@@ -45,17 +45,29 @@ curl http://127.0.0.1:8765/health/ready
 
 ## 3. Configure OpenClaw Model Proxy
 
-Use the same provider API key you normally configure in OpenClaw. The sidecar
-LLM proxy is always on while using the plugin and forwards OpenClaw's
-`Authorization` header upstream by default, so the plugin does not need a
-second API key.
+If OpenClaw already has a `vllm` API-key profile, keep that key in OpenClaw and
+only update the vLLM provider base URL and model to:
+
+```text
+http://127.0.0.1:8765/v1
+deepseek-v4-flash
+```
+
+The sidecar LLM proxy is always on while using the plugin and forwards
+OpenClaw's `Authorization` header upstream by default, so the plugin does not
+need a second API key.
+
+If OpenClaw does not already have a `vllm` API-key profile, `openclaw onboard`
+requires one. This includes the common case where OpenClaw was previously
+configured for DeepSeek directly, because the sidecar proxy is registered as a
+local vLLM-compatible provider. Onboard vLLM once and point it at the sidecar:
 
 ```bash
 openclaw onboard --non-interactive --accept-risk --skip-health \
   --mode local \
   --auth-choice vllm \
   --custom-base-url "http://127.0.0.1:8765/v1" \
-  --custom-api-key "<your existing provider API key>" \
+  --custom-api-key "<your provider API key>" \
   --custom-model-id "deepseek-v4-flash"
 ```
 
