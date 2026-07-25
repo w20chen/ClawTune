@@ -279,7 +279,7 @@ def _configure_openclaw(
             "openclaw_onboard",
         )
         _run_logged([openclaw, "plugins", "install", "--link", str(plugin_dir)], env, log, "plugin_install")
-        _run_logged([openclaw, "plugins", "enable", "hardware-scheduler"], env, log, "plugin_enable")
+        _run_logged([openclaw, "plugins", "enable", "agent-scheduler"], env, log, "plugin_enable")
         patch = subprocess.run(
             [openclaw, "config", "patch", "--stdin"],
             input=sandbox_config,
@@ -396,7 +396,7 @@ def _openclaw_config(
             },
             "plugins": {
                 "entries": {
-                    "hardware-scheduler": {
+                    "agent-scheduler": {
                         "enabled": True,
                         "config": {
                             "endpoint": endpoint_host,

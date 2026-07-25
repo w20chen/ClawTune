@@ -4,10 +4,27 @@ OpenClaw Agent Scheduler is an OpenClaw plugin plus a Python sidecar. It records
 OpenClaw model/tool traces and per-tool resource usage. It also includes a
 SWE-Rebench batch runner.
 
-## Install
+## Preliminaries
+
+Install OpenClaw (version 2026.7.1):
 
 ```bash
-python -m pip install -e "services/scheduler[dev]"
+curl -fsSL --proto '=https' --tlsv1.2 \
+  https://openclaw.ai/install.sh \
+  | bash -s -- --install-method npm --version 2026.7.1
+```
+
+Clone this repository:
+
+```bash
+git clone git@github.com:w20chen/claw.git
+```
+
+## Install Local Packages
+
+```bash
+cd claw
+python3 -m pip install -e "services/scheduler[dev]"
 
 cd packages/openclaw-plugin
 npm install
@@ -15,26 +32,34 @@ npm run build
 cd ../..
 ```
 
-## Run With OpenClaw
+## Run with OpenClaw
 
-Start the sidecar:
+The recommended order is:
 
-```bash
-cp .env.example .env
-python -m agent_scheduler.main --host 127.0.0.1 --port 8765
-```
+1. Start the sidecar.
+2. Route OpenClaw model traffic through the sidecar proxy.
+3. Install, enable, and configure the OpenClaw plugin.
+4. Run OpenClaw.
 
-Before starting the sidecar, please ensure that port 8765 is not occupied. If the port is already in use by another process, you can forcefully release it with the following command:
+This keeps the first plugin hook and the first model request pointed at a
+healthy sidecar. Installing the plugin itself does not require an API key.
+
+Before starting the sidecar, ensure that port 8765 is not occupied. If the port
+is already in use by another process, you can forcefully release it with:
 
 ```bash
 sudo lsof -t -i :8765 | xargs -r sudo kill -9
 ```
 
-Install the plugin:
+Start the sidecar and check readiness:
 
 ```bash
-openclaw plugins install --link ./packages/openclaw-plugin
-openclaw plugins enable hardware-scheduler
+cp .env.example .env
+python3 -m agent_scheduler.main --host 127.0.0.1 --port 8765
+```
+
+```bash
+curl http://127.0.0.1:8765/health/ready
 ```
 
 Route OpenClaw model traffic through the sidecar proxy. Use the same provider
@@ -50,15 +75,18 @@ openclaw onboard --non-interactive --accept-risk --skip-health \
   --custom-model-id "deepseek-v4-flash"
 ```
 
-Configure the plugin. Replace `launcherPath` with your absolute `claw-launch`
-path:
+Install the plugin into OpenClaw, enable it, and patch its config. Replace
+`launcherPath` with the absolute path printed by `command -v claw-launch`.
 
 ```bash
+openclaw plugins install --link ./packages/openclaw-plugin
+openclaw plugins enable agent-scheduler
+
 cat <<'JSON5' | openclaw config patch --stdin
 {
   plugins: {
     entries: {
-      "hardware-scheduler": {
+      "agent-scheduler": {
         enabled: true,
         config: {
           endpoint: "http://127.0.0.1:8765",
@@ -74,6 +102,8 @@ cat <<'JSON5' | openclaw config patch --stdin
   }
 }
 JSON5
+
+openclaw plugins inspect agent-scheduler --runtime --json
 ```
 
 Run:

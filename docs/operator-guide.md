@@ -2,7 +2,7 @@
 
 Use this guide for normal OpenClaw runs.
 
-## 1. Install
+## 1. Install Local Packages
 
 ```bash
 python -m pip install -e "services/scheduler[dev]"
@@ -18,6 +18,17 @@ Check the launcher:
 ```bash
 claw-launch --help
 ```
+
+Recommended runtime order:
+
+1. Start the sidecar.
+2. Route OpenClaw model traffic through the sidecar proxy.
+3. Install, enable, and configure the OpenClaw plugin.
+4. Run OpenClaw.
+
+Installing the plugin itself does not require an API key, but doing it after
+the sidecar readiness check keeps the first plugin hook pointed at a healthy
+endpoint.
 
 ## 2. Start Sidecar
 
@@ -60,24 +71,22 @@ AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=deepseek/deepseek-v4-flash
 # AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY_OVERRIDE=sk-...
 ```
 
-## 4. Install Plugin
+## 4. Install And Configure Plugin
 
 ```bash
 openclaw plugins install --link ./packages/openclaw-plugin
-openclaw plugins enable hardware-scheduler
-openclaw plugins inspect hardware-scheduler --runtime --json
+openclaw plugins enable agent-scheduler
 ```
 
-## 5. Configure Plugin
-
-Patch OpenClaw config. Replace `launcherPath` with an absolute path.
+Patch OpenClaw config. Replace `launcherPath` with the absolute path printed by
+`command -v claw-launch`.
 
 ```bash
 cat <<'JSON5' | openclaw config patch --stdin
 {
   plugins: {
     entries: {
-      "hardware-scheduler": {
+      "agent-scheduler": {
         enabled: true,
         config: {
           endpoint: "http://127.0.0.1:8765",
@@ -93,6 +102,8 @@ cat <<'JSON5' | openclaw config patch --stdin
   }
 }
 JSON5
+
+openclaw plugins inspect agent-scheduler --runtime --json
 ```
 
 Debug-only fallback:
@@ -101,7 +112,7 @@ Debug-only fallback:
 executionBackend: "hook-only"
 ```
 
-## 6. Run
+## 5. Run
 
 ```bash
 openclaw agent --local --agent main --model "vllm/deepseek-v4-flash" \

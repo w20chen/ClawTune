@@ -12,8 +12,8 @@ Install:
 
 ```bash
 openclaw plugins install --link ./packages/openclaw-plugin
-openclaw plugins enable hardware-scheduler
-openclaw plugins inspect hardware-scheduler --runtime --json
+openclaw plugins enable agent-scheduler
+openclaw plugins inspect agent-scheduler --runtime --json
 ```
 
 Expected hooks:

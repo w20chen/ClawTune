@@ -37,3 +37,28 @@ test("loadConfig keeps execution placement toggles configurable", () => {
   assert.equal(config.enableAffinity, false);
   assert.equal(config.enableNuma, false);
 });
+
+test("loadConfig reads agent scheduler environment overrides", () => {
+  const previousEndpoint = process.env.OPENCLAW_AGENT_SCHEDULER_ENDPOINT;
+  const previousTraceDir = process.env.OPENCLAW_AGENT_SCHEDULER_TRACE_DIR;
+  process.env.OPENCLAW_AGENT_SCHEDULER_ENDPOINT = "http://127.0.0.1:9999";
+  process.env.OPENCLAW_AGENT_SCHEDULER_TRACE_DIR = "/tmp/agent-scheduler-traces";
+
+  try {
+    const config = loadConfig({});
+
+    assert.equal(config.endpoint, "http://127.0.0.1:9999");
+    assert.equal(config.trace.trace_dir, "/tmp/agent-scheduler-traces");
+  } finally {
+    if (previousEndpoint === undefined) {
+      delete process.env.OPENCLAW_AGENT_SCHEDULER_ENDPOINT;
+    } else {
+      process.env.OPENCLAW_AGENT_SCHEDULER_ENDPOINT = previousEndpoint;
+    }
+    if (previousTraceDir === undefined) {
+      delete process.env.OPENCLAW_AGENT_SCHEDULER_TRACE_DIR;
+    } else {
+      process.env.OPENCLAW_AGENT_SCHEDULER_TRACE_DIR = previousTraceDir;
+    }
+  }
+});

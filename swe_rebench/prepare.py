@@ -345,7 +345,7 @@ echo "=== openclaw plugins install ==="
 cp -r "$CLAW_ROOT/plugin" /tmp/plugin
 openclaw plugins install --link /tmp/plugin || echo "plugin install FAILED (exit=$?)"
 echo "=== openclaw plugins enable ==="
-openclaw plugins enable hardware-scheduler || echo "plugin enable FAILED (exit=$?)"
+openclaw plugins enable agent-scheduler || echo "plugin enable FAILED (exit=$?)"
 echo ""
 
 if [ -f "$CLAW_ROOT/openclaw-config.json5" ]; then
@@ -683,7 +683,7 @@ def _write_plugin_config(bundle_dir: Path) -> None:
                 },
             },
         },
-        "plugins": {"entries": {"hardware-scheduler": {"enabled": True, "config": _PLUGIN_CONFIG}}}
+        "plugins": {"entries": {"agent-scheduler": {"enabled": True, "config": _PLUGIN_CONFIG}}}
     }, indent=2)
     dest = bundle_dir / "openclaw-config.json5"
     dest.write_text(cfg, encoding="utf-8")

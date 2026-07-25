@@ -22,7 +22,7 @@ Link plugin:
 
 ```bash
 openclaw plugins install --link ./packages/openclaw-plugin
-openclaw plugins enable hardware-scheduler
+openclaw plugins enable agent-scheduler
 ```
 
 ## Docker Sidecar

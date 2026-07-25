@@ -1,7 +1,7 @@
 # SWE-Rebench Batch Runner
 
 Use this when you want to run many SWE-Rebench tasks through OpenClaw with the
-hardware-scheduler plugin and sidecar tracing enabled.
+agent-scheduler plugin and sidecar tracing enabled.
 
 ## Setup
 
