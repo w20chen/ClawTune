@@ -37,16 +37,16 @@ openclaw plugins install --link ./packages/openclaw-plugin
 openclaw plugins enable hardware-scheduler
 ```
 
-Route OpenClaw model traffic through the sidecar proxy:
+Route OpenClaw model traffic through the sidecar proxy. Use the same provider
+API key you normally configure in OpenClaw; the sidecar forwards OpenClaw's
+`Authorization` header by default, so there is no separate plugin API key.
 
 ```bash
-export LLM_API_KEY="sk-..."
-
 openclaw onboard --non-interactive --accept-risk --skip-health \
   --mode local \
   --auth-choice vllm \
   --custom-base-url "http://127.0.0.1:8765/v1" \
-  --custom-api-key "$LLM_API_KEY" \
+  --custom-api-key "<your existing provider API key>" \
   --custom-model-id "deepseek-v4-flash"
 ```
 
@@ -95,7 +95,8 @@ python tools/inspect_trace.py data/traces/<trace-file>.jsonl --all --details
 
 ```bash
 cp swe_rebench/config.example.yaml swe_rebench/config.yaml
-# Edit llm.api_key, or export LLM_API_KEY.
+# SWE-Rebench is automated and does not read your host OpenClaw key.
+# Set LLM_API_KEY, edit llm.api_key, or use swe_rebench/llm_api_key.txt.
 
 python -m swe_rebench.runner prepare --config swe_rebench/config.yaml
 python -m swe_rebench.discover --sample 20 --out swe_rebench/tasks.json

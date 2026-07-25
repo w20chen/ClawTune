@@ -34,23 +34,30 @@ curl http://127.0.0.1:8765/health/ready
 
 ## 3. Configure OpenClaw Model Proxy
 
-```bash
-export LLM_API_KEY="sk-..."
+Use the same provider API key you normally configure in OpenClaw. The sidecar
+LLM proxy is always on while using the plugin and forwards OpenClaw's
+`Authorization` header upstream by default, so the plugin does not need a
+second API key.
 
+```bash
 openclaw onboard --non-interactive --accept-risk --skip-health \
   --mode local \
   --auth-choice vllm \
   --custom-base-url "http://127.0.0.1:8765/v1" \
-  --custom-api-key "$LLM_API_KEY" \
+  --custom-api-key "<your existing provider API key>" \
   --custom-model-id "deepseek-v4-flash"
 ```
 
-For OpenRouter or another upstream, edit `.env` and restart the sidecar:
+For OpenRouter or another OpenAI-compatible upstream, edit `.env` and restart
+the sidecar. Keep using the provider key stored in OpenClaw unless you
+intentionally need an override.
 
 ```bash
 AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL=https://openrouter.ai/api/v1
-AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL=deepseek-chat
-AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=deepseek/deepseek-chat
+AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL=deepseek-v4-flash
+AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=deepseek/deepseek-v4-flash
+# Optional advanced override:
+# AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY_OVERRIDE=sk-...
 ```
 
 ## 4. Install Plugin

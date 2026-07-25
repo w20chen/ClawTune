@@ -27,13 +27,14 @@ Important `.env` values:
 AGENT_SCHEDULER_DB_PATH=data/openclaw-trace.sqlite3
 AGENT_SCHEDULER_TRACE_DIR=data/traces
 AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL=https://api.deepseek.com
-AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY=sk-...
-AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL=deepseek-chat
-AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=deepseek/deepseek-chat
+AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL=deepseek-v4-flash
+AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=deepseek/deepseek-v4-flash
 ```
 
-Use `AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY` only when OpenClaw does not forward
-the provider key you need.
+The LLM proxy is always enabled for plugin use. By default it forwards the
+provider key already configured in OpenClaw via the request `Authorization`
+header. Set `AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY_OVERRIDE` only when you
+intentionally want the sidecar to use a different upstream key.
 
 Inspect output:
 

@@ -117,7 +117,7 @@ def test_run_agent_test_bench_dry_run_delegates_original_cli(tmp_path: Path) -> 
             "--provider",
             "deepseek",
             "--model",
-            "deepseek-chat",
+            "deepseek-v4-flash",
             "--benchmark",
             "swe-rebench",
             "--scaffold",

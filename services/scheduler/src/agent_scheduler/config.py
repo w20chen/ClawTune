@@ -65,13 +65,15 @@ class SchedulerConfig:
             in {"1", "true", "yes", "on"},
             docker_exec_container_prefix=os.getenv("AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX"),
             docker_socket=os.getenv("AGENT_SCHEDULER_DOCKER_SOCKET", "/var/run/docker.sock"),
-            llm_proxy_enabled=os.getenv("AGENT_SCHEDULER_LLM_PROXY_ENABLED", "true").lower()
-            not in {"0", "false", "no"},
+            llm_proxy_enabled=True,
             llm_proxy_upstream_base_url=os.getenv(
                 "AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL",
                 DEFAULT_LLM_UPSTREAM_BASE_URL,
             ),
-            llm_proxy_upstream_api_key=os.getenv("AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY"),
+            llm_proxy_upstream_api_key=(
+                os.getenv("AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY_OVERRIDE")
+                or os.getenv("AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY")
+            ),
             llm_proxy_debug_dump=os.getenv("AGENT_SCHEDULER_LLM_PROXY_DEBUG_DUMP", "false").lower()
             in {"1", "true", "yes", "on"},
             llm_proxy_expose_model=os.getenv("AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL"),
