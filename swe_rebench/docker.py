@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from swe_rebench.config import DockerConfig
+from swe_rebench.sandbox import sandbox_container_prefix
 
 
 def _docker_host_socket(host: str) -> str | None:
@@ -131,6 +132,7 @@ def run_container(
     """
     trace_dir.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
+    docker_exec_container_prefix = sandbox_container_prefix(f"docker:{task_id}")
 
     environment = {
         "PROBLEM_STATEMENT": problem_statement,
@@ -147,6 +149,7 @@ def run_container(
         # Enable DockerExecObserver so read/write/edit tools get
         # independent PID/cgroup attribution via docker-exec events.
         "AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER": "true",
+        "AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX": docker_exec_container_prefix,
     }
     if env_extra:
         environment.update(env_extra)
