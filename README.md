@@ -62,8 +62,6 @@ python3 -m agent_scheduler.main --host 127.0.0.1 --port 8765
 curl http://127.0.0.1:8765/health/ready   # {"ready":true}
 ```
 
-Route OpenClaw model traffic through the sidecar proxy.
-
 If OpenClaw already has a `vllm` API-key profile, keep that key in OpenClaw and
 only update the vLLM provider base URL and model to:
 
@@ -123,7 +121,13 @@ JSON5
 openclaw plugins inspect agent-scheduler --runtime --json
 ```
 
-### Stable Local Linux Cgroup Launch
+After completing the above configuration, one can run OpenClaw with the following command:
+
+```bash
+openclaw agent --local --agent main --model "vllm/deepseek-v4-flash"   --message "Use the shell to run: python -c '\''print(\"trace-ok\")'\''. Then summarize the result." --session-key <set a session key>
+```
+
+### Linux Cgroup
 
 `enableCgroup: true` is the plugin default. For reliable cgroup-v2 attribution
 on local Linux, start OpenClaw inside a delegated cgroup scope and set
@@ -239,21 +243,7 @@ python -m swe_rebench.runner run --config swe_rebench/config.yaml \
 
 ## More
 
-- Normal OpenClaw guide: [docs/operator-guide.md](docs/operator-guide.md)
+- OpenClaw guide: [docs/operator-guide.md](docs/operator-guide.md)
 - SWE-Rebench guide: [swe_rebench/README.md](swe_rebench/README.md)
 - Deployment: [docs/deployment.md](docs/deployment.md)
 - Troubleshooting: [docs/operator-guide.md#troubleshooting](docs/operator-guide.md#troubleshooting)
-
-## Validate
-
-```bash
-python tools/validate_contracts.py
-python -m pytest tests -q --basetemp .pytest-tmp-root
-
-cd services/scheduler
-python -m pytest tests -q
-
-cd ../../packages/openclaw-plugin
-npm test
-npm run typecheck
-```
