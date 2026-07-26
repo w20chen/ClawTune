@@ -43,8 +43,7 @@ class ProcessResourceSampler:
             return self._empty(now, mono, None, "unattributed")
         if scope.kind == "cgroup-v2" and scope.cgroup_path:
             cgroup = self._snapshot_cgroup(now, mono, scope)
-            if cgroup.available:
-                return cgroup
+            return cgroup
         if scope.pid is None:
             return self._empty(now, mono, scope.root_pid, "pid-unavailable")
         if self._psutil is None:

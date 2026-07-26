@@ -220,14 +220,28 @@ class RealtimeToolMonitor:
             if not snapshot.available and active.latest_snapshot.available:
                 self._active[self._key(active.request.tool_call_id, active.request.event_id)] = active
                 return
+            timeline = list(active.timeline)
+            timeline_truncated = active.timeline_truncated
+            snapshot_count = active.snapshot_count
+            rss_bytes_peak = active.rss_bytes_peak
+            if snapshot.available:
+                timeline, timeline_truncated = _append_timeline(
+                    timeline,
+                    _timeline_point(snapshot),
+                    self.max_timeline_points,
+                    timeline_truncated,
+                )
+                snapshot_count += 1
+                rss_bytes_peak = _max_optional(rss_bytes_peak, snapshot.rss_bytes)
+            start_snapshot = active.snapshot if active.snapshot.available else snapshot
             self._active[self._key(request.tool_call_id, request.event_id)] = _ActiveTool(
                 request=request,
-                snapshot=snapshot,
+                snapshot=start_snapshot,
                 latest_snapshot=snapshot,
-                rss_bytes_peak=snapshot.rss_bytes,
-                timeline=[_timeline_point(snapshot)],
-                snapshot_count=1,
-                timeline_truncated=False,
+                rss_bytes_peak=rss_bytes_peak,
+                timeline=timeline,
+                snapshot_count=snapshot_count,
+                timeline_truncated=timeline_truncated,
                 resource_class=active.resource_class,
                 operation=active.operation,
             )
@@ -270,7 +284,7 @@ class RealtimeToolMonitor:
                     )
                     self._active[key] = _ActiveTool(
                         request=current.request,
-                        snapshot=current.snapshot,
+                        snapshot=current.snapshot if current.snapshot.available else snapshot,
                         latest_snapshot=snapshot,
                         rss_bytes_peak=_max_optional(current.rss_bytes_peak, snapshot.rss_bytes),
                         timeline=timeline,
