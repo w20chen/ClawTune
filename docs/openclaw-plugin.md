@@ -27,16 +27,30 @@ model_call_ended
 
 Recommended config:
 
-```json5
+```bash
+LAUNCHER_PATH="$(command -v claw-launch)"
+test -n "$LAUNCHER_PATH"
+
+cat <<JSON5 | openclaw config patch --stdin
 {
-  endpoint: "http://127.0.0.1:8765",
-  mode: "observe",
-  failOpen: true,
-  recordRawTrace: true,
-  executionBackend: "managed-wrapper",
-  launcherPath: "/absolute/path/to/claw-launch",
-  securityBoundaryAccepted: true
+  plugins: {
+    entries: {
+      "agent-scheduler": {
+        enabled: true,
+        config: {
+          endpoint: "http://127.0.0.1:8765",
+          mode: "observe",
+          failOpen: true,
+          recordRawTrace: true,
+          executionBackend: "managed-wrapper",
+          launcherPath: "$LAUNCHER_PATH",
+          securityBoundaryAccepted: true
+        }
+      }
+    }
+  }
 }
+JSON5
 ```
 
 Use `executionBackend: "hook-only"` for debugging when command rewriting is not

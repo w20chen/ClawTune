@@ -89,14 +89,16 @@ openclaw onboard --non-interactive --accept-risk --skip-health \
   --custom-model-id "deepseek-v4-flash"
 ```
 
-Install the plugin into OpenClaw, enable it, and patch its config. Replace
-`launcherPath` with the absolute path printed by `command -v claw-launch`.
+Install the plugin into OpenClaw, enable it, and patch its config.
 
 ```bash
 openclaw plugins install --link ./packages/openclaw-plugin
 openclaw plugins enable agent-scheduler
 
-cat <<'JSON5' | openclaw config patch --stdin
+LAUNCHER_PATH="$(command -v claw-launch)"
+test -n "$LAUNCHER_PATH"
+
+cat <<JSON5 | openclaw config patch --stdin
 {
   plugins: {
     entries: {
@@ -108,7 +110,7 @@ cat <<'JSON5' | openclaw config patch --stdin
           failOpen: true,
           recordRawTrace: true,
           executionBackend: "managed-wrapper",
-          launcherPath: "/absolute/path/to/claw-launch",
+          launcherPath: "$LAUNCHER_PATH",
           securityBoundaryAccepted: true
         }
       }

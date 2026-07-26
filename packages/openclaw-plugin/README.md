@@ -36,7 +36,11 @@ model_call_ended
 
 ## Recommended Config
 
-```json5
+```bash
+LAUNCHER_PATH="$(command -v claw-launch)"
+test -n "$LAUNCHER_PATH"
+
+cat <<JSON5 | openclaw config patch --stdin
 {
   plugins: {
     entries: {
@@ -48,13 +52,14 @@ model_call_ended
           failOpen: true,
           recordRawTrace: true,
           executionBackend: "managed-wrapper",
-          launcherPath: "/absolute/path/to/claw-launch",
+          launcherPath: "$LAUNCHER_PATH",
           securityBoundaryAccepted: true
         }
       }
     }
   }
 }
+JSON5
 ```
 
 `recordRawTrace` is disabled by package default. Enable it when you want

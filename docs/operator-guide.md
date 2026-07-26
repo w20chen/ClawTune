@@ -90,11 +90,13 @@ openclaw plugins install --link ./packages/openclaw-plugin
 openclaw plugins enable agent-scheduler
 ```
 
-Patch OpenClaw config. Replace `launcherPath` with the absolute path printed by
-`command -v claw-launch`.
+Patch OpenClaw config.
 
 ```bash
-cat <<'JSON5' | openclaw config patch --stdin
+LAUNCHER_PATH="$(command -v claw-launch)"
+test -n "$LAUNCHER_PATH"
+
+cat <<JSON5 | openclaw config patch --stdin
 {
   plugins: {
     entries: {
@@ -106,7 +108,7 @@ cat <<'JSON5' | openclaw config patch --stdin
           failOpen: true,
           recordRawTrace: true,
           executionBackend: "managed-wrapper",
-          launcherPath: "/absolute/path/to/claw-launch",
+          launcherPath: "$LAUNCHER_PATH",
           securityBoundaryAccepted: true
         }
       }

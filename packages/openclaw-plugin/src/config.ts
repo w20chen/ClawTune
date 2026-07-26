@@ -99,6 +99,9 @@ export function loadConfig(input: unknown): PluginConfig {
   if (config.executionBackend === "managed-wrapper" && config.securityBoundaryAccepted !== true) {
     throw new Error("managed-wrapper requires securityBoundaryAccepted=true");
   }
+  if (config.executionBackend === "managed-wrapper") {
+    validateManagedWrapperLauncherPath(config.launcherPath);
+  }
   return config as PluginConfig;
 }
 
@@ -182,4 +185,15 @@ function parseBoolean(value: string | undefined): boolean | null {
   if (value === undefined || value.length === 0) return null;
   const normalized = value.toLowerCase();
   return ["1", "true", "yes", "on"].includes(normalized);
+}
+
+function validateManagedWrapperLauncherPath(value: string): void {
+  if (value === "/absolute/path/to/claw-launch" || value.includes("<")) {
+    throw new Error(
+      "managed-wrapper launcherPath is still a placeholder; set it to `command -v claw-launch`"
+    );
+  }
+  if (!value.startsWith("/")) {
+    throw new Error("managed-wrapper launcherPath must be an absolute path");
+  }
 }
