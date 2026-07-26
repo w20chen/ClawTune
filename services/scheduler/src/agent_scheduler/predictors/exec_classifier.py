@@ -194,6 +194,16 @@ def extract_exec_operation(tool_name: str, tool_args: Any) -> str | None:
     return None
 
 
+def extract_operation(request: Any) -> str | None:
+    operation_hint = getattr(request, "operation_hint", None)
+    if operation_hint:
+        return operation_hint
+    return extract_exec_operation(
+        getattr(request, "tool_name", "unknown"),
+        getattr(request, "raw_params", None),
+    )
+
+
 def extract_command(tool_args: str | dict[str, Any] | None) -> str | None:
     if isinstance(tool_args, str):
         try:

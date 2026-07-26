@@ -5,4 +5,15 @@ max_global_concurrency: 4
 lease_ttl_ms: 300000
 admission_wait_ms: 5000
 db_path: ./data/scheduler.sqlite3
-tool_profiles_path: ./examples/tool-profiles.example.json
+tool_resource_trace_paths:
+  - ./data/traces
+tool_resource_stage2_trace_paths:
+  - ./data/tool-resource-stage2
+tool_resource_latency_buckets_ms:
+  - 100
+  - 500
+  - 2000
+  - 10000
+tool_resource_repo: openclaw
+tool_resource_artifact_dir: ./data/tool-resource
+tool_resource_container_executable: docker

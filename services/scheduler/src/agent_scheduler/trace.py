@@ -722,7 +722,7 @@ def _coverage(
 
     ratio = overlap_ns / action_duration_ns
 
-    if shared_sandbox_container and ratio > 0.0:
+    if shared_sandbox_container:
         reason = "shared_sandbox_container"
     elif shared_runtime_process and ratio > 0.0:
         reason = "shared_runtime_process"

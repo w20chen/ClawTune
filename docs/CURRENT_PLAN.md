@@ -47,3 +47,10 @@ cd packages/openclaw-plugin && npm test && npm run typecheck
 - `python -m mypy .` currently fails on pre-existing repository-wide typing
   issues, including missing `types-setuptools`, Windows/POSIX launcher
   attribute checks, and trace helper union-attr errors.
+- `python -c "import sys; sys.path.insert(0, 'services/scheduler/src'); from tool_resource.features import parse_command_clauses; print(parse_command_clauses('echo hi'))"`
+  cannot complete in this Windows workspace because the vendored mvdan adapter
+  binary is not built and `go` is not available on PATH to run
+  `services/scheduler/src/tool_resource/_mvdan_adapter/build.sh`.
+- `.venv\Scripts\python.exe -m pytest services\scheduler\tests\test_tool_resource_predictor.py services\scheduler\tests\test_sidecar.py -q`
+  cannot run in the current virtual environment because `pytest` is not
+  installed there.

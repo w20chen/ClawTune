@@ -15,7 +15,12 @@ class SchedulerConfig:
     max_global_concurrency: int = 4
     lease_ttl_ms: int = 300_000
     admission_wait_ms: int = 5_000
-    tool_profiles_path: Path | None = None
+    tool_resource_trace_paths: tuple[Path, ...] = ()
+    tool_resource_stage2_trace_paths: tuple[Path, ...] = ()
+    tool_resource_latency_buckets_ms: tuple[float, ...] = (100.0, 500.0, 2_000.0, 10_000.0)
+    tool_resource_repo: str = "openclaw"
+    tool_resource_artifact_dir: Path | None = None
+    tool_resource_container_executable: str = "docker"
     auth_token: str | None = None
     trace_dir: Path = Path("traces")
     trace_max_messages_bytes: int = 131_072  # 128 KiB, matches plugin default
@@ -45,14 +50,39 @@ class SchedulerConfig:
     @classmethod
     def from_env(cls) -> "SchedulerConfig":
         env_base = load_env_file()
-        profile = os.getenv("AGENT_SCHEDULER_TOOL_PROFILES")
         trace = os.getenv("AGENT_SCHEDULER_TRACE_DIR")
+        tool_resource_traces = os.getenv("AGENT_SCHEDULER_TOOL_RESOURCE_TRACES")
+        tool_resource_stage2_traces = os.getenv("AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_TRACES")
+        tool_resource_artifact_dir = os.getenv("AGENT_SCHEDULER_TOOL_RESOURCE_ARTIFACT_DIR")
         return cls(
             policy=os.getenv("AGENT_SCHEDULER_POLICY", "observe-only"),
             max_global_concurrency=int(os.getenv("AGENT_SCHEDULER_MAX_GLOBAL_CONCURRENCY", "4")),
             lease_ttl_ms=int(os.getenv("AGENT_SCHEDULER_LEASE_TTL_MS", "300000")),
             admission_wait_ms=int(os.getenv("AGENT_SCHEDULER_ADMISSION_WAIT_MS", "5000")),
-            tool_profiles_path=_resolve_path(profile, env_base) if profile else None,
+            tool_resource_trace_paths=tuple(
+                _resolve_path(item, env_base)
+                for item in _split_env_paths(tool_resource_traces)
+            ),
+            tool_resource_stage2_trace_paths=tuple(
+                _resolve_path(item, env_base)
+                for item in _split_env_paths(tool_resource_stage2_traces)
+            ),
+            tool_resource_latency_buckets_ms=tuple(
+                _parse_float_list(
+                    os.getenv("AGENT_SCHEDULER_TOOL_RESOURCE_LATENCY_BUCKETS_MS"),
+                    default=(100.0, 500.0, 2_000.0, 10_000.0),
+                )
+            ),
+            tool_resource_repo=os.getenv("AGENT_SCHEDULER_TOOL_RESOURCE_REPO", "openclaw"),
+            tool_resource_artifact_dir=(
+                _resolve_path(tool_resource_artifact_dir, env_base)
+                if tool_resource_artifact_dir
+                else None
+            ),
+            tool_resource_container_executable=os.getenv(
+                "AGENT_SCHEDULER_TOOL_RESOURCE_CONTAINER_EXECUTABLE",
+                "docker",
+            ),
             auth_token=os.getenv("AGENT_SCHEDULER_TOKEN"),
             trace_dir=_resolve_path(trace, env_base) if trace else Path("traces"),
             trace_max_messages_bytes=int(os.getenv("AGENT_SCHEDULER_TRACE_MAX_MESSAGES_BYTES", "131072")),
@@ -145,3 +175,27 @@ def _optional_int(value: str | None) -> int | None:
     except ValueError:
         return None
     return parsed if parsed >= 0 else None
+
+
+def _split_env_paths(value: str | None) -> list[str]:
+    if value is None or not value.strip():
+        return []
+    parts: list[str] = []
+    for chunk in value.split(os.pathsep):
+        parts.extend(item.strip() for item in chunk.split(",") if item.strip())
+    return parts
+
+
+def _parse_float_list(value: str | None, *, default: tuple[float, ...]) -> list[float]:
+    if value is None or not value.strip():
+        return list(default)
+    parsed: list[float] = []
+    for raw in value.split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        try:
+            parsed.append(float(item))
+        except ValueError:
+            continue
+    return parsed or list(default)

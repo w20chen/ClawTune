@@ -7,7 +7,7 @@ from typing import Any
 
 from agent_scheduler.contracts.models import ResourceScope, ToolBeforeRequest, ToolCompletedEvent
 from agent_scheduler.monitoring.process import ProcessResourceSampler, ResourceSnapshot
-from agent_scheduler.predictors.static_profile import extract_operation
+from agent_scheduler.predictors.exec_classifier import extract_operation
 
 
 @dataclass(frozen=True)

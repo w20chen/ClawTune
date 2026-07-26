@@ -173,6 +173,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         s.metrics.inc("scheduler_tool_requests_total")
         if s.trace_writer is not None:
             s.trace_writer.record_tool_started(request)
+        s.predictor.record_tool_started(request)
         prediction = await s.predictor.predict(request)
         decision = await s.policy.decide(
             request,
@@ -211,6 +212,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         await s.leases.release(event.lease_id)
         sample = s.tool_monitor.complete(event)
         if sample is not None:
+            s.predictor.observe_completion(event, sample)
             s.metrics.observe_tool_runtime(sample)
             s._recent_samples.insert(0, _sample_summary(sample))
             if len(s._recent_samples) > s._max_recent_samples:
@@ -253,7 +255,21 @@ def create_app(state: AppState | None = None) -> FastAPI:
         s: AppState = Depends(get_state),
         _: None = Depends(auth),
     ) -> ExecutionClaimResponse:
-        return s.executions.claim(request)
+        response = s.executions.claim(request)
+        record = s.executions.get(request.execution_id)
+        container_id = (
+            s.config.sandbox_container_id
+            or (s._sandbox_scope_override.container_id if s._sandbox_scope_override else None)
+        )
+        if record is not None:
+            s.predictor.begin_execution(
+                execution_id=request.execution_id,
+                tool_call_id=record.request.tool_call_id,
+                command=record.request.command,
+                container_id=container_id,
+                repo=s.config.tool_resource_repo,
+            )
+        return response
 
     @app.post("/v2/executions/{execution_id}/started", response_model=ExecutionUpdateResponse)
     async def execution_started(
@@ -266,6 +282,15 @@ def create_app(state: AppState | None = None) -> FastAPI:
         record = s.executions.get(execution_id)
         if record is not None and record.scope is not None:
             s.tool_monitor.bind_scope(record.request.tool_call_id, record.scope)
+        container_id = request.container_id or s.config.sandbox_container_id
+        if record is not None:
+            s.predictor.begin_execution(
+                execution_id=execution_id,
+                tool_call_id=record.request.tool_call_id,
+                command=record.request.command,
+                container_id=container_id,
+                repo=s.config.tool_resource_repo,
+            )
         return response
 
     @app.post("/v2/executions/{execution_id}/exited", response_model=ExecutionUpdateResponse)
@@ -275,6 +300,12 @@ def create_app(state: AppState | None = None) -> FastAPI:
         s: AppState = Depends(get_state),
         _: None = Depends(auth),
     ) -> ExecutionUpdateResponse:
-        return s.executions.exited(execution_id, request)
+        response = s.executions.exited(execution_id, request)
+        s.predictor.finish_execution(
+            execution_id=execution_id,
+            exit_code=request.exit_code,
+            signal=request.signal,
+        )
+        return response
 
     return app

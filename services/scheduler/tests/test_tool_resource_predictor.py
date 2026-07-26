@@ -1,0 +1,359 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+import agent_scheduler.predictors.tool_resource as tool_resource_predictor
+from agent_scheduler.api.app import create_app
+from agent_scheduler.api.dependencies import build_state
+from agent_scheduler.config import SchedulerConfig
+from agent_scheduler.contracts.models import ParamFeatures, ToolBeforeRequest, ToolCompletedEvent
+from agent_scheduler.monitoring.tool_runtime import ToolRuntimeSample
+from agent_scheduler.predictors.tool_resource import (
+    ToolResourcePredictor,
+    load_openclaw_trace_observations,
+)
+from tool_resource.runtime_kb import LatencyBuckets
+
+
+def _write_trace(path: Path, *, command: str = "python -m pytest tests -q") -> None:
+    records = [
+        {
+            "schema_version": 6,
+            "record_type": "trace_metadata",
+            "trace_format_version": 6,
+            "scaffold": "openclaw",
+            "mode": "collect",
+            "created_at": "2026-07-24T17:29:43.615462Z",
+        },
+        {
+            "schema_version": 6,
+            "record_type": "span_start",
+            "trace_id": "run-1",
+            "span_id": "call-1",
+            "parent_span_id": None,
+            "session_id": "session-1",
+            "run_id": "run-1",
+            "agent_id": "main",
+            "sequence_no": 1,
+            "kind": "tool",
+            "name": "exec",
+            "wall_time_ns": "1000000000000",
+            "monotonic_time_ns": "1",
+            "input": {"requested_args": {"command": command}},
+            "execution": {"mode": "launcher", "execution_id": "call-1"},
+        },
+        {
+            "schema_version": 6,
+            "record_type": "span_end",
+            "trace_id": "run-1",
+            "span_id": "call-1",
+            "parent_span_id": None,
+            "session_id": "session-1",
+            "run_id": "run-1",
+            "agent_id": "main",
+            "sequence_no": 1,
+            "kind": "tool",
+            "name": "exec",
+            "wall_time_ns": "1001200000000",
+            "monotonic_time_ns": "2",
+            "duration_ns": "1200000000",
+            "status": {"code": "ok", "message": None},
+            "output": {"exit_code": 0, "result": None},
+            "execution": {"mode": "launcher", "execution_id": "call-1"},
+            "resources": {
+                "cpu_utilization_avg_cores": 1.5,
+                "rss_peak_bytes": 104857600,
+            },
+        },
+    ]
+    path.write_text(
+        "\n".join(json.dumps(record, separators=(",", ":")) for record in records) + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_openclaw_trace_v6_loads_as_tool_resource_observations(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.jsonl"
+    _write_trace(trace)
+
+    loaded = load_openclaw_trace_observations(trace, repo="repo-1")
+
+    assert loaded.tool_spans_seen == 1
+    assert len(loaded.observations) == 1
+    observation = loaded.observations[0]
+    assert observation.repo == "repo-1"
+    assert observation.bin == "python"
+    assert observation.argv == ("python", "-m", "pytest", "tests", "-q")
+    assert observation.latency_ms == 1200
+    assert observation.sampled_peak_rss_mb == 100
+
+
+def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.jsonl"
+    _write_trace(trace)
+    predictor = ToolResourcePredictor.from_openclaw_traces(
+        [trace],
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+    )
+    request = ToolBeforeRequest(
+        schema_version="scheduler.v1",
+        event_id="evt-1",
+        occurred_at="2026-07-24T17:29:44Z",
+        plugin_version="0.1.0",
+        run_id="run-2",
+        session_id="session-1",
+        session_key=None,
+        agent_id="main",
+        tool_call_id="call-2",
+        tool_name="exec",
+        tool_kind="shell",
+        tool_input_kind="json",
+        derived_paths=[],
+        params_digest="sha256:" + "a" * 64,
+        param_features=ParamFeatures(
+            serialized_size_bytes=10,
+            string_length=10,
+            list_item_count=0,
+            path_count=0,
+            has_command_like_field=True,
+        ),
+        raw_params={"command": "python -m pytest tests -q"},
+    )
+
+    result = asyncio.run(predictor.predict(request))
+
+    assert result.resource_class == "latency_medium"
+    assert result.duration_p50_ms == 1250
+    assert result.confidence == 1.0
+
+
+def test_stage2_clause_identity_matches_online_prediction(tmp_path: Path, monkeypatch) -> None:
+    def parse_command(command: str) -> dict:
+        if command == "python -m pytest tests -q":
+            return {
+                "clauses": [{"bin": "python", "argv": ["python", "-m", "pytest", "tests", "-q"]}],
+                "parse_failed": False,
+            }
+        return {
+            "clauses": [{"bin": "git", "argv": ["git", "status"]}],
+            "parse_failed": False,
+        }
+
+    monkeypatch.setattr(tool_resource_predictor, "parse_command_clauses", parse_command)
+    stage2 = tmp_path / "stage2.json"
+    stage2.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "mode": "clause",
+                "provenance": {"repo": "repo-1"},
+                "calls": [
+                    {
+                        "eligible_for_kb": True,
+                        "clauses": [
+                            {
+                                "bin": "python",
+                                "argv": ["python", "-m", "pytest", "tests", "-q"],
+                                "latency_ms": 1200,
+                                "ts_start": 1.0,
+                                "ts_end": 2.2,
+                            }
+                        ],
+                    },
+                    {
+                        "eligible_for_kb": True,
+                        "clauses": [
+                            {
+                                "bin": "git",
+                                "argv": ["git", "status"],
+                                "latency_ms": 50,
+                                "ts_start": 3.0,
+                                "ts_end": 3.05,
+                            }
+                        ],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(stage2,),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+    )
+
+    result = asyncio.run(
+        predictor.predict(_tool_request("evt-1", "call-1", "python -m pytest tests -q"))
+    )
+
+    assert predictor.report.observations_loaded == 2
+    assert result.resource_class == "latency_medium"
+    assert result.duration_p50_ms == 1250
+    assert result.confidence == 1.0
+
+
+def test_tool_resource_predictor_learns_from_completion_without_cold_start() -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+    )
+    request = _tool_request("evt-1", "call-1", "python -m pytest tests -q")
+    predictor.record_tool_started(request)
+
+    added = predictor.observe_completion(
+        ToolCompletedEvent(
+            schema_version="scheduler.v1",
+            event_id="evt-1",
+            occurred_at="2026-07-24T17:29:45Z",
+            plugin_version="0.1.0",
+            run_id="run-1",
+            session_id="session-1",
+            session_key=None,
+            agent_id="main",
+            tool_call_id="call-1",
+            decision_id=None,
+            lease_id=None,
+            execution_id=None,
+            tool_name="exec",
+            duration_ms=1200,
+            succeeded=True,
+            error_type=None,
+            error_digest=None,
+            result_size_bytes=None,
+            raw_result=None,
+            raw_event=None,
+            resource_scope=None,
+        ),
+        _runtime_sample("evt-1", "call-1"),
+    )
+    result = asyncio.run(
+        predictor.predict(_tool_request("evt-2", "call-2", "python -m pytest tests -q"))
+    )
+
+    assert added == 1
+    assert result.resource_class == "latency_medium"
+    assert result.duration_p50_ms == 1250
+
+
+def test_sidecar_uses_tool_resource_predictor_when_configured(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.jsonl"
+    _write_trace(trace)
+    state = build_state(
+        SchedulerConfig(
+            tool_resource_trace_paths=(trace,),
+            tool_resource_latency_buckets_ms=(100.0, 500.0, 2_000.0),
+        )
+    )
+    client = TestClient(create_app(state))
+
+    response = client.post(
+        "/v1/decisions/tool",
+        json={
+            "schema_version": "scheduler.v1",
+            "event_id": "evt-1",
+            "occurred_at": "2026-07-24T17:29:44Z",
+            "plugin_version": "0.1.0",
+            "run_id": "run-2",
+            "session_id": "session-1",
+            "session_key": None,
+            "agent_id": "main",
+            "tool_call_id": "call-2",
+            "tool_name": "exec",
+            "tool_kind": "shell",
+            "tool_input_kind": "json",
+            "operation_hint": None,
+            "derived_paths": [],
+            "params_digest": "sha256:" + "a" * 64,
+            "param_features": {
+                "serialized_size_bytes": 10,
+                "string_length": 10,
+                "list_item_count": 0,
+                "path_count": 0,
+                "has_command_like_field": True,
+            },
+            "raw_params": {"command": "python -m pytest tests -q"},
+            "resource_scope": None,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["prediction"]["resource_class"] == "latency_medium"
+
+
+def _tool_request(event_id: str, tool_call_id: str, command: str) -> ToolBeforeRequest:
+    return ToolBeforeRequest(
+        schema_version="scheduler.v1",
+        event_id=event_id,
+        occurred_at="2026-07-24T17:29:44Z",
+        plugin_version="0.1.0",
+        run_id="run-1",
+        session_id="session-1",
+        session_key=None,
+        agent_id="main",
+        tool_call_id=tool_call_id,
+        tool_name="exec",
+        tool_kind="shell",
+        tool_input_kind="json",
+        derived_paths=[],
+        params_digest="sha256:" + "a" * 64,
+        param_features=ParamFeatures(
+            serialized_size_bytes=10,
+            string_length=10,
+            list_item_count=0,
+            path_count=0,
+            has_command_like_field=True,
+        ),
+        raw_params={"command": command},
+    )
+
+
+def _runtime_sample(event_id: str, tool_call_id: str) -> ToolRuntimeSample:
+    return ToolRuntimeSample(
+        event_id=event_id,
+        tool_call_id=tool_call_id,
+        tool_name="exec",
+        operation="pytest",
+        started_at=1_000.0,
+        ended_at=1_001.2,
+        duration_ms=1200,
+        monitor_duration_ms=1200,
+        monitor_start_wall_s=1_000.0,
+        monitor_end_wall_s=1_001.2,
+        monitor_start_monotonic_s=10.0,
+        monitor_end_monotonic_s=11.2,
+        cpu_time_delta_s=1.0,
+        rss_bytes_before=10,
+        rss_bytes_after=20,
+        read_bytes_delta=0,
+        write_bytes_delta=0,
+        net_rx_bytes_delta=0,
+        net_tx_bytes_delta=0,
+        ctx_switches_delta=0,
+        rss_bytes_peak=104857600,
+        cpu_utilization_avg_cores=0.8,
+        cpu_utilization_avg_pct=80.0,
+        disk_read_bytes_per_s=0.0,
+        disk_write_bytes_per_s=0.0,
+        net_rx_bytes_per_s=0.0,
+        net_tx_bytes_per_s=0.0,
+        sampling_interval_ms=50,
+        sampling_point_count=2,
+        sampling_quality="ok",
+        resource_timeline=[],
+        resource_timeline_truncated=False,
+        resource_class="unknown",
+        target_pid=123,
+        process_count_before=1,
+        process_count_after=1,
+        attribution_status="pid",
+        monitor_source="pid",
+    )
