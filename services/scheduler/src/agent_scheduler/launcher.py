@@ -32,8 +32,11 @@ def main() -> None:
             raise SystemExit(run_execution(args.endpoint, args.execution_id, args.token))
         except Exception as exc:
             print("Command could not be started by the execution environment.", file=sys.stderr)
-            if _env_enabled("CLAW_LAUNCH_DEBUG"):
-                print(f"claw-launch debug: {type(exc).__name__}: {exc}", file=sys.stderr)
+            if _env_enabled("CLAW_LAUNCH_DEBUG") or _env_enabled("CLAW_CGROUP_REQUIRED"):
+                print(
+                    f"claw-launch debug: {type(exc).__name__}: {_redact_debug_message(str(exc))}",
+                    file=sys.stderr,
+                )
             raise SystemExit(125) from None
     raise SystemExit(2)
 
@@ -579,6 +582,16 @@ def _enabled(profiling: object, key: str, default: bool) -> bool:
 
 def _env_enabled(name: str) -> bool:
     return os.environ.get(name, "").lower() in {"1", "true", "yes", "on"}
+
+
+def _redact_debug_message(message: str) -> str:
+    parts = []
+    for item in message.split():
+        if item.startswith("token="):
+            parts.append("token=<redacted>")
+        else:
+            parts.append(item)
+    return " ".join(parts)
 
 
 def _safe_execution_id(execution_id: str) -> str:
