@@ -172,6 +172,13 @@ With cgroup enabled, `/v1/tools/recent` should report
 `"attribution_status":"cgroup-v2"` or traces should show
 `"resources":{"scope":"cgroup"}` for managed `exec` tools.
 
+`claw-launch` also has an automatic systemd fallback for normal
+`openclaw agent ...` usage. If a per-tool cgroup can be created but the child
+process cannot be migrated into it, the launcher retries the payload in a
+transient user systemd scope with `Delegate=yes` and reports that scope's
+cgroup to the sidecar. Set `CLAW_CGROUP_AUTO_SYSTEMD=0` to disable this retry
+and keep the older process-tree fallback behavior.
+
 ### Cgroup Troubleshooting
 
 On cgroup v2, owning the destination `cgroup.procs` file is not enough. The

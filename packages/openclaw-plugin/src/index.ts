@@ -810,15 +810,17 @@ export default definePluginEntry({
 // ── Helper functions ───────────────────────────────────────────────────
 
 function common(event: unknown): CommonEvent {
+  const runtimeSessionKey = getRuntimeSessionKey();
+  const sessionKey = extractString(event, ["session_key", "sessionKey"]) ?? runtimeSessionKey;
   return {
     schema_version: "scheduler.v1",
     event_id: randomUUID(),
     occurred_at: new Date().toISOString(),
     plugin_version: pluginVersion,
-    run_id: extractString(event, ["run_id", "runId"]),
-    session_id: extractString(event, ["session_id", "sessionId"]),
-    session_key: extractString(event, ["session_key", "sessionKey"]),
-    agent_id: extractString(event, ["agent_id", "agentId"])
+    run_id: extractString(event, ["run_id", "runId"]) ?? getRuntimeRunId(),
+    session_id: extractString(event, ["session_id", "sessionId"]) ?? sessionKey,
+    session_key: sessionKey,
+    agent_id: extractString(event, ["agent_id", "agentId"]) ?? getRuntimeAgentId()
   };
 }
 
@@ -847,10 +849,11 @@ function buildToolBefore(event: unknown, config: PluginConfig): ToolBeforeReques
 }
 
 function mergeContext(payload: CommonEvent, context: unknown): void {
-  payload.run_id = payload.run_id ?? extractString(context, ["runId", "run_id"]);
-  payload.session_id = payload.session_id ?? extractString(context, ["sessionId", "session_id"]);
-  payload.session_key = payload.session_key ?? extractString(context, ["sessionKey", "session_key"]);
-  payload.agent_id = payload.agent_id ?? extractString(context, ["agentId", "agent_id"]);
+  const runtimeSessionKey = getRuntimeSessionKey();
+  payload.run_id = payload.run_id ?? extractString(context, ["runId", "run_id"]) ?? getRuntimeRunId();
+  payload.session_key = payload.session_key ?? extractString(context, ["sessionKey", "session_key"]) ?? runtimeSessionKey;
+  payload.session_id = payload.session_id ?? extractString(context, ["sessionId", "session_id"]) ?? payload.session_key;
+  payload.agent_id = payload.agent_id ?? extractString(context, ["agentId", "agent_id"]) ?? getRuntimeAgentId();
 }
 
 function buildCompletion(
@@ -1031,6 +1034,52 @@ function extractString(value: unknown, keys: string[]): string | null {
   for (const key of keys) {
     const item = rec[key];
     if (typeof item === "string" && item.length > 0) return item;
+  }
+  return null;
+}
+
+function getRuntimeSessionKey(): string | null {
+  return firstEnvString([
+    "OPENCLAW_SESSION_KEY",
+    "OPENCLAW_AGENT_SESSION_KEY",
+    "CLAW_SESSION_KEY",
+  ]) ?? argvValue("--session-key");
+}
+
+function getRuntimeRunId(): string | null {
+  return firstEnvString([
+    "OPENCLAW_RUN_ID",
+    "OPENCLAW_AGENT_RUN_ID",
+    "CLAW_RUN_ID",
+  ]) ?? argvValue("--run-id");
+}
+
+function getRuntimeAgentId(): string | null {
+  return firstEnvString([
+    "OPENCLAW_AGENT_ID",
+    "CLAW_AGENT_ID",
+  ]) ?? argvValue("--agent");
+}
+
+function firstEnvString(keys: string[]): string | null {
+  for (const key of keys) {
+    const value = process.env[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return null;
+}
+
+function argvValue(name: string): string | null {
+  for (let index = 0; index < process.argv.length; index += 1) {
+    const arg = process.argv[index];
+    if (arg === name) {
+      const next = process.argv[index + 1];
+      return typeof next === "string" && next.length > 0 ? next : null;
+    }
+    const prefix = name + "=";
+    if (arg.startsWith(prefix) && arg.length > prefix.length) {
+      return arg.slice(prefix.length);
+    }
   }
   return null;
 }

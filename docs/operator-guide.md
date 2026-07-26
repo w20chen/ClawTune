@@ -172,6 +172,10 @@ python tools/inspect_trace.py data/traces/<trace-file>.jsonl --all --details
 - Tool args/results are null: confirm `recordRawTrace: true`.
 - Resource usage is `unattributed`: use `managed-wrapper` and an absolute
   `launcherPath`.
+- Per-tool cgroup migration fails during normal `openclaw agent ...` usage:
+  `claw-launch` automatically retries the payload in a transient user systemd
+  scope when cgroup profiling is enabled. Set `CLAW_CGROUP_AUTO_SYSTEMD=0` to
+  disable that retry and use the process-tree fallback.
 - `claw-launch` exits 125 with `cgroup_join_failed ... Permission denied`:
   cgroup v2 is present, but delegation is incomplete. Owning the destination
   `cgroup.procs` is not sufficient if the launcher process starts outside the
