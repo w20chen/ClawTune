@@ -45,6 +45,7 @@ class AgentTestBenchTraceWriter:
         self._model_starts: dict[str, ModelEvent] = {}
         self._tool_starts: dict[str, ToolBeforeRequest] = {}
         self._tool_predictions: dict[str, dict[str, Any]] = {}
+        self._tool_resource_telemetry: dict[str, dict[str, Any]] = {}
         self._recent_proxy_calls: list[dict[str, Any]] = []
         self._seq_counters: dict[str, int] = {}
         self._files: dict[str, Path] = {}
@@ -106,12 +107,42 @@ class AgentTestBenchTraceWriter:
             prediction.model_dump(mode="json")
         )
 
+    def record_tool_resource_telemetry(
+        self,
+        execution_id: str | None,
+        telemetry: Any,
+    ) -> None:
+        if execution_id is None or telemetry is None:
+            return
+        if hasattr(telemetry, "model_dump"):
+            payload = telemetry.model_dump(mode="json")
+        elif hasattr(telemetry, "__dataclass_fields__"):
+            payload = {
+                key: getattr(telemetry, key)
+                for key in telemetry.__dataclass_fields__
+            }
+        elif isinstance(telemetry, dict):
+            payload = dict(telemetry)
+        else:
+            return
+        self._tool_resource_telemetry[execution_id] = payload
+
     def record_tool(self, event: ToolCompletedEvent, sample: ToolRuntimeSample) -> None:
         start_key, start = self._pop_tool_start(event)
         prediction = self._pop_tool_prediction(event, start_key)
+        tool_resource_telemetry = self._pop_tool_resource_telemetry(event.execution_id)
         tool_args = None if start is None else start.raw_params
         ts_start, ts_end = _tool_timestamps(sample, event.duration_ms)
-        self._record_tool_v6(event, sample, start, prediction, tool_args, ts_start, ts_end)
+        self._record_tool_v6(
+            event,
+            sample,
+            start,
+            prediction,
+            tool_resource_telemetry,
+            tool_args,
+            ts_start,
+            ts_end,
+        )
 
     def _record_tool_v6(
         self,
@@ -119,6 +150,7 @@ class AgentTestBenchTraceWriter:
         sample: ToolRuntimeSample,
         start: ToolBeforeRequest | None,
         prediction: dict[str, Any] | None,
+        tool_resource_telemetry: dict[str, Any] | None,
         tool_args: Any,
         ts_start: float,
         ts_end: float,
@@ -228,6 +260,7 @@ class AgentTestBenchTraceWriter:
                 "cgroup_path": scope.cgroup_path if scope is not None else None,
                 "pid_role": "payload_root" if has_pid else None,
                 "source": scope.source if scope is not None else None,
+                "tool_resource": tool_resource_telemetry,
             },
             "resources": {
                 "attribution_status": _v6_attribution(sample, scope),
@@ -478,6 +511,14 @@ class AgentTestBenchTraceWriter:
         if start_key is not None and start_key != event_key:
             return self._tool_predictions.pop(start_key, None)
         return None
+
+    def _pop_tool_resource_telemetry(
+        self,
+        execution_id: str | None,
+    ) -> dict[str, Any] | None:
+        if execution_id is None:
+            return None
+        return self._tool_resource_telemetry.pop(execution_id, None)
 
     def _remember_proxy_call(self, record: dict[str, Any]) -> None:
         self._recent_proxy_calls.append(record)

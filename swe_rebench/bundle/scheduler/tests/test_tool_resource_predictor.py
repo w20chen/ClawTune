@@ -481,6 +481,41 @@ def test_tool_resource_predictor_explains_unknown_without_cold_start() -> None:
     ]
 
 
+def test_exec_prediction_uses_fallback_parser_when_mvdan_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    command = "python -m pytest tests -q"
+    trace = tmp_path / "trace.jsonl"
+    _write_trace(trace, command=command)
+    predictor = ToolResourcePredictor.from_openclaw_traces(
+        [trace],
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0, 10_000.0)),
+        repo="repo-1",
+    )
+
+    def fail_parse(_command: str) -> dict:
+        raise RuntimeError("mvdan unavailable")
+
+    monkeypatch.setattr(tool_resource_predictor, "parse_command_clauses", fail_parse)
+    monkeypatch.setattr(tool_resource_runtime_kb, "parse_command_clauses", fail_parse)
+
+    result = asyncio.run(
+        predictor.predict(_tool_request("evt-1", "call-1", command))
+    )
+
+    assert result.resource_class == "latency_medium"
+    assert result.tool_resource["unavailable_reason"] is None
+    assert result.tool_resource["prediction"]["scope"] == "repo"
+    assert result.tool_resource["prediction"]["key_kind"] in {
+        "exact_clause",
+        "argv_prefix_depth_4",
+        "argv_prefix_depth_3",
+        "argv_prefix_depth_2",
+        "bin",
+    }
+
+
 def test_tool_resource_predictor_persists_clause_kb_prefixes(tmp_path: Path) -> None:
     artifact_dir = tmp_path / "tool-resource"
     predictor = ToolResourcePredictor.from_traces(

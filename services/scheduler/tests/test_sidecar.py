@@ -701,6 +701,14 @@ def test_exec_completion_uses_registered_launcher_scope(tmp_path: Path) -> None:
         },
     )
     (cgroup / "cpu.stat").write_text("usage_usec 200000\n", encoding="utf-8")
+    assert client.post(
+        "/v2/executions/call-exec/exited",
+        json={
+            "update_token": claim["update_token"],
+            "exit_code": 0,
+            "signal": None,
+        },
+    ).json() == {"stored": True}
     completion = {
         "schema_version": "scheduler.v1",
         "event_id": "evt-exec-end",
@@ -736,6 +744,13 @@ def test_exec_completion_uses_registered_launcher_scope(tmp_path: Path) -> None:
     assert tool_end["resources"]["attribution_source"] == "claw-launch"
     assert tool_end["resources"]["attribution_status"] == "attributed"
     assert tool_end["resources"]["scope"] == "cgroup"
+    assert tool_end["execution"]["tool_resource"]["execution_id"] == "call-exec"
+    assert tool_end["execution"]["tool_resource"]["status"] in {
+        "ok",
+        "invalid",
+        "unavailable",
+        "collected_not_eligible",
+    }
 
 
 def test_resource_timeline_uses_interval_rates() -> None:

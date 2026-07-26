@@ -165,7 +165,7 @@ def _post_started(
             "process_starttime_ticks": _read_pid_starttime_ticks(child_pid),
             "cgroup_path": cgroup_path,
             "pid_namespace_inode": _pid_namespace_inode(child_pid),
-            "container_id": None,
+            "container_id": _detect_container_id(),
         },
     )
 
@@ -409,6 +409,45 @@ def _read_self_cgroup_path() -> str | None:
                 return f"/sys/fs/cgroup{path}"
     except OSError:
         return None
+
+
+def _detect_container_id() -> str | None:
+    for name in (
+        "CLAW_SANDBOX_CONTAINER_ID",
+        "AGENT_SCHEDULER_SANDBOX_CONTAINER_ID",
+    ):
+        value = os.getenv(name)
+        detected = _normalize_container_id(value)
+        if detected is not None:
+            return detected
+    return None
+
+
+def _normalize_container_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    return _container_id_from_text(value)
+
+
+def _container_id_from_text(value: str) -> str | None:
+    for part in value.replace("\\", "/").split("/"):
+        token = part
+        for prefix in ("docker-", "cri-containerd-", "crio-"):
+            if token.startswith(prefix):
+                token = token[len(prefix):]
+        if token.endswith(".scope"):
+            token = token[:-6]
+        token = token.strip()
+        if _looks_like_container_id(token):
+            return token
+    return None
+
+
+def _looks_like_container_id(value: str) -> bool:
+    return 12 <= len(value) <= 128 and all(ch in "0123456789abcdef" for ch in value.lower())
 
 
 def _explicit_cgroup_path() -> str | None:

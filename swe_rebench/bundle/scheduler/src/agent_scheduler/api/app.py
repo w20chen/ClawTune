@@ -312,11 +312,13 @@ def create_app(state: AppState | None = None) -> FastAPI:
         _: None = Depends(auth),
     ) -> ExecutionUpdateResponse:
         response = s.executions.exited(execution_id, request)
-        s.predictor.finish_execution(
+        telemetry = s.predictor.finish_execution(
             execution_id=execution_id,
             exit_code=request.exit_code,
             signal=request.signal,
         )
+        if s.trace_writer is not None:
+            s.trace_writer.record_tool_resource_telemetry(execution_id, telemetry)
         return response
 
     return app

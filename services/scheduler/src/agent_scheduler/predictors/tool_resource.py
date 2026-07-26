@@ -5,7 +5,7 @@ import math
 import os
 import shlex
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -56,6 +56,20 @@ class OpenClawTraceLoadReport:
     rejections: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ExecutionTelemetrySummary:
+    execution_id: str
+    tool_call_id: str | None
+    artifact_path: str | None
+    started: bool
+    status: str
+    unavailable_reason: str | None = None
+    kb_observations_added: int = 0
+    kb_update_error: str | None = None
+    call_telemetry: dict[str, Any] | None = None
+    artifact_summary: dict[str, Any] | None = None
+
+
 class ToolResourcePredictor:
     """OpenClaw adapter for the vendored tool_resource SDK and KB."""
 
@@ -80,6 +94,7 @@ class ToolResourcePredictor:
         self.clause_kb_snapshot_path = clause_kb_snapshot_path
         self._sdk = ToolResourceSDK(kb, buckets)
         self._runs_by_execution_id: dict[str, CommandRun] = {}
+        self._telemetry_by_execution_id: dict[str, ExecutionTelemetrySummary] = {}
         self._starts: dict[str, ToolBeforeRequest] = {}
 
     @classmethod
@@ -199,26 +214,18 @@ class ToolResourcePredictor:
     ) -> ToolPrediction:
         command = _command_for_request(request)
         try:
-            if request.tool_name == "exec" and command:
-                prediction = self.kb.predict_command_latency_bucket(
-                    self.repo,
-                    command,
-                    time.time(),
-                    self.buckets,
-                )
-            else:
-                clauses, parse_failed = clauses_from_tool_request(
-                    request.tool_name,
-                    request.raw_params,
-                )
-                prediction = self.kb.predict_command_latency_bucket_from_clauses(
-                    self.repo,
-                    clauses,
-                    time.time(),
-                    self.buckets,
-                    command=command or request.tool_name,
-                    parse_failed=parse_failed,
-                )
+            clauses, parse_failed = clauses_from_tool_request(
+                request.tool_name,
+                request.raw_params,
+            )
+            prediction = self.kb.predict_command_latency_bucket_from_clauses(
+                self.repo,
+                clauses,
+                time.time(),
+                self.buckets,
+                command=command or request.tool_name,
+                parse_failed=parse_failed,
+            )
         except Exception as exc:
             continuous_predictions = self._continuous_predictions_for_request(
                 request,
@@ -313,6 +320,19 @@ class ToolResourcePredictor:
         if execution_id in self._runs_by_execution_id:
             return False
         if self.artifact_dir is None or not container_id:
+            reason = (
+                "artifact_dir_unconfigured"
+                if self.artifact_dir is None
+                else "container_id_unavailable"
+            )
+            self._telemetry_by_execution_id[execution_id] = ExecutionTelemetrySummary(
+                execution_id=execution_id,
+                tool_call_id=tool_call_id,
+                artifact_path=None,
+                started=False,
+                status="unavailable",
+                unavailable_reason=reason,
+            )
             return False
         artifact_path = self.artifact_dir / f"{_safe_artifact_name(execution_id)}.json"
         context = DockerExecutionContext(
@@ -323,9 +343,24 @@ class ToolResourcePredictor:
         )
         try:
             run = self._sdk.start_command(context, tool_call_id or execution_id, command)
-        except Exception:
+        except Exception as exc:
+            self._telemetry_by_execution_id[execution_id] = ExecutionTelemetrySummary(
+                execution_id=execution_id,
+                tool_call_id=tool_call_id,
+                artifact_path=str(artifact_path),
+                started=False,
+                status="unavailable",
+                unavailable_reason=f"start_failed:{type(exc).__name__}: {exc}",
+            )
             return False
         self._runs_by_execution_id[execution_id] = run
+        self._telemetry_by_execution_id[execution_id] = ExecutionTelemetrySummary(
+            execution_id=execution_id,
+            tool_call_id=tool_call_id,
+            artifact_path=str(artifact_path),
+            started=True,
+            status="started",
+        )
         return True
 
     def finish_execution(
@@ -334,10 +369,20 @@ class ToolResourcePredictor:
         execution_id: str,
         exit_code: int | None,
         signal: int | None,
-    ) -> int:
+    ) -> ExecutionTelemetrySummary:
         run = self._runs_by_execution_id.pop(execution_id, None)
         if run is None:
-            return 0
+            return self._telemetry_by_execution_id.get(
+                execution_id,
+                ExecutionTelemetrySummary(
+                    execution_id=execution_id,
+                    tool_call_id=None,
+                    artifact_path=None,
+                    started=False,
+                    status="unavailable",
+                    unavailable_reason="no_active_stage2_run",
+                ),
+            )
         replay_execution = "completed" if exit_code == 0 and signal is None else "failed"
         workload_result = {"exit_code": exit_code, "signal": signal}
         try:
@@ -346,8 +391,17 @@ class ToolResourcePredictor:
                 workload_result,
                 replay_execution=replay_execution,
             )
-        except Exception:
-            return 0
+        except Exception as exc:
+            summary = ExecutionTelemetrySummary(
+                execution_id=execution_id,
+                tool_call_id=run.tool_call_id,
+                artifact_path=str(run._observer.context.artifact_path),
+                started=True,
+                status="unavailable",
+                unavailable_reason=f"finish_failed:{type(exc).__name__}: {exc}",
+            )
+            self._telemetry_by_execution_id[execution_id] = summary
+            return summary
         if isinstance(result.telemetry_artifact, dict):
             for call in _stage2_completed_calls(
                 result.telemetry_artifact,
@@ -356,7 +410,29 @@ class ToolResourcePredictor:
                 self.continuous_kb.observe_completed_call(call)
         if result.kb_observations_added:
             self._persist_clause_kb()
-        return result.kb_observations_added
+        call_telemetry = (
+            dict(result.call_telemetry)
+            if isinstance(result.call_telemetry, dict)
+            else None
+        )
+        summary = ExecutionTelemetrySummary(
+            execution_id=execution_id,
+            tool_call_id=run.tool_call_id,
+            artifact_path=str(run._observer.context.artifact_path),
+            started=True,
+            status=_stage2_status(result.telemetry_artifact, call_telemetry, result.kb_update_error),
+            unavailable_reason=_stage2_unavailable_reason(
+                result.telemetry_artifact,
+                call_telemetry,
+                result.kb_update_error,
+            ),
+            kb_observations_added=result.kb_observations_added,
+            kb_update_error=result.kb_update_error,
+            call_telemetry=_compact_call_telemetry(call_telemetry),
+            artifact_summary=_compact_artifact_summary(result.telemetry_artifact),
+        )
+        self._telemetry_by_execution_id[execution_id] = summary
+        return summary
 
     def _persist_clause_kb(self) -> bool:
         if self.clause_kb_snapshot_path is None:
@@ -701,6 +777,102 @@ def _stage2_completed_call(repo: str, row: Any) -> CompletedCall | None:
         peak_memory_mb_eligible=False,
         ambient_before_mb=None,
     )
+
+
+def _stage2_status(
+    artifact: Any,
+    call_telemetry: Mapping[str, Any] | None,
+    kb_update_error: str | None,
+) -> str:
+    if call_telemetry is not None:
+        quality = call_telemetry.get("telemetry_quality")
+        if quality == "ok":
+            return "ok" if kb_update_error is None else "collected_not_eligible"
+        if quality in {"invalid", "unavailable"}:
+            return str(quality)
+    if isinstance(artifact, Mapping):
+        quality = artifact.get("telemetry_quality")
+        if quality == "ok":
+            return "ok" if kb_update_error is None else "collected_not_eligible"
+        if quality in {"invalid", "unavailable"}:
+            return str(quality)
+    return "unavailable" if kb_update_error else "unknown"
+
+
+def _stage2_unavailable_reason(
+    artifact: Any,
+    call_telemetry: Mapping[str, Any] | None,
+    kb_update_error: str | None,
+) -> str | None:
+    if call_telemetry is not None:
+        reason = call_telemetry.get("unavailable_reason") or call_telemetry.get("reason")
+        if isinstance(reason, str) and reason:
+            return reason
+        quality = call_telemetry.get("telemetry_quality")
+        if quality == "invalid":
+            return "call_telemetry_invalid"
+        if quality == "unavailable":
+            return "call_telemetry_unavailable"
+    if isinstance(artifact, Mapping):
+        reason = artifact.get("unavailable_reason") or artifact.get("reason")
+        if isinstance(reason, str) and reason:
+            return reason
+    return kb_update_error
+
+
+def _compact_call_telemetry(call: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if call is None:
+        return None
+    clauses = call.get("clauses")
+    return {
+        "tool_call_id": call.get("tool_call_id"),
+        "command": call.get("command"),
+        "telemetry_quality": call.get("telemetry_quality"),
+        "formal_completeness": call.get("formal_completeness"),
+        "eligible_for_kb": call.get("eligible_for_kb"),
+        "clause_count": len(clauses) if isinstance(clauses, list) else 0,
+        "clauses": _compact_clauses(clauses),
+    }
+
+
+def _compact_artifact_summary(artifact: Any) -> dict[str, Any] | None:
+    if not isinstance(artifact, Mapping):
+        return None
+    calls = artifact.get("calls")
+    return {
+        "schema_version": artifact.get("schema_version"),
+        "mode": artifact.get("mode"),
+        "collector": artifact.get("collector"),
+        "container_id": artifact.get("container_id"),
+        "telemetry_quality": artifact.get("telemetry_quality"),
+        "formal_completeness": artifact.get("formal_completeness"),
+        "telemetry_loss_total": artifact.get("telemetry_loss_total"),
+        "call_count": len(calls) if isinstance(calls, list) else 0,
+    }
+
+
+def _compact_clauses(clauses: Any) -> list[dict[str, Any]]:
+    if not isinstance(clauses, list):
+        return []
+    compact: list[dict[str, Any]] = []
+    for row in clauses:
+        if not isinstance(row, Mapping):
+            continue
+        compact.append(
+            {
+                "bin": row.get("bin"),
+                "argv": row.get("argv"),
+                "status": row.get("status"),
+                "availability": row.get("availability"),
+                "ts_start": row.get("ts_start"),
+                "ts_end": row.get("ts_end"),
+                "latency_ms": row.get("latency_ms"),
+                "peak_cpu_cores": row.get("peak_cpu_cores"),
+                "peak_memory_mb": row.get("peak_memory_mb"),
+                "cumulative_cpu_s": row.get("cumulative_cpu_s"),
+            }
+        )
+    return compact
 
 
 def _clauses_from_command(command: str) -> tuple[tuple[dict[str, Any], ...], bool]:

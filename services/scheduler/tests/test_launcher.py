@@ -77,6 +77,13 @@ def test_launcher_claims_starts_and_returns_child_exit_code(monkeypatch) -> None
     )
 
 
+def test_launcher_reports_container_id_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("CLAW_SANDBOX_CONTAINER_ID", "a" * 64)
+    monkeypatch.delenv("AGENT_SCHEDULER_SANDBOX_CONTAINER_ID", raising=False)
+
+    assert launcher._detect_container_id() == "a" * 64
+
+
 def test_launcher_prebinds_cgroup_before_spawning_payload(monkeypatch, tmp_path) -> None:
     events: list[str] = []
     posts: list[tuple[str, dict[str, Any]]] = []
