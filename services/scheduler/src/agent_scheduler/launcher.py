@@ -474,6 +474,9 @@ def _cgroup_debug_details(cgroup_path: Path, child_pid: int) -> str:
         "subtree_control": _read_text_one_line(cgroup_path / "cgroup.subtree_control"),
         "parent_subtree_control": _read_text_one_line(parent / "cgroup.subtree_control"),
         "child_cgroup": _read_text_one_line(Path(f"/proc/{child_pid}/cgroup")),
+        "launcher_euid": str(os.geteuid()) if hasattr(os, "geteuid") else None,
+        "procs_stat": _path_stat_summary(cgroup_path / "cgroup.procs"),
+        "parent_procs_stat": _path_stat_summary(parent / "cgroup.procs"),
     }
     return " ".join(f"{key}={_quote_detail(value)}" for key, value in fields.items())
 
@@ -488,6 +491,14 @@ def _read_text_one_line(path: Path) -> str | None:
 
 def _quote_detail(value: str | None) -> str:
     return "-" if value is None else repr(value)
+
+
+def _path_stat_summary(path: Path) -> str | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return f"mode={stat.S_IMODE(st.st_mode):04o},uid={st.st_uid},gid={st.st_gid}"
 
 
 def _enable_cgroup_controller(cgroup_path: Path, controller: str) -> None:

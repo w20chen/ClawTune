@@ -172,6 +172,12 @@ python tools/inspect_trace.py data/traces/<trace-file>.jsonl --all --details
 - Tool args/results are null: confirm `recordRawTrace: true`.
 - Resource usage is `unattributed`: use `managed-wrapper` and an absolute
   `launcherPath`.
+- `claw-launch` exits 125 with `cgroup_join_failed ... Permission denied`:
+  cgroup v2 is present, but delegation is incomplete. Create
+  `/sys/fs/cgroup/claw`, chown the directory plus `cgroup.procs`,
+  `cgroup.threads`, and `cgroup.subtree_control` to the OpenClaw user, then
+  export `CLAW_CGROUP_ROOT=/sys/fs/cgroup/claw`. See the repository README for
+  the full setup block.
 - `claw-launch` not found: reinstall the scheduler package and patch the
   absolute launcher path.
 - On Windows PowerShell, use `npm.cmd` or `openclaw.cmd` if `.ps1` shims are

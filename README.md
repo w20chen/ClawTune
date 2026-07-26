@@ -131,8 +131,28 @@ For local Linux runs, export these variables in the same shell that starts
 ```bash
 test -f /sys/fs/cgroup/cgroup.controllers
 
+# Optional cleanup after failed setup attempts. Only removes empty cgroups.
+sudo find /sys/fs/cgroup/claw -mindepth 1 -maxdepth 1 -type d -empty -delete 2>/dev/null || true
+
 sudo mkdir -p /sys/fs/cgroup/claw
-sudo chown -R "$USER:$USER" /sys/fs/cgroup/claw
+sudo chown "$USER:$USER" /sys/fs/cgroup/claw
+sudo chown "$USER:$USER" \
+  /sys/fs/cgroup/claw/cgroup.procs \
+  /sys/fs/cgroup/claw/cgroup.threads \
+  /sys/fs/cgroup/claw/cgroup.subtree_control
+
+# Initialize cpuset when available, then enable controllers for child cgroups.
+if [ -r /sys/fs/cgroup/cpuset.cpus.effective ]; then
+  cat /sys/fs/cgroup/cpuset.cpus.effective | sudo tee /sys/fs/cgroup/claw/cpuset.cpus >/dev/null
+fi
+if [ -r /sys/fs/cgroup/cpuset.mems.effective ]; then
+  cat /sys/fs/cgroup/cpuset.mems.effective | sudo tee /sys/fs/cgroup/claw/cpuset.mems >/dev/null
+fi
+for ctl in cpu cpuset io memory pids; do
+  if grep -qw "$ctl" /sys/fs/cgroup/claw/cgroup.controllers 2>/dev/null; then
+    echo "+$ctl" | sudo tee /sys/fs/cgroup/claw/cgroup.subtree_control >/dev/null || true
+  fi
+done
 
 export CLAW_ENABLE_CGROUP=1
 export CLAW_CGROUP_ROOT=/sys/fs/cgroup/claw
