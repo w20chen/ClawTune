@@ -123,65 +123,79 @@ JSON5
 openclaw plugins inspect agent-scheduler --runtime --json
 ```
 
-`enableCgroup: true` is the plugin default, but Linux cgroup attribution also
-requires the `claw-launch` process to see cgroup v2 and a writable cgroup root.
-For local Linux runs, export these variables in the same shell that starts
-`openclaw agent`:
+### Stable Local Linux Cgroup Launch
+
+`enableCgroup: true` is the plugin default. For reliable cgroup-v2 attribution
+on local Linux, start OpenClaw inside a delegated cgroup scope and set
+`CLAW_CGROUP_ROOT` under that scope. This avoids the common
+`cgroup_join_failed ... Permission denied` failure caused by trying to move a
+process from an unrelated host cgroup into `/sys/fs/cgroup/claw`.
+
+First confirm that the host uses cgroup v2:
 
 ```bash
 test -f /sys/fs/cgroup/cgroup.controllers
-
-# Optional cleanup after failed setup attempts. Only removes empty cgroups.
-sudo find /sys/fs/cgroup/claw -mindepth 1 -maxdepth 1 -type d -empty -delete 2>/dev/null || true
-
-sudo mkdir -p /sys/fs/cgroup/claw
-sudo chown "$USER:$USER" /sys/fs/cgroup/claw
-sudo chown "$USER:$USER" \
-  /sys/fs/cgroup/claw/cgroup.procs \
-  /sys/fs/cgroup/claw/cgroup.threads \
-  /sys/fs/cgroup/claw/cgroup.subtree_control
-
-# Initialize cpuset when available, then enable controllers for child cgroups.
-if [ -r /sys/fs/cgroup/cpuset.cpus.effective ]; then
-  cat /sys/fs/cgroup/cpuset.cpus.effective | sudo tee /sys/fs/cgroup/claw/cpuset.cpus >/dev/null
-fi
-if [ -r /sys/fs/cgroup/cpuset.mems.effective ]; then
-  cat /sys/fs/cgroup/cpuset.mems.effective | sudo tee /sys/fs/cgroup/claw/cpuset.mems >/dev/null
-fi
-for ctl in cpu cpuset io memory pids; do
-  if grep -qw "$ctl" /sys/fs/cgroup/claw/cgroup.controllers 2>/dev/null; then
-    echo "+$ctl" | sudo tee /sys/fs/cgroup/claw/cgroup.subtree_control >/dev/null || true
-  fi
-done
-
-export CLAW_ENABLE_CGROUP=1
-export CLAW_CGROUP_ROOT=/sys/fs/cgroup/claw
 ```
 
-During setup/debugging, make cgroup failures explicit instead of silently
-falling back to PID attribution:
+Then run OpenClaw through a delegated systemd user scope:
 
 ```bash
-export CLAW_CGROUP_REQUIRED=1
-export CLAW_CGROUP_DEBUG=1
-export CLAW_LAUNCH_DEBUG=1
+systemd-run --user --scope -p Delegate=yes bash -lc '
+  set -euo pipefail
+  self_cg="/sys/fs/cgroup$(awk -F: '\''$1=="0"{print $3}'\'' /proc/self/cgroup)"
+  export CLAW_CGROUP_ROOT="$self_cg/claw"
+  export CLAW_ENABLE_CGROUP=1
+  export CLAW_CGROUP_REQUIRED=1
+  export CLAW_CGROUP_DEBUG=1
+  export CLAW_LAUNCH_DEBUG=1
+  exec openclaw agent --local --agent main --model "vllm/deepseek-v4-flash" \
+    --message "Use the shell to run: python -c '\''print(\"trace-ok\")'\''. Then summarize the result."
+'
 ```
+
+Expected result:
+
+```text
+trace-ok
+```
+
+For normal interactive use, keep the same wrapper shape and replace the
+`--message ...` portion with your usual OpenClaw invocation. `CLAW_CGROUP_ROOT`
+must be computed inside the `systemd-run` shell because each delegated scope has
+its own cgroup path.
 
 With cgroup enabled, `/v1/tools/recent` should report
 `"attribution_status":"cgroup-v2"` or traces should show
-`"resources":{"scope":"cgroup"}` for managed `exec` tools. If it still reports
-`"pid"` or `"unattributed"`, the launcher could not create or read the cgroup;
-check the debug error, cgroup v2 availability, and write permission on
-`/sys/fs/cgroup/claw`. Exit code `125` means `claw-launch` failed before the
-payload command started; keep `CLAW_LAUNCH_DEBUG=1` enabled to print the
-underlying exception.
+`"resources":{"scope":"cgroup"}` for managed `exec` tools.
 
-Run:
+### Cgroup Troubleshooting
+
+On cgroup v2, owning the destination `cgroup.procs` file is not enough. The
+kernel also checks migration permission through the source and destination
+common ancestor. This probe confirms the failure mode:
 
 ```bash
-openclaw agent --local --agent main --model "vllm/deepseek-v4-flash" \
-  --message "Use the shell to run: python -c 'print(\"trace-ok\")'. Then summarize the result."
+probe=/sys/fs/cgroup/claw/probe-$$
+sudo mkdir -p "$probe"
+sudo chown "$USER:$USER" "$probe" "$probe/cgroup.procs"
+echo $$ > "$probe/cgroup.procs"
 ```
+
+If the probe prints `Permission denied`, do not use `/sys/fs/cgroup/claw` as a
+shared host-level root for local shell launches. Use the delegated
+`systemd-run --user --scope -p Delegate=yes` command above.
+
+If systemd user scopes are unavailable, use PID attribution until the
+host/container can provide a delegated cgroup tree:
+
+```bash
+export CLAW_ENABLE_CGROUP=0
+export CLAW_CGROUP_REQUIRED=0
+```
+
+Exit code `125` means `claw-launch` failed before the payload command started.
+Keep `CLAW_LAUNCH_DEBUG=1` enabled while debugging to print the underlying
+exception.
 
 Inspect:
 

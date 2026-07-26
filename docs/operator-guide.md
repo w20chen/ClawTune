@@ -173,11 +173,14 @@ python tools/inspect_trace.py data/traces/<trace-file>.jsonl --all --details
 - Resource usage is `unattributed`: use `managed-wrapper` and an absolute
   `launcherPath`.
 - `claw-launch` exits 125 with `cgroup_join_failed ... Permission denied`:
-  cgroup v2 is present, but delegation is incomplete. Create
-  `/sys/fs/cgroup/claw`, chown the directory plus `cgroup.procs`,
-  `cgroup.threads`, and `cgroup.subtree_control` to the OpenClaw user, then
-  export `CLAW_CGROUP_ROOT=/sys/fs/cgroup/claw`. See the repository README for
-  the full setup block.
+  cgroup v2 is present, but delegation is incomplete. Owning the destination
+  `cgroup.procs` is not sufficient if the launcher process starts outside the
+  delegated tree; cgroup v2 also checks migration permission through the source
+  and destination common ancestor. Use the README probe to verify this, then
+  start OpenClaw inside a delegated cgroup, for example with
+  `systemd-run --user --scope -p Delegate=yes ... openclaw agent ...`. If a
+  delegated scope is unavailable, unset `CLAW_CGROUP_REQUIRED` or set it to `0`
+  and rely on PID attribution until the host/container cgroup setup is fixed.
 - `claw-launch` not found: reinstall the scheduler package and patch the
   absolute launcher path.
 - On Windows PowerShell, use `npm.cmd` or `openclaw.cmd` if `.ps1` shims are
