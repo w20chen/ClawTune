@@ -7,9 +7,13 @@ import signal
 import stat
 import subprocess
 import sys
+import time
+import tempfile
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
+from shutil import which
 from typing import Any
 
 
@@ -59,6 +63,15 @@ def run_execution(endpoint: str, execution_id: str, token: str) -> int:
     cgroup_path = _prepare_cgroup(execution_id, cpu_set, mems, profiling)
     parsed_affinity = _parse_cpu_list(cpu_set) if _enabled(profiling, "enable_affinity", True) else set()
     affinity_cpus = parsed_affinity or None
+    if cgroup_path is not None:
+        _post_started(
+            endpoint,
+            execution_id=execution_id,
+            update_token=update_token,
+            launcher_pid=launcher_pid,
+            child_pid=launcher_pid,
+            cgroup_path=cgroup_path,
+        )
 
     child = _spawn_shell(command, cwd, cgroup_path=cgroup_path, affinity_cpus=affinity_cpus)
     # Track whether we own this cgroup (created by us) or are borrowing
@@ -67,10 +80,28 @@ def run_execution(endpoint: str, execution_id: str, token: str) -> int:
     try:
         if cgroup_owned:
             if not _join_child_cgroup(child.pid, cgroup_path):
-                # Join failed — cgroup is likely read-only (Docker container).
-                # Keep cgroup_path: the sidecar only *reads* stats and does
-                # not need the child process to be a member of that cgroup.
-                cgroup_owned = False
+                fallback = _restart_in_systemd_scope(
+                    child,
+                    command,
+                    cwd,
+                    execution_id=execution_id,
+                    affinity_cpus=affinity_cpus,
+                    profiling=profiling,
+                    on_cgroup_ready=lambda pid, path: _post_started(
+                        endpoint,
+                        execution_id=execution_id,
+                        update_token=update_token,
+                        launcher_pid=launcher_pid,
+                        child_pid=pid,
+                        cgroup_path=path,
+                    ),
+                )
+                if fallback is None:
+                    cgroup_owned = False
+                else:
+                    _cleanup_cgroup(cgroup_path)
+                    child, cgroup_path = fallback
+                    cgroup_owned = False
             else:
                 _verify_child_cgroup(child.pid, cgroup_path)
     except Exception:
@@ -79,18 +110,13 @@ def run_execution(endpoint: str, execution_id: str, token: str) -> int:
             _cleanup_cgroup(cgroup_path)
         raise
     _install_signal_forwarders(child)
-    _post_json_best_effort(
+    _post_started(
         endpoint,
-        f"/v2/executions/{execution_id}/started",
-        {
-            "update_token": update_token,
-            "launcher_pid": launcher_pid,
-            "child_pid": child.pid,
-            "process_starttime_ticks": _read_pid_starttime_ticks(child.pid),
-            "cgroup_path": cgroup_path,
-            "pid_namespace_inode": _pid_namespace_inode(child.pid),
-            "container_id": None,
-        },
+        execution_id=execution_id,
+        update_token=update_token,
+        launcher_pid=launcher_pid,
+        child_pid=child.pid,
+        cgroup_path=cgroup_path,
     )
     returncode = child.wait()
     exit_code = returncode if returncode >= 0 else None
@@ -118,6 +144,154 @@ def _spawn_shell(
             preexec_fn=_child_preexec(cgroup_path, affinity_cpus),
         )
     return subprocess.Popen(command, cwd=cwd, shell=True)
+
+
+def _post_started(
+    endpoint: str,
+    *,
+    execution_id: str,
+    update_token: str,
+    launcher_pid: int,
+    child_pid: int,
+    cgroup_path: str | None,
+) -> None:
+    _post_json_best_effort(
+        endpoint,
+        f"/v2/executions/{execution_id}/started",
+        {
+            "update_token": update_token,
+            "launcher_pid": launcher_pid,
+            "child_pid": child_pid,
+            "process_starttime_ticks": _read_pid_starttime_ticks(child_pid),
+            "cgroup_path": cgroup_path,
+            "pid_namespace_inode": _pid_namespace_inode(child_pid),
+            "container_id": None,
+        },
+    )
+
+
+def _restart_in_systemd_scope(
+    child: subprocess.Popen[bytes],
+    command: str,
+    cwd: str | None,
+    *,
+    execution_id: str,
+    affinity_cpus: set[int] | None,
+    profiling: object,
+    on_cgroup_ready: Callable[[int, str], None] | None = None,
+) -> tuple[subprocess.Popen[bytes], str] | None:
+    if not _systemd_scope_fallback_enabled(profiling):
+        return None
+    if not _supports_posix_controls() or which("systemd-run") is None:
+        return None
+    unit = f"claw-{_safe_execution_id(execution_id)}.scope"
+    suspended = _suspend_child_best_effort(child)
+    cgroup_probe = tempfile.NamedTemporaryFile(prefix="claw-cgroup-", delete=False)
+    cgroup_probe.close()
+    release_probe = tempfile.NamedTemporaryFile(prefix="claw-release-", delete=False)
+    release_path = release_probe.name
+    release_probe.close()
+    _unlink_best_effort(release_path)
+    wrapper = (
+        'cg="$(awk -F: \'$1=="0"{print $3}\' /proc/self/cgroup)"; '
+        'if [ -n "$cg" ] && [ "$cg" != "/" ]; then '
+        'printf "%s" "/sys/fs/cgroup$cg" > "$CLAW_SYSTEMD_CGROUP_FILE"; '
+        'else printf "%s" "/sys/fs/cgroup" > "$CLAW_SYSTEMD_CGROUP_FILE"; fi; '
+        'i=0; while [ ! -e "$CLAW_SYSTEMD_RELEASE_FILE" ] && [ "$i" -lt 500 ]; do '
+        'i=$((i+1)); sleep 0.01; done; rm -f "$CLAW_SYSTEMD_RELEASE_FILE"; '
+        'exec /bin/sh -lc "$CLAW_SYSTEMD_PAYLOAD"'
+    )
+    env = dict(os.environ)
+    env["CLAW_SYSTEMD_PAYLOAD"] = command
+    env["CLAW_SYSTEMD_CGROUP_FILE"] = cgroup_probe.name
+    env["CLAW_SYSTEMD_RELEASE_FILE"] = release_path
+    args = [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        f"--unit={unit}",
+        "-p",
+        "Delegate=yes",
+        "/bin/sh",
+        "-lc",
+        wrapper,
+    ]
+    try:
+        fallback_child = subprocess.Popen(
+            args,
+            cwd=cwd,
+            env=env,
+            preexec_fn=_child_preexec(None, affinity_cpus),
+        )
+    except OSError:
+        if suspended:
+            _resume_child_best_effort(child)
+        _unlink_best_effort(cgroup_probe.name)
+        _unlink_best_effort(release_path)
+        return None
+    cgroup_path = _read_cgroup_probe(cgroup_probe.name) or _systemd_unit_cgroup_path(unit)
+    _unlink_best_effort(cgroup_probe.name)
+    if cgroup_path is None:
+        _terminate_child_best_effort(fallback_child)
+        if suspended:
+            _resume_child_best_effort(child)
+        _unlink_best_effort(release_path)
+        return None
+    if on_cgroup_ready is not None:
+        on_cgroup_ready(fallback_child.pid, cgroup_path)
+    Path(release_path).write_text("1", encoding="utf-8")
+    _terminate_child_best_effort(child)
+    return fallback_child, cgroup_path
+
+
+def _systemd_scope_fallback_enabled(profiling: object) -> bool:
+    raw = os.environ.get("CLAW_CGROUP_AUTO_SYSTEMD")
+    if raw is not None:
+        return raw.lower() not in {"0", "false", "no", "off"}
+    return _enabled(profiling, "enable_cgroup", False)
+
+
+def _systemd_unit_cgroup_path(unit: str) -> str | None:
+    for _attempt in range(20):
+        try:
+            result = subprocess.run(
+                ["systemctl", "--user", "show", unit, "--property=ControlGroup", "--value"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode == 0:
+            control_group = result.stdout.strip()
+            if control_group:
+                if control_group == "/":
+                    return "/sys/fs/cgroup"
+                return f"/sys/fs/cgroup{control_group}"
+        time.sleep(0.05)
+    return None
+
+
+def _read_cgroup_probe(path: str) -> str | None:
+    for _attempt in range(20):
+        try:
+            value = Path(path).read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        if value:
+            return value
+        time.sleep(0.05)
+    return None
+
+
+def _unlink_best_effort(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def _child_preexec(cgroup_path: str | None, affinity_cpus: set[int] | None):
@@ -462,6 +636,27 @@ def _terminate_child_best_effort(child: subprocess.Popen[bytes]) -> None:
             child.kill()
         except Exception:
             pass
+
+
+def _suspend_child_best_effort(child: subprocess.Popen[bytes]) -> bool:
+    stop_signal = getattr(signal, "SIGSTOP", None)
+    if not _supports_posix_controls() or stop_signal is None:
+        return False
+    try:
+        os.kill(child.pid, stop_signal)
+        return True
+    except OSError:
+        return False
+
+
+def _resume_child_best_effort(child: subprocess.Popen[bytes]) -> None:
+    cont_signal = getattr(signal, "SIGCONT", None)
+    if not _supports_posix_controls() or cont_signal is None:
+        return
+    try:
+        os.kill(child.pid, cont_signal)
+    except OSError:
+        pass
 
 
 def _cgroup_debug_details(cgroup_path: Path, child_pid: int) -> str:

@@ -58,12 +58,22 @@ payload under `prediction.tool_resource`: the clause latency bucket predictor,
 the continuous empirical conditional-p90 predictions for latency, CPU, and
 memory, and a `prediction_algorithms` section that explicitly lists enabled
 non-MLP algorithms while marking `tool_resource.mlp` as excluded.
+When no persisted or seeded clause latency evidence exists, the native payload
+still appears with `unavailable_reason: "no_clause_latency_evidence"` so
+operators can distinguish "predictor ran but had no evidence" from integration
+failure.
 
 Native `tool_resource` Stage-2 collection is wired through the managed-wrapper
 execution lifecycle. It needs a sandbox container id from OpenClaw or
 `AGENT_SCHEDULER_SANDBOX_CONTAINER_ID`, an artifact directory, the configured
 container executable, and the platform support expected by upstream
 `tool_resource`.
+
+For managed-wrapper executions with cgroup profiling, `claw-launch` reports
+the prepared cgroup to the sidecar before releasing the payload command. This
+lets the realtime monitor start sampling before short-lived commands finish;
+the launcher then updates the same execution with the real child PID once the
+payload process exists.
 
 The LLM proxy is always enabled for plugin use. By default it forwards the
 provider key already configured in OpenClaw via the request `Authorization`

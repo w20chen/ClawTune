@@ -77,6 +77,60 @@ def test_launcher_claims_starts_and_returns_child_exit_code(monkeypatch) -> None
     )
 
 
+def test_launcher_prebinds_cgroup_before_spawning_payload(monkeypatch, tmp_path) -> None:
+    events: list[str] = []
+    posts: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_post_json(_endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        events.append(path)
+        posts.append((path, payload))
+        return {
+            "execution_id": "exec-1",
+            "update_token": "update-1",
+            "command": "echo hello",
+            "command_digest": "sha256:" + "a" * 64,
+            "workdir": None,
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"enable_cgroup": True},
+        }
+
+    def fake_best_effort(_endpoint: str, path: str, payload: dict[str, Any]) -> None:
+        events.append(path)
+        posts.append((path, payload))
+
+    def fake_spawn(
+        _command: str,
+        _cwd: str | None,
+        *,
+        cgroup_path: str | None = None,
+        affinity_cpus: set[int] | None = None,
+    ) -> _FakeChild:
+        events.append("spawn")
+        assert cgroup_path == str(tmp_path / "exec-1")
+        assert affinity_cpus is None
+        return _FakeChild()
+
+    monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
+    monkeypatch.setenv("CLAW_CGROUP_ROOT", str(tmp_path))
+    monkeypatch.setattr(launcher, "_post_json", fake_post_json)
+    monkeypatch.setattr(launcher, "_post_json_best_effort", fake_best_effort)
+    monkeypatch.setattr(launcher, "_spawn_shell", fake_spawn)
+    monkeypatch.setattr(launcher, "_install_signal_forwarders", lambda _child: None)
+    monkeypatch.setattr(launcher, "_read_pid_starttime_ticks", lambda _pid: 99)
+    monkeypatch.setattr(launcher, "_pid_namespace_inode", lambda _pid: 123)
+
+    assert launcher.run_execution("http://sidecar", "exec-1", "token-1") == 7
+    assert events[:3] == [
+        "/v2/executions/claim",
+        "/v2/executions/exec-1/started",
+        "spawn",
+    ]
+    assert posts[1][1]["child_pid"] == posts[1][1]["launcher_pid"]
+    assert posts[1][1]["cgroup_path"] == str(tmp_path / "exec-1")
+    assert posts[2][1]["child_pid"] == 4242
+
+
 def test_launcher_extracts_cpu_and_numa_placement() -> None:
     placement = {"cpu_set": "0-2,4", "numa_node": 1}
 
@@ -248,11 +302,11 @@ def test_launcher_join_failure_restarts_in_systemd_scope(monkeypatch, tmp_path) 
     monkeypatch.setattr(launcher, "_systemd_unit_cgroup_path", lambda _unit: systemd_cgroup)
 
     assert launcher.run_execution("http://sidecar", "exec-1", "token-1") == 0
-    assert posts[1] == (
+    assert posts[2] == (
         "/v2/executions/exec-1/started",
         {
             "update_token": "update-1",
-            "launcher_pid": posts[1][1]["launcher_pid"],
+            "launcher_pid": posts[2][1]["launcher_pid"],
             "child_pid": 5151,
             "process_starttime_ticks": 99,
             "cgroup_path": systemd_cgroup,

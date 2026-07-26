@@ -219,8 +219,25 @@ class ToolResourcePredictor:
                     command=command or request.tool_name,
                     parse_failed=parse_failed,
                 )
-        except Exception:
-            return ToolPrediction(resource_class="unknown")
+        except Exception as exc:
+            continuous_predictions = self._continuous_predictions_for_request(
+                request,
+                command,
+                time.time(),
+                ambient_before_mb=ambient_before_mb,
+            )
+            return ToolPrediction(
+                resource_class="unknown",
+                tool_resource=_tool_resource_prediction_payload(
+                    _unavailable_prediction_for_request(
+                        request,
+                        repo=self.repo,
+                        command=command,
+                        reason=_prediction_error_reason(exc),
+                    ),
+                    continuous_predictions=continuous_predictions,
+                ),
+            )
         continuous_predictions = self._continuous_predictions_for_request(
             request,
             command,
@@ -861,6 +878,34 @@ def _tool_resource_prediction_payload(
         "continuous_predictions": continuous_predictions or {},
         "prediction_algorithms": _prediction_algorithms_payload(),
     }
+
+
+def _unavailable_prediction_for_request(
+    request: ToolBeforeRequest,
+    *,
+    repo: str,
+    command: str | None,
+    reason: str,
+) -> CommandLatencyBucketPrediction:
+    clauses, parse_failed = clauses_from_tool_request(
+        request.tool_name,
+        request.raw_params,
+    )
+    return CommandLatencyBucketPrediction(
+        repo=repo,
+        command=command or request.tool_name,
+        parse_failed=parse_failed,
+        clause_bins=tuple(str(clause["bin"]) for clause in clauses),
+        prediction=None,
+        unavailable_reason=reason,
+    )
+
+
+def _prediction_error_reason(exc: Exception) -> str:
+    message = str(exc)
+    if "no public global clause latency node" in message:
+        return "no_clause_latency_evidence"
+    return f"prediction_error:{type(exc).__name__}"
 
 
 def _clause_kb_snapshot_path(artifact_dir: Path | None) -> Path | None:
