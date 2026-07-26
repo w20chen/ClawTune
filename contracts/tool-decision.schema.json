@@ -18,7 +18,50 @@
         "duration_p50_ms": {"type": ["integer", "null"], "minimum": 0},
         "duration_p90_ms": {"type": ["integer", "null"], "minimum": 0},
         "resource_class": {"type": "string"},
-        "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+        "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "tool_resource": {
+          "type": ["object", "null"],
+          "description": "Native tool_resource CommandLatencyBucketPrediction payload.",
+          "properties": {
+            "repo": {"type": "string"},
+            "command": {"type": "string"},
+            "parse_failed": {"type": "boolean"},
+            "clause_bins": {"type": "array", "items": {"type": "string"}},
+            "prediction": {
+              "type": ["object", "null"],
+              "properties": {
+                "bucket_id": {"type": "integer", "minimum": 0},
+                "probability_by_bucket": {
+                  "type": "array",
+                  "items": {"type": "number", "minimum": 0, "maximum": 1}
+                },
+                "scope": {"type": "string"},
+                "key_kind": {"type": "string"},
+                "evidence_count": {"type": "integer", "minimum": 0},
+                "fallback_path": {"type": "array", "items": {"type": "string"}}
+              },
+              "required": [
+                "bucket_id",
+                "probability_by_bucket",
+                "scope",
+                "key_kind",
+                "evidence_count",
+                "fallback_path"
+              ],
+              "additionalProperties": false
+            },
+            "unavailable_reason": {"type": ["string", "null"]}
+          },
+          "required": [
+            "repo",
+            "command",
+            "parse_failed",
+            "clause_bins",
+            "prediction",
+            "unavailable_reason"
+          ],
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },

@@ -56,7 +56,6 @@ def run_host_sandbox_task(
             port=sidecar_port,
             config=config,
             workspace=workspace,
-            tool_profiles=config.repo_root / config.bundle.tool_profiles,
         )
         _configure_openclaw(
             trace_dir=trace_dir,
@@ -192,7 +191,6 @@ def _start_sidecar(
     port: int,
     config: RunnerConfig,
     workspace: Path,
-    tool_profiles: Path,
 ) -> subprocess.Popen[str]:
     env = os.environ.copy()
     env.update(
@@ -206,7 +204,6 @@ def _start_sidecar(
             "AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL": config.llm.model,
             "AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL": config.llm.model,
             "AGENT_SCHEDULER_POLICY": "observe-only",
-            "AGENT_SCHEDULER_TOOL_PROFILES": str(tool_profiles),
             "AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER": "true",
             "AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX": _sandbox_container_prefix(workspace),
         }

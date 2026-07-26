@@ -701,7 +701,6 @@ def test_host_sandbox_sidecar_enables_docker_exec_observer(monkeypatch, tmp_path
     workspace = tmp_path / "workspace"
     trace_dir = tmp_path / "trace"
     trace_dir.mkdir()
-    tool_profiles = tmp_path / "profiles.json"
     captured: dict[str, object] = {}
 
     class FakeProcess:
@@ -722,7 +721,6 @@ def test_host_sandbox_sidecar_enables_docker_exec_observer(monkeypatch, tmp_path
         port=8765,
         config=config,
         workspace=workspace,
-        tool_profiles=tool_profiles,
     )
 
     assert isinstance(process, FakeProcess)
@@ -1042,12 +1040,10 @@ def test_prepare_rebuilds_plugin_dist_after_removing_stale_files(monkeypatch, tm
 def test_bundle_stale_check_ignores_dist_but_tracks_source(tmp_path: Path) -> None:
     plugin_dir = tmp_path / "packages" / "openclaw-plugin"
     scheduler_dir = tmp_path / "services" / "scheduler"
-    profiles = tmp_path / "examples" / "tool-profiles.example.json"
     bundle_dir = tmp_path / "bundle"
     (plugin_dir / "src").mkdir(parents=True)
     (plugin_dir / "dist").mkdir()
     scheduler_dir.mkdir(parents=True)
-    profiles.parent.mkdir(parents=True)
     bundle_dir.mkdir()
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
@@ -1063,7 +1059,6 @@ def test_bundle_stale_check_ignores_dist_but_tracks_source(tmp_path: Path) -> No
         plugin_dir / "src" / "index.ts",
         plugin_dir / "dist" / "index.js",
         scheduler_dir / "pyproject.toml",
-        profiles,
     ):
         path.write_text("old\n", encoding="utf-8")
         os.utime(path, (old, old))

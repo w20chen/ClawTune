@@ -92,7 +92,6 @@ bundle:
   # Source directories (relative to repo root).
   plugin_source: "packages/openclaw-plugin"
   scheduler_source: "services/scheduler"
-  tool_profiles: "examples/tool-profiles.example.json"
 
   # Where the bundle is assembled.
   output_dir: "swe_rebench/bundle"

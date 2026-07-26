@@ -99,6 +99,7 @@ export type ToolDecision = {
     duration_p90_ms: number | null;
     resource_class: string;
     confidence: number | null;
+    tool_resource?: ToolResourceCommandPrediction | null;
   };
   placement_advice: {
     cpu_set: string | null;
@@ -108,6 +109,24 @@ export type ToolDecision = {
   };
   placement?: unknown | null;
   profiling?: unknown | null;
+};
+
+export type ToolResourceCommandPrediction = {
+  repo: string;
+  command: string;
+  parse_failed: boolean;
+  clause_bins: string[];
+  prediction: ToolResourceClausePrediction | null;
+  unavailable_reason: string | null;
+};
+
+export type ToolResourceClausePrediction = {
+  bucket_id: number;
+  probability_by_bucket: number[];
+  scope: string;
+  key_kind: string;
+  evidence_count: number;
+  fallback_path: string[];
 };
 
 export type ToolCompletedEvent = CommonEvent & {

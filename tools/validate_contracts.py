@@ -17,7 +17,6 @@ EXAMPLES = {
     "tool-decision.schema.json": "tool-decision.json",
     "tool-completed-event.schema.json": "tool-completed-event.json",
     "model-event.schema.json": "model-event.json",
-    "tool-profile.schema.json": "tool-profiles.example.json",
     "execution-registration.schema.json": "execution-registration.json",
     "execution-claim.schema.json": "execution-claim.json",
     "execution-started.schema.json": "execution-started.json",

@@ -38,6 +38,28 @@ test("loadConfig keeps execution placement toggles configurable", () => {
   assert.equal(config.enableNuma, false);
 });
 
+test("loadConfig rejects managed-wrapper placeholder launcherPath", () => {
+  assert.throws(
+    () => loadConfig({
+      executionBackend: "managed-wrapper",
+      launcherPath: "/absolute/path/to/claw-launch",
+      securityBoundaryAccepted: true,
+    }),
+    /launcherPath is still a placeholder/
+  );
+});
+
+test("loadConfig rejects managed-wrapper relative launcherPath", () => {
+  assert.throws(
+    () => loadConfig({
+      executionBackend: "managed-wrapper",
+      launcherPath: "claw-launch",
+      securityBoundaryAccepted: true,
+    }),
+    /launcherPath must be an absolute path/
+  );
+});
+
 test("loadConfig reads agent scheduler environment overrides", () => {
   const previousEndpoint = process.env.OPENCLAW_AGENT_SCHEDULER_ENDPOINT;
   const previousTraceDir = process.env.OPENCLAW_AGENT_SCHEDULER_TRACE_DIR;

@@ -136,7 +136,6 @@ class OutputConfig:
 class BundleConfig:
     plugin_source: str = "packages/openclaw-plugin"
     scheduler_source: str = "services/scheduler"
-    tool_profiles: str = "examples/tool-profiles.example.json"
     output_dir: str = "swe_rebench/bundle"
 
     @classmethod
@@ -144,7 +143,6 @@ class BundleConfig:
         return cls(
             plugin_source=str(d.get("plugin_source", "packages/openclaw-plugin")),
             scheduler_source=str(d.get("scheduler_source", "services/scheduler")),
-            tool_profiles=str(d.get("tool_profiles", "examples/tool-profiles.example.json")),
             output_dir=str(d.get("output_dir", "swe_rebench/bundle")),
         )
 

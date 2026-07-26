@@ -1,4 +1,13 @@
 {
+  "agents": {
+    "defaults": {
+      "sandbox": {
+        "docker": {
+          "containerPrefix": "__SANDBOX_CONTAINER_PREFIX__"
+        }
+      }
+    }
+  },
   "plugins": {
     "entries": {
       "agent-scheduler": {

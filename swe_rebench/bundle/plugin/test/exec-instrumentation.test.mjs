@@ -202,6 +202,7 @@ test("exec instrumentation can force sandbox workdir from environment", async ()
     const result = await instrumentExecParams(event, {}, payload, decision, client, baseConfig);
 
     assert.equal(result.params.workdir, "/workspace");
+    assert.equal(result.params.cwd, "/workspace");
     assert.equal("host" in result.params, false);
     assert.equal("elevated" in result.params, false);
     assert.equal(result.params.env.CLAW_EXEC_WORKDIR, "/workspace");

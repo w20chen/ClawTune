@@ -51,6 +51,22 @@ if ! command -v curl &>/dev/null; then
     esac
 fi
 
+# ── Docker CLI (needed by sidecar DockerExecObserver) ───────────
+if ! command -v docker &>/dev/null; then
+    echo "[claw] installing docker CLI..."
+    case "$PKG_MGR" in
+        apt) apt-get install -y -qq docker.io 2>/dev/null || apt-get install -y -qq docker-ce-cli 2>/dev/null || true ;;
+        yum) yum install -y -q docker-cli 2>/dev/null || yum install -y -q docker 2>/dev/null || true ;;
+        dnf) dnf install -y -q docker-cli 2>/dev/null || dnf install -y -q docker 2>/dev/null || true ;;
+        apk) apk add --no-cache docker-cli 2>/dev/null || apk add --no-cache docker 2>/dev/null || true ;;
+    esac
+fi
+if command -v docker &>/dev/null; then
+    echo "[claw] docker CLI OK"
+else
+    echo "[claw] docker CLI not available (DockerExecObserver will idle)"
+fi
+
 # ── Python 3 (system fallback -- usually conda is already present) ──
 if ! $_CLW_PYTHON --version &>/dev/null 2>&1; then
     echo "[claw] installing python3..."

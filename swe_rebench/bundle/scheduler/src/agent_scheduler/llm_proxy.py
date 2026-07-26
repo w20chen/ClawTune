@@ -14,7 +14,6 @@ from agent_scheduler.trace import AgentTestBenchTraceWriter
 
 
 HOP_BY_HOP_HEADERS = {
-    "authorization",
     "connection",
     "keep-alive",
     "proxy-authenticate",
@@ -398,6 +397,9 @@ def _forward_headers(request: Request, config: SchedulerConfig) -> dict[str, str
         for key, value in request.headers.items()
         if key.lower() not in HOP_BY_HOP_HEADERS
     }
+    # Default plugin mode reuses the API key already configured in OpenClaw:
+    # OpenClaw sends it as Authorization, and the proxy forwards it upstream.
+    # A sidecar upstream key is an explicit advanced override.
     if config.llm_proxy_upstream_api_key:
         headers["authorization"] = f"Bearer {config.llm_proxy_upstream_api_key}"
     return headers

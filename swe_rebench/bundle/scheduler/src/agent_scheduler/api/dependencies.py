@@ -11,16 +11,17 @@ from agent_scheduler.monitoring.tool_runtime import RealtimeToolMonitor
 from agent_scheduler.policies.base import SchedulingPolicy
 from agent_scheduler.policies.concurrency import ConcurrencyPolicy
 from agent_scheduler.policies.observe import ObserveOnlyPolicy
-from agent_scheduler.predictors.static_profile import StaticProfilePredictor
+from agent_scheduler.predictors.tool_resource import ToolResourcePredictor
 from agent_scheduler.telemetry.metrics import Metrics
 from agent_scheduler.topology.linux import read_topology
 from agent_scheduler.trace import AgentTestBenchTraceWriter
+from tool_resource.runtime_kb import LatencyBuckets
 
 
 @dataclass
 class AppState:
     config: SchedulerConfig
-    predictor: StaticProfilePredictor
+    predictor: ToolResourcePredictor
     leases: LeaseManager
     policy: SchedulingPolicy
     tool_monitor: RealtimeToolMonitor
@@ -38,7 +39,20 @@ class AppState:
 def build_state(config: SchedulerConfig | None = None) -> AppState:
     cfg = config or SchedulerConfig.from_env()
     leases = LeaseManager(cfg.max_global_concurrency, cfg.lease_ttl_ms)
-    predictor = StaticProfilePredictor.from_path(cfg.tool_profiles_path)
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=cfg.tool_resource_trace_paths,
+        stage2_trace_paths=cfg.tool_resource_stage2_trace_paths,
+        buckets=LatencyBuckets(cfg.tool_resource_latency_buckets_ms),
+        repo=cfg.tool_resource_repo,
+        artifact_dir=(
+            cfg.tool_resource_artifact_dir
+            if cfg.tool_resource_artifact_dir is not None
+            else cfg.trace_dir / "tool-resource"
+        ),
+        container_executable=cfg.tool_resource_container_executable,
+    )
+    if predictor.artifact_dir is not None:
+        predictor.artifact_dir.mkdir(parents=True, exist_ok=True)
     policy: SchedulingPolicy
     if cfg.policy == "concurrency":
         policy = ConcurrencyPolicy(leases, cfg.admission_wait_ms)

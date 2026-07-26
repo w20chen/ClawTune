@@ -37,6 +37,21 @@ test("sandbox path normalization leaves relative paths alone", () => {
   assert.equal(result.params.cwd, ".");
 });
 
+test("sandbox path normalization maps container task-directory aliases for file tools", () => {
+  const result = normalizeSandboxToolParams(
+    {
+      path: "/workspace/0b01001001__spectree-64/README.md",
+      cwd: "/workspace/0b01001001__spectree-64",
+    },
+    "read",
+    env
+  );
+
+  assert.equal(result.changed, true);
+  assert.equal(result.params.path, "README.md");
+  assert.equal(result.params.cwd, ".");
+});
+
 test("sandbox path normalization strips gateway override from exec in sandbox mode", () => {
   const result = normalizeSandboxToolParams(
     {
@@ -51,7 +66,39 @@ test("sandbox path normalization strips gateway override from exec in sandbox mo
 
   assert.equal(result.changed, true);
   assert.equal(result.params.command, "pytest -q");
+  assert.equal(result.params.cwd, "/workspace");
   assert.equal(result.params.workdir, "/workspace");
   assert.equal("host" in result.params, false);
   assert.equal("elevated" in result.params, false);
+});
+
+test("sandbox path normalization maps container task-directory aliases for exec", () => {
+  const result = normalizeSandboxToolParams(
+    {
+      command: "pwd",
+      workdir: "/workspace/0b01001001__spectree-64",
+    },
+    "exec",
+    env
+  );
+
+  assert.equal(result.changed, true);
+  assert.equal(result.params.command, "pwd");
+  assert.equal(result.params.cwd, "/workspace");
+  assert.equal(result.params.workdir, "/workspace");
+});
+
+test("sandbox path normalization sets default sandbox workdir for exec", () => {
+  const result = normalizeSandboxToolParams(
+    {
+      command: "echo hello",
+    },
+    "exec",
+    env
+  );
+
+  assert.equal(result.changed, true);
+  assert.equal(result.params.command, "echo hello");
+  assert.equal(result.params.cwd, "/workspace");
+  assert.equal(result.params.workdir, "/workspace");
 });

@@ -290,3 +290,30 @@ def test_launcher_main_hides_internal_wrapper_errors(monkeypatch, capsys) -> Non
     assert "claw-launch" not in captured.err
     assert "cgroup" not in captured.err
     assert "secret" not in captured.err
+
+
+def test_launcher_main_prints_redacted_debug_when_cgroup_required(monkeypatch, capsys) -> None:
+    def fail_run(_endpoint: str, _execution_id: str, _token: str) -> int:
+        raise RuntimeError("cgroup_join_failed path=/sys/fs/cgroup/claw token=secret")
+
+    monkeypatch.setenv("CLAW_CGROUP_REQUIRED", "1")
+    monkeypatch.setattr(launcher, "run_execution", fail_run)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "claw-launch",
+            "run",
+            "--execution-id",
+            "exec-1",
+            "--token=secret",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        launcher.main()
+
+    assert exc.value.code == 125
+    captured = capsys.readouterr()
+    assert "claw-launch debug: RuntimeError: cgroup_join_failed" in captured.err
+    assert "token=<redacted>" in captured.err
+    assert "secret" not in captured.err

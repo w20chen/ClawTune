@@ -6,7 +6,8 @@ services:
     environment:
       AGENT_SCHEDULER_DB_PATH: /data/scheduler.sqlite3
       AGENT_SCHEDULER_POLICY: observe-only
-      AGENT_SCHEDULER_TOOL_PROFILES: /config/tool-profiles.example.json
+      AGENT_SCHEDULER_TOOL_RESOURCE_TRACES: /data/traces
+      AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_TRACES: /data/tool-resource
     ports:
       - "127.0.0.1:8765:8765"
     volumes:

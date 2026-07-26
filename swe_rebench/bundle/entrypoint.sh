@@ -38,6 +38,7 @@ EOF
 fi
 export AGENT_SCHEDULER_DB_PATH="/tmp/scheduler.sqlite3"
 export AGENT_SCHEDULER_TRACE_DIR="$TRACE_DIR"
+export AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER="${AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER:-true}"
 export AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL="${LLM_UPSTREAM_BASE_URL:-https://api.deepseek.com}"
 export AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY="${LLM_API_KEY:-}"
 export AGENT_SCHEDULER_LLM_PROXY_ENABLED="true"
@@ -48,7 +49,6 @@ export AGENT_SCHEDULER_LLM_PROXY_ENABLED="true"
 export AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL="${LLM_MODEL:-deepseek-v4-flash}"
 export AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL="${LLM_MODEL:-deepseek-v4-flash}"
 export AGENT_SCHEDULER_POLICY="observe-only"
-export AGENT_SCHEDULER_TOOL_PROFILES="$CLAW_ROOT/tool_profiles.json"
 mkdir -p "$TRACE_DIR"
 $_CLW_PYTHON - <<'PY' > "$TRACE_DIR/cgroup_probe.json" 2>/dev/null || true
 import json
@@ -155,7 +155,7 @@ echo ""
 
 echo "=== openclaw plugins install ==="
 # Copy plugin to writable location to avoid "suspicious ownership" error
-# from the read-only /claw bind mount (host uid â‰?container root uid).
+# from the read-only /claw bind mount (host uid â‰  container root uid).
 cp -r "$CLAW_ROOT/plugin" /tmp/plugin
 openclaw plugins install --link /tmp/plugin || echo "plugin install FAILED (exit=$?)"
 echo "=== openclaw plugins enable ==="
@@ -164,7 +164,9 @@ echo ""
 
 if [ -f "$CLAW_ROOT/openclaw-config.json5" ]; then
     echo "=== openclaw config patch ==="
-    openclaw config patch --stdin < "$CLAW_ROOT/openclaw-config.json5" || echo "config patch FAILED (exit=$?)"
+    sed "s/__SANDBOX_CONTAINER_PREFIX__/${AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX:-}/g" \
+        "$CLAW_ROOT/openclaw-config.json5" \
+        | openclaw config patch --stdin || echo "config patch FAILED (exit=$?)"
     echo ""
 fi
 

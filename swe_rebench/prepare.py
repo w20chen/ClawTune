@@ -85,7 +85,6 @@ def build_bundle(config: RunnerConfig) -> Path:
     _build_plugin_dist(repo, bundle_dir, config)
     _copy_plugin(repo, bundle_dir, config)
     _copy_scheduler(repo, bundle_dir, config)
-    _copy_tool_profiles(repo, bundle_dir, config)
     _write_entrypoint(bundle_dir, config)
     _write_setup_script(bundle_dir)
     _write_plugin_config(bundle_dir)
@@ -108,7 +107,6 @@ def bundle_needs_rebuild(config: RunnerConfig, bundle_dir: Path | None = None) -
     sources = [
         repo / config.bundle.plugin_source,
         repo / config.bundle.scheduler_source,
-        repo / config.bundle.tool_profiles,
         Path(__file__).resolve(),
     ]
     for source in sources:
@@ -182,15 +180,6 @@ def _copy_scheduler(repo: Path, bundle_dir: Path, config: RunnerConfig) -> None:
     _log(f"  Copied scheduler source ({_count_files(dst)} files)")
 
 
-def _copy_tool_profiles(repo: Path, bundle_dir: Path, config: RunnerConfig) -> None:
-    src = repo / config.bundle.tool_profiles
-    if not src.exists():
-        _log(f"  [warn] tool profiles not found: {src}")
-        return
-    shutil.copy2(src, bundle_dir / "tool_profiles.json")
-    _log("  Copied tool profiles")
-
-
 # ══════════════════════════════════════════════════════════════════
 #  entrypoint.sh
 # ══════════════════════════════════════════════════════════════════
@@ -234,7 +223,6 @@ export AGENT_SCHEDULER_LLM_PROXY_ENABLED="true"
 export AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL="${LLM_MODEL:-__MODEL_SHORT__}"
 export AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL="${LLM_MODEL:-__MODEL_SHORT__}"
 export AGENT_SCHEDULER_POLICY="observe-only"
-export AGENT_SCHEDULER_TOOL_PROFILES="$CLAW_ROOT/tool_profiles.json"
 mkdir -p "$TRACE_DIR"
 $_CLW_PYTHON - <<'PY' > "$TRACE_DIR/cgroup_probe.json" 2>/dev/null || true
 import json

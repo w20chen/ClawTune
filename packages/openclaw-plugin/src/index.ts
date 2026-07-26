@@ -836,7 +836,7 @@ function buildToolBefore(event: unknown, config: PluginConfig): ToolBeforeReques
     tool_name: toolName,
     tool_kind: extractString(event, ["tool_kind", "toolKind", "kind"]),
     tool_input_kind: extractString(event, ["tool_input_kind", "toolInputKind", "inputKind"]),
-    operation_hint: operationHint(toolName, safeParams),
+    operation_hint: null,
     derived_paths: [],
     params_digest: stableDigest(safeParams),
     param_features: paramFeatures(safeParams),
@@ -844,117 +844,6 @@ function buildToolBefore(event: unknown, config: PluginConfig): ToolBeforeReques
     raw_event: rawEvent,
     resource_scope: null
   };
-}
-
-function operationHint(toolName: string, params: unknown): string | null {
-  if (toolName.startsWith("exec-")) return toolName.slice("exec-".length) || null;
-  if (toolName !== "exec") return null;
-  const command = extractCommand(params);
-  if (command === null) return null;
-  const base = classifyCommand(command);
-  return base === "exec" ? null : base;
-}
-
-function extractCommand(params: unknown): string | null {
-  if (!isRecord(params)) return null;
-  const p = params as Record<string, unknown>;
-  const command = p.command ?? p.cmd;
-  if (typeof command === "string" && command.length > 0) return command;
-  const nested = p.exec;
-  if (isRecord(nested)) {
-    const nd = nested as Record<string, unknown>;
-    const nestedCommand = nd.command ?? nd.cmd;
-    if (typeof nestedCommand === "string" && nestedCommand.length > 0) return nestedCommand;
-  }
-  return null;
-}
-
-function classifyCommand(command: string): string {
-  const commandMap: Record<string, string> = {
-    grep: "grep", egrep: "grep", fgrep: "grep", rg: "grep",
-    find: "find", fd: "find", python: "python", python3: "python",
-    pytest: "pytest", django: "pytest", pip: "pip", pip3: "pip",
-    git: "git", curl: "curl", wget: "curl", npm: "npm", npx: "npm",
-    make: "make", gcc: "gcc", clang: "gcc", docker: "docker", podman: "docker",
-    cat: "cat", sed: "sed", awk: "awk", ls: "ls", cd: "cd",
-    rm: "rm", cp: "cp", mv: "mv"
-  };
-  const priority: Record<string, number> = {
-    pytest: 4, pip: 4, pip3: 4,
-    python: 3, python3: 3, git: 3, npm: 3, npx: 3, make: 3,
-    gcc: 3, clang: 3, docker: 3, podman: 3, curl: 3, wget: 3,
-    grep: 2, rg: 2, find: 2, fd: 2, cat: 2, sed: 2, awk: 2,
-    rm: 2, cp: 2, mv: 2
-  };
-  let best = "exec";
-  let bestPriority = -1;
-  for (const segment of splitCommandSegments(command)) {
-    const token = tokenizeCommandSegment(segment);
-    if (token === null) continue;
-    const category = commandMap[token] ?? safeUnknownCommand(token);
-    if (category === null) continue;
-    const score = priority[token] ?? 1;
-    if (score >= bestPriority) {
-      best = category;
-      bestPriority = score;
-    }
-  }
-  return best;
-}
-
-function splitCommandSegments(command: string): string[] {
-  const segments: string[] = [];
-  let current = "";
-  let single = false;
-  let double = false;
-  for (let index = 0; index < command.length; index += 1) {
-    const char = command[index];
-    if (char === "'" && !double) single = !single;
-    if (char === '"' && !single && command[index - 1] !== "\\") double = !double;
-    if (!single && !double) {
-      if (char === "|" || char === ";") {
-        segments.push(current);
-        current = "";
-        continue;
-      }
-      if (char === "&" && command[index + 1] === "&") {
-        segments.push(current);
-        current = "";
-        index += 1;
-        continue;
-      }
-    }
-    current += char;
-  }
-  segments.push(current);
-  return segments;
-}
-
-function tokenizeCommandSegment(segment: string): string | null {
-  const parts = segment.match(/"([^"\\]|\\.)*"|'[^']*'|\S+/g)?.map((part) => part.replace(/^['"]|['"]$/g, "")) ?? [];
-  let index = 0;
-  while (index < parts.length && /^[A-Za-z_][A-Za-z0-9_]*=.*$/s.test(parts[index])) index += 1;
-  while (index < parts.length && ["sudo", "nice", "nohup", "timeout"].includes(baseName(parts[index]))) {
-    const wrapper = baseName(parts[index]);
-    index += 1;
-    while (index < parts.length && parts[index].startsWith("-")) index += 1;
-    if (wrapper === "timeout" && index < parts.length && /^\d+(\.\d+)?$/.test(parts[index])) index += 1;
-  }
-  if (index >= parts.length) return null;
-  let token = baseName(parts[index]).toLowerCase();
-  if ((token === "python" || token === "python3") && parts[index + 1] === "-m" && parts[index + 2]) {
-    token = baseName(parts[index + 2]).toLowerCase();
-  }
-  return token;
-}
-
-function baseName(token: string): string {
-  return token.split("/").pop() ?? token;
-}
-
-function safeUnknownCommand(token: string): string | null {
-  const lowered = token.toLowerCase();
-  return /^[a-z0-9][a-z0-9._+-]{0,63}$/.test(lowered) ? lowered : null;
 }
 
 function mergeContext(payload: CommonEvent, context: unknown): void {

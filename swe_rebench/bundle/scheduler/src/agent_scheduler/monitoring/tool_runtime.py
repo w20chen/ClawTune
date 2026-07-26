@@ -7,7 +7,7 @@ from typing import Any
 
 from agent_scheduler.contracts.models import ResourceScope, ToolBeforeRequest, ToolCompletedEvent
 from agent_scheduler.monitoring.process import ProcessResourceSampler, ResourceSnapshot
-from agent_scheduler.predictors.static_profile import extract_operation
+from agent_scheduler.tool_resource_commands import operation_from_request
 
 
 @dataclass(frozen=True)
@@ -98,7 +98,7 @@ class RealtimeToolMonitor:
                 snapshot_count=1,
                 timeline_truncated=False,
                 resource_class=resource_class,
-                operation=extract_operation(request),
+                operation=operation_from_request(request),
             )
 
     def complete(self, completion: ToolCompletedEvent) -> ToolRuntimeSample:

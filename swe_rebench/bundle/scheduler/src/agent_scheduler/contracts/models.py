@@ -68,6 +68,7 @@ class ToolPrediction(BaseModel):
     duration_p90_ms: int | None = Field(default=None, ge=0)
     resource_class: str = "unknown"
     confidence: float | None = Field(default=None, ge=0, le=1)
+    tool_resource: Any | None = None
 
 
 class PlacementAdvice(BaseModel):
