@@ -798,8 +798,6 @@ class ClauseResourceKB:
             }
             for source in _CLAUSE_SOURCES
         }
-        if not kb._public[_LATENCY_MS].get(("global", "")):
-            raise ValueError("snapshot has no public clause latency global node")
         kb._repo = {
             repo: {
                 source: {

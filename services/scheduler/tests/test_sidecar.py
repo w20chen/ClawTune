@@ -25,7 +25,7 @@ def _read_trace_records(trace_dir: Path) -> list[dict]:
 
 
 def _client(tmp_path: Path) -> TestClient:
-    state = build_state(SchedulerConfig())
+    state = build_state(SchedulerConfig(trace_dir=tmp_path / "traces"))
     return TestClient(create_app(state))
 
 
@@ -302,6 +302,8 @@ def test_internal_tool_uses_shared_sandbox_cgroup_fallback(tmp_path: Path) -> No
     assert tool_end["resources"]["attribution_status"] == "partially_attributed"
     assert tool_end["resources"]["scope"] == "cgroup"
     assert tool_end["resources"]["coverage_reason"] == "shared_sandbox_container"
+    assert tool_end["resources"]["monitor_duration_ns"] is not None
+    assert tool_end["resources"]["cgroup_cpu_time_s"] is not None
 
 
 def test_internal_tool_uses_docker_exec_inferred_scope_before_fallback(tmp_path: Path) -> None:

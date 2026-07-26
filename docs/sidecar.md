@@ -45,6 +45,20 @@ internal tools use the tool name. If no usable evidence exists, prediction stays
 `unknown` until new tool completions or managed-wrapper executions add
 observations to the KB.
 
+The clause KB is persisted as `clause-resource-kb.json` under
+`AGENT_SCHEDULER_TOOL_RESOURCE_ARTIFACT_DIR` (or
+`<trace_dir>/tool-resource` by default). On cold start without an existing
+snapshot, configured OpenClaw trace v6 and Stage-2 artifacts seed both public
+bin/global priors and repo exact/argv-prefix/bin nodes, so prefix backoff can
+survive sidecar restarts. The sidecar writes that merged snapshot immediately
+after cold start and after every successful online KB update.
+
+Tool decisions and trace span starts include the full non-MLP prediction
+payload under `prediction.tool_resource`: the clause latency bucket predictor,
+the continuous empirical conditional-p90 predictions for latency, CPU, and
+memory, and a `prediction_algorithms` section that explicitly lists enabled
+non-MLP algorithms while marking `tool_resource.mlp` as excluded.
+
 Native `tool_resource` Stage-2 collection is wired through the managed-wrapper
 execution lifecycle. It needs a sandbox container id from OpenClaw or
 `AGENT_SCHEDULER_SANDBOX_CONTAINER_ID`, an artifact directory, the configured

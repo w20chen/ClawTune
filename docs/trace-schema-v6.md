@@ -40,8 +40,13 @@ Useful fields:
   non-MLP `RuntimeToolResourceKB` conditional-p90 estimates for
   `latency_ms`, `peak_cpu_cores`, and `peak_memory_mb`; memory requires a
   pre-call ambient memory anchor and otherwise reports an unavailable note.
+  `prediction.tool_resource.prediction_algorithms` lists the enabled
+  non-MLP predictors and records `tool_resource.mlp` as excluded.
 - `resources.attribution_status`: resource attribution status.
 - `resources.cpu_time_s`, `resources.rss_peak_bytes`: sampled resource data.
+- `resources.monitor_duration_ns`, `resources.monitor_*_time_ns`, and
+  `resources.cgroup_cpu_time_s`: monitor timing fields, with cgroup CPU time
+  populated when the sampler source is cgroup v2.
 - `resources.sampling_interval_ms`, `resources.sampling_point_count`,
   `resources.sampling_quality`: resource sampler cadence and quality.
 - `resources.resource_timeline`: per-sample resource timeline, capped by

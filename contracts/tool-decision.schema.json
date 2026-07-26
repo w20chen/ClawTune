@@ -76,6 +76,42 @@
                 ],
                 "additionalProperties": false
               }
+            },
+            "prediction_algorithms": {
+              "type": "object",
+              "description": "Prediction algorithms evaluated for this request. The sidecar records enabled non-MLP tool_resource predictors and explicitly records excluded algorithms such as MLP.",
+              "properties": {
+                "enabled": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {"type": "string"},
+                      "family": {"type": "string"},
+                      "source": {"type": "string"},
+                      "targets": {"type": "array", "items": {"type": "string"}},
+                      "outputs": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["name", "family", "source", "targets", "outputs"],
+                    "additionalProperties": false
+                  }
+                },
+                "excluded": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {"type": "string"},
+                      "source": {"type": "string"},
+                      "reason": {"type": "string"}
+                    },
+                    "required": ["name", "source", "reason"],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": ["enabled", "excluded"],
+              "additionalProperties": false
             }
           },
           "required": [
@@ -84,7 +120,9 @@
             "parse_failed",
             "clause_bins",
             "prediction",
-            "unavailable_reason"
+            "unavailable_reason",
+            "continuous_predictions",
+            "prediction_algorithms"
           ],
           "additionalProperties": false
         }

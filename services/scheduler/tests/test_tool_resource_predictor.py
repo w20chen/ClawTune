@@ -159,13 +159,14 @@ def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) ->
         "prediction": {
             "bucket_id": 2,
             "probability_by_bucket": [0.0, 0.0, 1.0, 0.0],
-            "scope": "public",
-            "key_kind": "bin",
+            "scope": "repo",
+            "key_kind": "exact_clause",
             "evidence_count": 1,
-            "fallback_path": ["repo:exact_clause", "repo:argv_prefix_depth_4", "repo:argv_prefix_depth_3", "repo:argv_prefix_depth_2", "repo:bin", "public:bin"],
+            "fallback_path": ["repo:exact_clause"],
         },
         "unavailable_reason": None,
         "continuous_predictions": {},
+        "prediction_algorithms": _prediction_algorithms(),
     }
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
     assert continuous["latency_ms"]["scope"] == "repo"
@@ -259,12 +260,66 @@ def test_stage2_clause_identity_matches_online_prediction(tmp_path: Path, monkey
     assert result.duration_p50_ms == 1250
     assert result.confidence == 1.0
     assert result.tool_resource is not None
-    assert result.tool_resource["prediction"]["scope"] == "public"
-    assert result.tool_resource["prediction"]["key_kind"] == "bin"
+    assert result.tool_resource["prediction"]["scope"] == "repo"
+    assert result.tool_resource["prediction"]["key_kind"] == "exact_clause"
     assert result.tool_resource["prediction"]["evidence_count"] == 1
     assert result.tool_resource["continuous_predictions"]["peak_cpu_cores"][
         "conditional_p90"
     ] is None
+
+
+def test_openclaw_trace_history_populates_repo_argv_prefix(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.jsonl"
+    _write_trace(trace, command="python -m pytest tests -q")
+    predictor = ToolResourcePredictor.from_openclaw_traces(
+        [trace],
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+    )
+
+    result = asyncio.run(
+        predictor.predict(_tool_request("evt-prefix", "call-prefix", "python -m pytest integration -q"))
+    )
+
+    assert result.resource_class == "latency_medium"
+    assert result.tool_resource["prediction"]["scope"] == "repo"
+    assert result.tool_resource["prediction"]["key_kind"] == "argv_prefix_depth_3"
+    assert result.tool_resource["prediction"]["fallback_path"] == [
+        "repo:exact_clause",
+        "repo:argv_prefix_depth_4",
+        "repo:argv_prefix_depth_3",
+    ]
+
+
+def test_openclaw_trace_cold_start_persists_clause_kb(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.jsonl"
+    artifact_dir = tmp_path / "tool-resource"
+    _write_trace(trace, command="python -m pytest tests -q")
+
+    ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(trace,),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+        artifact_dir=artifact_dir,
+    )
+
+    snapshot = artifact_dir / "clause-resource-kb.json"
+    assert snapshot.is_file()
+
+    reloaded = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+        artifact_dir=artifact_dir,
+    )
+    result = asyncio.run(
+        reloaded.predict(_tool_request("evt-prefix", "call-prefix", "python -m pytest integration -q"))
+    )
+
+    assert result.tool_resource["prediction"]["scope"] == "repo"
+    assert result.tool_resource["prediction"]["key_kind"] == "argv_prefix_depth_3"
 
 
 def test_stage2_loader_uses_native_sdk_artifact_validation(tmp_path: Path) -> None:
@@ -342,6 +397,7 @@ def test_tool_resource_predictor_exposes_native_unavailable_reason(
         "prediction": None,
         "unavailable_reason": "compound_command_uncomposed",
         "continuous_predictions": {},
+        "prediction_algorithms": _prediction_algorithms(),
     }
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
     assert continuous["latency_ms"]["key_kind"] == "command_prefix_depth_3"
@@ -399,6 +455,62 @@ def test_tool_resource_predictor_learns_from_completion_without_cold_start() -> 
     assert result.tool_resource["continuous_predictions"]["peak_memory_mb"][
         "note"
     ] == "memory prediction requires ambient_before_mb anchor"
+
+
+def test_tool_resource_predictor_persists_clause_kb_prefixes(tmp_path: Path) -> None:
+    artifact_dir = tmp_path / "tool-resource"
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+        artifact_dir=artifact_dir,
+    )
+    request = _tool_request("evt-1", "call-1", "python -m pytest tests -q")
+    predictor.record_tool_started(request)
+
+    assert predictor.observe_completion(
+        ToolCompletedEvent(
+            schema_version="scheduler.v1",
+            event_id="evt-1",
+            occurred_at="2026-07-24T17:29:45Z",
+            plugin_version="0.1.0",
+            run_id="run-1",
+            session_id="session-1",
+            session_key=None,
+            agent_id="main",
+            tool_call_id="call-1",
+            decision_id=None,
+            lease_id=None,
+            execution_id=None,
+            tool_name="exec",
+            duration_ms=1200,
+            succeeded=True,
+            error_type=None,
+            error_digest=None,
+            result_size_bytes=None,
+            raw_result=None,
+            raw_event=None,
+            resource_scope=None,
+        ),
+        _runtime_sample("evt-1", "call-1"),
+    ) == 1
+    assert (artifact_dir / "clause-resource-kb.json").is_file()
+
+    reloaded = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+        artifact_dir=artifact_dir,
+    )
+    result = asyncio.run(
+        reloaded.predict(_tool_request("evt-2", "call-2", "python -m pytest integration -q"))
+    )
+
+    assert result.resource_class == "latency_medium"
+    assert result.tool_resource["prediction"]["scope"] == "repo"
+    assert result.tool_resource["prediction"]["key_kind"] == "argv_prefix_depth_3"
 
 
 def test_tool_resource_predictor_continuous_memory_uses_ambient_anchor() -> None:
@@ -573,6 +685,18 @@ def test_trace_writes_tool_prediction_payload(tmp_path: Path) -> None:
     )
     assert tool_start["prediction"] == decision["prediction"]
     assert tool_start["prediction"]["tool_resource"]["prediction"]["bucket_id"] == 2
+    algorithms = tool_start["prediction"]["tool_resource"]["prediction_algorithms"]
+    assert [item["name"] for item in algorithms["enabled"]] == [
+        "clause_latency_bucket",
+        "runtime_tool_resource_conditional_p90",
+    ]
+    assert algorithms["excluded"] == [
+        {
+            "name": "quantile_mlp",
+            "source": "tool_resource.mlp",
+            "reason": "not enabled by the sidecar; this integration uses non-MLP empirical predictors only",
+        }
+    ]
 
 
 def _tool_request(event_id: str, tool_call_id: str, command: str) -> ToolBeforeRequest:
@@ -643,3 +767,37 @@ def _runtime_sample(event_id: str, tool_call_id: str) -> ToolRuntimeSample:
         attribution_status="pid",
         monitor_source="pid",
     )
+
+
+def _prediction_algorithms() -> dict:
+    return {
+        "enabled": [
+            {
+                "name": "clause_latency_bucket",
+                "family": "empirical_bucket",
+                "source": "ClauseResourceKB",
+                "targets": ["latency_ms"],
+                "outputs": [
+                    "bucket_id",
+                    "probability_by_bucket",
+                    "duration_p50_ms",
+                    "duration_p90_ms",
+                    "resource_class",
+                ],
+            },
+            {
+                "name": "runtime_tool_resource_conditional_p90",
+                "family": "empirical_ecdf",
+                "source": "RuntimeToolResourceKB",
+                "targets": ["latency_ms", "peak_cpu_cores", "peak_memory_mb"],
+                "outputs": ["conditional_p90"],
+            },
+        ],
+        "excluded": [
+            {
+                "name": "quantile_mlp",
+                "source": "tool_resource.mlp",
+                "reason": "not enabled by the sidecar; this integration uses non-MLP empirical predictors only",
+            }
+        ],
+    }

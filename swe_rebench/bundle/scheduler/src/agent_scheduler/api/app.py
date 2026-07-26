@@ -174,7 +174,18 @@ def create_app(state: AppState | None = None) -> FastAPI:
         if s.trace_writer is not None:
             s.trace_writer.record_tool_started(request)
         s.predictor.record_tool_started(request)
-        prediction = await s.predictor.predict(request)
+        ambient_snapshot = s.tool_monitor.sampler.snapshot(request.resource_scope)
+        ambient_before_mb = (
+            None
+            if ambient_snapshot.rss_bytes is None
+            else ambient_snapshot.rss_bytes / (1024 * 1024)
+        )
+        prediction = await s.predictor.predict(
+            request,
+            ambient_before_mb=ambient_before_mb,
+        )
+        if s.trace_writer is not None:
+            s.trace_writer.record_tool_prediction(request, prediction)
         decision = await s.policy.decide(
             request,
             SchedulingContext(prediction=prediction, placement=PlacementAdvice()),

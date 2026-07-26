@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shlex
 import time
 from collections.abc import Iterable, Sequence
@@ -67,6 +68,7 @@ class ToolResourcePredictor:
         repo: str,
         artifact_dir: Path | None = None,
         container_executable: str = "docker",
+        clause_kb_snapshot_path: Path | None = None,
     ) -> None:
         self.kb = kb
         self.continuous_kb = RuntimeToolResourceKB()
@@ -75,6 +77,7 @@ class ToolResourcePredictor:
         self.repo = repo
         self.artifact_dir = artifact_dir
         self.container_executable = container_executable
+        self.clause_kb_snapshot_path = clause_kb_snapshot_path
         self._sdk = ToolResourceSDK(kb, buckets)
         self._runs_by_execution_id: dict[str, CommandRun] = {}
         self._starts: dict[str, ToolBeforeRequest] = {}
@@ -121,15 +124,29 @@ class ToolResourcePredictor:
             observations.extend(loaded.observations)
             continuous_observations.extend(loaded.completed_calls)
 
+        snapshot_path = _clause_kb_snapshot_path(artifact_dir)
         kb: ClauseResourceKB
         kb_has_public_evidence = False
-        if observations:
+        loaded_snapshot = _load_clause_kb_snapshot(snapshot_path, rejections)
+        if loaded_snapshot is not None:
+            kb = loaded_snapshot
+            if observations and not _has_public_clause_latency(kb):
+                try:
+                    kb._public = ClauseResourceKB.fit_public(observations)._public  # type: ignore[attr-defined]
+                except ValueError as exc:
+                    rejections.append(f"fit_public: {exc}")
+            for observation in observations:
+                kb.observe_completed_clause(observation)
+            kb_has_public_evidence = _has_public_clause_latency(kb)
+        elif observations:
             try:
                 kb = ClauseResourceKB.fit_public(observations)
                 kb_has_public_evidence = True
             except ValueError as exc:
                 rejections.append(f"fit_public: {exc}")
                 kb = ClauseResourceKB()
+            for observation in observations:
+                kb.observe_completed_clause(observation)
         else:
             kb = ClauseResourceKB()
 
@@ -151,9 +168,12 @@ class ToolResourcePredictor:
             repo=repo,
             artifact_dir=artifact_dir,
             container_executable=container_executable,
+            clause_kb_snapshot_path=snapshot_path,
         )
         for call in continuous_observations:
             predictor.continuous_kb.observe_completed_call(call)
+        if observations or loaded_snapshot is not None:
+            predictor._persist_clause_kb()
         return predictor
 
     @classmethod
@@ -261,6 +281,7 @@ class ToolResourcePredictor:
         if observation is None:
             return 1 if completed_call is not None else 0
         self.kb.observe_completed_clause(observation)
+        self._persist_clause_kb()
         return 1
 
     def begin_execution(
@@ -316,7 +337,18 @@ class ToolResourcePredictor:
                 fallback_repo=self.repo,
             ):
                 self.continuous_kb.observe_completed_call(call)
+        if result.kb_observations_added:
+            self._persist_clause_kb()
         return result.kb_observations_added
+
+    def _persist_clause_kb(self) -> bool:
+        if self.clause_kb_snapshot_path is None:
+            return False
+        try:
+            _write_json_atomic(self.clause_kb_snapshot_path, self.kb.to_json_obj())
+            return True
+        except Exception:
+            return False
 
     def _continuous_predictions_for_request(
         self,
@@ -827,7 +859,43 @@ def _tool_resource_prediction_payload(
         ),
         "unavailable_reason": prediction.unavailable_reason,
         "continuous_predictions": continuous_predictions or {},
+        "prediction_algorithms": _prediction_algorithms_payload(),
     }
+
+
+def _clause_kb_snapshot_path(artifact_dir: Path | None) -> Path | None:
+    if artifact_dir is None:
+        return None
+    return artifact_dir / "clause-resource-kb.json"
+
+
+def _load_clause_kb_snapshot(
+    path: Path | None,
+    rejections: list[str],
+) -> ClauseResourceKB | None:
+    if path is None or not path.is_file():
+        return None
+    try:
+        return ClauseResourceKB.from_json_obj(json.loads(path.read_text(encoding="utf-8")))
+    except Exception as exc:
+        rejections.append(f"{path}: clause KB snapshot rejected: {exc}")
+        return None
+
+
+def _write_json_atomic(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(
+        json.dumps(obj, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+
+
+def _has_public_clause_latency(kb: ClauseResourceKB) -> bool:
+    public = getattr(kb, "_public", {})
+    latency = public.get("latency_ms", {}) if isinstance(public, dict) else {}
+    return bool(latency.get(("global", "")))
 
 
 def _target_prediction_payload(prediction: TargetPrediction) -> dict[str, Any]:
@@ -839,6 +907,40 @@ def _target_prediction_payload(prediction: TargetPrediction) -> dict[str, Any]:
         "evidence_count": prediction.evidence_count,
         "fallback_path": list(prediction.fallback_path),
         "note": prediction.note,
+    }
+
+
+def _prediction_algorithms_payload() -> dict[str, Any]:
+    return {
+        "enabled": [
+            {
+                "name": "clause_latency_bucket",
+                "family": "empirical_bucket",
+                "source": "ClauseResourceKB",
+                "targets": ["latency_ms"],
+                "outputs": [
+                    "bucket_id",
+                    "probability_by_bucket",
+                    "duration_p50_ms",
+                    "duration_p90_ms",
+                    "resource_class",
+                ],
+            },
+            {
+                "name": "runtime_tool_resource_conditional_p90",
+                "family": "empirical_ecdf",
+                "source": "RuntimeToolResourceKB",
+                "targets": ["latency_ms", "peak_cpu_cores", "peak_memory_mb"],
+                "outputs": ["conditional_p90"],
+            },
+        ],
+        "excluded": [
+            {
+                "name": "quantile_mlp",
+                "source": "tool_resource.mlp",
+                "reason": "not enabled by the sidecar; this integration uses non-MLP empirical predictors only",
+            }
+        ],
     }
 
 
