@@ -111,6 +111,7 @@ cat <<JSON5 | openclaw config patch --stdin
           recordRawTrace: true,
           executionBackend: "managed-wrapper",
           launcherPath: "$LAUNCHER_PATH",
+          enableCgroup: true,
           securityBoundaryAccepted: true
         }
       }
@@ -121,6 +122,36 @@ JSON5
 
 openclaw plugins inspect agent-scheduler --runtime --json
 ```
+
+`enableCgroup: true` is the plugin default, but Linux cgroup attribution also
+requires the `claw-launch` process to see cgroup v2 and a writable cgroup root.
+For local Linux runs, export these variables in the same shell that starts
+`openclaw agent`:
+
+```bash
+test -f /sys/fs/cgroup/cgroup.controllers
+
+sudo mkdir -p /sys/fs/cgroup/claw
+sudo chown -R "$USER:$USER" /sys/fs/cgroup/claw
+
+export CLAW_ENABLE_CGROUP=1
+export CLAW_CGROUP_ROOT=/sys/fs/cgroup/claw
+```
+
+During setup/debugging, make cgroup failures explicit instead of silently
+falling back to PID attribution:
+
+```bash
+export CLAW_CGROUP_REQUIRED=1
+export CLAW_CGROUP_DEBUG=1
+```
+
+With cgroup enabled, `/v1/tools/recent` should report
+`"attribution_status":"cgroup-v2"` or traces should show
+`"resources":{"scope":"cgroup"}` for managed `exec` tools. If it still reports
+`"pid"` or `"unattributed"`, the launcher could not create or read the cgroup;
+check the debug error, cgroup v2 availability, and write permission on
+`/sys/fs/cgroup/claw`.
 
 Run:
 
