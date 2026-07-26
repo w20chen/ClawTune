@@ -2,7 +2,7 @@
 
 Use this guide for normal OpenClaw runs.
 
-## 1. Install
+## 1. Install Local Packages
 
 ```bash
 python -m pip install -e "services/scheduler[dev]"
@@ -19,6 +19,17 @@ Check the launcher:
 claw-launch --help
 ```
 
+Recommended runtime order:
+
+1. Start the sidecar.
+2. Route OpenClaw model traffic through the sidecar proxy.
+3. Install, enable, and configure the OpenClaw plugin.
+4. Run OpenClaw.
+
+Installing the plugin itself does not require an API key, but doing it after
+the sidecar readiness check keeps the first plugin hook pointed at a healthy
+endpoint.
+
 ## 2. Start Sidecar
 
 ```bash
@@ -34,43 +45,60 @@ curl http://127.0.0.1:8765/health/ready
 
 ## 3. Configure OpenClaw Model Proxy
 
-```bash
-export LLM_API_KEY="sk-..."
+If OpenClaw already has a `vllm` API-key profile, keep that key in OpenClaw and
+only update the vLLM provider base URL and model to:
 
+```text
+http://127.0.0.1:8765/v1
+deepseek-v4-flash
+```
+
+The sidecar LLM proxy is always on while using the plugin and forwards
+OpenClaw's `Authorization` header upstream by default, so the plugin does not
+need a second API key.
+
+If OpenClaw does not already have a `vllm` API-key profile, `openclaw onboard`
+requires one. This includes the common case where OpenClaw was previously
+configured for DeepSeek directly, because the sidecar proxy is registered as a
+local vLLM-compatible provider. Onboard vLLM once and point it at the sidecar:
+
+```bash
 openclaw onboard --non-interactive --accept-risk --skip-health \
   --mode local \
   --auth-choice vllm \
   --custom-base-url "http://127.0.0.1:8765/v1" \
-  --custom-api-key "$LLM_API_KEY" \
+  --custom-api-key "<your provider API key>" \
   --custom-model-id "deepseek-v4-flash"
 ```
 
-For OpenRouter or another upstream, edit `.env` and restart the sidecar:
+For OpenRouter or another OpenAI-compatible upstream, edit `.env` and restart
+the sidecar. Keep using the provider key stored in OpenClaw unless you
+intentionally need an override.
 
 ```bash
 AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL=https://openrouter.ai/api/v1
-AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL=deepseek-chat
-AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=deepseek/deepseek-chat
+AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL=deepseek-v4-flash
+AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=deepseek/deepseek-v4-flash
+# Optional advanced override:
+# AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY_OVERRIDE=sk-...
 ```
 
-## 4. Install Plugin
+## 4. Install And Configure Plugin
 
 ```bash
 openclaw plugins install --link ./packages/openclaw-plugin
-openclaw plugins enable hardware-scheduler
-openclaw plugins inspect hardware-scheduler --runtime --json
+openclaw plugins enable agent-scheduler
 ```
 
-## 5. Configure Plugin
-
-Patch OpenClaw config. Replace `launcherPath` with an absolute path.
+Patch OpenClaw config. Replace `launcherPath` with the absolute path printed by
+`command -v claw-launch`.
 
 ```bash
 cat <<'JSON5' | openclaw config patch --stdin
 {
   plugins: {
     entries: {
-      "hardware-scheduler": {
+      "agent-scheduler": {
         enabled: true,
         config: {
           endpoint: "http://127.0.0.1:8765",
@@ -86,6 +114,8 @@ cat <<'JSON5' | openclaw config patch --stdin
   }
 }
 JSON5
+
+openclaw plugins inspect agent-scheduler --runtime --json
 ```
 
 Debug-only fallback:
@@ -94,7 +124,7 @@ Debug-only fallback:
 executionBackend: "hook-only"
 ```
 
-## 6. Run
+## 5. Run
 
 ```bash
 openclaw agent --local --agent main --model "vllm/deepseek-v4-flash" \

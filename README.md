@@ -4,10 +4,27 @@ OpenClaw Agent Scheduler is an OpenClaw plugin plus a Python sidecar. It records
 OpenClaw model/tool traces and per-tool resource usage. It also includes a
 SWE-Rebench batch runner.
 
-## Install
+## Preliminaries
+
+Install OpenClaw (version 2026.7.1):
 
 ```bash
-python -m pip install -e "services/scheduler[dev]"
+curl -fsSL --proto '=https' --tlsv1.2 \
+  https://openclaw.ai/install.sh \
+  | bash -s -- --install-method npm --version 2026.7.1
+```
+
+Clone this repository:
+
+```bash
+git clone git@github.com:w20chen/claw.git
+```
+
+## Install Local Packages
+
+```bash
+cd claw
+python3 -m pip install -e "services/scheduler[dev]"
 
 cd packages/openclaw-plugin
 npm install
@@ -15,50 +32,75 @@ npm run build
 cd ../..
 ```
 
-## Run With OpenClaw
+## Run with OpenClaw
 
-Start the sidecar:
+The recommended order is:
 
-```bash
-cp .env.example .env
-python -m agent_scheduler.main --host 127.0.0.1 --port 8765
-```
+1. Start the sidecar.
+2. Route OpenClaw model traffic through the sidecar proxy.
+3. Install, enable, and configure the OpenClaw plugin.
+4. Run OpenClaw.
 
-Before starting the sidecar, please ensure that port 8765 is not occupied. If the port is already in use by another process, you can forcefully release it with the following command:
+This keeps the first plugin hook and the first model request pointed at a
+healthy sidecar. Installing the plugin itself does not require an API key.
+
+Before starting the sidecar, ensure that port 8765 is not occupied. If the port
+is already in use by another process, you can forcefully release it with:
 
 ```bash
 sudo lsof -t -i :8765 | xargs -r sudo kill -9
 ```
 
-Install the plugin:
+Start the sidecar and check readiness:
 
 ```bash
-openclaw plugins install --link ./packages/openclaw-plugin
-openclaw plugins enable hardware-scheduler
+cp .env.example .env
+python3 -m agent_scheduler.main --host 127.0.0.1 --port 8765
 ```
 
-Route OpenClaw model traffic through the sidecar proxy:
+```bash
+curl http://127.0.0.1:8765/health/ready   # {"ready":true}
+```
+
+Route OpenClaw model traffic through the sidecar proxy.
+
+If OpenClaw already has a `vllm` API-key profile, keep that key in OpenClaw and
+only update the vLLM provider base URL and model to:
+
+```text
+http://127.0.0.1:8765/v1
+deepseek-v4-flash
+```
+
+The sidecar forwards OpenClaw's `Authorization` header upstream by default, so
+there is no separate plugin API key.
+
+If OpenClaw does not already have a `vllm` API-key profile, `openclaw onboard`
+requires one. This includes the common case where OpenClaw was previously
+configured for DeepSeek directly, because the sidecar proxy is registered as a
+local vLLM-compatible provider. Onboard vLLM once and point it at the sidecar:
 
 ```bash
-export LLM_API_KEY="sk-..."
-
 openclaw onboard --non-interactive --accept-risk --skip-health \
   --mode local \
   --auth-choice vllm \
   --custom-base-url "http://127.0.0.1:8765/v1" \
-  --custom-api-key "$LLM_API_KEY" \
+  --custom-api-key "<your provider API key>" \
   --custom-model-id "deepseek-v4-flash"
 ```
 
-Configure the plugin. Replace `launcherPath` with your absolute `claw-launch`
-path:
+Install the plugin into OpenClaw, enable it, and patch its config. Replace
+`launcherPath` with the absolute path printed by `command -v claw-launch`.
 
 ```bash
+openclaw plugins install --link ./packages/openclaw-plugin
+openclaw plugins enable agent-scheduler
+
 cat <<'JSON5' | openclaw config patch --stdin
 {
   plugins: {
     entries: {
-      "hardware-scheduler": {
+      "agent-scheduler": {
         enabled: true,
         config: {
           endpoint: "http://127.0.0.1:8765",
@@ -74,6 +116,8 @@ cat <<'JSON5' | openclaw config patch --stdin
   }
 }
 JSON5
+
+openclaw plugins inspect agent-scheduler --runtime --json
 ```
 
 Run:
@@ -95,7 +139,8 @@ python tools/inspect_trace.py data/traces/<trace-file>.jsonl --all --details
 
 ```bash
 cp swe_rebench/config.example.yaml swe_rebench/config.yaml
-# Edit llm.api_key, or export LLM_API_KEY.
+# SWE-Rebench is automated and does not read your host OpenClaw key.
+# Set LLM_API_KEY, edit llm.api_key, or use swe_rebench/llm_api_key.txt.
 
 python -m swe_rebench.runner prepare --config swe_rebench/config.yaml
 python -m swe_rebench.discover --sample 20 --out swe_rebench/tasks.json

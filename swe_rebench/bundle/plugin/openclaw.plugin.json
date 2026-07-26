@@ -1,6 +1,6 @@
 {
-  "id": "hardware-scheduler",
-  "name": "Hardware Scheduler",
+  "id": "agent-scheduler",
+  "name": "Agent Scheduler",
   "version": "0.1.0",
   "description": "Hardware-aware tool scheduling bridge for OpenClaw.",
   "entry": "./dist/index.js",

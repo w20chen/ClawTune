@@ -45,7 +45,7 @@ def _sample_summary(sample: ToolRuntimeSample) -> dict[str, object]:
 
 def create_app(state: AppState | None = None) -> FastAPI:
     app_state = state or build_state()
-    app = FastAPI(title="OpenClaw Hardware Scheduler Sidecar", version="0.1.0")
+    app = FastAPI(title="OpenClaw Agent Scheduler Sidecar", version="0.1.0")
     app.state.scheduler = app_state
 
     def get_state() -> AppState:

@@ -48,7 +48,7 @@ const pluginVersion = "0.1.0";
 // ── Plugin-wide state ──────────────────────────────────────────────────
 let registry: SpanRegistry | null = null;
 
-/** Unique instance ID generated once per plugin load (≈ per CLI launch). */
+/** Unique instance ID generated once per plugin load (�?per CLI launch). */
 const instanceId = randomUUID();
 
 /** Per-run trace writers, keyed by normalized run identity. */
@@ -108,7 +108,7 @@ async function getRunWriter(
     const run = safeFilename(runId);
     // Note: agent_id is included per-record in the JSONL content.
     // It is omitted from the filename because model hooks (model_call_started,
-    // model_call_ended) do not expose agent_id — an OpenClaw limitation.
+    // model_call_ended) do not expose agent_id �?an OpenClaw limitation.
     const filename = `${session}_${run}.jsonl`;
     const { join } = await import("node:path");
     const filePath = join(traceDir, filename);
@@ -142,9 +142,9 @@ async function getRunWriter(
 }
 
 export default definePluginEntry({
-  id: "hardware-scheduler",
-  name: "Hardware Scheduler",
-  description: "Hardware-aware tool scheduling bridge for OpenClaw.",
+  id: "agent-scheduler",
+  name: "Agent Scheduler",
+  description: "Agent scheduling and tracing bridge for OpenClaw.",
   configSchema: {
     type: "object",
     additionalProperties: false,
@@ -347,7 +347,7 @@ export default definePluginEntry({
       }
       return sandboxParams.changed && sandboxParams.params !== null ? {params: sandboxParams.params} : undefined;
     } catch (error) {
-      logger.warn("hardware scheduler decision failed", classifyError(error));
+      logger.warn("Agent Scheduler decision failed", classifyError(error));
       const sandboxParams = normalizeSandboxToolParams(cloneEventParams(event), toolName);
       if ((config.mode === "observe" || config.failOpen) && sandboxParams.changed && sandboxParams.params !== null) {
         return {params: sandboxParams.params};
@@ -355,7 +355,7 @@ export default definePluginEntry({
       if (config.mode === "observe" || config.failOpen) return undefined;
       return {
         block: true,
-        blockReason: "Hardware scheduler sidecar unavailable and failOpen=false."
+        blockReason: "Agent Scheduler sidecar unavailable and failOpen=false."
       };
     }
   });
@@ -399,13 +399,13 @@ export default definePluginEntry({
       try {
         completion.resource_scope = await client.getExecutionScope(completion.execution_id);
       } catch (error) {
-        logger.warn("hardware scheduler execution scope lookup failed", classifyError(error));
+        logger.warn("Agent Scheduler execution scope lookup failed", classifyError(error));
       }
     }
     try {
       await client.reportCompletion(completion);
     } catch (error) {
-      logger.warn("hardware scheduler completion report failed", classifyError(error));
+      logger.warn("Agent Scheduler completion report failed", classifyError(error));
     }
 
     // Determine status code
@@ -1080,7 +1080,7 @@ async function reportModel(
     };
     await client.reportModel(payload);
   } catch (error) {
-    logger.warn("hardware scheduler model report failed", classifyError(error));
+    logger.warn("Agent Scheduler model report failed", classifyError(error));
   }
 }
 

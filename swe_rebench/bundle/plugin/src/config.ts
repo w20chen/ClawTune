@@ -108,22 +108,22 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 function envOverrides(): Partial<PluginConfig> {
   const output: Partial<PluginConfig> = {};
-  setString(output, "endpoint", process.env.OPENCLAW_HARDWARE_SCHEDULER_ENDPOINT);
-  setString(output, "mode", process.env.OPENCLAW_HARDWARE_SCHEDULER_MODE);
-  setString(output, "launcherPath", process.env.OPENCLAW_HARDWARE_SCHEDULER_LAUNCHER_PATH);
-  setString(output, "executionBackend", process.env.OPENCLAW_HARDWARE_SCHEDULER_EXECUTION_BACKEND);
-  setBoolean(output, "failOpen", process.env.OPENCLAW_HARDWARE_SCHEDULER_FAIL_OPEN);
-  setBoolean(output, "sendRawParams", process.env.OPENCLAW_HARDWARE_SCHEDULER_SEND_RAW_PARAMS);
-  setBoolean(output, "recordRawTrace", process.env.OPENCLAW_HARDWARE_SCHEDULER_RECORD_RAW_TRACE);
+  setString(output, "endpoint", schedulerEnv("ENDPOINT"));
+  setString(output, "mode", schedulerEnv("MODE"));
+  setString(output, "launcherPath", schedulerEnv("LAUNCHER_PATH"));
+  setString(output, "executionBackend", schedulerEnv("EXECUTION_BACKEND"));
+  setBoolean(output, "failOpen", schedulerEnv("FAIL_OPEN"));
+  setBoolean(output, "sendRawParams", schedulerEnv("SEND_RAW_PARAMS"));
+  setBoolean(output, "recordRawTrace", schedulerEnv("RECORD_RAW_TRACE"));
   setBoolean(
     output,
     "securityBoundaryAccepted",
-    process.env.OPENCLAW_HARDWARE_SCHEDULER_SECURITY_BOUNDARY_ACCEPTED
+    schedulerEnv("SECURITY_BOUNDARY_ACCEPTED")
   );
   const trace: Record<string, unknown> = {};
-  const traceDir = process.env.OPENCLAW_HARDWARE_SCHEDULER_TRACE_DIR;
+  const traceDir = schedulerEnv("TRACE_DIR");
   if (traceDir !== undefined && traceDir.length > 0) trace.trace_dir = traceDir;
-  const recordRaw = parseBoolean(process.env.OPENCLAW_HARDWARE_SCHEDULER_RECORD_RAW_TRACE);
+  const recordRaw = parseBoolean(schedulerEnv("RECORD_RAW_TRACE"));
   if (recordRaw !== null) {
     trace.include_raw_events = recordRaw;
     trace.include_llm_messages = recordRaw;
@@ -133,6 +133,10 @@ function envOverrides(): Partial<PluginConfig> {
     (output as Record<string, unknown>).trace = trace;
   }
   return output;
+}
+
+function schedulerEnv(suffix: string): string | undefined {
+  return process.env[`OPENCLAW_AGENT_SCHEDULER_${suffix}`];
 }
 
 function legacyTraceOverrides(raw: Record<string, unknown>): Record<string, unknown> {

@@ -4,7 +4,7 @@ Runtime path:
 
 ```text
 OpenClaw agent
-  -> hardware-scheduler plugin hooks
+  -> agent-scheduler plugin hooks
   -> scheduler sidecar
   -> JSONL traces + SQLite state + recent metrics
 ```

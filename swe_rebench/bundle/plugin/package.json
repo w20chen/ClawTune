@@ -1,5 +1,5 @@
 {
-  "name": "@w20chen/openclaw-hardware-scheduler",
+  "name": "@w20chen/openclaw-agent-scheduler",
   "version": "0.1.0",
   "description": "OpenClaw hardware-aware scheduling plugin",
   "type": "module",

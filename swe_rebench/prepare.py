@@ -345,12 +345,14 @@ echo "=== openclaw plugins install ==="
 cp -r "$CLAW_ROOT/plugin" /tmp/plugin
 openclaw plugins install --link /tmp/plugin || echo "plugin install FAILED (exit=$?)"
 echo "=== openclaw plugins enable ==="
-openclaw plugins enable hardware-scheduler || echo "plugin enable FAILED (exit=$?)"
+openclaw plugins enable agent-scheduler || echo "plugin enable FAILED (exit=$?)"
 echo ""
 
 if [ -f "$CLAW_ROOT/openclaw-config.json5" ]; then
     echo "=== openclaw config patch ==="
-    openclaw config patch --stdin < "$CLAW_ROOT/openclaw-config.json5" || echo "config patch FAILED (exit=$?)"
+    sed "s/__SANDBOX_CONTAINER_PREFIX__/${AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX:-}/g" \
+        "$CLAW_ROOT/openclaw-config.json5" \
+        | openclaw config patch --stdin || echo "config patch FAILED (exit=$?)"
     echo ""
 fi
 
@@ -672,7 +674,16 @@ def _write_run_agent(bundle_dir: Path, config: RunnerConfig) -> None:
 
 def _write_plugin_config(bundle_dir: Path) -> None:
     cfg = json.dumps({
-        "plugins": {"entries": {"hardware-scheduler": {"enabled": True, "config": _PLUGIN_CONFIG}}}
+        "agents": {
+            "defaults": {
+                "sandbox": {
+                    "docker": {
+                        "containerPrefix": "__SANDBOX_CONTAINER_PREFIX__",
+                    },
+                },
+            },
+        },
+        "plugins": {"entries": {"agent-scheduler": {"enabled": True, "config": _PLUGIN_CONFIG}}}
     }, indent=2)
     dest = bundle_dir / "openclaw-config.json5"
     dest.write_text(cfg, encoding="utf-8")

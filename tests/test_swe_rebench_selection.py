@@ -26,8 +26,10 @@ from swe_rebench.prepare import (
     _PLUGIN_CONFIG,
     _build_plugin_dist,
     _write_entrypoint,
+    _write_plugin_config,
     bundle_needs_rebuild,
 )
+from swe_rebench.sandbox import sandbox_container_prefix
 from swe_rebench.task_source import filter_tasks, parse_instance_ids, tasks_from_records
 from swe_rebench.runner import (
     _inspect_trace,
@@ -383,6 +385,17 @@ def test_entrypoint_installs_stable_launcher_path() -> None:
     assert "python3 -m agent_scheduler.launcher" in _ENTRYPOINT_TEMPLATE
 
 
+def test_docker_runner_config_sets_sandbox_container_prefix_placeholder(tmp_path: Path) -> None:
+    _write_plugin_config(tmp_path)
+
+    parsed = json.loads((tmp_path / "openclaw-config.json5").read_text(encoding="utf-8"))
+    docker_cfg = parsed["agents"]["defaults"]["sandbox"]["docker"]
+
+    assert docker_cfg["containerPrefix"] == "__SANDBOX_CONTAINER_PREFIX__"
+    assert "__SANDBOX_CONTAINER_PREFIX__" in _ENTRYPOINT_TEMPLATE
+    assert "openclaw config patch --stdin" in _ENTRYPOINT_TEMPLATE
+
+
 def test_runner_config_enables_complete_cgroup_sampling() -> None:
     config = RunnerConfig.from_yaml("swe_rebench/config.yaml")
 
@@ -495,7 +508,7 @@ def test_host_sandbox_openclaw_config_uses_only_public_top_level_keys(tmp_path: 
     assert docker_cfg["extraHosts"] == ["host.docker.internal:host-gateway"]
     assert "binds" not in docker_cfg
     assert parsed["agents"]["defaults"]["sandbox"]["workspaceAccess"] == "rw"
-    plugin_cfg = parsed["plugins"]["entries"]["hardware-scheduler"]["config"]
+    plugin_cfg = parsed["plugins"]["entries"]["agent-scheduler"]["config"]
     assert plugin_cfg["logLevel"] == "warn"
     assert parsed["env"]["CLAW_EXEC_WORKDIR"] == "/workspace"
     assert parsed["env"]["CLAW_SANDBOX_HOST_WORKSPACE"] == str(tmp_path / "workspace")
@@ -940,6 +953,9 @@ def test_docker_cli_uses_wait_exit_code_with_rm_container(monkeypatch, tmp_path:
 
     assert result.exit_code == 7
     assert not any(call[:2] == ["docker", "inspect"] for call in calls)
+    docker_run = calls[0]
+    expected_prefix = sandbox_container_prefix("docker:task-1")
+    assert f"AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX={expected_prefix}" in docker_run
 
 
 def test_require_llm_api_key_reports_default_file(tmp_path: Path, monkeypatch) -> None:

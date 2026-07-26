@@ -155,11 +155,11 @@ echo ""
 
 echo "=== openclaw plugins install ==="
 # Copy plugin to writable location to avoid "suspicious ownership" error
-# from the read-only /claw bind mount (host uid â‰  container root uid).
+# from the read-only /claw bind mount (host uid â‰?container root uid).
 cp -r "$CLAW_ROOT/plugin" /tmp/plugin
 openclaw plugins install --link /tmp/plugin || echo "plugin install FAILED (exit=$?)"
 echo "=== openclaw plugins enable ==="
-openclaw plugins enable hardware-scheduler || echo "plugin enable FAILED (exit=$?)"
+openclaw plugins enable agent-scheduler || echo "plugin enable FAILED (exit=$?)"
 echo ""
 
 if [ -f "$CLAW_ROOT/openclaw-config.json5" ]; then

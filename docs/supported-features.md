@@ -3,7 +3,7 @@
 ## Supported
 
 - Run the sidecar locally on `127.0.0.1:8765`.
-- Install and enable the `hardware-scheduler` OpenClaw plugin.
+- Install and enable the `agent-scheduler` OpenClaw plugin.
 - Route OpenClaw model traffic through the sidecar OpenAI-compatible proxy.
 - Record schema v6 JSONL traces under `data/traces`.
 - Record hook-visible tool args/results with `recordRawTrace: true`.

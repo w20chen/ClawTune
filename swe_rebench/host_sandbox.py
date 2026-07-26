@@ -8,7 +8,6 @@ workspace.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -23,6 +22,7 @@ from typing import Any
 
 from swe_rebench.config import RunnerConfig
 from swe_rebench.docker import ContainerResult
+from swe_rebench.sandbox import sandbox_container_prefix
 from swe_rebench.task_source import TaskDef
 
 
@@ -279,7 +279,7 @@ def _configure_openclaw(
             "openclaw_onboard",
         )
         _run_logged([openclaw, "plugins", "install", "--link", str(plugin_dir)], env, log, "plugin_install")
-        _run_logged([openclaw, "plugins", "enable", "hardware-scheduler"], env, log, "plugin_enable")
+        _run_logged([openclaw, "plugins", "enable", "agent-scheduler"], env, log, "plugin_enable")
         patch = subprocess.run(
             [openclaw, "config", "patch", "--stdin"],
             input=sandbox_config,
@@ -396,7 +396,7 @@ def _openclaw_config(
             },
             "plugins": {
                 "entries": {
-                    "hardware-scheduler": {
+                    "agent-scheduler": {
                         "enabled": True,
                         "config": {
                             "endpoint": endpoint_host,
@@ -447,8 +447,7 @@ def _openclaw_config(
 
 
 def _sandbox_container_prefix(workspace: Path) -> str:
-    digest = hashlib.sha256(str(workspace).encode("utf-8")).hexdigest()[:12]
-    return f"claw-srb-{digest}-"
+    return sandbox_container_prefix(workspace)
 
 
 def _cleanup_openclaw_sandbox_containers(trace_dir: Path, workspace: Path) -> None:

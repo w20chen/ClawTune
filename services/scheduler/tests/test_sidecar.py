@@ -95,10 +95,22 @@ def test_llm_proxy_upstream_url_preserves_v1_when_base_omits_it() -> None:
     )
 
 
-def test_llm_proxy_does_not_forward_client_authorization_header() -> None:
+def test_llm_proxy_forwards_openclaw_authorization_header_by_default() -> None:
     class Request:
         headers = {
-            "authorization": "Bearer sk-test",
+            "authorization": "Bearer sk-openclaw",
+            "content-type": "application/json",
+        }
+
+    headers_without_upstream_key = _forward_headers(Request(), SchedulerConfig())
+    assert headers_without_upstream_key["authorization"] == "Bearer sk-openclaw"
+    assert headers_without_upstream_key["content-type"] == "application/json"
+
+
+def test_llm_proxy_upstream_key_overrides_openclaw_authorization_header() -> None:
+    class Request:
+        headers = {
+            "authorization": "Bearer sk-openclaw",
             "content-type": "application/json",
         }
 
@@ -109,9 +121,6 @@ def test_llm_proxy_does_not_forward_client_authorization_header() -> None:
 
     assert headers["authorization"] == "Bearer real-key"
     assert headers["content-type"] == "application/json"
-
-    headers_without_upstream_key = _forward_headers(Request(), SchedulerConfig())
-    assert "authorization" not in headers_without_upstream_key
 
 
 def test_decision_and_completion_round_trip(tmp_path: Path) -> None:

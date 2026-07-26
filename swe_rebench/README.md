@@ -1,7 +1,7 @@
 # SWE-Rebench Batch Runner
 
 Use this when you want to run many SWE-Rebench tasks through OpenClaw with the
-hardware-scheduler plugin and sidecar tracing enabled.
+agent-scheduler plugin and sidecar tracing enabled.
 
 ## Setup
 
@@ -30,8 +30,8 @@ OpenRouter example:
 llm:
   api_key: "${LLM_API_KEY}"
   upstream_base_url: "https://openrouter.ai/api/v1"
-  model: "deepseek/deepseek-chat"
-  openclaw_model_ref: "vllm/deepseek-chat"
+  model: "deepseek/deepseek-v4-flash"
+  openclaw_model_ref: "vllm/deepseek-v4-flash"
 ```
 
 ## Discover Tasks

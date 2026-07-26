@@ -33,9 +33,8 @@ AGENT_SCHEDULER_TOOL_RESOURCE_REPO=openclaw
 AGENT_SCHEDULER_TOOL_RESOURCE_ARTIFACT_DIR=data/tool-resource
 AGENT_SCHEDULER_TOOL_RESOURCE_CONTAINER_EXECUTABLE=docker
 AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL=https://api.deepseek.com
-AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY=sk-...
-AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL=deepseek-chat
-AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=deepseek/deepseek-chat
+AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL=deepseek-v4-flash
+AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=deepseek/deepseek-v4-flash
 ```
 
 The sidecar always uses the vendored `tool_resource` predictor. It can
@@ -52,8 +51,10 @@ execution lifecycle. It needs a sandbox container id from OpenClaw or
 container executable, and the platform support expected by upstream
 `tool_resource`.
 
-Use `AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY` only when OpenClaw does not forward
-the provider key you need.
+The LLM proxy is always enabled for plugin use. By default it forwards the
+provider key already configured in OpenClaw via the request `Authorization`
+header. Set `AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY_OVERRIDE` only when you
+intentionally want the sidecar to use a different upstream key.
 
 Inspect output:
 

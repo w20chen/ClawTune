@@ -1,4 +1,4 @@
-# OpenClaw Hardware Scheduler Plugin
+# OpenClaw Agent Scheduler Plugin
 
 This package is the OpenClaw plugin entrypoint. It reports model/tool hooks to
 the scheduler sidecar and can instrument `exec` calls for stronger resource
@@ -21,8 +21,8 @@ From the repository root:
 
 ```bash
 openclaw plugins install --link ./packages/openclaw-plugin
-openclaw plugins enable hardware-scheduler
-openclaw plugins inspect hardware-scheduler --runtime --json
+openclaw plugins enable agent-scheduler
+openclaw plugins inspect agent-scheduler --runtime --json
 ```
 
 Expected hooks:
@@ -40,7 +40,7 @@ model_call_ended
 {
   plugins: {
     entries: {
-      "hardware-scheduler": {
+      "agent-scheduler": {
         enabled: true,
         config: {
           endpoint: "http://127.0.0.1:8765",
