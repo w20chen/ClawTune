@@ -50,7 +50,33 @@
               ],
               "additionalProperties": false
             },
-            "unavailable_reason": {"type": ["string", "null"]}
+            "unavailable_reason": {"type": ["string", "null"]},
+            "continuous_predictions": {
+              "type": "object",
+              "description": "Best-effort non-MLP RuntimeToolResourceKB TargetPrediction payloads keyed by target name.",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "target": {"type": "string"},
+                  "conditional_p90": {"type": ["number", "null"]},
+                  "scope": {"type": ["string", "null"]},
+                  "key_kind": {"type": ["string", "null"]},
+                  "evidence_count": {"type": "integer", "minimum": 0},
+                  "fallback_path": {"type": "array", "items": {"type": "string"}},
+                  "note": {"type": ["string", "null"]}
+                },
+                "required": [
+                  "target",
+                  "conditional_p90",
+                  "scope",
+                  "key_kind",
+                  "evidence_count",
+                  "fallback_path",
+                  "note"
+                ],
+                "additionalProperties": false
+              }
+            }
           },
           "required": [
             "repo",

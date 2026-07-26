@@ -111,6 +111,8 @@ export interface SpanStartExecution {
 export interface SpanStartRecord extends SpanIdentity {
   record_type: "span_start";
   input: SpanStartInput;
+  /** Optional scheduler-side prediction captured before tool execution. */
+  prediction?: ToolPrediction | null;
   execution: SpanStartExecution;
   /** Optional: raw model-side tool call observation for debugging. */
   model_tool_call_observation?: ModelToolCallObservation | null;
@@ -122,6 +124,14 @@ export interface ModelToolCallObservation {
   tool_call_id: string | null;
   raw_arguments: string | null;
   parse_status: "verified" | "damaged_or_unverified";
+}
+
+export interface ToolPrediction {
+  duration_p50_ms: number | null;
+  duration_p90_ms: number | null;
+  resource_class: string;
+  confidence: number | null;
+  tool_resource?: unknown | null;
 }
 
 // ── Span End ───────────────────────────────────────────────────────────

@@ -54,6 +54,10 @@ cd packages/openclaw-plugin && npm test && npm run typecheck
 - `.venv\Scripts\python.exe -m pytest services\scheduler\tests\test_tool_resource_predictor.py services\scheduler\tests\test_sidecar.py -q`
   cannot run in the current virtual environment because `pytest` is not
   installed there.
+- `python -m pytest services\scheduler\tests\test_tool_resource_predictor.py -q`
+  cannot run directly in this Windows sandbox because pytest tries to create
+  `C:\Users\29068\.pytest-tmp`, which is outside the writable workspace; use
+  `--basetemp .pytest-tmp-root`.
 - The Linux cgroup v2 migration probe and `systemd-run --user --scope -p
   Delegate=yes ... openclaw agent ...` validation cannot run in this Windows
   PowerShell workspace; they must be run on the Linux host/container where

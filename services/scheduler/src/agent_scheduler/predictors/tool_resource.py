@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import shlex
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -16,9 +17,19 @@ from tool_resource.runtime_kb import (
     ClauseObservation,
     ClauseResourceKB,
     CommandLatencyBucketPrediction,
+    CompletedCall,
     LatencyBuckets,
+    RuntimeToolResourceKB,
+    TargetPrediction,
+    ToolCallQuery,
 )
-from tool_resource.sdk import CommandRun, DockerExecutionContext, ToolResourceSDK
+from tool_resource.sdk import (
+    CommandRun,
+    DockerExecutionContext,
+    ToolResourceSDK,
+    _load_valid_artifact,
+    _observations_from_call,
+)
 
 
 @dataclass(frozen=True)
@@ -29,7 +40,9 @@ class ToolResourceLoadReport:
     openclaw_traces_accepted: int
     openclaw_tool_spans_seen: int
     observations_loaded: int
+    continuous_observations_loaded: int
     kb_available: bool
+    continuous_kb_available: bool
     rejections: tuple[str, ...]
 
 
@@ -56,6 +69,7 @@ class ToolResourcePredictor:
         container_executable: str = "docker",
     ) -> None:
         self.kb = kb
+        self.continuous_kb = RuntimeToolResourceKB()
         self.buckets = buckets
         self.report = report
         self.repo = repo
@@ -79,6 +93,7 @@ class ToolResourcePredictor:
         openclaw_paths = list(_expand_trace_paths(openclaw_trace_paths))
         stage2_paths = list(_expand_trace_paths(stage2_trace_paths))
         observations: list[ClauseObservation] = []
+        continuous_observations: list[CompletedCall] = []
         rejections: list[str] = []
         stage2_loaded = 0
 
@@ -86,6 +101,9 @@ class ToolResourcePredictor:
             try:
                 artifact = _read_stage2_artifact(path)
                 observations.extend(_stage2_observations(artifact, fallback_repo=repo))
+                continuous_observations.extend(
+                    _stage2_completed_calls(artifact, fallback_repo=repo)
+                )
                 stage2_loaded += 1
             except ValueError as exc:
                 rejections.append(f"{path}: {exc}")
@@ -101,6 +119,7 @@ class ToolResourcePredictor:
             openclaw_accepted += 1
             openclaw_spans_seen += loaded.tool_spans_seen
             observations.extend(loaded.observations)
+            continuous_observations.extend(loaded.completed_calls)
 
         kb: ClauseResourceKB
         kb_has_public_evidence = False
@@ -114,7 +133,7 @@ class ToolResourcePredictor:
         else:
             kb = ClauseResourceKB()
 
-        return cls(
+        predictor = cls(
             kb=kb,
             buckets=buckets,
             report=ToolResourceLoadReport(
@@ -124,13 +143,18 @@ class ToolResourcePredictor:
                 openclaw_traces_accepted=openclaw_accepted,
                 openclaw_tool_spans_seen=openclaw_spans_seen,
                 observations_loaded=len(observations),
+                continuous_observations_loaded=len(continuous_observations),
                 kb_available=kb_has_public_evidence,
+                continuous_kb_available=bool(continuous_observations),
                 rejections=tuple(rejections),
             ),
             repo=repo,
             artifact_dir=artifact_dir,
             container_executable=container_executable,
         )
+        for call in continuous_observations:
+            predictor.continuous_kb.observe_completed_call(call)
+        return predictor
 
     @classmethod
     def from_openclaw_traces(
@@ -147,24 +171,49 @@ class ToolResourcePredictor:
             repo=repo,
         )
 
-    async def predict(self, request: ToolBeforeRequest) -> ToolPrediction:
-        clauses, parse_failed = clauses_from_tool_request(request.tool_name, request.raw_params)
+    async def predict(
+        self,
+        request: ToolBeforeRequest,
+        *,
+        ambient_before_mb: float | None = None,
+    ) -> ToolPrediction:
+        command = _command_for_request(request)
         try:
-            command = _command_for_request(request)
-            prediction = self.kb.predict_command_latency_bucket_from_clauses(
-                self.repo,
-                clauses,
-                time.time(),
-                self.buckets,
-                command=command or request.tool_name,
-                parse_failed=parse_failed,
-            )
+            if request.tool_name == "exec" and command:
+                prediction = self.kb.predict_command_latency_bucket(
+                    self.repo,
+                    command,
+                    time.time(),
+                    self.buckets,
+                )
+            else:
+                clauses, parse_failed = clauses_from_tool_request(
+                    request.tool_name,
+                    request.raw_params,
+                )
+                prediction = self.kb.predict_command_latency_bucket_from_clauses(
+                    self.repo,
+                    clauses,
+                    time.time(),
+                    self.buckets,
+                    command=command or request.tool_name,
+                    parse_failed=parse_failed,
+                )
         except Exception:
             return ToolPrediction(resource_class="unknown")
+        continuous_predictions = self._continuous_predictions_for_request(
+            request,
+            command,
+            time.time(),
+            ambient_before_mb=ambient_before_mb,
+        )
         if prediction.prediction is None:
             return ToolPrediction(
                 resource_class="unknown",
-                tool_resource=_tool_resource_prediction_payload(prediction),
+                tool_resource=_tool_resource_prediction_payload(
+                    prediction,
+                    continuous_predictions=continuous_predictions,
+                ),
             )
 
         bucket_prediction = prediction.prediction
@@ -183,7 +232,10 @@ class ToolResourcePredictor:
             duration_p90_ms=duration_p90_ms,
             resource_class=_resource_class_for_bucket(bucket_prediction.bucket_id),
             confidence=max(bucket_prediction.probability_by_bucket, default=0.0),
-            tool_resource=_tool_resource_prediction_payload(prediction),
+            tool_resource=_tool_resource_prediction_payload(
+                prediction,
+                continuous_predictions=continuous_predictions,
+            ),
         )
 
     def record_tool_started(self, request: ToolBeforeRequest) -> None:
@@ -198,8 +250,16 @@ class ToolResourcePredictor:
         if start is None and event.tool_call_id is not None:
             start = self._pop_start_by_tool_call_id(event.tool_call_id)
         observation = observation_from_completion(event, sample, repo=self.repo, start=start)
+        completed_call = completed_call_from_completion(
+            event,
+            sample,
+            repo=self.repo,
+            start=start,
+        )
+        if completed_call is not None:
+            self.continuous_kb.observe_completed_call(completed_call)
         if observation is None:
-            return 0
+            return 1 if completed_call is not None else 0
         self.kb.observe_completed_clause(observation)
         return 1
 
@@ -250,7 +310,55 @@ class ToolResourcePredictor:
             )
         except Exception:
             return 0
+        if isinstance(result.telemetry_artifact, dict):
+            for call in _stage2_completed_calls(
+                result.telemetry_artifact,
+                fallback_repo=self.repo,
+            ):
+                self.continuous_kb.observe_completed_call(call)
         return result.kb_observations_added
+
+    def _continuous_predictions_for_request(
+        self,
+        request: ToolBeforeRequest,
+        command: str | None,
+        ts_start: float,
+        ambient_before_mb: float | None = None,
+    ) -> dict[str, Any]:
+        query = ToolCallQuery(
+            repo=self.repo,
+            tool_name=request.tool_name,
+            command=command,
+            ts_start=ts_start,
+            ambient_before_mb=ambient_before_mb,
+        )
+        predictions: dict[str, Any] = {}
+        try:
+            self.continuous_kb._advance(query.ts_start)  # type: ignore[attr-defined]
+        except AttributeError:
+            # Historical RuntimeToolResourceKB exposes absorption through query().
+            try:
+                self.continuous_kb.query(query)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        for target in ("latency_ms", "peak_cpu_cores", "peak_memory_mb"):
+            try:
+                prediction = self.continuous_kb._predict_target(query, target)  # type: ignore[attr-defined]
+            except Exception as exc:
+                predictions[target] = {
+                    "target": target,
+                    "conditional_p90": None,
+                    "scope": None,
+                    "key_kind": None,
+                    "evidence_count": 0,
+                    "fallback_path": [],
+                    "note": f"unavailable: {exc}",
+                }
+                continue
+            predictions[target] = _target_prediction_payload(prediction)
+        return predictions
 
     def _pop_start_by_tool_call_id(self, tool_call_id: str) -> ToolBeforeRequest | None:
         for key, request in list(self._starts.items()):
@@ -264,6 +372,7 @@ class ToolResourcePredictor:
 class _LoadedTrace:
     tool_spans_seen: int
     observations: tuple[ClauseObservation, ...]
+    completed_calls: tuple[CompletedCall, ...]
 
 
 def load_openclaw_trace_observations(path: Path, *, repo: str) -> _LoadedTrace:
@@ -271,6 +380,7 @@ def load_openclaw_trace_observations(path: Path, *, repo: str) -> _LoadedTrace:
         raise ValueError("trace path is not a file")
     starts: dict[str, dict[str, Any]] = {}
     observations: list[ClauseObservation] = []
+    completed_calls: list[CompletedCall] = []
     tool_spans_seen = 0
     with path.open(encoding="utf-8-sig") as fh:
         for line_no, line in enumerate(fh, start=1):
@@ -295,7 +405,10 @@ def load_openclaw_trace_observations(path: Path, *, repo: str) -> _LoadedTrace:
             observation = _observation_from_tool_span(start, record, repo=repo)
             if observation is not None:
                 observations.append(observation)
-    return _LoadedTrace(tool_spans_seen, tuple(observations))
+            completed_call = _completed_call_from_tool_span(start, record, repo=repo)
+            if completed_call is not None:
+                completed_calls.append(completed_call)
+    return _LoadedTrace(tool_spans_seen, tuple(observations), tuple(completed_calls))
 
 
 def observation_from_completion(
@@ -330,6 +443,38 @@ def observation_from_completion(
         in_pipe=False,
         in_subst=False,
         pipeline_position=-1,
+    )
+
+
+def completed_call_from_completion(
+    event: ToolCompletedEvent,
+    sample: ToolRuntimeSample,
+    *,
+    repo: str,
+    start: ToolBeforeRequest | None = None,
+) -> CompletedCall | None:
+    if not event.succeeded:
+        return None
+    raw_params = start.raw_params if start is not None else _raw_params_from_result(event.raw_event, event.raw_result)
+    command = extract_command(raw_params)
+    ts_start = sample.started_at
+    ts_end = sample.ended_at
+    if ts_end < ts_start:
+        ts_end = ts_start
+    peak_memory_mb = _rss_mb(sample.rss_bytes_peak)
+    ambient_before_mb = _rss_mb(sample.rss_bytes_before)
+    return CompletedCall(
+        repo=repo,
+        tool_name=event.tool_name,
+        command=command,
+        ts_start=ts_start,
+        ts_end=ts_end,
+        censored=False,
+        peak_cpu_cores=sample.cpu_utilization_avg_cores,
+        peak_cpu_cores_eligible=sample.cpu_utilization_avg_cores is not None,
+        peak_memory_mb=peak_memory_mb,
+        peak_memory_mb_eligible=peak_memory_mb is not None and ambient_before_mb is not None,
+        ambient_before_mb=ambient_before_mb,
     )
 
 
@@ -386,19 +531,45 @@ def _observation_from_tool_span(
     )
 
 
+def _completed_call_from_tool_span(
+    start: dict[str, Any] | None,
+    end: dict[str, Any],
+    *,
+    repo: str,
+) -> CompletedCall | None:
+    status = end.get("status") if isinstance(end.get("status"), dict) else {}
+    if status.get("code") not in {"ok", "unknown"}:
+        return None
+    tool_name = end.get("name")
+    if not isinstance(tool_name, str) or not tool_name:
+        return None
+    duration_ms = _duration_ms(end)
+    if duration_ms is None or duration_ms < 0:
+        return None
+    ts_start, ts_end = _span_times(end, duration_ms)
+    raw_params = _raw_params_from_start(start)
+    command = extract_command(raw_params)
+    resources = end.get("resources") if isinstance(end.get("resources"), dict) else {}
+    peak_memory_mb = _rss_mb(resources.get("rss_peak_bytes"))
+    ambient_before_mb = _rss_mb(resources.get("memory_rss_bytes_before"))
+    peak_cpu_cores = _optional_float(resources.get("cpu_utilization_avg_cores"))
+    return CompletedCall(
+        repo=repo,
+        tool_name=tool_name,
+        command=command,
+        ts_start=ts_start,
+        ts_end=ts_end,
+        censored=False,
+        peak_cpu_cores=peak_cpu_cores,
+        peak_cpu_cores_eligible=peak_cpu_cores is not None,
+        peak_memory_mb=peak_memory_mb,
+        peak_memory_mb_eligible=peak_memory_mb is not None and ambient_before_mb is not None,
+        ambient_before_mb=ambient_before_mb,
+    )
+
+
 def _read_stage2_artifact(path: Path) -> dict[str, Any]:
-    try:
-        artifact = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"cannot read Stage-2 artifact: {exc}") from exc
-    if not isinstance(artifact, dict) or artifact.get("version") != 2:
-        raise ValueError("expected Stage-2 telemetry artifact version 2")
-    if artifact.get("mode") != "clause":
-        raise ValueError("expected clause telemetry mode")
-    calls = artifact.get("calls")
-    if not isinstance(calls, list):
-        raise ValueError("artifact calls must be a list")
-    return artifact
+    return _load_valid_artifact(path)
 
 
 def _stage2_observations(
@@ -416,48 +587,70 @@ def _stage2_observations(
     for call in artifact.get("calls", []):
         if not isinstance(call, dict) or call.get("eligible_for_kb") is not True:
             continue
+        observations.extend(
+            _observations_from_call(
+                repo,
+                call,
+                require_timestamps=False,
+            )
+        )
+    return observations
+
+
+def _stage2_completed_calls(
+    artifact: dict[str, Any],
+    *,
+    fallback_repo: str,
+) -> list[CompletedCall]:
+    provenance = artifact.get("provenance")
+    repo = (
+        provenance.get("repo")
+        if isinstance(provenance, dict) and isinstance(provenance.get("repo"), str)
+        else fallback_repo
+    )
+    calls: list[CompletedCall] = []
+    for call in artifact.get("calls", []):
+        if not isinstance(call, dict) or call.get("eligible_for_kb") is not True:
+            continue
         clauses = call.get("clauses")
         if not isinstance(clauses, list):
             continue
         for clause in clauses:
-            observation = _stage2_clause_observation(repo, clause)
-            if observation is not None:
-                observations.append(observation)
-    return observations
+            completed = _stage2_completed_call(repo, clause)
+            if completed is not None:
+                calls.append(completed)
+    return calls
 
 
-def _stage2_clause_observation(repo: str, row: Any) -> ClauseObservation | None:
+def _stage2_completed_call(repo: str, row: Any) -> CompletedCall | None:
     if not isinstance(row, dict):
         return None
     availability = row.get("availability")
-    if isinstance(availability, dict) and availability.get("latency") != "ok":
+    if not isinstance(availability, dict) or availability.get("latency") != "ok":
         return None
     latency_ms = _optional_float(row.get("latency_ms"))
-    bin_ = row.get("bin")
-    argv = row.get("argv")
-    if latency_ms is None or latency_ms < 0 or not isinstance(bin_, str) or not bin_:
-        return None
-    if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
+    if latency_ms is None:
         return None
     ts_start = _optional_float(row.get("ts_start"))
     ts_end = _optional_float(row.get("ts_end"))
     if ts_start is None or ts_end is None or ts_end < ts_start:
         ts_start = 0.0
         ts_end = latency_ms / 1000
-    return ClauseObservation(
+    argv = row.get("argv")
+    command = shlex.join(argv) if isinstance(argv, list) and all(isinstance(item, str) for item in argv) else None
+    peak_cpu_cores = _optional_float(row.get("peak_cpu_cores"))
+    return CompletedCall(
         repo=repo,
-        bin=bin_,
-        argv=tuple(argv),
+        tool_name="exec",
+        command=command,
         ts_start=ts_start,
         ts_end=ts_end,
-        latency_ms=latency_ms,
-        peak_cpu_cores=_optional_float(row.get("peak_cpu_cores")),
-        sampled_peak_rss_mb=_optional_float(row.get("sampled_peak_rss_mb")),
-        cpu_ns_cumulative=_optional_int(row.get("cpu_ns_cumulative")),
-        in_loop=bool(row.get("in_loop", False)),
-        in_pipe=bool(row.get("in_pipe", False)),
-        in_subst=bool(row.get("in_subst", False)),
-        pipeline_position=_optional_int(row.get("pipeline_position")) or -1,
+        censored=False,
+        peak_cpu_cores=peak_cpu_cores,
+        peak_cpu_cores_eligible=peak_cpu_cores is not None,
+        peak_memory_mb=None,
+        peak_memory_mb_eligible=False,
+        ambient_before_mb=None,
     )
 
 
@@ -567,12 +760,6 @@ def _optional_float(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
-def _optional_int(value: Any) -> int | None:
-    if not isinstance(value, int) or isinstance(value, bool):
-        return None
-    return value if value >= 0 else None
-
-
 def _rss_mb(value: Any) -> float | None:
     parsed = _optional_float(value)
     return None if parsed is None else parsed / (1024 * 1024)
@@ -617,6 +804,8 @@ def _resource_class_for_bucket(bucket_id: int) -> str:
 
 def _tool_resource_prediction_payload(
     prediction: CommandLatencyBucketPrediction,
+    *,
+    continuous_predictions: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     clause_prediction = prediction.prediction
     return {
@@ -637,6 +826,19 @@ def _tool_resource_prediction_payload(
             }
         ),
         "unavailable_reason": prediction.unavailable_reason,
+        "continuous_predictions": continuous_predictions or {},
+    }
+
+
+def _target_prediction_payload(prediction: TargetPrediction) -> dict[str, Any]:
+    return {
+        "target": prediction.target,
+        "conditional_p90": prediction.conditional_p90,
+        "scope": prediction.scope,
+        "key_kind": prediction.key_kind,
+        "evidence_count": prediction.evidence_count,
+        "fallback_path": list(prediction.fallback_path),
+        "note": prediction.note,
     }
 
 

@@ -33,6 +33,13 @@ Useful fields:
 - `output.content`: LLM output. When the model emits tool calls, this may be
   an object containing both `content` and `tool_calls`.
 - `input.requested_args`: tool input when `recordRawTrace: true`.
+- `prediction`: tool prediction captured before execution on tool
+  `span_start` records. This mirrors the `/v1/decisions/tool` response
+  `prediction`, including native `tool_resource` details when available.
+  `prediction.tool_resource.continuous_predictions` contains best-effort
+  non-MLP `RuntimeToolResourceKB` conditional-p90 estimates for
+  `latency_ms`, `peak_cpu_cores`, and `peak_memory_mb`; memory requires a
+  pre-call ambient memory anchor and otherwise reports an unavailable note.
 - `resources.attribution_status`: resource attribution status.
 - `resources.cpu_time_s`, `resources.rss_peak_bytes`: sampled resource data.
 - `resources.sampling_interval_ms`, `resources.sampling_point_count`,

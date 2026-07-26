@@ -9,7 +9,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from agent_scheduler.contracts.models import ModelEvent, ToolBeforeRequest, ToolCompletedEvent
+from agent_scheduler.contracts.models import (
+    ModelEvent,
+    ToolBeforeRequest,
+    ToolCompletedEvent,
+    ToolPrediction,
+)
 from agent_scheduler.monitoring.tool_runtime import ToolRuntimeSample
 
 
@@ -39,6 +44,7 @@ class AgentTestBenchTraceWriter:
         self._lock = threading.Lock()
         self._model_starts: dict[str, ModelEvent] = {}
         self._tool_starts: dict[str, ToolBeforeRequest] = {}
+        self._tool_predictions: dict[str, dict[str, Any]] = {}
         self._recent_proxy_calls: list[dict[str, Any]] = []
         self._seq_counters: dict[str, int] = {}
         self._files: dict[str, Path] = {}
@@ -91,17 +97,28 @@ class AgentTestBenchTraceWriter:
     def record_tool_started(self, event: ToolBeforeRequest) -> None:
         self._tool_starts[_tool_key(event.tool_call_id, event.event_id)] = event
 
+    def record_tool_prediction(
+        self,
+        event: ToolBeforeRequest,
+        prediction: ToolPrediction,
+    ) -> None:
+        self._tool_predictions[_tool_key(event.tool_call_id, event.event_id)] = (
+            prediction.model_dump(mode="json")
+        )
+
     def record_tool(self, event: ToolCompletedEvent, sample: ToolRuntimeSample) -> None:
-        start = self._pop_tool_start(event)
+        start_key, start = self._pop_tool_start(event)
+        prediction = self._pop_tool_prediction(event, start_key)
         tool_args = None if start is None else start.raw_params
         ts_start, ts_end = _tool_timestamps(sample, event.duration_ms)
-        self._record_tool_v6(event, sample, start, tool_args, ts_start, ts_end)
+        self._record_tool_v6(event, sample, start, prediction, tool_args, ts_start, ts_end)
 
     def _record_tool_v6(
         self,
         event: ToolCompletedEvent,
         sample: ToolRuntimeSample,
         start: ToolBeforeRequest | None,
+        prediction: dict[str, Any] | None,
         tool_args: Any,
         ts_start: float,
         ts_end: float,
@@ -161,6 +178,7 @@ class AgentTestBenchTraceWriter:
             "wall_time_ns": wall_start_ns,
             "monotonic_time_ns": mono_start_ns,
             "input": {"requested_args": tool_args},
+            "prediction": prediction,
             "execution": {
                 "mode": "launcher" if event.execution_id else "in_process_or_runtime_managed",
                 "execution_id": event.execution_id,
@@ -430,20 +448,34 @@ class AgentTestBenchTraceWriter:
             "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
 
-    def _pop_tool_start(self, event: ToolCompletedEvent) -> ToolBeforeRequest | None:
-        start = self._tool_starts.pop(_tool_key(event.tool_call_id, event.event_id), None)
+    def _pop_tool_start(self, event: ToolCompletedEvent) -> tuple[str | None, ToolBeforeRequest | None]:
+        event_key = _tool_key(event.tool_call_id, event.event_id)
+        start = self._tool_starts.pop(event_key, None)
         if start is not None or event.tool_call_id is not None:
-            return start
+            return event_key, start
         matches = [
             (key, value)
             for key, value in self._tool_starts.items()
             if value.tool_name == event.tool_name
         ]
         if len(matches) != 1:
-            return None
+            return None, None
         key, value = matches[0]
         self._tool_starts.pop(key, None)
-        return value
+        return key, value
+
+    def _pop_tool_prediction(
+        self,
+        event: ToolCompletedEvent,
+        start_key: str | None,
+    ) -> dict[str, Any] | None:
+        event_key = _tool_key(event.tool_call_id, event.event_id)
+        prediction = self._tool_predictions.pop(event_key, None)
+        if prediction is not None:
+            return prediction
+        if start_key is not None and start_key != event_key:
+            return self._tool_predictions.pop(start_key, None)
+        return None
 
     def _remember_proxy_call(self, record: dict[str, Any]) -> None:
         self._recent_proxy_calls.append(record)
