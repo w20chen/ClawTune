@@ -199,7 +199,9 @@ function launcherEnv(): Record<string, string> {
     "CLAW_CGROUP_ROOT",
     "CLAW_CGROUP_PATH",
     "CLAW_CGROUP_REQUIRED",
+    "CLAW_CGROUP_DEBUG",
     "CLAW_ENABLE_CGROUP",
+    "CLAW_LAUNCH_DEBUG",
     "CLAW_SCHEDULER_ENDPOINT",
     "OPENCLAW_SCHEDULER_ENDPOINT",
   ]) {

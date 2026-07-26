@@ -143,9 +143,18 @@ test("exec instrumentation drops shell startup env override keys", async () => {
 });
 
 test("exec instrumentation forwards launcher cgroup environment", async () => {
-  const previous = process.env.CLAW_CGROUP_ROOT;
-  const previousEndpoint = process.env.CLAW_SCHEDULER_ENDPOINT;
+  const names = [
+    "CLAW_CGROUP_ROOT",
+    "CLAW_CGROUP_REQUIRED",
+    "CLAW_CGROUP_DEBUG",
+    "CLAW_LAUNCH_DEBUG",
+    "CLAW_SCHEDULER_ENDPOINT"
+  ];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   process.env.CLAW_CGROUP_ROOT = "/sys/fs/cgroup/claw";
+  process.env.CLAW_CGROUP_REQUIRED = "1";
+  process.env.CLAW_CGROUP_DEBUG = "1";
+  process.env.CLAW_LAUNCH_DEBUG = "1";
   process.env.CLAW_SCHEDULER_ENDPOINT = "http://host.docker.internal:8765";
   const client = {
     async registerExecution() {
@@ -158,17 +167,17 @@ test("exec instrumentation forwards launcher cgroup environment", async () => {
     const result = await instrumentExecParams(event, {}, payload, decision, client, baseConfig);
 
     assert.equal(result.params.env.CLAW_CGROUP_ROOT, "/sys/fs/cgroup/claw");
+    assert.equal(result.params.env.CLAW_CGROUP_REQUIRED, "1");
+    assert.equal(result.params.env.CLAW_CGROUP_DEBUG, "1");
+    assert.equal(result.params.env.CLAW_LAUNCH_DEBUG, "1");
     assert.equal(result.params.env.CLAW_SCHEDULER_ENDPOINT, "http://host.docker.internal:8765");
   } finally {
-    if (previous === undefined) {
-      delete process.env.CLAW_CGROUP_ROOT;
-    } else {
-      process.env.CLAW_CGROUP_ROOT = previous;
-    }
-    if (previousEndpoint === undefined) {
-      delete process.env.CLAW_SCHEDULER_ENDPOINT;
-    } else {
-      process.env.CLAW_SCHEDULER_ENDPOINT = previousEndpoint;
+    for (const name of names) {
+      if (previous[name] === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = previous[name];
+      }
     }
   }
 });

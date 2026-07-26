@@ -144,6 +144,7 @@ falling back to PID attribution:
 ```bash
 export CLAW_CGROUP_REQUIRED=1
 export CLAW_CGROUP_DEBUG=1
+export CLAW_LAUNCH_DEBUG=1
 ```
 
 With cgroup enabled, `/v1/tools/recent` should report
@@ -151,7 +152,9 @@ With cgroup enabled, `/v1/tools/recent` should report
 `"resources":{"scope":"cgroup"}` for managed `exec` tools. If it still reports
 `"pid"` or `"unattributed"`, the launcher could not create or read the cgroup;
 check the debug error, cgroup v2 availability, and write permission on
-`/sys/fs/cgroup/claw`.
+`/sys/fs/cgroup/claw`. Exit code `125` means `claw-launch` failed before the
+payload command started; keep `CLAW_LAUNCH_DEBUG=1` enabled to print the
+underlying exception.
 
 Run:
 
