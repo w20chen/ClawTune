@@ -213,6 +213,7 @@ def _start_sidecar(
             "AGENT_SCHEDULER_POLICY": "observe-only",
             "AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER": "true",
             "AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX": _sandbox_container_prefix(workspace),
+            "AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED": "false",
         }
     )
     stdout = (trace_dir / "sidecar-stdout.txt").open("w", encoding="utf-8")
@@ -268,13 +269,31 @@ payload = {
     "lib_modules_exists": Path("/lib/modules").exists(),
 }
 try:
-    from tool_resource.telemetry import _bpf_runtime_diagnostics, _ensure_bcc_importable
+    from tool_resource.telemetry import (
+        _bpf_runtime_diagnostics,
+        _ensure_bcc_importable,
+        validate_clause_telemetry_runtime,
+    )
     _ensure_bcc_importable()
     import bcc
     payload["bcc_import"] = {"ok": True, "path": getattr(bcc, "__file__", None)}
     payload["bpf_runtime"] = _bpf_runtime_diagnostics()
+    try:
+        validate_clause_telemetry_runtime(
+            container_executable="docker",
+            concurrency=1,
+            workers=1,
+        )
+    except Exception as exc:
+        payload["stage2_ready"] = False
+        payload["stage2_disabled_reason"] = f"{type(exc).__name__}: {exc}"
+    else:
+        payload["stage2_ready"] = True
+        payload["stage2_disabled_reason"] = None
 except Exception as exc:
     payload["bcc_import"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    payload["stage2_ready"] = False
+    payload["stage2_disabled_reason"] = f"{type(exc).__name__}: {exc}"
 print(json.dumps(payload, indent=2))
 """
     result = subprocess.run(

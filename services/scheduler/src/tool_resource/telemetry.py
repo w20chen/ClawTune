@@ -115,6 +115,7 @@ def _bpf_runtime_diagnostics() -> dict[str, Any]:
     except ImportError:
         pass
     return {
+        "euid": os.geteuid() if hasattr(os, "geteuid") else None,
         "python": sys.executable,
         "bcc_file": bcc_file,
         "clang": shutil.which("clang"),
@@ -125,6 +126,33 @@ def _bpf_runtime_diagnostics() -> dict[str, Any]:
         "lib_modules_exists": Path("/lib/modules").exists(),
         "cgroup_v2": Path("/sys/fs/cgroup/cgroup.controllers").is_file(),
     }
+
+
+_BPF_PERMISSION_ERROR_PATTERNS = (
+    "operation not permitted",
+    "permission denied",
+    "failed to create bpf map",
+    "could not open bpf map",
+    "perf_event_open",
+)
+
+
+def _is_bpf_permission_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return any(pattern in message for pattern in _BPF_PERMISSION_ERROR_PATTERNS)
+
+
+def _bpf_setup_error_message(phase: str, exc: BaseException) -> str:
+    diagnostics = json.dumps(_bpf_runtime_diagnostics(), sort_keys=True)
+    detail = f"{type(exc).__name__}: {exc}"
+    if _is_bpf_permission_error(exc):
+        return (
+            f"{phase}: permission denied while creating BPF maps/probes/events; "
+            "Stage-2 clause telemetry requires root or the kernel capabilities "
+            "needed for BPF and perf_event access; "
+            f"detail={detail}; diagnostics={diagnostics}"
+        )
+    return f"{phase}: {detail}; diagnostics={diagnostics}"
 
 
 def _decode_symbol(value: Any) -> str:
@@ -2523,10 +2551,8 @@ class ClauseTelemetryCollector:
         except BaseException as exc:
             self._closed = True
             self._cleanup_status = "not_started"
-            diagnostics = json.dumps(_bpf_runtime_diagnostics(), sort_keys=True)
             raise RuntimeError(
-                f"BPF module compile failed: {type(exc).__name__}: {exc}; "
-                f"diagnostics={diagnostics}"
+                _bpf_setup_error_message("BPF module load failed", exc)
             ) from exc
         try:
             _attach_first_kprobe(
@@ -2600,7 +2626,7 @@ class ClauseTelemetryCollector:
             )
             self._perf_type = PerfType
             self._perf_config = PerfSWConfig
-        except BaseException:
+        except BaseException as exc:
             self._stop_poll.set()
             poller = getattr(self, "_poller", None)
             if poller is not None:
@@ -2608,7 +2634,9 @@ class ClauseTelemetryCollector:
             self._bpf.cleanup()
             self._closed = True
             self._cleanup_status = "ok"
-            raise
+            raise RuntimeError(
+                _bpf_setup_error_message("BPF collector attach failed", exc)
+            ) from exc
 
     @classmethod
     def unavailable(

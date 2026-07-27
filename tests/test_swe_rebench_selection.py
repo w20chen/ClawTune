@@ -774,6 +774,7 @@ def test_host_sandbox_sidecar_enables_docker_exec_observer(monkeypatch, tmp_path
     env = captured["env"]
     assert isinstance(env, dict)
     assert env["AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER"] == "true"
+    assert env["AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED"] == "false"
     assert env["AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX"] == _sandbox_container_prefix(workspace)
     assert str(tmp_path / "services" / "scheduler" / "src") in env["PYTHONPATH"]
 
