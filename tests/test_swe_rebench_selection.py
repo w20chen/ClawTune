@@ -386,6 +386,13 @@ def test_entrypoint_installs_stable_launcher_path() -> None:
     assert "python3 -m agent_scheduler.launcher" in _ENTRYPOINT_TEMPLATE
 
 
+def test_setup_installs_scheduler_runtime_dependencies() -> None:
+    from swe_rebench.prepare import _SETUP_TEMPLATE
+
+    assert "fastapi uvicorn pydantic psutil httpx prometheus-client numpy" in _SETUP_TEMPLATE
+    assert "import fastapi, uvicorn, pydantic, psutil, numpy" in _SETUP_TEMPLATE
+
+
 def test_docker_runner_config_sets_sandbox_container_prefix_placeholder(tmp_path: Path) -> None:
     _write_plugin_config(tmp_path)
 

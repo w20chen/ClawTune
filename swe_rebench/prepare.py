@@ -620,9 +620,9 @@ echo "[claw] openclaw $(openclaw --version 2>&1 | head -1)"
 # ── Sidecar Python deps ─────────────────────────────────────────
 echo "[claw] installing sidecar Python deps..."
 $_CLW_PIP install --quiet \
-    fastapi uvicorn pydantic psutil httpx prometheus-client \
+    fastapi uvicorn pydantic psutil httpx prometheus-client numpy \
     2>&1 | tail -1
-$_CLW_PYTHON -c "import fastapi, uvicorn, pydantic, psutil; print('[claw] sidecar deps OK')"
+$_CLW_PYTHON -c "import fastapi, uvicorn, pydantic, psutil, numpy; print('[claw] sidecar deps OK')"
 
 # ── Done ────────────────────────────────────────────────────────
 touch "$SETUP_DONE"
