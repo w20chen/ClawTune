@@ -24,6 +24,11 @@ python -m swe_rebench.runner run --config swe_rebench/config.yaml \
   --dataset swe_rebench/tasks.json --sample 10 --parallelism 4 --export
 ```
 
+For broad Docker compatibility, leave `docker.cgroup_required: false` unless a
+container probe confirms `/sys/fs/cgroup/claw` can be created. With the default
+false value, cgroup sampling is best-effort and can borrow the task container's
+own cgroup when cgroupfs is read-only.
+
 ## Validation
 
 ```bash

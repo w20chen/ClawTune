@@ -144,7 +144,7 @@ def run_container(
         "LLM_UPSTREAM_BASE_URL": llm_upstream_url,
         "LLM_MODEL": llm_model,
         "OPENCLAW_MODEL_REF": openclaw_model_ref,
-        "CLAW_CGROUP_REQUIRED": "1",
+        "CLAW_CGROUP_REQUIRED": "1" if config.cgroup_required else "0",
         "CLAW_CGROUP_ROOT": "/sys/fs/cgroup/claw",
         # Enable DockerExecObserver so read/write/edit tools get
         # independent PID/cgroup attribution via docker-exec events.

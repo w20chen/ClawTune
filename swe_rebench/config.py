@@ -77,6 +77,7 @@ class DockerConfig:
     privileged: bool = False
     cgroupns_mode: str = ""
     cgroup_mount_rw: bool = False
+    cgroup_required: bool = False
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DockerConfig":
@@ -91,6 +92,7 @@ class DockerConfig:
             privileged=_as_bool(d.get("privileged", False)),
             cgroupns_mode=str(d.get("cgroupns_mode", "")),
             cgroup_mount_rw=_as_bool(d.get("cgroup_mount_rw", False)),
+            cgroup_required=_as_bool(d.get("cgroup_required", False)),
         )
 
 

@@ -403,6 +403,7 @@ def test_runner_config_enables_complete_cgroup_sampling() -> None:
     assert config.docker.privileged is True
     assert config.docker.cgroupns_mode == "host"
     assert config.docker.cgroup_mount_rw is True
+    assert config.docker.cgroup_required is False
 
 
 def test_runner_config_parses_host_openclaw_sandbox_mode(tmp_path: Path) -> None:
@@ -805,6 +806,7 @@ def test_runner_config_parses_docker_bool_strings(tmp_path: Path) -> None:
 docker:
   privileged: "false"
   cgroup_mount_rw: "true"
+  cgroup_required: "true"
 """,
         encoding="utf-8",
     )
@@ -813,6 +815,7 @@ docker:
 
     assert config.docker.privileged is False
     assert config.docker.cgroup_mount_rw is True
+    assert config.docker.cgroup_required is True
 
 
 def test_task_artifacts_summarizes_patch_and_result_summary(tmp_path: Path) -> None:
@@ -954,6 +957,51 @@ def test_docker_cli_uses_wait_exit_code_with_rm_container(monkeypatch, tmp_path:
     docker_run = calls[0]
     expected_prefix = sandbox_container_prefix("docker:task-1")
     assert f"AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX={expected_prefix}" in docker_run
+    assert "CLAW_CGROUP_REQUIRED=0" in docker_run
+
+
+def test_docker_cli_sets_required_cgroup_only_when_configured(monkeypatch, tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    class Result:
+        def __init__(self, stdout: str = "") -> None:
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:3] == ["docker", "run", "--rm"]:
+            return Result(stdout="abc123\n")
+        if cmd == ["docker", "wait", "abc123"]:
+            return Result(stdout="0\n")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+docker:
+  cgroup_required: true
+""",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+
+    run_container(
+        client=None,
+        image="image:latest",
+        task_id="task-1",
+        bundle_dir=tmp_path,
+        trace_dir=tmp_path / "trace",
+        problem_statement="fix",
+        config=config.docker,
+        llm_api_key="sk-test",
+        llm_upstream_url="https://example.invalid",
+        timeout_seconds=10,
+    )
+
+    assert "CLAW_CGROUP_REQUIRED=1" in calls[0]
 
 
 def test_require_llm_api_key_reports_default_file(tmp_path: Path, monkeypatch) -> None:

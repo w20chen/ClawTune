@@ -59,6 +59,11 @@ docker:
   privileged: false
   cgroupns_mode: ""
   cgroup_mount_rw: false
+  # Keep false for broad compatibility. When false, cgroup sampling is
+  # best-effort and falls back to the container's own cgroup if cgroupfs is not
+  # writable. Set true only when the probe confirms /sys/fs/cgroup/claw can be
+  # created and you want the run to fail hard otherwise.
+  cgroup_required: false
 
 # ── Batch Execution ───────────────────────────────────────────────
 batch:
