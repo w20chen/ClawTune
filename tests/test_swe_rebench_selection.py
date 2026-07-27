@@ -865,6 +865,44 @@ def test_runner_trace_reset_falls_back_to_docker_on_permission_error(
     assert "task-image:latest" in cleanup_cmd
 
 
+def test_runner_trace_reset_falls_back_to_docker_on_directory_not_empty(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    trace_root = tmp_path / "traces"
+    trace_dir = trace_root / "task-1"
+    trace_dir.mkdir(parents=True)
+    calls: list[list[str]] = []
+
+    def fake_rmtree(path, **kwargs):
+        raise OSError(39, "Directory not empty", str(path / "tool-resource"))
+
+    def fake_which(name: str):
+        return "/usr/bin/docker" if name == "docker" else None
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return Result()
+
+    monkeypatch.setattr("swe_rebench.runner.shutil.rmtree", fake_rmtree)
+    monkeypatch.setattr("swe_rebench.host_sandbox.shutil.which", fake_which)
+    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+
+    _reset_task_trace_dir(trace_root, trace_dir, docker_cleanup_image="task-image:latest")
+
+    assert calls
+    cleanup_cmd = calls[0]
+    assert cleanup_cmd[:3] == ["/usr/bin/docker", "run", "--rm"]
+    assert f"TARGET={trace_dir.name}" in cleanup_cmd
+    assert str(trace_dir.parent.resolve()) + ":/host_parent" in cleanup_cmd
+    assert "task-image:latest" in cleanup_cmd
+
+
 def test_runner_config_parses_docker_bool_strings(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

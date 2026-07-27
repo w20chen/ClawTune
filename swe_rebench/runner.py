@@ -31,6 +31,7 @@ Or all-in-one::
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import shutil
@@ -552,12 +553,18 @@ def _reset_task_trace_dir(
     if target.exists():
         try:
             shutil.rmtree(target, onerror=_chmod_and_retry)
-        except PermissionError:
-            if docker_cleanup_image is None:
+        except OSError as exc:
+            if not _can_retry_trace_cleanup_with_docker(exc, docker_cleanup_image):
                 raise
             _reset_directory_with_docker(target, docker_cleanup_image)
             return
     target.mkdir(parents=True, exist_ok=True)
+
+
+def _can_retry_trace_cleanup_with_docker(exc: OSError, docker_cleanup_image: str | None) -> bool:
+    if docker_cleanup_image is None:
+        return False
+    return isinstance(exc, PermissionError) or exc.errno in {errno.ENOTEMPTY, 39}
 
 
 def _require_llm_api_key(config: RunnerConfig) -> None:
