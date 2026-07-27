@@ -273,6 +273,8 @@ def _task_artifacts(trace_dir: Path | None) -> dict[str, Any]:
         "result_summary.json",
         "cgroup_probe.json",
         "phase3.log",
+        "sidecar.log",
+        "container.log",
     ):
         path = trace_dir / name
         if not path.exists():

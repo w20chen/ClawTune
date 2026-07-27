@@ -260,7 +260,8 @@ $_CLW_PIP install -e . --quiet 2>/dev/null || $_CLW_PIP install . --quiet 2>/dev
 
 # Start sidecar
 PYTHONPATH=src $_CLW_PYTHON -m agent_scheduler.main \
-    --host 127.0.0.1 --port "$SIDECAR_PORT" &
+    --host 127.0.0.1 --port "$SIDECAR_PORT" \
+    > "$TRACE_DIR/sidecar.log" 2>&1 &
 SIDECAR_PID=$!
 echo "[claw] sidecar PID=$SIDECAR_PID"
 
@@ -290,6 +291,11 @@ for i in $(seq 1 60); do
 done
 if [ "$READY" -eq 0 ]; then
     echo "[claw] FATAL: sidecar not ready after 60s"
+    {
+        echo ""
+        echo "=== sidecar readiness failure ==="
+        ps -p "$SIDECAR_PID" -o pid,ppid,stat,cmd || true
+    } >> "$TRACE_DIR/sidecar.log" 2>&1 || true
     kill "$SIDECAR_PID" 2>/dev/null || true
     exit 1
 fi

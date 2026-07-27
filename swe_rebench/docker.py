@@ -227,6 +227,7 @@ def _run_container_sdk(
             exit_code = 124
             error = f"container_timeout_or_wait_failed: {exc}"
         finally:
+            _write_sdk_container_log(container, trace_dir)
             try:
                 container.remove(force=True)
             except Exception:
@@ -263,7 +264,7 @@ def _run_container_cli(
     """Run via ``docker`` CLI as fallback."""
     import subprocess
 
-    cmd = ["docker", "run", "--rm", "--detach"]
+    cmd = ["docker", "run", "--detach"]
 
     # Volumes
     for host_path, vol_cfg in volumes.items():
@@ -307,9 +308,7 @@ def _run_container_cli(
         container_id = result.stdout.strip()
         _log(f"[{task_id}] container {container_id[:12]} started (CLI fallback)")
 
-        # Wait for container.  Because the container was started with --rm,
-        # docker wait is the reliable source of the exit code; inspect may
-        # race with auto-removal after the process exits.
+        # Wait for container, then capture logs before removing it.
         wait_cmd = ["docker", "wait", container_id]
         wait_result: subprocess.CompletedProcess[str]
         if timeout_seconds > 0:
@@ -325,6 +324,8 @@ def _run_container_cli(
                 _log(f"[{task_id}] timeout, killing container")
                 subprocess.run(["docker", "kill", container_id], capture_output=True)
                 subprocess.run(["docker", "wait", container_id], capture_output=True, text=True)
+                _write_cli_container_log(container_id, trace_dir)
+                subprocess.run(["docker", "rm", "-f", container_id], capture_output=True, text=True)
                 duration = time.monotonic() - started
                 return ContainerResult(
                     task_id=task_id, image=image, exit_code=124,
@@ -337,6 +338,8 @@ def _run_container_cli(
         else:
             wait_result = subprocess.run(wait_cmd, capture_output=True, text=True, check=True)
         exit_code = int(wait_result.stdout.strip())
+        _write_cli_container_log(container_id, trace_dir)
+        subprocess.run(["docker", "rm", "-f", container_id], capture_output=True, text=True)
 
     except subprocess.CalledProcessError as exc:
         _log(f"[{task_id}] CLI error: {exc}")
@@ -363,6 +366,38 @@ def _find_traces(directory: Path) -> list[Path]:
     if not directory.exists():
         return []
     return sorted(directory.glob("*.jsonl"))
+
+
+def _write_sdk_container_log(container: Any, trace_dir: Path) -> None:
+    try:
+        raw = container.logs(stdout=True, stderr=True, timestamps=False)
+    except Exception as exc:
+        (trace_dir / "container.log").write_text(f"cannot read container logs: {exc}\n", encoding="utf-8")
+        return
+    if isinstance(raw, bytes):
+        text = raw.decode("utf-8", errors="replace")
+    else:
+        text = str(raw)
+    (trace_dir / "container.log").write_text(text, encoding="utf-8")
+
+
+def _write_cli_container_log(container_id: str, trace_dir: Path) -> None:
+    import subprocess
+
+    result = subprocess.run(
+        ["docker", "logs", container_id],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    text = ""
+    if result.stdout:
+        text += result.stdout
+    if result.stderr:
+        text += result.stderr
+    if not text and result.returncode != 0:
+        text = f"docker logs failed exit={result.returncode}\n"
+    (trace_dir / "container.log").write_text(text, encoding="utf-8")
 
 
 def _log(msg: str) -> None:

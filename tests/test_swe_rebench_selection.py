@@ -365,6 +365,7 @@ def test_entrypoint_uses_runtime_llm_env_and_writes_task_manifest() -> None:
     assert 'agent-cwd.txt' in _ENTRYPOINT_TEMPLATE
     assert 'agent_prompt.txt' in _ENTRYPOINT_TEMPLATE
     assert 'agent-stdout.txt' in _ENTRYPOINT_TEMPLATE
+    assert 'sidecar.log' in _ENTRYPOINT_TEMPLATE
     assert 'model.patch' in _ENTRYPOINT_TEMPLATE
     assert 'result_summary.json' in _ENTRYPOINT_TEMPLATE
     assert 'cgroup_probe.json' in _ENTRYPOINT_TEMPLATE
@@ -822,6 +823,8 @@ def test_task_artifacts_summarizes_patch_and_result_summary(tmp_path: Path) -> N
     (tmp_path / "model.patch").write_text("diff --git a/a b/a\n", encoding="utf-8")
     (tmp_path / "agent-cwd.txt").write_text("/testbed\n", encoding="utf-8")
     (tmp_path / "agent-stdout.txt").write_text("done\n", encoding="utf-8")
+    (tmp_path / "sidecar.log").write_text("ready\n", encoding="utf-8")
+    (tmp_path / "container.log").write_text("container done\n", encoding="utf-8")
     (tmp_path / "result_summary.json").write_text(
         json.dumps({"has_patch": True, "patch_bytes": 19}),
         encoding="utf-8",
@@ -832,6 +835,8 @@ def test_task_artifacts_summarizes_patch_and_result_summary(tmp_path: Path) -> N
     assert artifacts["model.patch"]["has_diff"] is True
     assert artifacts["agent-cwd.txt"]["preview"] == "/testbed\n"
     assert artifacts["agent-stdout.txt"]["preview"] == "done\n"
+    assert artifacts["sidecar.log"]["bytes"] == 7
+    assert artifacts["container.log"]["bytes"] == 16
     assert artifacts["result_summary.json"]["summary"]["has_patch"] is True
 
 
@@ -928,10 +933,14 @@ def test_docker_cli_uses_wait_exit_code_with_rm_container(monkeypatch, tmp_path:
 
     def fake_run(cmd, **kwargs):
         calls.append(list(cmd))
-        if cmd[:3] == ["docker", "run", "--rm"]:
+        if cmd[:3] == ["docker", "run", "--detach"]:
             return Result(stdout="abc123\n")
         if cmd == ["docker", "wait", "abc123"]:
             return Result(stdout="7\n")
+        if cmd == ["docker", "logs", "abc123"]:
+            return Result(stdout="container output\n")
+        if cmd == ["docker", "rm", "-f", "abc123"]:
+            return Result(stdout="abc123\n")
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr("subprocess.run", fake_run)
@@ -958,6 +967,7 @@ def test_docker_cli_uses_wait_exit_code_with_rm_container(monkeypatch, tmp_path:
     expected_prefix = sandbox_container_prefix("docker:task-1")
     assert f"AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX={expected_prefix}" in docker_run
     assert "CLAW_CGROUP_REQUIRED=0" in docker_run
+    assert (tmp_path / "trace" / "container.log").read_text(encoding="utf-8") == "container output\n"
 
 
 def test_docker_cli_sets_required_cgroup_only_when_configured(monkeypatch, tmp_path: Path) -> None:
@@ -971,10 +981,14 @@ def test_docker_cli_sets_required_cgroup_only_when_configured(monkeypatch, tmp_p
 
     def fake_run(cmd, **kwargs):
         calls.append(list(cmd))
-        if cmd[:3] == ["docker", "run", "--rm"]:
+        if cmd[:3] == ["docker", "run", "--detach"]:
             return Result(stdout="abc123\n")
         if cmd == ["docker", "wait", "abc123"]:
             return Result(stdout="0\n")
+        if cmd == ["docker", "logs", "abc123"]:
+            return Result(stdout="")
+        if cmd == ["docker", "rm", "-f", "abc123"]:
+            return Result(stdout="abc123\n")
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr("subprocess.run", fake_run)
