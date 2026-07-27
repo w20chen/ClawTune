@@ -1,6 +1,9 @@
 # OpenClaw Agent Scheduler
 
-[![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/w20chen/claw)
+[![OpenClaw](https://img.shields.io/badge/OpenClaw-%E2%89%A52026.7.1-6e40c9.svg)](https://openclaw.ai/)
+[![Node.js](https://img.shields.io/badge/Node.js-24-green.svg?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/w20chen/claw)
 
 OpenClaw Agent Scheduler is an OpenClaw plugin plus a Python sidecar. It records
 OpenClaw model/tool traces and per-tool resource usage. It also includes a
