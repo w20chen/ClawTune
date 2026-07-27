@@ -132,6 +132,8 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         "process_tree_tool_span_ends": 0,
         "attributed_tool_span_ends": 0,
         "failed_tool_span_ends": 0,
+        "launcher_tool_resource_span_ends": 0,
+        "launcher_tool_resource_eligible_span_ends": 0,
         "warnings": [],
     }
     try:
@@ -169,17 +171,21 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                     report["process_tree_tool_span_ends"] += 1
                 if resources.get("attribution_status") in {"attributed", "partially_attributed"}:
                     report["attributed_tool_span_ends"] += 1
-                if status_code == "ok" and output_exit_code not in (None, 0):
+                if status_code in {"error", "timeout", "cancelled"} or output_exit_code not in (None, 0):
                     report["failed_tool_span_ends"] += 1
                 if _nested_get(record, ("execution", "mode")) == "launcher":
                     report["launcher_tool_span_ends"] += 1
+                    tool_resource = _nested_get(record, ("execution", "tool_resource"))
+                    if isinstance(tool_resource, dict):
+                        report["launcher_tool_resource_span_ends"] += 1
+                        if tool_resource.get("kb_observations_added", 0):
+                            report["launcher_tool_resource_eligible_span_ends"] += 1
                     if resources.get("scope") == "cgroup":
                         report["launcher_cgroup_tool_span_ends"] += 1
                     if resources.get("attribution_status") in {"attributed", "partially_attributed"}:
                         report["launcher_attributed_tool_span_ends"] += 1
                     if (
-                        resources.get("scope") not in {"cgroup", "process_tree"}
-                        and resources.get("attribution_status") == "unattributed"
+                        resources.get("attribution_status") == "unattributed"
                     ):
                         report["unattributed_launcher_tool_span_ends"] += 1
         if kind == "llm" or "model" in span_name or record.get("action_type") == "llm_call":
@@ -194,7 +200,9 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
     if report["launcher_tool_span_ends"] and not report["launcher_cgroup_tool_span_ends"]:
         report["warnings"].append("launcher tool spans have no cgroup resource samples")
     if report["failed_tool_span_ends"]:
-        report["warnings"].append("tool span status disagrees with non-zero exit code")
+        report["warnings"].append("trace contains failed tool spans")
+    if report["launcher_tool_span_ends"] and not report["launcher_tool_resource_span_ends"]:
+        report["warnings"].append("launcher tool spans have no Stage-2 tool-resource telemetry")
     return report
 
 
@@ -215,16 +223,36 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         int(item.get("unattributed_launcher_tool_span_ends", 0))
         for item in trace_inspection
     )
+    launcher_tool_resource_span_ends = sum(
+        int(item.get("launcher_tool_resource_span_ends", 0))
+        for item in trace_inspection
+    )
+    launcher_tool_resource_eligible_span_ends = sum(
+        int(item.get("launcher_tool_resource_eligible_span_ends", 0))
+        for item in trace_inspection
+    )
     return {
         "tool_span_ends": tool_span_ends,
         "launcher_tool_span_ends": launcher_tool_span_ends,
         "launcher_attributed_tool_span_ends": launcher_attributed_tool_span_ends,
         "launcher_cgroup_tool_span_ends": launcher_cgroup_tool_span_ends,
+        "launcher_tool_resource_span_ends": launcher_tool_resource_span_ends,
+        "launcher_tool_resource_eligible_span_ends": launcher_tool_resource_eligible_span_ends,
         "attributed_tool_span_ends": attributed_tool_span_ends,
         "cgroup_tool_span_ends": cgroup_tool_span_ends,
         "unattributed_launcher_tool_span_ends": unattributed_launcher_tool_span_ends,
         "cgroup_coverage_ratio": (
             round(launcher_cgroup_tool_span_ends / launcher_tool_span_ends, 3)
+            if launcher_tool_span_ends
+            else None
+        ),
+        "launcher_attribution_ratio": (
+            round(launcher_attributed_tool_span_ends / launcher_tool_span_ends, 3)
+            if launcher_tool_span_ends
+            else None
+        ),
+        "launcher_tool_resource_ratio": (
+            round(launcher_tool_resource_span_ends / launcher_tool_span_ends, 3)
             if launcher_tool_span_ends
             else None
         ),

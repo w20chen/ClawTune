@@ -319,6 +319,9 @@ class ToolResourcePredictor:
     ) -> bool:
         if execution_id in self._runs_by_execution_id:
             return False
+        previous = self._telemetry_by_execution_id.get(execution_id)
+        if previous is not None and previous.started:
+            return False
         if self.artifact_dir is None or not container_id:
             reason = (
                 "artifact_dir_unconfigured"

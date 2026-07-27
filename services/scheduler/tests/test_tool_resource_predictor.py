@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shlex
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,15 @@ def _test_parse_command(command: str) -> dict:
             continue
         clauses.append({"bin": Path(argv[0]).name, "argv": argv})
     return {"clauses": clauses, "parse_failed": not clauses}
+
+
+class _FakeToolResourceSDK:
+    def __init__(self) -> None:
+        self.started: list[tuple[str, str, str]] = []
+
+    def start_command(self, context, tool_call_id: str, command: str):
+        self.started.append((context.container_id, tool_call_id, command))
+        return SimpleNamespace(tool_call_id=tool_call_id)
 
 
 @pytest.fixture(autouse=True)
@@ -101,6 +111,35 @@ def _write_trace(
         "\n".join(json.dumps(record, separators=(",", ":")) for record in records) + "\n",
         encoding="utf-8",
     )
+
+
+def test_predictor_retries_stage2_after_container_id_arrives(tmp_path: Path) -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0)),
+        repo="repo-1",
+        artifact_dir=tmp_path / "tool-resource",
+    )
+    fake_sdk = _FakeToolResourceSDK()
+    predictor._sdk = fake_sdk  # type: ignore[assignment]
+
+    assert not predictor.begin_execution(
+        execution_id="exec-1",
+        tool_call_id="call-1",
+        command="echo hi && true",
+        container_id=None,
+        repo="repo-1",
+    )
+    assert predictor.begin_execution(
+        execution_id="exec-1",
+        tool_call_id="call-1",
+        command="echo hi && true",
+        container_id="a" * 64,
+        repo="repo-1",
+    )
+
+    assert fake_sdk.started == [("a" * 64, "call-1", "echo hi && true")]
 
 
 def test_openclaw_trace_v6_loads_as_tool_resource_observations(tmp_path: Path) -> None:

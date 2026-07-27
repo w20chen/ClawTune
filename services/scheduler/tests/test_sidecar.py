@@ -737,6 +737,84 @@ def test_exec_root_cgroup_scope_falls_back_to_shared_sandbox(tmp_path: Path) -> 
     assert tool_end["resources"]["coverage_reason"] == "shared_sandbox_container"
 
 
+def test_stage2_execution_waits_for_sandbox_container_scope(tmp_path: Path) -> None:
+    state = build_state(SchedulerConfig(trace_dir=tmp_path / "traces"))
+    client = TestClient(create_app(state))
+    begin_calls: list[dict[str, object]] = []
+
+    def begin_execution(**kwargs):
+        begin_calls.append(kwargs)
+        return True
+
+    state.predictor.begin_execution = begin_execution  # type: ignore[method-assign]
+
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-launcher-exec",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi && true",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"mode": "off"},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": os.getpid(),
+        },
+    ).json()
+    assert begin_calls == []
+
+    client.post(
+        "/v1/runtime/sandbox-scope",
+        json={
+            "kind": "cgroup-v2",
+            "execution_id": None,
+            "pid": os.getpid(),
+            "root_pid": os.getpid(),
+            "process_start_time": None,
+            "root_starttime_ticks": None,
+            "cgroup_path": str(tmp_path / "sandbox-cgroup"),
+            "pid_namespace_inode": None,
+            "container_id": "b" * 64,
+            "include_children": True,
+            "source": "openclaw-sandbox",
+            "attribution_source": "shared-sandbox-container",
+        },
+    )
+    client.post(
+        "/v2/executions/call-exec/started",
+        json={
+            "update_token": claim["update_token"],
+            "launcher_pid": os.getpid(),
+            "child_pid": os.getpid(),
+            "process_starttime_ticks": 123,
+            "cgroup_path": str(tmp_path / "call-cgroup"),
+            "pid_namespace_inode": 456,
+            "container_id": None,
+        },
+    )
+
+    assert begin_calls == [
+        {
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "command": "echo hi && true",
+            "container_id": "b" * 64,
+            "repo": "openclaw",
+        }
+    ]
+
+
 def test_exec_completion_uses_registered_launcher_scope(tmp_path: Path) -> None:
     cgroup = tmp_path / "launcher-cgroup"
     cgroup.mkdir()

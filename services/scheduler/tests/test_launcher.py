@@ -84,6 +84,20 @@ def test_launcher_reports_container_id_from_environment(monkeypatch) -> None:
     assert launcher._detect_container_id() == "a" * 64
 
 
+def test_launcher_reports_container_id_from_self_cgroup(monkeypatch) -> None:
+    monkeypatch.delenv("CLAW_SANDBOX_CONTAINER_ID", raising=False)
+    monkeypatch.delenv("AGENT_SCHEDULER_SANDBOX_CONTAINER_ID", raising=False)
+    container_id = "b" * 64
+
+    def fake_read_text(self, *args, **kwargs):
+        assert str(self).replace("\\", "/") == "/proc/self/cgroup"
+        return f"0::/system.slice/docker-{container_id}.scope\n"
+
+    monkeypatch.setattr(launcher.Path, "read_text", fake_read_text)
+
+    assert launcher._detect_container_id() == container_id
+
+
 def test_launcher_prebinds_cgroup_before_spawning_payload(monkeypatch, tmp_path) -> None:
     events: list[str] = []
     posts: list[tuple[str, dict[str, Any]]] = []

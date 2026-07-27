@@ -66,6 +66,13 @@ cd packages/openclaw-plugin && npm test && npm run typecheck
   cannot run directly in this Windows sandbox because pytest tries to create
   `C:\Users\29068\.pytest-tmp`, which is outside the writable workspace; use
   `--basetemp .pytest-tmp-root`.
+- `python -m pytest services/scheduler/tests/test_tool_resource_predictor.py::test_predictor_retries_stage2_after_container_id_arrives services/scheduler/tests/test_sidecar.py::test_stage2_execution_waits_for_sandbox_container_scope tests/test_swe_rebench_runner_inspection.py -q`
+  cannot run directly in this Windows sandbox because pytest tries to create
+  `C:\Users\29068\.pytest-tmp`, which is outside the writable workspace; rerun
+  with `--basetemp .pytest-tmp-root`.
+- `python -m pytest --basetemp C:\tmp\claw-pytest services/scheduler/tests/test_tool_resource_predictor.py::test_predictor_retries_stage2_after_container_id_arrives services/scheduler/tests/test_sidecar.py::test_stage2_execution_waits_for_sandbox_container_scope tests/test_swe_rebench_runner_inspection.py -q`
+  cannot run in this sandbox because creating `C:\tmp\claw-pytest` is denied;
+  use a basetemp inside the repository, such as `.pytest-tmp-root`.
 - The Linux cgroup v2 migration probe and `systemd-run --user --scope -p
   Delegate=yes ... openclaw agent ...` validation cannot run in this Windows
   PowerShell workspace; they must be run on the Linux host/container where

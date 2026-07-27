@@ -420,6 +420,12 @@ def _detect_container_id() -> str | None:
         detected = _normalize_container_id(value)
         if detected is not None:
             return detected
+    try:
+        detected = _container_id_from_text(Path("/proc/self/cgroup").read_text(encoding="utf-8"))
+    except OSError:
+        detected = None
+    if detected is not None:
+        return detected
     return None
 
 
@@ -434,7 +440,7 @@ def _normalize_container_id(value: str | None) -> str | None:
 
 def _container_id_from_text(value: str) -> str | None:
     for part in value.replace("\\", "/").split("/"):
-        token = part
+        token = part.strip()
         for prefix in ("docker-", "cri-containerd-", "crio-"):
             if token.startswith(prefix):
                 token = token[len(prefix):]
