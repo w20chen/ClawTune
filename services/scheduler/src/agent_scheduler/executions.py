@@ -62,6 +62,14 @@ class ExecutionRegistry:
         self._sweep()
         return self._by_execution_id.get(execution_id)
 
+    def active(self) -> list[ExecutionRecord]:
+        self._sweep()
+        return [
+            record
+            for record in self._by_execution_id.values()
+            if record.claimed and record.exit_code is None and record.signal is None
+        ]
+
     def claim(self, request: ExecutionClaimRequest) -> ExecutionClaimResponse:
         self._sweep()
         record = self._by_execution_id.get(request.execution_id)

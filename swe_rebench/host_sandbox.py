@@ -551,10 +551,12 @@ def _discover_sandbox_scope_loop(
     if openclaw is None or docker is None:
         return
     env = _openclaw_env(openclaw_home, sidecar_port, config, workspace)
+    prefix = _sandbox_container_prefix(workspace)
     seen: set[str] = set()
     while not stop_event.is_set():
         try:
             container_ids = _openclaw_sandbox_container_ids(openclaw, env)
+            container_ids.extend(_docker_sandbox_container_ids(docker, prefix))
             for container_id in container_ids:
                 if container_id in seen:
                     continue
@@ -569,7 +571,7 @@ def _discover_sandbox_scope_loop(
                 )
         except Exception as exc:
             _write_text(trace_dir / "sandbox_scope_discovery_last_error.txt", str(exc) + "\n")
-        stop_event.wait(1.0)
+        stop_event.wait(0.1)
 
 
 def _openclaw_sandbox_container_ids(openclaw: str, env: dict[str, str]) -> list[str]:
@@ -593,6 +595,21 @@ def _openclaw_sandbox_container_ids(openclaw: str, env: dict[str, str]) -> list[
                 ids.append(value)
                 break
     return list(dict.fromkeys(ids))
+
+
+def _docker_sandbox_container_ids(docker: str, prefix: str) -> list[str]:
+    result = subprocess.run(
+        [docker, "ps", "-q", "--filter", f"name={prefix}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return []
+    return [
+        line.strip()
+        for line in result.stdout.splitlines()
+        if _looks_like_container_id(line.strip())
+    ]
 
 
 def _docker_container_scope(docker: str, container_id: str) -> dict[str, Any] | None:
@@ -649,6 +666,9 @@ def _post_sandbox_scope(sidecar_port: int, scope: dict[str, Any]) -> None:
         method="POST",
         headers={"content-type": "application/json"},
     )
+    bearer = os.environ.get("AGENT_SCHEDULER_TOKEN") or os.environ.get("OPENCLAW_SCHEDULER_TOKEN")
+    if bearer:
+        request.add_header("authorization", f"Bearer {bearer}")
     with urllib.request.urlopen(request, timeout=2):
         pass
 

@@ -132,6 +132,7 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         "process_tree_tool_span_ends": 0,
         "attributed_tool_span_ends": 0,
         "failed_tool_span_ends": 0,
+        "status_exit_code_disagreements": 0,
         "launcher_tool_resource_span_ends": 0,
         "launcher_tool_resource_eligible_span_ends": 0,
         "warnings": [],
@@ -171,6 +172,8 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                     report["process_tree_tool_span_ends"] += 1
                 if resources.get("attribution_status") in {"attributed", "partially_attributed"}:
                     report["attributed_tool_span_ends"] += 1
+                if status_code == "ok" and output_exit_code not in (None, 0):
+                    report["status_exit_code_disagreements"] += 1
                 if status_code in {"error", "timeout", "cancelled"} or output_exit_code not in (None, 0):
                     report["failed_tool_span_ends"] += 1
                 if _nested_get(record, ("execution", "mode")) == "launcher":
@@ -201,6 +204,8 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         report["warnings"].append("launcher tool spans have no cgroup resource samples")
     if report["failed_tool_span_ends"]:
         report["warnings"].append("trace contains failed tool spans")
+    if report["status_exit_code_disagreements"]:
+        report["warnings"].append("tool span status disagrees with non-zero exit code")
     if report["launcher_tool_span_ends"] and not report["launcher_tool_resource_span_ends"]:
         report["warnings"].append("launcher tool spans have no Stage-2 tool-resource telemetry")
     return report

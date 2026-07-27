@@ -96,6 +96,22 @@ def create_app(state: AppState | None = None) -> FastAPI:
             return s._sandbox_scope_override.container_id
         return None
 
+    def begin_stage2_for_record(
+        s: AppState,
+        execution_id: str,
+        container_id: str | None,
+    ) -> None:
+        record = s.executions.get(execution_id)
+        if record is None:
+            return
+        s.predictor.begin_execution(
+            execution_id=execution_id,
+            tool_call_id=record.request.tool_call_id,
+            command=record.request.command,
+            container_id=container_id,
+            repo=s.config.tool_resource_repo,
+        )
+
     def with_sandbox_fallback(request: ToolBeforeRequest, s: AppState) -> ToolBeforeRequest:
         if request.resource_scope is not None:
             return request
@@ -167,6 +183,12 @@ def create_app(state: AppState | None = None) -> FastAPI:
         if s.docker_exec_observer is not None:
             s.docker_exec_observer.update_container(
                 container_id=scope.container_id,
+            )
+        for record in s.executions.active():
+            begin_stage2_for_record(
+                s,
+                record.request.execution_id,
+                scope.container_id,
             )
         return {"stored": True}
 
@@ -297,13 +319,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             # container_id_unavailable record; /started will retry once the
             # launcher or sandbox-scope discovery supplies the container id.
             if container_id:
-                s.predictor.begin_execution(
-                    execution_id=request.execution_id,
-                    tool_call_id=record.request.tool_call_id,
-                    command=record.request.command,
-                    container_id=container_id,
-                    repo=s.config.tool_resource_repo,
-                )
+                begin_stage2_for_record(s, request.execution_id, container_id)
         return response
 
     @app.post("/v2/executions/{execution_id}/started", response_model=ExecutionUpdateResponse)
@@ -319,13 +335,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             s.tool_monitor.bind_scope(record.request.tool_call_id, record.scope)
         container_id = request.container_id or sandbox_container_id(s)
         if record is not None:
-            s.predictor.begin_execution(
-                execution_id=execution_id,
-                tool_call_id=record.request.tool_call_id,
-                command=record.request.command,
-                container_id=container_id,
-                repo=s.config.tool_resource_repo,
-            )
+            begin_stage2_for_record(s, execution_id, container_id)
         return response
 
     @app.post("/v2/executions/{execution_id}/exited", response_model=ExecutionUpdateResponse)

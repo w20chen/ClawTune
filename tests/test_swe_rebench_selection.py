@@ -9,6 +9,7 @@ from swe_rebench.docker import ContainerResult
 from swe_rebench.host_sandbox import (
     _cleanup_openclaw_sandbox_containers,
     _cleanup_runtime_artifacts,
+    _docker_sandbox_container_ids,
     _ensure_openclaw_sandbox_image,
     _ensure_plugin_built,
     _openclaw_config,
@@ -562,6 +563,19 @@ def test_host_sandbox_cleanup_removes_prefixed_openclaw_containers(monkeypatch, 
     log = (trace_dir / "sandbox-container-cleanup.log").read_text(encoding="utf-8")
     assert prefix in log
     assert "abc123" in log
+
+
+def test_host_sandbox_discovers_sandbox_container_by_docker_prefix(monkeypatch) -> None:
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((list(cmd), kwargs))
+        return subprocess.CompletedProcess(cmd, 0, stdout="abc123def456\nnot a container id!\n", stderr="")
+
+    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+
+    assert _docker_sandbox_container_ids("/usr/bin/docker", "claw-srb-test") == ["abc123def456"]
+    assert calls[0][0] == ["/usr/bin/docker", "ps", "-q", "--filter", "name=claw-srb-test"]
 
 
 def test_host_sandbox_openclaw_env_points_workspace_dir_at_task_workspace(tmp_path: Path) -> None:

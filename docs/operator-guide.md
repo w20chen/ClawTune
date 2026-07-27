@@ -1,4 +1,4 @@
-# Run OpenClaw With Tracing
+# Run OpenClaw with Tracing
 
 Use this guide for normal OpenClaw runs.
 
@@ -83,7 +83,7 @@ AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=deepseek/deepseek-v4-flash
 # AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY_OVERRIDE=sk-...
 ```
 
-## 4. Install And Configure Plugin
+## 4. Install and Configure Plugin
 
 ```bash
 openclaw plugins install --link ./packages/openclaw-plugin

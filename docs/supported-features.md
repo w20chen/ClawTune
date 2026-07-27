@@ -11,7 +11,7 @@
 - Run SWE-Rebench batches with `--sample`, `--skip`, `--instance-ids`,
   `--repo`, `--parallelism`, and `--export`.
 
-## Not The Goal Yet
+## Not the Goal Yet
 
 - CPU-side optimization policy.
 - GPU/KV-cache scheduling.
