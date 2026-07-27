@@ -370,6 +370,7 @@ def test_entrypoint_uses_runtime_llm_env_and_writes_task_manifest() -> None:
     assert 'model.patch' in _ENTRYPOINT_TEMPLATE
     assert 'result_summary.json' in _ENTRYPOINT_TEMPLATE
     assert 'cgroup_probe.json' in _ENTRYPOINT_TEMPLATE
+    assert 'tool_resource_preflight.json' in _ENTRYPOINT_TEMPLATE
 
 
 def test_swe_rebench_plugin_config_uses_managed_wrapper_cgroup() -> None:
@@ -392,6 +393,9 @@ def test_setup_installs_scheduler_runtime_dependencies() -> None:
 
     assert "fastapi uvicorn pydantic psutil httpx prometheus-client numpy" in _SETUP_TEMPLATE
     assert "import fastapi, uvicorn, pydantic, psutil, numpy" in _SETUP_TEMPLATE
+    assert "python3-bpfcc bpfcc-tools libbpfcc" in _SETUP_TEMPLATE
+    assert "/tmp/.claw_bcc_pythonpath" in _SETUP_TEMPLATE
+    assert "import bcc" in _SETUP_TEMPLATE
 
 
 def test_docker_runner_config_sets_sandbox_container_prefix_placeholder(tmp_path: Path) -> None:
@@ -417,6 +421,8 @@ def test_entrypoint_exports_container_runtime_identity_for_launcher() -> None:
     assert "AGENT_SCHEDULER_SANDBOX_CONTAINER_ID" in _ENTRYPOINT_TEMPLATE
     assert "CLAW_SANDBOX_CONTAINER_ID" in _ENTRYPOINT_TEMPLATE
     assert '"container_id": os.environ.get("AGENT_SCHEDULER_SANDBOX_CONTAINER_ID")' in _ENTRYPOINT_TEMPLATE
+    assert "tool_resource_preflight.json" in _ENTRYPOINT_TEMPLATE
+    assert '"stage2_ready"' in _ENTRYPOINT_TEMPLATE
 
 
 def test_runner_config_enables_complete_cgroup_sampling() -> None:
@@ -956,6 +962,7 @@ def test_task_artifacts_summarizes_patch_and_result_summary(tmp_path: Path) -> N
     (tmp_path / "agent-stdout.txt").write_text("done\n", encoding="utf-8")
     (tmp_path / "sidecar.log").write_text("ready\n", encoding="utf-8")
     (tmp_path / "container.log").write_text("container done\n", encoding="utf-8")
+    (tmp_path / "tool_resource_preflight.json").write_text('{"stage2_ready": true}\n', encoding="utf-8")
     (tmp_path / "result_summary.json").write_text(
         json.dumps({"has_patch": True, "patch_bytes": 19}),
         encoding="utf-8",
@@ -968,6 +975,7 @@ def test_task_artifacts_summarizes_patch_and_result_summary(tmp_path: Path) -> N
     assert artifacts["agent-stdout.txt"]["preview"] == "done\n"
     assert artifacts["sidecar.log"]["bytes"] == 7
     assert artifacts["container.log"]["bytes"] == 16
+    assert artifacts["tool_resource_preflight.json"]["bytes"] > 0
     assert artifacts["result_summary.json"]["summary"]["has_patch"] is True
 
 

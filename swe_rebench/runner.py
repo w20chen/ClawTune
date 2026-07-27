@@ -310,6 +310,7 @@ def _task_artifacts(trace_dir: Path | None) -> dict[str, Any]:
         "model.patch",
         "result_summary.json",
         "cgroup_probe.json",
+        "tool_resource_preflight.json",
         "phase3.log",
         "sidecar.log",
         "container.log",

@@ -232,6 +232,10 @@ if [ -n "$CONTAINER_ID_CANDIDATE" ]; then
     export AGENT_SCHEDULER_SANDBOX_CONTAINER_ID="${AGENT_SCHEDULER_SANDBOX_CONTAINER_ID:-$CONTAINER_ID_CANDIDATE}"
     export CLAW_SANDBOX_CONTAINER_ID="${CLAW_SANDBOX_CONTAINER_ID:-$CONTAINER_ID_CANDIDATE}"
 fi
+if [ -s /tmp/.claw_bcc_pythonpath ]; then
+    CLAW_BCC_PYTHONPATH="$(cat /tmp/.claw_bcc_pythonpath)"
+    export PYTHONPATH="$CLAW_BCC_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}"
+fi
 mkdir -p "$TRACE_DIR"
 $_CLW_PYTHON - <<'PY' > "$TRACE_DIR/cgroup_probe.json" 2>/dev/null || true
 import json
@@ -263,13 +267,64 @@ probe = {
 print(json.dumps(probe, indent=2))
 PY
 
+$_CLW_PYTHON - <<'PY' > "$TRACE_DIR/tool_resource_preflight.json" 2>&1 || true
+import json
+import os
+import platform
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+container_id = os.environ.get("AGENT_SCHEDULER_SANDBOX_CONTAINER_ID") or os.environ.get("CLAW_SANDBOX_CONTAINER_ID")
+docker = shutil.which("docker")
+docker_inspect = {"ok": False, "detail": "docker or container id unavailable"}
+if docker and container_id:
+    result = subprocess.run(
+        [docker, "inspect", container_id, "--format", "{{.State.Pid}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    docker_inspect = {
+        "ok": result.returncode == 0 and result.stdout.strip().isdigit(),
+        "stdout": result.stdout.strip(),
+        "stderr": result.stderr.strip(),
+        "returncode": result.returncode,
+    }
+try:
+    import bcc  # noqa: F401
+    bcc_import = {"ok": True, "error": None}
+except Exception as exc:
+    bcc_import = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+preflight = {
+    "platform": platform.system().lower(),
+    "euid": os.geteuid() if hasattr(os, "geteuid") else None,
+    "python": sys.executable,
+    "pythonpath": os.environ.get("PYTHONPATH", ""),
+    "cgroup_v2": Path("/sys/fs/cgroup/cgroup.controllers").is_file(),
+    "docker": docker,
+    "container_id": container_id,
+    "docker_inspect": docker_inspect,
+    "bcc_import": bcc_import,
+    "stage2_ready": (
+        platform.system().lower() == "linux"
+        and (not hasattr(os, "geteuid") or os.geteuid() == 0)
+        and Path("/sys/fs/cgroup/cgroup.controllers").is_file()
+        and docker_inspect.get("ok") is True
+        and bcc_import.get("ok") is True
+    ),
+}
+print(json.dumps(preflight, indent=2))
+PY
+
 cd "$CLAW_ROOT/scheduler"
 
 # Install scheduler package (editable, best-effort)
 $_CLW_PIP install -e . --quiet 2>/dev/null || $_CLW_PIP install . --quiet 2>/dev/null || true
 
 # Start sidecar
-PYTHONPATH=src $_CLW_PYTHON -m agent_scheduler.main \
+PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" $_CLW_PYTHON -m agent_scheduler.main \
     --host 127.0.0.1 --port "$SIDECAR_PORT" \
     > "$TRACE_DIR/sidecar.log" 2>&1 &
 SIDECAR_PID=$!
@@ -565,6 +620,22 @@ else
     echo "[claw] docker CLI not available (DockerExecObserver will idle)"
 fi
 
+echo "[claw] installing BCC/eBPF dependencies (best-effort)..."
+case "$PKG_MGR" in
+    apt) apt-get install -y -qq python3-bpfcc bpfcc-tools libbpfcc 2>/dev/null || true ;;
+    yum) yum install -y -q bcc-tools python3-bcc 2>/dev/null || true ;;
+    dnf) dnf install -y -q bcc-tools python3-bcc 2>/dev/null || true ;;
+    apk) apk add --no-cache bcc-tools bcc-python3 2>/dev/null || true ;;
+esac
+if [ -d /usr/lib/python3/dist-packages/bcc ]; then
+    echo "/usr/lib/python3/dist-packages" > /tmp/.claw_bcc_pythonpath
+else
+    _CLAW_BCC_PATH="$(find /usr/lib /usr/lib64 -path '*/site-packages/bcc' -type d -print -quit 2>/dev/null || true)"
+    if [ -n "$_CLAW_BCC_PATH" ]; then
+        dirname "$_CLAW_BCC_PATH" > /tmp/.claw_bcc_pythonpath
+    fi
+fi
+
 # ── Python 3 (system fallback -- usually conda is already present) ──
 if ! $_CLW_PYTHON --version &>/dev/null 2>&1; then
     echo "[claw] installing python3..."
@@ -632,7 +703,17 @@ echo "[claw] installing sidecar Python deps..."
 $_CLW_PIP install --quiet \
     fastapi uvicorn pydantic psutil httpx prometheus-client numpy \
     2>&1 | tail -1
+if [ -s /tmp/.claw_bcc_pythonpath ]; then
+    export PYTHONPATH="$(cat /tmp/.claw_bcc_pythonpath)${PYTHONPATH:+:$PYTHONPATH}"
+fi
 $_CLW_PYTHON -c "import fastapi, uvicorn, pydantic, psutil, numpy; print('[claw] sidecar deps OK')"
+$_CLW_PYTHON - <<'PY' || true
+try:
+    import bcc  # noqa: F401
+    print("[claw] BCC Python binding OK")
+except Exception as exc:
+    print(f"[claw] BCC Python binding unavailable: {type(exc).__name__}: {exc}")
+PY
 
 # ── Done ────────────────────────────────────────────────────────
 touch "$SETUP_DONE"
