@@ -44,7 +44,11 @@ from typing import Any
 
 from swe_rebench.config import RunnerConfig
 from swe_rebench.docker import ContainerResult, get_docker_client, pull_image, run_container
-from swe_rebench.host_sandbox import run_host_sandbox_task
+from swe_rebench.host_sandbox import (
+    _chmod_and_retry,
+    _reset_directory_with_docker,
+    run_host_sandbox_task,
+)
 from swe_rebench.prepare import build_bundle, bundle_needs_rebuild
 from swe_rebench.task_source import (
     TaskDef,
@@ -450,7 +454,7 @@ def _run_one(
     config: RunnerConfig,
 ) -> ContainerResult:
     """Execute a single task container (called in worker thread)."""
-    _reset_task_trace_dir(config.output.trace_root, trace_dir)
+    _reset_task_trace_dir(config.output.trace_root, trace_dir, docker_cleanup_image=task.image)
 
     if config.runtime.mode == "host-openclaw-sandbox":
         return run_host_sandbox_task(
@@ -532,7 +536,12 @@ def _task_trace_dir(config: RunnerConfig, task: TaskDef) -> Path:
 
 # ── Trace export ──────────────────────────────────────────────────
 
-def _reset_task_trace_dir(trace_root: Path, trace_dir: Path) -> None:
+def _reset_task_trace_dir(
+    trace_root: Path,
+    trace_dir: Path,
+    *,
+    docker_cleanup_image: str | None = None,
+) -> None:
     """Remove stale per-task artifacts before a fresh run."""
     root = trace_root.resolve()
     target = trace_dir.resolve()
@@ -541,7 +550,13 @@ def _reset_task_trace_dir(trace_root: Path, trace_dir: Path) -> None:
         raise ValueError(f"refusing to clear trace directory outside trace root: {target}")
 
     if target.exists():
-        shutil.rmtree(target)
+        try:
+            shutil.rmtree(target, onerror=_chmod_and_retry)
+        except PermissionError:
+            if docker_cleanup_image is None:
+                raise
+            _reset_directory_with_docker(target, docker_cleanup_image)
+            return
     target.mkdir(parents=True, exist_ok=True)
 
 
