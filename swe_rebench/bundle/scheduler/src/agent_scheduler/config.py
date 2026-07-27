@@ -21,6 +21,7 @@ class SchedulerConfig:
     tool_resource_repo: str = "openclaw"
     tool_resource_artifact_dir: Path | None = None
     tool_resource_container_executable: str = "docker"
+    tool_resource_stage2_required: bool = True
     auth_token: str | None = None
     trace_dir: Path = Path("traces")
     trace_max_messages_bytes: int = 131_072  # 128 KiB, matches plugin default
@@ -83,6 +84,11 @@ class SchedulerConfig:
                 "AGENT_SCHEDULER_TOOL_RESOURCE_CONTAINER_EXECUTABLE",
                 "docker",
             ),
+            tool_resource_stage2_required=os.getenv(
+                "AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED",
+                "true",
+            ).lower()
+            in {"1", "true", "yes", "on"},
             auth_token=os.getenv("AGENT_SCHEDULER_TOKEN"),
             trace_dir=_resolve_path(trace, env_base) if trace else Path("traces"),
             trace_max_messages_bytes=int(os.getenv("AGENT_SCHEDULER_TRACE_MAX_MESSAGES_BYTES", "131072")),

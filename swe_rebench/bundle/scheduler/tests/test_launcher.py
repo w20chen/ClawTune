@@ -290,7 +290,7 @@ def test_launcher_join_failure_restarts_in_systemd_scope(monkeypatch, tmp_path) 
 
     def fake_popen(args: list[str], **_kwargs: Any) -> FakeSystemdChild:
         assert args[:4] == ["systemd-run", "--user", "--scope", "--quiet"]
-        assert f"--unit=claw-exec-1.scope" in args
+        assert "--unit=claw-exec-1.scope" in args
         assert "Delegate=yes" in args
         return FakeSystemdChild()
 

@@ -10,7 +10,7 @@ const defaults: PluginConfig = {
   recordRawTrace: false,
   authTokenEnv: "OPENCLAW_SCHEDULER_TOKEN",
   logLevel: "info",
-  executionBackend: "hook-only",
+  executionBackend: "managed-wrapper",
   launcherPath: "/opt/claw/bin/claw-launch",
   collectorSocket: "/run/claw/collector.sock",
   instrumentHosts: ["gateway"],
@@ -19,7 +19,7 @@ const defaults: PluginConfig = {
   enableAffinity: true,
   enableNuma: true,
   profilingMode: "off",
-  securityBoundaryAccepted: false,
+  securityBoundaryAccepted: true,
   trace: {
     schema_version: 6,
     include_raw_events: false,

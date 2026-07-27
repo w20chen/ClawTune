@@ -14,11 +14,15 @@
           authTokenEnv: "OPENCLAW_SCHEDULER_TOKEN",
           logLevel: "info",
 
+          // managed-wrapper is the primary path: rewrite exec commands to
+          // claw-launch so tool_resource Stage-2 eBPF clause telemetry can
+          // start before the payload command.
+          //
           // hook-only: observe/report without changing exec params.
           // marker: inject CLAW_* env markers into built-in exec.
           // managed-wrapper: rewrite exec command to launcherPath; requires
           // securityBoundaryAccepted=true and a deployed claw-launch binary.
-          executionBackend: "hook-only",
+          executionBackend: "managed-wrapper",
           launcherPath: "/opt/claw/bin/claw-launch",
           collectorSocket: "/run/claw/collector.sock",
           instrumentHosts: ["gateway"],
@@ -27,7 +31,7 @@
           enableAffinity: true,
           enableNuma: true,
           profilingMode: "off",
-          securityBoundaryAccepted: false
+          securityBoundaryAccepted: true
         }
       }
     }

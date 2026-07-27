@@ -32,6 +32,7 @@ AGENT_SCHEDULER_TOOL_RESOURCE_LATENCY_BUCKETS_MS=100,500,2000,10000
 AGENT_SCHEDULER_TOOL_RESOURCE_REPO=openclaw
 AGENT_SCHEDULER_TOOL_RESOURCE_ARTIFACT_DIR=data/tool-resource
 AGENT_SCHEDULER_TOOL_RESOURCE_CONTAINER_EXECUTABLE=docker
+AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED=true
 AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL=https://api.deepseek.com
 AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL=deepseek-v4-flash
 AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=deepseek/deepseek-v4-flash
@@ -63,11 +64,16 @@ still appears with `unavailable_reason: "no_clause_latency_evidence"` so
 operators can distinguish "predictor ran but had no evidence" from integration
 failure.
 
-Native `tool_resource` Stage-2 collection is wired through the managed-wrapper
-execution lifecycle. It needs a sandbox container id from OpenClaw or
+Native `tool_resource` Stage-2 collection is the primary managed-wrapper
+execution path. It needs a sandbox container id from OpenClaw or
 `AGENT_SCHEDULER_SANDBOX_CONTAINER_ID`, an artifact directory, the configured
 container executable, and the platform support expected by upstream
 `tool_resource`.
+
+When `AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED=true`, managed-wrapper
+claims fail closed if the Stage-2 collector cannot start before the payload
+command is released. This prevents silently falling back to whole-tool
+process/cgroup sampling for shell commands that need clause-level telemetry.
 
 For managed-wrapper executions with cgroup profiling, `claw-launch` reports
 the prepared cgroup to the sidecar before releasing the payload command. This

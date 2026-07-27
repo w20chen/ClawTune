@@ -27,10 +27,16 @@ Configuration uses environment variables:
 - `AGENT_SCHEDULER_TOOL_RESOURCE_REPO`
 - `AGENT_SCHEDULER_TOOL_RESOURCE_ARTIFACT_DIR`
 - `AGENT_SCHEDULER_TOOL_RESOURCE_CONTAINER_EXECUTABLE`
+- `AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED`
 - `AGENT_SCHEDULER_TOKEN`
 
 `AGENT_SCHEDULER_CONFIG` is not consumed by the sidecar; use the environment
 variables above.
+
+`AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED` defaults to `true`. In this
+mode managed-wrapper `exec` claims fail closed unless native `tool_resource`
+Stage-2 clause telemetry can be started before the payload command runs. Set it
+to `false` only for debugging coarse hook/PID/cgroup collection.
 
 Runtime inspection:
 

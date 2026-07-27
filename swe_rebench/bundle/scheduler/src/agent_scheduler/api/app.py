@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
 from agent_scheduler.api.dependencies import AppState, build_state
@@ -273,13 +273,27 @@ def create_app(state: AppState | None = None) -> FastAPI:
             or (s._sandbox_scope_override.container_id if s._sandbox_scope_override else None)
         )
         if record is not None:
-            s.predictor.begin_execution(
+            started = s.predictor.begin_execution(
                 execution_id=request.execution_id,
                 tool_call_id=record.request.tool_call_id,
                 command=record.request.command,
                 container_id=container_id,
                 repo=s.config.tool_resource_repo,
             )
+            if (
+                s.config.tool_resource_stage2_required
+                and record.request.backend == "managed-wrapper"
+            ):
+                if not container_id:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="tool_resource_container_id_unavailable",
+                    )
+                if not started:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="tool_resource_stage2_start_failed",
+                    )
         return response
 
     @app.post("/v2/executions/{execution_id}/started", response_model=ExecutionUpdateResponse)

@@ -17,7 +17,7 @@
       "recordRawTrace": {"type": "boolean", "default": false},
       "authTokenEnv": {"type": "string", "default": "OPENCLAW_SCHEDULER_TOKEN"},
       "logLevel": {"enum": ["error", "warn", "info", "debug"], "default": "info"},
-      "executionBackend": {"enum": ["hook-only", "marker", "managed-wrapper"], "default": "hook-only"},
+      "executionBackend": {"enum": ["hook-only", "marker", "managed-wrapper"], "default": "managed-wrapper"},
       "launcherPath": {"type": "string", "default": "/opt/claw/bin/claw-launch"},
       "collectorSocket": {"type": "string", "default": "/run/claw/collector.sock"},
       "instrumentHosts": {"type": "array", "items": {"type": "string"}, "default": ["gateway"]},
@@ -26,7 +26,7 @@
       "enableAffinity": {"type": "boolean", "default": true},
       "enableNuma": {"type": "boolean", "default": true},
       "profilingMode": {"enum": ["off", "proc", "perf", "ksys", "vtune"], "default": "off"},
-      "securityBoundaryAccepted": {"type": "boolean", "default": false},
+      "securityBoundaryAccepted": {"type": "boolean", "default": true},
       "trace": {
         "type": "object",
         "additionalProperties": false,

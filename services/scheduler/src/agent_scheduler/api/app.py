@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
 from agent_scheduler.api.dependencies import AppState, build_state
@@ -100,11 +100,11 @@ def create_app(state: AppState | None = None) -> FastAPI:
         s: AppState,
         execution_id: str,
         container_id: str | None,
-    ) -> None:
+    ) -> bool:
         record = s.executions.get(execution_id)
         if record is None:
-            return
-        s.predictor.begin_execution(
+            return False
+        return s.predictor.begin_execution(
             execution_id=execution_id,
             tool_call_id=record.request.tool_call_id,
             command=record.request.command,
@@ -319,7 +319,24 @@ def create_app(state: AppState | None = None) -> FastAPI:
             # container_id_unavailable record; /started will retry once the
             # launcher or sandbox-scope discovery supplies the container id.
             if container_id:
-                begin_stage2_for_record(s, request.execution_id, container_id)
+                started = begin_stage2_for_record(s, request.execution_id, container_id)
+                if (
+                    s.config.tool_resource_stage2_required
+                    and record.request.backend == "managed-wrapper"
+                    and not started
+                ):
+                    raise HTTPException(
+                        status_code=503,
+                        detail="tool_resource_stage2_start_failed",
+                    )
+            elif (
+                s.config.tool_resource_stage2_required
+                and record.request.backend == "managed-wrapper"
+            ):
+                raise HTTPException(
+                    status_code=503,
+                    detail="tool_resource_container_id_unavailable",
+                )
         return response
 
     @app.post("/v2/executions/{execution_id}/started", response_model=ExecutionUpdateResponse)

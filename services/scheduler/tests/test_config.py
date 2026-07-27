@@ -17,6 +17,7 @@ def test_scheduler_config_loads_env_file_and_resolves_paths(tmp_path, monkeypatc
                 "AGENT_SCHEDULER_SANDBOX_CGROUP_PATH=/sys/fs/cgroup/openclaw/session-1",
                 "AGENT_SCHEDULER_SANDBOX_CONTAINER_ID=container-1",
                 "AGENT_SCHEDULER_SANDBOX_ROOT_PID=1234",
+                "AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED=false",
             ]
         ),
         encoding="utf-8",
@@ -31,6 +32,7 @@ def test_scheduler_config_loads_env_file_and_resolves_paths(tmp_path, monkeypatc
     monkeypatch.delenv("AGENT_SCHEDULER_SANDBOX_CGROUP_PATH", raising=False)
     monkeypatch.delenv("AGENT_SCHEDULER_SANDBOX_CONTAINER_ID", raising=False)
     monkeypatch.delenv("AGENT_SCHEDULER_SANDBOX_ROOT_PID", raising=False)
+    monkeypatch.delenv("AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED", raising=False)
 
     config = SchedulerConfig.from_env()
 
@@ -42,3 +44,8 @@ def test_scheduler_config_loads_env_file_and_resolves_paths(tmp_path, monkeypatc
     assert config.sandbox_cgroup_path == "/sys/fs/cgroup/openclaw/session-1"
     assert config.sandbox_container_id == "container-1"
     assert config.sandbox_root_pid == 1234
+    assert config.tool_resource_stage2_required is False
+
+
+def test_scheduler_config_requires_stage2_by_default() -> None:
+    assert SchedulerConfig().tool_resource_stage2_required is True

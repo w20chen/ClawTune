@@ -2,6 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {loadConfig} from "../dist/config.js";
 
+test("loadConfig uses managed-wrapper as the default exec path", () => {
+  const config = loadConfig({});
+
+  assert.equal(config.executionBackend, "managed-wrapper");
+  assert.equal(config.securityBoundaryAccepted, true);
+});
+
 test("loadConfig deep-merges partial trace config", () => {
   const config = loadConfig({
     trace: {

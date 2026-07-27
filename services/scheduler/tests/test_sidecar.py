@@ -53,6 +53,7 @@ def _trace_client_with_sandbox_cgroup(tmp_path: Path, cgroup_path: Path) -> tupl
             trace_dir=trace_dir,
             sandbox_cgroup_path=str(cgroup_path),
             sandbox_container_id="sandbox-1",
+            tool_resource_stage2_required=False,
         )
     )
     return TestClient(create_app(state)), trace_dir
@@ -738,7 +739,12 @@ def test_exec_root_cgroup_scope_falls_back_to_shared_sandbox(tmp_path: Path) -> 
 
 
 def test_stage2_execution_waits_for_sandbox_container_scope(tmp_path: Path) -> None:
-    state = build_state(SchedulerConfig(trace_dir=tmp_path / "traces"))
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=tmp_path / "traces",
+            tool_resource_stage2_required=False,
+        )
+    )
     client = TestClient(create_app(state))
     begin_calls: list[dict[str, object]] = []
     started_execution_ids: set[str] = set()
@@ -820,7 +826,12 @@ def test_stage2_execution_waits_for_sandbox_container_scope(tmp_path: Path) -> N
 
 
 def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(tmp_path: Path) -> None:
-    state = build_state(SchedulerConfig(trace_dir=tmp_path / "traces"))
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=tmp_path / "traces",
+            tool_resource_stage2_required=False,
+        )
+    )
     client = TestClient(create_app(state))
     begin_calls: list[dict[str, object]] = []
 
@@ -906,6 +917,92 @@ def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(tmp_pa
     ]
 
 
+def test_required_stage2_rejects_claim_without_container_id(tmp_path: Path) -> None:
+    state = build_state(SchedulerConfig(trace_dir=tmp_path / "traces"))
+    client = TestClient(create_app(state))
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-launcher-exec",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi && true",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"mode": "off"},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": os.getpid(),
+        },
+    )
+
+    assert claim.status_code == 503
+    assert claim.json()["detail"] == "tool_resource_container_id_unavailable"
+
+
+def test_required_stage2_starts_during_claim_with_sandbox_container_id(tmp_path: Path) -> None:
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=tmp_path / "traces",
+            sandbox_container_id="b" * 64,
+        )
+    )
+    client = TestClient(create_app(state))
+    begin_calls: list[dict[str, object]] = []
+
+    def begin_execution(**kwargs):
+        begin_calls.append(kwargs)
+        return True
+
+    state.predictor.begin_execution = begin_execution  # type: ignore[method-assign]
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-launcher-exec",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi && true",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"mode": "off"},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": os.getpid(),
+        },
+    )
+
+    assert claim.status_code == 200
+    assert begin_calls == [
+        {
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "command": "echo hi && true",
+            "container_id": "b" * 64,
+            "repo": "openclaw",
+        }
+    ]
+
+
 def test_exec_completion_uses_registered_launcher_scope(tmp_path: Path) -> None:
     cgroup = tmp_path / "launcher-cgroup"
     cgroup.mkdir()
@@ -913,7 +1010,14 @@ def test_exec_completion_uses_registered_launcher_scope(tmp_path: Path) -> None:
     (cgroup / "memory.current").write_text("4096\n", encoding="utf-8")
     (cgroup / "io.stat").write_text("8:0 rbytes=10 wbytes=20\n", encoding="utf-8")
     (cgroup / "cgroup.procs").write_text("", encoding="utf-8")
-    client, trace_dir = _trace_client(tmp_path)
+    trace_dir = tmp_path / "traces"
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=trace_dir,
+            tool_resource_stage2_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
     request: dict[str, object] = {
         "schema_version": "scheduler.v1",
         "event_id": "evt-exec-start",
