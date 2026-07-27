@@ -17,6 +17,7 @@ from swe_rebench.host_sandbox import (
     _run_openclaw_agent,
     _reset_directory,
     _sandbox_container_prefix,
+    _stage_plugin_for_openclaw_if_needed,
     _start_sidecar,
     _write_host_tool_resource_preflight,
     _write_task_inputs,
@@ -739,6 +740,40 @@ def test_host_sandbox_builds_plugin_before_install(monkeypatch, tmp_path: Path) 
 
     assert calls == [["/usr/bin/npm", "run", "build"]]
     assert (tmp_path / "trace" / "plugin-build.log").exists()
+
+
+def test_host_sandbox_stages_user_owned_plugin_when_running_as_root(monkeypatch, tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "package.json").write_text("{}\n", encoding="utf-8")
+    (plugin_dir / "dist.js").write_text("module.exports = {}\n", encoding="utf-8")
+    (plugin_dir / "node_modules").mkdir()
+    (plugin_dir / "node_modules" / "ignored.txt").write_text("skip\n", encoding="utf-8")
+    trace_dir = tmp_path / "trace"
+    trace_dir.mkdir()
+
+    monkeypatch.setattr("swe_rebench.host_sandbox.os.geteuid", lambda: 0, raising=False)
+    original_stat = Path.stat
+
+    class FakeStat:
+        st_uid = 1005
+
+    def fake_stat(path: Path, *args, **kwargs):
+        if path == plugin_dir:
+            return FakeStat()
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+
+    staged = _stage_plugin_for_openclaw_if_needed(
+        trace_dir=trace_dir,
+        plugin_dir=plugin_dir,
+    )
+
+    assert staged == trace_dir / "openclaw-plugin-root-owned"
+    assert (staged / "package.json").exists()
+    assert (staged / "dist.js").exists()
+    assert not (staged / "node_modules").exists()
 
 
 def test_host_sandbox_sidecar_enables_docker_exec_observer(monkeypatch, tmp_path: Path) -> None:

@@ -328,6 +328,10 @@ def _configure_openclaw(
     env = _openclaw_env(openclaw_home, sidecar_port, config, workspace)
     plugin_dir = config.repo_root / config.bundle.plugin_source
     _ensure_plugin_built(trace_dir, plugin_dir)
+    plugin_install_dir = _stage_plugin_for_openclaw_if_needed(
+        trace_dir=trace_dir,
+        plugin_dir=plugin_dir,
+    )
     endpoint_host = f"http://127.0.0.1:{sidecar_port}"
     endpoint_sandbox = f"http://host.docker.internal:{sidecar_port}"
     sandbox_config = _openclaw_config(
@@ -361,7 +365,7 @@ def _configure_openclaw(
             log,
             "openclaw_onboard",
         )
-        _run_logged([openclaw, "plugins", "install", "--link", str(plugin_dir)], env, log, "plugin_install")
+        _run_logged([openclaw, "plugins", "install", "--link", str(plugin_install_dir)], env, log, "plugin_install")
         _run_logged([openclaw, "plugins", "enable", "agent-scheduler"], env, log, "plugin_enable")
         patch = subprocess.run(
             [openclaw, "config", "patch", "--stdin"],
@@ -593,6 +597,30 @@ def _ensure_plugin_built(trace_dir: Path, plugin_dir: Path) -> None:
             f"plugin_build_failed exit={result.returncode}: "
             f"{_tail_text(log_path, 2000)}"
         )
+
+
+def _stage_plugin_for_openclaw_if_needed(*, trace_dir: Path, plugin_dir: Path) -> Path:
+    """Use a root-owned linked plugin path when the runner itself is root.
+
+    OpenClaw rejects linked plugins whose ownership does not match the current
+    user/root trust boundary. In host-openclaw-sandbox, users may run the runner
+    with sudo only to satisfy eBPF permissions while keeping the repo owned by
+    their normal account. Stage a per-run copy instead of asking them to chown
+    the source tree.
+    """
+
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return plugin_dir
+    try:
+        if plugin_dir.stat().st_uid == 0:
+            return plugin_dir
+    except OSError:
+        return plugin_dir
+    staged = trace_dir / "openclaw-plugin-root-owned"
+    if staged.exists():
+        shutil.rmtree(staged, onerror=_chmod_and_retry)
+    shutil.copytree(plugin_dir, staged, ignore=shutil.ignore_patterns("node_modules"))
+    return staged
 
 
 def _openclaw_env(
