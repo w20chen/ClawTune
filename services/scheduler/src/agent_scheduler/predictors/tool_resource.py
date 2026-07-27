@@ -482,7 +482,7 @@ class ToolResourcePredictor:
                     "key_kind": None,
                     "evidence_count": 0,
                     "fallback_path": [],
-                    "note": f"unavailable: {exc}",
+                    "note": _continuous_unavailable_note(target, exc),
                 }
                 continue
             predictions[target] = _target_prediction_payload(prediction)
@@ -1128,6 +1128,13 @@ def _target_prediction_payload(prediction: TargetPrediction) -> dict[str, Any]:
         "fallback_path": list(prediction.fallback_path),
         "note": prediction.note,
     }
+
+
+def _continuous_unavailable_note(target: str, exc: Exception) -> str:
+    message = str(exc)
+    if message == f"no public global node for target {target!r}":
+        return "no continuous evidence for target"
+    return f"unavailable: {message}"
 
 
 def _prediction_algorithms_payload() -> dict[str, Any]:

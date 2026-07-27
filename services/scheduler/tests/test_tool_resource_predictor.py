@@ -522,10 +522,34 @@ def test_tool_resource_predictor_explains_unknown_without_cold_start() -> None:
     assert result.tool_resource["clause_bins"] == ["python"]
     assert result.tool_resource["prediction"] is None
     assert result.tool_resource["unavailable_reason"] == "no_clause_latency_evidence"
+    continuous = result.tool_resource["continuous_predictions"]
+    assert continuous["latency_ms"]["note"] == "no continuous evidence for target"
+    assert continuous["peak_cpu_cores"]["note"] == "no continuous evidence for target"
+    assert continuous["peak_memory_mb"]["note"] == "memory prediction requires ambient_before_mb anchor"
     assert [item["name"] for item in result.tool_resource["prediction_algorithms"]["enabled"]] == [
         "clause_latency_bucket",
         "runtime_tool_resource_conditional_p90",
     ]
+
+
+def test_tool_resource_predictor_explains_empty_continuous_memory_with_anchor() -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+    )
+
+    result = asyncio.run(
+        predictor.predict(
+            _tool_request("evt-1", "call-1", "python -m pytest tests -q"),
+            ambient_before_mb=10.0,
+        )
+    )
+
+    memory = result.tool_resource["continuous_predictions"]["peak_memory_mb"]
+    assert memory["conditional_p90"] is None
+    assert memory["note"] == "no continuous evidence for target"
 
 
 def test_exec_prediction_uses_fallback_parser_when_mvdan_fails(

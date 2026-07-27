@@ -46,6 +46,39 @@ if TYPE_CHECKING:
 # (attribution, windowing, aggregation) can be imported and unit-tested without
 # a bcc/BPF runtime.
 
+_BCC_SEARCH_ROOTS = (Path("/usr/lib"), Path("/usr/lib64"), Path("/usr/local/lib"))
+
+
+def _ensure_bcc_importable() -> None:
+    """Make distro BCC bindings visible to non-system Python interpreters."""
+
+    try:
+        import bcc  # noqa: F401
+        return
+    except ImportError as first_error:
+        for root in _BCC_SEARCH_ROOTS:
+            if not root.exists():
+                continue
+            for package_dir in root.glob("**/site-packages/bcc"):
+                parent = str(package_dir.parent)
+                if parent not in sys.path:
+                    sys.path.append(parent)
+                try:
+                    import bcc  # noqa: F401
+                    return
+                except ImportError:
+                    continue
+            for package_dir in root.glob("**/dist-packages/bcc"):
+                parent = str(package_dir.parent)
+                if parent not in sys.path:
+                    sys.path.append(parent)
+                try:
+                    import bcc  # noqa: F401
+                    return
+                except ImportError:
+                    continue
+        raise first_error
+
 SAMPLE_PERIOD_NS = 10_000_000  # ~10 ms CPU-time per perf callback
 WINDOW_NS = 500_000_000  # 500 ms wall label window (resource_timeline semantics)
 ALIGN_BIN_NS = 20_000_000  # 20 ms aligned bins for RSS summation
@@ -872,6 +905,7 @@ def _rmdir_with_retry(cg: Path, attempts: int = 25, delay_s: float = 0.02) -> No
 def collect_case(command: str, tag: str, *, marker: str = "") -> RawRun:
     """Attach the sampler, run ``sh -c command`` in a fresh cgroup, analyze raw."""
 
+    _ensure_bcc_importable()
     from bcc import BPF, PerfSWConfig, PerfType
 
     cg = _new_cgroup(tag)
@@ -2137,7 +2171,7 @@ def validate_clause_telemetry_runtime(
     if not Path("/sys/fs/cgroup/cgroup.controllers").is_file():
         raise ValueError("clause telemetry requires cgroup v2")
     try:
-        import bcc  # noqa: F401
+        _ensure_bcc_importable()
     except ImportError as exc:
         raise ValueError(
             "clause telemetry requires BCC Python bindings in the active interpreter"
@@ -2320,6 +2354,7 @@ class ClauseTelemetryCollector:
         artifact_path: Path,
         source_actions: Sequence[Mapping[str, Any]] = (),
     ) -> None:
+        _ensure_bcc_importable()
         from bcc import BPF, PerfSWConfig, PerfType
 
         cgroup, init_pid = _container_cgroup(container_id, container_executable)
