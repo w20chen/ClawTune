@@ -42,6 +42,8 @@ class ProcessResourceSampler:
         if scope is None:
             return self._empty(now, mono, None, "unattributed")
         if scope.kind == "cgroup-v2" and scope.cgroup_path:
+            if _is_cgroup_root(scope.cgroup_path):
+                return self._empty(now, mono, None, "cgroup-root-unattributed")
             cgroup = self._snapshot_cgroup(now, mono, scope)
             return cgroup
         if scope.pid is None:
@@ -319,3 +321,8 @@ class ProcessResourceSampler:
             return psutil
         except Exception:
             return None
+
+
+def _is_cgroup_root(cgroup_path: str) -> bool:
+    normalized = cgroup_path.replace("\\", "/").rstrip("/")
+    return normalized in {"/sys/fs/cgroup", "/sys/fs/cgroup/unified"}

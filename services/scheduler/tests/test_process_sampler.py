@@ -115,3 +115,26 @@ def test_cgroup_v2_scope_does_not_fall_back_to_process_tree(tmp_path) -> None:
     assert snapshot.available is False
     assert snapshot.source == "cgroup-v2"
     assert snapshot.target_pid == os.getpid()
+
+
+def test_process_sampler_rejects_cgroup_root_scope() -> None:
+    snapshot = ProcessResourceSampler().snapshot(
+        ResourceScope(
+            kind="cgroup-v2",
+            execution_id="exec-1",
+            pid=123,
+            root_pid=123,
+            process_start_time=None,
+            root_starttime_ticks=None,
+            cgroup_path="/sys/fs/cgroup",
+            pid_namespace_inode=None,
+            container_id=None,
+            include_children=True,
+            source="claw-launch",
+            attribution_source="claw-launch",
+        )
+    )
+
+    assert snapshot.available is False
+    assert snapshot.source == "cgroup-root-unattributed"
+    assert snapshot.target_pid is None

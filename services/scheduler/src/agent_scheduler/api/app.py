@@ -51,6 +51,16 @@ def _ambient_before_mb(request: ToolBeforeRequest, sample_rss_bytes: int | None)
     return None
 
 
+def _has_usable_cgroup_scope(scope: ResourceScope | None) -> bool:
+    if scope is None:
+        return False
+    cgroup_path = scope.cgroup_path
+    if not cgroup_path:
+        return True
+    normalized = cgroup_path.replace("\\", "/").rstrip("/")
+    return normalized not in {"/sys/fs/cgroup", "/sys/fs/cgroup/unified"}
+
+
 def create_app(state: AppState | None = None) -> FastAPI:
     app_state = state or build_state()
     app = FastAPI(title="OpenClaw Agent Scheduler Sidecar", version="0.1.0")
@@ -107,7 +117,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         deadline = time.monotonic() + 0.75
         while True:
             scope = s.executions.scope(event.execution_id)
-            if scope is not None:
+            if _has_usable_cgroup_scope(scope):
                 return event.model_copy(update={"resource_scope": scope})
             if time.monotonic() >= deadline:
                 return event
