@@ -135,6 +135,12 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         "status_exit_code_disagreements": 0,
         "launcher_tool_resource_span_ends": 0,
         "launcher_tool_resource_eligible_span_ends": 0,
+        "launcher_tool_resource_unavailable_span_ends": 0,
+        "launcher_tool_resource_unavailable_reasons": {},
+        "launcher_tool_resource_disabled_reasons": {},
+        "tool_resource_prediction_span_starts": 0,
+        "tool_resource_prediction_available_span_starts": 0,
+        "continuous_prediction_available_span_starts": 0,
         "warnings": [],
     }
     try:
@@ -161,6 +167,16 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         kind = str(record.get("kind") or "")
         if kind == "tool" or "tool" in span_name or record.get("action_type") == "tool_exec":
             report["has_tool_span"] = True
+            if record_type == "span_start":
+                prediction = _nested_get(record, ("prediction", "tool_resource"))
+                if isinstance(prediction, dict):
+                    report["tool_resource_prediction_span_starts"] += 1
+                    continuous = prediction.get("continuous_predictions")
+                    has_continuous = _has_available_continuous_prediction(continuous)
+                    if prediction.get("prediction") is not None or has_continuous:
+                        report["tool_resource_prediction_available_span_starts"] += 1
+                    if has_continuous:
+                        report["continuous_prediction_available_span_starts"] += 1
             if record_type == "span_end":
                 report["tool_span_ends"] += 1
                 status_code = _nested_get(record, ("status", "code"))
@@ -183,6 +199,21 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                         report["launcher_tool_resource_span_ends"] += 1
                         if tool_resource.get("kb_observations_added", 0):
                             report["launcher_tool_resource_eligible_span_ends"] += 1
+                        if tool_resource.get("status") == "unavailable":
+                            report["launcher_tool_resource_unavailable_span_ends"] += 1
+                            _increment_count(
+                                report["launcher_tool_resource_unavailable_reasons"],
+                                str(tool_resource.get("unavailable_reason") or "unknown"),
+                            )
+                            disabled_reason = _nested_get(
+                                tool_resource,
+                                ("artifact_summary", "collector", "disabled_reason"),
+                            )
+                            if disabled_reason:
+                                _increment_count(
+                                    report["launcher_tool_resource_disabled_reasons"],
+                                    str(disabled_reason),
+                                )
                     if resources.get("scope") == "cgroup":
                         report["launcher_cgroup_tool_span_ends"] += 1
                     if resources.get("attribution_status") in {"attributed", "partially_attributed"}:
@@ -208,6 +239,8 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         report["warnings"].append("tool span status disagrees with non-zero exit code")
     if report["launcher_tool_span_ends"] and not report["launcher_tool_resource_span_ends"]:
         report["warnings"].append("launcher tool spans have no Stage-2 tool-resource telemetry")
+    if report["launcher_tool_resource_unavailable_span_ends"]:
+        report["warnings"].append("Stage-2 tool-resource telemetry is unavailable for some launcher tool spans")
     return report
 
 
@@ -236,6 +269,22 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         int(item.get("launcher_tool_resource_eligible_span_ends", 0))
         for item in trace_inspection
     )
+    launcher_tool_resource_unavailable_span_ends = sum(
+        int(item.get("launcher_tool_resource_unavailable_span_ends", 0))
+        for item in trace_inspection
+    )
+    tool_resource_prediction_span_starts = sum(
+        int(item.get("tool_resource_prediction_span_starts", 0))
+        for item in trace_inspection
+    )
+    tool_resource_prediction_available_span_starts = sum(
+        int(item.get("tool_resource_prediction_available_span_starts", 0))
+        for item in trace_inspection
+    )
+    continuous_prediction_available_span_starts = sum(
+        int(item.get("continuous_prediction_available_span_starts", 0))
+        for item in trace_inspection
+    )
     return {
         "tool_span_ends": tool_span_ends,
         "launcher_tool_span_ends": launcher_tool_span_ends,
@@ -243,6 +292,10 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         "launcher_cgroup_tool_span_ends": launcher_cgroup_tool_span_ends,
         "launcher_tool_resource_span_ends": launcher_tool_resource_span_ends,
         "launcher_tool_resource_eligible_span_ends": launcher_tool_resource_eligible_span_ends,
+        "launcher_tool_resource_unavailable_span_ends": launcher_tool_resource_unavailable_span_ends,
+        "tool_resource_prediction_span_starts": tool_resource_prediction_span_starts,
+        "tool_resource_prediction_available_span_starts": tool_resource_prediction_available_span_starts,
+        "continuous_prediction_available_span_starts": continuous_prediction_available_span_starts,
         "attributed_tool_span_ends": attributed_tool_span_ends,
         "cgroup_tool_span_ends": cgroup_tool_span_ends,
         "unattributed_launcher_tool_span_ends": unattributed_launcher_tool_span_ends,
@@ -259,6 +312,11 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         "launcher_tool_resource_ratio": (
             round(launcher_tool_resource_span_ends / launcher_tool_span_ends, 3)
             if launcher_tool_span_ends
+            else None
+        ),
+        "tool_resource_prediction_available_ratio": (
+            round(tool_resource_prediction_available_span_starts / tool_resource_prediction_span_starts, 3)
+            if tool_resource_prediction_span_starts
             else None
         ),
     }
@@ -295,6 +353,20 @@ def _extract_trace_exit_code(value: Any) -> int | None:
     return None
 
 
+def _has_available_continuous_prediction(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    for prediction in value.values():
+        if isinstance(prediction, dict) and prediction.get("conditional_p90") is not None:
+            return True
+    return False
+
+
+def _increment_count(counts: Any, key: str) -> None:
+    if isinstance(counts, dict):
+        counts[key] = int(counts.get(key, 0)) + 1
+
+
 def _task_artifacts(trace_dir: Path | None) -> dict[str, Any]:
     """Summarize smoke-test artifacts emitted by the task container."""
     if trace_dir is None:
@@ -311,9 +383,14 @@ def _task_artifacts(trace_dir: Path | None) -> dict[str, Any]:
         "result_summary.json",
         "cgroup_probe.json",
         "tool_resource_preflight.json",
+        "tool_resource_preflight_host.json",
         "phase3.log",
         "sidecar.log",
+        "sidecar-stdout.txt",
+        "sidecar-stderr.txt",
         "container.log",
+        "sandbox_scope.json",
+        "sandbox_scope_discovery_last_error.txt",
     ):
         path = trace_dir / name
         if not path.exists():
@@ -329,7 +406,15 @@ def _task_artifacts(trace_dir: Path | None) -> dict[str, Any]:
                 item["summary"] = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
                 item["warning"] = f"cannot parse result summary: {exc}"
-        if name in {"agent-cwd.txt", "agent-stdout.txt", "agent-stderr.txt", "repo_status.txt"}:
+        if name in {
+            "agent-cwd.txt",
+            "agent-stdout.txt",
+            "agent-stderr.txt",
+            "repo_status.txt",
+            "sidecar-stdout.txt",
+            "sidecar-stderr.txt",
+            "sandbox_scope_discovery_last_error.txt",
+        }:
             item["preview"] = _preview_text(path)
         result[name] = item
     proxy_debug = sorted(trace_dir.glob("llm_proxy_debug_*.json"))

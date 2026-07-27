@@ -29,6 +29,8 @@ Expected record types:
 
 Useful fields:
 
+- `duration_ns`: span duration from monotonic clock in nanoseconds (string).
+- `duration_sec`: span duration in seconds, derived from `duration_ns` / 1e9 (string).
 - `input.messages`: LLM request messages when proxy capture is active.
 - `output.content`: LLM output. When the model emits tool calls, this may be
   an object containing both `content` and `tool_calls`.

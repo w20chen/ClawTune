@@ -48,7 +48,7 @@ const pluginVersion = "0.1.1";
 // ── Plugin-wide state ──────────────────────────────────────────────────
 let registry: SpanRegistry | null = null;
 
-/** Unique instance ID generated once per plugin load (�?per CLI launch). */
+/** Unique instance ID generated once per plugin load (�?per CLI launch). */
 const instanceId = randomUUID();
 
 /** Per-run trace writers, keyed by normalized run identity. */
@@ -108,7 +108,7 @@ async function getRunWriter(
     const run = safeFilename(runId);
     // Note: agent_id is included per-record in the JSONL content.
     // It is omitted from the filename because model hooks (model_call_started,
-    // model_call_ended) do not expose agent_id �?an OpenClaw limitation.
+    // model_call_ended) do not expose agent_id �?an OpenClaw limitation.
     const filename = `${session}_${run}.jsonl`;
     const { join } = await import("node:path");
     const filePath = join(traceDir, filename);
@@ -520,6 +520,7 @@ export default definePluginEntry({
         wall_time_ns: endWall.toString(),
         monotonic_time_ns: endMono.toString(),
         duration_ns: durNs.toString(),
+        duration_sec: (Number(durNs) / 1e9).toString(),
         observed_duration_ms: completion.duration_ms ?? null,
         status: {
           code: statusCode,
@@ -703,6 +704,7 @@ export default definePluginEntry({
         wall_time_ns: endWall.toString(),
         monotonic_time_ns: endMono.toString(),
         duration_ns: durNs.toString(),
+        duration_sec: (Number(durNs) / 1e9).toString(),
         observed_duration_ms: durationMs ?? null,
         status: {
           code: statusCode,
@@ -770,6 +772,7 @@ export default definePluginEntry({
           wall_time_ns: endWall.toString(),
           monotonic_time_ns: endMono.toString(),
           duration_ns: durNs.toString(),
+          duration_sec: (Number(durNs) / 1e9).toString(),
           status: {
             code: "interrupted",
             message: "plugin shutdown before span completion",

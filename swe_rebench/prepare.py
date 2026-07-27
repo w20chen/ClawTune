@@ -304,6 +304,9 @@ preflight = {
     "pythonpath": os.environ.get("PYTHONPATH", ""),
     "cgroup_v2": Path("/sys/fs/cgroup/cgroup.controllers").is_file(),
     "docker": docker,
+    "clang": shutil.which("clang"),
+    "llc": shutil.which("llc"),
+    "bpftool": shutil.which("bpftool"),
     "container_id": container_id,
     "docker_inspect": docker_inspect,
     "bcc_import": bcc_import,
@@ -626,6 +629,17 @@ case "$PKG_MGR" in
     yum) yum install -y -q bcc-tools python3-bcc 2>/dev/null || true ;;
     dnf) dnf install -y -q bcc-tools python3-bcc 2>/dev/null || true ;;
     apk) apk add --no-cache bcc-tools bcc-python3 2>/dev/null || true ;;
+esac
+case "$PKG_MGR" in
+    apt)
+        apt-get install -y -qq clang llvm kmod linux-headers-"$(uname -r)" 2>/dev/null \
+            || apt-get install -y -qq clang llvm kmod linux-headers-generic 2>/dev/null \
+            || apt-get install -y -qq clang llvm kmod 2>/dev/null \
+            || true
+        ;;
+    yum) yum install -y -q clang llvm kmod kernel-headers kernel-devel 2>/dev/null || yum install -y -q clang llvm kmod 2>/dev/null || true ;;
+    dnf) dnf install -y -q clang llvm kmod kernel-headers kernel-devel 2>/dev/null || dnf install -y -q clang llvm kmod 2>/dev/null || true ;;
+    apk) apk add --no-cache clang llvm kmod linux-headers 2>/dev/null || true ;;
 esac
 if [ -d /usr/lib/python3/dist-packages/bcc ]; then
     echo "/usr/lib/python3/dist-packages" > /tmp/.claw_bcc_pythonpath

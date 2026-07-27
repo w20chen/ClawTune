@@ -18,6 +18,7 @@ from swe_rebench.host_sandbox import (
     _reset_directory,
     _sandbox_container_prefix,
     _start_sidecar,
+    _write_host_tool_resource_preflight,
     _write_task_inputs,
 )
 from swe_rebench.task_source import TaskDef
@@ -394,6 +395,8 @@ def test_setup_installs_scheduler_runtime_dependencies() -> None:
     assert "fastapi uvicorn pydantic psutil httpx prometheus-client numpy" in _SETUP_TEMPLATE
     assert "import fastapi, uvicorn, pydantic, psutil, numpy" in _SETUP_TEMPLATE
     assert "python3-bpfcc bpfcc-tools libbpfcc" in _SETUP_TEMPLATE
+    assert "clang llvm kmod" in _SETUP_TEMPLATE
+    assert 'linux-headers-"$(uname -r)"' in _SETUP_TEMPLATE
     assert "/tmp/.claw_bcc_pythonpath" in _SETUP_TEMPLATE
     assert "import bcc" in _SETUP_TEMPLATE
 
@@ -423,6 +426,7 @@ def test_entrypoint_exports_container_runtime_identity_for_launcher() -> None:
     assert '"container_id": os.environ.get("AGENT_SCHEDULER_SANDBOX_CONTAINER_ID")' in _ENTRYPOINT_TEMPLATE
     assert "tool_resource_preflight.json" in _ENTRYPOINT_TEMPLATE
     assert '"stage2_ready"' in _ENTRYPOINT_TEMPLATE
+    assert '"clang": shutil.which("clang")' in _ENTRYPOINT_TEMPLATE
 
 
 def test_runner_config_enables_complete_cgroup_sampling() -> None:
@@ -771,6 +775,36 @@ def test_host_sandbox_sidecar_enables_docker_exec_observer(monkeypatch, tmp_path
     assert isinstance(env, dict)
     assert env["AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER"] == "true"
     assert env["AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX"] == _sandbox_container_prefix(workspace)
+    assert str(tmp_path / "services" / "scheduler" / "src") in env["PYTHONPATH"]
+
+
+def test_host_sandbox_writes_tool_resource_preflight(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("", encoding="utf-8")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    trace_dir = tmp_path / "trace"
+    trace_dir.mkdir()
+    captured: dict[str, object] = {}
+
+    class FakeRunResult:
+        stdout = '{"mode": "host-openclaw-sandbox"}\n'
+        stderr = ""
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["env"] = kwargs["env"]
+        return FakeRunResult()
+
+    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+
+    _write_host_tool_resource_preflight(trace_dir, config)
+
+    preflight = trace_dir / "tool_resource_preflight_host.json"
+    assert preflight.read_text(encoding="utf-8") == '{"mode": "host-openclaw-sandbox"}\n'
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert str(tmp_path / "services" / "scheduler" / "src") in env["PYTHONPATH"]
 
 
 def test_host_sandbox_cleans_only_untracked_runtime_artifacts(monkeypatch, tmp_path: Path) -> None:
@@ -961,8 +995,10 @@ def test_task_artifacts_summarizes_patch_and_result_summary(tmp_path: Path) -> N
     (tmp_path / "agent-cwd.txt").write_text("/testbed\n", encoding="utf-8")
     (tmp_path / "agent-stdout.txt").write_text("done\n", encoding="utf-8")
     (tmp_path / "sidecar.log").write_text("ready\n", encoding="utf-8")
+    (tmp_path / "sidecar-stderr.txt").write_text("bcc diagnostics\n", encoding="utf-8")
     (tmp_path / "container.log").write_text("container done\n", encoding="utf-8")
     (tmp_path / "tool_resource_preflight.json").write_text('{"stage2_ready": true}\n', encoding="utf-8")
+    (tmp_path / "tool_resource_preflight_host.json").write_text('{"bcc_import": {"ok": true}}\n', encoding="utf-8")
     (tmp_path / "result_summary.json").write_text(
         json.dumps({"has_patch": True, "patch_bytes": 19}),
         encoding="utf-8",
@@ -974,8 +1010,10 @@ def test_task_artifacts_summarizes_patch_and_result_summary(tmp_path: Path) -> N
     assert artifacts["agent-cwd.txt"]["preview"] == "/testbed\n"
     assert artifacts["agent-stdout.txt"]["preview"] == "done\n"
     assert artifacts["sidecar.log"]["bytes"] == 7
+    assert artifacts["sidecar-stderr.txt"]["preview"] == "bcc diagnostics\n"
     assert artifacts["container.log"]["bytes"] == 16
     assert artifacts["tool_resource_preflight.json"]["bytes"] > 0
+    assert artifacts["tool_resource_preflight_host.json"]["bytes"] > 0
     assert artifacts["result_summary.json"]["summary"]["has_patch"] is True
 
 

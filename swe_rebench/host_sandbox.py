@@ -50,6 +50,7 @@ def run_host_sandbox_task(
         _install_sandbox_launcher(workspace, bundle_dir)
         _write_task_inputs(trace_dir, task, config, workspace)
         _ensure_openclaw_sandbox_image(trace_dir)
+        _write_host_tool_resource_preflight(trace_dir, config)
 
         sidecar = _start_sidecar(
             trace_dir=trace_dir,
@@ -193,9 +194,15 @@ def _start_sidecar(
     workspace: Path,
 ) -> subprocess.Popen[str]:
     env = os.environ.copy()
+    scheduler_src = str(config.repo_root / "services" / "scheduler" / "src")
+    existing_pythonpath = env.get("PYTHONPATH")
     env.update(
         {
-            "PYTHONPATH": str(config.repo_root / "services" / "scheduler" / "src"),
+            "PYTHONPATH": (
+                scheduler_src
+                if not existing_pythonpath
+                else scheduler_src + os.pathsep + existing_pythonpath
+            ),
             "AGENT_SCHEDULER_DB_PATH": str(trace_dir / "scheduler.sqlite3"),
             "AGENT_SCHEDULER_TRACE_DIR": str(trace_dir),
             "AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL": config.llm.upstream_base_url,
@@ -228,6 +235,66 @@ def _start_sidecar(
     )
     _wait_ready(port)
     return process
+
+
+def _write_host_tool_resource_preflight(trace_dir: Path, config: RunnerConfig) -> None:
+    scheduler_src = str(config.repo_root / "services" / "scheduler" / "src")
+    env = os.environ.copy()
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        scheduler_src
+        if not existing_pythonpath
+        else scheduler_src + os.pathsep + existing_pythonpath
+    )
+    code = r"""
+import json
+import os
+import platform
+import shutil
+import sys
+from pathlib import Path
+
+payload = {
+    "mode": "host-openclaw-sandbox",
+    "platform": platform.system().lower(),
+    "euid": os.geteuid() if hasattr(os, "geteuid") else None,
+    "python": sys.executable,
+    "pythonpath": os.environ.get("PYTHONPATH", ""),
+    "docker": shutil.which("docker"),
+    "clang": shutil.which("clang"),
+    "llc": shutil.which("llc"),
+    "bpftool": shutil.which("bpftool"),
+    "cgroup_v2": Path("/sys/fs/cgroup/cgroup.controllers").is_file(),
+    "lib_modules_exists": Path("/lib/modules").exists(),
+}
+try:
+    from tool_resource.telemetry import _bpf_runtime_diagnostics, _ensure_bcc_importable
+    _ensure_bcc_importable()
+    import bcc
+    payload["bcc_import"] = {"ok": True, "path": getattr(bcc, "__file__", None)}
+    payload["bpf_runtime"] = _bpf_runtime_diagnostics()
+except Exception as exc:
+    payload["bcc_import"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+print(json.dumps(payload, indent=2))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(config.repo_root / "services" / "scheduler"),
+    )
+    output = result.stdout if result.stdout.strip() else result.stderr
+    if not output.strip():
+        output = json.dumps(
+            {
+                "mode": "host-openclaw-sandbox",
+                "error": "host tool-resource preflight produced no output",
+                "returncode": result.returncode,
+            },
+            indent=2,
+        )
+    _write_text(trace_dir / "tool_resource_preflight_host.json", output.rstrip() + "\n")
 
 
 def _configure_openclaw(

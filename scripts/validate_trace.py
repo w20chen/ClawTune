@@ -97,15 +97,38 @@ def validate_trace(lines: list[str]) -> dict[str, Any]:
                     result["invalid_coverage_ratios"] += 1
                     result["errors"].append(f"span {sid}: coverage_ratio={cr} out of [0,1]")
 
-            # Validate duration non-negative
-            dur_str = record.get("duration_ns")
-            if dur_str is not None:
+            # Validate duration_ns non-negative
+            dur_ns_str = record.get("duration_ns")
+            if dur_ns_str is not None:
                 try:
-                    dur = int(dur_str)
-                    if dur < 0:
+                    dur_ns = int(dur_ns_str)
+                    if dur_ns < 0:
                         result["errors"].append(f"span {sid}: negative duration_ns")
                 except (ValueError, TypeError):
                     result["errors"].append(f"span {sid}: invalid duration_ns")
+
+            # Validate duration_sec non-negative and consistent with duration_ns
+            dur_sec_str = record.get("duration_sec")
+            if dur_sec_str is not None:
+                try:
+                    dur_sec = float(dur_sec_str)
+                    if dur_sec < 0:
+                        result["errors"].append(f"span {sid}: negative duration_sec")
+                except (ValueError, TypeError):
+                    result["errors"].append(f"span {sid}: invalid duration_sec")
+
+                # Cross-validate consistency with duration_ns if both present
+                if dur_ns_str is not None:
+                    try:
+                        dur_ns = int(dur_ns_str)
+                        expected_sec = dur_ns / 1e9
+                        if abs(dur_sec - expected_sec) > max(1e-9, expected_sec * 1e-6):
+                            result["errors"].append(
+                                f"span {sid}: duration_sec ({dur_sec}) inconsistent "
+                                f"with duration_ns ({dur_ns} -> {expected_sec})"
+                            )
+                    except (ValueError, TypeError):
+                        pass  # already reported above
 
     # Check completeness
     for sid in starts:

@@ -31,6 +31,7 @@ import ctypes
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -78,6 +79,52 @@ def _ensure_bcc_importable() -> None:
                 except ImportError:
                     continue
         raise first_error
+
+
+def _bpf_runtime_diagnostics() -> dict[str, Any]:
+    """Small environment snapshot for BCC/BPF compile failures."""
+
+    def run(args: Sequence[str]) -> str | None:
+        try:
+            result = subprocess.run(
+                list(args),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+        except Exception:
+            return None
+        output = (result.stdout or result.stderr).strip()
+        return output.splitlines()[0] if output else None
+
+    kernel = run(["uname", "-r"])
+    headers: list[str] = []
+    if kernel:
+        candidates = (
+            Path("/lib/modules") / kernel / "build",
+            Path("/usr/src") / f"linux-headers-{kernel}",
+        )
+        headers = [str(path) for path in candidates if path.exists()]
+    bcc_file = None
+    try:
+        _ensure_bcc_importable()
+        import bcc
+
+        bcc_file = getattr(bcc, "__file__", None)
+    except ImportError:
+        pass
+    return {
+        "python": sys.executable,
+        "bcc_file": bcc_file,
+        "clang": shutil.which("clang"),
+        "llc": shutil.which("llc"),
+        "bpftool": shutil.which("bpftool"),
+        "kernel_release": kernel,
+        "kernel_headers": headers,
+        "lib_modules_exists": Path("/lib/modules").exists(),
+        "cgroup_v2": Path("/sys/fs/cgroup/cgroup.controllers").is_file(),
+    }
 
 SAMPLE_PERIOD_NS = 10_000_000  # ~10 ms CPU-time per perf callback
 WINDOW_NS = 500_000_000  # 500 ms wall label window (resource_timeline semantics)
@@ -2387,7 +2434,16 @@ class ClauseTelemetryCollector:
         ]
         self._source_exec_index = 0
 
-        self._bpf = BPF(text=BPF_PROGRAM)
+        try:
+            self._bpf = BPF(text=BPF_PROGRAM)
+        except BaseException as exc:
+            self._closed = True
+            self._cleanup_status = "not_started"
+            diagnostics = json.dumps(_bpf_runtime_diagnostics(), sort_keys=True)
+            raise RuntimeError(
+                f"BPF module compile failed: {type(exc).__name__}: {exc}; "
+                f"diagnostics={diagnostics}"
+            ) from exc
         try:
             self._bpf.attach_kprobe(
                 event="bprm_execve", fn_name="capture_bprm_argv"
