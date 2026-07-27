@@ -126,6 +126,53 @@ def _bpf_runtime_diagnostics() -> dict[str, Any]:
         "cgroup_v2": Path("/sys/fs/cgroup/cgroup.controllers").is_file(),
     }
 
+
+def _decode_symbol(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return str(value)
+
+
+def _syscall_symbol_candidates(bpf_cls: Any, name: str) -> tuple[str, ...]:
+    candidates: list[str] = []
+    try:
+        candidates.append(_decode_symbol(bpf_cls.get_syscall_fnname(name)))
+    except Exception:
+        pass
+    candidates.extend(
+        [
+            f"__x64_sys_{name}",
+            f"__ia32_sys_{name}",
+            f"__arm64_sys_{name}",
+            f"sys_{name}",
+        ]
+    )
+    return tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
+
+
+def _attach_first_kprobe(
+    bpf: Any,
+    bpf_cls: Any,
+    *,
+    syscall: str,
+    fn_name: str,
+    retprobe: bool = False,
+) -> str:
+    errors: list[str] = []
+    for event in _syscall_symbol_candidates(bpf_cls, syscall):
+        try:
+            if retprobe:
+                bpf.attach_kretprobe(event=event, fn_name=fn_name)
+            else:
+                bpf.attach_kprobe(event=event, fn_name=fn_name)
+            return event
+        except Exception as exc:
+            errors.append(f"{event}: {type(exc).__name__}: {exc}")
+    probe_kind = "kretprobe" if retprobe else "kprobe"
+    raise RuntimeError(
+        f"cannot attach {probe_kind} for syscall {syscall}: {'; '.join(errors)}"
+    )
+
 SAMPLE_PERIOD_NS = 10_000_000  # ~10 ms CPU-time per perf callback
 WINDOW_NS = 500_000_000  # 500 ms wall label window (resource_timeline semantics)
 ALIGN_BIN_NS = 20_000_000  # 20 ms aligned bins for RSS summation
@@ -137,7 +184,7 @@ MAX_ARG_WORD_BYTES = (ARG_BYTES - 1) * MAX_ARG_CHUNKS
 ARG_FLAG_TRUNCATED = 1
 ARG_FLAG_ARGV_CAPPED = 2
 ARG_FLAG_CONTINUED = 4
-PAGE = os.sysconf("SC_PAGE_SIZE")
+PAGE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
 _NPROC = os.cpu_count() or 1
 LOSS_COUNTER_NAMES = (
     "ringbuf_reserve_failures",
@@ -455,12 +502,18 @@ static int capture_enter(const char *filename, const char *const *argv) {
     return 0;
 }
 
-TRACEPOINT_PROBE(syscalls, sys_enter_execve) {
-    return capture_enter(args->filename, (const char *const *)args->argv);
+int capture_sys_execve(struct pt_regs *ctx) {
+    return capture_enter(
+        (const char *)PT_REGS_PARM1(ctx),
+        (const char *const *)PT_REGS_PARM2(ctx)
+    );
 }
 
-TRACEPOINT_PROBE(syscalls, sys_enter_execveat) {
-    return capture_enter(args->filename, (const char *const *)args->argv);
+int capture_sys_execveat(struct pt_regs *ctx) {
+    return capture_enter(
+        (const char *)PT_REGS_PARM2(ctx),
+        (const char *const *)PT_REGS_PARM3(ctx)
+    );
 }
 
 /* copy_strings() has faulted the original argv pages before bprm_execve.
@@ -564,8 +617,13 @@ static int on_exec_return(long ret) {
     return 0;
 }
 
-TRACEPOINT_PROBE(syscalls, sys_exit_execve) { return on_exec_return(args->ret); }
-TRACEPOINT_PROBE(syscalls, sys_exit_execveat) { return on_exec_return(args->ret); }
+int capture_sys_execve_return(struct pt_regs *ctx) {
+    return on_exec_return(PT_REGS_RC(ctx));
+}
+
+int capture_sys_execveat_return(struct pt_regs *ctx) {
+    return on_exec_return(PT_REGS_RC(ctx));
+}
 
 /* Fork lineage must be TGID-consistent with every other event (which key on
  * tgid = pid_tgid>>32). The tracepoint's parent_pid/child_pid are TIDs; using
@@ -958,6 +1016,32 @@ def collect_case(command: str, tag: str, *, marker: str = "") -> RawRun:
     cg = _new_cgroup(tag)
     cgroup_id = cg.stat().st_ino
     bpf = BPF(text=BPF_PROGRAM)
+    _attach_first_kprobe(
+        bpf,
+        BPF,
+        syscall="execve",
+        fn_name="capture_sys_execve",
+    )
+    _attach_first_kprobe(
+        bpf,
+        BPF,
+        syscall="execveat",
+        fn_name="capture_sys_execveat",
+    )
+    _attach_first_kprobe(
+        bpf,
+        BPF,
+        syscall="execve",
+        fn_name="capture_sys_execve_return",
+        retprobe=True,
+    )
+    _attach_first_kprobe(
+        bpf,
+        BPF,
+        syscall="execveat",
+        fn_name="capture_sys_execveat_return",
+        retprobe=True,
+    )
     bpf.attach_kprobe(event="bprm_execve", fn_name="capture_bprm_argv")
     bpf.attach_kprobe(
         event="bprm_change_interp", fn_name="capture_interp_change"
@@ -2445,6 +2529,32 @@ class ClauseTelemetryCollector:
                 f"diagnostics={diagnostics}"
             ) from exc
         try:
+            _attach_first_kprobe(
+                self._bpf,
+                BPF,
+                syscall="execve",
+                fn_name="capture_sys_execve",
+            )
+            _attach_first_kprobe(
+                self._bpf,
+                BPF,
+                syscall="execveat",
+                fn_name="capture_sys_execveat",
+            )
+            _attach_first_kprobe(
+                self._bpf,
+                BPF,
+                syscall="execve",
+                fn_name="capture_sys_execve_return",
+                retprobe=True,
+            )
+            _attach_first_kprobe(
+                self._bpf,
+                BPF,
+                syscall="execveat",
+                fn_name="capture_sys_execveat_return",
+                retprobe=True,
+            )
             self._bpf.attach_kprobe(
                 event="bprm_execve", fn_name="capture_bprm_argv"
             )
