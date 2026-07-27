@@ -43,6 +43,14 @@ def _sample_summary(sample: ToolRuntimeSample) -> dict[str, object]:
     }
 
 
+def _ambient_before_mb(request: ToolBeforeRequest, sample_rss_bytes: int | None) -> float | None:
+    if sample_rss_bytes is not None:
+        return sample_rss_bytes / (1024 * 1024)
+    if request.tool_name == "exec":
+        return 0.0
+    return None
+
+
 def create_app(state: AppState | None = None) -> FastAPI:
     app_state = state or build_state()
     app = FastAPI(title="OpenClaw Agent Scheduler Sidecar", version="0.1.0")
@@ -175,11 +183,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             s.trace_writer.record_tool_started(request)
         s.predictor.record_tool_started(request)
         ambient_snapshot = s.tool_monitor.sampler.snapshot(request.resource_scope)
-        ambient_before_mb = (
-            None
-            if ambient_snapshot.rss_bytes is None
-            else ambient_snapshot.rss_bytes / (1024 * 1024)
-        )
+        ambient_before_mb = _ambient_before_mb(request, ambient_snapshot.rss_bytes)
         prediction = await s.predictor.predict(
             request,
             ambient_before_mb=ambient_before_mb,

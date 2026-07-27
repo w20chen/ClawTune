@@ -38,7 +38,18 @@ def _native_parser_fixture(monkeypatch) -> None:
     monkeypatch.setattr(tool_resource_runtime_kb, "parse_command_clauses", _test_parse_command)
 
 
-def _write_trace(path: Path, *, command: str = "python -m pytest tests -q") -> None:
+def _write_trace(
+    path: Path,
+    *,
+    command: str = "python -m pytest tests -q",
+    memory_rss_bytes_before: int | None = None,
+) -> None:
+    resources = {
+        "cpu_utilization_avg_cores": 1.5,
+        "rss_peak_bytes": 104857600,
+    }
+    if memory_rss_bytes_before is not None:
+        resources["memory_rss_bytes_before"] = memory_rss_bytes_before
     records = [
         {
             "schema_version": 6,
@@ -83,10 +94,7 @@ def _write_trace(path: Path, *, command: str = "python -m pytest tests -q") -> N
             "status": {"code": "ok", "message": None},
             "output": {"exit_code": 0, "result": None},
             "execution": {"mode": "launcher", "execution_id": "call-1"},
-            "resources": {
-                "cpu_utilization_avg_cores": 1.5,
-                "rss_peak_bytes": 104857600,
-            },
+            "resources": resources,
         },
     ]
     path.write_text(
@@ -665,6 +673,57 @@ def test_sidecar_uses_tool_resource_predictor_when_configured(tmp_path: Path) ->
 
     assert response.status_code == 200
     assert response.json()["prediction"]["resource_class"] == "latency_medium"
+
+
+def test_sidecar_defaults_exec_memory_anchor_for_new_execution_cgroup(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.jsonl"
+    _write_trace(trace, memory_rss_bytes_before=0)
+    state = build_state(
+        SchedulerConfig(
+            tool_resource_trace_paths=(trace,),
+            tool_resource_latency_buckets_ms=(100.0, 500.0, 2_000.0),
+        )
+    )
+    client = TestClient(create_app(state))
+
+    response = client.post(
+        "/v1/decisions/tool",
+        json={
+            "schema_version": "scheduler.v1",
+            "event_id": "evt-1",
+            "occurred_at": "2026-07-24T17:29:44Z",
+            "plugin_version": "0.1.0",
+            "run_id": "run-2",
+            "session_id": "session-1",
+            "session_key": None,
+            "agent_id": "main",
+            "tool_call_id": "call-2",
+            "tool_name": "exec",
+            "tool_kind": "shell",
+            "tool_input_kind": "json",
+            "operation_hint": None,
+            "derived_paths": [],
+            "params_digest": "sha256:" + "a" * 64,
+            "param_features": {
+                "serialized_size_bytes": 10,
+                "string_length": 10,
+                "list_item_count": 0,
+                "path_count": 0,
+                "has_command_like_field": True,
+            },
+            "raw_params": {"command": "python -m pytest tests -q"},
+            "resource_scope": None,
+        },
+    )
+
+    assert response.status_code == 200
+    memory = response.json()["prediction"]["tool_resource"]["continuous_predictions"][
+        "peak_memory_mb"
+    ]
+    assert memory["conditional_p90"] == pytest.approx(100.0)
+    assert memory["scope"] == "repo"
+    assert memory["key_kind"] == "exact_command"
+    assert memory["note"] == "residual quantile plus query ambient_before_mb"
 
 
 def test_trace_writes_tool_prediction_payload(tmp_path: Path) -> None:
