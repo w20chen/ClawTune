@@ -157,13 +157,87 @@ python -m swe_rebench.runner collect --config swe_rebench/config.yaml
 
 ## Common Options
 
+`--config` can be placed before or after the subcommand:
+
+```bash
+python -m swe_rebench.runner --config swe_rebench/config.yaml run ...
+python -m swe_rebench.runner run --config swe_rebench/config.yaml ...
+```
+
+### `prepare`
+
+Builds the runtime bundle mounted into task containers.
+
 | Option | Purpose |
 | --- | --- |
-| `--sample N` | Run first N selected tasks. |
-| `--skip N` | Skip N tasks before sampling. |
-| `--instance-ids a,b` | Run exact task IDs. |
-| `--repo owner/repo` | Filter by repo. |
-| `--parallelism N` | Run N containers concurrently. |
-| `--runtime-mode MODE` | Override `runtime.mode`; use `host-openclaw-sandbox` for host OpenClaw + OpenClaw Docker sandbox. |
-| `--export` | Copy traces to `swe_rebench/export`. |
-| `--dry-run` | Print selected tasks without starting containers. |
+| `--config PATH` | Load runner settings from this YAML file. |
+| `--bundle-dir PATH` | Override `bundle.output_dir` for this prepare run. |
+
+### `run`
+
+Runs one or more SWE-Rebench tasks. At least one task source must be available:
+`--dataset`, `--tasks`, `--image`, or the default discovered task file.
+
+Task source options:
+
+| Option | Purpose |
+| --- | --- |
+| `--dataset PATH` | Load a SWE-bench/SWE-Rebench JSON or JSONL dataset. |
+| `--tasks PATH` | Load a simple task-list JSON file, such as one written by `swe_rebench.discover`. |
+| `--image IMAGE` | Run one Docker image directly, bypassing dataset loading. Use with `--task-id` and `--problem`. |
+| `--task-id ID` | Task ID for `--image` mode; defaults to `task-1`. |
+| `--problem TEXT` | Problem statement for `--image` mode. |
+
+Task selection options:
+
+| Option | Purpose |
+| --- | --- |
+| `--sample N` | Run only the first N selected tasks after filtering and skipping. |
+| `--skip N` | Skip the first N selected tasks before applying `--sample`. |
+| `--instance-ids a,b` | Run exact task IDs, preserving the comma-separated order. |
+| `--repo owner/repo` | Run only tasks whose `repo` field matches this value. |
+
+Execution options:
+
+| Option | Purpose |
+| --- | --- |
+| `--prepare` | Rebuild the runtime bundle before running tasks. The runner also rebuilds automatically when the bundle looks stale. |
+| `--parallelism N` | Override `batch.parallelism` from config for this run. |
+| `--runtime-mode MODE` | Override `runtime.mode`; valid values are `container-openclaw`(default) and `host-openclaw-sandbox`. |
+| `--dry-run` | Print the selected tasks and exit without pulling images or starting containers. |
+
+Output options:
+
+| Option | Purpose |
+| --- | --- |
+| `--export` | Copy produced trace JSONL files to `output.flat_export_dir`, usually `swe_rebench/export`. |
+
+Important config-only settings:
+
+| Config key | Purpose |
+| --- | --- |
+| `batch.task_timeout_seconds` | Per-task wall-clock timeout. `0` disables the timeout. |
+| `batch.retry_failed` | Number of retries after a failed task. |
+| `docker.pull_policy` | Image pull behavior: `missing`, `always`, or `never`. |
+| `docker.memory_limit` / `docker.cpus` | Per-container resource limits. |
+| `docker.network_mode` / `docker.dns_servers` | Container networking controls. |
+| `docker.privileged`, `docker.cgroupns_mode`, `docker.cgroup_mount_rw` | Optional cgroup access knobs for more complete cgroup sampling. |
+| `docker.cgroup_required` | If `true`, fail hard when per-tool cgroups cannot be created. Keep `false` for broad compatibility. |
+| `output.trace_root` | Per-task artifact directory root. |
+| `output.report_path` | Batch report JSON path. |
+| `output.flat_export_dir` | Destination for `--export`; empty disables flat export. |
+| `agent.max_turns` / `agent.extra_args` | Agent behavior defaults used by generated runtime scripts. |
+
+### `collect`
+
+Scans an existing trace root and rewrites the summary report without starting
+containers.
+
+| Option | Purpose |
+| --- | --- |
+| `--config PATH` | Load output paths from this YAML file. |
+| `--export-dir PATH` | Override `output.flat_export_dir` for this collect run. |
+
+### `cleanup`
+
+Currently a no-op because task containers are removed after each run.
