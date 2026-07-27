@@ -148,7 +148,9 @@ test("exec instrumentation forwards launcher cgroup environment", async () => {
     "CLAW_CGROUP_REQUIRED",
     "CLAW_CGROUP_DEBUG",
     "CLAW_LAUNCH_DEBUG",
-    "CLAW_SCHEDULER_ENDPOINT"
+    "CLAW_SCHEDULER_ENDPOINT",
+    "CLAW_SANDBOX_CONTAINER_ID",
+    "AGENT_SCHEDULER_SANDBOX_CONTAINER_ID"
   ];
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   process.env.CLAW_CGROUP_ROOT = "/sys/fs/cgroup/claw";
@@ -156,6 +158,8 @@ test("exec instrumentation forwards launcher cgroup environment", async () => {
   process.env.CLAW_CGROUP_DEBUG = "1";
   process.env.CLAW_LAUNCH_DEBUG = "1";
   process.env.CLAW_SCHEDULER_ENDPOINT = "http://host.docker.internal:8765";
+  process.env.CLAW_SANDBOX_CONTAINER_ID = "5a423f3b2078";
+  process.env.AGENT_SCHEDULER_SANDBOX_CONTAINER_ID = "5a423f3b2078";
   const client = {
     async registerExecution() {
       return {one_time_token: "token-1"};
@@ -171,6 +175,8 @@ test("exec instrumentation forwards launcher cgroup environment", async () => {
     assert.equal(result.params.env.CLAW_CGROUP_DEBUG, "1");
     assert.equal(result.params.env.CLAW_LAUNCH_DEBUG, "1");
     assert.equal(result.params.env.CLAW_SCHEDULER_ENDPOINT, "http://host.docker.internal:8765");
+    assert.equal(result.params.env.CLAW_SANDBOX_CONTAINER_ID, "5a423f3b2078");
+    assert.equal(result.params.env.AGENT_SCHEDULER_SANDBOX_CONTAINER_ID, "5a423f3b2078");
   } finally {
     for (const name of names) {
       if (previous[name] === undefined) {

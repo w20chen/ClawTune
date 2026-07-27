@@ -222,6 +222,16 @@ export AGENT_SCHEDULER_LLM_PROXY_ENABLED="true"
 export AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL="${LLM_MODEL:-__MODEL_SHORT__}"
 export AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL="${LLM_MODEL:-__MODEL_SHORT__}"
 export AGENT_SCHEDULER_POLICY="observe-only"
+export CLAW_SCHEDULER_ENDPOINT="http://127.0.0.1:$SIDECAR_PORT"
+export OPENCLAW_SCHEDULER_ENDPOINT="$CLAW_SCHEDULER_ENDPOINT"
+export CLAW_EXEC_WORKDIR="/testbed"
+export OPENCLAW_WORKSPACE_DIR="/testbed"
+export OPENCLAW_REPO_ROOT="/testbed"
+CONTAINER_ID_CANDIDATE="$(hostname 2>/dev/null || true)"
+if [ -n "$CONTAINER_ID_CANDIDATE" ]; then
+    export AGENT_SCHEDULER_SANDBOX_CONTAINER_ID="${AGENT_SCHEDULER_SANDBOX_CONTAINER_ID:-$CONTAINER_ID_CANDIDATE}"
+    export CLAW_SANDBOX_CONTAINER_ID="${CLAW_SANDBOX_CONTAINER_ID:-$CONTAINER_ID_CANDIDATE}"
+fi
 mkdir -p "$TRACE_DIR"
 $_CLW_PYTHON - <<'PY' > "$TRACE_DIR/cgroup_probe.json" 2>/dev/null || true
 import json
@@ -248,6 +258,7 @@ probe = {
     "cgroup_mount_exists": mount.exists(),
     "cgroup_mount_writable": os.access(mount, os.W_OK),
     "self_cgroup_path": self_path,
+    "container_id": os.environ.get("AGENT_SCHEDULER_SANDBOX_CONTAINER_ID"),
 }
 print(json.dumps(probe, indent=2))
 PY
@@ -669,12 +680,26 @@ def _write_plugin_config(bundle_dir: Path) -> None:
     cfg = json.dumps({
         "agents": {
             "defaults": {
+                "workspace": "/testbed",
+                "repoRoot": "/testbed",
+                "tools": {
+                    "elevated": {
+                        "enabled": True,
+                    },
+                },
                 "sandbox": {
                     "docker": {
                         "containerPrefix": "__SANDBOX_CONTAINER_PREFIX__",
                     },
                 },
             },
+        },
+        "env": {
+            "CLAW_SCHEDULER_ENDPOINT": "http://127.0.0.1:8765",
+            "OPENCLAW_SCHEDULER_ENDPOINT": "http://127.0.0.1:8765",
+            "CLAW_EXEC_WORKDIR": "/testbed",
+            "OPENCLAW_WORKSPACE_DIR": "/testbed",
+            "OPENCLAW_REPO_ROOT": "/testbed",
         },
         "plugins": {"entries": {"agent-scheduler": {"enabled": True, "config": _PLUGIN_CONFIG}}}
     }, indent=2)

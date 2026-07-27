@@ -398,11 +398,25 @@ def test_docker_runner_config_sets_sandbox_container_prefix_placeholder(tmp_path
     _write_plugin_config(tmp_path)
 
     parsed = json.loads((tmp_path / "openclaw-config.json5").read_text(encoding="utf-8"))
+    agent_defaults = parsed["agents"]["defaults"]
     docker_cfg = parsed["agents"]["defaults"]["sandbox"]["docker"]
 
+    assert agent_defaults["workspace"] == "/testbed"
+    assert agent_defaults["repoRoot"] == "/testbed"
+    assert agent_defaults["tools"]["elevated"]["enabled"] is True
     assert docker_cfg["containerPrefix"] == "__SANDBOX_CONTAINER_PREFIX__"
+    assert parsed["env"]["CLAW_EXEC_WORKDIR"] == "/testbed"
+    assert parsed["env"]["CLAW_SCHEDULER_ENDPOINT"] == "http://127.0.0.1:8765"
     assert "__SANDBOX_CONTAINER_PREFIX__" in _ENTRYPOINT_TEMPLATE
     assert "openclaw config patch --stdin" in _ENTRYPOINT_TEMPLATE
+
+
+def test_entrypoint_exports_container_runtime_identity_for_launcher() -> None:
+    assert 'export CLAW_SCHEDULER_ENDPOINT="http://127.0.0.1:$SIDECAR_PORT"' in _ENTRYPOINT_TEMPLATE
+    assert 'export CLAW_EXEC_WORKDIR="/testbed"' in _ENTRYPOINT_TEMPLATE
+    assert "AGENT_SCHEDULER_SANDBOX_CONTAINER_ID" in _ENTRYPOINT_TEMPLATE
+    assert "CLAW_SANDBOX_CONTAINER_ID" in _ENTRYPOINT_TEMPLATE
+    assert '"container_id": os.environ.get("AGENT_SCHEDULER_SANDBOX_CONTAINER_ID")' in _ENTRYPOINT_TEMPLATE
 
 
 def test_runner_config_enables_complete_cgroup_sampling() -> None:

@@ -211,6 +211,8 @@ function launcherEnv(): Record<string, string> {
     "CLAW_LAUNCH_DEBUG",
     "CLAW_SCHEDULER_ENDPOINT",
     "OPENCLAW_SCHEDULER_ENDPOINT",
+    "CLAW_SANDBOX_CONTAINER_ID",
+    "AGENT_SCHEDULER_SANDBOX_CONTAINER_ID",
   ]) {
     const value = process.env[key];
     if (typeof value === "string" && value.length > 0) output[key] = value;
