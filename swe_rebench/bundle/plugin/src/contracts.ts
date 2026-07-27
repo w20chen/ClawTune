@@ -25,7 +25,6 @@ export type PluginConfig = {
   failOpen: boolean;
   sendRawParams: boolean;
   recordRawTrace: boolean;
-  authTokenEnv: string;
   logLevel: "error" | "warn" | "info" | "debug";
   executionBackend: ExecutionBackend;
   launcherPath: string;

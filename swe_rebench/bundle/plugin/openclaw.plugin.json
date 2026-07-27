@@ -1,21 +1,20 @@
 {
   "id": "agent-scheduler",
   "name": "Agent Scheduler",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Agent scheduling and tracing bridge for OpenClaw.",
   "entry": "./dist/index.js",
   "runtime": "node",
   "configSchema": {
     "type": "object",
     "properties": {
-      "endpoint": {"type": "string", "default": "http://127.0.0.1:8765"},
+      "endpoint": {"type": "string", "default": "http://localhost:8765"},
       "mode": {"enum": ["observe", "enforce"], "default": "observe"},
       "decisionTimeoutMs": {"type": "integer", "default": 800, "minimum": 1},
       "reportTimeoutMs": {"type": "integer", "default": 800, "minimum": 1},
       "failOpen": {"type": "boolean", "default": true},
       "sendRawParams": {"type": "boolean", "default": false},
       "recordRawTrace": {"type": "boolean", "default": false},
-      "authTokenEnv": {"type": "string", "default": "OPENCLAW_SCHEDULER_TOKEN"},
       "logLevel": {"enum": ["error", "warn", "info", "debug"], "default": "info"},
       "executionBackend": {"enum": ["hook-only", "marker", "managed-wrapper"], "default": "managed-wrapper"},
       "launcherPath": {"type": "string", "default": "/opt/claw/bin/claw-launch"},

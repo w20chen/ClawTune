@@ -22,7 +22,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command_name", required=True)
     run = sub.add_parser("run")
     run.add_argument("--execution-id", required=True)
-    run.add_argument("--token", required=True)
+    run.add_argument("--token", help=argparse.SUPPRESS)
     run.add_argument(
         "--endpoint",
         default=os.environ.get("CLAW_SCHEDULER_ENDPOINT")
@@ -32,8 +32,11 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command_name == "run":
+        token = os.environ.pop("CLAW_EXECUTION_TOKEN", None) or args.token
+        if not token:
+            run.error("CLAW_EXECUTION_TOKEN is required")
         try:
-            raise SystemExit(run_execution(args.endpoint, args.execution_id, args.token))
+            raise SystemExit(run_execution(args.endpoint, args.execution_id, token))
         except Exception as exc:
             print("Command could not be started by the execution environment.", file=sys.stderr)
             if _env_enabled("CLAW_LAUNCH_DEBUG") or _env_enabled("CLAW_CGROUP_REQUIRED"):
@@ -141,9 +144,10 @@ def _spawn_shell(
         return subprocess.Popen(
             ["/bin/sh", "-lc", command],
             cwd=cwd,
+            env=_payload_environment(),
             preexec_fn=_child_preexec(cgroup_path, affinity_cpus),
         )
-    return subprocess.Popen(command, cwd=cwd, shell=True)
+    return subprocess.Popen(command, cwd=cwd, env=_payload_environment(), shell=True)
 
 
 def _post_started(
@@ -201,7 +205,7 @@ def _restart_in_systemd_scope(
         'i=$((i+1)); sleep 0.01; done; rm -f "$CLAW_SYSTEMD_RELEASE_FILE"; '
         'exec /bin/sh -lc "$CLAW_SYSTEMD_PAYLOAD"'
     )
-    env = dict(os.environ)
+    env = _payload_environment()
     env["CLAW_SYSTEMD_PAYLOAD"] = command
     env["CLAW_SYSTEMD_CGROUP_FILE"] = cgroup_probe.name
     env["CLAW_SYSTEMD_RELEASE_FILE"] = release_path
@@ -833,6 +837,17 @@ def _enabled(profiling: object, key: str, default: bool) -> bool:
 
 def _env_enabled(name: str) -> bool:
     return os.environ.get(name, "").lower() in {"1", "true", "yes", "on"}
+
+
+def _payload_environment() -> dict[str, str]:
+    env = dict(os.environ)
+    for key in (
+        "CLAW_EXECUTION_TOKEN",
+        "CLAW_SCHEDULER_TOKEN",
+        "OPENCLAW_SCHEDULER_TOKEN",
+    ):
+        env.pop(key, None)
+    return env
 
 
 def _redact_debug_message(message: str) -> str:

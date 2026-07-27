@@ -32,7 +32,6 @@ _PLUGIN_CONFIG: dict[str, Any] = {
     "failOpen": True,
     "sendRawParams": False,
     "recordRawTrace": False,
-    "authTokenEnv": "OPENCLAW_SCHEDULER_TOKEN",
     "logLevel": "info",
     "executionBackend": "managed-wrapper",
     "launcherPath": "/opt/claw/bin/claw-launch",

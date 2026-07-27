@@ -7,6 +7,7 @@ import type {
   ToolCompletedEvent,
   ToolDecision
 } from "./contracts.js";
+import {sidecarRequestHeaders} from "./sidecar-auth.js";
 
 export class SidecarClient {
   constructor(private readonly config: PluginConfig) {}
@@ -47,12 +48,9 @@ export class SidecarClient {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const headers: Record<string, string> = {"content-type": "application/json"};
-      const token = process.env[this.config.authTokenEnv];
-      if (token) headers.authorization = `Bearer ${token}`;
       const response = await fetch(`${this.config.endpoint}${path}`, {
         ...init,
-        headers,
+        headers: sidecarRequestHeaders(),
         signal: controller.signal
       });
       if (!response.ok) {

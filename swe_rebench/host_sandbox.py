@@ -403,7 +403,6 @@ def _openclaw_config(
                             "failOpen": True,
                             "sendRawParams": False,
                             "recordRawTrace": False,
-                            "authTokenEnv": "OPENCLAW_SCHEDULER_TOKEN",
                             "logLevel": "warn",
                             "executionBackend": "managed-wrapper",
                             "launcherPath": "/workspace/.claw/bin/claw-launch",

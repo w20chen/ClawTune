@@ -45,10 +45,13 @@ cd packages/openclaw-plugin && npm test && npm run typecheck
 - `cd packages/openclaw-plugin && npm test` cannot run directly from this
   Windows PowerShell sandbox because `npm.ps1` is blocked by execution policy;
   use `npm.cmd test` instead.
-- `cd swe_rebench/bundle/plugin && npm.cmd run build` could not run in this
-  Windows workspace because the bundled plugin does not have a local `tsc`
-  executable installed.  The current bundled `dist` was validated with
-  `node --test test/*.test.mjs`.
+- `cd swe_rebench/bundle/plugin && npm.cmd run build` cannot run directly
+  because the bundled plugin intentionally has no local `node_modules`.
+  It was compiled with the main plugin's `tsc` and explicit `--typeRoots`, then
+  validated with `node --test test/*.test.mjs`.
+- `clawhub package validate packages/openclaw-plugin` cannot run because the
+  ClawHub CLI is not installed in this Windows workspace. The npm publish file
+  set and suspicious static-analysis patterns are checked locally instead.
 - `python -m mypy .` currently fails on pre-existing repository-wide typing
   issues, including missing `types-setuptools`, Windows/POSIX launcher
   attribute checks, and trace helper union-attr errors.

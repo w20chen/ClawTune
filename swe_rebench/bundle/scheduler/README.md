@@ -32,6 +32,10 @@ Configuration uses environment variables:
 `AGENT_SCHEDULER_CONFIG` is not consumed by the sidecar; use the environment
 variables above.
 
+When `AGENT_SCHEDULER_TOKEN` is set, start OpenClaw with the same value in
+`OPENCLAW_SCHEDULER_TOKEN` so both the plugin and `claw-launch` can authenticate
+to the sidecar.
+
 Runtime inspection:
 
 ```bash

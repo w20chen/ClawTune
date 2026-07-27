@@ -1,14 +1,13 @@
 import type {PluginConfig} from "./contracts.js";
 
 const defaults: PluginConfig = {
-  endpoint: "http://127.0.0.1:8765",
+  endpoint: "http://localhost:8765",
   mode: "observe",
   decisionTimeoutMs: 800,
   reportTimeoutMs: 800,
   failOpen: true,
   sendRawParams: false,
   recordRawTrace: false,
-  authTokenEnv: "OPENCLAW_SCHEDULER_TOKEN",
   logLevel: "info",
   executionBackend: "managed-wrapper",
   launcherPath: "/opt/claw/bin/claw-launch",

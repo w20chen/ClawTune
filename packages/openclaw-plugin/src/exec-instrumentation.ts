@@ -96,13 +96,21 @@ export async function instrumentExecParams(
     if (config.mode !== "observe" && !config.failOpen) throw error;
   }
 
+  const inheritedLauncherEnv = launcherEnv();
+  const launcherEndpoint = inheritedLauncherEnv.CLAW_SCHEDULER_ENDPOINT
+    ?? inheritedLauncherEnv.OPENCLAW_SCHEDULER_ENDPOINT
+    ?? config.endpoint;
   params.env = {
     ...safeExecEnv(params.env),
-    ...launcherEnv(),
+    ...inheritedLauncherEnv,
     CLAW_EXECUTION_ID: executionId,
+    ...(token !== null && config.executionBackend === "managed-wrapper"
+      ? {CLAW_EXECUTION_TOKEN: token}
+      : {}),
+    CLAW_SCHEDULER_ENDPOINT: launcherEndpoint,
     CLAW_TOOL_CALL_ID: payload.tool_call_id ?? "",
     CLAW_RUN_ID: runId ?? "",
-    CLAW_SESSION_KEY_HASH: sessionKeyHash ?? "",
+    CLAW_SESSION_HASH: sessionKeyHash ?? "",
     CLAW_COMMAND_DIGEST: commandDigest
   };
 
@@ -117,8 +125,7 @@ export async function instrumentExecParams(
     effectiveCommand = [
       shellQuote(config.launcherPath),
       "run",
-      `--execution-id=${shellQuote(executionId)}`,
-      `--token=${shellQuote(token)}`
+      `--execution-id=${shellQuote(executionId)}`
     ].join(" ");
     params.command = effectiveCommand;
     // payloadCommand stays as the original requestedCommand

@@ -1,5 +1,7 @@
 # OpenClaw Agent Scheduler
 
+[![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/w20chen/claw)
+
 OpenClaw Agent Scheduler is an OpenClaw plugin plus a Python sidecar. It records
 OpenClaw model/tool traces and per-tool resource usage. It also includes a
 SWE-Rebench batch runner.

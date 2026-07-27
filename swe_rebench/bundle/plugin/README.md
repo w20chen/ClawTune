@@ -47,7 +47,7 @@ cat <<JSON5 | openclaw config patch --stdin
       "agent-scheduler": {
         enabled: true,
         config: {
-          endpoint: "http://127.0.0.1:8765",
+          endpoint: "http://localhost:8765",
           mode: "observe",
           failOpen: true,
           recordRawTrace: true,
@@ -65,3 +65,8 @@ JSON5
 `recordRawTrace` is disabled by package default. Enable it when you want
 hook-visible tool args/results in traces. Use `managed-wrapper` when you want
 the sidecar to correlate `exec` with a trusted PID or cgroup scope.
+
+Sidecar authentication is optional. When the sidecar is started with
+`AGENT_SCHEDULER_TOKEN`, expose the same value to OpenClaw as
+`OPENCLAW_SCHEDULER_TOKEN`. The plugin reads only this fixed, plugin-specific
+variable and sends it as a bearer credential to the configured sidecar.

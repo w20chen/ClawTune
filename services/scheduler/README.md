@@ -33,6 +33,10 @@ Configuration uses environment variables:
 `AGENT_SCHEDULER_CONFIG` is not consumed by the sidecar; use the environment
 variables above.
 
+When `AGENT_SCHEDULER_TOKEN` is set, start OpenClaw with the same value in
+`OPENCLAW_SCHEDULER_TOKEN` so both the plugin and `claw-launch` can authenticate
+to the sidecar.
+
 `AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED` defaults to `true`. In this
 mode managed-wrapper `exec` claims fail closed unless native `tool_resource`
 Stage-2 clause telemetry can be started before the payload command runs. Set it

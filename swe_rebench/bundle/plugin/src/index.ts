@@ -43,7 +43,7 @@ import type {
 } from "./trace/schema.js";
 import { TRACE_SCHEMA_VERSION } from "./trace/schema.js";
 
-const pluginVersion = "0.1.0";
+const pluginVersion = "0.1.1";
 
 // ── Plugin-wide state ──────────────────────────────────────────────────
 let registry: SpanRegistry | null = null;
@@ -149,14 +149,13 @@ export default definePluginEntry({
     type: "object",
     additionalProperties: false,
     properties: {
-      endpoint: {type: "string", default: "http://127.0.0.1:8765"},
+      endpoint: {type: "string", default: "http://localhost:8765"},
       mode: {enum: ["observe", "enforce"], default: "observe"},
       decisionTimeoutMs: {type: "integer", default: 800, minimum: 1},
       reportTimeoutMs: {type: "integer", default: 800, minimum: 1},
       failOpen: {type: "boolean", default: true},
       sendRawParams: {type: "boolean", default: false},
       recordRawTrace: {type: "boolean", default: false},
-      authTokenEnv: {type: "string", default: "OPENCLAW_SCHEDULER_TOKEN"},
       logLevel: {enum: ["error", "warn", "info", "debug"], default: "info"},
       executionBackend: {enum: ["hook-only", "marker", "managed-wrapper"], default: "managed-wrapper"},
       launcherPath: {type: "string", default: "/opt/claw/bin/claw-launch"},

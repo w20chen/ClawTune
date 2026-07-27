@@ -3,14 +3,13 @@ import assert from "node:assert/strict";
 import {instrumentExecParams} from "../dist/exec-instrumentation.js";
 
 const baseConfig = {
-  endpoint: "http://127.0.0.1:8765",
+  endpoint: "http://localhost:8765",
   mode: "observe",
   decisionTimeoutMs: 800,
   reportTimeoutMs: 800,
   failOpen: true,
   sendRawParams: false,
   recordRawTrace: false,
-  authTokenEnv: "OPENCLAW_SCHEDULER_TOKEN",
   logLevel: "info",
   executionBackend: "marker",
   launcherPath: "/opt/claw/bin/claw-launch",
@@ -28,7 +27,7 @@ const payload = {
   schema_version: "scheduler.v1",
   event_id: "evt-1",
   occurred_at: "2026-07-16T00:00:00Z",
-  plugin_version: "0.1.0",
+  plugin_version: "0.1.1",
   run_id: "run-1",
   session_id: null,
   session_key: "session-secret",
@@ -92,7 +91,8 @@ test("marker backend injects env without changing command", async () => {
   assert.equal(result.params.env.CLAW_TOOL_CALL_ID, "call-1");
   assert.equal(result.params.env.CLAW_RUN_ID, "run-1");
   assert.match(result.params.env.CLAW_COMMAND_DIGEST, /^sha256:[a-f0-9]{64}$/);
-  assert.match(result.params.env.CLAW_SESSION_KEY_HASH, /^sha256:[a-f0-9]{64}$/);
+  assert.match(result.params.env.CLAW_SESSION_HASH, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(result.params.env.CLAW_EXECUTION_TOKEN, undefined);
   assert.equal(seen[0].command, "pytest tests -q");
 });
 
@@ -217,7 +217,7 @@ test("exec instrumentation can force sandbox workdir from environment", async ()
   }
 });
 
-test("managed-wrapper rewrites command to launcher token only", async () => {
+test("managed-wrapper passes the claim token outside the process argv", async () => {
   const client = {
     async registerExecution() {
       return {one_time_token: "-token-1"};
@@ -234,7 +234,10 @@ test("managed-wrapper rewrites command to launcher token only", async () => {
     {...baseConfig, executionBackend: "managed-wrapper", securityBoundaryAccepted: true}
   );
 
-  assert.equal(result.params.command, "'/opt/claw/bin/claw-launch' run --execution-id='call-1' --token='-token-1'");
+  assert.equal(result.params.command, "'/opt/claw/bin/claw-launch' run --execution-id='call-1'");
   assert.equal(result.params.command.includes("raw-command"), false);
+  assert.equal(result.params.command.includes("token-1"), false);
   assert.equal(result.params.env.CLAW_EXECUTION_ID, "call-1");
+  assert.equal(result.params.env.CLAW_EXECUTION_TOKEN, "-token-1");
+  assert.equal(result.params.env.CLAW_SCHEDULER_ENDPOINT, "http://localhost:8765");
 });

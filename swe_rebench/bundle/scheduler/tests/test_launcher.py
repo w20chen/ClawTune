@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import pytest
@@ -398,6 +399,48 @@ def test_launcher_accepts_dash_prefixed_token_with_equals(monkeypatch) -> None:
         "execution_id": "exec-1",
         "token": "-leading-token",
     }
+
+
+def test_launcher_prefers_execution_token_env_and_removes_it(monkeypatch) -> None:
+    seen: dict[str, str] = {}
+
+    def fake_run(endpoint: str, execution_id: str, token: str) -> int:
+        seen["endpoint"] = endpoint
+        seen["execution_id"] = execution_id
+        seen["token"] = token
+        assert "CLAW_EXECUTION_TOKEN" not in os.environ
+        return 0
+
+    monkeypatch.setenv("CLAW_EXECUTION_TOKEN", "env-token")
+    monkeypatch.setattr(launcher, "run_execution", fake_run)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["claw-launch", "run", "--execution-id", "exec-1"],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        launcher.main()
+
+    assert exc.value.code == 0
+    assert seen == {
+        "endpoint": "http://127.0.0.1:8765",
+        "execution_id": "exec-1",
+        "token": "env-token",
+    }
+
+
+def test_payload_environment_removes_scheduler_credentials(monkeypatch) -> None:
+    monkeypatch.setenv("CLAW_EXECUTION_TOKEN", "claim-token")
+    monkeypatch.setenv("CLAW_SCHEDULER_TOKEN", "legacy-bearer")
+    monkeypatch.setenv("OPENCLAW_SCHEDULER_TOKEN", "bearer")
+    monkeypatch.setenv("KEEP", "value")
+
+    env = launcher._payload_environment()
+
+    assert env["KEEP"] == "value"
+    assert "CLAW_EXECUTION_TOKEN" not in env
+    assert "CLAW_SCHEDULER_TOKEN" not in env
+    assert "OPENCLAW_SCHEDULER_TOKEN" not in env
 
 
 def test_launcher_main_hides_internal_wrapper_errors(monkeypatch, capsys) -> None:
