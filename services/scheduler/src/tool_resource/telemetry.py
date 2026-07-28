@@ -285,6 +285,7 @@ BPF_ARRAY(ringbuf_reserve_failures, u64, 1);
 BPF_ARRAY(argv_read_failures, u64, 1);
 BPF_ARRAY(argv_boundary_read_failures, u64, 1);
 BPF_ARRAY(perf_sample_count, u64, 1);
+BPF_ARRAY(kprobe_total_hits, u64, 1);
 BPF_QUEUE(exec_sequences, u64, 65536);
 BPF_ARRAY(sequence_ready, u32, 1);
 struct task_key_t {
@@ -302,6 +303,8 @@ BPF_HASH(pending_seq, struct task_key_t, struct pending_exec_t);
 
 static int wanted(void) {
     u32 zero = 0;
+    u64 *counter = kprobe_total_hits.lookup(&zero);
+    if (counter) __sync_fetch_and_add(counter, 1);
     u64 *t = target_cgroup.lookup(&zero);
     /* When no cgroup is configured (t==NULL or *t==0), allow all events.
      * This is intentionally permissive: if the container cgroup cannot be
@@ -3781,6 +3784,15 @@ class ClauseTelemetryCollector:
             total_loss_counts = dict.fromkeys(LOSS_COUNTER_NAMES, 0)
             self._disable(f"collector counter read failed: {type(exc).__name__}: {exc}")
         total_loss = sum(total_loss_counts.values())
+        # Read diagnostic kprobe counter to determine if kprobes fired at all.
+        try:
+            kprobe_hits = (
+                int(self._bpf["kprobe_total_hits"][ctypes.c_int(0)].value)
+                if self.state == "active" and hasattr(self, "_bpf")
+                else 0
+            )
+        except BaseException:
+            kprobe_hits = 0
         if self._active is not None:
             self._disable(
                 f"unterminated exec delimiter: {self._active.tool_call_id}",
@@ -3887,6 +3899,7 @@ class ClauseTelemetryCollector:
                         "invalid_call_count": invalid_count,
                         "unavailable_call_count": unavailable_count,
                         "eligible_call_count": eligible_count,
+                        "kprobe_total_hits": kprobe_hits,
                     },
                     "call_coverage": {
                         "total_call_count": len(self.calls),
