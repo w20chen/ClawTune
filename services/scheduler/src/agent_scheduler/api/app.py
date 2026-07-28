@@ -535,6 +535,16 @@ def create_app(state: AppState | None = None) -> FastAPI:
             if len(s._recent_samples) > s._max_recent_samples:
                 s._recent_samples.pop()
             if s.trace_writer is not None:
+                if event.execution_id is not None:
+                    telemetry = s.predictor.finish_execution(
+                        execution_id=event.execution_id,
+                        exit_code=0 if event.succeeded else None,
+                        signal=None,
+                    )
+                    s.trace_writer.record_tool_resource_telemetry(
+                        event.execution_id,
+                        telemetry,
+                    )
                 s.trace_writer.record_tool(event, sample)
         s.metrics.inc("scheduler_tool_completions_total")
         s.metrics.tool_durations.append(event.duration_ms / 1000)
@@ -587,7 +597,17 @@ def create_app(state: AppState | None = None) -> FastAPI:
             # /v1/runtime/sandbox-scope will retry begin_stage2_for_record
             # for all active executions once the sandbox container is
             # discovered.
-            if container_id and not _defer_stage2_until_started(record):
+            fallback_scope = sandbox_fallback_scope(s)
+            if (
+                container_id
+                and (
+                    not _defer_stage2_until_started(record)
+                    or (
+                        s.config.execution_cgroup_root is None
+                        and _has_usable_cgroup_scope(fallback_scope)
+                    )
+                )
+            ):
                 started = begin_stage2_for_record(s, request.execution_id, container_id)
                 if (
                     s.config.tool_resource_stage2_required

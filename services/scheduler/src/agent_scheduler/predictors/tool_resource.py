@@ -477,17 +477,17 @@ class ToolResourcePredictor:
     def _persist_clause_kb(self) -> bool:
         if self.clause_kb_snapshot_path is None:
             return False
+        try:
+            _write_json_atomic(self.clause_kb_snapshot_path, self.kb.to_json_obj())
+            return True
+        except Exception:
+            return False
 
     def _persist_runtime_kb(self) -> bool:
         if self.runtime_kb_snapshot_path is None:
             return False
         try:
             _write_json_atomic(self.runtime_kb_snapshot_path, self.continuous_kb.to_json_obj())
-            return True
-        except Exception:
-            return False
-        try:
-            _write_json_atomic(self.clause_kb_snapshot_path, self.kb.to_json_obj())
             return True
         except Exception:
             return False

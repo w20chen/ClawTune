@@ -193,3 +193,7 @@ python -m pytest tests/test_swe_rebench_runner_inspection.py \
 - `npm test` from `packages/openclaw-plugin` cannot run through PowerShell in
   this Windows workspace because `npm.ps1` is blocked by the local execution
   policy. The equivalent `npm.cmd test` command was run instead.
+- `npm run build` from `packages/openclaw-plugin` cannot run through
+  PowerShell in this Windows workspace because `npm.ps1` is blocked by the
+  local execution policy. The equivalent `npm.cmd run build` command was run
+  instead.

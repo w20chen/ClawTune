@@ -862,6 +862,130 @@ def test_stage2_execution_waits_for_sandbox_container_scope(tmp_path: Path) -> N
     ]
 
 
+def test_stage2_execution_starts_on_claim_when_sandbox_scope_is_known(tmp_path: Path) -> None:
+    sandbox_cgroup = tmp_path / "sandbox-cgroup"
+    _write_cgroup_fixture(sandbox_cgroup)
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=tmp_path / "traces",
+            sandbox_cgroup_path=str(sandbox_cgroup),
+            sandbox_container_id="b" * 64,
+            tool_resource_stage2_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
+    begin_calls: list[dict[str, object]] = []
+
+    def begin_execution(**kwargs):
+        begin_calls.append(kwargs)
+        return True
+
+    state.predictor.begin_execution = begin_execution  # type: ignore[method-assign]
+
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-launcher-exec",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi && true",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"enable_cgroup": True},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+    client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": os.getpid(),
+        },
+    )
+
+    assert begin_calls == [
+        {
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "command": "echo hi && true",
+            "container_id": "b" * 64,
+            "repo": "openclaw",
+        }
+    ]
+
+
+def test_exec_completion_finalizes_stage2_before_trace_write(tmp_path: Path) -> None:
+    sandbox_cgroup = tmp_path / "sandbox-cgroup"
+    _write_cgroup_fixture(sandbox_cgroup)
+    trace_dir = tmp_path / "traces"
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=trace_dir,
+            sandbox_cgroup_path=str(sandbox_cgroup),
+            sandbox_container_id="b" * 64,
+            tool_resource_stage2_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
+    finish_calls: list[dict[str, object]] = []
+
+    def finish_execution(**kwargs):
+        finish_calls.append(kwargs)
+        return {
+            "execution_id": kwargs["execution_id"],
+            "tool_call_id": kwargs["execution_id"],
+            "artifact_path": None,
+            "started": False,
+            "status": "unavailable",
+            "unavailable_reason": "execution_not_exited",
+        }
+
+    state.predictor.finish_execution = finish_execution  # type: ignore[method-assign]
+    completion = {
+        "schema_version": "scheduler.v1",
+        "event_id": "evt-exec-end",
+        "occurred_at": "2026-07-16T03:23:01Z",
+        "plugin_version": "0.1.0",
+        "run_id": "run-launcher-exec",
+        "session_id": "session-launcher-exec",
+        "session_key": None,
+        "agent_id": None,
+        "tool_call_id": "call-exec",
+        "decision_id": None,
+        "lease_id": None,
+        "execution_id": "call-exec",
+        "tool_name": "exec",
+        "duration_ms": 100,
+        "succeeded": True,
+        "error_type": None,
+        "error_digest": None,
+        "result_size_bytes": None,
+        "raw_result": {"details": {"status": "running"}},
+        "resource_scope": None,
+    }
+
+    assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
+
+    assert finish_calls == [
+        {"execution_id": "call-exec", "exit_code": 0, "signal": None}
+    ]
+    tool_end = next(
+        r
+        for r in _read_trace_records(trace_dir)
+        if r.get("record_type") == "span_end" and r.get("kind") == "tool"
+    )
+    assert tool_end["execution"]["tool_resource"]["execution_id"] == "call-exec"
+    assert tool_end["execution"]["tool_resource"]["status"] == "unavailable"
+    assert (
+        tool_end["execution"]["tool_resource"]["unavailable_reason"]
+        == "execution_not_exited"
+    )
+
+
 def test_execution_started_host_cgroup_gate_creates_exact_scope(
     tmp_path: Path,
     monkeypatch,
