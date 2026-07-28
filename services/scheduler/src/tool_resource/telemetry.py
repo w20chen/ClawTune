@@ -280,8 +280,7 @@ struct event_t {
 };
 
 BPF_RINGBUF_OUTPUT(events, 1024);
-BPF_HASH(target_cgroups, u64, u8, 64);
-BPF_ARRAY(filter_active, u32, 1);
+BPF_ARRAY(target_cgroup, u64, 1);
 BPF_ARRAY(ringbuf_reserve_failures, u64, 1);
 BPF_ARRAY(argv_read_failures, u64, 1);
 BPF_ARRAY(argv_boundary_read_failures, u64, 1);
@@ -303,12 +302,13 @@ BPF_HASH(pending_seq, struct task_key_t, struct pending_exec_t);
 
 static int wanted(void) {
     u32 zero = 0;
-    u32 *active = filter_active.lookup(&zero);
-    // When filter_active is unset or 0, allow all events (no filtering).
-    if (!active || !*active) return 1;
-    u64 current = bpf_get_current_cgroup_id();
-    u8 *found = target_cgroups.lookup(&current);
-    return found != NULL;
+    u64 *t = target_cgroup.lookup(&zero);
+    /* When no cgroup is configured (t==NULL or *t==0), allow all events.
+     * This is intentionally permissive: if the container cgroup cannot be
+     * reliably identified (e.g. Docker creates child cgroups under the
+     * scope), we capture everything and let userspace filter by cgroup_id. */
+    if (!t || !*t) return 1;
+    return *t == bpf_get_current_cgroup_id();
 }
 
 static void lost(u64 *counter) {
@@ -1149,7 +1149,7 @@ def collect_case(command: str, tag: str, *, marker: str = "") -> RawRun:
     for seq in range(8192):
         q.push(ctypes.c_ulonglong(seq))
     bpf["sequence_ready"][ctypes.c_int(0)] = ctypes.c_uint(1)
-    _populate_bpf_cgroup_filter(bpf, {cgroup_id})
+    bpf["target_cgroup"][ctypes.c_int(0)] = ctypes.c_ulonglong(cgroup_id)
 
     events: list[dict[str, Any]] = []
     lock = threading.Lock()
@@ -2614,16 +2614,6 @@ def _discover_leaf_cgroup_inodes(cgroup: Path) -> set[int]:
     return inodes
 
 
-def _populate_bpf_cgroup_filter(bpf: Any, cgroup_inodes: set[int]) -> None:
-    """Populate the ``target_cgroups`` BPF hash with *cgroup_inodes* and
-    activate the filter."""
-    if not cgroup_inodes:
-        return
-    for inode in cgroup_inodes:
-        bpf["target_cgroups"][ctypes.c_ulonglong(inode)] = ctypes.c_uint8(1)
-    bpf["filter_active"][ctypes.c_int(0)] = ctypes.c_uint32(1)
-
-
 def _event_row(table: Any, data: int) -> dict[str, Any]:
     event = table.event(data)
     row = {
@@ -2794,9 +2784,14 @@ class ClauseTelemetryCollector:
         self.container_id = container_id
         self.cgroup = cgroup
         self.cgroup_id = cgroup.stat().st_ino
-        # Discover all leaf cgroup inodes so the BPF filter matches processes
-        # in child cgroups (Docker/cgroup-v2 may create nested cgroups).
-        self.cgroup_inodes = _discover_leaf_cgroup_inodes(cgroup) if cgroup else set()
+        # Discover all cgroup inodes under the container scope so the
+        # Python event filter can match processes in child cgroups that
+        # Docker/containerd may create.  The BPF wanted() filter is left
+        # permissive (target_cgroup=0) to avoid silent event loss when the
+        # exact leaf cgroup is not known ahead of time.
+        self.cgroup_inodes = (
+            _discover_leaf_cgroup_inodes(cgroup) if cgroup else {self.cgroup_id}
+        )
         if not self.cgroup_inodes and self.cgroup_id:
             self.cgroup_inodes = {self.cgroup_id}
         self.init_pid = init_pid
@@ -2870,7 +2865,8 @@ class ClauseTelemetryCollector:
             for sequence in range(8192):
                 queue.push(ctypes.c_ulonglong(sequence))
             self._bpf["sequence_ready"][ctypes.c_int(0)] = ctypes.c_uint(1)
-            _populate_bpf_cgroup_filter(self._bpf, self.cgroup_inodes)
+            # target_cgroup stays 0 → wanted() is permissive (allow all).
+            # Python-side filtering by self.cgroup_inodes discards noise.
             self._table = self._bpf["events"]
 
             def receive(_ctx: int, data: int, _size: int) -> int:
