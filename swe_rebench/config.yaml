@@ -13,7 +13,7 @@ runtime:
 
   # Keep container-openclaw fail-open when BCC/eBPF is unavailable. The runner
   # propagates this value to the in-container sidecar.
-  stage2_required: false
+  stage2_required: true
 
 llm:
   # API key for the upstream LLM provider (required)

@@ -455,8 +455,12 @@ def _run_openclaw_agent(
         }
     )
     prompt_path = trace_dir / "agent_prompt.txt"
-    stdout = (trace_dir / "agent-stdout.txt").open("w", encoding="utf-8")
-    stderr = (trace_dir / "agent-stderr.txt").open("w", encoding="utf-8")
+    stdout_path = trace_dir / "agent-stdout.txt"
+    stderr_path = trace_dir / "agent-stderr.txt"
+    stdout_file = stdout_path.open("w", encoding="utf-8")
+    stderr_file = stderr_path.open("w", encoding="utf-8")
+    _log(f"[agent] starting (trace: {trace_dir})")
+
     stop_discovery = threading.Event()
     discovery = threading.Thread(
         target=_discover_sandbox_scope_loop,
@@ -486,10 +490,37 @@ def _run_openclaw_agent(
         ],
         cwd=str(config.repo_root),
         env=env,
-        stdout=stdout,
-        stderr=stderr,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
     )
+
+    # ── Tee agent output to trace files + console ──────────────────
+    _write_lock = threading.Lock()
+
+    def _tee(pipe: Any, log_file: Any, tag: str) -> None:
+        try:
+            for line in pipe:
+                with _write_lock:
+                    log_file.write(line)
+                    log_file.flush()
+                _log(f"[{tag}] {line.rstrip()}")
+        except (ValueError, OSError):
+            pass
+
+    tee_stdout = threading.Thread(
+        target=_tee,
+        args=(process.stdout, stdout_file, "agent"),
+        daemon=True,
+    )
+    tee_stderr = threading.Thread(
+        target=_tee,
+        args=(process.stderr, stderr_file, "agent:err"),
+        daemon=True,
+    )
+    tee_stdout.start()
+    tee_stderr.start()
+
     try:
         return process.wait(
             timeout=config.batch.task_timeout_seconds if config.batch.task_timeout_seconds > 0 else None
@@ -501,6 +532,18 @@ def _run_openclaw_agent(
     finally:
         stop_discovery.set()
         discovery.join(timeout=2)
+        # Close pipes and join tee threads
+        try:
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
+        except OSError:
+            pass
+        tee_stdout.join(timeout=2)
+        tee_stderr.join(timeout=2)
+        stdout_file.close()
+        stderr_file.close()
 
 
 def _openclaw_config(
@@ -514,8 +557,8 @@ def _openclaw_config(
         {
             "agents": {
                 "defaults": {
-                    "workspace": str(workspace),
-                    "repoRoot": str(workspace),
+                    "workspace": "/workspace",
+                    "repoRoot": "/workspace",
                     "sandbox": {
                         "mode": "all",
                         "backend": "docker",
