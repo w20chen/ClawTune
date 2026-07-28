@@ -26,6 +26,14 @@ from swe_rebench.docker import ContainerResult
 from swe_rebench.sandbox import sandbox_container_prefix
 from swe_rebench.task_source import TaskDef
 
+# ── thread-safe console logging ──────────────────────────────────
+_print_lock = threading.Lock()
+
+
+def _log(msg: str) -> None:
+    with _print_lock:
+        print(msg, file=sys.stderr, flush=True)
+
 
 def run_host_sandbox_task(
     *,
