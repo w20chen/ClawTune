@@ -698,11 +698,15 @@ def test_host_sandbox_discovers_sandbox_container_by_docker_prefix(monkeypatch) 
     assert calls[0][0] == ["/usr/bin/docker", "ps", "-q", "--filter", "name=claw-srb-test"]
 
 
-def test_host_sandbox_openclaw_env_points_workspace_dir_at_task_workspace(tmp_path: Path) -> None:
+def test_host_sandbox_openclaw_env_points_workspace_dir_at_task_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
     workspace = tmp_path / "workspace"
+    monkeypatch.setenv("OPENCLAW_AGENT_SCHEDULER_TRACE_DIR", "/tmp/plugin-should-not-write")
 
     env = _openclaw_env(tmp_path / "home", 8765, config, workspace)
 
@@ -711,6 +715,7 @@ def test_host_sandbox_openclaw_env_points_workspace_dir_at_task_workspace(tmp_pa
     assert env["CLAW_SANDBOX_HOST_WORKSPACE"] == str(workspace)
     assert env["CLAW_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
     assert env["CLAW_ENABLE_CGROUP"] == "1"
+    assert "OPENCLAW_AGENT_SCHEDULER_TRACE_DIR" not in env
 
 
 def test_host_sandbox_prompt_uses_relative_paths(tmp_path: Path) -> None:

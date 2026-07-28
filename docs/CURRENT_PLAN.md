@@ -107,6 +107,11 @@ python -m pytest tests/test_swe_rebench_runner_inspection.py \
   because the bundled plugin intentionally has no local `node_modules`.
   It was compiled with the main plugin's `tsc` and explicit `--typeRoots`, then
   validated with `node --test test/*.test.mjs`.
+- `cd swe_rebench/bundle/plugin && npm.cmd test` cannot run directly for the
+  same reason: its `npm test` script invokes local `tsc`, which is absent from
+  the intentionally dependency-free bundle directory. Use the main plugin's
+  `tsc.cmd -p tsconfig.json --typeRoots ...\packages\openclaw-plugin\node_modules\@types`
+  followed by `node --test test/*.test.mjs`.
 - `clawhub package validate packages/openclaw-plugin` cannot run because the
   ClawHub CLI is not installed in this Windows workspace. The npm publish file
   set and suspicious static-analysis patterns are checked locally instead.

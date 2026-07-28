@@ -63,14 +63,16 @@ test("loadConfig rejects managed-wrapper relative launcherPath", () => {
 test("loadConfig reads agent scheduler environment overrides", () => {
   const previousEndpoint = process.env.OPENCLAW_AGENT_SCHEDULER_ENDPOINT;
   const previousTraceDir = process.env.OPENCLAW_AGENT_SCHEDULER_TRACE_DIR;
+  const previousPluginTraceDir = process.env.OPENCLAW_AGENT_SCHEDULER_PLUGIN_TRACE_DIR;
   process.env.OPENCLAW_AGENT_SCHEDULER_ENDPOINT = "http://127.0.0.1:9999";
   process.env.OPENCLAW_AGENT_SCHEDULER_TRACE_DIR = "/tmp/agent-scheduler-traces";
+  process.env.OPENCLAW_AGENT_SCHEDULER_PLUGIN_TRACE_DIR = "/tmp/plugin-traces";
 
   try {
     const config = loadConfig({});
 
     assert.equal(config.endpoint, "http://127.0.0.1:9999");
-    assert.equal(config.trace.trace_dir, "/tmp/agent-scheduler-traces");
+    assert.equal(config.trace.trace_dir, "/tmp/plugin-traces");
   } finally {
     if (previousEndpoint === undefined) {
       delete process.env.OPENCLAW_AGENT_SCHEDULER_ENDPOINT;
@@ -81,6 +83,35 @@ test("loadConfig reads agent scheduler environment overrides", () => {
       delete process.env.OPENCLAW_AGENT_SCHEDULER_TRACE_DIR;
     } else {
       process.env.OPENCLAW_AGENT_SCHEDULER_TRACE_DIR = previousTraceDir;
+    }
+    if (previousPluginTraceDir === undefined) {
+      delete process.env.OPENCLAW_AGENT_SCHEDULER_PLUGIN_TRACE_DIR;
+    } else {
+      process.env.OPENCLAW_AGENT_SCHEDULER_PLUGIN_TRACE_DIR = previousPluginTraceDir;
+    }
+  }
+});
+
+test("loadConfig does not treat sidecar trace dir env as plugin trace output", () => {
+  const previousTraceDir = process.env.OPENCLAW_AGENT_SCHEDULER_TRACE_DIR;
+  const previousPluginTraceDir = process.env.OPENCLAW_AGENT_SCHEDULER_PLUGIN_TRACE_DIR;
+  process.env.OPENCLAW_AGENT_SCHEDULER_TRACE_DIR = "/tmp/sidecar-traces";
+  delete process.env.OPENCLAW_AGENT_SCHEDULER_PLUGIN_TRACE_DIR;
+
+  try {
+    const config = loadConfig({});
+
+    assert.equal(config.trace.trace_dir, "");
+  } finally {
+    if (previousTraceDir === undefined) {
+      delete process.env.OPENCLAW_AGENT_SCHEDULER_TRACE_DIR;
+    } else {
+      process.env.OPENCLAW_AGENT_SCHEDULER_TRACE_DIR = previousTraceDir;
+    }
+    if (previousPluginTraceDir === undefined) {
+      delete process.env.OPENCLAW_AGENT_SCHEDULER_PLUGIN_TRACE_DIR;
+    } else {
+      process.env.OPENCLAW_AGENT_SCHEDULER_PLUGIN_TRACE_DIR = previousPluginTraceDir;
     }
   }
 });

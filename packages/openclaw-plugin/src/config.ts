@@ -123,7 +123,7 @@ function envOverrides(): Partial<PluginConfig> {
     schedulerEnv("SECURITY_BOUNDARY_ACCEPTED")
   );
   const trace: Record<string, unknown> = {};
-  const traceDir = schedulerEnv("TRACE_DIR");
+  const traceDir = schedulerEnv("PLUGIN_TRACE_DIR");
   if (traceDir !== undefined && traceDir.length > 0) trace.trace_dir = traceDir;
   const recordRaw = parseBoolean(schedulerEnv("RECORD_RAW_TRACE"));
   if (recordRaw !== null) {

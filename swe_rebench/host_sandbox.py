@@ -680,6 +680,10 @@ def _openclaw_env(
     workspace: Path | None = None,
 ) -> dict[str, str]:
     env = os.environ.copy()
+    # The sidecar owns benchmark trace writing.  Do not let a host-level
+    # plugin trace override leak into OpenClaw and re-enable the plugin's
+    # fallback trace writer for SWE-Rebench runs.
+    env.pop("OPENCLAW_AGENT_SCHEDULER_TRACE_DIR", None)
     env.update(
         {
             "OPENCLAW_HOME": str(openclaw_home),
