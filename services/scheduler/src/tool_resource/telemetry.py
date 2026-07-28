@@ -2593,18 +2593,23 @@ def _container_cgroup(
 
 
 def _discover_leaf_cgroup_inodes(cgroup: Path) -> set[int]:
-    """Return inode numbers for *cgroup* and all descendant leaf cgroups.
+    """Return inode numbers for *cgroup* and all related cgroups.
 
-    On Docker / cgroup v2 systems the container runtime may create child
-    cgroups under the scope cgroup.  Processes inside those child cgroups
-    have a different ``bpf_get_current_cgroup_id()`` than the parent, so the
-    eBPF ``wanted()`` filter must accept all of them.
+    On Docker / cgroup v2 with systemd, ``docker exec`` often creates a
+    *sibling* transient scope under the same parent directory (e.g.
+    ``/sys/fs/cgroup/system.slice/``) rather than a *child* cgroup under
+    the container's scope.  The sibling and the container scope share a
+    common container-ID prefix in their directory names, so we scan the
+    parent directory for all entries with the same prefix in addition to
+    walking the descendant tree.
     """
     inodes: set[int] = set()
     try:
         inodes.add(cgroup.stat().st_ino)
     except OSError:
         pass
+
+    # Child cgroups (legacy / nested container runtimes).
     try:
         for entry in cgroup.rglob("*"):
             if entry.is_dir():
@@ -2614,7 +2619,55 @@ def _discover_leaf_cgroup_inodes(cgroup: Path) -> set[int]:
                     pass
     except OSError:
         pass
+
+    # Sibling cgroups sharing the same container-id prefix
+    # (e.g. systemd transient scopes for docker exec).
+    _add_sibling_cgroup_inodes(cgroup, inodes)
+
     return inodes
+
+
+def _add_sibling_cgroup_inodes(
+    cgroup: Path,
+    inodes: set[int],
+) -> None:
+    """Add inodes of sibling cgroups whose name starts with the same prefix.
+
+    Docker scope names follow the pattern
+    ``docker-<container_id>[(.<suffix>)].scope``.  Systemd transient scopes
+    for ``docker exec`` are siblings of the container scope and share the
+    container-id prefix.
+    """
+    parent = cgroup.parent
+    if parent is None:
+        return
+    # Extract the container-id prefix from the cgroup directory name.
+    # Typical name: "docker-8de5ac85ada8….scope"
+    # The sibling for exec might be "docker-8de5ac85ada8….scope" (different suffix)
+    # or a systemd transient like "docker-8de5ac85ada8….scope:<uuid>".
+    name = cgroup.name
+    # Find the longest common prefix with other directory entries.
+    # We look for entries that share at least the first 32 hex chars of
+    # the container id (which always follows "docker-").
+    if not name.startswith("docker-"):
+        return
+    try:
+        prefix = name[: 7 + 32]  # "docker-" + 32 hex chars
+    except IndexError:
+        return
+    try:
+        for entry in parent.iterdir():
+            if not entry.is_dir():
+                continue
+            if entry == cgroup:
+                continue
+            if entry.name.startswith(prefix):
+                try:
+                    inodes.add(entry.stat().st_ino)
+                except OSError:
+                    pass
+    except OSError:
+        pass
 
 
 def _container_pid_set(
