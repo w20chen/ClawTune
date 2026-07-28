@@ -774,7 +774,8 @@ def test_host_sandbox_verifies_mounted_launcher_before_agent(
     command = calls[0][0]
     assert command[:4] == ["/usr/bin/docker", "run", "--rm", "--network"]
     assert command[command.index("--user") + 1] == "65534:65534"
-    assert "/workspace/.claw/bin/claw-launch" in command
+    assert command[command.index("--entrypoint") + 1] == "/bin/sh"
+    assert command[-2] == "/workspace/.claw/bin/claw-launch"
     assert command[-1] == "--help"
 
 

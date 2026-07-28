@@ -60,6 +60,15 @@ access without following repository symlinks. The launcher preflight explicitly
 runs as numeric uid/gid `65534:65534`, so it exercises the unprivileged access
 boundary before an agent run starts.
 
+A third run showed that uid-independent traversal was still not the complete
+boundary: the preflight succeeded as uid 65534, while OpenClaw's real exec shell
+continued to receive `EACCES` for the 0755 script. This is the behavior of the
+real sandbox's non-executable workspace mount, not a missing file mode. The
+plugin protocol now has an optional `launcherInterpreter`; this host mode sets
+it to `/bin/sh`, producing `/bin/sh /workspace/.claw/bin/claw-launch run ...`.
+The workspace remains non-executable and the trusted interpreter reads the
+launcher instead. The preflight now uses the identical interpreter chain.
+
 The x86_64 syscall kprobe now unwraps the inner `pt_regs` supplied by
 `CONFIG_ARCH_HAS_SYSCALL_WRAPPER` before reading `execve`/`execveat`
 arguments. Host preflight also runs a real short-lived cgroup/eBPF collection

@@ -28,6 +28,7 @@ export type PluginConfig = {
   logLevel: "error" | "warn" | "info" | "debug";
   executionBackend: ExecutionBackend;
   launcherPath: string;
+  launcherInterpreter: string | null;
   collectorSocket: string;
   instrumentHosts: string[];
   instrumentTools: string[];

@@ -159,6 +159,7 @@ export default definePluginEntry({
       logLevel: {enum: ["error", "warn", "info", "debug"], default: "info"},
       executionBackend: {enum: ["hook-only", "marker", "managed-wrapper"], default: "managed-wrapper"},
       launcherPath: {type: "string", default: "/opt/claw/bin/claw-launch"},
+      launcherInterpreter: {type: ["string", "null"], default: null},
       collectorSocket: {type: "string", default: "/run/claw/collector.sock"},
       instrumentHosts: {type: "array", items: {type: "string"}, default: ["gateway"]},
       instrumentTools: {type: "array", items: {type: "string"}, default: ["exec"]},

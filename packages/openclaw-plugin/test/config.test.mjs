@@ -99,6 +99,14 @@ test("loadConfig reads agent scheduler environment overrides", () => {
   }
 });
 
+test("loadConfig validates launcherInterpreter when configured", () => {
+  assert.equal(loadConfig({launcherInterpreter: "/bin/sh"}).launcherInterpreter, "/bin/sh");
+  assert.throws(
+    () => loadConfig({launcherInterpreter: "sh"}),
+    /launcherInterpreter must be an absolute path/
+  );
+});
+
 test("loadConfig does not treat sidecar trace dir env as plugin trace output", () => {
   const previousTraceDir = process.env.OPENCLAW_AGENT_SCHEDULER_TRACE_DIR;
   const previousPluginTraceDir = process.env.OPENCLAW_AGENT_SCHEDULER_PLUGIN_TRACE_DIR;

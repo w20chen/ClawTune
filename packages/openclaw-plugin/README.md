@@ -53,6 +53,8 @@ cat <<JSON5 | openclaw config patch --stdin
           recordRawTrace: true,
           executionBackend: "managed-wrapper",
           launcherPath: "$LAUNCHER_PATH",
+          // Set to "/bin/sh" when the launcher script is on a noexec mount.
+          launcherInterpreter: null,
           securityBoundaryAccepted: true
         }
       }

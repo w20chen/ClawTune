@@ -13,6 +13,7 @@ const baseConfig = {
   logLevel: "info",
   executionBackend: "marker",
   launcherPath: "/opt/claw/bin/claw-launch",
+  launcherInterpreter: null,
   collectorSocket: "/run/claw/collector.sock",
   instrumentHosts: ["gateway"],
   instrumentTools: ["exec"],
@@ -246,4 +247,33 @@ test("managed-wrapper passes the claim token outside the process argv", async ()
   assert.equal(result.params.env.CLAW_EXECUTION_ID, "call-1");
   assert.equal(result.params.env.CLAW_EXECUTION_TOKEN, "-token-1");
   assert.equal(result.params.env.CLAW_SCHEDULER_ENDPOINT, "http://localhost:8765");
+});
+
+test("managed-wrapper can invoke a launcher on a noexec workspace through an interpreter", async () => {
+  const client = {
+    async registerExecution() {
+      return {one_time_token: "token-1"};
+    }
+  };
+  const event = {toolName: "exec", toolCallId: "call-1", params: {command: "echo raw-command"}};
+
+  const result = await instrumentExecParams(
+    event,
+    {},
+    payload,
+    decision,
+    client,
+    {
+      ...baseConfig,
+      executionBackend: "managed-wrapper",
+      securityBoundaryAccepted: true,
+      launcherPath: "/workspace/.claw/bin/claw-launch",
+      launcherInterpreter: "/bin/sh"
+    }
+  );
+
+  assert.equal(
+    result.params.command,
+    "'/bin/sh' '/workspace/.claw/bin/claw-launch' run --execution-id='call-1'"
+  );
 });

@@ -123,6 +123,7 @@ export async function instrumentExecParams(
       throw new Error("execution_registration_failed");
     }
     effectiveCommand = [
+      ...(config.launcherInterpreter === null ? [] : [shellQuote(config.launcherInterpreter)]),
       shellQuote(config.launcherPath),
       "run",
       `--execution-id=${shellQuote(executionId)}`
