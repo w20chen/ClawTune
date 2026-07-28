@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
@@ -52,13 +53,16 @@ def _ambient_before_mb(request: ToolBeforeRequest, sample_rss_bytes: int | None)
 
 
 def _has_usable_cgroup_scope(scope: ResourceScope | None) -> bool:
-    if scope is None:
+    if scope is None or scope.kind != "cgroup-v2":
         return False
     cgroup_path = scope.cgroup_path
     if not cgroup_path:
-        return True
+        return False
     normalized = cgroup_path.replace("\\", "/").rstrip("/")
-    return normalized not in {"/sys/fs/cgroup", "/sys/fs/cgroup/unified"}
+    return (
+        normalized not in {"/sys/fs/cgroup", "/sys/fs/cgroup/unified"}
+        and Path(cgroup_path).is_dir()
+    )
 
 
 def _trusted_cgroup_path(cgroup_path: str | None) -> str | None:
@@ -165,13 +169,18 @@ def create_app(state: AppState | None = None) -> FastAPI:
         event: ToolCompletedEvent,
         s: AppState,
     ) -> ToolCompletedEvent:
-        if (
-            event.resource_scope is not None
-            and not _is_shared_runtime_scope(event.resource_scope)
-        ):
-            return event
         scope = sandbox_fallback_scope(s)
         if scope is None:
+            return event
+        existing = event.resource_scope
+        if (
+            existing is not None
+            and not _is_shared_runtime_scope(existing)
+            and (
+                event.execution_id is None
+                or _has_usable_cgroup_scope(existing)
+            )
+        ):
             return event
         return event.model_copy(update={"resource_scope": scope})
 
@@ -184,7 +193,13 @@ def create_app(state: AppState | None = None) -> FastAPI:
         deadline = time.monotonic() + 0.75
         while True:
             scope = s.executions.scope(event.execution_id)
-            if _has_usable_cgroup_scope(scope):
+            if (
+                _has_usable_cgroup_scope(scope)
+                or (
+                    sandbox_fallback_scope(s) is None
+                    and scope is not None
+                )
+            ):
                 return event.model_copy(update={"resource_scope": scope})
             if time.monotonic() >= deadline:
                 return event
@@ -417,7 +432,22 @@ def create_app(state: AppState | None = None) -> FastAPI:
         response = s.executions.started(execution_id, request)
         record = s.executions.get(execution_id)
         if record is not None and record.scope is not None:
-            s.tool_monitor.bind_scope(record.request.tool_call_id, record.scope)
+            monitor_scope = record.scope
+            fallback_scope = sandbox_fallback_scope(s)
+            if (
+                fallback_scope is not None
+                and not _has_usable_cgroup_scope(monitor_scope)
+            ):
+                # In host-openclaw-sandbox mode launcher PIDs belong to the
+                # container PID namespace.  Sampling the same numeric PID on
+                # the host can silently attribute an unrelated host process.
+                # Keep the already discovered host-side sandbox cgroup unless
+                # the launcher supplies a real cgroup-v2 child scope.
+                monitor_scope = fallback_scope
+            s.tool_monitor.bind_scope(
+                record.request.tool_call_id,
+                monitor_scope,
+            )
         container_id = request.container_id or sandbox_container_id(s)
         if record is not None:
             # The launcher runs inside the sandbox container.  Its

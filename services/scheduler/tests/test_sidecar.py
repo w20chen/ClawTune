@@ -6,12 +6,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from agent_scheduler.api.app import create_app
 from agent_scheduler.api.dependencies import build_state
 from agent_scheduler.config import SchedulerConfig
-from agent_scheduler.llm_proxy import _forward_headers, _upstream_url
+from agent_scheduler.llm_proxy import (
+    _forward_headers,
+    _parse_sse_buffer,
+    _upstream_url,
+)
 from agent_scheduler.monitoring.docker_exec import DockerExecObserver, _docker_events_command
 from agent_scheduler.monitoring.tool_runtime import _relative_timeline
 
@@ -654,7 +659,11 @@ def test_exec_tool_can_use_shared_sandbox_cgroup_fallback(tmp_path: Path) -> Non
     assert tool_end["resources"]["coverage_reason"] == "shared_sandbox_container"
 
 
-def test_exec_root_cgroup_scope_falls_back_to_shared_sandbox(tmp_path: Path) -> None:
+@pytest.mark.parametrize("launcher_cgroup_path", ["/sys/fs/cgroup", None])
+def test_exec_unusable_launcher_scope_falls_back_to_shared_sandbox(
+    tmp_path: Path,
+    launcher_cgroup_path: str | None,
+) -> None:
     cgroup = tmp_path / "cgroup"
     cgroup.mkdir()
     (cgroup / "cpu.stat").write_text("usage_usec 100000\n", encoding="utf-8")
@@ -718,9 +727,12 @@ def test_exec_root_cgroup_scope_falls_back_to_shared_sandbox(tmp_path: Path) -> 
         json={
             "update_token": claim["update_token"],
             "launcher_pid": os.getpid(),
-            "child_pid": 31,
+            # A container PID can collide with a real host PID.  It must not
+            # replace the host-side sandbox cgroup sampler merely because the
+            # numeric PID happens to be readable on the sidecar host.
+            "child_pid": os.getpid(),
             "process_starttime_ticks": 123,
-            "cgroup_path": "/sys/fs/cgroup",
+            "cgroup_path": launcher_cgroup_path,
             "pid_namespace_inode": 456,
             "container_id": "sandbox-1",
         },
@@ -1843,6 +1855,72 @@ def test_llm_proxy_buffers_fragmented_sse_events(tmp_path: Path, monkeypatch) ->
     assert response.text.count("data: ") == 2
     assert '"content": "hello"' in response.text
     assert "[DONE]" in response.text
+
+
+def test_llm_proxy_parses_crlf_sse_before_end_of_stream() -> None:
+    first = b'data: {"choices":[{"delta":{"content":"hello"}}]}\r\n\r\n'
+    second = b"data: [DONE]\r\n\r\n"
+
+    events, remainder = _parse_sse_buffer(first + second[:8])
+
+    assert len(events) == 1
+    assert events[0]["choices"][0]["delta"]["content"] == "hello"
+    assert remainder == second[:8]
+
+
+def test_llm_proxy_surfaces_empty_stream_and_writes_safe_diagnostic(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client, trace_dir = _trace_proxy_client(tmp_path)
+
+    class FakeStream:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def aiter_bytes(self):
+            yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+            yield b"data: [DONE]\n\n"
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def stream(self, method, url, headers=None, content=None):
+            return FakeStream()
+
+    monkeypatch.setattr("agent_scheduler.llm_proxy.httpx.AsyncClient", FakeAsyncClient)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert "upstream_empty_response" in response.text
+    assert response.text.rstrip().endswith("data: [DONE]")
+    debug_files = list(trace_dir.glob("llm_proxy_debug_*.json"))
+    assert len(debug_files) == 1
+    diagnostic = json.loads(debug_files[0].read_text(encoding="utf-8"))
+    assert diagnostic["automatic_empty_diagnostic"] is True
+    assert diagnostic["raw_preview_bytes"] > 0
+    assert "raw_preview_sha256" in diagnostic
+    assert "raw_preview" not in diagnostic
 
 
 def test_llm_proxy_writes_debug_dump_only_when_enabled(tmp_path: Path, monkeypatch) -> None:

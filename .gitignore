@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .pytest-tmp-root/
+.pytest-tmp-*/
 .ruff_cache/
 .mypy_cache/
 .venv/
@@ -20,3 +21,4 @@ build/
 swe_rebench/llm_api_key.txt
 .DS_Store
 .gateway-run.*.log
+/services/scheduler/traces/tool-resource/

@@ -4,11 +4,47 @@ import json
 
 from swe_rebench.config import RunnerConfig
 from swe_rebench.runner import (
+    _agent_diagnostics,
     _inspect_tool_resource_artifacts,
     _inspect_trace,
     _required_telemetry_error,
     _resource_summary,
 )
+
+
+def test_empty_llm_response_is_reported_as_agent_failure_before_telemetry(tmp_path):
+    trace = tmp_path / "trace.jsonl"
+    records = [
+        {"record_type": "trace_metadata", "task": "task-1"},
+        {
+            "record_type": "span_end",
+            "kind": "llm",
+            "name": "model",
+            "status": {"code": "ok"},
+            "output": {"content": {"message": {"role": "assistant", "content": ""}}},
+        },
+    ]
+    trace.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n",
+        encoding="utf-8",
+    )
+
+    inspected = _inspect_trace(trace, "task-1")
+    diagnostics = _agent_diagnostics(
+        [inspected],
+        {
+            "agent-stderr.txt": {
+                "preview": "empty response retries exhausted: provider=test"
+            },
+            "model.patch": {"bytes": 0, "has_diff": False},
+        },
+        {"agent_exit_code": 0, "has_patch": False},
+    )
+
+    assert inspected["llm_span_ends"] == 1
+    assert inspected["empty_llm_span_ends"] == 1
+    assert diagnostics["failure_kind"] == "empty_llm_response"
+    assert "never entered the tool-execution phase" in diagnostics["failure"]
 
 
 def test_trace_inspection_counts_failed_and_unattributed_launcher_spans(tmp_path):
@@ -108,7 +144,9 @@ def test_required_telemetry_audits_all_tool_samples_and_async_artifacts(tmp_path
     trace_dir = tmp_path / "trace"
     artifact_dir = trace_dir / "tool-resource"
     artifact_dir.mkdir(parents=True)
-    (artifact_dir / "call_async.json").write_text(
+    # Fallback execution IDs are exec-<uuid>, not necessarily call_<id>.
+    # The audit must discover artifacts by schema rather than filename prefix.
+    (artifact_dir / "exec-async.json").write_text(
         json.dumps(
             {
                 "schema": "clause_telemetry_v2",
@@ -143,6 +181,10 @@ def test_required_telemetry_audits_all_tool_samples_and_async_artifacts(tmp_path
                 ],
             }
         ),
+        encoding="utf-8",
+    )
+    (artifact_dir / "clause-resource-kb.json").write_text(
+        json.dumps({"version": 1, "observations": []}),
         encoding="utf-8",
     )
     artifact_report = _inspect_tool_resource_artifacts(trace_dir)

@@ -109,6 +109,10 @@ python -m swe_rebench.runner run --config swe_rebench/config.yaml \
   --export
 ```
 
+`host-openclaw-container` is accepted as a user-facing alias for
+`host-openclaw-sandbox`; reports and manifests use the canonical
+`host-openclaw-sandbox` value.
+
 This copies `/testbed` from the task image into a host workspace, starts a host
 sidecar, configures an isolated OpenClaw home for the task, and mounts the
 workspace into the OpenClaw sandbox at `/workspace`.
@@ -127,6 +131,9 @@ Resource attribution is best-effort:
 - Shared sandbox samples are marked
   `coverage_reason: "shared_sandbox_container"` because they are container
   time-window attribution, not exclusive per-tool PID attribution.
+- Launcher PIDs without a usable cgroup-v2 child path are container-namespace
+  PIDs and are never sampled as host PIDs. The sidecar keeps the discovered
+  host-side sandbox cgroup in that case.
 
 ### Stage-2 eBPF Clause Telemetry (host-sandbox only)
 
@@ -190,6 +197,12 @@ clause-telemetry completeness.
   permission denied, etc.).
 - Trace inspection: `python tools/inspect_trace.py <trace.jsonl> --all --details`
   shows per-tool resource telemetry when stage2 is active.
+- `llm_proxy_debug_*.json` is automatically written for an empty HTTP-200
+  model response. The automatic diagnostic contains byte counts and a SHA-256
+  digest, not the raw upstream payload.
+- `report.json` keeps `agent_diagnostics` separate from `telemetry_audit`. If
+  the model returns no content and executes no tools, telemetry is
+  `not_evaluable`; it is not reported as an eBPF collector failure.
 
 **Limitations:**
 
@@ -285,7 +298,7 @@ Execution options:
 | Option | Purpose |
 | --- | --- |
 | `--prepare` | Rebuild the runtime bundle before running tasks. The runner also rebuilds automatically when the bundle looks stale. |
-| `--runtime-mode MODE` | Override `runtime.mode`; valid values are `container-openclaw`(default) and `host-openclaw-sandbox`. |
+| `--runtime-mode MODE` | Override `runtime.mode`; valid values are `container-openclaw` (default), `host-openclaw-sandbox`, and alias `host-openclaw-container`. |
 | `--stage2-required` / `--no-stage2-required` | Require complete eBPF clause artifacts or explicitly allow a best-effort diagnostic run. CLI-selected host-sandbox mode defaults to required. |
 | `--dry-run` | Print the selected tasks and exit without pulling images or starting containers. |
 

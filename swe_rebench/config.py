@@ -31,6 +31,15 @@ def _as_bool(value: Any) -> bool:
     return bool(value)
 
 
+def normalize_runtime_mode(value: str) -> str:
+    # "host-openclaw-container" describes the same topology in user-facing
+    # terms: OpenClaw/sidecar on the host, tool execution in its Docker
+    # sandbox container.  Keep one canonical internal name.
+    if value == "host-openclaw-container":
+        return "host-openclaw-sandbox"
+    return value
+
+
 @dataclass
 class RuntimeConfig:
     mode: str = "container-openclaw"
@@ -38,10 +47,12 @@ class RuntimeConfig:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "RuntimeConfig":
-        mode = str(d.get("mode", "container-openclaw"))
+        mode = normalize_runtime_mode(str(d.get("mode", "container-openclaw")))
         if mode not in {"container-openclaw", "host-openclaw-sandbox"}:
             raise ValueError(
-                "runtime.mode must be 'container-openclaw' or 'host-openclaw-sandbox'"
+                "runtime.mode must be 'container-openclaw', "
+                "'host-openclaw-sandbox', or its alias "
+                "'host-openclaw-container'"
             )
         return cls(
             mode=mode,

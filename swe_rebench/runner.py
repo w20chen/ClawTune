@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from swe_rebench.config import RunnerConfig
+from swe_rebench.config import RunnerConfig, normalize_runtime_mode
 from swe_rebench.docker import ContainerResult, get_docker_client, pull_image, run_container
 from swe_rebench.host_sandbox import (
     _chmod_and_retry,
@@ -91,6 +91,7 @@ def _result_dict(r: ContainerResult) -> dict[str, Any]:
     tool_resource_artifacts = _inspect_tool_resource_artifacts(r.trace_dir)
     artifacts = _task_artifacts(r.trace_dir)
     smoke = _smoke_summary(artifacts)
+    agent_diagnostics = _agent_diagnostics(trace_inspection, artifacts, smoke)
     return {
         "task_id": r.task_id,
         "image": r.image,
@@ -104,6 +105,7 @@ def _result_dict(r: ContainerResult) -> dict[str, Any]:
         "tool_resource_artifacts": tool_resource_artifacts,
         "artifacts": artifacts,
         "smoke": smoke,
+        "agent_diagnostics": agent_diagnostics,
         "duration_seconds": round(r.duration_seconds, 1),
     }
 
@@ -124,6 +126,9 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         "has_task_id": False,
         "has_tool_span": False,
         "has_llm_span": False,
+        "llm_span_ends": 0,
+        "empty_llm_span_ends": 0,
+        "failed_llm_span_ends": 0,
         "tool_span_ends": 0,
         "launcher_tool_span_ends": 0,
         "launcher_stage2_expected_span_ends": 0,
@@ -244,6 +249,16 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                         report["unattributed_launcher_tool_span_ends"] += 1
         if kind == "llm" or "model" in span_name or record.get("action_type") == "llm_call":
             report["has_llm_span"] = True
+            if record_type == "span_end":
+                report["llm_span_ends"] += 1
+                if not _llm_record_has_output(record):
+                    report["empty_llm_span_ends"] += 1
+                if _nested_get(record, ("status", "code")) in {
+                    "error",
+                    "timeout",
+                    "cancelled",
+                }:
+                    report["failed_llm_span_ends"] += 1
 
     if not report["has_task_id"]:
         report["warnings"].append("trace does not contain TASK_INSTANCE_ID")
@@ -391,7 +406,9 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
         report["warnings"].append("task trace directory is unavailable")
         return report
     artifact_dir = trace_dir / "tool-resource"
-    for path in sorted(artifact_dir.glob("call_*.json")):
+    for path in sorted(artifact_dir.glob("*.json")):
+        if path.name in {"clause-resource-kb.json", "clause-kb.json"}:
+            continue
         report["artifact_count"] += 1
         try:
             artifact = json.loads(path.read_text(encoding="utf-8"))
@@ -446,6 +463,90 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
     if report["clauses_with_status"] != report["clause_count"]:
         report["warnings"].append("some mapped clauses have no explicit status")
     return report
+
+
+def _llm_record_has_output(record: dict[str, Any]) -> bool:
+    output = record.get("output")
+    if not isinstance(output, dict):
+        return False
+    return _has_llm_payload(output.get("content"))
+
+
+def _has_llm_payload(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(_has_llm_payload(item) for item in value)
+    if not isinstance(value, dict):
+        return False
+    tool_calls = value.get("tool_calls")
+    if isinstance(tool_calls, list) and bool(tool_calls):
+        return True
+    for key in ("content", "message", "text", "reasoning_content"):
+        if key in value and _has_llm_payload(value[key]):
+            return True
+    return False
+
+
+def _agent_diagnostics(
+    trace_inspection: list[dict[str, Any]],
+    artifacts: dict[str, Any],
+    smoke: dict[str, Any],
+) -> dict[str, Any]:
+    llm_span_ends = sum(int(item.get("llm_span_ends", 0)) for item in trace_inspection)
+    empty_llm_span_ends = sum(
+        int(item.get("empty_llm_span_ends", 0)) for item in trace_inspection
+    )
+    failed_llm_span_ends = sum(
+        int(item.get("failed_llm_span_ends", 0)) for item in trace_inspection
+    )
+    tool_span_ends = sum(int(item.get("tool_span_ends", 0)) for item in trace_inspection)
+    stdout = str(artifacts.get("agent-stdout.txt", {}).get("preview", ""))
+    stderr = str(artifacts.get("agent-stderr.txt", {}).get("preview", ""))
+    combined = f"{stdout}\n{stderr}".lower()
+    empty_response_markers = (
+        "agent couldn't generate a response",
+        "empty response retries exhausted",
+        "incomplete turn detected",
+    )
+    empty_response_detected = (
+        any(marker in combined for marker in empty_response_markers)
+        or (
+            llm_span_ends > 0
+            and empty_llm_span_ends == llm_span_ends
+            and tool_span_ends == 0
+        )
+    )
+    if empty_response_detected:
+        failure_kind = "empty_llm_response"
+        failure = (
+            "OpenClaw received only empty LLM responses and never entered the "
+            "tool-execution phase"
+        )
+    elif smoke.get("agent_exit_code") not in {None, 0}:
+        failure_kind = "agent_exit_nonzero"
+        failure = f"OpenClaw agent exited with code {smoke.get('agent_exit_code')}"
+    elif (
+        smoke.get("has_patch") is False
+        and (
+            "model.patch" in artifacts
+            or "result_summary.json" in artifacts
+        )
+    ):
+        failure_kind = "no_patch"
+        failure = "OpenClaw agent completed without producing a patch"
+    else:
+        failure_kind = None
+        failure = None
+    return {
+        "failure_kind": failure_kind,
+        "failure": failure,
+        "llm_span_ends": llm_span_ends,
+        "empty_llm_span_ends": empty_llm_span_ends,
+        "failed_llm_span_ends": failed_llm_span_ends,
+        "tool_span_ends": tool_span_ends,
+        "empty_response_detected": empty_response_detected,
+    }
 
 
 def _required_telemetry_error(
@@ -697,9 +798,38 @@ def run_batch(
 
         result_dict = _result_dict(result)
         telemetry_error = _required_telemetry_error(config, result_dict)
-        if telemetry_error is not None and result.exit_code == 0 and not result.error:
+        agent_error = _nested_get(result_dict, ("agent_diagnostics", "failure"))
+        telemetry_not_evaluable = bool(
+            config.runtime.stage2_required
+            and isinstance(agent_error, str)
+            and int(
+                _nested_get(result_dict, ("resource_summary", "tool_span_ends"))
+                or 0
+            )
+            == 0
+        )
+        result_dict["telemetry_audit"] = {
+            "required": config.runtime.stage2_required,
+            "status": (
+                "not_evaluable"
+                if telemetry_not_evaluable
+                else "failed"
+                if telemetry_error is not None
+                else ("passed" if config.runtime.stage2_required else "not_required")
+            ),
+            "error": None if telemetry_not_evaluable else telemetry_error,
+            "not_evaluable_reason": (
+                telemetry_error if telemetry_not_evaluable else None
+            ),
+        }
+        primary_error = (
+            str(agent_error)
+            if isinstance(agent_error, str) and agent_error
+            else telemetry_error
+        )
+        if primary_error is not None and result.exit_code == 0 and not result.error:
             result.exit_code = -1
-            result.error = telemetry_error
+            result.error = primary_error
             result_dict["exit_code"] = result.exit_code
             result_dict["error"] = result.error
         report.results.append(result_dict)
@@ -755,7 +885,7 @@ def _run_one(
     """Execute a single task container (called in worker thread)."""
     _reset_task_trace_dir(config.output.trace_root, trace_dir, docker_cleanup_image=task.image)
 
-    if config.runtime.mode == "host-openclaw-sandbox":
+    if normalize_runtime_mode(config.runtime.mode) == "host-openclaw-sandbox":
         return run_host_sandbox_task(
             task=task,
             trace_dir=trace_dir,
@@ -988,10 +1118,13 @@ def _apply_runtime_overrides(
     stage2_required: bool | None,
 ) -> None:
     if runtime_mode is not None:
-        config.runtime.mode = runtime_mode
+        config.runtime.mode = normalize_runtime_mode(runtime_mode)
     if stage2_required is not None:
         config.runtime.stage2_required = stage2_required
-    elif runtime_mode == "host-openclaw-sandbox":
+    elif (
+        runtime_mode is not None
+        and normalize_runtime_mode(runtime_mode) == "host-openclaw-sandbox"
+    ):
         # A CLI-selected host-sandbox run is expected to provide the mode's
         # defining eBPF clause telemetry. Do not silently spend an entire
         # benchmark run producing only unavailable Stage-2 artifacts.
@@ -1048,7 +1181,11 @@ def main() -> None:
     run_p.add_argument("--repo", default=None,
                        help="Run only tasks whose repo field matches this value")
     run_p.add_argument("--runtime-mode", default=None,
-                       choices=("container-openclaw", "host-openclaw-sandbox"),
+                       choices=(
+                           "container-openclaw",
+                           "host-openclaw-sandbox",
+                           "host-openclaw-container",
+                       ),
                        help="Override runtime mode from config")
     run_p.add_argument(
         "--stage2-required",

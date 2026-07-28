@@ -57,6 +57,30 @@ when it is missed, a plugin-provided shared host-runtime scope is now replaced
 by the discovered sandbox-container cgroup instead of measuring the unrelated
 host OpenClaw process.
 
+## 2026-07-28 Experiment Audit
+
+The `0b01001001__spectree-64` run did not reach command execution. Both LLM
+spans completed with empty assistant content, OpenClaw exhausted its empty
+response retry, and the trace therefore contains zero tool spans and zero
+Stage-2 artifacts. Host BCC/BPF semantic preflight and sandbox cgroup discovery
+were healthy. The former final error, `required resource telemetry found no
+tool spans`, was a secondary symptom rather than the root failure.
+
+The runner now records this as `agent_diagnostics.failure_kind:
+empty_llm_response`, keeps the strict telemetry gate separately as
+`telemetry_audit`, and marks it `not_evaluable` when no tool phase exists.
+The LLM proxy accepts LF and CRLF SSE framing and surfaces successful HTTP
+responses with no content/tool calls as `upstream_empty_response`; its automatic
+diagnostic stores only byte counts and a response digest.
+
+For subsequent command-bearing runs, a launcher PID without a usable cgroup-v2
+child path is no longer treated as a host PID. In host-sandbox mode the sampler
+retains the discovered host-side sandbox cgroup, preventing PID-namespace
+collisions from attributing an unrelated host process. Stage-2 artifact audit
+also accepts fallback `exec-<uuid>.json` names instead of assuming every tool
+call starts with `call_`. `host-openclaw-container` is accepted as an alias for
+the canonical `host-openclaw-sandbox` mode.
+
 ## Validation
 
 ```bash
@@ -64,6 +88,12 @@ python tools/validate_contracts.py
 python -m pytest tests -q --basetemp .pytest-tmp-root
 cd services/scheduler && python -m pytest tests -q
 cd packages/openclaw-plugin && npm test && npm run typecheck
+python -m pytest services/scheduler/tests/test_sidecar.py \
+  services/scheduler/tests/test_tool_runtime_monitor.py -q \
+  --basetemp .pytest-tmp-fix-sidecar
+python -m pytest tests/test_swe_rebench_runner_inspection.py \
+  tests/test_swe_rebench_selection.py -q \
+  --basetemp .pytest-tmp-fix-runner
 ```
 
 ## Not Run Locally

@@ -463,6 +463,26 @@ runtime:
     assert config.runtime.mode == "host-openclaw-sandbox"
 
 
+def test_runner_normalizes_host_openclaw_container_alias(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        'runtime:\n  mode: "host-openclaw-container"\n',
+        encoding="utf-8",
+    )
+
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    assert config.runtime.mode == "host-openclaw-sandbox"
+
+    config.runtime.stage2_required = False
+    _apply_runtime_overrides(
+        config,
+        runtime_mode="host-openclaw-container",
+        stage2_required=None,
+    )
+    assert config.runtime.mode == "host-openclaw-sandbox"
+    assert config.runtime.stage2_required is True
+
+
 def test_cli_host_sandbox_override_requires_stage2_by_default(tmp_path: Path) -> None:
     config = RunnerConfig.from_yaml("swe_rebench/config.yaml", repo_root=tmp_path)
 
