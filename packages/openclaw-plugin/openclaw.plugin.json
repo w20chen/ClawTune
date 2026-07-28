@@ -26,6 +26,7 @@
       "enableAffinity": {"type": "boolean", "default": true},
       "enableNuma": {"type": "boolean", "default": true},
       "profilingMode": {"enum": ["off", "proc", "perf", "ksys", "vtune"], "default": "off"},
+      "consoleMode": {"enum": ["verbose", "quiet"], "default": "verbose"},
       "securityBoundaryAccepted": {"type": "boolean", "default": true},
       "trace": {
         "type": "object",
