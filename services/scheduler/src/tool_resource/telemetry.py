@@ -2617,21 +2617,50 @@ def _discover_leaf_cgroup_inodes(cgroup: Path) -> set[int]:
     return inodes
 
 
-def _container_pid_set(events: list[dict[str, Any]], init_pid: int) -> set[int]:
+def _container_pid_set(
+    events: list[dict[str, Any]],
+    init_pid: int,
+    *,
+    cgroup_inodes: set[int] | None = None,
+) -> set[int]:
     """Return the set of host PIDs belonging to the container rooted at *init_pid*.
 
-    Processes events in timestamp order: fork events grow the tree, and exec
-    events whose *parent_host_pid* is already known add their *host_pid*.
-    This handles long-lived processes that were forked before the collector
-    started (their fork event is missing, but their exec events reference
-    the known parent).
+    Discovery is done in two modes:
+
+    *When *cgroup_inodes* is provided (non-empty)* — PIDs are discovered
+    via cgroup membership: any ``host_pid`` or ``child_host_pid`` whose
+    event ``cgroup_id`` matches a known container cgroup inode is added.
+    This correctly handles Docker exec processes whose ``real_parent``
+    points outside the container (e.g. containerd-shim), breaking the
+    fork/exec lineage chain.  Lineage traversal is skipped because
+    cgroup membership is authoritative.
+
+    *When *cgroup_inodes* is ``None`` or empty* — the legacy fork/exec
+    lineage pass runs: fork events grow the tree, and exec events whose
+    ``parent_host_pid`` is already known add their ``host_pid``.  This
+    handles long-lived processes that were forked before the collector
+    started.
     """
     if init_pid <= 0:
         return set()
     pids: set[int] = {init_pid}
+
+    # --- cgroup-based discovery (authoritative when available) ------------
+    if cgroup_inodes:
+        for event in events:
+            cg = event.get("cgroup_id", 0)
+            if cg not in cgroup_inodes:
+                continue
+            host = event.get("host_pid", 0)
+            child = event.get("child_host_pid", 0)
+            if host > 0:
+                pids.add(host)
+            if child > 0:
+                pids.add(child)
+        return pids
+
+    # --- lineage pass (legacy, no cgroup info available) ------------------
     changed = True
-    # Iterate until the set stabilises — a single pass usually suffices
-    # but we keep the loop for safety against out-of-order fork records.
     while changed:
         changed = False
         for event in events:
@@ -2643,7 +2672,6 @@ def _container_pid_set(events: list[dict[str, Any]], init_pid: int) -> set[int]:
                     pids.add(host)
                     changed = True
                 elif event.get("type") == "fork" and host in pids:
-                    # host is the forking parent; add its child
                     if child > 0 and child not in pids:
                         pids.add(child)
                         changed = True
@@ -3149,7 +3177,9 @@ class ClauseTelemetryCollector:
                 # created long-lived container processes may predate the
                 # current command's start time.
                 container_pids = _container_pid_set(
-                    list(self._events), self.init_pid
+                    list(self._events),
+                    self.init_pid,
+                    cgroup_inodes=self.cgroup_inodes,
                 )
                 events = sorted(
                     (
