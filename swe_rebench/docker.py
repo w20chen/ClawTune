@@ -98,6 +98,7 @@ def run_container(
     openclaw_model_ref: str = "",
     timeout_seconds: int = 1800,
     env_extra: dict[str, str] | None = None,
+    stage2_required: bool = False,
 ) -> ContainerResult:
     """Run a single task container and return the result.
 
@@ -129,6 +130,10 @@ def run_container(
         Maximum wall-clock time for the container.
     env_extra:
         Additional environment variables to pass.
+    stage2_required:
+        Whether the in-container sidecar must fail closed when Stage-2 eBPF
+        telemetry cannot be started.  False keeps container-openclaw usable
+        through its documented best-effort fallback.
     """
     trace_dir.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
@@ -153,6 +158,12 @@ def run_container(
     }
     if env_extra:
         environment.update(env_extra)
+    # Runtime policy is runner-owned. Dataset-provided task environment must
+    # not silently turn a best-effort container run into fail-closed Stage-2
+    # (or weaken an explicitly required run).
+    environment["AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED"] = (
+        "true" if stage2_required else "false"
+    )
 
     volumes = {
         str(bundle_dir.resolve()): {"bind": "/claw", "mode": "ro"},

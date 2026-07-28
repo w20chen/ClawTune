@@ -11,6 +11,10 @@ runtime:
   # OpenClaw on the host and use OpenClaw's Docker sandbox for tools.
   mode: "container-openclaw"
 
+  # Keep container-openclaw fail-open when BCC/eBPF is unavailable. The runner
+  # propagates this value to the in-container sidecar.
+  stage2_required: false
+
 llm:
   # API key for the upstream LLM provider (required)
   # The sidecar proxies requests and records them, then forwards here.

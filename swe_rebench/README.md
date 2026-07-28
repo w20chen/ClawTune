@@ -93,6 +93,11 @@ python -m swe_rebench.runner run --config swe_rebench/config.yaml \
 
 The default mode is still `container-openclaw`: each SWE-Rebench task container
 runs OpenClaw, the plugin, and the scheduler sidecar inside the image.
+In this mode `runtime.stage2_required: false` is propagated explicitly to the
+in-container sidecar, so unavailable BCC/eBPF, Docker-event, or cgroup features
+degrade to the ordinary tool/resource trace instead of blocking `exec`.
+Setting `stage2_required: true` opts into fail-closed startup and final artifact
+completeness checks.
 
 To keep OpenClaw on the host and use OpenClaw's Docker sandbox for tools:
 
@@ -291,7 +296,7 @@ Important config-only settings:
 
 | Config key | Purpose |
 | --- | --- |
-| `runtime.stage2_required` | Enable BCC/BPF eBPF clause telemetry (host-sandbox only; see above). |
+| `runtime.stage2_required` | Require healthy BCC/BPF clause artifacts. Defaults to `false` for the best-effort container mode; host-sandbox CLI selection defaults it to `true`. |
 | `batch.task_timeout_seconds` | Per-task wall-clock timeout. `0` disables the timeout. |
 | `batch.retry_failed` | Number of retries after a failed task. |
 | `docker.pull_policy` | Image pull behavior: `missing`, `always`, or `never`. |

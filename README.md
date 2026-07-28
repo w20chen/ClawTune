@@ -231,10 +231,12 @@ cp swe_rebench/config.example.yaml swe_rebench/config.yaml
 python -m swe_rebench.runner prepare --config swe_rebench/config.yaml
 python -m swe_rebench.discover --sample 20 --out swe_rebench/tasks.json
 
-python -m swe_rebench.runner run --config swe_rebench/config.yaml \
+sudo -E env "PATH=$PATH" "$(command -v python3)" \
+  -m swe_rebench.runner run \
+  --config swe_rebench/config.yaml \
   --prepare \
   --dataset swe_rebench/tasks.json \
-  --sample 10 \
+  --sample 1 \
   --export \
   --runtime-mode host-openclaw-sandbox
 ```

@@ -173,3 +173,32 @@ def test_required_telemetry_audits_all_tool_samples_and_async_artifacts(tmp_path
     result["resource_summary"]["launcher_stage2_expected_span_ends"] = 1
     result["resource_summary"]["resource_sampled_tool_span_ends"] = 1
     assert "sampled 1/2" in (_required_telemetry_error(config, result) or "")
+
+
+def test_container_mode_honors_explicit_stage2_requirement(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "runtime:\n  mode: container-openclaw\n  stage2_required: true\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+
+    assert _required_telemetry_error(
+        config,
+        {
+            "resource_summary": {
+                "tool_span_ends": 1,
+                "resource_sampled_tool_span_ends": 0,
+                "cgroup_sampled_tool_span_ends": 0,
+                "launcher_stage2_expected_span_ends": 1,
+            },
+            "tool_resource_artifacts": {
+                "artifact_count": 0,
+                "healthy_artifact_count": 0,
+                "call_count": 0,
+                "ok_call_count": 0,
+                "clause_count": 0,
+                "clauses_with_status": 0,
+            },
+        },
+    ) == "required resource telemetry is incomplete: sampled 0/1 tool spans"

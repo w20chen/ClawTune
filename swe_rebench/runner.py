@@ -452,10 +452,7 @@ def _required_telemetry_error(
     config: RunnerConfig,
     result: dict[str, Any],
 ) -> str | None:
-    if (
-        config.runtime.mode != "host-openclaw-sandbox"
-        or not config.runtime.stage2_required
-    ):
+    if not config.runtime.stage2_required:
         return None
     resources = result.get("resource_summary")
     artifacts = result.get("tool_resource_artifacts")
@@ -794,6 +791,7 @@ def _run_one(
             llm_model=config.llm.model,
             openclaw_model_ref=config.llm.openclaw_model_ref,
             timeout_seconds=config.batch.task_timeout_seconds,
+            stage2_required=config.runtime.stage2_required,
             env_extra={
                 "TASK_BASE_COMMIT": task.base_commit,
                 "TASK_HINT_TEXT": task.hint_text,

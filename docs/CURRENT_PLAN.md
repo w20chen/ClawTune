@@ -115,3 +115,17 @@ cd packages/openclaw-plugin && npm test && npm run typecheck
   host-openclaw-sandbox` validation cannot run in this Windows workspace
   because it requires a Linux host with cgroup v2, BCC, BPF/perf permissions,
   Docker, OpenClaw, and the configured upstream model.
+- `docker version --format '{{json .}}'` and a live
+  `container-openclaw` smoke run cannot run in this Windows workspace because
+  the Docker CLI/daemon is not installed.
+- `bash -n .container-audit-bundle/entrypoint.sh`,
+  `bash -n .container-audit-bundle/setup.sh`, and
+  `bash -n .container-audit-bundle/run_agent.sh` cannot run in this Windows
+  workspace because WSL instance creation is denied with
+  `Wsl/Service/CreateInstance/E_ACCESSDENIED`; validate the generated scripts
+  on the Linux Docker host.
+- `python -m pytest -q --basetemp .pytest-tmp-container-root` cannot run as one
+  repository-wide collection command because the scheduler package requires
+  `services/scheduler/src` on `PYTHONPATH` and the generated
+  `swe_rebench/bundle/scheduler/tests` tree duplicates scheduler test module
+  names. The maintained suites were run separately instead.

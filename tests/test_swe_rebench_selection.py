@@ -366,6 +366,10 @@ def test_inspect_trace_does_not_treat_result_code_as_exit_code(tmp_path: Path) -
 def test_entrypoint_uses_runtime_llm_env_and_writes_task_manifest() -> None:
     assert 'AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL="${LLM_UPSTREAM_BASE_URL:-__UPSTREAM__}"' in _ENTRYPOINT_TEMPLATE
     assert 'AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY="${LLM_API_KEY:-__LLM_KEY__}"' in _ENTRYPOINT_TEMPLATE
+    assert (
+        'AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED="${AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED:-false}"'
+        in _ENTRYPOINT_TEMPLATE
+    )
     assert 'export OPENCLAW_MODEL_REF="${OPENCLAW_MODEL_REF:-__MODEL_FULL__}"' in _ENTRYPOINT_TEMPLATE
     assert 'task_manifest.json' in _ENTRYPOINT_TEMPLATE
     assert 'agent-cwd.txt' in _ENTRYPOINT_TEMPLATE
@@ -437,6 +441,7 @@ def test_runner_config_enables_complete_cgroup_sampling() -> None:
     config = RunnerConfig.from_yaml("swe_rebench/config.yaml")
 
     assert config.runtime.mode == "container-openclaw"
+    assert config.runtime.stage2_required is False
     assert config.docker.privileged is True
     assert config.docker.cgroupns_mode == "host"
     assert config.docker.cgroup_mount_rw is True
@@ -543,6 +548,53 @@ bundle:
     assert result.exit_code == 0
     assert called["task"] == task
     assert called["config"] == config
+
+
+def test_run_one_propagates_container_stage2_fallback_mode(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+runtime:
+  mode: "container-openclaw"
+  stage2_required: false
+output:
+  trace_root: "traces"
+  report_path: "report.json"
+bundle:
+  output_dir: "bundle"
+""",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    task = TaskDef(instance_id="task-1", image="image:latest", problem_statement="fix")
+    trace_dir = tmp_path / "traces" / "task-1"
+    called: dict[str, object] = {}
+
+    import swe_rebench.runner as runner
+
+    monkeypatch.setattr(runner, "pull_image", lambda *args, **kwargs: True)
+
+    def fake_run_container(**kwargs):
+        called.update(kwargs)
+        return ContainerResult(
+            task_id="task-1",
+            image="image:latest",
+            exit_code=0,
+            trace_dir=trace_dir,
+        )
+
+    monkeypatch.setattr(runner, "run_container", fake_run_container)
+
+    result = _run_one(
+        client=object(),
+        task=task,
+        bundle_dir=tmp_path / "bundle",
+        trace_dir=trace_dir,
+        config=config,
+    )
+
+    assert result.exit_code == 0
+    assert called["stage2_required"] is False
 
 
 def test_host_sandbox_openclaw_config_uses_only_public_top_level_keys(tmp_path: Path) -> None:
@@ -1233,6 +1285,7 @@ def test_docker_cli_uses_wait_exit_code_with_rm_container(monkeypatch, tmp_path:
         llm_api_key="sk-test",
         llm_upstream_url="https://example.invalid",
         timeout_seconds=10,
+        env_extra={"AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED": "true"},
     )
 
     assert result.exit_code == 7
@@ -1240,6 +1293,7 @@ def test_docker_cli_uses_wait_exit_code_with_rm_container(monkeypatch, tmp_path:
     docker_run = calls[0]
     expected_prefix = sandbox_container_prefix("docker:task-1")
     assert f"AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX={expected_prefix}" in docker_run
+    assert "AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED=false" in docker_run
     assert "CLAW_CGROUP_REQUIRED=0" in docker_run
     assert (tmp_path / "trace" / "container.log").read_text(encoding="utf-8") == "container output\n"
 
@@ -1287,9 +1341,11 @@ docker:
         llm_api_key="sk-test",
         llm_upstream_url="https://example.invalid",
         timeout_seconds=10,
+        stage2_required=True,
     )
 
     assert "CLAW_CGROUP_REQUIRED=1" in calls[0]
+    assert "AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED=true" in calls[0]
 
 
 def test_require_llm_api_key_reports_default_file(tmp_path: Path, monkeypatch) -> None:
