@@ -2617,6 +2617,43 @@ def _discover_leaf_cgroup_inodes(cgroup: Path) -> set[int]:
     return inodes
 
 
+def _container_pid_set(events: list[dict[str, Any]], init_pid: int) -> set[int]:
+    """Return the set of host PIDs belonging to the container rooted at *init_pid*.
+
+    Processes events in timestamp order: fork events grow the tree, and exec
+    events whose *parent_host_pid* is already known add their *host_pid*.
+    This handles long-lived processes that were forked before the collector
+    started (their fork event is missing, but their exec events reference
+    the known parent).
+    """
+    if init_pid <= 0:
+        return set()
+    pids: set[int] = {init_pid}
+    changed = True
+    # Iterate until the set stabilises — a single pass usually suffices
+    # but we keep the loop for safety against out-of-order fork records.
+    while changed:
+        changed = False
+        for event in events:
+            host = event.get("host_pid", 0)
+            parent = event.get("parent_host_pid", 0)
+            child = event.get("child_host_pid", 0)
+            if host > 0 and host not in pids:
+                if parent in pids:
+                    pids.add(host)
+                    changed = True
+                elif event.get("type") == "fork" and host in pids:
+                    # host is the forking parent; add its child
+                    if child > 0 and child not in pids:
+                        pids.add(child)
+                        changed = True
+            elif host > 0 and event.get("type") == "fork" and host in pids:
+                if child > 0 and child not in pids:
+                    pids.add(child)
+                    changed = True
+    return pids
+
+
 def _event_row(table: Any, data: int) -> dict[str, Any]:
     event = table.event(data)
     row = {
@@ -3107,17 +3144,23 @@ class ClauseTelemetryCollector:
                 _counter(self._bpf, "perf_sample_count") - token.perf_sample_count
             )
             with self._events_lock:
-                # NOTE: no cgroup_id filter here.  Docker uses cgroup
-                # namespaces, so bpf_get_current_cgroup_id() returns a
-                # namespace-relative ID that differs from the host
-                # filesystem inode (os.stat().st_ino).  The time-window
-                # filter (started_ns .. ended_ns) provides sufficient
-                # isolation on a dedicated test host.
+                # Build the container PID set from *all* captured events
+                # (not just the time window) because fork events that
+                # created long-lived container processes may predate the
+                # current command's start time.
+                container_pids = _container_pid_set(
+                    list(self._events), self.init_pid
+                )
                 events = sorted(
                     (
                         event
                         for event in self._events
                         if token.started_ns <= event["ts_ns"] <= ended_ns
+                        and (
+                            not container_pids
+                            or event.get("host_pid", 0) in container_pids
+                            or event.get("child_host_pid", 0) in container_pids
+                        )
                     ),
                     key=lambda event: event["ts_ns"],
                 )
