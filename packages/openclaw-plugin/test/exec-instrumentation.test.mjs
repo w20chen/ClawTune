@@ -274,6 +274,6 @@ test("managed-wrapper can invoke a launcher on a noexec workspace through an int
 
   assert.equal(
     result.params.command,
-    "'/bin/sh' '/workspace/.claw/bin/claw-launch' run --execution-id='call-1'"
+    "'/bin/sh' -c 'exec '\\''/bin/sh'\\'' '\\''/workspace/.claw/bin/claw-launch'\\'' run --execution-id='\\''call-1'\\'''"
   );
 });

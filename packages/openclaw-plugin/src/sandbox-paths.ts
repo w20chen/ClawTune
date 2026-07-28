@@ -19,7 +19,7 @@ export function normalizeSandboxToolParams(
     ?? normalizePathEnv(env.execWorkdir)
     ?? "/workspace";
   if (hostWorkspace === null) return {params, changed: false};
-  const targetWorkspace = usesContainerWorkspace(toolName) ? containerWorkspace : null;
+  const targetWorkspace = usesSandboxWorkspace(toolName) ? containerWorkspace : null;
   const containerAliases = containerWorkspaceAliases(hostWorkspace, containerWorkspace);
 
   let changed = false;
@@ -149,6 +149,10 @@ function mapWorkspacePath(
       return targetWorkspace === null ? suffix : `${targetWorkspace}/${suffix}`;
     }
   }
+  if (targetWorkspace !== null && isRelativePath(value)) {
+    if (normalized === ".") return targetWorkspace;
+    return `${targetWorkspace}/${normalized}`;
+  }
   return value;
 }
 
@@ -159,8 +163,15 @@ function containerWorkspaceAliases(hostWorkspace: string, containerWorkspace: st
   return [...new Set(aliases)].sort((left, right) => right.length - left.length);
 }
 
-function usesContainerWorkspace(toolName: string): boolean {
-  return toolName === "exec" || toolName === "process";
+function usesSandboxWorkspace(toolName: string): boolean {
+  return [
+    "exec",
+    "process",
+    "read",
+    "write",
+    "edit",
+    "apply_patch",
+  ].includes(toolName);
 }
 
 function normalizePathEnv(value: string | undefined): string | null {
@@ -170,6 +181,14 @@ function normalizePathEnv(value: string | undefined): string | null {
 
 function normalizePathString(value: string): string {
   return value.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/+$/g, "") || "/";
+}
+
+function isRelativePath(value: string): boolean {
+  if (value.length === 0) return false;
+  const normalized = normalizePathString(value);
+  if (normalized.startsWith("/")) return false;
+  if (/^[A-Za-z]:\//.test(normalized)) return false;
+  return normalized === "." || !normalized.startsWith("~");
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

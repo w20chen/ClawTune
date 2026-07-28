@@ -111,6 +111,41 @@ def test_launcher_permission_failure_and_invalid_coverage_are_root_diagnostics(t
     assert diagnostics["failure_kind"] == "launcher_not_executable"
 
 
+def test_launcher_bare_run_failure_is_reported_before_no_patch(tmp_path):
+    trace = tmp_path / "trace.jsonl"
+    record = {
+        "record_type": "span_end",
+        "kind": "tool",
+        "name": "exec",
+        "status": {"code": "error"},
+        "output": {
+            "exit_code": 127,
+            "stderr": "/bin/bash: run: No such file or directory",
+            "result": {"details": {"failureKind": "shell-command-not-found"}},
+        },
+        "execution": {"mode": "launcher", "execution_id": "call-1"},
+        "resources": {
+            "scope": "cgroup",
+            "attribution_status": "attributed",
+        },
+    }
+    trace.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    inspected = _inspect_trace(trace, "")
+    diagnostics = _agent_diagnostics(
+        [inspected],
+        {"model.patch": {"bytes": 0, "has_diff": False}},
+        {"agent_exit_code": 0, "has_patch": False},
+    )
+    summary = _resource_summary([inspected])
+
+    assert inspected["launcher_command_not_found_span_ends"] == 1
+    assert summary["launcher_command_not_found_span_ends"] == 1
+    assert "launcher command was not invoked correctly inside the sandbox" in inspected["warnings"]
+    assert diagnostics["failure_kind"] == "launcher_invocation_command_not_found"
+    assert diagnostics["launcher_command_not_found_span_ends"] == 1
+
+
 def test_trace_inspection_reports_stage2_failures_and_prediction_fallbacks(tmp_path):
     trace = tmp_path / "trace.jsonl"
     records = [

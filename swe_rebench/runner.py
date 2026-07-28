@@ -146,6 +146,7 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         "invalid_coverage_ratio_span_ends": 0,
         "status_exit_code_disagreements": 0,
         "launcher_not_executable_span_ends": 0,
+        "launcher_command_not_found_span_ends": 0,
         "launcher_tool_resource_span_ends": 0,
         "launcher_tool_resource_available_span_ends": 0,
         "launcher_tool_resource_eligible_span_ends": 0,
@@ -236,6 +237,8 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                     report["launcher_tool_span_ends"] += 1
                     if _tool_failure_kind(record) == "shell-not-executable":
                         report["launcher_not_executable_span_ends"] += 1
+                    if _is_launcher_command_not_found(record):
+                        report["launcher_command_not_found_span_ends"] += 1
                     if (
                         _nested_get(record, ("execution", "execution_id"))
                         and output_exit_code is not None
@@ -300,6 +303,8 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         report["warnings"].append("tool spans contain coverage_ratio outside [0,1]")
     if report["launcher_not_executable_span_ends"]:
         report["warnings"].append("launcher is not executable inside the sandbox")
+    if report["launcher_command_not_found_span_ends"]:
+        report["warnings"].append("launcher command was not invoked correctly inside the sandbox")
     if report["launcher_tool_span_ends"] and not report["launcher_tool_resource_span_ends"]:
         report["warnings"].append("launcher tool spans have no Stage-2 tool-resource telemetry")
     if report["launcher_tool_resource_unavailable_span_ends"]:
@@ -368,6 +373,10 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         int(item.get("launcher_not_executable_span_ends", 0))
         for item in trace_inspection
     )
+    launcher_command_not_found_span_ends = sum(
+        int(item.get("launcher_command_not_found_span_ends", 0))
+        for item in trace_inspection
+    )
     invalid_coverage_ratio_span_ends = sum(
         int(item.get("invalid_coverage_ratio_span_ends", 0))
         for item in trace_inspection
@@ -395,6 +404,7 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         "launcher_tool_resource_eligible_span_ends": launcher_tool_resource_eligible_span_ends,
         "launcher_tool_resource_unavailable_span_ends": launcher_tool_resource_unavailable_span_ends,
         "launcher_not_executable_span_ends": launcher_not_executable_span_ends,
+        "launcher_command_not_found_span_ends": launcher_command_not_found_span_ends,
         "invalid_coverage_ratio_span_ends": invalid_coverage_ratio_span_ends,
         "tool_resource_prediction_span_starts": tool_resource_prediction_span_starts,
         "tool_resource_prediction_available_span_starts": tool_resource_prediction_available_span_starts,
@@ -581,12 +591,22 @@ def _agent_diagnostics(
         int(item.get("launcher_not_executable_span_ends", 0))
         for item in trace_inspection
     )
+    launcher_command_not_found = sum(
+        int(item.get("launcher_command_not_found_span_ends", 0))
+        for item in trace_inspection
+    )
     if launcher_not_executable:
         failure_kind = "launcher_not_executable"
         failure = (
             f"{launcher_not_executable} managed exec call(s) failed before the "
             "launcher could start because claw-launch was not executable in "
             "the sandbox"
+        )
+    elif launcher_command_not_found:
+        failure_kind = "launcher_invocation_command_not_found"
+        failure = (
+            f"{launcher_command_not_found} managed exec call(s) ran `run` as "
+            "the sandbox command instead of invoking claw-launch"
         )
     elif empty_response_detected:
         failure_kind = "empty_llm_response"
@@ -617,6 +637,7 @@ def _agent_diagnostics(
         "failed_llm_span_ends": failed_llm_span_ends,
         "tool_span_ends": tool_span_ends,
         "launcher_not_executable_span_ends": launcher_not_executable,
+        "launcher_command_not_found_span_ends": launcher_command_not_found,
         "empty_response_detected": empty_response_detected,
     }
 
@@ -724,6 +745,16 @@ def _tool_failure_kind(record: dict[str, Any]) -> str | None:
         return None
     value = details.get("failureKind") or details.get("failure_kind")
     return value if isinstance(value, str) and value else None
+
+
+def _is_launcher_command_not_found(record: dict[str, Any]) -> bool:
+    if _tool_failure_kind(record) != "shell-command-not-found":
+        return False
+    output_text = json.dumps(record.get("output"), ensure_ascii=False).lower()
+    return (
+        "/bin/bash: run: no such file or directory" in output_text
+        or "run: no such file or directory" in output_text
+    )
 
 
 def _has_available_continuous_prediction(value: Any) -> bool:

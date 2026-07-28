@@ -162,6 +162,11 @@ Latest Windows validation:
 - `python tools/validate_contracts.py`: all 9 contract examples passed.
 - `python -m pytest tests -q --basetemp .pytest-tmp-final2-root`:
   65 passed, 1 POSIX-permission test skipped on Windows.
+- Not run in this Windows workspace: full `sudo -E env "PATH=$PATH"
+  "$(command -v python3)" -m swe_rebench.runner run --config
+  swe_rebench/config.yaml --dataset swe_rebench/tasks.json --sample 1 --export
+  --runtime-mode host-openclaw-sandbox`. It requires the Linux/root Docker/eBPF
+  host-sandbox environment used by the benchmark runner.
 - `$env:PYTHONPATH='services\scheduler\src'; python -m pytest
   services/scheduler/tests -q --basetemp .pytest-tmp-final2-scheduler`:
   101 passed.

@@ -714,6 +714,7 @@ def test_host_sandbox_openclaw_env_points_workspace_dir_at_task_workspace(
     monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "stale-token")
     monkeypatch.setenv("OPENCLAW_GATEWAY_PASSWORD", "stale-password")
     monkeypatch.setenv("OPENCLAW_GATEWAY_URL", "ws://127.0.0.1:18789")
+    monkeypatch.setenv("OPENCLAW_GATEWAY_AUTH_TOKEN", "stale-auth-token")
 
     env = _openclaw_env(tmp_path / "home", 8765, config, workspace)
 
@@ -726,6 +727,7 @@ def test_host_sandbox_openclaw_env_points_workspace_dir_at_task_workspace(
     assert "OPENCLAW_GATEWAY_TOKEN" not in env
     assert "OPENCLAW_GATEWAY_PASSWORD" not in env
     assert "OPENCLAW_GATEWAY_URL" not in env
+    assert "OPENCLAW_GATEWAY_AUTH_TOKEN" not in env
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not represented on Windows")

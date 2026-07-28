@@ -823,15 +823,11 @@ def _openclaw_env(
     # fallback trace writer for SWE-Rebench runs.
     env.pop("OPENCLAW_AGENT_SCHEDULER_TRACE_DIR", None)
     # A sudo -E benchmark must not inherit credentials/targets for the user's
-    # long-running gateway.  This run creates an isolated OPENCLAW_HOME; stale
-    # gateway variables make sessions_spawn announce to the local gateway with
-    # a mismatched token even though ``openclaw agent --local`` is healthy.
-    for name in (
-        "OPENCLAW_GATEWAY_TOKEN",
-        "OPENCLAW_GATEWAY_PASSWORD",
-        "OPENCLAW_GATEWAY_URL",
-        "OPENCLAW_GATEWAY_WS_URL",
-    ):
+    # long-running gateway. This run creates an isolated OPENCLAW_HOME; any
+    # stale gateway variable can make sessions_spawn announce to the local
+    # gateway with a mismatched token even though ``openclaw agent --local`` is
+    # healthy.
+    for name in [key for key in env if key.startswith("OPENCLAW_GATEWAY_")]:
         env.pop(name, None)
     env.update(
         {
