@@ -157,6 +157,7 @@ export default definePluginEntry({
       sendRawParams: {type: "boolean", default: false},
       recordRawTrace: {type: "boolean", default: false},
       logLevel: {enum: ["error", "warn", "info", "debug"], default: "info"},
+      consoleMode: {enum: ["verbose", "quiet"], default: "verbose"},
       executionBackend: {enum: ["hook-only", "marker", "managed-wrapper"], default: "managed-wrapper"},
       launcherPath: {type: "string", default: "/opt/claw/bin/claw-launch"},
       launcherInterpreter: {type: ["string", "null"], default: null},
@@ -200,6 +201,136 @@ export default definePluginEntry({
   registry = new SpanRegistry();
   const traceCfg = config.trace;
 
+  // ── Console turn-by-turn logging (verbose mode) ──────────────────
+  const CONSOLE_PREFIX = "[openclaw]";
+  let turnCounter = 0;
+  const pendingToolNames = new Map<string, string>(); // toolCallId -> toolName
+
+  function consoleVerbose(msg: string): void {
+    if (config.consoleMode !== "verbose") return;
+    console.log(`${CONSOLE_PREFIX} ${msg}`);
+  }
+
+  function truncateStr(s: string, maxLen: number): string {
+    if (s.length <= maxLen) return s;
+    return s.slice(0, maxLen) + `...<truncated ${s.length - maxLen} chars>`;
+  }
+
+  function summarizeMessages(messages: unknown): string {
+    if (!Array.isArray(messages)) return "? messages";
+    const roles = new Map<string, number>();
+    for (const m of messages) {
+      if (!isRecord(m)) continue;
+      const role = String((m as Record<string, unknown>).role ?? "unknown");
+      roles.set(role, (roles.get(role) ?? 0) + 1);
+    }
+    const parts = Array.from(roles.entries()).map(([r, c]) => `${r}×${c}`);
+    return parts.length > 0 ? parts.join(", ") : `${messages.length} messages`;
+  }
+
+  function extractTextContent(output: unknown): string | null {
+    if (!isRecord(output)) return null;
+    const o = output as Record<string, unknown>;
+    // OpenAI style: choices[0].message.content
+    const choices = o.choices;
+    if (Array.isArray(choices) && choices.length > 0 && isRecord(choices[0])) {
+      const msg = (choices[0] as Record<string, unknown>).message ?? (choices[0] as Record<string, unknown>).delta;
+      if (isRecord(msg)) {
+        const content = (msg as Record<string, unknown>).content;
+        if (typeof content === "string" && content.length > 0) return content;
+      }
+    }
+    // Direct content field
+    const content = o.content;
+    if (typeof content === "string" && content.length > 0) return content;
+    // text field
+    const text = o.text;
+    if (typeof text === "string" && text.length > 0) return text;
+    return null;
+  }
+
+  function extractToolCallsForDisplay(output: unknown): Array<{name: string; id: string}> {
+    const result: Array<{name: string; id: string}> = [];
+    if (!isRecord(output)) return result;
+    const o = output as Record<string, unknown>;
+
+    // OpenAI style: choices[0].message.tool_calls
+    const choices = o.choices;
+    if (Array.isArray(choices) && choices.length > 0 && isRecord(choices[0])) {
+      const msg = (choices[0] as Record<string, unknown>).message ?? (choices[0] as Record<string, unknown>).delta;
+      if (isRecord(msg)) {
+        const toolCalls = (msg as Record<string, unknown>).tool_calls;
+        if (Array.isArray(toolCalls)) {
+          for (const tc of toolCalls) {
+            if (!isRecord(tc)) continue;
+            const tcRec = tc as Record<string, unknown>;
+            const fn = tcRec.function;
+            const name = isRecord(fn) ? String((fn as Record<string, unknown>).name ?? "?") : "?";
+            const id = String(tcRec.id ?? "");
+            result.push({name, id});
+          }
+        }
+        return result;
+      }
+    }
+    // Direct tool_calls
+    const directCalls = o.tool_calls;
+    if (Array.isArray(directCalls)) {
+      for (const tc of directCalls) {
+        if (!isRecord(tc)) continue;
+        const tcRec = tc as Record<string, unknown>;
+        const fn = tcRec.function;
+        const name = isRecord(fn) ? String((fn as Record<string, unknown>).name ?? "?") : "?";
+        const id = String(tcRec.id ?? "");
+        result.push({name, id});
+      }
+    }
+    return result;
+  }
+
+  function summarizeToolParams(event: unknown): string {
+    if (!isRecord(event)) return "";
+    const params = (event as Record<string, unknown>).params ?? (event as Record<string, unknown>).arguments ?? (event as Record<string, unknown>).input;
+    if (params === null || params === undefined) return "";
+    if (typeof params === "string") return truncateStr(params, 200);
+    if (isRecord(params)) {
+      const keys = Object.keys(params as Record<string, unknown>);
+      if (keys.length === 0) return "{}";
+      // For known tools, print key fields
+      const p = params as Record<string, unknown>;
+      const cmd = p.command ?? p.cmd;
+      if (typeof cmd === "string") return `command="${truncateStr(cmd, 150)}"`;
+      const filePath = p.file_path ?? p.path ?? p.filePath ?? p.file;
+      if (typeof filePath === "string") {
+        const content = p.content ?? p.text;
+        const contentLen = typeof content === "string" ? ` (${content.length} chars)` : "";
+        return `path="${filePath}"${contentLen}`;
+      }
+      // Generic: list key=value pairs
+      const entries = keys.slice(0, 3).map(k => {
+        const v = p[k];
+        const vs = typeof v === "string" ? truncateStr(v, 60) : (typeof v === "object" ? "{...}" : String(v));
+        return `${k}=${vs}`;
+      });
+      return entries.join(", ") + (keys.length > 3 ? ` +${keys.length - 3} more` : "");
+    }
+    return truncateStr(String(params), 200);
+  }
+
+  function summarizeToolResult(event: unknown): string {
+    if (!isRecord(event)) return "";
+    const result = (event as Record<string, unknown>).result ?? (event as Record<string, unknown>).output ?? (event as Record<string, unknown>).response;
+    if (result === null || result === undefined) return "(no output)";
+    if (typeof result === "string") return truncateStr(result, 300);
+    if (isRecord(result)) {
+      const r = result as Record<string, unknown>;
+      const text = r.text ?? r.content ?? r.message ?? r.stdout;
+      if (typeof text === "string") return truncateStr(text, 300);
+      return truncateStr(JSON.stringify(result), 300);
+    }
+    return truncateStr(String(result), 300);
+  }
+
   // ── Debug: dump OpenClaw hook payload keys (once per hook type) ──
   const debugDumped = new Set<string>();
   function dumpHookShape(event: unknown, context: unknown, hookName: string): void {
@@ -227,6 +358,12 @@ export default definePluginEntry({
     dumpHookShape(event, context, "before_tool_call");
     const toolName = extractString(event, ["tool_name", "toolName", "name"]) ?? "unknown";
     const toolCallId = extractString(event, ["tool_call_id", "toolCallId", "id"]);
+
+    // ── verbose console: tool call ──
+    if (toolCallId) pendingToolNames.set(toolCallId, toolName);
+    const paramStr = summarizeToolParams(event);
+    consoleVerbose(`■ ${toolName}${paramStr ? ` ${paramStr}` : ""}`);
+
     // Use OpenClaw-provided IDs only. No self-generated fallback.
     const runId = extractString(event, ["run_id", "runId"]) ?? extractString(context, ["runId", "run_id"]);
     const sessionId = extractString(event, ["session_id", "sessionId"]) ?? extractString(context, ["sessionId", "session_id"]);
@@ -381,6 +518,8 @@ export default definePluginEntry({
     if (toolCallId && registry) {
       registry.clearToolCallParent(toolCallId);
     }
+    // Clean up pending tool name mapping
+    if (toolCallId) pendingToolNames.delete(toolCallId);
 
     const startMono = activeSpan?.startMonotonicTimeNs ?? endMono;
     const startWall = activeSpan?.startWallTimeNs ?? endWall;
@@ -419,6 +558,14 @@ export default definePluginEntry({
     // Determine status code
     const toolExitCode = extractToolExitCode(completion.raw_result, completion.tool_name);
     const toolSucceeded = completion.succeeded && (toolExitCode === null || toolExitCode === 0);
+
+    // ── verbose console: tool result ──
+    const durMs = completion.duration_ms ?? Math.round(Number(durNs) / 1e6);
+    const exitStr = toolExitCode !== null ? ` exit=${toolExitCode}` : "";
+    const statusStr = completion.succeeded ? "ok" : (completion.error_type ?? "failed");
+    const resultStr = summarizeToolResult(event);
+    consoleVerbose(`■ ${toolName} done (${durMs}ms) ${statusStr}${exitStr}${resultStr ? ` | ${resultStr}` : ""}`);
+
     let statusCode: StatusCode = "unknown";
     if (toolSucceeded) {
       statusCode = "ok";
@@ -571,6 +718,11 @@ export default definePluginEntry({
     const provider = extractString(event, ["provider"]);
     const traceId = runId ?? sessionId ?? "unknown-run";
 
+    // ── verbose console: turn start ──
+    turnCounter++;
+    const inputMessages = extractModelInput(event);
+    consoleVerbose(`── Turn ${turnCounter} ── model: ${model} | input: ${summarizeMessages(inputMessages)}`);
+
     llmSeqCounter++;
     const spanId = callId ?? `${traceId}:model:${llmSeqCounter}`;
 
@@ -672,6 +824,17 @@ export default definePluginEntry({
     const model = extractString(event, ["model"]) ?? activeSpan?.name ?? "unknown-model";
     const outcome = extractString(event, ["outcome", "status"]);
     const durationMs = extractNumber(event, ["duration_ms", "durationMs"]);
+
+    // ── verbose console: model response ──
+    const modelOutput = extractModelOutput(event);
+    const textContent = extractTextContent(modelOutput);
+    const displayToolCalls = extractToolCallsForDisplay(modelOutput);
+    if (textContent) {
+      consoleVerbose(`→ ${truncateStr(textContent, 500)}`);
+    }
+    for (const tc of displayToolCalls) {
+      consoleVerbose(`→ tool: ${tc.name}`);
+    }
 
     // Extract tool calls from the response to set up parent mapping
     if (registry) {

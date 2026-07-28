@@ -36,6 +36,7 @@ _PLUGIN_CONFIG: dict[str, Any] = {
     "sendRawParams": False,
     "recordRawTrace": False,
     "logLevel": "info",
+    "consoleMode": "verbose",
     "executionBackend": "managed-wrapper",
     "launcherPath": "/opt/claw/bin/claw-launch",
     "instrumentHosts": ["gateway"],

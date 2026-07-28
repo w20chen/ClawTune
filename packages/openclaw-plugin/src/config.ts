@@ -9,6 +9,7 @@ const defaults: PluginConfig = {
   sendRawParams: false,
   recordRawTrace: false,
   logLevel: "info",
+  consoleMode: "verbose",
   executionBackend: "managed-wrapper",
   launcherPath: "/opt/claw/bin/claw-launch",
   launcherInterpreter: null,
@@ -120,6 +121,7 @@ function envOverrides(): Partial<PluginConfig> {
   const output: Partial<PluginConfig> = {};
   setString(output, "endpoint", schedulerEnv("ENDPOINT"));
   setString(output, "mode", schedulerEnv("MODE"));
+  setString(output, "consoleMode", schedulerEnv("CONSOLE_MODE"));
   setString(output, "launcherPath", schedulerEnv("LAUNCHER_PATH"));
   setString(output, "executionBackend", schedulerEnv("EXECUTION_BACKEND"));
   setBoolean(output, "failOpen", schedulerEnv("FAIL_OPEN"));

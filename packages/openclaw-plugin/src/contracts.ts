@@ -26,6 +26,12 @@ export type PluginConfig = {
   sendRawParams: boolean;
   recordRawTrace: boolean;
   logLevel: "error" | "warn" | "info" | "debug";
+  /**
+   * Console output mode for turn-by-turn logging.
+   * - "verbose": Print LLM messages, tool calls, and tool results to stdout.
+   * - "quiet": Suppress turn-by-turn console output (only internal logs).
+   */
+  consoleMode: "verbose" | "quiet";
   executionBackend: ExecutionBackend;
   launcherPath: string;
   launcherInterpreter: string | null;

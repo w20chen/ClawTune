@@ -598,13 +598,26 @@ def _run_openclaw_agent(
     # ── Tee agent output to trace files + console ──────────────────
     _write_lock = threading.Lock()
 
+    # ── Patterns to suppress from console (still written to log file) ──
+    # These are OpenClaw internal operational logs that add noise without
+    # meaningful per-turn information.  The plugin's consoleMode=verbose
+    # provides the structured turn-by-turn output.
+    _NOISY_PATTERNS = [
+        "[provider-transport-fetch]",
+        "[model-fetch]",
+    ]
+
+    def _is_noisy(line: str) -> bool:
+        return any(p in line for p in _NOISY_PATTERNS)
+
     def _tee(pipe: Any, log_file: Any, tag: str) -> None:
         try:
             for line in pipe:
                 with _write_lock:
                     log_file.write(line)
                     log_file.flush()
-                _log(f"[{tag}] {line.rstrip()}")
+                if not _is_noisy(line):
+                    _log(f"[{tag}] {line.rstrip()}")
         except (ValueError, OSError):
             pass
 
@@ -704,6 +717,7 @@ def _openclaw_config(
                             "sendRawParams": False,
                             "recordRawTrace": False,
                             "logLevel": "warn",
+                            "consoleMode": "verbose",
                             "executionBackend": "managed-wrapper",
                             "launcherPath": "/workspace/.claw/bin/claw-launch",
                             "launcherInterpreter": "/bin/sh",
