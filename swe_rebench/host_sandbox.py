@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -78,7 +79,7 @@ def run_host_sandbox_task(
         _collect_patch(trace_dir, workspace, task)
     except Exception as exc:
         error = str(exc)
-        _write_text(trace_dir / "host_sandbox_error.txt", error + "\n")
+        _write_text(trace_dir / "host_sandbox_error.txt", traceback.format_exc())
     finally:
         if sidecar is not None:
             _stop_process(sidecar)

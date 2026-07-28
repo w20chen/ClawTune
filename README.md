@@ -235,7 +235,6 @@ python -m swe_rebench.runner run --config swe_rebench/config.yaml \
   --prepare \
   --dataset swe_rebench/tasks.json \
   --sample 10 \
-  --parallelism 4 \
   --export \
   --runtime-mode host-openclaw-sandbox
 ```
