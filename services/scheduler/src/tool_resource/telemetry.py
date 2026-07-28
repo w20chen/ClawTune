@@ -280,7 +280,8 @@ struct event_t {
 };
 
 BPF_RINGBUF_OUTPUT(events, 1024);
-BPF_ARRAY(target_cgroup, u64, 1);
+BPF_HASH(target_cgroups, u64, u8, 64);
+BPF_ARRAY(filter_active, u32, 1);
 BPF_ARRAY(ringbuf_reserve_failures, u64, 1);
 BPF_ARRAY(argv_read_failures, u64, 1);
 BPF_ARRAY(argv_boundary_read_failures, u64, 1);
@@ -302,8 +303,12 @@ BPF_HASH(pending_seq, struct task_key_t, struct pending_exec_t);
 
 static int wanted(void) {
     u32 zero = 0;
-    u64 *t = target_cgroup.lookup(&zero);
-    return t && *t && *t == bpf_get_current_cgroup_id();
+    u32 *active = filter_active.lookup(&zero);
+    // When filter_active is unset or 0, allow all events (no filtering).
+    if (!active || !*active) return 1;
+    u64 current = bpf_get_current_cgroup_id();
+    u8 *found = target_cgroups.lookup(&current);
+    return found != NULL;
 }
 
 static void lost(u64 *counter) {
@@ -1144,7 +1149,7 @@ def collect_case(command: str, tag: str, *, marker: str = "") -> RawRun:
     for seq in range(8192):
         q.push(ctypes.c_ulonglong(seq))
     bpf["sequence_ready"][ctypes.c_int(0)] = ctypes.c_uint(1)
-    bpf["target_cgroup"][ctypes.c_int(0)] = ctypes.c_ulonglong(cgroup_id)
+    _populate_bpf_cgroup_filter(bpf, {cgroup_id})
 
     events: list[dict[str, Any]] = []
     lock = threading.Lock()
@@ -2584,6 +2589,41 @@ def _container_cgroup(
     return cgroup, init_pid
 
 
+def _discover_leaf_cgroup_inodes(cgroup: Path) -> set[int]:
+    """Return inode numbers for *cgroup* and all descendant leaf cgroups.
+
+    On Docker / cgroup v2 systems the container runtime may create child
+    cgroups under the scope cgroup.  Processes inside those child cgroups
+    have a different ``bpf_get_current_cgroup_id()`` than the parent, so the
+    eBPF ``wanted()`` filter must accept all of them.
+    """
+    inodes: set[int] = set()
+    try:
+        inodes.add(cgroup.stat().st_ino)
+    except OSError:
+        pass
+    try:
+        for entry in cgroup.rglob("*"):
+            if entry.is_dir():
+                try:
+                    inodes.add(entry.stat().st_ino)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return inodes
+
+
+def _populate_bpf_cgroup_filter(bpf: Any, cgroup_inodes: set[int]) -> None:
+    """Populate the ``target_cgroups`` BPF hash with *cgroup_inodes* and
+    activate the filter."""
+    if not cgroup_inodes:
+        return
+    for inode in cgroup_inodes:
+        bpf["target_cgroups"][ctypes.c_ulonglong(inode)] = ctypes.c_uint8(1)
+    bpf["filter_active"][ctypes.c_int(0)] = ctypes.c_uint32(1)
+
+
 def _event_row(table: Any, data: int) -> dict[str, Any]:
     event = table.event(data)
     row = {
@@ -2754,6 +2794,11 @@ class ClauseTelemetryCollector:
         self.container_id = container_id
         self.cgroup = cgroup
         self.cgroup_id = cgroup.stat().st_ino
+        # Discover all leaf cgroup inodes so the BPF filter matches processes
+        # in child cgroups (Docker/cgroup-v2 may create nested cgroups).
+        self.cgroup_inodes = _discover_leaf_cgroup_inodes(cgroup) if cgroup else set()
+        if not self.cgroup_inodes and self.cgroup_id:
+            self.cgroup_inodes = {self.cgroup_id}
         self.init_pid = init_pid
         self.quota_cores = observed_quota_cores(cgroup)
         self.repo = repo
@@ -2825,9 +2870,7 @@ class ClauseTelemetryCollector:
             for sequence in range(8192):
                 queue.push(ctypes.c_ulonglong(sequence))
             self._bpf["sequence_ready"][ctypes.c_int(0)] = ctypes.c_uint(1)
-            self._bpf["target_cgroup"][ctypes.c_int(0)] = ctypes.c_ulonglong(
-                self.cgroup_id
-            )
+            _populate_bpf_cgroup_filter(self._bpf, self.cgroup_inodes)
             self._table = self._bpf["events"]
 
             def receive(_ctx: int, data: int, _size: int) -> int:
@@ -2888,6 +2931,7 @@ class ClauseTelemetryCollector:
         collector.container_id = container_id
         collector.cgroup = None
         collector.cgroup_id = 0
+        collector.cgroup_inodes = set()
         collector.init_pid = 0
         collector.quota_cores = 0.0
         collector.repo = repo
@@ -3069,7 +3113,7 @@ class ClauseTelemetryCollector:
                         event
                         for event in self._events
                         if token.started_ns <= event["ts_ns"] <= ended_ns
-                        and event["cgroup_id"] == self.cgroup_id
+                        and event["cgroup_id"] in self.cgroup_inodes
                     ),
                     key=lambda event: event["ts_ns"],
                 )

@@ -90,9 +90,14 @@ def run_host_sandbox_task(
     except Exception as exc:
         error = str(exc)
         _write_text(trace_dir / "host_sandbox_error.txt", traceback.format_exc())
+    except KeyboardInterrupt:
+        error = "interrupted by user"
     finally:
-        if sidecar is not None:
-            _stop_process(sidecar)
+        try:
+            if sidecar is not None:
+                _stop_process(sidecar)
+        except KeyboardInterrupt:
+            pass
         _write_result_summary(trace_dir, task, workspace, exit_code, error)
 
     return ContainerResult(
@@ -624,21 +629,37 @@ def _run_openclaw_agent(
         process.kill()
         process.wait()
         return 124
-    finally:
-        stop_discovery.set()
-        discovery.join(timeout=2)
-        # Close pipes and join tee threads
+    except KeyboardInterrupt:
+        # Kill the agent process immediately so tee threads can exit
         try:
-            if process.stdout:
-                process.stdout.close()
-            if process.stderr:
-                process.stderr.close()
-        except OSError:
+            process.kill()
+            process.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
             pass
-        tee_stdout.join(timeout=2)
-        tee_stderr.join(timeout=2)
-        stdout_file.close()
-        stderr_file.close()
+        return -1
+    finally:
+        # All cleanup steps are protected from secondary interrupts so
+        # Ctrl-C never leaves the process in an unreachable zombie state.
+        stop_discovery.set()
+        _join_thread_safe(discovery, timeout=2)
+
+        # Close process pipes so tee threads exit their read loops
+        for pipe_attr in ("stdout", "stderr"):
+            pipe = getattr(process, pipe_attr, None)
+            if pipe is not None:
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
+
+        _join_thread_safe(tee_stdout, timeout=2)
+        _join_thread_safe(tee_stderr, timeout=2)
+
+        for f in (stdout_file, stderr_file):
+            try:
+                f.close()
+            except OSError:
+                pass
 
 
 def _openclaw_config(
@@ -1269,6 +1290,14 @@ def _run_logged(cmd: list[str], env: dict[str, str], log: Any, label: str) -> No
     log.write(f"\nexit={result.returncode}\n\n")
     if result.returncode != 0:
         raise RuntimeError(f"{label}_failed exit={result.returncode}")
+
+
+def _join_thread_safe(thread: threading.Thread, *, timeout: float | None = None) -> None:
+    """Join a thread, ignoring KeyboardInterrupt so cleanup is never abandoned."""
+    try:
+        thread.join(timeout=timeout)
+    except KeyboardInterrupt:
+        pass
 
 
 def _stop_process(process: subprocess.Popen[str]) -> None:
