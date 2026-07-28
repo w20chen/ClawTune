@@ -79,6 +79,16 @@ def _trusted_cgroup_path(cgroup_path: str | None) -> str | None:
     return cgroup_path
 
 
+def _is_shared_runtime_scope(scope: ResourceScope | None) -> bool:
+    return bool(
+        scope is not None
+        and (
+            scope.source == "openclaw-runtime"
+            or scope.attribution_source == "shared-runtime-process"
+        )
+    )
+
+
 def create_app(state: AppState | None = None) -> FastAPI:
     app_state = state or build_state()
     app = FastAPI(title="OpenClaw Agent Scheduler Sidecar", version="0.1.0")
@@ -141,7 +151,10 @@ def create_app(state: AppState | None = None) -> FastAPI:
         )
 
     def with_sandbox_fallback(request: ToolBeforeRequest, s: AppState) -> ToolBeforeRequest:
-        if request.resource_scope is not None:
+        if (
+            request.resource_scope is not None
+            and not _is_shared_runtime_scope(request.resource_scope)
+        ):
             return request
         scope = sandbox_fallback_scope(s)
         if scope is None:
@@ -152,7 +165,10 @@ def create_app(state: AppState | None = None) -> FastAPI:
         event: ToolCompletedEvent,
         s: AppState,
     ) -> ToolCompletedEvent:
-        if event.resource_scope is not None:
+        if (
+            event.resource_scope is not None
+            and not _is_shared_runtime_scope(event.resource_scope)
+        ):
             return event
         scope = sandbox_fallback_scope(s)
         if scope is None:

@@ -38,6 +38,18 @@ container probe confirms `/sys/fs/cgroup/claw` can be created. With the default
 false value, cgroup sampling is best-effort and can borrow the task container's
 own cgroup when cgroupfs is read-only.
 
+## Current Host Stage-2 Fix
+
+The x86_64 syscall kprobe now unwraps the inner `pt_regs` supplied by
+`CONFIG_ARCH_HAS_SYSCALL_WRAPPER` before reading `execve`/`execveat`
+arguments. Host preflight also runs a real short-lived cgroup/eBPF collection
+and requires non-empty executable/argv events, a successful exec boundary,
+zero telemetry loss, and drained lifecycle maps before a full task starts.
+For native OpenClaw tools, a Docker `exec_start` match still takes precedence;
+when it is missed, a plugin-provided shared host-runtime scope is now replaced
+by the discovered sandbox-container cgroup instead of measuring the unrelated
+host OpenClaw process.
+
 ## Validation
 
 ```bash
@@ -89,6 +101,11 @@ cd packages/openclaw-plugin && npm test && npm run typecheck
   cannot run directly in this Windows sandbox because pytest tries to create
   `C:\Users\29068\.pytest-tmp`, which is outside the writable workspace; rerun
   with `--basetemp .pytest-tmp-root`.
+- `python -m pytest services/scheduler/tests/test_tool_resource_telemetry.py
+  tests/test_swe_rebench_selection.py -q` and the same command with
+  `--basetemp C:\tmp\claw-stage2-pytest-20260728a` cannot run in this Windows
+  sandbox because those temp roots are not writable; the command passed with a
+  repository-local `--basetemp .pytest_tmp_stage2_20260728a`.
 - `python -m pytest --basetemp C:\tmp\claw-pytest services\scheduler\tests\test_tool_resource_telemetry.py tests\test_swe_rebench_selection.py::test_host_sandbox_sidecar_enables_docker_exec_observer tests\test_swe_rebench_selection.py::test_host_sandbox_writes_tool_resource_preflight tests\test_swe_rebench_runner_inspection.py -q`
   cannot run in this sandbox because creating `C:\tmp\claw-pytest` is denied;
   use a basetemp inside the repository, such as `.pytest-tmp-root`.

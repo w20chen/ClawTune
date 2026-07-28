@@ -297,9 +297,9 @@ payload = {
 }
 try:
     from tool_resource.telemetry import (
-        BPF_PROGRAM,
         _bpf_runtime_diagnostics,
         _ensure_bcc_importable,
+        validate_clause_telemetry_smoke,
         validate_clause_telemetry_runtime,
     )
     _ensure_bcc_importable()
@@ -312,9 +312,7 @@ try:
             concurrency=1,
             workers=1,
         )
-        from bcc import BPF
-        bpf = BPF(text=BPF_PROGRAM)
-        bpf.cleanup()
+        payload["semantic_smoke"] = validate_clause_telemetry_smoke()
     except Exception as exc:
         payload["stage2_ready"] = False
         payload["stage2_disabled_reason"] = f"{type(exc).__name__}: {exc}"

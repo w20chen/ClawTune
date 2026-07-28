@@ -530,18 +530,61 @@ static int capture_enter(const char *filename, const char *const *argv) {
     return 0;
 }
 
+/*
+ * CONFIG_ARCH_HAS_SYSCALL_WRAPPER kernels (including x86_64 and arm64) pass
+ * one pointer to the saved syscall register frame to __*_sys_execve*. The outer
+ * kprobe frame therefore does not contain the syscall arguments directly.
+ * Treating PT_REGS_PARM1(ctx) as filename saves the inner pt_regs pointer as a
+ * user address and makes every later filename/argv read fail.
+ */
+static struct pt_regs *syscall_argument_regs(struct pt_regs *ctx) {
+#ifdef CONFIG_ARCH_HAS_SYSCALL_WRAPPER
+    return (struct pt_regs *)PT_REGS_PARM1(ctx);
+#else
+    return ctx;
+#endif
+}
+
 int capture_sys_execve(struct pt_regs *ctx) {
-    return capture_enter(
-        (const char *)PT_REGS_PARM1(ctx),
-        (const char *const *)PT_REGS_PARM2(ctx)
+    struct pt_regs *regs = syscall_argument_regs(ctx);
+#ifdef CONFIG_ARCH_HAS_SYSCALL_WRAPPER
+    u64 filename = 0;
+    u64 argv = 0;
+    bpf_probe_read_kernel(
+        &filename, sizeof(filename), &PT_REGS_PARM1(regs)
     );
+    bpf_probe_read_kernel(&argv, sizeof(argv), &PT_REGS_PARM2(regs));
+    return capture_enter(
+        (const char *)filename,
+        (const char *const *)argv
+    );
+#else
+    return capture_enter(
+        (const char *)PT_REGS_PARM1(regs),
+        (const char *const *)PT_REGS_PARM2(regs)
+    );
+#endif
 }
 
 int capture_sys_execveat(struct pt_regs *ctx) {
-    return capture_enter(
-        (const char *)PT_REGS_PARM2(ctx),
-        (const char *const *)PT_REGS_PARM3(ctx)
+    struct pt_regs *regs = syscall_argument_regs(ctx);
+#ifdef CONFIG_ARCH_HAS_SYSCALL_WRAPPER
+    u64 filename = 0;
+    u64 argv = 0;
+    bpf_probe_read_kernel(
+        &filename, sizeof(filename), &PT_REGS_PARM2(regs)
     );
+    bpf_probe_read_kernel(&argv, sizeof(argv), &PT_REGS_PARM3(regs));
+    return capture_enter(
+        (const char *)filename,
+        (const char *const *)argv
+    );
+#else
+    return capture_enter(
+        (const char *)PT_REGS_PARM2(regs),
+        (const char *const *)PT_REGS_PARM3(regs)
+    );
+#endif
 }
 
 /* copy_strings() has faulted the original argv pages before bprm_execve.
@@ -1162,6 +1205,61 @@ def collect_case(command: str, tag: str, *, marker: str = "") -> RawRun:
         argv_read_failures=loss_counts["argv_read_failures"],
         argv_boundary_read_failures=loss_counts["argv_boundary_read_failures"],
     )
+
+
+def validate_clause_telemetry_smoke() -> dict[str, Any]:
+    """Exercise the real exec/cgroup path and reject semantically empty BPF data."""
+
+    marker = "claw-stage2-preflight"
+    raw = collect_case(
+        f"printf {marker}",
+        f"preflight_{os.getpid()}",
+        marker=marker,
+    )
+    argv = [
+        str(event.get("arg") or "")
+        for event in raw.events
+        if event.get("type") == "exec_arg"
+    ]
+    requested_paths = [
+        str(event.get("arg") or "")
+        for event in raw.events
+        if event.get("type") == "exec_meta"
+    ]
+    exec_boundaries = sum(
+        event.get("type") == "exec_boundary" for event in raw.events
+    )
+    errors: list[str] = []
+    if raw.status != 0:
+        errors.append(f"smoke command exited {raw.status}")
+    if not raw.marker:
+        errors.append("smoke stdout marker was not observed")
+    if raw.loss_count:
+        detail = ", ".join(
+            f"{name}={count}" for name, count in raw.loss_counts.items() if count
+        )
+        errors.append(f"telemetry loss={raw.loss_count} ({detail})")
+    if not any(argv):
+        errors.append("no non-empty exec argv was captured")
+    if not any(requested_paths):
+        errors.append("no non-empty requested executable path was captured")
+    if exec_boundaries < 1:
+        errors.append("no successful exec boundary was captured")
+    uncleared = {
+        name: count for name, count in raw.lifecycle_map_entries.items() if count
+    }
+    if uncleared:
+        errors.append(f"lifecycle maps were not drained: {uncleared}")
+    if errors:
+        raise RuntimeError("Stage-2 semantic smoke failed: " + "; ".join(errors))
+    return {
+        "ok": True,
+        "event_count": len(raw.events),
+        "exec_arg_count": len(argv),
+        "exec_boundary_count": exec_boundaries,
+        "requested_executable_count": len(requested_paths),
+        "loss_counts": raw.loss_counts,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -3704,5 +3802,6 @@ __all__ = [
     "analyze",
     "cpu_window_profile",
     "rss_bin_profile",
+    "validate_clause_telemetry_smoke",
     "validate_clause_telemetry_runtime",
 ]

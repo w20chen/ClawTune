@@ -233,14 +233,38 @@ def test_metrics_endpoint(tmp_path: Path) -> None:
     assert "scheduler_tool_net_tx_bytes_per_second" in response.text
 
 
-def test_internal_tool_uses_shared_sandbox_cgroup_fallback(tmp_path: Path) -> None:
+def test_internal_tool_prefers_shared_sandbox_over_shared_runtime_scope(
+    tmp_path: Path,
+) -> None:
     cgroup = tmp_path / "cgroup"
+    runtime_cgroup = tmp_path / "runtime-cgroup"
     cgroup.mkdir()
+    runtime_cgroup.mkdir()
     (cgroup / "cpu.stat").write_text("usage_usec 100000\n", encoding="utf-8")
     (cgroup / "memory.current").write_text("4096\n", encoding="utf-8")
     (cgroup / "io.stat").write_text("8:0 rbytes=10 wbytes=20\n", encoding="utf-8")
     (cgroup / "cgroup.procs").write_text("", encoding="utf-8")
+    (runtime_cgroup / "cpu.stat").write_text("usage_usec 900000\n", encoding="utf-8")
+    (runtime_cgroup / "memory.current").write_text("8192\n", encoding="utf-8")
+    (runtime_cgroup / "io.stat").write_text(
+        "8:0 rbytes=100 wbytes=200\n", encoding="utf-8"
+    )
+    (runtime_cgroup / "cgroup.procs").write_text("", encoding="utf-8")
     client, trace_dir = _trace_client_with_sandbox_cgroup(tmp_path, cgroup)
+    shared_runtime_scope = {
+        "kind": "cgroup-v2",
+        "execution_id": None,
+        "pid": os.getpid(),
+        "root_pid": os.getpid(),
+        "process_start_time": None,
+        "root_starttime_ticks": None,
+        "cgroup_path": str(runtime_cgroup),
+        "pid_namespace_inode": None,
+        "container_id": None,
+        "include_children": True,
+        "source": "openclaw-runtime",
+        "attribution_source": "shared-runtime-process",
+    }
     request: dict[str, object] = {
         "schema_version": "scheduler.v1",
         "event_id": "evt-read-start",
@@ -265,7 +289,7 @@ def test_internal_tool_uses_shared_sandbox_cgroup_fallback(tmp_path: Path) -> No
             "has_command_like_field": False,
         },
         "raw_params": {"path": "README.md"},
-        "resource_scope": None,
+        "resource_scope": shared_runtime_scope,
     }
     decision = client.post("/v1/decisions/tool", json=request).json()
     (cgroup / "cpu.stat").write_text("usage_usec 200000\n", encoding="utf-8")
@@ -289,7 +313,7 @@ def test_internal_tool_uses_shared_sandbox_cgroup_fallback(tmp_path: Path) -> No
         "error_digest": None,
         "result_size_bytes": 4,
         "raw_result": "data",
-        "resource_scope": None,
+        "resource_scope": shared_runtime_scope,
     }
 
     assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}

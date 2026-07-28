@@ -173,16 +173,19 @@ sudo -E env "PATH=$PATH" "$(command -v python3)" \
 ```
 
 Passing `--runtime-mode host-openclaw-sandbox` on the CLI makes Stage-2
-telemetry required by default. The runner loads the BPF module during preflight
-and stops immediately if root/BPF/perf permissions or the toolchain are
-missing. Use `--no-stage2-required` only for an explicit best-effort diagnostic
-run; such a run does not satisfy clause-telemetry completeness.
+telemetry required by default. The runner performs a real cgroup/eBPF smoke
+collection during preflight and requires a successful exec boundary, non-empty
+executable/argv capture, drained lifecycle maps, and zero telemetry loss. It
+stops immediately if root/BPF/perf permissions, the toolchain, probe attachment,
+or syscall argument decoding are unhealthy. Use `--no-stage2-required` only for
+an explicit best-effort diagnostic run; such a run does not satisfy
+clause-telemetry completeness.
 
 **Diagnostics:**
 
 - `tool_resource_preflight_host.json` — written to the task trace directory;
   records BCC import status, kernel headers, clang/llc/bpftool availability,
-  and cgroup-v2 detection.
+  cgroup-v2 detection, and the semantic smoke result.
 - `sidecar-stderr.txt` — check for BPF setup errors (missing kernel headers,
   permission denied, etc.).
 - Trace inspection: `python tools/inspect_trace.py <trace.jsonl> --all --details`
