@@ -171,9 +171,11 @@ class AgentTestBenchTraceWriter:
         wall_end_ns = str(int(ts_end * 1_000_000_000))
         # Use monotonic clock for durations so they are immune to wall-clock
         # adjustments (NTP, leap seconds).  Wall-clock is preserved separately.
-        mono_start_ns = str(time.monotonic_ns())
-        mono_end_ns = str(time.monotonic_ns())
-        duration_ns = str(int(max(0, event.duration_ms) * 1_000_000))
+        duration_ns_value = int(max(0, event.duration_ms) * 1_000_000)
+        mono_end_ns_value = time.monotonic_ns()
+        mono_start_ns = str(max(0, mono_end_ns_value - duration_ns_value))
+        mono_end_ns = str(mono_end_ns_value)
+        duration_ns = str(duration_ns_value)
 
         tool_exit_code = _tool_exit_code(event.raw_result, event.tool_name)
         status_code = _tool_status_code(event, tool_exit_code)
@@ -630,13 +632,17 @@ def _first_int(value: dict[str, Any], keys: tuple[str, ...]) -> int | None:
 
 
 def _tool_timestamps(sample: ToolRuntimeSample, duration_ms: int) -> tuple[float, float]:
-    ts_start = sample.started_at
     ts_end = sample.ended_at
     duration_s = max(0.0, duration_ms / 1000)
+    if duration_s > 0:
+        # Monitoring begins while the scheduler decision is still in flight,
+        # so its window may be substantially longer than the duration reported
+        # by OpenClaw for the actual tool action.  The action window must use
+        # the reported duration and keep the monitor window separate.
+        return ts_end - duration_s, ts_end
+    ts_start = sample.started_at
     if ts_end < ts_start:
         ts_end = ts_start
-    if duration_s > 0 and ts_end - ts_start < duration_s:
-        ts_start = ts_end - duration_s
     return ts_start, ts_end
 
 
@@ -795,7 +801,10 @@ def _coverage(
     if action_duration_ns <= 0:
         return overlap_ns, None, "full_window" if overlap_ns > 0 else "monitor_window_no_overlap"
 
-    ratio = overlap_ns / action_duration_ns
+    # Keep the public trace invariant even when upstream clocks are rounded or
+    # a malformed sample claims a monitor interval wider than its action.
+    overlap_ns = min(overlap_ns, action_duration_ns)
+    ratio = max(0.0, min(1.0, overlap_ns / action_duration_ns))
 
     if shared_sandbox_container:
         reason = "shared_sandbox_container"

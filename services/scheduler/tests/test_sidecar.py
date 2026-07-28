@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import agent_scheduler.api.app as app_module
 from agent_scheduler.api.app import create_app
 from agent_scheduler.api.dependencies import build_state
 from agent_scheduler.config import SchedulerConfig
+from agent_scheduler.contracts.models import ParamFeatures, ToolBeforeRequest
 from agent_scheduler.llm_proxy import (
     _forward_headers,
     _parse_sse_buffer,
@@ -20,6 +22,28 @@ from agent_scheduler.llm_proxy import (
 )
 from agent_scheduler.monitoring.docker_exec import DockerExecObserver, _docker_events_command
 from agent_scheduler.monitoring.tool_runtime import _relative_timeline
+from agent_scheduler.trace import _coverage, _tool_timestamps
+
+
+def test_tool_action_window_uses_reported_duration_not_monitor_window() -> None:
+    sample = SimpleNamespace(started_at=100.0, ended_at=101.0)
+
+    assert _tool_timestamps(sample, 100) == (100.9, 101.0)
+
+
+def test_coverage_ratio_is_defensively_bounded() -> None:
+    duration_ns, ratio, reason = _coverage(
+        action_start_wall_ns=1_000,
+        action_end_wall_ns=2_000,
+        action_duration_ns=100,
+        monitor_start_wall_ns=900,
+        monitor_end_wall_ns=2_100,
+        has_pid=True,
+    )
+
+    assert duration_ns == 100
+    assert ratio == 1.0
+    assert reason == "full_window"
 
 
 def _read_trace_records(trace_dir: Path) -> list[dict]:
@@ -324,9 +348,15 @@ def test_internal_tool_prefers_shared_sandbox_over_shared_runtime_scope(
 
     assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
 
+    trace_records = _read_trace_records(trace_dir)
+    tool_start = [
+        record
+        for record in trace_records
+        if record.get("record_type") == "span_start" and record.get("kind") == "tool"
+    ][0]
     tool_end = [
         record
-        for record in _read_trace_records(trace_dir)
+        for record in trace_records
         if record.get("record_type") == "span_end" and record.get("kind") == "tool"
     ][0]
     assert tool_end["execution"]["cgroup_path"] == str(cgroup)
@@ -335,6 +365,10 @@ def test_internal_tool_prefers_shared_sandbox_over_shared_runtime_scope(
     assert tool_end["resources"]["coverage_reason"] == "shared_sandbox_container"
     assert tool_end["resources"]["monitor_duration_ns"] is not None
     assert tool_end["resources"]["cgroup_cpu_time_s"] is not None
+    assert (
+        int(tool_end["monotonic_time_ns"]) - int(tool_start["monotonic_time_ns"])
+        == int(tool_end["duration_ns"])
+    )
 
 
 def test_internal_tool_uses_docker_exec_inferred_scope_before_fallback(tmp_path: Path) -> None:
@@ -421,9 +455,11 @@ def test_internal_tool_uses_docker_exec_inferred_scope_before_fallback(tmp_path:
         for record in _read_trace_records(trace_dir)
         if record.get("record_type") == "span_end" and record.get("kind") == "tool"
     ][0]
-    assert tool_end["execution"]["cgroup_path"] == str(inferred_cgroup)
+    assert tool_end["execution"]["cgroup_path"] is None
+    assert tool_end["execution"]["payload_pid"] == os.getpid()
     assert tool_end["execution"]["source"] == "docker-events"
-    assert tool_end["resources"]["attribution_source"] == "docker-exec-inferred"
+    assert tool_end["resources"]["scope"] == "process_tree"
+    assert tool_end["resources"]["attribution_source"] == "docker-exec-pid"
     assert tool_end["resources"]["attribution_status"] == "attributed"
     assert tool_end["resources"]["coverage_reason"] != "shared_sandbox_container"
 
@@ -526,9 +562,11 @@ def test_internal_tool_overrides_shared_runtime_scope_with_docker_exec(tmp_path:
         for record in _read_trace_records(trace_dir)
         if record.get("record_type") == "span_end" and record.get("kind") == "tool"
     ][0]
-    assert tool_end["execution"]["cgroup_path"] == str(inferred_cgroup)
+    assert tool_end["execution"]["cgroup_path"] is None
+    assert tool_end["execution"]["payload_pid"] == os.getpid()
     assert tool_end["execution"]["source"] == "docker-events"
-    assert tool_end["resources"]["attribution_source"] == "docker-exec-inferred"
+    assert tool_end["resources"]["scope"] == "process_tree"
+    assert tool_end["resources"]["attribution_source"] == "docker-exec-pid"
     assert tool_end["resources"]["coverage_reason"] != "shared_runtime_process"
 
 
@@ -572,7 +610,56 @@ def test_docker_exec_event_uses_exec_id_attribute_not_container_id() -> None:
     assert observer._records[0].exec_id == "exec-real-id"
 
 
-def test_docker_exec_observer_subscribes_to_container_exec_start_events() -> None:
+def test_docker_exec_observer_binds_live_pid_before_completion() -> None:
+    bound = []
+    observer = DockerExecObserver(
+        enabled=True,
+        container_id="sandbox-1",
+        autostart=False,
+        on_scope=lambda tool_call_id, scope: (
+            bound.append((tool_call_id, scope)) or True
+        ),
+    )
+    observer.begin_tool(
+        ToolBeforeRequest(
+            schema_version="scheduler.v1",
+            event_id="evt-read",
+            occurred_at="2026-07-16T03:23:00Z",
+            plugin_version="0.1.0",
+            run_id="run-1",
+            session_id="session-1",
+            session_key=None,
+            agent_id=None,
+            tool_call_id="call-read",
+            tool_name="read",
+            tool_kind="file",
+            tool_input_kind="json",
+            derived_paths=[],
+            params_digest="sha256:" + "a" * 64,
+            param_features=ParamFeatures(
+                serialized_size_bytes=1,
+                string_length=1,
+                list_item_count=0,
+                path_count=1,
+                has_command_like_field=False,
+            ),
+        )
+    )
+
+    observer.record_exec_start(
+        exec_id="exec-read",
+        container_id="sandbox-1",
+        pid=os.getpid(),
+        command="openclaw-sandbox-fs read README.md",
+    )
+
+    assert bound[0][0] == "call-read"
+    assert bound[0][1].kind == "pid"
+    assert bound[0][1].pid == os.getpid()
+    assert bound[0][1].attribution_source == "docker-exec-pid"
+
+
+def test_docker_exec_observer_subscribes_before_container_exec_start() -> None:
     command = _docker_events_command("docker")
 
     assert command == [
@@ -582,6 +669,8 @@ def test_docker_exec_observer_subscribes_to_container_exec_start_events() -> Non
         "{{json .}}",
         "--filter",
         "type=container",
+        "--filter",
+        "event=exec_create",
         "--filter",
         "event=exec_start",
     ]

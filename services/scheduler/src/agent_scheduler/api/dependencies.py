@@ -58,23 +58,28 @@ def build_state(config: SchedulerConfig | None = None) -> AppState:
         policy = ConcurrencyPolicy(leases, cfg.admission_wait_ms)
     else:
         policy = ObserveOnlyPolicy()
+    tool_monitor = RealtimeToolMonitor(
+        poll_interval_s=max(0.01, cfg.resource_poll_interval_ms / 1000),
+        max_timeline_points=max(1, cfg.resource_timeline_max_points),
+    )
+    docker_exec_observer = (
+        DockerExecObserver(
+            enabled=cfg.docker_exec_observer_enabled,
+            docker_socket=cfg.docker_socket,
+            container_id=cfg.sandbox_container_id,
+            container_prefix=cfg.docker_exec_container_prefix,
+            on_scope=tool_monitor.bind_scope,
+        )
+        if cfg.docker_exec_observer_enabled
+        else None
+    )
     return AppState(
         config=cfg,
         predictor=predictor,
         leases=leases,
         policy=policy,
-        tool_monitor=RealtimeToolMonitor(
-            poll_interval_s=max(0.01, cfg.resource_poll_interval_ms / 1000),
-            max_timeline_points=max(1, cfg.resource_timeline_max_points),
-        ),
-        docker_exec_observer=DockerExecObserver(
-            enabled=cfg.docker_exec_observer_enabled,
-            docker_socket=cfg.docker_socket,
-            container_id=cfg.sandbox_container_id,
-            container_prefix=cfg.docker_exec_container_prefix,
-        )
-        if cfg.docker_exec_observer_enabled
-        else None,
+        tool_monitor=tool_monitor,
+        docker_exec_observer=docker_exec_observer,
         executions=ExecutionRegistry(),
         metrics=Metrics(),
         topology=read_topology(),

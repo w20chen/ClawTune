@@ -60,6 +60,7 @@ def run_host_sandbox_task(
         _install_sandbox_launcher(workspace, bundle_dir)
         _write_task_inputs(trace_dir, task, config, workspace)
         _ensure_openclaw_sandbox_image(task.image, trace_dir)
+        _verify_sandbox_launcher(trace_dir, workspace)
 
         sidecar = _start_sidecar(
             trace_dir=trace_dir,
@@ -198,6 +199,39 @@ def _ensure_openclaw_sandbox_image(task_image: str, trace_dir: Path) -> None:
         )
 
 
+def _verify_sandbox_launcher(trace_dir: Path, workspace: Path) -> None:
+    """Execute the mounted launcher help path before spending an agent run."""
+
+    docker = _require_executable("docker")
+    log_path = trace_dir / "launcher-preflight.log"
+    with log_path.open("w", encoding="utf-8") as log:
+        result = subprocess.run(
+            [
+                docker,
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--mount",
+                f"type=bind,src={workspace},dst=/workspace",
+                "--workdir",
+                "/workspace",
+                "--entrypoint",
+                "/workspace/.claw/bin/claw-launch",
+                "openclaw-sandbox:bookworm-slim",
+                "--help",
+            ],
+            stdout=log,
+            stderr=log,
+            text=True,
+        )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "sandbox_launcher_preflight_failed: the mounted claw-launch must "
+            f"be readable and executable by the sandbox: {_tail_text(log_path, 2000)}"
+        )
+
+
 def _install_sandbox_launcher(workspace: Path, bundle_dir: Path) -> None:
     scheduler_src = bundle_dir / "scheduler" / "src"
     target_src = workspace / ".claw" / "scheduler" / "src"
@@ -215,7 +249,35 @@ def _install_sandbox_launcher(workspace: Path, bundle_dir: Path) -> None:
         "exec python3 -m agent_scheduler.launcher \"$@\"\n",
         encoding="utf-8",
     )
-    launcher.chmod(launcher.stat().st_mode | 0o111)
+    # The runner is commonly invoked through ``sudo -E`` for BPF access.
+    # A restrictive root umask can otherwise leave the intermediate .claw
+    # directories at 0700 and this script at 0711.  The sandbox user then
+    # cannot traverse/read the interpreted script and every exec fails with
+    # exit 126 before claw-launch can claim the execution.  Use explicit
+    # container-facing permissions instead of merely adding execute bits.
+    _make_sandbox_runtime_readable(workspace / ".claw", target_src)
+    launcher.chmod(0o755)
+
+
+def _make_sandbox_runtime_readable(runtime_root: Path, scheduler_src: Path) -> None:
+    """Make the mounted launcher runtime readable by the sandbox uid.
+
+    Only the private ``.claw`` runtime is changed.  Task repository modes are
+    preserved, and regular scheduler source files do not gain execute bits.
+    """
+
+    for directory in (
+        runtime_root,
+        runtime_root / "scheduler",
+        scheduler_src,
+        runtime_root / "bin",
+    ):
+        directory.chmod(directory.stat().st_mode | 0o555)
+    for path in scheduler_src.rglob("*"):
+        if path.is_dir():
+            path.chmod(path.stat().st_mode | 0o555)
+        elif path.is_file():
+            path.chmod(path.stat().st_mode | 0o444)
 
 
 def _start_sidecar(
@@ -735,6 +797,17 @@ def _openclaw_env(
     # plugin trace override leak into OpenClaw and re-enable the plugin's
     # fallback trace writer for SWE-Rebench runs.
     env.pop("OPENCLAW_AGENT_SCHEDULER_TRACE_DIR", None)
+    # A sudo -E benchmark must not inherit credentials/targets for the user's
+    # long-running gateway.  This run creates an isolated OPENCLAW_HOME; stale
+    # gateway variables make sessions_spawn announce to the local gateway with
+    # a mismatched token even though ``openclaw agent --local`` is healthy.
+    for name in (
+        "OPENCLAW_GATEWAY_TOKEN",
+        "OPENCLAW_GATEWAY_PASSWORD",
+        "OPENCLAW_GATEWAY_URL",
+        "OPENCLAW_GATEWAY_WS_URL",
+    ):
+        env.pop(name, None)
     env.update(
         {
             "OPENCLAW_HOME": str(openclaw_home),

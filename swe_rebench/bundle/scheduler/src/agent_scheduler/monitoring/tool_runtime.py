@@ -208,18 +208,49 @@ class RealtimeToolMonitor:
         with self._lock:
             return len(self._active)
 
-    def bind_scope(self, tool_call_id: str | None, scope: ResourceScope) -> None:
+    def bind_scope(self, tool_call_id: str | None, scope: ResourceScope) -> bool:
         if tool_call_id is None:
-            return
+            return False
         with self._lock:
             active = self._pop_by_tool_call_id(tool_call_id)
             if active is None:
-                return
+                return False
+            current_scope = active.request.resource_scope
+            if (
+                current_scope is not None
+                and current_scope.kind == scope.kind
+                and current_scope.pid == scope.pid
+                and current_scope.cgroup_path == scope.cgroup_path
+                and current_scope.source == scope.source
+                and current_scope.attribution_source == scope.attribution_source
+            ):
+                self._active[self._key(active.request.tool_call_id, active.request.event_id)] = active
+                return True
             request = active.request.model_copy(update={"resource_scope": scope})
             snapshot = self.sampler.snapshot(request.resource_scope)
             if not snapshot.available and active.latest_snapshot.available:
                 self._active[self._key(active.request.tool_call_id, active.request.event_id)] = active
-                return
+                return False
+            if (
+                snapshot.available
+                and scope.attribution_source == "docker-exec-pid"
+            ):
+                # The old baseline belongs to the shared container/runtime
+                # scope and cannot be subtracted from the newly discovered
+                # Docker-exec PID.  Rebase immediately while the process is
+                # alive; coverage will honestly report the late start.
+                self._active[self._key(request.tool_call_id, request.event_id)] = _ActiveTool(
+                    request=request,
+                    snapshot=snapshot,
+                    latest_snapshot=snapshot,
+                    rss_bytes_peak=snapshot.rss_bytes,
+                    timeline=[_timeline_point(snapshot)],
+                    snapshot_count=1,
+                    timeline_truncated=False,
+                    resource_class=active.resource_class,
+                    operation=active.operation,
+                )
+                return True
             timeline = list(active.timeline)
             timeline_truncated = active.timeline_truncated
             snapshot_count = active.snapshot_count
@@ -245,6 +276,7 @@ class RealtimeToolMonitor:
                 resource_class=active.resource_class,
                 operation=active.operation,
             )
+            return snapshot.available
 
     def _pop_by_tool_call_id(self, tool_call_id: str) -> _ActiveTool | None:
         for key, active in list(self._active.items()):

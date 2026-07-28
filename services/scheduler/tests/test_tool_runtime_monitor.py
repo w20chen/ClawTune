@@ -138,3 +138,84 @@ def test_bind_scope_switches_unattributed_start_to_cgroup_baseline() -> None:
     assert abs(sample.cpu_time_delta_s - 0.2) < 0.001
     assert sample.rss_bytes_before == 4096
     assert sample.rss_bytes_after == 8192
+
+
+def test_docker_exec_pid_binding_rebases_shared_cgroup_sample() -> None:
+    sampler = QueueSampler(
+        [
+            _snapshot(
+                captured_at=20.0,
+                cpu_s=100.0,
+                rss=1_000_000,
+                available=True,
+                source="cgroup-v2",
+            ),
+            _snapshot(
+                captured_at=20.1,
+                cpu_s=1.0,
+                rss=4096,
+                available=True,
+                source="process-tree",
+            ),
+            _snapshot(
+                captured_at=20.3,
+                cpu_s=1.2,
+                rss=8192,
+                available=True,
+                source="process-tree",
+            ),
+        ]
+    )
+    monitor = RealtimeToolMonitor(sampler=sampler, poll_interval_s=60)
+    monitor.begin(
+        _request(
+            ResourceScope(
+                kind="cgroup-v2",
+                pid=10,
+                root_pid=10,
+                cgroup_path="/sys/fs/cgroup/docker",
+                source="openclaw-sandbox",
+                attribution_source="shared-sandbox-container",
+            )
+        ),
+        "unknown",
+    )
+    pid_scope = ResourceScope(
+        kind="pid",
+        pid=123,
+        root_pid=123,
+        source="docker-events",
+        attribution_source="docker-exec-pid",
+    )
+
+    assert monitor.bind_scope("call-1", pid_scope) is True
+    assert monitor.bind_scope("call-1", pid_scope) is True
+    sample = monitor.complete(
+        ToolCompletedEvent(
+            schema_version="scheduler.v1",
+            event_id="evt-end",
+            occurred_at="2026-07-16T03:23:01Z",
+            plugin_version="0.1.0",
+            run_id="run-1",
+            session_id="session-1",
+            session_key=None,
+            agent_id=None,
+            tool_call_id="call-1",
+            decision_id=None,
+            lease_id=None,
+            execution_id=None,
+            tool_name="read",
+            duration_ms=200,
+            succeeded=True,
+            error_type=None,
+            error_digest=None,
+            result_size_bytes=None,
+            resource_scope=pid_scope,
+        )
+    )
+
+    assert sample.monitor_source == "process-tree"
+    assert sample.attribution_status == "pid"
+    assert abs((sample.cpu_time_delta_s or 0) - 0.2) < 0.001
+    assert sample.rss_bytes_before == 4096
+    assert sample.rss_bytes_after == 8192

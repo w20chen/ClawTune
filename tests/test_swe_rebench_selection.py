@@ -1,4 +1,5 @@
 import json
+import io
 import os
 import subprocess
 import sys
@@ -14,6 +15,7 @@ from swe_rebench.host_sandbox import (
     _docker_sandbox_container_ids,
     _ensure_openclaw_sandbox_image,
     _ensure_plugin_built,
+    _install_sandbox_launcher,
     _openclaw_config,
     _openclaw_env,
     _run_openclaw_agent,
@@ -21,6 +23,7 @@ from swe_rebench.host_sandbox import (
     _sandbox_container_prefix,
     _stage_plugin_for_openclaw_if_needed,
     _start_sidecar,
+    _verify_sandbox_launcher,
     _write_host_tool_resource_preflight,
     _write_task_inputs,
 )
@@ -630,8 +633,8 @@ def test_host_sandbox_openclaw_config_uses_only_public_top_level_keys(tmp_path: 
     parsed = json.loads(raw)
 
     assert set(parsed) == {"agents", "plugins", "env"}
-    assert parsed["agents"]["defaults"]["workspace"] == str(tmp_path / "workspace")
-    assert parsed["agents"]["defaults"]["repoRoot"] == str(tmp_path / "workspace")
+    assert parsed["agents"]["defaults"]["workspace"] == "/workspace"
+    assert parsed["agents"]["defaults"]["repoRoot"] == "/workspace"
     docker_cfg = parsed["agents"]["defaults"]["sandbox"]["docker"]
     assert docker_cfg["containerPrefix"] == _sandbox_container_prefix(tmp_path / "workspace")
     assert docker_cfg["workdir"] == "/workspace"
@@ -707,6 +710,9 @@ def test_host_sandbox_openclaw_env_points_workspace_dir_at_task_workspace(
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
     workspace = tmp_path / "workspace"
     monkeypatch.setenv("OPENCLAW_AGENT_SCHEDULER_TRACE_DIR", "/tmp/plugin-should-not-write")
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "stale-token")
+    monkeypatch.setenv("OPENCLAW_GATEWAY_PASSWORD", "stale-password")
+    monkeypatch.setenv("OPENCLAW_GATEWAY_URL", "ws://127.0.0.1:18789")
 
     env = _openclaw_env(tmp_path / "home", 8765, config, workspace)
 
@@ -716,6 +722,58 @@ def test_host_sandbox_openclaw_env_points_workspace_dir_at_task_workspace(
     assert env["CLAW_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
     assert env["CLAW_ENABLE_CGROUP"] == "1"
     assert "OPENCLAW_AGENT_SCHEDULER_TRACE_DIR" not in env
+    assert "OPENCLAW_GATEWAY_TOKEN" not in env
+    assert "OPENCLAW_GATEWAY_PASSWORD" not in env
+    assert "OPENCLAW_GATEWAY_URL" not in env
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not represented on Windows")
+def test_host_sandbox_launcher_is_readable_under_restrictive_umask(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    scheduler_src = tmp_path / "bundle" / "scheduler" / "src"
+    package = scheduler_src / "agent_scheduler"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+
+    previous_umask = os.umask(0o077)
+    try:
+        _install_sandbox_launcher(workspace, tmp_path / "bundle")
+    finally:
+        os.umask(previous_umask)
+
+    runtime = workspace / ".claw"
+    launcher = runtime / "bin" / "claw-launch"
+    assert launcher.stat().st_mode & 0o777 == 0o755
+    assert runtime.stat().st_mode & 0o055 == 0o055
+    assert (runtime / "scheduler").stat().st_mode & 0o055 == 0o055
+    assert (runtime / "scheduler" / "src").stat().st_mode & 0o055 == 0o055
+    assert (runtime / "scheduler" / "src" / "agent_scheduler" / "__init__.py").stat().st_mode & 0o044 == 0o044
+
+
+def test_host_sandbox_verifies_mounted_launcher_before_agent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._require_executable",
+        lambda name: "/usr/bin/docker",
+    )
+    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+
+    _verify_sandbox_launcher(tmp_path, tmp_path / "workspace")
+
+    command = calls[0][0]
+    assert command[:4] == ["/usr/bin/docker", "run", "--rm", "--network"]
+    assert "/workspace/.claw/bin/claw-launch" in command
+    assert command[-1] == "--help"
 
 
 def test_host_sandbox_prompt_uses_relative_paths(tmp_path: Path) -> None:
@@ -747,6 +805,8 @@ def test_host_sandbox_agent_forces_sandbox_exec_workdir(monkeypatch, tmp_path: P
 
     class FakeProcess:
         pid = 123
+        stdout = io.StringIO("")
+        stderr = io.StringIO("")
 
         def wait(self, timeout=None):
             return 0

@@ -81,6 +81,16 @@ lets the realtime monitor start sampling before short-lived commands finish;
 the launcher then updates the same execution with the real child PID once the
 payload process exists.
 
+For native sandbox file tools (`read`, `write`, `edit`, and `apply_patch`),
+the optional Docker observer subscribes to both `exec_create` and `exec_start`.
+It correlates the Docker exec command with an active tool and rebinds the
+monitor to the live host PID plus descendants. Because Docker exec processes
+share the container cgroup, exact matches are recorded as `scope:
+process_tree`, `source: docker-events`, and `attribution_source:
+docker-exec-pid`. If the process exits before a PID baseline can be sampled,
+the sidecar retains the discovered shared sandbox cgroup with
+`coverage_reason: shared_sandbox_container`.
+
 The LLM proxy is always enabled for plugin use. By default it forwards the
 provider key already configured in OpenClaw via the request `Authorization`
 header. Set `AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY_OVERRIDE` only when you

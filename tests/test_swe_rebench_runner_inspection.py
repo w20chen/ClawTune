@@ -79,6 +79,38 @@ def test_trace_inspection_counts_failed_and_unattributed_launcher_spans(tmp_path
     assert summary["launcher_tool_resource_ratio"] == 0.0
 
 
+def test_launcher_permission_failure_and_invalid_coverage_are_root_diagnostics(tmp_path):
+    trace = tmp_path / "trace.jsonl"
+    record = {
+        "record_type": "span_end",
+        "kind": "tool",
+        "name": "exec",
+        "status": {"code": "error"},
+        "output": {
+            "exit_code": 126,
+            "result": {"details": {"failureKind": "shell-not-executable"}},
+        },
+        "execution": {"mode": "launcher", "execution_id": "call-1"},
+        "resources": {
+            "scope": "cgroup",
+            "attribution_status": "partially_attributed",
+            "coverage_ratio": 4.5,
+        },
+    }
+    trace.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    inspected = _inspect_trace(trace, "")
+    diagnostics = _agent_diagnostics(
+        [inspected],
+        {"model.patch": {"bytes": 0, "has_diff": False}},
+        {"agent_exit_code": 0, "has_patch": False},
+    )
+
+    assert inspected["launcher_not_executable_span_ends"] == 1
+    assert inspected["invalid_coverage_ratio_span_ends"] == 1
+    assert diagnostics["failure_kind"] == "launcher_not_executable"
+
+
 def test_trace_inspection_reports_stage2_failures_and_prediction_fallbacks(tmp_path):
     trace = tmp_path / "trace.jsonl"
     records = [
@@ -187,6 +219,10 @@ def test_required_telemetry_audits_all_tool_samples_and_async_artifacts(tmp_path
         json.dumps({"version": 1, "observations": []}),
         encoding="utf-8",
     )
+    (artifact_dir / "runtime-tool-resource-kb.json").write_text(
+        json.dumps({"schema": "runtime_tool_resource_kb_v1"}),
+        encoding="utf-8",
+    )
     artifact_report = _inspect_tool_resource_artifacts(trace_dir)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -204,6 +240,8 @@ def test_required_telemetry_audits_all_tool_samples_and_async_artifacts(tmp_path
         "tool_resource_artifacts": artifact_report,
     }
 
+    assert artifact_report["json_file_count"] == 2
+    assert artifact_report["artifact_count"] == 1
     assert artifact_report["healthy_artifact_count"] == 1
     assert artifact_report["clauses_with_status"] == 1
     assert _required_telemetry_error(config, result) is None

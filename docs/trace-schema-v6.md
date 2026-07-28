@@ -62,6 +62,10 @@ Coverage reasons distinguish attribution failures from expected shared scopes:
   OpenClaw runtime process, not a dedicated tool process.
 - `shared_sandbox_container`: an internal tool was sampled through the shared
   OpenClaw Docker sandbox container cgroup, not a dedicated tool process.
+- Native tools with `execution.source: docker-events` and
+  `resources.attribution_source: docker-exec-pid` use the matched Docker exec
+  host PID and descendants. Their resource scope is `process_tree`, because a
+  Docker exec does not receive a dedicated cgroup.
 - `monitor_window_no_overlap`: a PID/cgroup existed, but the sampler did not
   capture an overlapping resource window.
 

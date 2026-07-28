@@ -57,29 +57,61 @@ when it is missed, a plugin-provided shared host-runtime scope is now replaced
 by the discovered sandbox-container cgroup instead of measuring the unrelated
 host OpenClaw process.
 
-## 2026-07-28 Experiment Audit
+## 2026-07-28 Experiment Audit and Fix
 
-The `0b01001001__spectree-64` run did not reach command execution. Both LLM
-spans completed with empty assistant content, OpenClaw exhausted its empty
-response retry, and the trace therefore contains zero tool spans and zero
-Stage-2 artifacts. Host BCC/BPF semantic preflight and sandbox cgroup discovery
-were healthy. The former final error, `required resource telemetry found no
-tool spans`, was a secondary symptom rather than the root failure.
+The exported `0b01001001__spectree-64` run contains 81 completed LLM spans and
+87 completed tool spans. It did enter the tool phase, but all 68 managed
+`exec` calls exited 126 before their payload started:
 
-The runner now records this as `agent_diagnostics.failure_kind:
-empty_llm_response`, keeps the strict telemetry gate separately as
-`telemetry_audit`, and marks it `not_evaluable` when no tool phase exists.
-The LLM proxy accepts LF and CRLF SSE framing and surfaces successful HTTP
-responses with no content/tool calls as `upstream_empty_response`; its automatic
-diagnostic stores only byte counts and a response digest.
+```text
+/bin/sh: 1: /workspace/.claw/bin/claw-launch: Permission denied
+failureKind=shell-not-executable
+```
 
-For subsequent command-bearing runs, a launcher PID without a usable cgroup-v2
-child path is no longer treated as a host PID. In host-sandbox mode the sampler
-retains the discovered host-side sandbox cgroup, preventing PID-namespace
-collisions from attributing an unrelated host process. Stage-2 artifact audit
-also accepts fallback `exec-<uuid>.json` names instead of assuming every tool
-call starts with `call_`. `host-openclaw-container` is accepted as an alias for
-the canonical `host-openclaw-sandbox` mode.
+The host BCC/BPF semantic preflight, module load, cgroup-v2 detection, and
+sandbox-container discovery were healthy. Stage-2 reported
+`no_active_stage2_run` because the launcher never reached claim/start, so the
+runtime KB file was the only JSON file under `tool-resource`; it is not a
+clause telemetry artifact. The former audit message `1/68` was therefore a
+counting bug. The real coverage was `0/68`.
+
+The launcher installer now makes every private `.claw` path component
+traversable, scheduler source readable, and the interpreted launcher exactly
+0755. This handles `sudo -E` with a restrictive root umask. Before the model is
+started, the runner bind-mounts the workspace into the configured sandbox image
+and executes `claw-launch --help`; a permission or interpreter failure now
+stops immediately with `sandbox_launcher_preflight_failed`. Trace inspection
+also reports `launcher_not_executable` ahead of the secondary `no_patch`
+symptom.
+
+The run also exposed 69 invalid `coverage_ratio` values above 1.0 (maximum
+about 15.85). Scheduler decision monitoring started earlier than the actual
+OpenClaw tool duration, but the trace used the monitor window as the action
+window and the shorter tool duration as denominator. Action timestamps are now
+derived from the reported tool duration, monitor timestamps remain separate,
+and coverage is defensively bounded to `[0,1]`.
+
+Native OpenClaw tools produced three best-effort Docker-event matches, but the
+old implementation still sampled the whole container cgroup and labelled it
+as exact. The observer now subscribes at `exec_create` as well as `exec_start`,
+polls `ExecInspect` at 5 ms while the short process becomes live, correlates the
+record to the active tool, and immediately rebinds the monitor to the host PID
+and descendants. If the PID is already gone, it keeps the honest shared
+sandbox-cgroup fallback. Strict telemetry audits consequently require cgroup-v2
+coverage for managed launcher calls and attributed process-or-cgroup samples
+for native calls.
+
+Finally, host-sandbox runs discard inherited `OPENCLAW_GATEWAY_*` credentials
+before constructing the isolated temporary OpenClaw home. This prevents
+`sudo -E` from sending subagent announcements with a token belonging to an
+unrelated long-running gateway.
+
+The production predictor remains the vendored `tool_resource` integration:
+`ClauseResourceKB` supplies empirical clause latency buckets and
+`RuntimeToolResourceKB` supplies causal continuous p90 latency/CPU/memory
+estimates. `tool_resource.mlp` is intentionally reported as excluded because
+this repository has no trained checkpoint/feature-normalization contract;
+running an untrained MLP would fabricate predictions.
 
 ## Validation
 
@@ -96,8 +128,37 @@ python -m pytest tests/test_swe_rebench_runner_inspection.py \
   --basetemp .pytest-tmp-fix-runner
 ```
 
+Latest Windows validation:
+
+- `python tools/validate_contracts.py`: all 9 contract examples passed.
+- `python -m pytest tests -q --basetemp .pytest-tmp-final2-root`:
+  65 passed, 1 POSIX-permission test skipped on Windows.
+- `$env:PYTHONPATH='services\scheduler\src'; python -m pytest
+  services/scheduler/tests -q --basetemp .pytest-tmp-final2-scheduler`:
+  101 passed.
+- `cd packages/openclaw-plugin && npm.cmd test`: 57 passed, including build
+  and trace coverage validation.
+
+The next Linux host-sandbox run is the remaining end-to-end acceptance test.
+It must show:
+
+1. `launcher-preflight.log` exits successfully and no exec result contains
+   `shell-not-executable`;
+2. every executed launcher call has one healthy clause telemetry artifact,
+   with clause latency and explicit exit/signaled status;
+3. every non-null `coverage_ratio` is in `[0,1]`;
+4. native tools use `docker-exec-pid`/`process_tree` when a live Docker exec
+   PID is captured, otherwise `shared_sandbox_container`;
+5. prediction availability becomes non-zero after causal evidence exists;
+   the first cold-start command may correctly remain `unknown`.
+
 ## Not Run Locally
 
+- `python tools/validate_agent_test_bench_run.py
+  C:\Users\29068\Desktop\0b01001001__spectree-64` is not applicable to this
+  flat OpenClaw export: the validator searches for files named `trace.jsonl`,
+  while the run stores two UUID-named trace-v6 JSONL files. The runner's
+  `_inspect_trace`/`_inspect_tool_resource_artifacts` audit was used instead.
 - Live SWE-Rebench Docker task execution requires Docker access, real task
   images, and a valid upstream LLM key/model configuration.
 - `cd packages/openclaw-plugin && npm test` cannot run directly from this

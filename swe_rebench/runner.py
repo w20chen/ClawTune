@@ -137,12 +137,17 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         "unattributed_launcher_tool_span_ends": 0,
         "cgroup_tool_span_ends": 0,
         "process_tree_tool_span_ends": 0,
+        "docker_exec_pid_tool_span_ends": 0,
+        "shared_sandbox_tool_span_ends": 0,
         "attributed_tool_span_ends": 0,
         "resource_sampled_tool_span_ends": 0,
         "cgroup_sampled_tool_span_ends": 0,
         "failed_tool_span_ends": 0,
+        "invalid_coverage_ratio_span_ends": 0,
         "status_exit_code_disagreements": 0,
+        "launcher_not_executable_span_ends": 0,
         "launcher_tool_resource_span_ends": 0,
+        "launcher_tool_resource_available_span_ends": 0,
         "launcher_tool_resource_eligible_span_ends": 0,
         "launcher_tool_resource_unavailable_span_ends": 0,
         "launcher_tool_resource_unavailable_reasons": {},
@@ -191,6 +196,13 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                 status_code = _nested_get(record, ("status", "code"))
                 output_exit_code = _extract_trace_exit_code(record.get("output"))
                 resources = record.get("resources") if isinstance(record.get("resources"), dict) else {}
+                coverage_ratio = resources.get("coverage_ratio")
+                if (
+                    isinstance(coverage_ratio, (int, float))
+                    and not isinstance(coverage_ratio, bool)
+                    and not 0.0 <= float(coverage_ratio) <= 1.0
+                ):
+                    report["invalid_coverage_ratio_span_ends"] += 1
                 if (
                     isinstance(resources.get("sampling_point_count"), int)
                     and resources["sampling_point_count"] > 0
@@ -206,6 +218,14 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                     report["cgroup_tool_span_ends"] += 1
                 if resources.get("scope") == "process_tree":
                     report["process_tree_tool_span_ends"] += 1
+                if (
+                    _nested_get(record, ("execution", "source")) == "docker-events"
+                    and resources.get("scope") == "process_tree"
+                    and resources.get("attribution_source") == "docker-exec-pid"
+                ):
+                    report["docker_exec_pid_tool_span_ends"] += 1
+                if resources.get("coverage_reason") == "shared_sandbox_container":
+                    report["shared_sandbox_tool_span_ends"] += 1
                 if resources.get("attribution_status") in {"attributed", "partially_attributed"}:
                     report["attributed_tool_span_ends"] += 1
                 if status_code == "ok" and output_exit_code not in (None, 0):
@@ -214,6 +234,8 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                     report["failed_tool_span_ends"] += 1
                 if _nested_get(record, ("execution", "mode")) == "launcher":
                     report["launcher_tool_span_ends"] += 1
+                    if _tool_failure_kind(record) == "shell-not-executable":
+                        report["launcher_not_executable_span_ends"] += 1
                     if (
                         _nested_get(record, ("execution", "execution_id"))
                         and output_exit_code is not None
@@ -222,6 +244,8 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                     tool_resource = _nested_get(record, ("execution", "tool_resource"))
                     if isinstance(tool_resource, dict):
                         report["launcher_tool_resource_span_ends"] += 1
+                        if tool_resource.get("status") != "unavailable":
+                            report["launcher_tool_resource_available_span_ends"] += 1
                         if tool_resource.get("kb_observations_added", 0):
                             report["launcher_tool_resource_eligible_span_ends"] += 1
                         if tool_resource.get("status") == "unavailable":
@@ -272,6 +296,10 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         report["warnings"].append("trace contains failed tool spans")
     if report["status_exit_code_disagreements"]:
         report["warnings"].append("tool span status disagrees with non-zero exit code")
+    if report["invalid_coverage_ratio_span_ends"]:
+        report["warnings"].append("tool spans contain coverage_ratio outside [0,1]")
+    if report["launcher_not_executable_span_ends"]:
+        report["warnings"].append("launcher is not executable inside the sandbox")
     if report["launcher_tool_span_ends"] and not report["launcher_tool_resource_span_ends"]:
         report["warnings"].append("launcher tool spans have no Stage-2 tool-resource telemetry")
     if report["launcher_tool_resource_unavailable_span_ends"]:
@@ -308,6 +336,14 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         for item in trace_inspection
     )
     cgroup_tool_span_ends = sum(int(item.get("cgroup_tool_span_ends", 0)) for item in trace_inspection)
+    docker_exec_pid_tool_span_ends = sum(
+        int(item.get("docker_exec_pid_tool_span_ends", 0))
+        for item in trace_inspection
+    )
+    shared_sandbox_tool_span_ends = sum(
+        int(item.get("shared_sandbox_tool_span_ends", 0))
+        for item in trace_inspection
+    )
     unattributed_launcher_tool_span_ends = sum(
         int(item.get("unattributed_launcher_tool_span_ends", 0))
         for item in trace_inspection
@@ -316,12 +352,24 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         int(item.get("launcher_tool_resource_span_ends", 0))
         for item in trace_inspection
     )
+    launcher_tool_resource_available_span_ends = sum(
+        int(item.get("launcher_tool_resource_available_span_ends", 0))
+        for item in trace_inspection
+    )
     launcher_tool_resource_eligible_span_ends = sum(
         int(item.get("launcher_tool_resource_eligible_span_ends", 0))
         for item in trace_inspection
     )
     launcher_tool_resource_unavailable_span_ends = sum(
         int(item.get("launcher_tool_resource_unavailable_span_ends", 0))
+        for item in trace_inspection
+    )
+    launcher_not_executable_span_ends = sum(
+        int(item.get("launcher_not_executable_span_ends", 0))
+        for item in trace_inspection
+    )
+    invalid_coverage_ratio_span_ends = sum(
+        int(item.get("invalid_coverage_ratio_span_ends", 0))
         for item in trace_inspection
     )
     tool_resource_prediction_span_starts = sum(
@@ -343,8 +391,11 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         "launcher_attributed_tool_span_ends": launcher_attributed_tool_span_ends,
         "launcher_cgroup_tool_span_ends": launcher_cgroup_tool_span_ends,
         "launcher_tool_resource_span_ends": launcher_tool_resource_span_ends,
+        "launcher_tool_resource_available_span_ends": launcher_tool_resource_available_span_ends,
         "launcher_tool_resource_eligible_span_ends": launcher_tool_resource_eligible_span_ends,
         "launcher_tool_resource_unavailable_span_ends": launcher_tool_resource_unavailable_span_ends,
+        "launcher_not_executable_span_ends": launcher_not_executable_span_ends,
+        "invalid_coverage_ratio_span_ends": invalid_coverage_ratio_span_ends,
         "tool_resource_prediction_span_starts": tool_resource_prediction_span_starts,
         "tool_resource_prediction_available_span_starts": tool_resource_prediction_available_span_starts,
         "continuous_prediction_available_span_starts": continuous_prediction_available_span_starts,
@@ -352,6 +403,8 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         "resource_sampled_tool_span_ends": resource_sampled_tool_span_ends,
         "cgroup_sampled_tool_span_ends": cgroup_sampled_tool_span_ends,
         "cgroup_tool_span_ends": cgroup_tool_span_ends,
+        "docker_exec_pid_tool_span_ends": docker_exec_pid_tool_span_ends,
+        "shared_sandbox_tool_span_ends": shared_sandbox_tool_span_ends,
         "unattributed_launcher_tool_span_ends": unattributed_launcher_tool_span_ends,
         "all_tool_resource_coverage_ratio": (
             round(resource_sampled_tool_span_ends / tool_span_ends, 3)
@@ -374,6 +427,11 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
             else None
         ),
         "launcher_tool_resource_ratio": (
+            round(launcher_tool_resource_available_span_ends / launcher_tool_span_ends, 3)
+            if launcher_tool_span_ends
+            else None
+        ),
+        "launcher_tool_resource_envelope_ratio": (
             round(launcher_tool_resource_span_ends / launcher_tool_span_ends, 3)
             if launcher_tool_span_ends
             else None
@@ -390,6 +448,7 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
     """Audit finalized Stage-2 files, including async exec completions."""
 
     report: dict[str, Any] = {
+        "json_file_count": 0,
         "artifact_count": 0,
         "healthy_artifact_count": 0,
         "call_count": 0,
@@ -409,7 +468,7 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
     for path in sorted(artifact_dir.glob("*.json")):
         if path.name in {"clause-resource-kb.json", "clause-kb.json"}:
             continue
-        report["artifact_count"] += 1
+        report["json_file_count"] += 1
         try:
             artifact = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -418,6 +477,7 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
         if not isinstance(artifact, dict) or artifact.get("mode") != "clause":
             report["warnings"].append(f"{path.name}: not a clause telemetry artifact")
             continue
+        report["artifact_count"] += 1
         collector = artifact.get("collector")
         healthy = (
             artifact.get("schema") == "clause_telemetry_v2"
@@ -517,7 +577,18 @@ def _agent_diagnostics(
             and tool_span_ends == 0
         )
     )
-    if empty_response_detected:
+    launcher_not_executable = sum(
+        int(item.get("launcher_not_executable_span_ends", 0))
+        for item in trace_inspection
+    )
+    if launcher_not_executable:
+        failure_kind = "launcher_not_executable"
+        failure = (
+            f"{launcher_not_executable} managed exec call(s) failed before the "
+            "launcher could start because claw-launch was not executable in "
+            "the sandbox"
+        )
+    elif empty_response_detected:
         failure_kind = "empty_llm_response"
         failure = (
             "OpenClaw received only empty LLM responses and never entered the "
@@ -545,6 +616,7 @@ def _agent_diagnostics(
         "empty_llm_span_ends": empty_llm_span_ends,
         "failed_llm_span_ends": failed_llm_span_ends,
         "tool_span_ends": tool_span_ends,
+        "launcher_not_executable_span_ends": launcher_not_executable,
         "empty_response_detected": empty_response_detected,
     }
 
@@ -561,7 +633,8 @@ def _required_telemetry_error(
         return "required resource telemetry audit is missing"
     tool_spans = int(resources.get("tool_span_ends", 0))
     sampled_spans = int(resources.get("resource_sampled_tool_span_ends", 0))
-    cgroup_sampled_spans = int(resources.get("cgroup_sampled_tool_span_ends", 0))
+    launcher_spans = int(resources.get("launcher_tool_span_ends", 0))
+    launcher_cgroup_spans = int(resources.get("launcher_cgroup_tool_span_ends", 0))
     if tool_spans == 0:
         return "required resource telemetry found no tool spans"
     if sampled_spans != tool_spans:
@@ -569,10 +642,10 @@ def _required_telemetry_error(
             "required resource telemetry is incomplete: "
             f"sampled {sampled_spans}/{tool_spans} tool spans"
         )
-    if cgroup_sampled_spans != tool_spans:
+    if launcher_cgroup_spans != launcher_spans:
         return (
-            "required cgroup-v2 telemetry is incomplete: "
-            f"sampled {cgroup_sampled_spans}/{tool_spans} tool spans"
+            "required launcher cgroup-v2 telemetry is incomplete: "
+            f"sampled {launcher_cgroup_spans}/{launcher_spans} launcher tool spans"
         )
     artifact_count = int(artifacts.get("artifact_count", 0))
     expected_artifacts = int(resources.get("launcher_stage2_expected_span_ends", 0))
@@ -639,6 +712,20 @@ def _extract_trace_exit_code(value: Any) -> int | None:
     return None
 
 
+def _tool_failure_kind(record: dict[str, Any]) -> str | None:
+    output = record.get("output")
+    if not isinstance(output, dict):
+        return None
+    result = output.get("result")
+    if not isinstance(result, dict):
+        return None
+    details = result.get("details")
+    if not isinstance(details, dict):
+        return None
+    value = details.get("failureKind") or details.get("failure_kind")
+    return value if isinstance(value, str) and value else None
+
+
 def _has_available_continuous_prediction(value: Any) -> bool:
     if not isinstance(value, dict):
         return False
@@ -670,6 +757,7 @@ def _task_artifacts(trace_dir: Path | None) -> dict[str, Any]:
         "cgroup_probe.json",
         "tool_resource_preflight.json",
         "tool_resource_preflight_host.json",
+        "launcher-preflight.log",
         "phase3.log",
         "sidecar.log",
         "sidecar-stdout.txt",
