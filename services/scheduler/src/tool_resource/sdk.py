@@ -85,6 +85,19 @@ class DockerCommandObserver:
         calls = getattr(self._collector, "calls", None)
         return calls if isinstance(calls, list) else []
 
+    @property
+    def telemetry_available(self) -> bool:
+        """Whether the eBPF collector is armed, not merely fail-isolated."""
+
+        return getattr(self._collector, "state", None) == "active"
+
+    @property
+    def unavailable_reason(self) -> str | None:
+        if self.telemetry_available:
+            return None
+        reason = getattr(self._collector, "_disabled_reason", None)
+        return str(reason) if reason else "collector_unavailable"
+
     def start(self, tool_call_id: str, command: str) -> CommandObservationToken:
         """Start observation immediately before the Docker runner executes."""
 

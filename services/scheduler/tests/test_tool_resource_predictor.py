@@ -39,7 +39,13 @@ class _FakeToolResourceSDK:
 
     def start_command(self, context, tool_call_id: str, command: str):
         self.started.append((context.container_id, tool_call_id, command))
-        return SimpleNamespace(tool_call_id=tool_call_id)
+        return SimpleNamespace(
+            tool_call_id=tool_call_id,
+            _observer=SimpleNamespace(
+                telemetry_available=True,
+                unavailable_reason=None,
+            ),
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -140,6 +146,41 @@ def test_predictor_retries_stage2_after_container_id_arrives(tmp_path: Path) -> 
     )
 
     assert fake_sdk.started == [("a" * 64, "call-1", "echo hi && true")]
+
+
+def test_predictor_does_not_report_fail_isolated_collector_as_started(
+    tmp_path: Path,
+) -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0)),
+        repo="repo-1",
+        artifact_dir=tmp_path / "tool-resource",
+    )
+
+    class UnavailableSDK:
+        def start_command(self, context, tool_call_id: str, command: str):
+            return SimpleNamespace(
+                tool_call_id=tool_call_id,
+                _observer=SimpleNamespace(
+                    telemetry_available=False,
+                    unavailable_reason="collector attach failed: permission denied",
+                ),
+            )
+
+    predictor._sdk = UnavailableSDK()  # type: ignore[assignment]
+
+    assert not predictor.begin_execution(
+        execution_id="exec-1",
+        tool_call_id="call-1",
+        command="echo hi",
+        container_id="a" * 64,
+    )
+    summary = predictor._telemetry_by_execution_id["exec-1"]
+    assert summary.started is True
+    assert summary.status == "unavailable"
+    assert summary.unavailable_reason == "collector attach failed: permission denied"
 
 
 def test_openclaw_trace_v6_loads_as_tool_resource_observations(tmp_path: Path) -> None:

@@ -918,7 +918,7 @@ def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(tmp_pa
     ]
 
 
-def test_required_stage2_rejects_claim_without_container_id(tmp_path: Path) -> None:
+def test_required_stage2_defers_claim_without_container_id(tmp_path: Path) -> None:
     state = build_state(SchedulerConfig(trace_dir=tmp_path / "traces"))
     client = TestClient(create_app(state))
     registration = client.post(
@@ -947,8 +947,55 @@ def test_required_stage2_rejects_claim_without_container_id(tmp_path: Path) -> N
         },
     )
 
-    assert claim.status_code == 503
-    assert claim.json()["detail"] == "tool_resource_container_id_unavailable"
+    assert claim.status_code == 200
+
+
+def test_required_stage2_rejects_unavailable_collector_during_started(
+    tmp_path: Path,
+) -> None:
+    state = build_state(SchedulerConfig(trace_dir=tmp_path / "traces"))
+    client = TestClient(create_app(state))
+    state.predictor.begin_execution = lambda **kwargs: False  # type: ignore[method-assign]
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-launcher-exec",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"mode": "off"},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": os.getpid(),
+        },
+    ).json()
+
+    started = client.post(
+        "/v2/executions/call-exec/started",
+        json={
+            "update_token": claim["update_token"],
+            "launcher_pid": os.getpid(),
+            "child_pid": os.getpid(),
+            "process_starttime_ticks": 123,
+            "cgroup_path": str(tmp_path / "call-cgroup"),
+            "pid_namespace_inode": 456,
+            "container_id": "b" * 64,
+        },
+    )
+
+    assert started.status_code == 503
+    assert started.json()["detail"] == "tool_resource_stage2_start_failed"
 
 
 def test_required_stage2_starts_during_claim_with_sandbox_container_id(tmp_path: Path) -> None:

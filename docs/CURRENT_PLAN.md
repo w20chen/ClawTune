@@ -24,6 +24,15 @@ python -m swe_rebench.runner run --config swe_rebench/config.yaml \
   --dataset swe_rebench/tasks.json --sample 10 --export
 ```
 
+Complete host-sandbox eBPF/cgroup telemetry:
+
+```bash
+sudo -E env "PATH=$PATH" "$(command -v python3)" \
+  -m swe_rebench.runner run --config swe_rebench/config.yaml \
+  --runtime-mode host-openclaw-sandbox \
+  --dataset swe_rebench/tasks.json --sample 1 --export
+```
+
 For broad Docker compatibility, leave `docker.cgroup_required: false` unless a
 container probe confirms `/sys/fs/cgroup/claw` can be created. With the default
 false value, cgroup sampling is best-effort and can borrow the task container's
@@ -87,3 +96,22 @@ cd packages/openclaw-plugin && npm test && npm run typecheck
   Delegate=yes ... openclaw agent ...` validation cannot run in this Windows
   PowerShell workspace; they must be run on the Linux host/container where
   `/sys/fs/cgroup` is mounted.
+- `python -m ruff check swe_rebench\host_sandbox.py swe_rebench\runner.py
+  services\scheduler\src\agent_scheduler\api\app.py
+  services\scheduler\src\agent_scheduler\predictors\tool_resource.py
+  services\scheduler\src\tool_resource\clause_bridge.py
+  services\scheduler\src\tool_resource\sdk.py
+  services\scheduler\src\tool_resource\telemetry.py
+  tests\test_swe_rebench_runner_inspection.py
+  tests\test_swe_rebench_selection.py
+  services\scheduler\tests\test_sidecar.py
+  services\scheduler\tests\test_tool_resource_predictor.py
+  services\scheduler\tests\test_tool_resource_telemetry.py
+  tools\validate_contracts.py` cannot run because `ruff` is not installed in
+  the active Windows Python environment.
+- The complete `sudo -E env "PATH=$PATH" "$(command -v python3)" -m
+  swe_rebench.runner run --config swe_rebench/config.yaml --prepare --dataset
+  swe_rebench/tasks.json --sample 1 --export --runtime-mode
+  host-openclaw-sandbox` validation cannot run in this Windows workspace
+  because it requires a Linux host with cgroup v2, BCC, BPF/perf permissions,
+  Docker, OpenClaw, and the configured upstream model.

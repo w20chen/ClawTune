@@ -123,6 +123,14 @@ def create_app(state: AppState | None = None) -> FastAPI:
         record = s.executions.get(execution_id)
         if record is None:
             return False
+        if cgroup_path is None:
+            return s.predictor.begin_execution(
+                execution_id=execution_id,
+                tool_call_id=record.request.tool_call_id,
+                command=record.request.command,
+                container_id=container_id,
+                repo=s.config.tool_resource_repo,
+            )
         return s.predictor.begin_execution(
             execution_id=execution_id,
             tool_call_id=record.request.tool_call_id,
@@ -204,12 +212,19 @@ def create_app(state: AppState | None = None) -> FastAPI:
             s.docker_exec_observer.update_container(
                 container_id=scope.container_id,
             )
+        stage2_start_failed = False
         for record in s.executions.active():
-            begin_stage2_for_record(
+            started = begin_stage2_for_record(
                 s,
                 record.request.execution_id,
                 scope.container_id,
             )
+            if (
+                s.config.tool_resource_stage2_required
+                and record.request.backend == "managed-wrapper"
+                and not started
+            ):
+                stage2_start_failed = True
             # Repair tool-monitor scopes that were bound from inside the
             # container (launcher's /proc/self/cgroup view) before the
             # host-side sandbox scope was discovered.  The new scope has
@@ -222,6 +237,11 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 s.tool_monitor.bind_scope(
                     record.request.tool_call_id, scope
                 )
+        if stage2_start_failed:
+            raise HTTPException(
+                status_code=503,
+                detail="tool_resource_stage2_start_failed",
+            )
         return {"stored": True}
 
     @app.get("/v1/models")
@@ -389,10 +409,19 @@ def create_app(state: AppState | None = None) -> FastAPI:
             # and may be the host root (/sys/fs/cgroup) when cgroupfs
             # is read-only inside the container.  Only pass through
             # paths that are actual sub-cgroups, not the root fallback.
-            begin_stage2_for_record(
+            started = begin_stage2_for_record(
                 s, execution_id, container_id,
                 cgroup_path=_trusted_cgroup_path(request.cgroup_path),
             )
+            if (
+                s.config.tool_resource_stage2_required
+                and record.request.backend == "managed-wrapper"
+                and not started
+            ):
+                raise HTTPException(
+                    status_code=503,
+                    detail="tool_resource_stage2_start_failed",
+                )
         return response
 
     @app.post("/v2/executions/{execution_id}/exited", response_model=ExecutionUpdateResponse)

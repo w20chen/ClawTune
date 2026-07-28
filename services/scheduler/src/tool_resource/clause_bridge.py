@@ -200,6 +200,7 @@ class BridgedClause:
     disk_read_bytes_total: int | None
     disk_write_bytes_total: int | None
     disk_cancelled_write_bytes_total: int | None
+    status: dict[str, Any]
     availability: dict[str, str]
     provenance: dict[str, Any]
 
@@ -221,6 +222,7 @@ class NoRuntimeExec:
             "cpu": "unknown:no_runtime_exec",
             "memory": "unknown:no_runtime_exec",
             "disk_io": "unknown:no_runtime_exec",
+            "status": "unknown:no_runtime_exec",
         }
     )
 
@@ -1344,6 +1346,11 @@ def _aggregate(
     peak_cpu, cpu_reason = _merge_cpu(owned_images, t_exec, t_end, quota)
     peak_rss, rss_reason = _merge_rss(owned_images)
     disk_io, disk_io_reason = _merge_disk_io(owned_images)
+    status = _clause_status(
+        owned_pids,
+        owned_images,
+        protocol_timeout_terminated=protocol_timeout_terminated,
+    )
     exit_signals = [i.exit_signal for i in owned_images if i.exit_signal]
 
     obs = ClauseObservation(
@@ -1363,7 +1370,7 @@ def _aggregate(
     )
     availability = (
         dict.fromkeys(
-            ("latency", "cpu", "memory", "disk_io"),
+            ("latency", "cpu", "memory", "disk_io", "status"),
             "unknown:protocol_timeout",
         )
         if protocol_timeout_terminated
@@ -1372,6 +1379,11 @@ def _aggregate(
             "cpu": "ok" if peak_cpu is not None else f"unknown:{cpu_reason}",
             "memory": "ok" if peak_rss is not None else f"unknown:{rss_reason}",
             "disk_io": ("ok" if disk_io is not None else f"unknown:{disk_io_reason}"),
+            "status": (
+                "ok"
+                if status["state"] in {"exited", "signaled"}
+                else f"unknown:{status['reason'] or 'missing_terminal_status'}"
+            ),
         }
     )
     provenance = {
@@ -1429,9 +1441,56 @@ def _aggregate(
         disk_read_bytes_total=disk_io[0] if disk_io is not None else None,
         disk_write_bytes_total=disk_io[1] if disk_io is not None else None,
         disk_cancelled_write_bytes_total=(disk_io[2] if disk_io is not None else None),
+        status=status,
         availability=availability,
         provenance=provenance,
     )
+
+
+def _clause_status(
+    owned_pids: Sequence[int],
+    owned_images: Sequence[ExecImageRecord],
+    *,
+    protocol_timeout_terminated: bool = False,
+) -> dict[str, Any]:
+    """Return the shell-visible status of the mapped clause's root exec chain."""
+
+    base = {
+        "state": "unavailable",
+        "exit_code": None,
+        "signal": None,
+        "succeeded": None,
+        "reason": None,
+        "source": "root_exec_chain_terminal",
+    }
+    if protocol_timeout_terminated:
+        return {**base, "reason": "protocol_timeout"}
+    if not owned_pids:
+        return {**base, "reason": "missing_owned_root"}
+    root_images = sorted(
+        (image for image in owned_images if image.host_pid == owned_pids[0]),
+        key=lambda image: (image.t_exec_ns, image.exec_seq),
+    )
+    if not root_images:
+        return {**base, "reason": "missing_root_exec_chain"}
+    terminal = root_images[-1]
+    if not terminal.terminal or not terminal.has_causal_end:
+        return {**base, "reason": "missing_causal_terminal"}
+    if terminal.exit_signal is not None:
+        return {
+            **base,
+            "state": "signaled",
+            "signal": terminal.exit_signal,
+            "succeeded": False,
+        }
+    if terminal.normal_exit_status is not None:
+        return {
+            **base,
+            "state": "exited",
+            "exit_code": terminal.normal_exit_status,
+            "succeeded": terminal.normal_exit_status == 0,
+        }
+    return {**base, "reason": "missing_terminal_status"}
 
 
 __all__ = [

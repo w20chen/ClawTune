@@ -160,11 +160,18 @@ creating it.
 **Run:**
 
 ```bash
-python -m swe_rebench.runner run --config swe_rebench/config.yaml \
+sudo -E env "PATH=$PATH" "$(command -v python3)" \
+  -m swe_rebench.runner run --config swe_rebench/config.yaml \
   --runtime-mode host-openclaw-sandbox \
   --dataset swe_rebench/tasks.json \
   --sample 1 --export
 ```
+
+Passing `--runtime-mode host-openclaw-sandbox` on the CLI makes Stage-2
+telemetry required by default. The runner loads the BPF module during preflight
+and stops immediately if root/BPF/perf permissions or the toolchain are
+missing. Use `--no-stage2-required` only for an explicit best-effort diagnostic
+run; such a run does not satisfy clause-telemetry completeness.
 
 **Diagnostics:**
 
@@ -185,7 +192,12 @@ python -m swe_rebench.runner run --config swe_rebench/config.yaml \
   (after sandbox discovery), missing a few hundred ms of early process events.
   Subsequent executions use the already-discovered container id and start
   stage2 immediately.
-- Requires root or `CAP_BPF` + `CAP_PERFMON` capabilities on the host.
+- The current collector requires effective UID 0 on the host. Its BPF map,
+  kprobe/tracepoint, and perf-event setup is not treated as ready from partial
+  ambient capabilities alone.
+- Every mapped executable clause records `ts_start`, `ts_end`, `latency_ms`,
+  and a structured `status` (`exited`, `signaled`, or `unavailable`). The
+  contract is `contracts/clause-telemetry.schema.json`.
 
 ## Run One Task
 
@@ -266,6 +278,7 @@ Execution options:
 | --- | --- |
 | `--prepare` | Rebuild the runtime bundle before running tasks. The runner also rebuilds automatically when the bundle looks stale. |
 | `--runtime-mode MODE` | Override `runtime.mode`; valid values are `container-openclaw`(default) and `host-openclaw-sandbox`. |
+| `--stage2-required` / `--no-stage2-required` | Require complete eBPF clause artifacts or explicitly allow a best-effort diagnostic run. CLI-selected host-sandbox mode defaults to required. |
 | `--dry-run` | Print the selected tasks and exit without pulling images or starting containers. |
 
 Output options:

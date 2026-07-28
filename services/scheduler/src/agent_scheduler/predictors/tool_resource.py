@@ -319,10 +319,12 @@ class ToolResourcePredictor:
         cgroup_path: str | None = None,
     ) -> bool:
         if execution_id in self._runs_by_execution_id:
-            return False
+            existing = self._runs_by_execution_id[execution_id]
+            observer = getattr(existing, "_observer", None)
+            return bool(getattr(observer, "telemetry_available", True))
         previous = self._telemetry_by_execution_id.get(execution_id)
         if previous is not None and previous.started:
-            return False
+            return previous.status != "unavailable"
         if self.artifact_dir is None or not container_id:
             reason = (
                 "artifact_dir_unconfigured"
@@ -358,15 +360,25 @@ class ToolResourcePredictor:
                 unavailable_reason=f"start_failed:{type(exc).__name__}: {exc}",
             )
             return False
+        observer = getattr(run, "_observer", None)
+        telemetry_available = bool(
+            getattr(observer, "telemetry_available", True)
+        )
+        unavailable_reason = (
+            getattr(observer, "unavailable_reason", None)
+            if not telemetry_available
+            else None
+        )
         self._runs_by_execution_id[execution_id] = run
         self._telemetry_by_execution_id[execution_id] = ExecutionTelemetrySummary(
             execution_id=execution_id,
             tool_call_id=tool_call_id,
             artifact_path=str(artifact_path),
             started=True,
-            status="started",
+            status="started" if telemetry_available else "unavailable",
+            unavailable_reason=unavailable_reason,
         )
-        return True
+        return telemetry_available
 
     def finish_execution(
         self,
@@ -845,7 +857,8 @@ def _compact_artifact_summary(artifact: Any) -> dict[str, Any] | None:
         return None
     calls = artifact.get("calls")
     return {
-        "schema_version": artifact.get("schema_version"),
+        "schema": artifact.get("schema"),
+        "schema_version": artifact.get("version"),
         "mode": artifact.get("mode"),
         "collector": artifact.get("collector"),
         "container_id": artifact.get("container_id"),

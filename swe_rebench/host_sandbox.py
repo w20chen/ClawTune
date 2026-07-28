@@ -45,13 +45,13 @@ def run_host_sandbox_task(
     error: str | None = None
 
     try:
+        _write_host_tool_resource_preflight(trace_dir, config)
         _reset_directory(workspace, docker_cleanup_image=task.image)
         _reset_directory(openclaw_home)
         _export_testbed_from_image(task.image, workspace, config.docker.pull_policy)
         _install_sandbox_launcher(workspace, bundle_dir)
         _write_task_inputs(trace_dir, task, config, workspace)
         _ensure_openclaw_sandbox_image(task.image, trace_dir)
-        _write_host_tool_resource_preflight(trace_dir, config)
 
         sidecar = _start_sidecar(
             trace_dir=trace_dir,
@@ -297,6 +297,7 @@ payload = {
 }
 try:
     from tool_resource.telemetry import (
+        BPF_PROGRAM,
         _bpf_runtime_diagnostics,
         _ensure_bcc_importable,
         validate_clause_telemetry_runtime,
@@ -311,12 +312,16 @@ try:
             concurrency=1,
             workers=1,
         )
+        from bcc import BPF
+        bpf = BPF(text=BPF_PROGRAM)
+        bpf.cleanup()
     except Exception as exc:
         payload["stage2_ready"] = False
         payload["stage2_disabled_reason"] = f"{type(exc).__name__}: {exc}"
     else:
         payload["stage2_ready"] = True
         payload["stage2_disabled_reason"] = None
+        payload["bpf_module_load"] = {"ok": True}
 except Exception as exc:
     payload["bcc_import"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     payload["stage2_ready"] = False
@@ -341,6 +346,26 @@ print(json.dumps(payload, indent=2))
             indent=2,
         )
     _write_text(trace_dir / "tool_resource_preflight_host.json", output.rstrip() + "\n")
+    if not config.runtime.stage2_required:
+        return
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "Stage-2 eBPF preflight returned invalid JSON; see "
+            f"{trace_dir / 'tool_resource_preflight_host.json'}"
+        ) from exc
+    if result.returncode != 0 or payload.get("stage2_ready") is not True:
+        reason = payload.get("stage2_disabled_reason") or payload.get("error") or (
+            f"preflight exited with status {result.returncode}"
+        )
+        raise RuntimeError(
+            "Stage-2 eBPF telemetry is required but the host preflight failed: "
+            f"{reason}. Run the host-sandbox command as root (for example, "
+            "`sudo -E env \"PATH=$PATH\" \"$(command -v python3)\" "
+            "-m swe_rebench.runner run ...`) and inspect "
+            f"{trace_dir / 'tool_resource_preflight_host.json'}."
+        )
 
 
 def _configure_openclaw(

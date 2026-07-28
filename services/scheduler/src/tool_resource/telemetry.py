@@ -2965,6 +2965,8 @@ class ClauseTelemetryCollector:
                 "invalid_reasons": [
                     {"kind": "analysis_failure", "detail": message}
                 ],
+                "clauses": [],
+                "no_runtime_exec": [],
                 "integrity": {"status": "failed", "errors": [message]},
             }
             if isinstance(exc, ClauseTelemetryIntegrityError):
@@ -3049,6 +3051,8 @@ class ClauseTelemetryCollector:
                 "invalid_reasons": [
                     {"kind": "analysis_failure", "detail": message}
                 ],
+                "clauses": [],
+                "no_runtime_exec": [],
                 "integrity": {"status": "failed", "errors": [message]},
             }
             violations = [message]
@@ -3238,6 +3242,7 @@ class ClauseTelemetryCollector:
                 "peak_cpu_cores": bridged.observation.peak_cpu_cores,
                 "sampled_peak_rss_mb": bridged.observation.sampled_peak_rss_mb,
                 "cpu_ns_cumulative": bridged.observation.cpu_ns_cumulative,
+                "status": bridged.status,
                 "in_loop": bridged.observation.in_loop,
                 "in_pipe": bridged.observation.in_pipe,
                 "in_subst": bridged.observation.in_subst,
@@ -3271,6 +3276,14 @@ class ClauseTelemetryCollector:
                 "availability": resolved.availability,
                 "mapping_evidence": resolved.mapping_evidence,
                 "attempt_count": len(resolved.attempts),
+                "status": {
+                    "state": "not_executed",
+                    "exit_code": None,
+                    "signal": None,
+                    "succeeded": False,
+                    "reason": resolved.mapping_evidence,
+                    "source": "explicit_no_runtime_evidence",
+                },
             }
             if resolved.safety_guard_blocked is not None:
                 evidence = resolved.safety_guard_blocked
@@ -3296,6 +3309,7 @@ class ClauseTelemetryCollector:
                 return row
             if resolved.command_lookup_failure is None:
                 row["errno"] = sorted({attempt.errno for attempt in resolved.attempts})
+                row["status"]["state"] = "exec_failed"
                 row["provenance"] = {
                     "evidence_kind": "failed_execve",
                     "failed_exec_attempts": [
@@ -3310,6 +3324,14 @@ class ClauseTelemetryCollector:
                 }
                 return row
             evidence = resolved.command_lookup_failure
+            row["status"].update(
+                {
+                    "state": "exited",
+                    "exit_code": evidence.replay_exit_code,
+                    "reason": "shell_command_lookup_failure",
+                    "source": "source_replay_exit_code",
+                }
+            )
             row["provenance"] = {
                 "evidence_kind": "shell_command_lookup_failure",
                 "parser": evidence.parser,
@@ -3335,7 +3357,7 @@ class ClauseTelemetryCollector:
             no_runtime_exec_row(resolved) for resolved in bridge.no_runtime_exec
         ]
         target_availability: dict[str, Any] = {}
-        for target in ("latency", "cpu", "memory"):
+        for target in ("latency", "cpu", "memory", "disk_io", "status"):
             values = [
                 clause["availability"][target]
                 for clause in [*clauses, *no_runtime_exec]
@@ -3582,6 +3604,7 @@ class ClauseTelemetryCollector:
         self.artifact_path.write_text(
             json.dumps(
                 {
+                    "schema": "clause_telemetry_v2",
                     "version": 2,
                     "mode": "clause",
                     "status_model": "call_granular_v1",

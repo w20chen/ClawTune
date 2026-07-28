@@ -88,6 +88,7 @@ class BatchReport:
 def _result_dict(r: ContainerResult) -> dict[str, Any]:
     trace_inspection = [_inspect_trace(tf, r.task_id) for tf in r.trace_files]
     resource_summary = _resource_summary(trace_inspection)
+    tool_resource_artifacts = _inspect_tool_resource_artifacts(r.trace_dir)
     artifacts = _task_artifacts(r.trace_dir)
     smoke = _smoke_summary(artifacts)
     return {
@@ -100,6 +101,7 @@ def _result_dict(r: ContainerResult) -> dict[str, Any]:
         "trace_lines": sum(_count_lines(tf) for tf in r.trace_files),
         "trace_inspection": trace_inspection,
         "resource_summary": resource_summary,
+        "tool_resource_artifacts": tool_resource_artifacts,
         "artifacts": artifacts,
         "smoke": smoke,
         "duration_seconds": round(r.duration_seconds, 1),
@@ -124,12 +126,15 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         "has_llm_span": False,
         "tool_span_ends": 0,
         "launcher_tool_span_ends": 0,
+        "launcher_stage2_expected_span_ends": 0,
         "launcher_cgroup_tool_span_ends": 0,
         "launcher_attributed_tool_span_ends": 0,
         "unattributed_launcher_tool_span_ends": 0,
         "cgroup_tool_span_ends": 0,
         "process_tree_tool_span_ends": 0,
         "attributed_tool_span_ends": 0,
+        "resource_sampled_tool_span_ends": 0,
+        "cgroup_sampled_tool_span_ends": 0,
         "failed_tool_span_ends": 0,
         "status_exit_code_disagreements": 0,
         "launcher_tool_resource_span_ends": 0,
@@ -181,6 +186,17 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                 status_code = _nested_get(record, ("status", "code"))
                 output_exit_code = _extract_trace_exit_code(record.get("output"))
                 resources = record.get("resources") if isinstance(record.get("resources"), dict) else {}
+                if (
+                    isinstance(resources.get("sampling_point_count"), int)
+                    and resources["sampling_point_count"] > 0
+                    and resources.get("cpu_time_s") is not None
+                    and resources.get("rss_peak_bytes") is not None
+                    and isinstance(resources.get("resource_timeline"), list)
+                    and resources["resource_timeline"]
+                ):
+                    report["resource_sampled_tool_span_ends"] += 1
+                    if resources.get("monitor_source") == "cgroup-v2":
+                        report["cgroup_sampled_tool_span_ends"] += 1
                 if resources.get("scope") == "cgroup":
                     report["cgroup_tool_span_ends"] += 1
                 if resources.get("scope") == "process_tree":
@@ -193,6 +209,11 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                     report["failed_tool_span_ends"] += 1
                 if _nested_get(record, ("execution", "mode")) == "launcher":
                     report["launcher_tool_span_ends"] += 1
+                    if (
+                        _nested_get(record, ("execution", "execution_id"))
+                        and output_exit_code is not None
+                    ):
+                        report["launcher_stage2_expected_span_ends"] += 1
                     tool_resource = _nested_get(record, ("execution", "tool_resource"))
                     if isinstance(tool_resource, dict):
                         report["launcher_tool_resource_span_ends"] += 1
@@ -240,12 +261,20 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         report["warnings"].append("launcher tool spans have no Stage-2 tool-resource telemetry")
     if report["launcher_tool_resource_unavailable_span_ends"]:
         report["warnings"].append("Stage-2 tool-resource telemetry is unavailable for some launcher tool spans")
+    if report["resource_sampled_tool_span_ends"] != report["tool_span_ends"]:
+        report["warnings"].append("some tool spans have no complete cgroup/process resource samples")
+    if report["cgroup_sampled_tool_span_ends"] != report["tool_span_ends"]:
+        report["warnings"].append("some tool spans do not use the cgroup-v2 resource sampler")
     return report
 
 
 def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
     tool_span_ends = sum(int(item.get("tool_span_ends", 0)) for item in trace_inspection)
     launcher_tool_span_ends = sum(int(item.get("launcher_tool_span_ends", 0)) for item in trace_inspection)
+    launcher_stage2_expected_span_ends = sum(
+        int(item.get("launcher_stage2_expected_span_ends", 0))
+        for item in trace_inspection
+    )
     launcher_cgroup_tool_span_ends = sum(
         int(item.get("launcher_cgroup_tool_span_ends", 0))
         for item in trace_inspection
@@ -255,6 +284,14 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         for item in trace_inspection
     )
     attributed_tool_span_ends = sum(int(item.get("attributed_tool_span_ends", 0)) for item in trace_inspection)
+    resource_sampled_tool_span_ends = sum(
+        int(item.get("resource_sampled_tool_span_ends", 0))
+        for item in trace_inspection
+    )
+    cgroup_sampled_tool_span_ends = sum(
+        int(item.get("cgroup_sampled_tool_span_ends", 0))
+        for item in trace_inspection
+    )
     cgroup_tool_span_ends = sum(int(item.get("cgroup_tool_span_ends", 0)) for item in trace_inspection)
     unattributed_launcher_tool_span_ends = sum(
         int(item.get("unattributed_launcher_tool_span_ends", 0))
@@ -287,6 +324,7 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "tool_span_ends": tool_span_ends,
         "launcher_tool_span_ends": launcher_tool_span_ends,
+        "launcher_stage2_expected_span_ends": launcher_stage2_expected_span_ends,
         "launcher_attributed_tool_span_ends": launcher_attributed_tool_span_ends,
         "launcher_cgroup_tool_span_ends": launcher_cgroup_tool_span_ends,
         "launcher_tool_resource_span_ends": launcher_tool_resource_span_ends,
@@ -296,8 +334,20 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         "tool_resource_prediction_available_span_starts": tool_resource_prediction_available_span_starts,
         "continuous_prediction_available_span_starts": continuous_prediction_available_span_starts,
         "attributed_tool_span_ends": attributed_tool_span_ends,
+        "resource_sampled_tool_span_ends": resource_sampled_tool_span_ends,
+        "cgroup_sampled_tool_span_ends": cgroup_sampled_tool_span_ends,
         "cgroup_tool_span_ends": cgroup_tool_span_ends,
         "unattributed_launcher_tool_span_ends": unattributed_launcher_tool_span_ends,
+        "all_tool_resource_coverage_ratio": (
+            round(resource_sampled_tool_span_ends / tool_span_ends, 3)
+            if tool_span_ends
+            else None
+        ),
+        "all_tool_cgroup_coverage_ratio": (
+            round(cgroup_sampled_tool_span_ends / tool_span_ends, 3)
+            if tool_span_ends
+            else None
+        ),
         "cgroup_coverage_ratio": (
             round(launcher_cgroup_tool_span_ends / launcher_tool_span_ends, 3)
             if launcher_tool_span_ends
@@ -319,6 +369,145 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
             else None
         ),
     }
+
+
+def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
+    """Audit finalized Stage-2 files, including async exec completions."""
+
+    report: dict[str, Any] = {
+        "artifact_count": 0,
+        "healthy_artifact_count": 0,
+        "call_count": 0,
+        "ok_call_count": 0,
+        "invalid_call_count": 0,
+        "unavailable_call_count": 0,
+        "clause_count": 0,
+        "clauses_with_status": 0,
+        "no_runtime_exec_count": 0,
+        "status_states": {},
+        "warnings": [],
+    }
+    if trace_dir is None:
+        report["warnings"].append("task trace directory is unavailable")
+        return report
+    artifact_dir = trace_dir / "tool-resource"
+    for path in sorted(artifact_dir.glob("call_*.json")):
+        report["artifact_count"] += 1
+        try:
+            artifact = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            report["warnings"].append(f"{path.name}: cannot parse artifact: {exc}")
+            continue
+        if not isinstance(artifact, dict) or artifact.get("mode") != "clause":
+            report["warnings"].append(f"{path.name}: not a clause telemetry artifact")
+            continue
+        collector = artifact.get("collector")
+        healthy = (
+            artifact.get("schema") == "clause_telemetry_v2"
+            and artifact.get("telemetry_quality") == "ok"
+            and artifact.get("collection_validity") == "valid"
+            and artifact.get("cleanup") == "ok"
+            and isinstance(collector, dict)
+            and collector.get("health") == "healthy"
+        )
+        if healthy:
+            report["healthy_artifact_count"] += 1
+        else:
+            report["warnings"].append(f"{path.name}: collector is not healthy")
+        calls = artifact.get("calls")
+        if not isinstance(calls, list):
+            report["warnings"].append(f"{path.name}: calls is not an array")
+            continue
+        for call in calls:
+            if not isinstance(call, dict):
+                report["warnings"].append(f"{path.name}: call is not an object")
+                continue
+            report["call_count"] += 1
+            quality = call.get("telemetry_quality")
+            if quality == "ok":
+                report["ok_call_count"] += 1
+            elif quality == "invalid":
+                report["invalid_call_count"] += 1
+            else:
+                report["unavailable_call_count"] += 1
+            clauses = call.get("clauses")
+            if isinstance(clauses, list):
+                for clause in clauses:
+                    if not isinstance(clause, dict):
+                        continue
+                    report["clause_count"] += 1
+                    status = clause.get("status")
+                    if isinstance(status, dict) and isinstance(status.get("state"), str):
+                        report["clauses_with_status"] += 1
+                        _increment_count(report["status_states"], status["state"])
+            no_runtime = call.get("no_runtime_exec")
+            if isinstance(no_runtime, list):
+                report["no_runtime_exec_count"] += len(no_runtime)
+    if report["clauses_with_status"] != report["clause_count"]:
+        report["warnings"].append("some mapped clauses have no explicit status")
+    return report
+
+
+def _required_telemetry_error(
+    config: RunnerConfig,
+    result: dict[str, Any],
+) -> str | None:
+    if (
+        config.runtime.mode != "host-openclaw-sandbox"
+        or not config.runtime.stage2_required
+    ):
+        return None
+    resources = result.get("resource_summary")
+    artifacts = result.get("tool_resource_artifacts")
+    if not isinstance(resources, dict) or not isinstance(artifacts, dict):
+        return "required resource telemetry audit is missing"
+    tool_spans = int(resources.get("tool_span_ends", 0))
+    sampled_spans = int(resources.get("resource_sampled_tool_span_ends", 0))
+    cgroup_sampled_spans = int(resources.get("cgroup_sampled_tool_span_ends", 0))
+    if tool_spans == 0:
+        return "required resource telemetry found no tool spans"
+    if sampled_spans != tool_spans:
+        return (
+            "required resource telemetry is incomplete: "
+            f"sampled {sampled_spans}/{tool_spans} tool spans"
+        )
+    if cgroup_sampled_spans != tool_spans:
+        return (
+            "required cgroup-v2 telemetry is incomplete: "
+            f"sampled {cgroup_sampled_spans}/{tool_spans} tool spans"
+        )
+    artifact_count = int(artifacts.get("artifact_count", 0))
+    expected_artifacts = int(resources.get("launcher_stage2_expected_span_ends", 0))
+    if expected_artifacts == 0:
+        return "required Stage-2 telemetry found no executed launcher commands"
+    if artifact_count == 0:
+        return "required Stage-2 telemetry produced no exec artifacts"
+    if artifact_count != expected_artifacts:
+        return (
+            "required Stage-2 artifact coverage is incomplete: "
+            f"{artifact_count}/{expected_artifacts} executed launcher commands"
+        )
+    healthy_count = int(artifacts.get("healthy_artifact_count", 0))
+    if healthy_count != artifact_count:
+        return (
+            "required Stage-2 telemetry has unhealthy artifacts: "
+            f"{healthy_count}/{artifact_count} healthy"
+        )
+    call_count = int(artifacts.get("call_count", 0))
+    ok_calls = int(artifacts.get("ok_call_count", 0))
+    if ok_calls != call_count:
+        return (
+            "required Stage-2 clause telemetry is incomplete: "
+            f"{ok_calls}/{call_count} calls valid"
+        )
+    clause_count = int(artifacts.get("clause_count", 0))
+    clauses_with_status = int(artifacts.get("clauses_with_status", 0))
+    if clauses_with_status != clause_count:
+        return (
+            "required Stage-2 clause status is incomplete: "
+            f"{clauses_with_status}/{clause_count} mapped clauses"
+        )
+    return None
 
 
 def _nested_get(value: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -510,6 +699,12 @@ def run_batch(
             )
 
         result_dict = _result_dict(result)
+        telemetry_error = _required_telemetry_error(config, result_dict)
+        if telemetry_error is not None and result.exit_code == 0 and not result.error:
+            result.exit_code = -1
+            result.error = telemetry_error
+            result_dict["exit_code"] = result.exit_code
+            result_dict["error"] = result.error
         report.results.append(result_dict)
 
         if result.exit_code == 0 and not result.error:
@@ -788,6 +983,23 @@ def _resolve_config_path(config_arg: str | None, repo_root: Path, default_config
     return default_config
 
 
+def _apply_runtime_overrides(
+    config: RunnerConfig,
+    *,
+    runtime_mode: str | None,
+    stage2_required: bool | None,
+) -> None:
+    if runtime_mode is not None:
+        config.runtime.mode = runtime_mode
+    if stage2_required is not None:
+        config.runtime.stage2_required = stage2_required
+    elif runtime_mode == "host-openclaw-sandbox":
+        # A CLI-selected host-sandbox run is expected to provide the mode's
+        # defining eBPF clause telemetry. Do not silently spend an entire
+        # benchmark run producing only unavailable Stage-2 artifacts.
+        config.runtime.stage2_required = True
+
+
 def main() -> None:
     repo_root = _detect_repo_root()
     default_config = repo_root / "swe_rebench" / "config.example.yaml"
@@ -840,6 +1052,16 @@ def main() -> None:
     run_p.add_argument("--runtime-mode", default=None,
                        choices=("container-openclaw", "host-openclaw-sandbox"),
                        help="Override runtime mode from config")
+    run_p.add_argument(
+        "--stage2-required",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Require Stage-2 eBPF clause telemetry. Defaults to true when "
+            "--runtime-mode host-openclaw-sandbox is supplied; use "
+            "--no-stage2-required for an explicit best-effort run."
+        ),
+    )
     run_p.add_argument("--export", action="store_true",
                        help="Export traces to flat directory after run")
     run_p.add_argument("--dry-run", action="store_true",
@@ -872,8 +1094,11 @@ def main() -> None:
         return
 
     if args.command == "run":
-        if args.runtime_mode is not None:
-            config.runtime.mode = args.runtime_mode
+        _apply_runtime_overrides(
+            config,
+            runtime_mode=args.runtime_mode,
+            stage2_required=args.stage2_required,
+        )
 
         # Build bundle if requested or stale.  The plugin runtime lives in
         # ignored dist/ files, so relying on git reset alone is not enough.

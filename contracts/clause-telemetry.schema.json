@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/scheduler/clause-telemetry.schema.json",
+  "title": "Stage-2 eBPF clause telemetry artifact",
+  "type": "object",
+  "required": [
+    "version",
+    "schema",
+    "mode",
+    "status_model",
+    "calls",
+    "telemetry_quality",
+    "collection_validity"
+  ],
+  "properties": {
+    "schema": {"const": "clause_telemetry_v2"},
+    "version": {"const": 2},
+    "mode": {"const": "clause"},
+    "status_model": {"const": "call_granular_v1"},
+    "telemetry_quality": {"enum": ["ok", "invalid", "unavailable"]},
+    "collection_validity": {"enum": ["valid", "invalid"]},
+    "calls": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/call"}
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "clauseStatus": {
+      "type": "object",
+      "required": ["state", "exit_code", "signal", "succeeded", "reason", "source"],
+      "properties": {
+        "state": {
+          "enum": ["exited", "signaled", "not_executed", "exec_failed", "unavailable"]
+        },
+        "exit_code": {"type": ["integer", "null"]},
+        "signal": {"type": ["integer", "null"], "minimum": 1},
+        "succeeded": {"type": ["boolean", "null"]},
+        "reason": {"type": ["string", "null"]},
+        "source": {
+          "enum": [
+            "root_exec_chain_terminal",
+            "explicit_no_runtime_evidence",
+            "source_replay_exit_code"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "clause": {
+      "type": "object",
+      "required": ["bin", "argv", "ts_start", "ts_end", "latency_ms", "status"],
+      "properties": {
+        "bin": {"type": "string", "minLength": 1},
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string"}
+        },
+        "ts_start": {"type": "number"},
+        "ts_end": {"type": "number"},
+        "latency_ms": {"type": ["number", "null"], "minimum": 0},
+        "status": {"$ref": "#/$defs/clauseStatus"}
+      },
+      "additionalProperties": true
+    },
+    "noRuntimeExec": {
+      "type": "object",
+      "required": ["bin", "argv", "status"],
+      "properties": {
+        "bin": {"type": "string", "minLength": 1},
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string"}
+        },
+        "status": {"$ref": "#/$defs/clauseStatus"}
+      },
+      "additionalProperties": true
+    },
+    "call": {
+      "type": "object",
+      "required": [
+        "tool_call_id",
+        "command",
+        "telemetry_quality",
+        "eligible_for_kb",
+        "clauses"
+      ],
+      "properties": {
+        "tool_call_id": {"type": "string", "minLength": 1},
+        "command": {"type": "string"},
+        "telemetry_quality": {"enum": ["ok", "invalid", "unavailable"]},
+        "eligible_for_kb": {"type": "boolean"},
+        "clauses": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/clause"}
+        },
+        "no_runtime_exec": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/noRuntimeExec"}
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

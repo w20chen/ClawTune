@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from swe_rebench.config import RunnerConfig
 from swe_rebench.docker import ContainerResult
 from swe_rebench.host_sandbox import (
@@ -35,6 +37,7 @@ from swe_rebench.prepare import (
 from swe_rebench.sandbox import sandbox_container_prefix
 from swe_rebench.task_source import filter_tasks, parse_instance_ids, tasks_from_records
 from swe_rebench.runner import (
+    _apply_runtime_overrides,
     _inspect_trace,
     _resource_summary,
     _run_one,
@@ -455,6 +458,26 @@ runtime:
     assert config.runtime.mode == "host-openclaw-sandbox"
 
 
+def test_cli_host_sandbox_override_requires_stage2_by_default(tmp_path: Path) -> None:
+    config = RunnerConfig.from_yaml("swe_rebench/config.yaml", repo_root=tmp_path)
+
+    _apply_runtime_overrides(
+        config,
+        runtime_mode="host-openclaw-sandbox",
+        stage2_required=None,
+    )
+
+    assert config.runtime.mode == "host-openclaw-sandbox"
+    assert config.runtime.stage2_required is True
+
+    _apply_runtime_overrides(
+        config,
+        runtime_mode="host-openclaw-sandbox",
+        stage2_required=False,
+    )
+    assert config.runtime.stage2_required is False
+
+
 def test_runner_config_rejects_unknown_runtime_mode(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -841,6 +864,44 @@ def test_host_sandbox_writes_tool_resource_preflight(monkeypatch, tmp_path: Path
     env = captured["env"]
     assert isinstance(env, dict)
     assert str(tmp_path / "services" / "scheduler" / "src") in env["PYTHONPATH"]
+
+
+def test_host_sandbox_required_stage2_fails_fast_on_preflight(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "runtime:\n  mode: host-openclaw-sandbox\n  stage2_required: true\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    trace_dir = tmp_path / "trace"
+    trace_dir.mkdir()
+
+    class FakeRunResult:
+        stdout = json.dumps(
+            {
+                "mode": "host-openclaw-sandbox",
+                "stage2_ready": False,
+                "stage2_disabled_reason": "ValueError: clause telemetry requires root",
+            }
+        )
+        stderr = ""
+        returncode = 0
+
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox.subprocess.run",
+        lambda *args, **kwargs: FakeRunResult(),
+    )
+
+    with pytest.raises(RuntimeError, match=r"requires root.*sudo -E"):
+        _write_host_tool_resource_preflight(trace_dir, config)
+
+    recorded = json.loads(
+        (trace_dir / "tool_resource_preflight_host.json").read_text(encoding="utf-8")
+    )
+    assert recorded["stage2_ready"] is False
 
 
 def test_host_sandbox_cleans_only_untracked_runtime_artifacts(monkeypatch, tmp_path: Path) -> None:
