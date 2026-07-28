@@ -961,6 +961,19 @@ def _replay_tool_result(
     return result
 
 
+def _runtime_response_exit_code(
+    replay_response: Mapping[str, Any] | None,
+) -> int | None:
+    """Read either SDK or scheduler naming for a completed process status."""
+
+    if replay_response is None:
+        return None
+    raw = replay_response.get("returncode")
+    if raw is None:
+        raw = replay_response.get("exit_code")
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) else None
+
+
 def shell_command_lookup_failure_evidence(
     *,
     command: str,
@@ -2409,6 +2422,87 @@ def _command_tree_provenance(
     return entries[0], set(roots), provenance
 
 
+def _isolate_call_events(
+    events: list[dict[str, Any]],
+    command: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Select one exact launcher command tree from a shared-cgroup window.
+
+    Concurrent exec calls can have independent collectors targeting the same
+    sandbox cgroup.  Their monotonic windows may overlap, so timestamp and
+    cgroup alone do not delimit a call.  The launcher provides a stronger
+    boundary: the root shell argv contains the exact registered command.
+    Ambiguous or absent matches remain unfiltered and therefore fail closed in
+    ``_command_tree_provenance``.
+    """
+
+    clauses, fork_parent = _clauses_and_lineage(events)
+    exec_pids = {clause.host_pid for clause in clauses}
+    root_pids: set[int] = set()
+    for pid in exec_pids:
+        current = fork_parent.get(pid, 0)
+        seen = {pid}
+        has_exec_ancestor = False
+        while current and current not in seen:
+            if current in exec_pids:
+                has_exec_ancestor = True
+                break
+            seen.add(current)
+            current = fork_parent.get(current, 0)
+        if not has_exec_ancestor:
+            root_pids.add(pid)
+
+    candidates = {
+        clause.host_pid
+        for clause in clauses
+        if clause.host_pid in root_pids
+        and len(clause.argv) >= 3
+        and Path(clause.argv[0]).name in {"sh", "dash", "bash"}
+        and clause.argv[1] in {"-c", "-lc"}
+        and clause.argv[2] == command
+    }
+    selection = {
+        "mode": "not_needed" if len(root_pids) <= 1 else "unresolved",
+        "window_root_pids": sorted(root_pids),
+        "matching_root_pids": sorted(candidates),
+        "raw_window_event_count": len(events),
+        "selected_event_count": len(events),
+    }
+    if len(root_pids) <= 1:
+        return events, selection
+    if len(candidates) != 1:
+        return events, selection
+
+    selected_root = next(iter(candidates))
+    selected_pids = {selected_root}
+    changed = True
+    while changed:
+        changed = False
+        for child, parent in fork_parent.items():
+            if parent in selected_pids and child not in selected_pids:
+                selected_pids.add(child)
+                changed = True
+
+    selected_events = [
+        event
+        for event in events
+        if int(event.get("host_pid", 0)) in selected_pids
+        or (
+            event.get("type") == "fork"
+            and int(event.get("child_host_pid", 0)) in selected_pids
+        )
+    ]
+    selection.update(
+        {
+            "mode": "exact_launcher_command",
+            "selected_root_pid": selected_root,
+            "selected_pid_count": len(selected_pids),
+            "selected_event_count": len(selected_events),
+        }
+    )
+    return selected_events, selection
+
+
 def validate_clause_telemetry_runtime(
     *,
     container_executable: str | None,
@@ -2985,15 +3079,7 @@ class ClauseTelemetryCollector:
             if replay_response is not None
             else ""
         )
-        raw_replay_exit = (
-            replay_response.get("returncode") if replay_response is not None else None
-        )
-        replay_exit_code = (
-            raw_replay_exit
-            if isinstance(raw_replay_exit, int)
-            and not isinstance(raw_replay_exit, bool)
-            else None
-        )
+        replay_exit_code = _runtime_response_exit_code(replay_response)
         protocol_timeout = _is_protocol_timeout(
             replay_exit_code,
             replay_result,
@@ -3019,9 +3105,12 @@ class ClauseTelemetryCollector:
             ),
         }
         control_flow_fidelity["short_circuit_eligible"] = (
-            control_flow_fidelity["source_command_matches"]
-            and control_flow_fidelity["exit_code_matches"]
-            and control_flow_fidelity["tool_result_exact"]
+            not control_flow_fidelity["source_action_available"]
+            or (
+                control_flow_fidelity["source_command_matches"]
+                and control_flow_fidelity["exit_code_matches"]
+                and control_flow_fidelity["tool_result_exact"]
+            )
         )
         lookup_failure = shell_command_lookup_failure_evidence(
             command=token.command,
@@ -3175,6 +3264,9 @@ class ClauseTelemetryCollector:
     ) -> tuple[dict[str, Any], list[str]]:
         from tool_resource.clause_bridge import bridge_command
 
+        collector_perf_samples = perf_samples
+        events, event_isolation = _isolate_call_events(events, token.command)
+        perf_samples = sum(event["type"] == "perf" for event in events)
         normalized_loss_counts = {
             name: int(loss_counts.get(name, 0)) for name in LOSS_COUNTER_NAMES
         }
@@ -3533,10 +3625,12 @@ class ClauseTelemetryCollector:
                 **normalized_loss_counts,
                 "total": loss,
                 "perf_sample_count": perf_samples,
+                "collector_perf_sample_count": collector_perf_samples,
             },
             "ring_loss": {
                 "reserve_failures": loss,
                 "perf_sample_count": perf_samples,
+                "collector_perf_sample_count": collector_perf_samples,
             },
             "clauses": clauses,
             "no_runtime_exec": no_runtime_exec,
@@ -3551,6 +3645,7 @@ class ClauseTelemetryCollector:
                 "raw_event_count": len(events),
                 "exec_image_count": len(metrics),
                 "command_tree": command_tree,
+                "event_isolation": event_isolation,
                 "source_replay_control_flow_fidelity": (
                     dict(control_flow_fidelity)
                     if control_flow_fidelity is not None

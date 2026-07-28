@@ -45,6 +45,13 @@ The x86_64 syscall kprobe now unwraps the inner `pt_regs` supplied by
 arguments. Host preflight also runs a real short-lived cgroup/eBPF collection
 and requires non-empty executable/argv events, a successful exec boundary,
 zero telemetry loss, and drained lifecycle maps before a full task starts.
+The sandbox launcher now uses a non-login `sh -c` payload so host profile
+scripts cannot inject unrelated `id -u` images into every command. When
+concurrent exec calls overlap in the shared sandbox cgroup, Stage-2 selects an
+event tree only when its launcher argv contains the exact registered command;
+missing or ambiguous matches still fail closed. Scheduler `exit_code` and SDK
+`returncode` completion fields are both accepted, and live calls may resolve
+parser-proven `&&`/`||` short circuits from observed clause exit status.
 For native OpenClaw tools, a Docker `exec_start` match still takes precedence;
 when it is missed, a plugin-provided shared host-runtime scope is now replaced
 by the discovered sandbox-container cgroup instead of measuring the unrelated
@@ -106,6 +113,13 @@ cd packages/openclaw-plugin && npm test && npm run typecheck
   `--basetemp C:\tmp\claw-stage2-pytest-20260728a` cannot run in this Windows
   sandbox because those temp roots are not writable; the command passed with a
   repository-local `--basetemp .pytest_tmp_stage2_20260728a`.
+- `python -m pytest services/scheduler/tests/test_launcher.py -q` and
+  `python -m pytest services/scheduler/tests/test_tool_resource_telemetry.py
+  -q` cannot use this sandbox's default `C:\Users\29068\.pytest-tmp`.
+- The same two targeted commands with `--basetemp
+  C:\tmp\claw-pytest-launcher` and `--basetemp
+  C:\tmp\claw-pytest-telemetry` cannot create those temp roots. Both suites
+  pass with repository-local basetemp directories.
 - `python -m pytest --basetemp C:\tmp\claw-pytest services\scheduler\tests\test_tool_resource_telemetry.py tests\test_swe_rebench_selection.py::test_host_sandbox_sidecar_enables_docker_exec_observer tests\test_swe_rebench_selection.py::test_host_sandbox_writes_tool_resource_preflight tests\test_swe_rebench_runner_inspection.py -q`
   cannot run in this sandbox because creating `C:\tmp\claw-pytest` is denied;
   use a basetemp inside the repository, such as `.pytest-tmp-root`.

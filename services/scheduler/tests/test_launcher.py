@@ -99,6 +99,23 @@ def test_launcher_reports_container_id_from_self_cgroup(monkeypatch) -> None:
     assert launcher._detect_container_id() == container_id
 
 
+def test_launcher_uses_non_login_shell_for_payload(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_popen(args: list[str], **kwargs: Any) -> _FakeChild:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return _FakeChild()
+
+    monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
+    monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
+
+    launcher._spawn_shell("printf hello", "/workspace")
+
+    assert captured["args"] == ["/bin/sh", "-c", "printf hello"]
+    assert "-l" not in captured["args"]
+
+
 def test_launcher_prebinds_cgroup_before_spawning_payload(monkeypatch, tmp_path) -> None:
     events: list[str] = []
     posts: list[tuple[str, dict[str, Any]]] = []
@@ -307,6 +324,9 @@ def test_launcher_join_failure_restarts_in_systemd_scope(monkeypatch, tmp_path) 
         assert args[:4] == ["systemd-run", "--user", "--scope", "--quiet"]
         assert "--unit=claw-exec-1.scope" in args
         assert "Delegate=yes" in args
+        assert args[-3:-1] == ["/bin/sh", "-c"]
+        assert 'exec /bin/sh -c "$CLAW_SYSTEMD_PAYLOAD"' in args[-1]
+        assert "-lc" not in args
         return FakeSystemdChild()
 
     monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)

@@ -142,7 +142,7 @@ def _spawn_shell(
 ) -> subprocess.Popen[bytes]:
     if _supports_posix_controls():
         return subprocess.Popen(
-            ["/bin/sh", "-lc", command],
+            ["/bin/sh", "-c", command],
             cwd=cwd,
             env=_payload_environment(),
             preexec_fn=_child_preexec(cgroup_path, affinity_cpus),
@@ -203,7 +203,7 @@ def _restart_in_systemd_scope(
         'else printf "%s" "/sys/fs/cgroup" > "$CLAW_SYSTEMD_CGROUP_FILE"; fi; '
         'i=0; while [ ! -e "$CLAW_SYSTEMD_RELEASE_FILE" ] && [ "$i" -lt 500 ]; do '
         'i=$((i+1)); sleep 0.01; done; rm -f "$CLAW_SYSTEMD_RELEASE_FILE"; '
-        'exec /bin/sh -lc "$CLAW_SYSTEMD_PAYLOAD"'
+        'exec /bin/sh -c "$CLAW_SYSTEMD_PAYLOAD"'
     )
     env = _payload_environment()
     env["CLAW_SYSTEMD_PAYLOAD"] = command
@@ -219,7 +219,7 @@ def _restart_in_systemd_scope(
         "-p",
         "Delegate=yes",
         "/bin/sh",
-        "-lc",
+        "-c",
         wrapper,
     ]
     try:
