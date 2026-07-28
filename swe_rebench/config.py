@@ -34,6 +34,7 @@ def _as_bool(value: Any) -> bool:
 @dataclass
 class RuntimeConfig:
     mode: str = "container-openclaw"
+    stage2_required: bool = False
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "RuntimeConfig":
@@ -42,7 +43,10 @@ class RuntimeConfig:
             raise ValueError(
                 "runtime.mode must be 'container-openclaw' or 'host-openclaw-sandbox'"
             )
-        return cls(mode=mode)
+        return cls(
+            mode=mode,
+            stage2_required=_as_bool(d.get("stage2_required", False)),
+        )
 
 
 @dataclass
@@ -98,7 +102,6 @@ class DockerConfig:
 
 @dataclass
 class BatchConfig:
-    parallelism: int = 4
     task_timeout_seconds: int = 1800
     retry_failed: int = 0
     continue_on_error: bool = True
@@ -106,7 +109,6 @@ class BatchConfig:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "BatchConfig":
         return cls(
-            parallelism=int(d.get("parallelism", 4)),
             task_timeout_seconds=int(d.get("task_timeout_seconds", 1800)),
             retry_failed=int(d.get("retry_failed", 0)),
             continue_on_error=bool(d.get("continue_on_error", True)),

@@ -26,6 +26,7 @@ class DockerExecutionContext:
     container_executable: str
     repo: str
     artifact_path: Path
+    cgroup_path: str | None = None
     source_actions: Sequence[Mapping[str, Any]] = ()
 
     def __post_init__(self) -> None:
@@ -66,6 +67,7 @@ class DockerCommandObserver:
                 container_executable=context.container_executable,
                 repo=context.repo,
                 artifact_path=context.artifact_path,
+                cgroup_path=context.cgroup_path,
                 source_actions=context.source_actions,
             )
         except BaseException as exc:

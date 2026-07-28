@@ -21,7 +21,7 @@ cp swe_rebench/config.example.yaml swe_rebench/config.yaml
 python -m swe_rebench.runner prepare --config swe_rebench/config.yaml
 python -m swe_rebench.discover --sample 20 --out swe_rebench/tasks.json
 python -m swe_rebench.runner run --config swe_rebench/config.yaml \
-  --dataset swe_rebench/tasks.json --sample 10 --parallelism 4 --export
+  --dataset swe_rebench/tasks.json --sample 10 --export
 ```
 
 For broad Docker compatibility, leave `docker.cgroup_required: false` unless a

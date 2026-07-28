@@ -58,7 +58,6 @@ python -m swe_rebench.runner run --config swe_rebench/config.yaml \
   --prepare \
   --dataset swe_rebench/tasks.json \
   --sample 10 \
-  --parallelism 4 \
   --export
 ```
 
@@ -87,8 +86,7 @@ Run a repo subset:
 python -m swe_rebench.runner run --config swe_rebench/config.yaml \
   --dataset swe_rebench/tasks.json \
   --repo django/django \
-  --sample 5 \
-  --parallelism 2
+  --sample 5
 ```
 
 ### Host OpenClaw Sandbox Mode
@@ -103,7 +101,6 @@ python -m swe_rebench.runner run --config swe_rebench/config.yaml \
   --runtime-mode host-openclaw-sandbox \
   --dataset swe_rebench/tasks.json \
   --sample 1 \
-  --parallelism 1 \
   --export
 ```
 
@@ -111,9 +108,11 @@ This copies `/testbed` from the task image into a host workspace, starts a host
 sidecar, configures an isolated OpenClaw home for the task, and mounts the
 workspace into the OpenClaw sandbox at `/workspace`.
 
-If the default OpenClaw sandbox image (`openclaw-sandbox:bookworm-slim`) is
-missing, the runner builds the minimal npm-install compatible image documented
-by OpenClaw and writes `sandbox-image-build.log` under the task trace directory.
+The swe-rebench task image is tagged as the OpenClaw sandbox image
+(`openclaw-sandbox:bookworm-slim`) so that the sandbox inherits all of the
+compilers, libraries, and tools that the upstream SWE-Rebench task expects.
+If the task image differs from the current sandbox tag, the runner re-tags it
+and writes `sandbox-image-build.log` under the task trace directory.
 
 Resource attribution is best-effort:
 
@@ -123,6 +122,70 @@ Resource attribution is best-effort:
 - Shared sandbox samples are marked
   `coverage_reason: "shared_sandbox_container"` because they are container
   time-window attribution, not exclusive per-tool PID attribution.
+
+### Stage-2 eBPF Clause Telemetry (host-sandbox only)
+
+Stage-2 telemetry uses BCC/BPF to collect **per-clause** `peak_cpu_cores` and
+`sampled_peak_rss` via in-kernel perf CPU-clock sampling and kprobe-based
+process lifecycle tracking.  This provides much finer-grained resource
+attribution than the default cgroup-v2 polling fallback.
+
+**Prerequisites (host machine):**
+
+```bash
+# Ubuntu / Debian
+sudo apt-get install -y bpfcc-tools python3-bpfcc        \
+    linux-headers-$(uname -r) clang llc bpftool
+
+# Verify
+python3 -c "from bcc import BPF; print('BCC OK')"
+ls /sys/fs/cgroup/cgroup.controllers   # must exist (cgroup v2)
+```
+
+**Configuration:**
+
+```yaml
+# swe_rebench/config.yaml
+runtime:
+  mode: "host-openclaw-sandbox"
+  stage2_required: true   # enable Stage-2 eBPF telemetry
+```
+
+When `stage2_required: true` and the container id is not yet available at claim
+time (a brief race in host-sandbox mode), stage2 start is **deferred** rather
+than failing the execution.  The sandbox-scope discovery loop retries as soon
+as the sandbox container is found, typically within 100–200 ms of OpenClaw
+creating it.
+
+**Run:**
+
+```bash
+python -m swe_rebench.runner run --config swe_rebench/config.yaml \
+  --runtime-mode host-openclaw-sandbox \
+  --dataset swe_rebench/tasks.json \
+  --sample 1 --export
+```
+
+**Diagnostics:**
+
+- `tool_resource_preflight_host.json` — written to the task trace directory;
+  records BCC import status, kernel headers, clang/llc/bpftool availability,
+  and cgroup-v2 detection.
+- `sidecar-stderr.txt` — check for BPF setup errors (missing kernel headers,
+  permission denied, etc.).
+- Trace inspection: `python tools/inspect_trace.py <trace.jsonl> --all --details`
+  shows per-tool resource telemetry when stage2 is active.
+
+**Limitations:**
+
+- Only available in `host-openclaw-sandbox` mode.  `container-openclaw` mode
+  cannot load BPF programs inside Docker without `--privileged` and
+  `CAP_BPF`/`CAP_SYS_ADMIN`.
+- The first tool execution of a session may start stage2 slightly late
+  (after sandbox discovery), missing a few hundred ms of early process events.
+  Subsequent executions use the already-discovered container id and start
+  stage2 immediately.
+- Requires root or `CAP_BPF` + `CAP_PERFMON` capabilities on the host.
 
 ## Run One Task
 
@@ -202,7 +265,6 @@ Execution options:
 | Option | Purpose |
 | --- | --- |
 | `--prepare` | Rebuild the runtime bundle before running tasks. The runner also rebuilds automatically when the bundle looks stale. |
-| `--parallelism N` | Override `batch.parallelism` from config for this run. |
 | `--runtime-mode MODE` | Override `runtime.mode`; valid values are `container-openclaw`(default) and `host-openclaw-sandbox`. |
 | `--dry-run` | Print the selected tasks and exit without pulling images or starting containers. |
 
@@ -216,6 +278,7 @@ Important config-only settings:
 
 | Config key | Purpose |
 | --- | --- |
+| `runtime.stage2_required` | Enable BCC/BPF eBPF clause telemetry (host-sandbox only; see above). |
 | `batch.task_timeout_seconds` | Per-task wall-clock timeout. `0` disables the timeout. |
 | `batch.retry_failed` | Number of retries after a failed task. |
 | `docker.pull_policy` | Image pull behavior: `missing`, `always`, or `never`. |

@@ -11,6 +11,12 @@ runtime:
   # OpenClaw on the host and use OpenClaw's Docker sandbox for tools.
   mode: "container-openclaw"
 
+  # Enable Stage-2 eBPF clause telemetry (peak_cpu_cores + sampled_peak_rss).
+  # Requires: host-openclaw-sandbox mode, BCC/BPF toolchain installed on host,
+  # root or CAP_BPF+CAP_PERFMON, cgroup v2, kernel headers.
+  # When false (default), the sidecar gracefully degrades to cgroup v2 polling.
+  stage2_required: false
+
 llm:
   # API key for the upstream LLM provider (required)
   # The sidecar proxies requests and records them, then forwards here.
@@ -67,9 +73,6 @@ docker:
 
 # ── Batch Execution ───────────────────────────────────────────────
 batch:
-  # Maximum concurrent containers.
-  parallelism: 4
-
   # Per-task timeout in seconds.  0 = no timeout.
   task_timeout_seconds: 1800
 

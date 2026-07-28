@@ -682,7 +682,8 @@ def test_host_sandbox_agent_forces_sandbox_exec_workdir(monkeypatch, tmp_path: P
     assert env["CLAW_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
 
 
-def test_host_sandbox_builds_default_sandbox_image_when_missing(monkeypatch, tmp_path: Path) -> None:
+def test_host_sandbox_tags_sandbox_image_from_task_image(monkeypatch, tmp_path: Path) -> None:
+    task_image = "swebench/swe-rebench-task:latest"
     calls: list[list[str]] = []
 
     def fake_which(name: str):
@@ -698,19 +699,18 @@ def test_host_sandbox_builds_default_sandbox_image_when_missing(monkeypatch, tmp
         calls.append(list(cmd))
         if cmd[:3] == ["/usr/bin/docker", "image", "inspect"]:
             return Result(1)
-        if cmd[:4] == ["/usr/bin/docker", "build", "-t", "openclaw-sandbox:bookworm-slim"]:
-            assert kwargs["input"].startswith("FROM debian:bookworm-slim")
+        if cmd[:2] == ["/usr/bin/docker", "tag"]:
             return Result(0)
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr("swe_rebench.host_sandbox.shutil.which", fake_which)
     monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
 
-    _ensure_openclaw_sandbox_image(tmp_path)
+    _ensure_openclaw_sandbox_image(task_image, tmp_path)
 
     assert calls == [
         ["/usr/bin/docker", "image", "inspect", "openclaw-sandbox:bookworm-slim"],
-        ["/usr/bin/docker", "build", "-t", "openclaw-sandbox:bookworm-slim", "-"],
+        ["/usr/bin/docker", "tag", task_image, "openclaw-sandbox:bookworm-slim"],
     ]
     assert (tmp_path / "sandbox-image-build.log").exists()
 

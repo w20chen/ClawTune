@@ -55,9 +55,6 @@ docker:
 
 # ── Batch Execution ───────────────────────────────────────────────
 batch:
-  # Maximum concurrent containers.
-  parallelism: 4
-
   # Per-task timeout in seconds.  0 = no timeout.
   task_timeout_seconds: 1800
 

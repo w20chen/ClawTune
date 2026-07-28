@@ -9,7 +9,7 @@
 - Record hook-visible tool args/results with `recordRawTrace: true`.
 - Attribute `exec` resource usage with `executionBackend: "managed-wrapper"`.
 - Run SWE-Rebench batches with `--sample`, `--skip`, `--instance-ids`,
-  `--repo`, `--parallelism`, and `--export`.
+  `--repo`, and `--export`.
 
 ## Not the Goal Yet
 

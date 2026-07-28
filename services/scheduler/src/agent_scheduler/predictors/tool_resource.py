@@ -316,6 +316,7 @@ class ToolResourcePredictor:
         command: str,
         container_id: str | None,
         repo: str | None = None,
+        cgroup_path: str | None = None,
     ) -> bool:
         if execution_id in self._runs_by_execution_id:
             return False
@@ -343,6 +344,7 @@ class ToolResourcePredictor:
             container_executable=self.container_executable,
             repo=repo or self.repo,
             artifact_path=artifact_path,
+            cgroup_path=cgroup_path,
         )
         try:
             run = self._sdk.start_command(context, tool_call_id or execution_id, command)

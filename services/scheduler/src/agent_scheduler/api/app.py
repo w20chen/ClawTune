@@ -61,6 +61,24 @@ def _has_usable_cgroup_scope(scope: ResourceScope | None) -> bool:
     return normalized not in {"/sys/fs/cgroup", "/sys/fs/cgroup/unified"}
 
 
+def _trusted_cgroup_path(cgroup_path: str | None) -> str | None:
+    """Return *cgroup_path* only when it is a real sub-cgroup, not the host root.
+
+    When the launcher runs inside a Docker container with a private cgroup
+    namespace and cgroupfs is read-only, the internal fallback produces
+    ``/sys/fs/cgroup`` (the host root).  That path is never the correct
+    eBPF target because every process belongs to a leaf cgroup whose
+    inode differs from the root, so the BPF ``wanted()`` filter would
+    silently match zero events.
+    """
+    if not cgroup_path:
+        return None
+    normalized = cgroup_path.replace("\\", "/").rstrip("/")
+    if normalized in {"/sys/fs/cgroup", "/sys/fs/cgroup/unified"}:
+        return None
+    return cgroup_path
+
+
 def create_app(state: AppState | None = None) -> FastAPI:
     app_state = state or build_state()
     app = FastAPI(title="OpenClaw Agent Scheduler Sidecar", version="0.1.0")
@@ -100,6 +118,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         s: AppState,
         execution_id: str,
         container_id: str | None,
+        cgroup_path: str | None = None,
     ) -> bool:
         record = s.executions.get(execution_id)
         if record is None:
@@ -110,6 +129,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             command=record.request.command,
             container_id=container_id,
             repo=s.config.tool_resource_repo,
+            cgroup_path=cgroup_path,
         )
 
     def with_sandbox_fallback(request: ToolBeforeRequest, s: AppState) -> ToolBeforeRequest:
@@ -190,6 +210,18 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 record.request.execution_id,
                 scope.container_id,
             )
+            # Repair tool-monitor scopes that were bound from inside the
+            # container (launcher's /proc/self/cgroup view) before the
+            # host-side sandbox scope was discovered.  The new scope has
+            # the correct host cgroup path.
+            if (
+                record.scope is not None
+                and record.scope.cgroup_path
+                and record.scope.cgroup_path != scope.cgroup_path
+            ):
+                s.tool_monitor.bind_scope(
+                    record.request.tool_call_id, scope
+                )
         return {"stored": True}
 
     @app.get("/v1/models")
@@ -318,6 +350,12 @@ def create_app(state: AppState | None = None) -> FastAPI:
             # consume the Stage-2 observer opportunity with a permanent
             # container_id_unavailable record; /started will retry once the
             # launcher or sandbox-scope discovery supplies the container id.
+            #
+            # When stage2 is required but the container id is not yet
+            # available (host-sandbox race), defer rather than failing:
+            # /v1/runtime/sandbox-scope will retry begin_stage2_for_record
+            # for all active executions once the sandbox container is
+            # discovered.
             if container_id:
                 started = begin_stage2_for_record(s, request.execution_id, container_id)
                 if (
@@ -329,14 +367,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
                         status_code=503,
                         detail="tool_resource_stage2_start_failed",
                     )
-            elif (
-                s.config.tool_resource_stage2_required
-                and record.request.backend == "managed-wrapper"
-            ):
-                raise HTTPException(
-                    status_code=503,
-                    detail="tool_resource_container_id_unavailable",
-                )
+            # else: container_id not yet known — stage2 start is deferred to
+            # execution_started / sandbox-scope discovery (see above).
         return response
 
     @app.post("/v2/executions/{execution_id}/started", response_model=ExecutionUpdateResponse)
@@ -352,7 +384,15 @@ def create_app(state: AppState | None = None) -> FastAPI:
             s.tool_monitor.bind_scope(record.request.tool_call_id, record.scope)
         container_id = request.container_id or sandbox_container_id(s)
         if record is not None:
-            begin_stage2_for_record(s, execution_id, container_id)
+            # The launcher runs inside the sandbox container.  Its
+            # cgroup_path comes from the container's cgroup namespace
+            # and may be the host root (/sys/fs/cgroup) when cgroupfs
+            # is read-only inside the container.  Only pass through
+            # paths that are actual sub-cgroups, not the root fallback.
+            begin_stage2_for_record(
+                s, execution_id, container_id,
+                cgroup_path=_trusted_cgroup_path(request.cgroup_path),
+            )
         return response
 
     @app.post("/v2/executions/{execution_id}/exited", response_model=ExecutionUpdateResponse)

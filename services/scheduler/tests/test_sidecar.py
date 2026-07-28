@@ -884,6 +884,7 @@ def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(tmp_pa
             "command": "echo hi && true",
             "container_id": None,
             "repo": "openclaw",
+            "cgroup_path": str(tmp_path / "call-cgroup"),
         }
     ]
     begin_calls.clear()

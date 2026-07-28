@@ -143,7 +143,6 @@ python -m swe_rebench.runner run --config swe_rebench/config.yaml \
   --runtime-mode host-openclaw-sandbox \
   --dataset swe_rebench/tasks.json \
   --sample 1 \
-  --parallelism 1 \
   --export
 ```
 

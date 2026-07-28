@@ -516,9 +516,15 @@ def _prepare_cgroup(
     # sub-cgroups, but we CAN read cpu.stat / memory.current / io.stat from
     # the container's existing cgroup.  The sidecar sampler only reads; it
     # never writes.
+    #
+    # When the sidecar runs on a different host (host-openclaw-sandbox mode),
+    # the container's cgroup view is not valid on the host side.  Return None
+    # and let the sidecar discover the correct host cgroup path independently.
     if not required:
         borrowed = _read_self_cgroup_path()
         if borrowed is not None:
+            if _sidecar_is_remote():
+                return None
             return borrowed
 
     if required:
@@ -848,6 +854,29 @@ def _payload_environment() -> dict[str, str]:
     ):
         env.pop(key, None)
     return env
+
+
+def _sidecar_is_remote() -> bool:
+    """Return True when the sidecar endpoint points to a different host.
+
+    When claw-launch runs inside a Docker container and the sidecar is on
+    the host (reachable through a host-gateway address), the container's
+    cgroup view from /proc/self/cgroup is meaningless to the sidecar.
+    The sidecar must discover the host cgroup path independently via
+    sandbox-scope discovery or ``docker inspect``.
+    """
+    endpoint = (
+        os.environ.get("CLAW_SCHEDULER_ENDPOINT")
+        or os.environ.get("OPENCLAW_SCHEDULER_ENDPOINT")
+        or ""
+    )
+    remote_markers = (
+        "host.docker.internal",
+        "host.containers.internal",
+        "gateway.docker.internal",
+        "host-gateway",
+    )
+    return any(marker in endpoint for marker in remote_markers)
 
 
 def _redact_debug_message(message: str) -> str:

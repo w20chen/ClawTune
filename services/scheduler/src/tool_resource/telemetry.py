@@ -2337,6 +2337,18 @@ def validate_clause_telemetry_runtime(
         ) from exc
 
 
+def _is_root_cgroup_str(cgroup_path: str) -> bool:
+    """Return True when *cgroup_path* is the host cgroup v2 root.
+
+    The root cgroup (``/sys/fs/cgroup``) is never the correct eBPF target
+    because every process belongs to a leaf cgroup whose inode differs from
+    the root.  Using it would cause the BPF ``wanted()`` filter to silently
+    match zero events.
+    """
+    normalized = cgroup_path.replace("\\", "/").rstrip("/")
+    return normalized in {"/sys/fs/cgroup", "/sys/fs/cgroup/unified"}
+
+
 def _container_cgroup(
     container_id: str,
     container_executable: str,
@@ -2511,12 +2523,32 @@ class ClauseTelemetryCollector:
         container_executable: str,
         repo: str,
         artifact_path: Path,
+        cgroup_path: str | None = None,
         source_actions: Sequence[Mapping[str, Any]] = (),
     ) -> None:
         _ensure_bcc_importable()
         from bcc import BPF, PerfSWConfig, PerfType
 
-        cgroup, init_pid = _container_cgroup(container_id, container_executable)
+        if cgroup_path is not None and not _is_root_cgroup_str(cgroup_path):
+            cgroup = Path(cgroup_path)
+            if not cgroup.is_dir():
+                raise RuntimeError(f"explicit cgroup path does not exist: {cgroup}")
+            # Resolve init_pid from container for informational purposes only;
+            # entry_pid for analysis is derived from events, not from init_pid.
+            result = subprocess.run(
+                [container_executable, "inspect", container_id, "--format", "{{.State.Pid}}"],
+                capture_output=True, text=True, check=False,
+            )
+            init_pid = int(result.stdout.strip()) if result.stdout.strip().isdigit() else 0
+        else:
+            if cgroup_path is not None:
+                # The host root cgroup (/sys/fs/cgroup) is never the correct
+                # eBPF target.  Every process belongs to a leaf cgroup whose
+                # inode differs from the root, so the BPF wanted() filter
+                # would silently match zero events.  Fall through to
+                # container-based discovery instead.
+                pass
+            cgroup, init_pid = _container_cgroup(container_id, container_executable)
         self.container_id = container_id
         self.cgroup = cgroup
         self.cgroup_id = cgroup.stat().st_ino

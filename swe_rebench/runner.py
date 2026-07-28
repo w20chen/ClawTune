@@ -38,7 +38,6 @@ import shutil
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -481,7 +480,7 @@ def run_batch(
 ) -> BatchReport:
     """Run a batch of tasks and return a summary report."""
     _log(f"\n{'='*60}")
-    _log(f"Batch run: {len(tasks)} tasks, parallelism={config.batch.parallelism}")
+    _log(f"Batch run: {len(tasks)} tasks, serial execution")
     _log(f"Trace root: {config.output.trace_root}")
     _log(f"{'='*60}\n")
 
@@ -493,56 +492,44 @@ def run_batch(
     )
     start_wall = time.monotonic()
 
-    # Pre-pull images in parallel (best-effort)
+    # Pre-pull images (best-effort)
     _pre_pull_images(client, tasks, config.docker.pull_policy)
 
-    max_workers = max(1, config.batch.parallelism)
     completed_count = 0
     failed_count = 0
-    futures_map: dict[Any, TaskDef] = {}
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for task in tasks:
-            trace_dir = _task_trace_dir(config, task)
-            future = executor.submit(
-                _run_one,
-                client, task, bundle_dir, trace_dir, config,
+    for task in tasks:
+        trace_dir = _task_trace_dir(config, task)
+        try:
+            result = _run_one(client, task, bundle_dir, trace_dir, config)
+        except Exception as exc:
+            result = ContainerResult(
+                task_id=task.instance_id,
+                image=task.image,
+                exit_code=-1,
+                error=str(exc),
             )
-            futures_map[future] = task
 
-        for future in as_completed(futures_map):
-            task = futures_map[future]
-            try:
-                result = future.result()
-            except Exception as exc:
-                result = ContainerResult(
-                    task_id=task.instance_id,
-                    image=task.image,
-                    exit_code=-1,
-                    error=str(exc),
-                )
+        result_dict = _result_dict(result)
+        report.results.append(result_dict)
 
-            result_dict = _result_dict(result)
-            report.results.append(result_dict)
+        if result.exit_code == 0 and not result.error:
+            completed_count += 1
+            status = "OK"
+        else:
+            failed_count += 1
+            status = "FAIL"
 
-            if result.exit_code == 0 and not result.error:
-                completed_count += 1
-                status = "OK"
-            else:
-                failed_count += 1
-                status = "FAIL"
-
-            progress = completed_count + failed_count
-            _log(
-                f"[{progress}/{len(tasks)}] {status} "
-                f"task={result.task_id} "
-                f"exit={result.exit_code} "
-                f"traces={len(result.trace_files)} "
-                f"lines={result_dict['trace_lines']} "
-                f"time={result.duration_seconds:.0f}s"
-            )
-            if result.error:
-                _log(f"       error: {result.error}")
+        progress = completed_count + failed_count
+        _log(
+            f"[{progress}/{len(tasks)}] {status} "
+            f"task={result.task_id} "
+            f"exit={result.exit_code} "
+            f"traces={len(result.trace_files)} "
+            f"lines={result_dict['trace_lines']} "
+            f"time={result.duration_seconds:.0f}s"
+        )
+        if result.error:
+            _log(f"       error: {result.error}")
 
     report.completed = completed_count
     report.failed = failed_count
@@ -632,20 +619,17 @@ def _run_one(
 
 
 def _pre_pull_images(client: Any, tasks: list[TaskDef], policy: str) -> None:
-    """Pre-pull all unique images in parallel."""
+    """Pre-pull all unique images."""
     unique = list({t.image for t in tasks if t.image})
     if not unique:
         return
     _log(f"Pre-pulling {len(unique)} unique images...")
-    with ThreadPoolExecutor(max_workers=min(4, len(unique))) as executor:
-        futures = {executor.submit(pull_image, client, img, policy): img for img in unique}
-        for future in as_completed(futures):
-            img = futures[future]
-            try:
-                ok = future.result()
-                _log(f"  pull {img}: {'OK' if ok else 'FAIL'}")
-            except Exception as exc:
-                _log(f"  pull {img}: {exc}")
+    for img in unique:
+        try:
+            ok = pull_image(client, img, policy)
+            _log(f"  pull {img}: {'OK' if ok else 'FAIL'}")
+        except Exception as exc:
+            _log(f"  pull {img}: {exc}")
 
 
 def _task_trace_dir(config: RunnerConfig, task: TaskDef) -> Path:
@@ -853,8 +837,6 @@ def main() -> None:
                        help="Comma-separated instance IDs to run, preserving the given order")
     run_p.add_argument("--repo", default=None,
                        help="Run only tasks whose repo field matches this value")
-    run_p.add_argument("--parallelism", type=int, default=None,
-                       help="Override parallelism from config")
     run_p.add_argument("--runtime-mode", default=None,
                        choices=("container-openclaw", "host-openclaw-sandbox"),
                        help="Override runtime mode from config")
@@ -890,8 +872,6 @@ def main() -> None:
         return
 
     if args.command == "run":
-        if args.parallelism is not None:
-            config.batch.parallelism = args.parallelism
         if args.runtime_mode is not None:
             config.runtime.mode = args.runtime_mode
 

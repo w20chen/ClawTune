@@ -49,7 +49,7 @@ def run_host_sandbox_task(
         _export_testbed_from_image(task.image, workspace, config.docker.pull_policy)
         _install_sandbox_launcher(workspace, bundle_dir)
         _write_task_inputs(trace_dir, task, config, workspace)
-        _ensure_openclaw_sandbox_image(trace_dir)
+        _ensure_openclaw_sandbox_image(task.image, trace_dir)
         _write_host_tool_resource_preflight(trace_dir, config)
 
         sidecar = _start_sidecar(
@@ -128,40 +128,63 @@ def _export_testbed_from_image(image: str, workspace: Path, pull_policy: str) ->
         subprocess.run([docker, "rm", "-f", container_id], capture_output=True, text=True)
 
 
-def _ensure_openclaw_sandbox_image(trace_dir: Path) -> None:
-    image = "openclaw-sandbox:bookworm-slim"
+def _ensure_openclaw_sandbox_image(task_image: str, trace_dir: Path) -> None:
+    """Tag the swe-rebench task image as the OpenClaw sandbox image.
+
+    OpenClaw uses ``openclaw-sandbox:bookworm-slim`` as its default Docker
+    sandbox image.  Instead of building a minimal image from scratch, we
+    re-tag the swe-rebench task image so the sandbox inherits all of the
+    compilers, libraries, and tools that the upstream SWE-Rebench task
+    expects.
+    """
+    sandbox_image = "openclaw-sandbox:bookworm-slim"
     docker = _require_executable("docker")
-    inspect = subprocess.run(
-        [docker, "image", "inspect", image],
+
+    # Only re-tag when the task image differs from the current sandbox tag.
+    # ``docker image inspect`` reports the digest, so we compare the actual
+    # image identity rather than just the tag name.
+    tag_needed = True
+    inspect_sandbox = subprocess.run(
+        [docker, "image", "inspect", sandbox_image],
         capture_output=True,
         text=True,
     )
-    if inspect.returncode == 0:
+    if inspect_sandbox.returncode == 0:
+        try:
+            sandbox_info = json.loads(inspect_sandbox.stdout)[0]
+            sandbox_digest = sandbox_info.get("RepoDigests", [None])[0]
+        except (json.JSONDecodeError, IndexError, KeyError):
+            sandbox_digest = None
+
+        inspect_task = subprocess.run(
+            [docker, "image", "inspect", task_image],
+            capture_output=True,
+            text=True,
+        )
+        if inspect_task.returncode == 0:
+            try:
+                task_info = json.loads(inspect_task.stdout)[0]
+                task_digest = task_info.get("RepoDigests", [None])[0]
+            except (json.JSONDecodeError, IndexError, KeyError):
+                task_digest = None
+
+            if sandbox_digest and task_digest and sandbox_digest == task_digest:
+                tag_needed = False
+
+    if not tag_needed:
         return
 
-    dockerfile = (
-        "FROM debian:bookworm-slim\n"
-        "ENV DEBIAN_FRONTEND=noninteractive\n"
-        "RUN apt-get update && apt-get install -y --no-install-recommends \\\n"
-        "  bash ca-certificates curl git jq python3 ripgrep \\\n"
-        "  && rm -rf /var/lib/apt/lists/*\n"
-        "RUN useradd --create-home --shell /bin/bash sandbox\n"
-        "USER sandbox\n"
-        "WORKDIR /home/sandbox\n"
-        'CMD ["sleep", "infinity"]\n'
-    )
     log_path = trace_dir / "sandbox-image-build.log"
     with log_path.open("w", encoding="utf-8") as log:
         result = subprocess.run(
-            [docker, "build", "-t", image, "-"],
-            input=dockerfile,
+            [docker, "tag", task_image, sandbox_image],
             stdout=log,
             stderr=log,
             text=True,
         )
     if result.returncode != 0:
         raise RuntimeError(
-            f"openclaw_sandbox_image_build_failed exit={result.returncode}: "
+            f"openclaw_sandbox_image_tag_failed exit={result.returncode}: "
             f"{_tail_text(log_path, 2000)}"
         )
 
@@ -213,7 +236,10 @@ def _start_sidecar(
             "AGENT_SCHEDULER_POLICY": "observe-only",
             "AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER": "true",
             "AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX": _sandbox_container_prefix(workspace),
-            "AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED": "false",
+            "AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED": (
+                "true" if config.runtime.stage2_required else "false"
+            ),
+            "AGENT_SCHEDULER_TOOL_RESOURCE_ARTIFACT_DIR": str(trace_dir / "tool-resource"),
         }
     )
     stdout = (trace_dir / "sidecar-stdout.txt").open("w", encoding="utf-8")
