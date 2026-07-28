@@ -190,3 +190,6 @@ python -m pytest tests/test_swe_rebench_runner_inspection.py \
   `services/scheduler/src` on `PYTHONPATH` and the generated
   `swe_rebench/bundle/scheduler/tests` tree duplicates scheduler test module
   names. The maintained suites were run separately instead.
+- `npm test` from `packages/openclaw-plugin` cannot run through PowerShell in
+  this Windows workspace because `npm.ps1` is blocked by the local execution
+  policy. The equivalent `npm.cmd test` command was run instead.

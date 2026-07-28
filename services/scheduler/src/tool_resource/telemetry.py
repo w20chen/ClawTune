@@ -985,54 +985,64 @@ def shell_command_lookup_failure_evidence(
     replay_stderr: str,
     replay_exit_code: int | None,
 ) -> ShellCommandLookupFailure | None:
-    """Return strict source/replay command-lookup evidence, else no evidence."""
+    """Return strict command-lookup evidence, else no evidence.
+
+    Offline replay uses independent source and replay results.  A live
+    managed-wrapper call has only one authoritative execution result; requiring
+    a synthetic source action there made ordinary ``missing | tail`` pipelines
+    permanently invalid even though the anchored shell diagnostic and parser
+    semantics were unambiguous.
+    """
 
     from tool_resource.clause_bridge import (
         ShellCommandLookupFailure,
         shell_lookup_exit_semantics,
     )
 
-    if (
-        not source_tool_call_id
-        or not replay_tool_call_id
-        or source_command != command
-        or replay_exit_code not in {0, 127}
-    ):
+    if not replay_tool_call_id or replay_exit_code not in {0, 127}:
         return None
-    source_exit_code = _strict_exit_code(source_tool_result)
-    if source_exit_code != replay_exit_code:
-        return None
-    source_match = _anchored_command_not_found(source_tool_result)
     replay_channel = "raw_stderr" if replay_stderr else "tool_result"
     replay_match = _anchored_command_not_found(
         replay_stderr if replay_stderr else replay_result
     )
-    if (
-        source_match is None
-        or replay_match is None
-        or source_match[0] != replay_match[0]
-    ):
+    if replay_match is None:
         return None
+    source_match: tuple[str, str] | None = None
+    source_exit_code = replay_exit_code
+    evidence_mode = "live_execution"
+    source_channel = "unavailable"
+    if source_tool_call_id:
+        if source_command != command:
+            return None
+        source_exit_code = _strict_exit_code(source_tool_result)
+        if source_exit_code != replay_exit_code:
+            return None
+        source_match = _anchored_command_not_found(source_tool_result)
+        if source_match is None or source_match[0] != replay_match[0]:
+            return None
+        evidence_mode = "source_replay"
+        source_channel = "source_tool_result"
     exit_code_semantics = shell_lookup_exit_semantics(
         command,
-        source_match[0],
-        source_exit_code,
+        replay_match[0],
+        replay_exit_code,
     )
     if exit_code_semantics is None:
         return None
     return ShellCommandLookupFailure(
-        executable_head=source_match[0],
+        executable_head=replay_match[0],
         command=command,
         source_tool_call_id=source_tool_call_id,
         replay_tool_call_id=replay_tool_call_id,
         source_exit_code=source_exit_code,
         replay_exit_code=replay_exit_code,
-        source_diagnostic=source_match[1],
+        source_diagnostic=source_match[1] if source_match is not None else "",
         replay_diagnostic=replay_match[1],
-        source_channel="source_tool_result",
+        source_channel=source_channel,
         replay_channel=replay_channel,
         parser="anchored_shell_command_not_found_v1",
         exit_code_semantics=exit_code_semantics,
+        evidence_mode=evidence_mode,
     )
 
 
@@ -3519,11 +3529,16 @@ class ClauseTelemetryCollector:
                     "state": "exited",
                     "exit_code": evidence.replay_exit_code,
                     "reason": "shell_command_lookup_failure",
-                    "source": "source_replay_exit_code",
+                    "source": (
+                        "live_shell_exit_code"
+                        if evidence.evidence_mode == "live_execution"
+                        else "source_replay_exit_code"
+                    ),
                 }
             )
             row["provenance"] = {
                 "evidence_kind": "shell_command_lookup_failure",
+                "evidence_mode": evidence.evidence_mode,
                 "parser": evidence.parser,
                 "command": evidence.command,
                 "executable_head": evidence.executable_head,
@@ -3772,13 +3787,22 @@ class ClauseTelemetryCollector:
             and total_loss == 0
             and unavailable_count == 0
         )
-        telemetry_quality = "ok" if collector_healthy else "unavailable"
+        if not collector_healthy:
+            telemetry_quality = "unavailable"
+        elif invalid_count:
+            telemetry_quality = "invalid"
+        else:
+            telemetry_quality = "ok"
         formal_completeness = (
             "unavailable"
             if not collector_healthy
             else ("complete" if eligible_count == len(self.calls) else "partial")
         )
-        collection_validity = "valid" if collector_healthy else "invalid"
+        collection_validity = (
+            "valid"
+            if collector_healthy and invalid_count == 0
+            else "invalid"
+        )
         call_errors = {
             str(error)
             for call in self.calls
@@ -3837,7 +3861,11 @@ class ClauseTelemetryCollector:
                     "formal_completeness": formal_completeness,
                     "collection_validity": collection_validity,
                     "integrity": {
-                        "status": "ok" if collector_healthy else "failed",
+                        "status": (
+                            "ok"
+                            if collector_healthy and invalid_count == 0
+                            else "failed"
+                        ),
                         "errors": collector_errors,
                     },
                     "provenance": {

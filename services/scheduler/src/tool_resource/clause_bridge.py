@@ -157,7 +157,13 @@ class FailedExecAttempt:
 
 @dataclass(frozen=True)
 class ShellCommandLookupFailure:
-    """Source/replay-agreed shell command-not-found evidence."""
+    """Strict shell command-not-found evidence.
+
+    Historical offline replay required an exact source/replay agreement.  Live
+    managed-wrapper execution has no separate source action: the launcher
+    result is the source of truth.  ``evidence_mode`` distinguishes those
+    protocols so live evidence is not made to impersonate a replay pair.
+    """
 
     executable_head: str
     command: str
@@ -171,6 +177,7 @@ class ShellCommandLookupFailure:
     replay_channel: str
     parser: str
     exit_code_semantics: str
+    evidence_mode: str = "source_replay"
 
 
 @dataclass(frozen=True)
@@ -435,19 +442,31 @@ def _valid_lookup_failure(
     expected_semantics = _lookup_exit_semantics(
         static,
         evidence.executable_head,
-        evidence.source_exit_code,
+        evidence.replay_exit_code,
     )
-    return (
-        bool(evidence.source_tool_call_id)
-        and bool(evidence.replay_tool_call_id)
+    common = (
+        bool(evidence.replay_tool_call_id)
         and evidence.command == command
-        and evidence.source_exit_code == evidence.replay_exit_code
-        and source_head == replay_head == evidence.executable_head
-        and evidence.source_channel == "source_tool_result"
+        and replay_head == evidence.executable_head
         and evidence.replay_channel in {"raw_stderr", "tool_result"}
         and evidence.parser == "anchored_shell_command_not_found_v1"
         and expected_semantics is not None
         and evidence.exit_code_semantics == expected_semantics
+    )
+    if evidence.evidence_mode == "live_execution":
+        return (
+            common
+            and not evidence.source_tool_call_id
+            and not evidence.source_diagnostic
+            and evidence.source_channel == "unavailable"
+        )
+    return (
+        common
+        and evidence.evidence_mode == "source_replay"
+        and bool(evidence.source_tool_call_id)
+        and evidence.source_exit_code == evidence.replay_exit_code
+        and source_head == replay_head
+        and evidence.source_channel == "source_tool_result"
     )
 
 

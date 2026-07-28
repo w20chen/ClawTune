@@ -10,6 +10,7 @@ from tool_resource.telemetry import (
     _isolate_call_events,
     _runtime_response_exit_code,
     _syscall_symbol_candidates,
+    shell_command_lookup_failure_evidence,
     validate_clause_telemetry_smoke,
 )
 
@@ -124,6 +125,58 @@ def test_runtime_response_exit_code_accepts_scheduler_and_sdk_names() -> None:
     assert _runtime_response_exit_code({"exit_code": 8}) == 8
     assert _runtime_response_exit_code({"returncode": 7, "exit_code": 8}) == 7
     assert _runtime_response_exit_code({"exit_code": True}) is None
+
+
+def test_live_pipeline_lookup_failure_does_not_require_source_replay(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "tool_resource.clause_bridge.shell_lookup_exit_semantics",
+        lambda command, head, exit_code: (
+            "nonfinal_pipeline_masked_0"
+            if (command, head, exit_code) == ("pip install . | tail -5", "pip", 0)
+            else None
+        ),
+    )
+
+    evidence = shell_command_lookup_failure_evidence(
+        command="pip install . | tail -5",
+        source_tool_call_id="",
+        replay_tool_call_id="call-1",
+        source_command="",
+        source_tool_result="",
+        replay_result="/bin/sh: 1: pip: not found",
+        replay_stderr="",
+        replay_exit_code=0,
+    )
+
+    assert evidence is not None
+    assert evidence.evidence_mode == "live_execution"
+    assert evidence.executable_head == "pip"
+    assert evidence.source_tool_call_id == ""
+    assert evidence.source_channel == "unavailable"
+    assert evidence.exit_code_semantics == "nonfinal_pipeline_masked_0"
+
+
+def test_live_lookup_failure_rejects_unanchored_diagnostic(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tool_resource.clause_bridge.shell_lookup_exit_semantics",
+        lambda *_args: "direct_command_not_found_127",
+    )
+
+    assert (
+        shell_command_lookup_failure_evidence(
+            command="missing",
+            source_tool_call_id="",
+            replay_tool_call_id="call-1",
+            source_command="",
+            source_tool_result="",
+            replay_result="the missing command was not found",
+            replay_stderr="",
+            replay_exit_code=127,
+        )
+        is None
+    )
 
 
 def test_clause_status_uses_terminal_image_from_owned_root_chain() -> None:

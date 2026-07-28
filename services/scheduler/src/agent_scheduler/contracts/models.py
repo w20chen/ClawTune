@@ -186,6 +186,7 @@ class ExecutionStartedRequest(BaseModel):
     cgroup_path: str | None = None
     pid_namespace_inode: int | None = Field(default=None, ge=0)
     container_id: str | None = None
+    host_cgroup_gate: bool = False
 
 
 class ExecutionExitedRequest(BaseModel):
@@ -198,3 +199,4 @@ class ExecutionExitedRequest(BaseModel):
 
 class ExecutionUpdateResponse(BaseModel):
     stored: bool
+    cgroup_path: str | None = None

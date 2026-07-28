@@ -70,6 +70,7 @@ def test_launcher_claims_starts_and_returns_child_exit_code(monkeypatch) -> None
             "cgroup_path": None,
             "pid_namespace_inode": 123,
             "container_id": None,
+            "host_cgroup_gate": False,
         },
     )
     assert posts[2] == (
@@ -168,6 +169,62 @@ def test_launcher_prebinds_cgroup_before_spawning_payload(monkeypatch, tmp_path)
     assert posts[1][1]["child_pid"] == posts[1][1]["launcher_pid"]
     assert posts[1][1]["cgroup_path"] == str(tmp_path / "exec-1")
     assert posts[2][1]["child_pid"] == 4242
+
+
+def test_launcher_uses_host_cgroup_gate_for_remote_sidecar(monkeypatch) -> None:
+    posts: list[tuple[str, dict[str, Any]]] = []
+    released = False
+
+    class GatedChild:
+        pid = 5150
+
+        def wait(self) -> int:
+            assert released is True
+            return 0
+
+    def fake_post_json(_endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        posts.append((path, payload))
+        return {
+            "execution_id": "exec-1",
+            "update_token": "update-1",
+            "command": "echo hello",
+            "command_digest": "sha256:" + "a" * 64,
+            "workdir": None,
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"enable_cgroup": True},
+        }
+
+    def fake_best_effort(_endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        posts.append((path, payload))
+        if path.endswith("/started"):
+            return {"stored": True, "cgroup_path": "/sys/fs/cgroup/sandbox/claw-executions/exec-1"}
+        return {"stored": True}
+
+    def fake_gated(_command: str, _cwd: str | None, *, affinity_cpus: set[int] | None = None):
+        assert affinity_cpus is None
+
+        def release() -> None:
+            nonlocal released
+            released = True
+
+        return GatedChild(), release
+
+    monkeypatch.setenv("CLAW_SCHEDULER_ENDPOINT", "http://host.docker.internal:8765")
+    monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
+    monkeypatch.setattr(launcher, "_prepare_cgroup", lambda *_args: None)
+    monkeypatch.setattr(launcher, "_post_json", fake_post_json)
+    monkeypatch.setattr(launcher, "_post_json_best_effort", fake_best_effort)
+    monkeypatch.setattr(launcher, "_spawn_shell_gated", fake_gated)
+    monkeypatch.setattr(launcher, "_install_signal_forwarders", lambda _child: None)
+    monkeypatch.setattr(launcher, "_read_pid_starttime_ticks", lambda _pid: 99)
+    monkeypatch.setattr(launcher, "_pid_namespace_inode", lambda _pid: 123)
+
+    assert launcher.run_execution("http://host.docker.internal:8765", "exec-1", "token-1") == 0
+    assert released is True
+    assert posts[1][1]["child_pid"] == 5150
+    assert posts[1][1]["cgroup_path"] is None
+    assert posts[1][1]["host_cgroup_gate"] is True
 
 
 def test_launcher_extracts_cpu_and_numa_placement() -> None:
@@ -354,6 +411,7 @@ def test_launcher_join_failure_restarts_in_systemd_scope(monkeypatch, tmp_path) 
             "cgroup_path": systemd_cgroup,
             "pid_namespace_inode": 123,
             "container_id": None,
+            "host_cgroup_gate": False,
         },
     )
 

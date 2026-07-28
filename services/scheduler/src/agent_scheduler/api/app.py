@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from pathlib import Path
 
@@ -91,6 +92,185 @@ def _is_shared_runtime_scope(scope: ResourceScope | None) -> bool:
             or scope.attribution_source == "shared-runtime-process"
         )
     )
+
+
+def _profiling_enabled(profiling: object, key: str, default: bool = False) -> bool:
+    if not isinstance(profiling, dict):
+        return default
+    value = profiling.get(key)
+    return value if isinstance(value, bool) else default
+
+
+def _defer_stage2_until_started(record: object) -> bool:
+    request = getattr(record, "request", None)
+    return bool(
+        request is not None
+        and getattr(request, "backend", None) == "managed-wrapper"
+        and _profiling_enabled(getattr(request, "profiling", None), "enable_cgroup")
+    )
+
+
+def _safe_cgroup_name(value: str) -> str:
+    safe = "".join(char if char.isalnum() or char in "._-" else "_" for char in value)
+    return safe[:128] or "execution"
+
+
+def _pid_starttime_ticks(pid: int) -> int | None:
+    try:
+        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    close = text.rfind(")")
+    if close < 0:
+        return None
+    fields = text[close + 1 :].split()
+    if len(fields) <= 19:
+        return None
+    try:
+        return int(fields[19])
+    except ValueError:
+        return None
+
+
+def _pid_namespace_inode(pid: int) -> int | None:
+    try:
+        target = os.readlink(f"/proc/{pid}/ns/pid")
+    except OSError:
+        return None
+    if target.startswith("pid:[") and target.endswith("]"):
+        try:
+            return int(target[5:-1])
+        except ValueError:
+            return None
+    return None
+
+
+def _resolve_host_pid(
+    container_pid: int,
+    *,
+    pid_namespace_inode: int | None,
+    starttime_ticks: int | None,
+) -> int | None:
+    if container_pid <= 0:
+        return None
+    if _pid_matches(container_pid, pid_namespace_inode, starttime_ticks):
+        return container_pid
+    proc = Path("/proc")
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        host_pid = int(entry.name)
+        try:
+            status = (entry / "status").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        nspid = _status_nspid(status)
+        if not nspid or nspid[-1] != container_pid:
+            continue
+        if _pid_matches(host_pid, pid_namespace_inode, starttime_ticks):
+            return host_pid
+    return None
+
+
+def _status_nspid(status: str) -> list[int]:
+    for line in status.splitlines():
+        if not line.startswith("NSpid:"):
+            continue
+        values: list[int] = []
+        for raw in line.split()[1:]:
+            try:
+                values.append(int(raw))
+            except ValueError:
+                return []
+        return values
+    return []
+
+
+def _pid_matches(
+    host_pid: int,
+    pid_namespace_inode: int | None,
+    starttime_ticks: int | None,
+) -> bool:
+    if pid_namespace_inode is not None and _pid_namespace_inode(host_pid) != pid_namespace_inode:
+        return False
+    if starttime_ticks is not None and _pid_starttime_ticks(host_pid) != starttime_ticks:
+        return False
+    return True
+
+
+def _prepare_host_execution_cgroup(
+    execution_id: str,
+    request: ExecutionStartedRequest,
+    fallback_scope: ResourceScope | None,
+    configured_root: str | None,
+) -> ResourceScope | None:
+    root = configured_root or (
+        f"{fallback_scope.cgroup_path.rstrip('/')}/claw-executions"
+        if fallback_scope is not None and fallback_scope.cgroup_path
+        else None
+    )
+    if root is None:
+        return None
+    host_pid = _resolve_host_pid(
+        request.child_pid,
+        pid_namespace_inode=request.pid_namespace_inode,
+        starttime_ticks=request.process_starttime_ticks,
+    )
+    if host_pid is None:
+        return None
+    cgroup_path = Path(root) / _safe_cgroup_name(execution_id)
+    try:
+        cgroup_path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (cgroup_path / "cgroup.procs").write_text(str(host_pid), encoding="utf-8")
+    except OSError:
+        return None
+    if not _host_pid_in_cgroup(host_pid, cgroup_path):
+        _cleanup_owned_cgroup(str(cgroup_path))
+        return None
+    return ResourceScope(
+        kind="cgroup-v2",
+        execution_id=execution_id,
+        pid=host_pid,
+        root_pid=host_pid,
+        root_starttime_ticks=_pid_starttime_ticks(host_pid),
+        cgroup_path=str(cgroup_path),
+        pid_namespace_inode=_pid_namespace_inode(host_pid),
+        container_id=request.container_id or (
+            fallback_scope.container_id if fallback_scope is not None else None
+        ),
+        include_children=True,
+        source="claw-sidecar-host-cgroup",
+        attribution_source="exclusive-execution-cgroup",
+    )
+
+
+def _host_pid_in_cgroup(host_pid: int, cgroup_path: Path) -> bool:
+    try:
+        procs = (cgroup_path / "cgroup.procs").read_text(encoding="utf-8").split()
+    except OSError:
+        return False
+    return str(host_pid) in procs
+
+
+def _cleanup_owned_cgroup(path: str | None) -> None:
+    if not path:
+        return
+    cgroup = Path(path)
+    for _attempt in range(10):
+        try:
+            if (cgroup / "cgroup.procs").read_text(encoding="utf-8").strip():
+                return
+        except OSError:
+            return
+        try:
+            cgroup.rmdir()
+            return
+        except OSError:
+            time.sleep(0.02)
 
 
 def create_app(state: AppState | None = None) -> FastAPI:
@@ -407,7 +587,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             # /v1/runtime/sandbox-scope will retry begin_stage2_for_record
             # for all active executions once the sandbox container is
             # discovered.
-            if container_id:
+            if container_id and not _defer_stage2_until_started(record):
                 started = begin_stage2_for_record(s, request.execution_id, container_id)
                 if (
                     s.config.tool_resource_stage2_required
@@ -422,7 +602,11 @@ def create_app(state: AppState | None = None) -> FastAPI:
             # execution_started / sandbox-scope discovery (see above).
         return response
 
-    @app.post("/v2/executions/{execution_id}/started", response_model=ExecutionUpdateResponse)
+    @app.post(
+        "/v2/executions/{execution_id}/started",
+        response_model=ExecutionUpdateResponse,
+        response_model_exclude_none=True,
+    )
     async def execution_started(
         execution_id: str,
         request: ExecutionStartedRequest,
@@ -431,9 +615,27 @@ def create_app(state: AppState | None = None) -> FastAPI:
     ) -> ExecutionUpdateResponse:
         response = s.executions.started(execution_id, request)
         record = s.executions.get(execution_id)
+        fallback_scope = sandbox_fallback_scope(s)
+        if record is not None and request.host_cgroup_gate:
+            host_scope = _prepare_host_execution_cgroup(
+                execution_id,
+                request,
+                fallback_scope,
+                s.config.execution_cgroup_root,
+            )
+            if host_scope is not None:
+                s.executions.update_scope(
+                    execution_id,
+                    host_scope,
+                    owned_cgroup_path=host_scope.cgroup_path,
+                )
+                record = s.executions.get(execution_id)
+                response = ExecutionUpdateResponse(
+                    stored=True,
+                    cgroup_path=host_scope.cgroup_path,
+                )
         if record is not None and record.scope is not None:
             monitor_scope = record.scope
-            fallback_scope = sandbox_fallback_scope(s)
             if (
                 fallback_scope is not None
                 and not _has_usable_cgroup_scope(monitor_scope)
@@ -457,7 +659,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
             # paths that are actual sub-cgroups, not the root fallback.
             started = begin_stage2_for_record(
                 s, execution_id, container_id,
-                cgroup_path=_trusted_cgroup_path(request.cgroup_path),
+                cgroup_path=_trusted_cgroup_path(
+                    record.scope.cgroup_path if record.scope is not None else request.cgroup_path
+                ),
             )
             if (
                 s.config.tool_resource_stage2_required
@@ -470,7 +674,11 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 )
         return response
 
-    @app.post("/v2/executions/{execution_id}/exited", response_model=ExecutionUpdateResponse)
+    @app.post(
+        "/v2/executions/{execution_id}/exited",
+        response_model=ExecutionUpdateResponse,
+        response_model_exclude_none=True,
+    )
     async def execution_exited(
         execution_id: str,
         request: ExecutionExitedRequest,
@@ -483,6 +691,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
             exit_code=request.exit_code,
             signal=request.signal,
         )
+        record = s.executions.get(execution_id)
+        if record is not None:
+            _cleanup_owned_cgroup(record.owned_cgroup_path)
         if s.trace_writer is not None:
             s.trace_writer.record_tool_resource_telemetry(execution_id, telemetry)
         return response

@@ -390,11 +390,6 @@ class RuntimeToolResourceKB:
             }
             for target in TARGETS
         }
-        missing = [
-            target for target in TARGETS if not kb._public[target].get(("global", ""))
-        ]
-        if missing:
-            raise ValueError(f"snapshot has no public global node for {missing}")
         kb._repo = {
             repo: {
                 target: {

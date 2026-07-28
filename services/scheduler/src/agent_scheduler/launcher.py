@@ -74,9 +74,15 @@ def run_execution(endpoint: str, execution_id: str, token: str) -> int:
             launcher_pid=launcher_pid,
             child_pid=launcher_pid,
             cgroup_path=cgroup_path,
+            host_cgroup_gate=False,
         )
 
-    child = _spawn_shell(command, cwd, cgroup_path=cgroup_path, affinity_cpus=affinity_cpus)
+    release_gate: Callable[[], None] | None = None
+    use_host_cgroup_gate = cgroup_path is None and _host_cgroup_gate_enabled(profiling)
+    if use_host_cgroup_gate:
+        child, release_gate = _spawn_shell_gated(command, cwd, affinity_cpus=affinity_cpus)
+    else:
+        child = _spawn_shell(command, cwd, cgroup_path=cgroup_path, affinity_cpus=affinity_cpus)
     # Track whether we own this cgroup (created by us) or are borrowing
     # a pre-existing one (e.g. Docker container's read-only cgroup).
     cgroup_owned = cgroup_path is not None
@@ -97,6 +103,7 @@ def run_execution(endpoint: str, execution_id: str, token: str) -> int:
                         launcher_pid=launcher_pid,
                         child_pid=pid,
                         cgroup_path=path,
+                        host_cgroup_gate=False,
                     ),
                 )
                 if fallback is None:
@@ -113,14 +120,21 @@ def run_execution(endpoint: str, execution_id: str, token: str) -> int:
             _cleanup_cgroup(cgroup_path)
         raise
     _install_signal_forwarders(child)
-    _post_started(
+    started_response = _post_started(
         endpoint,
         execution_id=execution_id,
         update_token=update_token,
         launcher_pid=launcher_pid,
         child_pid=child.pid,
         cgroup_path=cgroup_path,
+        host_cgroup_gate=use_host_cgroup_gate,
     )
+    if cgroup_path is None and isinstance(started_response, dict):
+        response_cgroup = started_response.get("cgroup_path")
+        if isinstance(response_cgroup, str) and response_cgroup:
+            cgroup_path = response_cgroup
+    if release_gate is not None:
+        release_gate()
     returncode = child.wait()
     exit_code = returncode if returncode >= 0 else None
     term_signal = -returncode if returncode < 0 else None
@@ -158,8 +172,9 @@ def _post_started(
     launcher_pid: int,
     child_pid: int,
     cgroup_path: str | None,
-) -> None:
-    _post_json_best_effort(
+    host_cgroup_gate: bool,
+) -> dict[str, Any]:
+    return _post_json_best_effort(
         endpoint,
         f"/v2/executions/{execution_id}/started",
         {
@@ -170,8 +185,71 @@ def _post_started(
             "cgroup_path": cgroup_path,
             "pid_namespace_inode": _pid_namespace_inode(child_pid),
             "container_id": _detect_container_id(),
+            "host_cgroup_gate": host_cgroup_gate,
         },
     )
+
+
+def _spawn_shell_gated(
+    command: str,
+    cwd: str | None,
+    *,
+    affinity_cpus: set[int] | None = None,
+) -> tuple[subprocess.Popen[bytes], Callable[[], None]]:
+    if not _supports_posix_controls():
+        return _spawn_shell(command, cwd, affinity_cpus=affinity_cpus), lambda: None
+    read_fd, write_fd = os.pipe()
+    released = False
+
+    def release() -> None:
+        nonlocal released
+        if released:
+            return
+        released = True
+        try:
+            os.write(write_fd, b"1")
+        except OSError:
+            pass
+        try:
+            os.close(write_fd)
+        except OSError:
+            pass
+
+    child = subprocess.Popen(
+        ["/bin/sh", "-c", command],
+        cwd=cwd,
+        env=_payload_environment(),
+        preexec_fn=_gated_child_preexec(read_fd, affinity_cpus),
+        pass_fds=(read_fd,),
+    )
+    try:
+        os.close(read_fd)
+    except OSError:
+        pass
+    return child, release
+
+
+def _gated_child_preexec(read_fd: int, affinity_cpus: set[int] | None):
+    def preexec() -> None:
+        try:
+            os.setsid()
+        except OSError:
+            pass
+        if affinity_cpus and hasattr(os, "sched_setaffinity"):
+            try:
+                os.sched_setaffinity(0, affinity_cpus)
+            except OSError:
+                pass
+        try:
+            os.read(read_fd, 1)
+        except OSError:
+            pass
+        try:
+            os.close(read_fd)
+        except OSError:
+            pass
+
+    return preexec
 
 
 def _restart_in_systemd_scope(
@@ -257,6 +335,13 @@ def _systemd_scope_fallback_enabled(profiling: object) -> bool:
     return _enabled(profiling, "enable_cgroup", False)
 
 
+def _host_cgroup_gate_enabled(profiling: object) -> bool:
+    raw = os.environ.get("CLAW_HOST_CGROUP_GATE")
+    if raw is not None:
+        return raw.lower() not in {"0", "false", "no", "off"}
+    return _sidecar_is_remote() and _enabled(profiling, "enable_cgroup", False)
+
+
 def _systemd_unit_cgroup_path(unit: str) -> str | None:
     for _attempt in range(20):
         try:
@@ -332,11 +417,11 @@ def _install_signal_forwarders(child: subprocess.Popen[bytes]) -> None:
         signal.signal(signum, forward)
 
 
-def _post_json_best_effort(endpoint: str, path: str, payload: dict[str, Any]) -> None:
+def _post_json_best_effort(endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
     try:
-        _post_json(endpoint, path, payload)
+        return _post_json(endpoint, path, payload)
     except Exception:
-        pass
+        return {}
 
 
 def _post_json(endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:

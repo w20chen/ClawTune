@@ -9,6 +9,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+import agent_scheduler.api.app as app_module
 from agent_scheduler.api.app import create_app
 from agent_scheduler.api.dependencies import build_state
 from agent_scheduler.config import SchedulerConfig
@@ -859,6 +860,83 @@ def test_stage2_execution_waits_for_sandbox_container_scope(tmp_path: Path) -> N
             "repo": "openclaw",
         }
     ]
+
+
+def test_execution_started_host_cgroup_gate_creates_exact_scope(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sandbox_cgroup = tmp_path / "sandbox-cgroup"
+    _write_cgroup_fixture(sandbox_cgroup)
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=tmp_path / "traces",
+            sandbox_cgroup_path=str(sandbox_cgroup),
+            sandbox_container_id="b" * 64,
+            execution_cgroup_root=str(tmp_path / "exact-root"),
+            tool_resource_stage2_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
+    begin_calls: list[dict[str, object]] = []
+
+    def begin_execution(**kwargs):
+        begin_calls.append(kwargs)
+        return True
+
+    state.predictor.begin_execution = begin_execution  # type: ignore[method-assign]
+    monkeypatch.setattr(app_module, "_resolve_host_pid", lambda *_args, **_kwargs: 4242)
+    monkeypatch.setattr(app_module, "_pid_starttime_ticks", lambda _pid: 99)
+    monkeypatch.setattr(app_module, "_pid_namespace_inode", lambda _pid: 123)
+
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-host-gate",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"enable_cgroup": True},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": 100,
+        },
+    ).json()
+    assert begin_calls == []
+    started = client.post(
+        "/v2/executions/call-exec/started",
+        json={
+            "update_token": claim["update_token"],
+            "launcher_pid": 100,
+            "child_pid": 7,
+            "process_starttime_ticks": 99,
+            "cgroup_path": None,
+            "pid_namespace_inode": 123,
+            "container_id": None,
+            "host_cgroup_gate": True,
+        },
+    )
+
+    exact = tmp_path / "exact-root" / "call-exec"
+    assert started.status_code == 200
+    assert started.json() == {"stored": True, "cgroup_path": str(exact)}
+    assert (exact / "cgroup.procs").read_text(encoding="utf-8") == "4242"
+    scope = client.get("/v2/executions/call-exec/scope").json()["execution_scope"]
+    assert scope["cgroup_path"] == str(exact)
+    assert scope["pid"] == 4242
+    assert scope["attribution_source"] == "exclusive-execution-cgroup"
+    assert begin_calls[-1]["cgroup_path"] == str(exact)
 
 
 def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(tmp_path: Path) -> None:

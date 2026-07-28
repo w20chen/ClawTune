@@ -29,6 +29,7 @@ class ExecutionRecord:
     launcher_pid: int | None = None
     exit_code: int | None = None
     signal: int | None = None
+    owned_cgroup_path: str | None = None
 
 
 class ExecutionRegistry:
@@ -115,6 +116,20 @@ class ExecutionRegistry:
             attribution_source="claw-launch",
         )
         return ExecutionUpdateResponse(stored=True)
+
+    def update_scope(
+        self,
+        execution_id: str,
+        scope: ResourceScope,
+        *,
+        owned_cgroup_path: str | None = None,
+    ) -> None:
+        record = self._by_execution_id.get(execution_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="execution_not_found")
+        record.scope = scope
+        if owned_cgroup_path is not None:
+            record.owned_cgroup_path = owned_cgroup_path
 
     def exited(self, execution_id: str, request: ExecutionExitedRequest) -> ExecutionUpdateResponse:
         record = self._require_update(execution_id, request.update_token)
