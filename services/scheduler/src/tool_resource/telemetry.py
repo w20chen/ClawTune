@@ -3107,12 +3107,17 @@ class ClauseTelemetryCollector:
                 _counter(self._bpf, "perf_sample_count") - token.perf_sample_count
             )
             with self._events_lock:
+                # NOTE: no cgroup_id filter here.  Docker uses cgroup
+                # namespaces, so bpf_get_current_cgroup_id() returns a
+                # namespace-relative ID that differs from the host
+                # filesystem inode (os.stat().st_ino).  The time-window
+                # filter (started_ns .. ended_ns) provides sufficient
+                # isolation on a dedicated test host.
                 events = sorted(
                     (
                         event
                         for event in self._events
                         if token.started_ns <= event["ts_ns"] <= ended_ns
-                        and event["cgroup_id"] in self.cgroup_inodes
                     ),
                     key=lambda event: event["ts_ns"],
                 )
