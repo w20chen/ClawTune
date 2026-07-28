@@ -34,6 +34,9 @@ llm:
 docker:
   # Docker daemon socket or host.
   host: "unix:///var/run/docker.sock"
+  # On ARM/Kunpeng hosts running official x86_64 swe-rebench images through
+  # QEMU, set this to "linux/amd64" (or export SWE_REBENCH_DOCKER_PLATFORM).
+  platform: ""
 
   # Per-container resource limits.
   memory_limit: "8g"

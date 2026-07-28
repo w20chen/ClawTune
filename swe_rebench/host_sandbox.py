@@ -54,14 +54,14 @@ def run_host_sandbox_task(
 
     try:
         _write_host_tool_resource_preflight(trace_dir, config)
-        _reset_directory(workspace, docker_cleanup_image=task.image)
+        _reset_directory(workspace, docker_cleanup_image=task.image, docker_platform=config.docker.platform)
         _reset_directory(openclaw_home)
-        _export_testbed_from_image(task.image, workspace, config.docker.pull_policy)
+        _export_testbed_from_image(task.image, workspace, config.docker.pull_policy, config.docker.platform)
         _make_sandbox_workspace_writable(workspace)
         _install_sandbox_launcher(workspace, bundle_dir)
         _write_task_inputs(trace_dir, task, config, workspace)
-        _ensure_openclaw_sandbox_image(task.image, trace_dir)
-        _verify_sandbox_launcher(trace_dir, workspace)
+        _ensure_openclaw_sandbox_image(task.image, trace_dir, config.docker.platform)
+        _verify_sandbox_launcher(trace_dir, workspace, config.docker.platform)
 
         sidecar = _start_sidecar(
             trace_dir=trace_dir,
@@ -111,11 +111,11 @@ def _task_workspace(config: RunnerConfig, task: TaskDef) -> Path:
     return config.output.trace_root.parent / "workspaces" / safe_id
 
 
-def _export_testbed_from_image(image: str, workspace: Path, pull_policy: str) -> None:
+def _export_testbed_from_image(image: str, workspace: Path, pull_policy: str, platform: str = "") -> None:
     docker = _require_executable("docker")
     if pull_policy != "never":
-        pull = [docker, "pull", image]
-        if pull_policy == "missing":
+        pull = [docker, "pull", *_docker_platform_args(platform), image]
+        if pull_policy == "missing" and not platform:
             inspect = subprocess.run(
                 [docker, "image", "inspect", image],
                 capture_output=True,
@@ -127,7 +127,7 @@ def _export_testbed_from_image(image: str, workspace: Path, pull_policy: str) ->
             _run_checked(pull, "docker_pull")
 
     create = subprocess.run(
-        [docker, "create", image],
+        [docker, "create", *_docker_platform_args(platform), image],
         capture_output=True,
         text=True,
         check=True,
@@ -159,7 +159,7 @@ def _make_sandbox_workspace_writable(workspace: Path) -> None:
             path.chmod(path.stat().st_mode | 0o666)
 
 
-def _ensure_openclaw_sandbox_image(task_image: str, trace_dir: Path) -> None:
+def _ensure_openclaw_sandbox_image(task_image: str, trace_dir: Path, platform: str = "") -> None:
     """Tag the swe-rebench task image as the OpenClaw sandbox image.
 
     OpenClaw uses ``openclaw-sandbox:bookworm-slim`` as its default Docker
@@ -220,7 +220,7 @@ def _ensure_openclaw_sandbox_image(task_image: str, trace_dir: Path) -> None:
         )
 
 
-def _verify_sandbox_launcher(trace_dir: Path, workspace: Path) -> None:
+def _verify_sandbox_launcher(trace_dir: Path, workspace: Path, platform: str = "") -> None:
     """Execute the mounted launcher help path before spending an agent run."""
 
     docker = _require_executable("docker")
@@ -231,6 +231,7 @@ def _verify_sandbox_launcher(trace_dir: Path, workspace: Path) -> None:
                 docker,
                 "run",
                 "--rm",
+                *_docker_platform_args(platform),
                 "--network",
                 "none",
                 "--user",
@@ -664,6 +665,7 @@ def _openclaw_config(
                             "network": "bridge",
                             "extraHosts": ["host.docker.internal:host-gateway"],
                             "dangerouslyAllowExternalBindSources": True,
+                            **({"platform": config.docker.platform} if config.docker.platform else {}),
                         },
                     },
                 },
@@ -722,6 +724,10 @@ def _openclaw_config(
 
 def _sandbox_container_prefix(workspace: Path) -> str:
     return sandbox_container_prefix(workspace)
+
+
+def _docker_platform_args(platform: str) -> list[str]:
+    return ["--platform", platform] if platform else []
 
 
 def _cleanup_openclaw_sandbox_containers(trace_dir: Path, workspace: Path) -> None:
@@ -1147,14 +1153,19 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _reset_directory(path: Path, *, docker_cleanup_image: str | None = None) -> None:
+def _reset_directory(
+    path: Path,
+    *,
+    docker_cleanup_image: str | None = None,
+    docker_platform: str = "",
+) -> None:
     if path.exists():
         try:
             shutil.rmtree(path, onerror=_chmod_and_retry)
         except PermissionError:
             if docker_cleanup_image is None:
                 raise
-            _reset_directory_with_docker(path, docker_cleanup_image)
+            _reset_directory_with_docker(path, docker_cleanup_image, docker_platform)
     path.mkdir(parents=True, exist_ok=True)
 
 
@@ -1171,7 +1182,7 @@ def _chmod_and_retry(function: Any, path: str, _exc_info: Any) -> None:
     function(path)
 
 
-def _reset_directory_with_docker(path: Path, image: str) -> None:
+def _reset_directory_with_docker(path: Path, image: str, platform: str = "") -> None:
     docker = _require_executable("docker")
     target = path.resolve()
     parent = target.parent
@@ -1200,6 +1211,7 @@ def _reset_directory_with_docker(path: Path, image: str) -> None:
             docker,
             "run",
             "--rm",
+            *_docker_platform_args(platform),
             "-e",
             f"TARGET={target.name}",
             "-e",

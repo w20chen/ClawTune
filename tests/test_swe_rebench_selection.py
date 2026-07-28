@@ -14,6 +14,7 @@ from swe_rebench.host_sandbox import (
     _cleanup_runtime_artifacts,
     _docker_sandbox_container_ids,
     _ensure_openclaw_sandbox_image,
+    _export_testbed_from_image,
     _ensure_plugin_built,
     _install_sandbox_launcher,
     _make_sandbox_workspace_writable,
@@ -652,6 +653,24 @@ def test_host_sandbox_openclaw_config_uses_only_public_top_level_keys(tmp_path: 
     assert parsed["env"]["CLAW_ENABLE_CGROUP"] == "1"
 
 
+def test_host_sandbox_openclaw_config_passes_docker_platform(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "docker:\n  platform: linux/amd64\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    raw = _openclaw_config(
+        endpoint_host="http://127.0.0.1:8765",
+        endpoint_sandbox="http://host.docker.internal:8765",
+        workspace=tmp_path / "workspace",
+        config=config,
+    )
+    docker_cfg = json.loads(raw)["agents"]["defaults"]["sandbox"]["docker"]
+
+    assert docker_cfg["platform"] == "linux/amd64"
+
+
 def test_host_sandbox_container_prefix_is_stable_and_workspace_scoped(tmp_path: Path) -> None:
     first = _sandbox_container_prefix(tmp_path / "workspace-a")
     second = _sandbox_container_prefix(tmp_path / "workspace-a")
@@ -773,14 +792,79 @@ def test_host_sandbox_verifies_mounted_launcher_before_agent(
     )
     monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
 
-    _verify_sandbox_launcher(tmp_path, tmp_path / "workspace")
+    _verify_sandbox_launcher(tmp_path, tmp_path / "workspace", "linux/amd64")
 
     command = calls[0][0]
-    assert command[:4] == ["/usr/bin/docker", "run", "--rm", "--network"]
+    assert command[:5] == ["/usr/bin/docker", "run", "--rm", "--platform", "linux/amd64"]
+    assert command[command.index("--network") + 1] == "none"
     assert command[command.index("--user") + 1] == "65534:65534"
     assert command[command.index("--entrypoint") + 1] == "/bin/sh"
     assert command[-2] == "/workspace/.claw/bin/claw-launch"
     assert command[-1] == "--help"
+
+
+def test_host_sandbox_exports_testbed_with_docker_platform(monkeypatch, tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    class Result:
+        def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:3] == ["/usr/bin/docker", "image", "inspect"]:
+            return Result(1)
+        if cmd[:2] == ["/usr/bin/docker", "pull"]:
+            return Result(0)
+        if cmd[:2] == ["/usr/bin/docker", "create"]:
+            return Result(0, stdout="container-id\n")
+        if cmd[:2] == ["/usr/bin/docker", "rm"]:
+            return Result(0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._require_executable",
+        lambda name: "/usr/bin/docker",
+    )
+    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_sandbox._run_checked", lambda cmd, phase: calls.append(list(cmd)))
+
+    _export_testbed_from_image("image:latest", tmp_path / "workspace", "always", "linux/amd64")
+
+    assert ["/usr/bin/docker", "pull", "--platform", "linux/amd64", "image:latest"] in calls
+    assert ["/usr/bin/docker", "create", "--platform", "linux/amd64", "image:latest"] in calls
+
+
+def test_host_sandbox_missing_pull_policy_pulls_when_platform_is_set(monkeypatch, tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    class Result:
+        def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:2] == ["/usr/bin/docker", "create"]:
+            return Result(0, stdout="container-id\n")
+        if cmd[:2] == ["/usr/bin/docker", "rm"]:
+            return Result(0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._require_executable",
+        lambda name: "/usr/bin/docker",
+    )
+    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_sandbox._run_checked", lambda cmd, phase: calls.append(list(cmd)))
+
+    _export_testbed_from_image("image:latest", tmp_path / "workspace", "missing", "linux/amd64")
+
+    assert ["/usr/bin/docker", "pull", "--platform", "linux/amd64", "image:latest"] in calls
+    assert not any(call[:3] == ["/usr/bin/docker", "image", "inspect"] for call in calls)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not represented on Windows")
@@ -1129,11 +1213,15 @@ def test_host_sandbox_workspace_reset_falls_back_to_docker_on_permission_error(
     monkeypatch.setattr("swe_rebench.host_sandbox.shutil.which", fake_which)
     monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
 
-    _reset_directory(workspace, docker_cleanup_image="task-image:latest")
+    _reset_directory(
+        workspace,
+        docker_cleanup_image="task-image:latest",
+        docker_platform="linux/amd64",
+    )
 
     assert calls
     cleanup_cmd = calls[0]
-    assert cleanup_cmd[:3] == ["/usr/bin/docker", "run", "--rm"]
+    assert cleanup_cmd[:5] == ["/usr/bin/docker", "run", "--rm", "--platform", "linux/amd64"]
     assert f"TARGET={workspace.name}" in cleanup_cmd
     assert str(workspace.parent.resolve()) + ":/host_parent" in cleanup_cmd
     assert "task-image:latest" in cleanup_cmd
@@ -1187,11 +1275,16 @@ def test_runner_trace_reset_falls_back_to_docker_on_permission_error(
     monkeypatch.setattr("swe_rebench.host_sandbox.shutil.which", fake_which)
     monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
 
-    _reset_task_trace_dir(trace_root, trace_dir, docker_cleanup_image="task-image:latest")
+    _reset_task_trace_dir(
+        trace_root,
+        trace_dir,
+        docker_cleanup_image="task-image:latest",
+        docker_platform="linux/amd64",
+    )
 
     assert calls
     cleanup_cmd = calls[0]
-    assert cleanup_cmd[:3] == ["/usr/bin/docker", "run", "--rm"]
+    assert cleanup_cmd[:5] == ["/usr/bin/docker", "run", "--rm", "--platform", "linux/amd64"]
     assert f"TARGET={trace_dir.name}" in cleanup_cmd
     assert str(trace_dir.parent.resolve()) + ":/host_parent" in cleanup_cmd
     assert "task-image:latest" in cleanup_cmd
@@ -1252,6 +1345,16 @@ docker:
     assert config.docker.privileged is False
     assert config.docker.cgroup_mount_rw is True
     assert config.docker.cgroup_required is True
+
+
+def test_runner_config_reads_docker_platform_from_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SWE_REBENCH_DOCKER_PLATFORM", "linux/amd64")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("docker:\n  platform: linux/arm64\n", encoding="utf-8")
+
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+
+    assert config.docker.platform == "linux/amd64"
 
 
 def test_task_artifacts_summarizes_patch_and_result_summary(tmp_path: Path) -> None:
@@ -1461,6 +1564,54 @@ docker:
 
     assert "CLAW_CGROUP_REQUIRED=1" in calls[0]
     assert "AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED=true" in calls[0]
+
+
+def test_docker_cli_passes_configured_platform(monkeypatch, tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    class Result:
+        def __init__(self, stdout: str = "") -> None:
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:5] == ["docker", "run", "--detach", "--platform", "linux/amd64"]:
+            return Result(stdout="abc123\n")
+        if cmd == ["docker", "wait", "abc123"]:
+            return Result(stdout="0\n")
+        if cmd == ["docker", "logs", "abc123"]:
+            return Result(stdout="")
+        if cmd == ["docker", "rm", "-f", "abc123"]:
+            return Result(stdout="abc123\n")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+docker:
+  platform: linux/amd64
+""",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+
+    run_container(
+        client=None,
+        image="image:latest",
+        task_id="task-1",
+        bundle_dir=tmp_path,
+        trace_dir=tmp_path / "trace",
+        problem_statement="fix",
+        config=config.docker,
+        llm_api_key="sk-test",
+        llm_upstream_url="https://example.invalid",
+        timeout_seconds=10,
+    )
+
+    assert calls[0][:5] == ["docker", "run", "--detach", "--platform", "linux/amd64"]
 
 
 def test_require_llm_api_key_reports_default_file(tmp_path: Path, monkeypatch) -> None:

@@ -899,7 +899,7 @@ def run_batch(
     start_wall = time.monotonic()
 
     # Pre-pull images (best-effort)
-    _pre_pull_images(client, tasks, config.docker.pull_policy)
+    _pre_pull_images(client, tasks, config.docker.pull_policy, config.docker.platform)
 
     completed_count = 0
     failed_count = 0
@@ -1002,7 +1002,12 @@ def _run_one(
     config: RunnerConfig,
 ) -> ContainerResult:
     """Execute a single task container (called in worker thread)."""
-    _reset_task_trace_dir(config.output.trace_root, trace_dir, docker_cleanup_image=task.image)
+    _reset_task_trace_dir(
+        config.output.trace_root,
+        trace_dir,
+        docker_cleanup_image=task.image,
+        docker_platform=config.docker.platform,
+    )
 
     if normalize_runtime_mode(config.runtime.mode) == "host-openclaw-sandbox":
         return run_host_sandbox_task(
@@ -1020,7 +1025,7 @@ def _run_one(
             _log(f"[{task.instance_id}] retry {attempt}/{retries}")
 
         # Pull image if needed
-        if not pull_image(client, task.image, config.docker.pull_policy):
+        if not pull_image(client, task.image, config.docker.pull_policy, config.docker.platform):
             return ContainerResult(
                 task_id=task.instance_id, image=task.image,
                 exit_code=-1, error=f"Failed to pull image: {task.image}",
@@ -1060,7 +1065,7 @@ def _run_one(
     )
 
 
-def _pre_pull_images(client: Any, tasks: list[TaskDef], policy: str) -> None:
+def _pre_pull_images(client: Any, tasks: list[TaskDef], policy: str, platform: str = "") -> None:
     """Pre-pull all unique images."""
     unique = list({t.image for t in tasks if t.image})
     if not unique:
@@ -1068,7 +1073,7 @@ def _pre_pull_images(client: Any, tasks: list[TaskDef], policy: str) -> None:
     _log(f"Pre-pulling {len(unique)} unique images...")
     for img in unique:
         try:
-            ok = pull_image(client, img, policy)
+            ok = pull_image(client, img, policy, platform)
             _log(f"  pull {img}: {'OK' if ok else 'FAIL'}")
         except Exception as exc:
             _log(f"  pull {img}: {exc}")
@@ -1087,6 +1092,7 @@ def _reset_task_trace_dir(
     trace_dir: Path,
     *,
     docker_cleanup_image: str | None = None,
+    docker_platform: str = "",
 ) -> None:
     """Remove stale per-task artifacts before a fresh run."""
     root = trace_root.resolve()
@@ -1101,7 +1107,7 @@ def _reset_task_trace_dir(
         except OSError as exc:
             if not _can_retry_trace_cleanup_with_docker(exc, docker_cleanup_image):
                 raise
-            _reset_directory_with_docker(target, docker_cleanup_image)
+            _reset_directory_with_docker(target, docker_cleanup_image, docker_platform)
             return
     target.mkdir(parents=True, exist_ok=True)
 

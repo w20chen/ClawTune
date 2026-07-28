@@ -83,6 +83,7 @@ class LLMConfig:
 @dataclass
 class DockerConfig:
     host: str = "unix:///var/run/docker.sock"
+    platform: str = ""
     memory_limit: str = "8g"
     cpus: int = 4
     network_mode: str = "bridge"
@@ -98,6 +99,7 @@ class DockerConfig:
     def from_dict(cls, d: dict[str, Any]) -> "DockerConfig":
         return cls(
             host=str(d.get("host", "unix:///var/run/docker.sock")),
+            platform=str(os.getenv("SWE_REBENCH_DOCKER_PLATFORM") or d.get("platform", "")),
             memory_limit=str(d.get("memory_limit", "8g")),
             cpus=int(d.get("cpus", 4)),
             network_mode=str(d.get("network_mode", "bridge")),

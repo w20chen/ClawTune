@@ -285,6 +285,15 @@ It must show:
   workspace because WSL instance creation is denied with
   `Wsl/Service/CreateInstance/E_ACCESSDENIED`; validate the generated scripts
   on the Linux Docker host.
+- `bash -n scripts/setup/arm_qemu_setup.sh` cannot run in this Windows
+  workspace because WSL instance creation is denied with
+  `Wsl/Service/CreateInstance/E_ACCESSDENIED`; validate the ARM/QEMU setup
+  script on the Kunpeng Linux Docker host.
+- `sudo bash scripts/setup/arm_qemu_setup.sh install`, `sudo bash
+  scripts/setup/arm_qemu_setup.sh check`, and any live `docker run --platform
+  linux/amd64 ...` smoke cannot run in this Windows workspace because they
+  require a Linux ARM host with Docker, privileged binfmt registration, and
+  QEMU user emulation.
 - `python -m pytest -q --basetemp .pytest-tmp-container-root` cannot run as one
   repository-wide collection command because the scheduler package requires
   `services/scheduler/src` on `PYTHONPATH` and the generated

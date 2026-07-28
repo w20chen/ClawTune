@@ -31,6 +31,10 @@ def _docker_host_socket(host: str) -> str | None:
     return None
 
 
+def _docker_platform_args(platform: str) -> list[str]:
+    return ["--platform", platform] if platform else []
+
+
 @dataclass
 class ContainerResult:
     """Outcome of a single container run."""
@@ -59,19 +63,22 @@ def get_docker_client(config: DockerConfig) -> Any:
         return None
 
 
-def pull_image(client: Any, image: str, policy: str = "missing") -> bool:
+def pull_image(client: Any, image: str, policy: str = "missing", platform: str = "") -> bool:
     """Pull a Docker image.  Returns True on success."""
     if policy == "never":
         return True
     if client is not None:
         try:
             if policy == "always":
-                client.images.pull(image)
+                client.images.pull(image, platform=platform or None)
             elif policy == "missing":
-                try:
-                    client.images.get(image)
-                except Exception:
-                    client.images.pull(image)
+                if platform:
+                    client.images.pull(image, platform=platform or None)
+                else:
+                    try:
+                        client.images.get(image)
+                    except Exception:
+                        client.images.pull(image)
             return True
         except Exception as exc:
             _log(f"[error] pull {image}: {exc}")
@@ -79,7 +86,10 @@ def pull_image(client: Any, image: str, policy: str = "missing") -> bool:
     else:
         import subprocess
         flag = "--always" if policy == "always" else ""
-        cmd = f"docker pull {flag} {image}".split()
+        cmd = ["docker", "pull", *_docker_platform_args(platform)]
+        if flag:
+            cmd.append(flag)
+        cmd.append(image)
         result = subprocess.run(cmd, capture_output=True, text=True)
         return result.returncode == 0
 
@@ -221,6 +231,7 @@ def _run_container_sdk(
             dns=config.dns_servers if config.dns_servers else None,
             privileged=config.privileged,
             cgroupns=config.cgroupns_mode or None,
+            platform=config.platform or None,
         )
         container_id = container.id
         _log(f"[{task_id}] container {container_id[:12]} started")
@@ -275,7 +286,7 @@ def _run_container_cli(
     """Run via ``docker`` CLI as fallback."""
     import subprocess
 
-    cmd = ["docker", "run", "--detach"]
+    cmd = ["docker", "run", "--detach", *_docker_platform_args(config.platform)]
 
     # Volumes
     for host_path, vol_cfg in volumes.items():
