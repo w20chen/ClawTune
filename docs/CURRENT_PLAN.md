@@ -40,6 +40,26 @@ own cgroup when cgroupfs is read-only.
 
 ## Current Host Stage-2 Fix
 
+### Second-run workspace ownership finding (2026-07-28)
+
+A follow-up `host-openclaw-sandbox` run proved that the coverage clamp and
+Docker exec PID attribution changes work, but exposed a second launcher issue:
+the root-runner preflight succeeded while 27 real sandbox exec calls failed
+with `claw-launch: Permission denied`. The same run's native file tools could
+not traverse the repository.
+
+`/testbed` is the repository path in the original SWE-Rebench image. In this
+runtime mode it is intentionally copied to a per-task host directory and
+mounted by OpenClaw at `/workspace`; changing only the container path back to
+`/testbed` would not fix the failure. The actual mismatch was ownership:
+`sudo docker cp` created a root-owned tree, the preflight ran as root, and the
+real OpenClaw tool container ran unprivileged.
+
+The runner now grants the isolated exported task tree sandbox read/write/search
+access without following repository symlinks. The launcher preflight explicitly
+runs as numeric uid/gid `65534:65534`, so it exercises the unprivileged access
+boundary before an agent run starts.
+
 The x86_64 syscall kprobe now unwraps the inner `pt_regs` supplied by
 `CONFIG_ARCH_HAS_SYSCALL_WRAPPER` before reading `execve`/`execveat`
 arguments. Host preflight also runs a real short-lived cgroup/eBPF collection

@@ -16,6 +16,7 @@ from swe_rebench.host_sandbox import (
     _ensure_openclaw_sandbox_image,
     _ensure_plugin_built,
     _install_sandbox_launcher,
+    _make_sandbox_workspace_writable,
     _openclaw_config,
     _openclaw_env,
     _run_openclaw_agent,
@@ -772,8 +773,32 @@ def test_host_sandbox_verifies_mounted_launcher_before_agent(
 
     command = calls[0][0]
     assert command[:4] == ["/usr/bin/docker", "run", "--rm", "--network"]
+    assert command[command.index("--user") + 1] == "65534:65534"
     assert "/workspace/.claw/bin/claw-launch" in command
     assert command[-1] == "--help"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not represented on Windows")
+def test_host_sandbox_makes_sudo_export_writable_without_following_symlinks(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    package = workspace / "package"
+    package.mkdir(parents=True, mode=0o700)
+    source = package / "module.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    source.chmod(0o600)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("private\n", encoding="utf-8")
+    outside.chmod(0o600)
+    (workspace / "outside-link").symlink_to(outside)
+
+    _make_sandbox_workspace_writable(workspace)
+
+    assert workspace.stat().st_mode & 0o007 == 0o007
+    assert package.stat().st_mode & 0o007 == 0o007
+    assert source.stat().st_mode & 0o006 == 0o006
+    assert outside.stat().st_mode & 0o077 == 0
 
 
 def test_host_sandbox_prompt_uses_relative_paths(tmp_path: Path) -> None:

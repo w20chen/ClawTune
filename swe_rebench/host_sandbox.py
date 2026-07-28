@@ -57,6 +57,7 @@ def run_host_sandbox_task(
         _reset_directory(workspace, docker_cleanup_image=task.image)
         _reset_directory(openclaw_home)
         _export_testbed_from_image(task.image, workspace, config.docker.pull_policy)
+        _make_sandbox_workspace_writable(workspace)
         _install_sandbox_launcher(workspace, bundle_dir)
         _write_task_inputs(trace_dir, task, config, workspace)
         _ensure_openclaw_sandbox_image(task.image, trace_dir)
@@ -138,6 +139,26 @@ def _export_testbed_from_image(image: str, workspace: Path, pull_policy: str) ->
         subprocess.run([docker, "rm", "-f", container_id], capture_output=True, text=True)
 
 
+def _make_sandbox_workspace_writable(workspace: Path) -> None:
+    """Expose a sudo-exported repository to OpenClaw's unprivileged uid.
+
+    ``docker cp`` preserves image ownership, while this runner normally runs
+    as root for BPF. OpenClaw's tool container must still be able to traverse
+    and edit the isolated task tree.
+    """
+
+    workspace.chmod(workspace.stat().st_mode | 0o777)
+    for path in workspace.rglob("*"):
+        # Do not follow a repository symlink and chmod a target outside this
+        # isolated workspace.
+        if path.is_symlink():
+            continue
+        if path.is_dir():
+            path.chmod(path.stat().st_mode | 0o777)
+        elif path.is_file():
+            path.chmod(path.stat().st_mode | 0o666)
+
+
 def _ensure_openclaw_sandbox_image(task_image: str, trace_dir: Path) -> None:
     """Tag the swe-rebench task image as the OpenClaw sandbox image.
 
@@ -212,6 +233,8 @@ def _verify_sandbox_launcher(trace_dir: Path, workspace: Path) -> None:
                 "--rm",
                 "--network",
                 "none",
+                "--user",
+                "65534:65534",
                 "--mount",
                 f"type=bind,src={workspace},dst=/workspace",
                 "--workdir",
