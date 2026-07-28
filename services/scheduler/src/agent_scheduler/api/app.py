@@ -528,6 +528,18 @@ def create_app(state: AppState | None = None) -> FastAPI:
 
         await s.leases.release(event.lease_id)
         sample = s.tool_monitor.complete(event)
+        telemetry = None
+        if event.execution_id is not None:
+            telemetry = s.predictor.finish_execution(
+                execution_id=event.execution_id,
+                exit_code=0 if event.succeeded else None,
+                signal=None,
+            )
+            if s.trace_writer is not None:
+                s.trace_writer.record_tool_resource_telemetry(
+                    event.execution_id,
+                    telemetry,
+                )
         if sample is not None:
             s.predictor.observe_completion(event, sample)
             s.metrics.observe_tool_runtime(sample)
@@ -535,16 +547,6 @@ def create_app(state: AppState | None = None) -> FastAPI:
             if len(s._recent_samples) > s._max_recent_samples:
                 s._recent_samples.pop()
             if s.trace_writer is not None:
-                if event.execution_id is not None:
-                    telemetry = s.predictor.finish_execution(
-                        execution_id=event.execution_id,
-                        exit_code=0 if event.succeeded else None,
-                        signal=None,
-                    )
-                    s.trace_writer.record_tool_resource_telemetry(
-                        event.execution_id,
-                        telemetry,
-                    )
                 s.trace_writer.record_tool(event, sample)
         s.metrics.inc("scheduler_tool_completions_total")
         s.metrics.tool_durations.append(event.duration_ms / 1000)
@@ -575,6 +577,21 @@ def create_app(state: AppState | None = None) -> FastAPI:
         _: None = Depends(auth),
     ) -> ExecutionScopeResponse:
         return ExecutionScopeResponse(execution_scope=s.executions.scope(execution_id))
+
+    @app.get("/v2/executions/{execution_id}/telemetry")
+    async def execution_telemetry(
+        execution_id: str,
+        s: AppState = Depends(get_state),
+        _: None = Depends(auth),
+    ) -> dict[str, object | None]:
+        telemetry = s.predictor.execution_telemetry(execution_id)
+        if telemetry is None:
+            return {"tool_resource": None}
+        if hasattr(telemetry, "model_dump"):
+            return {"tool_resource": telemetry.model_dump(mode="json")}
+        if isinstance(telemetry, dict):
+            return {"tool_resource": telemetry}
+        return {"tool_resource": None}
 
     @app.post("/v2/executions/claim", response_model=ExecutionClaimResponse)
     async def claim_execution(

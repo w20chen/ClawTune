@@ -474,6 +474,9 @@ class ToolResourcePredictor:
         self._telemetry_by_execution_id[execution_id] = summary
         return summary
 
+    def execution_telemetry(self, execution_id: str) -> ExecutionTelemetrySummary | None:
+        return self._telemetry_by_execution_id.get(execution_id)
+
     def _persist_clause_kb(self) -> bool:
         if self.clause_kb_snapshot_path is None:
             return False

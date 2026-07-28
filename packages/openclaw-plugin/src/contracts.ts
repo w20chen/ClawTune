@@ -144,6 +144,10 @@ export type ToolCompletedEvent = CommonEvent & {
   resource_scope: ResourceScope | null;
 };
 
+export type ExecutionTelemetryResponse = {
+  tool_resource: unknown | null;
+};
+
 export type ModelEvent = CommonEvent & {
   event_type: "model_call_started" | "model_call_ended";
   call_id: string | null;

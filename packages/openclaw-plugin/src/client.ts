@@ -1,6 +1,7 @@
 import type {
   ExecutionRegistrationRequest,
   ExecutionRegistrationResponse,
+  ExecutionTelemetryResponse,
   PluginConfig,
   ResourceScope,
   ToolBeforeRequest,
@@ -34,6 +35,14 @@ export class SidecarClient {
       this.config.reportTimeoutMs
     );
     return response.execution_scope;
+  }
+
+  async getExecutionTelemetry(executionId: string): Promise<unknown | null> {
+    const response = await this.get<ExecutionTelemetryResponse>(
+      `/v2/executions/${encodeURIComponent(executionId)}/telemetry`,
+      this.config.reportTimeoutMs
+    );
+    return response.tool_resource;
   }
 
   private async post<T>(path: string, payload: unknown, timeoutMs: number): Promise<T> {

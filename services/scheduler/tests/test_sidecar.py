@@ -932,10 +932,11 @@ def test_exec_completion_finalizes_stage2_before_trace_write(tmp_path: Path) -> 
     )
     client = TestClient(create_app(state))
     finish_calls: list[dict[str, object]] = []
+    telemetry_by_execution_id: dict[str, dict[str, object | None]] = {}
 
     def finish_execution(**kwargs):
         finish_calls.append(kwargs)
-        return {
+        telemetry = {
             "execution_id": kwargs["execution_id"],
             "tool_call_id": kwargs["execution_id"],
             "artifact_path": None,
@@ -943,8 +944,14 @@ def test_exec_completion_finalizes_stage2_before_trace_write(tmp_path: Path) -> 
             "status": "unavailable",
             "unavailable_reason": "execution_not_exited",
         }
+        telemetry_by_execution_id[str(kwargs["execution_id"])] = telemetry
+        return telemetry
+
+    def execution_telemetry(execution_id: str):
+        return telemetry_by_execution_id.get(execution_id)
 
     state.predictor.finish_execution = finish_execution  # type: ignore[method-assign]
+    state.predictor.execution_telemetry = execution_telemetry  # type: ignore[method-assign]
     completion = {
         "schema_version": "scheduler.v1",
         "event_id": "evt-exec-end",
@@ -969,6 +976,16 @@ def test_exec_completion_finalizes_stage2_before_trace_write(tmp_path: Path) -> 
     }
 
     assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
+    assert client.get("/v2/executions/call-exec/telemetry").json() == {
+        "tool_resource": {
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "artifact_path": None,
+            "started": False,
+            "status": "unavailable",
+            "unavailable_reason": "execution_not_exited",
+        }
+    }
 
     assert finish_calls == [
         {"execution_id": "call-exec", "exit_code": 0, "signal": None}

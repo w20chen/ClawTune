@@ -401,10 +401,18 @@ export default definePluginEntry({
         logger.warn("Agent Scheduler execution scope lookup failed", classifyError(error));
       }
     }
+    let toolResourceTelemetry: unknown | null = null;
     try {
       await client.reportCompletion(completion);
     } catch (error) {
       logger.warn("Agent Scheduler completion report failed", classifyError(error));
+    }
+    if (completion.execution_id !== null) {
+      try {
+        toolResourceTelemetry = await client.getExecutionTelemetry(completion.execution_id);
+      } catch (error) {
+        logger.warn("Agent Scheduler execution telemetry lookup failed", classifyError(error));
+      }
     }
 
     // Determine status code
@@ -439,6 +447,7 @@ export default definePluginEntry({
       cgroup_path: scope?.cgroup_path ?? null,
       cgroup_id: null,
       pid_role: scope?.root_pid ? "payload_root" : (scope?.pid ? "payload_root" : null),
+      tool_resource: toolResourceTelemetry,
     };
 
     // Sanitize command fields for trace

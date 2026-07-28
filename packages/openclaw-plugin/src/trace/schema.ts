@@ -159,6 +159,7 @@ export interface SpanEndExecution {
   cgroup_path?: string | null;
   cgroup_id?: string | null;
   pid_role?: PidRole | null;
+  tool_resource?: unknown | null;
 }
 
 export interface SpanEndResources {
