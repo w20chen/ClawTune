@@ -991,6 +991,11 @@ def _chmod_and_retry(function: Any, path: str, _exc_info: Any) -> None:
         os.chmod(path, 0o700)
     except OSError:
         pass
+    if function is os.open:
+        exc = _exc_info[1] if isinstance(_exc_info, tuple) and len(_exc_info) > 1 else None
+        if isinstance(exc, BaseException):
+            raise exc
+        raise PermissionError(path)
     function(path)
 
 
