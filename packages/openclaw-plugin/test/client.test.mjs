@@ -89,3 +89,24 @@ test("sidecar client fetches execution telemetry", async () => {
     globalThis.fetch = previousFetch;
   }
 });
+
+test("sidecar client includes response body in HTTP errors", async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(
+    JSON.stringify({detail: "validation failed"}),
+    {
+      status: 422,
+      headers: {"content-type": "application/json"},
+    }
+  );
+
+  try {
+    const client = new SidecarClient(loadConfig({endpoint: "http://scheduler.test"}));
+    await assert.rejects(
+      () => client.reportCompletion({}),
+      /sidecar_http_422: .*validation failed/
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});

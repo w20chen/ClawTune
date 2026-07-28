@@ -676,7 +676,7 @@ def _openclaw_config(
                             "endpoint": endpoint_host,
                             "mode": "observe",
                             "decisionTimeoutMs": 800,
-                            "reportTimeoutMs": 800,
+                            "reportTimeoutMs": 10000,
                             "failOpen": True,
                             "sendRawParams": False,
                             "recordRawTrace": False,

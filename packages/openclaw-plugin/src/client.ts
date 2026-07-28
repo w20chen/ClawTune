@@ -63,11 +63,25 @@ export class SidecarClient {
         signal: controller.signal
       });
       if (!response.ok) {
-        throw new Error(`sidecar_http_${response.status}`);
+        throw new Error(`sidecar_http_${response.status}: ${await responseErrorPreview(response)}`);
       }
       return (await response.json()) as T;
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error(`sidecar_timeout_${timeoutMs}ms`);
+      }
+      throw error;
     } finally {
       clearTimeout(timeout);
     }
+  }
+}
+
+async function responseErrorPreview(response: Response): Promise<string> {
+  try {
+    const text = await response.text();
+    return text.slice(0, 1000);
+  } catch {
+    return response.statusText || "no response body";
   }
 }

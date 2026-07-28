@@ -645,6 +645,7 @@ def test_host_sandbox_openclaw_config_uses_only_public_top_level_keys(tmp_path: 
     assert parsed["agents"]["defaults"]["sandbox"]["workspaceAccess"] == "rw"
     plugin_cfg = parsed["plugins"]["entries"]["agent-scheduler"]["config"]
     assert plugin_cfg["logLevel"] == "warn"
+    assert plugin_cfg["reportTimeoutMs"] == 10000
     assert parsed["env"]["CLAW_EXEC_WORKDIR"] == "/workspace"
     assert parsed["env"]["CLAW_SANDBOX_HOST_WORKSPACE"] == str(tmp_path / "workspace")
     assert parsed["env"]["CLAW_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
