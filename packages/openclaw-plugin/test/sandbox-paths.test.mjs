@@ -7,7 +7,7 @@ const env = {
   containerWorkspace: "/workspace",
 };
 
-test("sandbox path normalization maps file tool host paths to container workspace paths", () => {
+test("sandbox path normalization maps file tool host paths to workspace-relative paths", () => {
   const result = normalizeSandboxToolParams(
     {
       path: "/home/weitian/claw/swe_rebench/workspaces/0b01001001__spectree-64/setup.py",
@@ -18,11 +18,11 @@ test("sandbox path normalization maps file tool host paths to container workspac
   );
 
   assert.equal(result.changed, true);
-  assert.equal(result.params.path, "/workspace/setup.py");
-  assert.equal(result.params.cwd, "/workspace");
+  assert.equal(result.params.path, "setup.py");
+  assert.equal(result.params.cwd, ".");
 });
 
-test("sandbox path normalization anchors relative file tool paths in the container workspace", () => {
+test("sandbox path normalization leaves relative file tool paths alone", () => {
   const result = normalizeSandboxToolParams(
     {
       path: "setup.py",
@@ -32,9 +32,9 @@ test("sandbox path normalization anchors relative file tool paths in the contain
     env
   );
 
-  assert.equal(result.changed, true);
-  assert.equal(result.params.path, "/workspace/setup.py");
-  assert.equal(result.params.cwd, "/workspace");
+  assert.equal(result.changed, false);
+  assert.equal(result.params.path, "setup.py");
+  assert.equal(result.params.cwd, ".");
 });
 
 test("sandbox path normalization maps container task-directory aliases for file tools", () => {
@@ -48,21 +48,21 @@ test("sandbox path normalization maps container task-directory aliases for file 
   );
 
   assert.equal(result.changed, true);
-  assert.equal(result.params.path, "/workspace/README.md");
-  assert.equal(result.params.cwd, "/workspace");
+  assert.equal(result.params.path, "README.md");
+  assert.equal(result.params.cwd, ".");
 });
 
-test("sandbox path normalization maps file tool workspace root to container root", () => {
+test("sandbox path normalization maps file tool container root to workspace root", () => {
   const result = normalizeSandboxToolParams(
     {
-      path: ".",
+      path: "/workspace",
     },
     "read",
     env
   );
 
   assert.equal(result.changed, true);
-  assert.equal(result.params.path, "/workspace");
+  assert.equal(result.params.path, ".");
 });
 
 test("sandbox path normalization strips gateway override from exec in sandbox mode", () => {

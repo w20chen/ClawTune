@@ -651,8 +651,8 @@ def _openclaw_config(
         {
             "agents": {
                 "defaults": {
-                    "workspace": "/workspace",
-                    "repoRoot": "/workspace",
+                    "workspace": str(workspace),
+                    "repoRoot": str(workspace),
                     "sandbox": {
                         "mode": "all",
                         "backend": "docker",

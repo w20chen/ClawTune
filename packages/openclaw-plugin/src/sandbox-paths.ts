@@ -19,7 +19,7 @@ export function normalizeSandboxToolParams(
     ?? normalizePathEnv(env.execWorkdir)
     ?? "/workspace";
   if (hostWorkspace === null) return {params, changed: false};
-  const targetWorkspace = usesSandboxWorkspace(toolName) ? containerWorkspace : null;
+  const targetWorkspace = usesContainerWorkspace(toolName) ? containerWorkspace : null;
   const containerAliases = containerWorkspaceAliases(hostWorkspace, containerWorkspace);
 
   let changed = false;
@@ -163,15 +163,8 @@ function containerWorkspaceAliases(hostWorkspace: string, containerWorkspace: st
   return [...new Set(aliases)].sort((left, right) => right.length - left.length);
 }
 
-function usesSandboxWorkspace(toolName: string): boolean {
-  return [
-    "exec",
-    "process",
-    "read",
-    "write",
-    "edit",
-    "apply_patch",
-  ].includes(toolName);
+function usesContainerWorkspace(toolName: string): boolean {
+  return toolName === "exec" || toolName === "process";
 }
 
 function normalizePathEnv(value: string | undefined): string | null {

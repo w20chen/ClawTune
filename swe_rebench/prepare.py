@@ -12,6 +12,7 @@ swe-rebench container at ``/claw``.  The bundle includes:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -22,6 +23,8 @@ from pathlib import Path
 from typing import Any
 
 from swe_rebench.config import RunnerConfig
+
+_BUNDLE_FINGERPRINT_FILE = "bundle-source-fingerprint.json"
 
 
 _PLUGIN_CONFIG: dict[str, Any] = {
@@ -88,6 +91,7 @@ def build_bundle(config: RunnerConfig) -> Path:
     _write_setup_script(bundle_dir)
     _write_plugin_config(bundle_dir)
     _write_run_agent(bundle_dir, config)
+    _write_bundle_fingerprint(config, bundle_dir)
 
     _log(f"Bundle assembled at {bundle_dir}")
     _log(f"  plugin/     <- {repo / config.bundle.plugin_source}")
@@ -101,6 +105,16 @@ def bundle_needs_rebuild(config: RunnerConfig, bundle_dir: Path | None = None) -
     marker = bundle / "entrypoint.sh"
     if not marker.exists():
         return True
+    fingerprint_path = bundle / _BUNDLE_FINGERPRINT_FILE
+    if not fingerprint_path.exists():
+        return True
+    try:
+        previous = json.loads(fingerprint_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True
+    current = _bundle_source_fingerprint(config)
+    if previous.get("digest") != current["digest"]:
+        return True
 
     marker_mtime = marker.stat().st_mtime
     sources = [
@@ -112,6 +126,78 @@ def bundle_needs_rebuild(config: RunnerConfig, bundle_dir: Path | None = None) -
         if source.exists() and _latest_source_mtime(source) > marker_mtime:
             return True
     return False
+
+
+def _write_bundle_fingerprint(config: RunnerConfig, bundle_dir: Path) -> None:
+    path = bundle_dir / _BUNDLE_FINGERPRINT_FILE
+    path.write_text(
+        json.dumps(_bundle_source_fingerprint(config), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _bundle_source_fingerprint(config: RunnerConfig) -> dict[str, Any]:
+    repo = config.repo_root
+    roots = [
+        repo / config.bundle.plugin_source,
+        repo / config.bundle.scheduler_source,
+        Path(__file__).resolve(),
+        repo / "swe_rebench" / "runner.py",
+        repo / "swe_rebench" / "host_sandbox.py",
+    ]
+    files = _fingerprint_files(roots)
+    digest = hashlib.sha256()
+    entries: list[str] = []
+    for path in files:
+        try:
+            relative = path.relative_to(repo).as_posix()
+        except ValueError:
+            relative = path.as_posix()
+        entries.append(relative)
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        try:
+            digest.update(path.read_bytes())
+        except OSError:
+            digest.update(b"<unreadable>")
+        digest.update(b"\0")
+    return {
+        "schema": "swe_rebench_bundle_source_fingerprint_v1",
+        "digest": f"sha256:{digest.hexdigest()}",
+        "file_count": len(entries),
+        "files": entries,
+    }
+
+
+def _fingerprint_files(roots: list[Path]) -> list[Path]:
+    files: list[Path] = []
+    skip_names = {
+        ".git",
+        ".mypy_cache",
+        ".npm-cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "__pycache__",
+        "dist",
+        "node_modules",
+        "traces",
+    }
+    skip_suffixes = {".pyc", ".pyo", ".whl", ".tar.gz"}
+    for root in roots:
+        if not root.exists():
+            continue
+        if root.is_file():
+            files.append(root)
+            continue
+        for item in root.rglob("*"):
+            if not item.is_file():
+                continue
+            if any(part in skip_names for part in item.parts):
+                continue
+            if any(item.name.endswith(suffix) for suffix in skip_suffixes):
+                continue
+            files.append(item)
+    return sorted(set(files), key=lambda path: path.as_posix())
 
 
 def _build_plugin_dist(repo: Path, bundle_dir: Path, config: RunnerConfig) -> None:

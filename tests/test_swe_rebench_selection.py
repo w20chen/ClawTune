@@ -35,6 +35,7 @@ from swe_rebench.prepare import (
     _PLUGIN_CONFIG,
     _build_plugin_dist,
     _write_entrypoint,
+    _write_bundle_fingerprint,
     _write_plugin_config,
     bundle_needs_rebuild,
 )
@@ -634,8 +635,8 @@ def test_host_sandbox_openclaw_config_uses_only_public_top_level_keys(tmp_path: 
     parsed = json.loads(raw)
 
     assert set(parsed) == {"agents", "plugins", "env"}
-    assert parsed["agents"]["defaults"]["workspace"] == "/workspace"
-    assert parsed["agents"]["defaults"]["repoRoot"] == "/workspace"
+    assert parsed["agents"]["defaults"]["workspace"] == str(tmp_path / "workspace")
+    assert parsed["agents"]["defaults"]["repoRoot"] == str(tmp_path / "workspace")
     docker_cfg = parsed["agents"]["defaults"]["sandbox"]["docker"]
     assert docker_cfg["containerPrefix"] == _sandbox_container_prefix(tmp_path / "workspace")
     assert docker_cfg["workdir"] == "/workspace"
@@ -1567,11 +1568,47 @@ def test_bundle_stale_check_ignores_dist_but_tracks_source(tmp_path: Path) -> No
     ):
         path.write_text("old\n", encoding="utf-8")
         os.utime(path, (old, old))
+    _write_bundle_fingerprint(config, bundle_dir)
 
     assert bundle_needs_rebuild(config, bundle_dir) is False
 
     source = plugin_dir / "src" / "index.ts"
     new = now + 100
     os.utime(source, (new, new))
+
+    assert bundle_needs_rebuild(config, bundle_dir) is True
+
+
+def test_bundle_stale_check_rebuilds_when_fingerprint_is_missing(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("", encoding="utf-8")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    (bundle_dir / "entrypoint.sh").write_text("built\n", encoding="utf-8")
+
+    assert bundle_needs_rebuild(config, bundle_dir) is True
+
+
+def test_bundle_stale_check_tracks_content_even_when_mtime_is_old(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "packages" / "openclaw-plugin"
+    scheduler_dir = tmp_path / "services" / "scheduler"
+    bundle_dir = tmp_path / "bundle"
+    (plugin_dir / "src").mkdir(parents=True)
+    scheduler_dir.mkdir(parents=True)
+    bundle_dir.mkdir()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("", encoding="utf-8")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+
+    source = plugin_dir / "src" / "index.ts"
+    source.write_text("old\n", encoding="utf-8")
+    marker = bundle_dir / "entrypoint.sh"
+    marker.write_text("built\n", encoding="utf-8")
+    _write_bundle_fingerprint(config, bundle_dir)
+    now = marker.stat().st_mtime
+    source.write_text("new\n", encoding="utf-8")
+    old = now - 100
+    os.utime(source, (old, old))
 
     assert bundle_needs_rebuild(config, bundle_dir) is True
