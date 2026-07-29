@@ -771,6 +771,10 @@ def _openclaw_config(
                 "CLAW_SANDBOX_CONTAINER_WORKSPACE": "/workspace",
                 "CLAW_ENABLE_CGROUP": "1",
                 "CLAW_LAUNCH_DEBUG": "1",
+                # Prepend conda paths so the agent finds pip/python from the
+                # task image's conda environment immediately, avoiding wasted
+                # turns on "pip: not found" / "apt-get install" failures.
+                "PATH": "/opt/conda/envs/testbed/bin:/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             },
         },
         indent=2,
