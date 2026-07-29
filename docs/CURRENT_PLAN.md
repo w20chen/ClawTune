@@ -827,3 +827,79 @@ Validation unavailable in this Windows workspace:
   `--basetemp C:\tmp\claw-runtime-boundary-pytest` could not use that directory
   because of local ACLs; rerunning the same selection below a writable
   per-user temp directory passed.
+
+## 2026-07-30 Container-OpenClaw Conda libstdc++ Isolation
+
+The latest downloaded live run is internally consistent: container
+`9f4a528d5930`, trace
+`0a052268-1ef4-4936-bfa7-e24073972a58_ef86c391-8073-4703-8d2f-b49336f58fb9`,
+and the 1,927-byte model patch all match the terminal report. It confirms that
+the libelf repair, Node 24 resolution, Docker Unix-socket fallback, cgroup
+attribution, and launcher lifecycle are working. In particular,
+`docker_inspect` succeeded via `docker-unix-socket`, and all 11 launcher calls
+had exit status, cgroup attribution, Stage-2 lifecycle, and artifact references.
+
+Stage-2 remained unavailable because the selected Conda Python loaded
+`/opt/conda/lib/libstdc++.so.6`, which lacks `GLIBCXX_3.4.30` required by the
+system `/lib/x86_64-linux-gnu/libclang-cpp.so.14`. All 11 Stage-2 artifacts
+therefore reported `collector_disabled`; this is an ABI bootstrap failure, not
+a Docker-socket or launcher-lifecycle failure.
+
+The container setup now handles only that exact
+`libstdc++.so.6`/`GLIBCXX_*`/`not found` signature. It enumerates system
+`libstdc++.so.6` candidates from `ldconfig`, accepts only readable paths below
+`/lib`, `/lib64`, `/usr/lib`, or `/usr/lib64`, and verifies each candidate with
+a real BCC import. A successful candidate is recorded in a root-created mode
+`0600` marker. After sidecar dependencies are installed, a combined
+FastAPI/uvicorn/pydantic/psutil/numpy/BCC import must also pass with that
+candidate; otherwise the marker is removed and Stage-2 remains fail-open. A
+fresh or resumed setup clears any stale marker before probing, while an
+idempotent `SETUP_DONE` return preserves the already-verified marker.
+
+The entrypoint does not export `LD_PRELOAD` or use `LD_LIBRARY_PATH`. It reads
+the validated marker into a Bash environment array and passes it only to the
+tool-resource preflight and the sidecar process. The cgroup probe, scheduler
+installation, OpenClaw, `claw-launch`, task Python, and agent payload do not
+receive it. `host-openclaw-sandbox`, shared scheduler code, and
+`services/scheduler/src/tool_resource` are unchanged.
+
+Validation in this Windows workspace:
+
+- `python -m pytest tests -q -p no:cacheprovider --basetemp
+  .pytest-tmp-libstdcxx-full`: 88 passed, 2 skipped.
+- The focused container repair, tracked/generated bundle, host dispatch, and
+  host sidecar environment selection: 6 passed.
+- `python -m swe_rebench.runner prepare --config
+  swe_rebench\config.yaml`: passed. Generated and tracked setup scripts match
+  `_SETUP_TEMPLATE`; generated and tracked default entrypoints match the
+  rendered `_ENTRYPOINT_TEMPLATE`.
+- One-task dry-runs for both `container-openclaw` and
+  `host-openclaw-sandbox`: passed.
+- `python tools\validate_contracts.py`: all nine schema examples passed.
+- Python compilation, CI YAML parsing, and `git diff --check`: passed.
+
+Validation unavailable in this Windows workspace:
+
+- `bash -n swe_rebench/bundle/setup.sh` and
+  `bash -n swe_rebench/bundle/entrypoint.sh` both fail before parsing. The
+  sandboxed attempt returns `Bash/Service/CreateInstance/E_ACCESSDENIED`; the
+  approved out-of-sandbox retry reaches WSL but reports that no Linux
+  distribution is installed. Both commands are Ubuntu CI steps.
+- A local tree-sitter Bash parse fallback also cannot run because the installed
+  `tree_sitter_languages` package is incompatible with the installed
+  `tree_sitter` API (`TypeError: __init__() takes exactly 1 argument (2
+  given)`).
+- A live Linux `container-openclaw` run remains unavailable locally because
+  this workspace has no usable Docker/cgroup-v2/eBPF runtime or model
+  credentials.
+
+The next Linux acceptance run must show the sidecar-only system-libstdc++
+repair message and `BCC Python binding OK`. Its
+`tool_resource_preflight.json` must report `docker_inspect.ok: true`,
+`bcc_import.ok: true`, a system `bcc_ld_preload`, and `stage2_ready: true`.
+At least one launcher artifact must stop reporting `collector_disabled`. If
+BCC import succeeds but attach or compilation then fails, record that new error
+separately; the host kernel is 6.8 while the task image currently installs
+Debian 6.1 headers, so matching kernel headers may be the next objective
+container limitation. Do not pre-emptively mount or mutate host kernel-header
+trees without live evidence.

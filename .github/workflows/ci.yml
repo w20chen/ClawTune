@@ -18,6 +18,7 @@ jobs:
       - run: python -m pip install -e services/scheduler[dev] jsonschema
       - run: python tools/validate_contracts.py
       - run: bash -n swe_rebench/bundle/setup.sh
+      - run: bash -n swe_rebench/bundle/entrypoint.sh
       - run: cd services/scheduler && pytest
       - run: python -m pytest tests -q --basetemp .pytest-tmp-root
       - run: cd packages/openclaw-plugin && npm ci && npm run typecheck && npm test && npm run build && npm pack

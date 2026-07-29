@@ -341,6 +341,23 @@ CLAW_BCC_PYTHONPATH=""
 if [ -s /tmp/.claw_bcc_pythonpath ]; then
     CLAW_BCC_PYTHONPATH="$(cat /tmp/.claw_bcc_pythonpath)"
 fi
+CLAW_BCC_LD_PRELOAD=""
+# Keep the ABI repair out of the entrypoint environment.  This array is passed
+# only to the BCC preflight and sidecar process below, never to task payloads.
+CLAW_BCC_RUNTIME_ENV=()
+if [ -s /tmp/.claw_bcc_ld_preload ]; then
+    IFS= read -r CLAW_BCC_LD_PRELOAD < /tmp/.claw_bcc_ld_preload \
+        || CLAW_BCC_LD_PRELOAD=""
+    case "$CLAW_BCC_LD_PRELOAD" in
+        /lib/*|/lib64/*|/usr/lib/*|/usr/lib64/*)
+            if [ -r "$CLAW_BCC_LD_PRELOAD" ]; then
+                CLAW_BCC_RUNTIME_ENV=(
+                    "LD_PRELOAD=${CLAW_BCC_LD_PRELOAD}${LD_PRELOAD:+:$LD_PRELOAD}"
+                )
+            fi
+            ;;
+    esac
+fi
 mkdir -p "$TRACE_DIR"
 $_CLW_PYTHON - <<'PY' > "$TRACE_DIR/cgroup_probe.json" 2>/dev/null || true
 import json
@@ -372,7 +389,9 @@ probe = {
 print(json.dumps(probe, indent=2))
 PY
 
-PYTHONPATH="${CLAW_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" $_CLW_PYTHON - <<'PY' > "$TRACE_DIR/tool_resource_preflight.json" 2>&1 || true
+env "${CLAW_BCC_RUNTIME_ENV[@]}" \
+    "PYTHONPATH=${CLAW_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" \
+    "$_CLW_PYTHON" - <<'PY' > "$TRACE_DIR/tool_resource_preflight.json" 2>&1 || true
 import json
 import http.client
 import os
@@ -454,6 +473,7 @@ preflight = {
     "euid": os.geteuid() if hasattr(os, "geteuid") else None,
     "python": sys.executable,
     "pythonpath": os.environ.get("PYTHONPATH", ""),
+    "bcc_ld_preload": os.environ.get("LD_PRELOAD"),
     "cgroup_v2": Path("/sys/fs/cgroup/cgroup.controllers").is_file(),
     "docker": docker,
     "clang": shutil.which("clang"),
@@ -484,7 +504,9 @@ CLAW_SIDECAR_PYTHONPATH="src"
 if [ -n "$CLAW_BCC_PYTHONPATH" ]; then
     CLAW_SIDECAR_PYTHONPATH="$CLAW_SIDECAR_PYTHONPATH:$CLAW_BCC_PYTHONPATH"
 fi
-PYTHONPATH="$CLAW_SIDECAR_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}" $_CLW_PYTHON -m agent_scheduler.main \
+env "${CLAW_BCC_RUNTIME_ENV[@]}" \
+    "PYTHONPATH=$CLAW_SIDECAR_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}" \
+    "$_CLW_PYTHON" -m agent_scheduler.main \
     --host 127.0.0.1 --port "$SIDECAR_PORT" \
     > "$TRACE_DIR/sidecar.log" 2>&1 &
 SIDECAR_PID=$!
@@ -825,35 +847,101 @@ else
 fi
 
 # Some minimized benchmark images retain dpkg's "installed" record for
-# libelf1 after removing its shared-object payload.  A normal apt install then
-# becomes a no-op even though importing BCC fails.  Repair only that observed
-# container failure; all other optional BCC failures remain fail-open.
-if [ "$PKG_MGR" = "apt" ] && [ -s /tmp/.claw_bcc_pythonpath ]; then
-    _CLAW_BCC_PYTHONPATH="$(cat /tmp/.claw_bcc_pythonpath)"
-    if ! _CLAW_BCC_IMPORT_ERROR="$(
+# libelf1 after removing its shared-object payload.  Conda-based images can
+# also force an older libstdc++.so.6 into the selected Python even though BCC
+# and libclang were installed from the system package manager.  Repair only
+# those observed container failures; all other optional BCC failures remain
+# fail-open.
+_CLAW_BCC_PYTHONPATH=""
+_CLAW_BCC_LD_PRELOAD=""
+_CLAW_BCC_PRELOAD_FILE="/tmp/.claw_bcc_ld_preload"
+# SETUP_DONE returns before this point, so a completed setup keeps its verified
+# marker while a fresh or resumed setup cannot inherit a stale one.
+rm -f -- "$_CLAW_BCC_PRELOAD_FILE" || true
+
+_claw_import_bcc() {
+    if [ -n "$_CLAW_BCC_LD_PRELOAD" ]; then
+        LD_PRELOAD="${_CLAW_BCC_LD_PRELOAD}${LD_PRELOAD:+:$LD_PRELOAD}" \
         PYTHONPATH="${_CLAW_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" \
-            "$_CLW_PYTHON" -c "import bcc" 2>&1
-    )"; then
-        case "$_CLAW_BCC_IMPORT_ERROR" in
-            *"libelf.so.1"*)
-                echo "[claw] libelf.so.1 is missing; reinstalling libelf1..."
-                if DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --reinstall libelf1; then
-                    if command -v ldconfig &>/dev/null; then
-                        ldconfig 2>/dev/null || true
-                    fi
-                    if _CLAW_BCC_RECHECK_ERROR="$(
-                        PYTHONPATH="${_CLAW_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" \
-                            "$_CLW_PYTHON" -c "import bcc" 2>&1
-                    )"; then
-                        echo "[claw] libelf1 reinstall repaired the BCC runtime"
-                    else
-                        echo "[claw] BCC remains unavailable after libelf1 reinstall: $_CLAW_BCC_RECHECK_ERROR"
-                    fi
-                else
-                    echo "[claw] libelf1 reinstall failed (Stage-2 will remain unavailable)"
-                fi
-                ;;
+            "$_CLW_PYTHON" -c "import bcc"
+    else
+        PYTHONPATH="${_CLAW_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" \
+            "$_CLW_PYTHON" -c "import bcc"
+    fi
+}
+
+_claw_try_system_libstdcxx() {
+    local candidate
+    local candidate_error=""
+
+    if ! command -v ldconfig &>/dev/null; then
+        return 1
+    fi
+    while IFS= read -r candidate; do
+        [ -r "$candidate" ] || continue
+        case "$candidate" in
+            /lib/*|/lib64/*|/usr/lib/*|/usr/lib64/*) ;;
+            *) continue ;;
         esac
+        _CLAW_BCC_LD_PRELOAD="$candidate"
+        if candidate_error="$(_claw_import_bcc 2>&1)"; then
+            if printf '%s\n' "$candidate" > "$_CLAW_BCC_PRELOAD_FILE" \
+                && chmod 0600 "$_CLAW_BCC_PRELOAD_FILE"
+            then
+                echo "[claw] BCC runtime repaired with system libstdc++ (sidecar-only): $candidate"
+                return 0
+            fi
+            candidate_error="verified $candidate but could not persist the sidecar-only preload marker"
+            rm -f "$_CLAW_BCC_PRELOAD_FILE" || true
+        fi
+        _CLAW_BCC_LD_PRELOAD=""
+        _CLAW_BCC_PRELOAD_ERROR="$candidate_error"
+    done < <(
+        ldconfig -p 2>/dev/null \
+            | awk '$1 == "libstdc++.so.6" && !seen[$NF]++ { print $NF }'
+    )
+    return 1
+}
+
+if [ -s /tmp/.claw_bcc_pythonpath ]; then
+    _CLAW_BCC_PYTHONPATH="$(cat /tmp/.claw_bcc_pythonpath)"
+    _CLAW_BCC_IMPORT_ERROR=""
+    if ! _CLAW_BCC_IMPORT_ERROR="$(_claw_import_bcc 2>&1)"; then
+        if [ "$PKG_MGR" = "apt" ]; then
+            case "$_CLAW_BCC_IMPORT_ERROR" in
+                *"libelf.so.1"*)
+                    echo "[claw] libelf.so.1 is missing; reinstalling libelf1..."
+                    if DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --reinstall libelf1; then
+                        if command -v ldconfig &>/dev/null; then
+                            ldconfig 2>/dev/null || true
+                        fi
+                        if _CLAW_BCC_RECHECK_ERROR="$(_claw_import_bcc 2>&1)"; then
+                            _CLAW_BCC_IMPORT_ERROR=""
+                            echo "[claw] libelf1 reinstall repaired the BCC runtime"
+                        else
+                            _CLAW_BCC_IMPORT_ERROR="$_CLAW_BCC_RECHECK_ERROR"
+                        fi
+                    else
+                        echo "[claw] libelf1 reinstall failed (Stage-2 will remain unavailable)"
+                    fi
+                    ;;
+            esac
+        fi
+        if [ -n "$_CLAW_BCC_IMPORT_ERROR" ]; then
+            case "$_CLAW_BCC_IMPORT_ERROR" in
+                *"libstdc++.so.6"*GLIBCXX_*"not found"*)
+                    echo "[claw] Conda libstdc++ is incompatible with system BCC; probing a sidecar-only system preload..."
+                    if _claw_try_system_libstdcxx; then
+                        _CLAW_BCC_IMPORT_ERROR=""
+                    else
+                        _CLAW_BCC_IMPORT_ERROR="${_CLAW_BCC_PRELOAD_ERROR:-$_CLAW_BCC_IMPORT_ERROR}"
+                    fi
+                    ;;
+            esac
+        fi
+        if [ -n "$_CLAW_BCC_IMPORT_ERROR" ]; then
+            echo "[claw] BCC remains unavailable after container repair probes: $_CLAW_BCC_IMPORT_ERROR"
+        fi
     fi
 fi
 
@@ -931,8 +1019,37 @@ $_CLW_PIP install --quiet \
 if [ -s /tmp/.claw_bcc_pythonpath ]; then
     export PYTHONPATH="$(cat /tmp/.claw_bcc_pythonpath)${PYTHONPATH:+:$PYTHONPATH}"
 fi
-$_CLW_PYTHON -c "import fastapi, uvicorn, pydantic, psutil, numpy; print('[claw] sidecar deps OK')"
-$_CLW_PYTHON - <<'PY' || true
+_CLAW_BCC_RUNTIME_ENV=()
+if [ -s "$_CLAW_BCC_PRELOAD_FILE" ]; then
+    IFS= read -r _CLAW_BCC_LD_PRELOAD < "$_CLAW_BCC_PRELOAD_FILE" \
+        || _CLAW_BCC_LD_PRELOAD=""
+    case "$_CLAW_BCC_LD_PRELOAD" in
+        /lib/*|/lib64/*|/usr/lib/*|/usr/lib64/*)
+            if [ -r "$_CLAW_BCC_LD_PRELOAD" ]; then
+                _CLAW_BCC_RUNTIME_ENV=(
+                    "LD_PRELOAD=${_CLAW_BCC_LD_PRELOAD}${LD_PRELOAD:+:$LD_PRELOAD}"
+                )
+            else
+                _CLAW_BCC_LD_PRELOAD=""
+            fi
+            ;;
+        *) _CLAW_BCC_LD_PRELOAD="" ;;
+    esac
+fi
+if [ -n "$_CLAW_BCC_LD_PRELOAD" ]; then
+    if ! env "${_CLAW_BCC_RUNTIME_ENV[@]}" "$_CLW_PYTHON" \
+        -c "import fastapi, uvicorn, pydantic, psutil, numpy, bcc; print('[claw] sidecar deps and BCC OK with system libstdc++')"
+    then
+        echo "[claw] system libstdc++ preload failed the combined sidecar/BCC probe; disabling the Stage-2 preload"
+        rm -f "$_CLAW_BCC_PRELOAD_FILE" || true
+        _CLAW_BCC_LD_PRELOAD=""
+        _CLAW_BCC_RUNTIME_ENV=()
+        "$_CLW_PYTHON" -c "import fastapi, uvicorn, pydantic, psutil, numpy; print('[claw] sidecar deps OK')"
+    fi
+else
+    "$_CLW_PYTHON" -c "import fastapi, uvicorn, pydantic, psutil, numpy; print('[claw] sidecar deps OK')"
+fi
+env "${_CLAW_BCC_RUNTIME_ENV[@]}" "$_CLW_PYTHON" - <<'PY' || true
 try:
     import bcc  # noqa: F401
     print("[claw] BCC Python binding OK")

@@ -75,6 +75,23 @@ CLAW_BCC_PYTHONPATH=""
 if [ -s /tmp/.claw_bcc_pythonpath ]; then
     CLAW_BCC_PYTHONPATH="$(cat /tmp/.claw_bcc_pythonpath)"
 fi
+CLAW_BCC_LD_PRELOAD=""
+# Keep the ABI repair out of the entrypoint environment.  This array is passed
+# only to the BCC preflight and sidecar process below, never to task payloads.
+CLAW_BCC_RUNTIME_ENV=()
+if [ -s /tmp/.claw_bcc_ld_preload ]; then
+    IFS= read -r CLAW_BCC_LD_PRELOAD < /tmp/.claw_bcc_ld_preload \
+        || CLAW_BCC_LD_PRELOAD=""
+    case "$CLAW_BCC_LD_PRELOAD" in
+        /lib/*|/lib64/*|/usr/lib/*|/usr/lib64/*)
+            if [ -r "$CLAW_BCC_LD_PRELOAD" ]; then
+                CLAW_BCC_RUNTIME_ENV=(
+                    "LD_PRELOAD=${CLAW_BCC_LD_PRELOAD}${LD_PRELOAD:+:$LD_PRELOAD}"
+                )
+            fi
+            ;;
+    esac
+fi
 mkdir -p "$TRACE_DIR"
 $_CLW_PYTHON - <<'PY' > "$TRACE_DIR/cgroup_probe.json" 2>/dev/null || true
 import json
@@ -106,7 +123,9 @@ probe = {
 print(json.dumps(probe, indent=2))
 PY
 
-PYTHONPATH="${CLAW_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" $_CLW_PYTHON - <<'PY' > "$TRACE_DIR/tool_resource_preflight.json" 2>&1 || true
+env "${CLAW_BCC_RUNTIME_ENV[@]}" \
+    "PYTHONPATH=${CLAW_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" \
+    "$_CLW_PYTHON" - <<'PY' > "$TRACE_DIR/tool_resource_preflight.json" 2>&1 || true
 import json
 import http.client
 import os
@@ -188,6 +207,7 @@ preflight = {
     "euid": os.geteuid() if hasattr(os, "geteuid") else None,
     "python": sys.executable,
     "pythonpath": os.environ.get("PYTHONPATH", ""),
+    "bcc_ld_preload": os.environ.get("LD_PRELOAD"),
     "cgroup_v2": Path("/sys/fs/cgroup/cgroup.controllers").is_file(),
     "docker": docker,
     "clang": shutil.which("clang"),
@@ -218,7 +238,9 @@ CLAW_SIDECAR_PYTHONPATH="src"
 if [ -n "$CLAW_BCC_PYTHONPATH" ]; then
     CLAW_SIDECAR_PYTHONPATH="$CLAW_SIDECAR_PYTHONPATH:$CLAW_BCC_PYTHONPATH"
 fi
-PYTHONPATH="$CLAW_SIDECAR_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}" $_CLW_PYTHON -m agent_scheduler.main \
+env "${CLAW_BCC_RUNTIME_ENV[@]}" \
+    "PYTHONPATH=$CLAW_SIDECAR_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}" \
+    "$_CLW_PYTHON" -m agent_scheduler.main \
     --host 127.0.0.1 --port "$SIDECAR_PORT" \
     > "$TRACE_DIR/sidecar.log" 2>&1 &
 SIDECAR_PID=$!

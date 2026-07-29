@@ -426,15 +426,50 @@ def test_setup_installs_scheduler_runtime_dependencies() -> None:
 def test_setup_repairs_libelf_payload_removed_from_minimized_apt_image() -> None:
     from swe_rebench.prepare import _SETUP_TEMPLATE
 
-    assert (
-        'if [ "$PKG_MGR" = "apt" ] && [ -s /tmp/.claw_bcc_pythonpath ]'
-        in _SETUP_TEMPLATE
-    )
+    assert 'if [ "$PKG_MGR" = "apt" ]; then' in _SETUP_TEMPLATE
     assert '*"libelf.so.1"*)' in _SETUP_TEMPLATE
     assert "apt-get install -y -qq --reinstall libelf1" in _SETUP_TEMPLATE
     assert "libelf1 reinstall repaired the BCC runtime" in _SETUP_TEMPLATE
-    assert "BCC remains unavailable after libelf1 reinstall" in _SETUP_TEMPLATE
+    assert "BCC remains unavailable after container repair probes" in _SETUP_TEMPLATE
     assert "libelf1 reinstall failed (Stage-2 will remain unavailable)" in _SETUP_TEMPLATE
+
+
+def test_container_bcc_repair_scopes_system_libstdcxx_to_sidecar() -> None:
+    from swe_rebench.prepare import _ENTRYPOINT_TEMPLATE, _SETUP_TEMPLATE
+
+    assert '*"libstdc++.so.6"*GLIBCXX_*"not found"*)' in _SETUP_TEMPLATE
+    assert "ldconfig -p" in _SETUP_TEMPLATE
+    assert '$1 == "libstdc++.so.6"' in _SETUP_TEMPLATE
+    assert "/tmp/.claw_bcc_ld_preload" in _SETUP_TEMPLATE
+    assert 'rm -f -- "$_CLAW_BCC_PRELOAD_FILE" || true' in _SETUP_TEMPLATE
+    assert 'chmod 0600 "$_CLAW_BCC_PRELOAD_FILE"' in _SETUP_TEMPLATE
+    assert "sidecar deps and BCC OK with system libstdc++" in _SETUP_TEMPLATE
+    assert "disabling the Stage-2 preload" in _SETUP_TEMPLATE
+    assert "export LD_PRELOAD" not in _SETUP_TEMPLATE
+    assert "LD_LIBRARY_PATH" not in _SETUP_TEMPLATE
+
+    assert "CLAW_BCC_RUNTIME_ENV=()" in _ENTRYPOINT_TEMPLATE
+    assert _ENTRYPOINT_TEMPLATE.count(
+        'env "${CLAW_BCC_RUNTIME_ENV[@]}"'
+    ) == 2
+    assert '"bcc_ld_preload": os.environ.get("LD_PRELOAD")' in _ENTRYPOINT_TEMPLATE
+    assert "export LD_PRELOAD" not in _ENTRYPOINT_TEMPLATE
+    launcher = _ENTRYPOINT_TEMPLATE.split(
+        "cat > /opt/claw/bin/claw-launch <<'EOF_LAUNCHER'\n", 1
+    )[1].split("\nEOF_LAUNCHER", 1)[0]
+    assert "LD_PRELOAD" not in launcher
+
+
+def test_tracked_entrypoint_matches_generated_default(tmp_path: Path) -> None:
+    config = RunnerConfig.from_yaml(
+        Path(__file__).parents[1] / "swe_rebench" / "config.yaml"
+    )
+    _write_entrypoint(tmp_path, config)
+    entrypoint = (
+        Path(__file__).parents[1] / "swe_rebench" / "bundle" / "entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert entrypoint == (tmp_path / "entrypoint.sh").read_text(encoding="utf-8")
 
 
 def test_setup_resolves_current_node_archive_for_detected_architecture() -> None:
@@ -1280,6 +1315,7 @@ def test_host_sandbox_stages_user_owned_plugin_when_running_as_root(monkeypatch,
 
 
 def test_host_sandbox_sidecar_enables_docker_exec_observer(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("LD_PRELOAD", raising=False)
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -1315,6 +1351,7 @@ def test_host_sandbox_sidecar_enables_docker_exec_observer(monkeypatch, tmp_path
     assert env["AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED"] == "false"
     assert env["AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX"] == _sandbox_container_prefix(workspace)
     assert str(tmp_path / "services" / "scheduler" / "src") in env["PYTHONPATH"]
+    assert "LD_PRELOAD" not in env
 
 
 def test_host_sandbox_writes_tool_resource_preflight(monkeypatch, tmp_path: Path) -> None:
