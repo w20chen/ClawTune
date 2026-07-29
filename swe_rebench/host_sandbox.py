@@ -571,6 +571,7 @@ def _run_openclaw_agent(
             "CLAW_SANDBOX_HOST_WORKSPACE": str(workspace),
             "CLAW_SANDBOX_CONTAINER_WORKSPACE": "/workspace",
             "CLAW_ENABLE_CGROUP": "1",
+            "CLAW_LAUNCH_MODE": "fork-exec",
             "CLAW_LAUNCH_DEBUG": "1",
         }
     )
@@ -770,6 +771,7 @@ def _openclaw_config(
                 "CLAW_SANDBOX_HOST_WORKSPACE": str(workspace),
                 "CLAW_SANDBOX_CONTAINER_WORKSPACE": "/workspace",
                 "CLAW_ENABLE_CGROUP": "1",
+                "CLAW_LAUNCH_MODE": "fork-exec",
                 "CLAW_LAUNCH_DEBUG": "1",
                 # Prepend conda paths so the agent finds pip/python from the
                 # task image's conda environment immediately, avoiding wasted
@@ -907,6 +909,7 @@ def _openclaw_env(
             "CLAW_SANDBOX_HOST_WORKSPACE": str(workspace) if workspace is not None else "",
             "CLAW_SANDBOX_CONTAINER_WORKSPACE": "/workspace",
             "CLAW_ENABLE_CGROUP": "1",
+            "CLAW_LAUNCH_MODE": "fork-exec",
             "CLAW_LAUNCH_DEBUG": "1",
         }
     )

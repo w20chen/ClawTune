@@ -391,3 +391,34 @@ or very short-lived commands where BPF events arrive after the time window.
   PowerShell in this Windows workspace because `npm.ps1` is blocked by the
   local execution policy. The equivalent `npm.cmd run build` command was run
   instead.
+
+## 2026-07-29 Host-Sandbox Launcher Regression Audit
+
+The pasted failing run was made after commit `51aa043` forced every launcher
+back through `_run_subprocess`. Its symptoms match that regression: managed
+exec calls became long-running OpenClaw process sessions, produced no command
+output, and all 12 finalized Stage-2 artifacts were invalid with zero mapped
+clauses. The separately downloaded flat export is from a different run: it has
+`agent_exit_code=0` and a non-empty patch, but it does not include the
+`tool-resource/` artifacts needed to audit eBPF eligibility.
+
+Host-openclaw-sandbox now explicitly selects `CLAW_LAUNCH_MODE=fork-exec`.
+The plugin forwards that variable into the Docker exec environment; other
+deployment modes retain the subprocess path with its cgroup, affinity, NUMA,
+and systemd-scope behavior. The forked payload reports the parent launcher and
+child identities separately, scrubs execution credentials before `execve`,
+forwards cancellation signals, and reports signal-derived shell exit status.
+The required host-sandbox audit now also fails when prediction envelopes are
+missing or when no latency/CPU/memory estimate becomes usable.
+
+Validation in this Windows workspace:
+
+- `cd packages/openclaw-plugin && npm.cmd test`: 62 passed, including the new
+  launcher-mode environment forwarding assertion.
+- `git diff --check`: passed.
+- Python unit tests could not run because this execution environment exposes
+  only the non-functional Windows Store `python.exe` alias and has no Python
+  interpreter on `PATH`.
+- The live `host-openclaw-sandbox` acceptance command could not run here
+  because it requires the user's Linux host with Docker, cgroup v2, BCC/eBPF
+  privileges, OpenClaw, and the configured upstream LLM credentials.

@@ -49,7 +49,20 @@ def main() -> None:
 
 
 def run_execution(endpoint: str, execution_id: str, token: str) -> int:
-    """Claim an execution and run it through the instrumented launcher path."""
+    """Claim and run one execution using the configured launcher strategy.
+
+    The OpenClaw Docker sandbox needs the payload to be a direct child that
+    replaces itself with the requested shell command. Keeping that behavior
+    opt-in preserves the richer local-host cgroup/placement path for normal
+    Linux installations while making the benchmark sandbox deterministic.
+    """
+    mode = os.environ.get("CLAW_LAUNCH_MODE", "subprocess").strip().lower()
+    if mode == "fork-exec":
+        if not (_supports_posix_controls() and hasattr(os, "fork")):
+            raise RuntimeError("CLAW_LAUNCH_MODE=fork-exec requires POSIX os.fork")
+        return _run_forkexec(endpoint, execution_id, token)
+    if mode != "subprocess":
+        raise ValueError(f"unsupported CLAW_LAUNCH_MODE: {mode!r}")
     return _run_subprocess(endpoint, execution_id, token)
 
 
@@ -71,21 +84,47 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
         try:
             if cwd:
                 os.chdir(cwd)
-        except OSError:
-            pass
-        _post_started(
-            endpoint, execution_id=execution_id, update_token=update_token,
-            launcher_pid=os.getpid(), child_pid=os.getpid(),
-            cgroup_path=None, host_cgroup_gate=False,
-        )
-        os.execv("/bin/sh", ["/bin/sh", "-c", command])
+            child_pid = os.getpid()
+            started_response = _post_started(
+                endpoint,
+                execution_id=execution_id,
+                update_token=update_token,
+                launcher_pid=launcher_pid,
+                child_pid=child_pid,
+                cgroup_path=None,
+                host_cgroup_gate=False,
+            )
+            if started_response.get("stored") is not True:
+                raise RuntimeError(
+                    "sidecar did not acknowledge the forked execution start"
+                )
+            os.execve(
+                "/bin/sh",
+                ["/bin/sh", "-c", command],
+                _payload_environment(),
+            )
+        except BaseException as exc:
+            if _env_enabled("CLAW_LAUNCH_DEBUG"):
+                print(
+                    "claw-launch child debug: "
+                    f"{type(exc).__name__}: {_redact_debug_message(str(exc))}",
+                    file=sys.stderr,
+                )
         os._exit(126)
 
     # ── Parent: wait for child, report exit status ─────────────────
+    restore_signal_handlers = _install_fork_signal_forwarders(pid)
     try:
-        _, status = os.waitpid(pid, 0)
+        while True:
+            try:
+                _, status = os.waitpid(pid, 0)
+                break
+            except InterruptedError:
+                continue
     except OSError:
         return 1
+    finally:
+        restore_signal_handlers()
     if os.WIFEXITED(status):
         exit_code = os.WEXITSTATUS(status)
         term_signal = None
@@ -99,7 +138,35 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
         endpoint, f"/v2/executions/{execution_id}/exited",
         {"update_token": update_token, "exit_code": exit_code, "signal": term_signal},
     )
-    return exit_code if exit_code is not None else 1
+    return exit_code if exit_code is not None else _shell_exit_code(-int(term_signal or 1))
+
+
+def _install_fork_signal_forwarders(child_pid: int) -> Callable[[], None]:
+    """Forward launcher cancellation to a forked payload and return cleanup."""
+
+    previous: dict[int, Any] = {}
+
+    def forward(signum: int, _frame: Any) -> None:
+        try:
+            os.kill(child_pid, signum)
+        except OSError:
+            pass
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        try:
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, forward)
+        except (OSError, ValueError):
+            continue
+
+    def restore() -> None:
+        for signum, handler in previous.items():
+            try:
+                signal.signal(signum, handler)
+            except (OSError, ValueError):
+                pass
+
+    return restore
 
 
 def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:

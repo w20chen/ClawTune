@@ -699,6 +699,23 @@ def _required_telemetry_error(
             "required Stage-2 clause status is incomplete: "
             f"{clauses_with_status}/{clause_count} mapped clauses"
         )
+    if config.runtime.mode == "host-openclaw-sandbox":
+        prediction_spans = int(
+            resources.get("tool_resource_prediction_span_starts", 0)
+        )
+        if prediction_spans != tool_spans:
+            return (
+                "required tool-resource prediction coverage is incomplete: "
+                f"{prediction_spans}/{tool_spans} tool calls"
+            )
+        available_predictions = int(
+            resources.get("tool_resource_prediction_available_span_starts", 0)
+        )
+        if available_predictions == 0:
+            return (
+                "required tool-resource prediction produced no usable "
+                "latency/CPU/memory estimate"
+            )
     return None
 
 

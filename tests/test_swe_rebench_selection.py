@@ -651,6 +651,7 @@ def test_host_sandbox_openclaw_config_uses_only_public_top_level_keys(tmp_path: 
     assert parsed["env"]["CLAW_SANDBOX_HOST_WORKSPACE"] == str(tmp_path / "workspace")
     assert parsed["env"]["CLAW_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
     assert parsed["env"]["CLAW_ENABLE_CGROUP"] == "1"
+    assert parsed["env"]["CLAW_LAUNCH_MODE"] == "fork-exec"
 
 
 def test_host_sandbox_openclaw_config_passes_docker_platform(tmp_path: Path) -> None:
@@ -744,6 +745,7 @@ def test_host_sandbox_openclaw_env_points_workspace_dir_at_task_workspace(
     assert env["CLAW_SANDBOX_HOST_WORKSPACE"] == str(workspace)
     assert env["CLAW_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
     assert env["CLAW_ENABLE_CGROUP"] == "1"
+    assert env["CLAW_LAUNCH_MODE"] == "fork-exec"
     assert "OPENCLAW_AGENT_SCHEDULER_TRACE_DIR" not in env
     assert "OPENCLAW_GATEWAY_TOKEN" not in env
     assert "OPENCLAW_GATEWAY_PASSWORD" not in env

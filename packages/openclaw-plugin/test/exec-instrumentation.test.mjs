@@ -148,6 +148,7 @@ test("exec instrumentation forwards launcher cgroup environment", async () => {
     "CLAW_CGROUP_ROOT",
     "CLAW_CGROUP_REQUIRED",
     "CLAW_CGROUP_DEBUG",
+    "CLAW_LAUNCH_MODE",
     "CLAW_LAUNCH_DEBUG",
     "CLAW_SCHEDULER_ENDPOINT",
     "CLAW_SANDBOX_CONTAINER_ID",
@@ -157,6 +158,7 @@ test("exec instrumentation forwards launcher cgroup environment", async () => {
   process.env.CLAW_CGROUP_ROOT = "/sys/fs/cgroup/claw";
   process.env.CLAW_CGROUP_REQUIRED = "1";
   process.env.CLAW_CGROUP_DEBUG = "1";
+  process.env.CLAW_LAUNCH_MODE = "fork-exec";
   process.env.CLAW_LAUNCH_DEBUG = "1";
   process.env.CLAW_SCHEDULER_ENDPOINT = "http://host.docker.internal:8765";
   process.env.CLAW_SANDBOX_CONTAINER_ID = "5a423f3b2078";
@@ -174,6 +176,7 @@ test("exec instrumentation forwards launcher cgroup environment", async () => {
     assert.equal(result.params.env.CLAW_CGROUP_ROOT, "/sys/fs/cgroup/claw");
     assert.equal(result.params.env.CLAW_CGROUP_REQUIRED, "1");
     assert.equal(result.params.env.CLAW_CGROUP_DEBUG, "1");
+    assert.equal(result.params.env.CLAW_LAUNCH_MODE, "fork-exec");
     assert.equal(result.params.env.CLAW_LAUNCH_DEBUG, "1");
     assert.equal(result.params.env.CLAW_SCHEDULER_ENDPOINT, "http://host.docker.internal:8765");
     assert.equal(result.params.env.CLAW_SANDBOX_CONTAINER_ID, "5a423f3b2078");

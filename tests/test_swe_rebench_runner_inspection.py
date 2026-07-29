@@ -271,6 +271,8 @@ def test_required_telemetry_audits_all_tool_samples_and_async_artifacts(tmp_path
             "resource_sampled_tool_span_ends": 2,
             "cgroup_sampled_tool_span_ends": 2,
             "launcher_stage2_expected_span_ends": 1,
+            "tool_resource_prediction_span_starts": 2,
+            "tool_resource_prediction_available_span_starts": 1,
         },
         "tool_resource_artifacts": artifact_report,
     }
@@ -288,6 +290,44 @@ def test_required_telemetry_audits_all_tool_samples_and_async_artifacts(tmp_path
     result["resource_summary"]["launcher_stage2_expected_span_ends"] = 1
     result["resource_summary"]["resource_sampled_tool_span_ends"] = 1
     assert "sampled 1/2" in (_required_telemetry_error(config, result) or "")
+
+
+def test_host_sandbox_required_telemetry_requires_predictions(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "runtime:\n  mode: host-openclaw-sandbox\n  stage2_required: true\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    resources = {
+        "tool_span_ends": 1,
+        "resource_sampled_tool_span_ends": 1,
+        "launcher_tool_span_ends": 1,
+        "launcher_cgroup_tool_span_ends": 1,
+        "launcher_stage2_expected_span_ends": 1,
+        "tool_resource_prediction_span_starts": 0,
+        "tool_resource_prediction_available_span_starts": 0,
+    }
+    artifacts = {
+        "artifact_count": 1,
+        "healthy_artifact_count": 1,
+        "call_count": 1,
+        "ok_call_count": 1,
+        "clause_count": 1,
+        "clauses_with_status": 1,
+    }
+    result = {
+        "resource_summary": resources,
+        "tool_resource_artifacts": artifacts,
+    }
+
+    assert "prediction coverage is incomplete" in (
+        _required_telemetry_error(config, result) or ""
+    )
+    resources["tool_resource_prediction_span_starts"] = 1
+    assert "produced no usable" in (_required_telemetry_error(config, result) or "")
+    resources["tool_resource_prediction_available_span_starts"] = 1
+    assert _required_telemetry_error(config, result) is None
 
 
 def test_container_mode_honors_explicit_stage2_requirement(tmp_path):

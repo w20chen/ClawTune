@@ -15,6 +15,35 @@ class _FakeChild:
         return 7
 
 
+def test_launcher_selects_explicit_fork_exec_mode(monkeypatch) -> None:
+    monkeypatch.setenv("CLAW_LAUNCH_MODE", "fork-exec")
+    monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
+    monkeypatch.setattr(launcher.os, "fork", lambda: 123, raising=False)
+    monkeypatch.setattr(launcher, "_run_forkexec", lambda *_args: 19)
+    monkeypatch.setattr(
+        launcher,
+        "_run_subprocess",
+        lambda *_args: pytest.fail("subprocess launcher must not be selected"),
+    )
+
+    assert launcher.run_execution("http://sidecar", "exec-1", "token-1") == 19
+
+
+def test_launcher_rejects_fork_exec_mode_without_posix_fork(monkeypatch) -> None:
+    monkeypatch.setenv("CLAW_LAUNCH_MODE", "fork-exec")
+    monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: False)
+
+    with pytest.raises(RuntimeError, match="requires POSIX os.fork"):
+        launcher.run_execution("http://sidecar", "exec-1", "token-1")
+
+
+def test_launcher_rejects_unknown_mode(monkeypatch) -> None:
+    monkeypatch.setenv("CLAW_LAUNCH_MODE", "mystery")
+
+    with pytest.raises(ValueError, match="unsupported CLAW_LAUNCH_MODE"):
+        launcher.run_execution("http://sidecar", "exec-1", "token-1")
+
+
 def test_launcher_claims_starts_and_returns_child_exit_code(monkeypatch) -> None:
     posts: list[tuple[str, dict[str, Any]]] = []
 
