@@ -704,9 +704,9 @@ class ClauseResourceKB:
         prediction = None
         if parse_failed:
             reason = "parse_failed"
-        elif len(effective) != 1:
-            reason = "compound_command_uncomposed"
-        else:
+        elif len(effective) == 0:
+            reason = "empty_command"
+        elif len(effective) == 1:
             clause = effective[0]
             prediction = self.predict_clause_latency_bucket(
                 repo,
@@ -714,6 +714,34 @@ class ClauseResourceKB:
                 tuple(clause["argv"]),
                 buckets,
             )
+        else:
+            # Compound command: predict each clause and take the worst case.
+            clause_predictions: list[ClauseLatencyBucketPrediction] = []
+            for clause in effective:
+                try:
+                    cp = self.predict_clause_latency_bucket(
+                        repo,
+                        str(clause["bin"]),
+                        tuple(clause["argv"]),
+                        buckets,
+                    )
+                    clause_predictions.append(cp)
+                except (ValueError, KeyError):
+                    pass
+            if clause_predictions:
+                # Worst-case: take the highest bucket_id (longest latency)
+                # and the minimum evidence_count (most conservative).
+                worst = max(clause_predictions, key=lambda cp: cp.bucket_id)
+                prediction = ClauseLatencyBucketPrediction(
+                    bucket_id=worst.bucket_id,
+                    probability_by_bucket=worst.probability_by_bucket,
+                    scope=worst.scope,
+                    key_kind=f"compound({','.join(cp.key_kind or '?' for cp in clause_predictions)})",
+                    evidence_count=min(cp.evidence_count for cp in clause_predictions),
+                    fallback_path=worst.fallback_path,
+                )
+            else:
+                reason = "compound_command_uncomposed"
         return CommandLatencyBucketPrediction(
             repo=repo,
             command=command,
