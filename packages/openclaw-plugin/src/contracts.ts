@@ -125,6 +125,8 @@ export type ToolResourceCommandPrediction = {
   clause_predictions: ToolResourceClausePredictionOutcome[];
   prediction: ToolResourceClausePrediction | null;
   unavailable_reason: string | null;
+  continuous_predictions?: Record<string, ToolResourceContinuousPrediction> | null;
+  prediction_algorithms?: ToolResourcePredictionAlgorithms | null;
 };
 
 export type ToolResourceClausePredictionOutcome = {
@@ -149,6 +151,31 @@ export type ToolResourceClausePrediction = {
   key_kind: string;
   evidence_count: number;
   fallback_path: string[];
+};
+
+export type ToolResourceContinuousPrediction = {
+  target: string;
+  conditional_p90: number | null;
+  scope: string | null;
+  key_kind: string | null;
+  evidence_count: number;
+  fallback_path: string[];
+  note: string | null;
+};
+
+export type ToolResourcePredictionAlgorithms = {
+  enabled?: Array<{
+    name?: string;
+    family?: string;
+    source?: string;
+    targets?: string[];
+    outputs?: string[];
+  }>;
+  excluded?: Array<{
+    name?: string;
+    source?: string;
+    reason?: string;
+  }>;
 };
 
 export type ToolCompletedEvent = CommonEvent & {

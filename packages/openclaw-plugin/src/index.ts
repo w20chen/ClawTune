@@ -4,7 +4,7 @@ import {readFileSync} from "node:fs";
 import {SidecarClient} from "./client.js";
 import {loadConfig, isRecord} from "./config.js";
 import {CorrelationMap} from "./correlation.js";
-import type {CommonEvent, ModelEvent, PluginConfig, ToolBeforeRequest, ToolCompletedEvent} from "./contracts.js";
+import type {CommonEvent, ModelEvent, PluginConfig, ToolBeforeRequest, ToolCompletedEvent, ToolDecision} from "./contracts.js";
 import type {ResourceScope} from "./contracts.js";
 import {buildTrustedResourceScope, instrumentExecParams} from "./exec-instrumentation.js";
 import type {InstrumentResult} from "./exec-instrumentation.js";
@@ -214,6 +214,119 @@ export default definePluginEntry({
   function truncateStr(s: string, maxLen: number): string {
     if (s.length <= maxLen) return s;
     return s.slice(0, maxLen) + `...<truncated ${s.length - maxLen} chars>`;
+  }
+
+  function formatMs(ms: number | null | undefined): string {
+    if (ms === null || ms === undefined || !Number.isFinite(ms)) return "?";
+    if (ms < 1000) return `${Math.round(ms)}ms`;
+    return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
+  }
+
+  function formatNumber(value: unknown, digits = 2): string {
+    return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "?";
+  }
+
+  function formatProbabilityList(values: unknown): string | null {
+    if (!Array.isArray(values) || values.length === 0) return null;
+    return values
+      .map((value, index) => `b${index}=${formatNumber(value, 2)}`)
+      .join(",");
+  }
+
+  function formatPredictionSource(value: unknown): string {
+    if (!isRecord(value)) return "no evidence";
+    const rec = value as Record<string, unknown>;
+    const scope = typeof rec.scope === "string" ? rec.scope : "?";
+    const keyKind = typeof rec.key_kind === "string" ? rec.key_kind : "?";
+    const evidence = typeof rec.evidence_count === "number" ? rec.evidence_count : 0;
+    return `${scope}/${keyKind} n=${evidence}`;
+  }
+
+  function continuousPredictionSummary(prediction: unknown, label: string, unit: string): string {
+    if (!isRecord(prediction)) return `${label}=?`;
+    const rec = prediction as Record<string, unknown>;
+    const p90 = rec.conditional_p90;
+    const note = typeof rec.note === "string" && rec.note ? ` note=${rec.note}` : "";
+    const source = formatPredictionSource(rec);
+    if (typeof p90 !== "number" || !Number.isFinite(p90)) {
+      return `${label}=unavailable (${source}${note})`;
+    }
+    const value = unit === "ms" ? formatMs(p90) : `${formatNumber(p90, unit === "cores" ? 2 : 1)}${unit}`;
+    return `${label}_p90=${value} (${source}${note})`;
+  }
+
+  function summarizePrediction(decision: ToolDecision): string {
+    const prediction = decision.prediction;
+    const parts = [
+      `time p50=${formatMs(prediction.duration_p50_ms)} p90=${formatMs(prediction.duration_p90_ms)}`,
+      `class=${prediction.resource_class}`,
+    ];
+    if (prediction.confidence !== null && prediction.confidence !== undefined) {
+      parts.push(`confidence=${formatNumber(prediction.confidence, 2)}`);
+    }
+    const toolResource = prediction.tool_resource;
+    if (toolResource) {
+      if (toolResource.prediction) {
+        const probabilities = formatProbabilityList(toolResource.prediction.probability_by_bucket);
+        parts.push(
+          `bucket=${toolResource.prediction.bucket_id} (${formatPredictionSource(toolResource.prediction)}${probabilities ? ` probs=${probabilities}` : ""})`
+        );
+      } else {
+        parts.push(`bucket=unavailable (${toolResource.unavailable_reason ?? "unknown"})`);
+      }
+      const continuous = toolResource.continuous_predictions ?? {};
+      parts.push(continuousPredictionSummary(continuous.latency_ms, "runtime_latency", "ms"));
+      parts.push(continuousPredictionSummary(continuous.peak_cpu_cores, "cpu", "cores"));
+      parts.push(continuousPredictionSummary(continuous.peak_memory_mb, "mem", "MB"));
+      const enabled = toolResource.prediction_algorithms?.enabled
+        ?.map((item) => item.name)
+        .filter((name): name is string => typeof name === "string" && name.length > 0);
+      if (enabled && enabled.length > 0) {
+        parts.push(`algorithms=${enabled.join("+")}`);
+      }
+    }
+    return parts.join("; ");
+  }
+
+  function summarizeObservedTelemetry(telemetry: unknown): string | null {
+    if (!isRecord(telemetry)) return null;
+    const rec = telemetry as Record<string, unknown>;
+    const status = typeof rec.status === "string" ? rec.status : "unknown";
+    const reason = typeof rec.unavailable_reason === "string" && rec.unavailable_reason
+      ? ` reason=${rec.unavailable_reason}`
+      : "";
+    const call = rec.call_telemetry;
+    if (!isRecord(call)) {
+      return `status=${status}${reason}`;
+    }
+    const clauses = (call as Record<string, unknown>).clauses;
+    if (!Array.isArray(clauses) || clauses.length === 0) {
+      return `status=${status}${reason}`;
+    }
+    let latencyMs = 0;
+    let hasLatency = false;
+    let peakCpu: number | null = null;
+    let peakMem: number | null = null;
+    for (const clause of clauses) {
+      if (!isRecord(clause)) continue;
+      const row = clause as Record<string, unknown>;
+      if (typeof row.latency_ms === "number" && Number.isFinite(row.latency_ms)) {
+        latencyMs += row.latency_ms;
+        hasLatency = true;
+      }
+      if (typeof row.peak_cpu_cores === "number" && Number.isFinite(row.peak_cpu_cores)) {
+        peakCpu = peakCpu === null ? row.peak_cpu_cores : Math.max(peakCpu, row.peak_cpu_cores);
+      }
+      if (typeof row.peak_memory_mb === "number" && Number.isFinite(row.peak_memory_mb)) {
+        peakMem = peakMem === null ? row.peak_memory_mb : Math.max(peakMem, row.peak_memory_mb);
+      }
+    }
+    const parts = [`status=${status}`];
+    if (hasLatency) parts.push(`latency=${formatMs(latencyMs)}`);
+    if (peakCpu !== null) parts.push(`cpu_peak=${formatNumber(peakCpu, 2)}cores`);
+    if (peakMem !== null) parts.push(`mem_peak=${formatNumber(peakMem, 1)}MB`);
+    if (reason) parts.push(reason.trim());
+    return parts.join("; ");
   }
 
   function summarizeMessages(messages: unknown): string {
@@ -453,6 +566,7 @@ export default definePluginEntry({
     payload.resource_scope = buildTrustedResourceScope(event, context) ?? buildRuntimeResourceScope(toolName);
     try {
       const decision = await client.decide(payload);
+      consoleVerbose(`prediction ${summarizePrediction(decision)}`);
       if (config.mode === "enforce" && decision.action === "block") {
         return {
           block: true,
@@ -565,6 +679,10 @@ export default definePluginEntry({
     const statusStr = completion.succeeded ? "ok" : (completion.error_type ?? "failed");
     const resultStr = summarizeToolResult(event);
     consoleVerbose(`■ ${toolName} done (${durMs}ms) ${statusStr}${exitStr}${resultStr ? ` | ${resultStr}` : ""}`);
+    const observedSummary = summarizeObservedTelemetry(toolResourceTelemetry);
+    if (observedSummary !== null) {
+      consoleVerbose(`observed ${observedSummary}`);
+    }
 
     let statusCode: StatusCode = "unknown";
     if (toolSucceeded) {
