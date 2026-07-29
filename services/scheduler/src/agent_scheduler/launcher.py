@@ -29,8 +29,13 @@ def main() -> None:
         or os.environ.get("OPENCLAW_SCHEDULER_ENDPOINT")
         or "http://127.0.0.1:8765",
     )
+    sub.add_parser("diagnose")
     args = parser.parse_args()
 
+    if args.command_name == "diagnose":
+        diagnostics = launcher_diagnostics()
+        print(json.dumps(diagnostics, sort_keys=True))
+        raise SystemExit(0 if diagnostics["ready"] else 2)
     if args.command_name == "run":
         token = os.environ.pop("CLAW_EXECUTION_TOKEN", None) or args.token
         if not token:
@@ -56,7 +61,7 @@ def run_execution(endpoint: str, execution_id: str, token: str) -> int:
     opt-in preserves the richer local-host cgroup/placement path for normal
     Linux installations while making the benchmark sandbox deterministic.
     """
-    mode = os.environ.get("CLAW_LAUNCH_MODE", "subprocess").strip().lower()
+    mode = _selected_launch_mode()
     if mode == "fork-exec":
         if not (_supports_posix_controls() and hasattr(os, "fork")):
             raise RuntimeError("CLAW_LAUNCH_MODE=fork-exec requires POSIX os.fork")
@@ -64,6 +69,20 @@ def run_execution(endpoint: str, execution_id: str, token: str) -> int:
     if mode != "subprocess":
         raise ValueError(f"unsupported CLAW_LAUNCH_MODE: {mode!r}")
     return _run_subprocess(endpoint, execution_id, token)
+
+
+def _selected_launch_mode() -> str:
+    return os.environ.get("CLAW_LAUNCH_MODE", "subprocess").strip().lower()
+
+
+def launcher_diagnostics() -> dict[str, Any]:
+    mode = _selected_launch_mode()
+    fork_supported = _supports_posix_controls() and hasattr(os, "fork")
+    return {
+        "mode": mode,
+        "fork_supported": fork_supported,
+        "ready": mode == "subprocess" or (mode == "fork-exec" and fork_supported),
+    }
 
 
 def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:

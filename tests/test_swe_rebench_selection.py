@@ -799,10 +799,11 @@ def test_host_sandbox_verifies_mounted_launcher_before_agent(
     command = calls[0][0]
     assert command[:5] == ["/usr/bin/docker", "run", "--rm", "--platform", "linux/amd64"]
     assert command[command.index("--network") + 1] == "none"
+    assert command[command.index("--env") + 1] == "CLAW_LAUNCH_MODE=fork-exec"
     assert command[command.index("--user") + 1] == "65534:65534"
     assert command[command.index("--entrypoint") + 1] == "/bin/sh"
     assert command[-2] == "/workspace/.claw/bin/claw-launch"
-    assert command[-1] == "--help"
+    assert command[-1] == "diagnose"
 
 
 def test_host_sandbox_exports_testbed_with_docker_platform(monkeypatch, tmp_path: Path) -> None:

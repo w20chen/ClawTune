@@ -14,6 +14,7 @@ from tool_resource.telemetry import (
     _clauses_and_lineage,
     _command_tree_provenance,
     _isolate_call_events,
+    _observed_container_cgroup_ids,
     _runtime_response_exit_code,
     _syscall_symbol_candidates,
     shell_command_lookup_failure_evidence,
@@ -277,6 +278,31 @@ def test_container_pid_set_uses_pid_namespace_when_cgroup_mismatches() -> None:
 
     assert 42 in pids
     assert 99 not in pids
+
+
+def test_dynamic_cgroup_discovery_rejects_unrelated_exec_boundaries() -> None:
+    events = [
+        {
+            "type": "exec_boundary",
+            "cgroup_id": 101,
+            "pid_namespace_inode": 777,
+            "host_pid": 42,
+        },
+        {
+            "type": "exec_boundary",
+            "cgroup_id": 202,
+            "pid_namespace_inode": 1,
+            "host_pid": 99,
+        },
+        {
+            "type": "exec_boundary",
+            "cgroup_id": 303,
+            "pid_namespace_inode": 0,
+            "host_pid": 123,
+        },
+    ]
+
+    assert _observed_container_cgroup_ids(events, {123}, {777}) == {101, 303}
 
 
 def _shell_tree(

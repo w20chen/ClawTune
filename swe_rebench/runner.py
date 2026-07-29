@@ -465,6 +465,7 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
         "ok_call_count": 0,
         "invalid_call_count": 0,
         "unavailable_call_count": 0,
+        "invalid_reason_counts": {},
         "clause_count": 0,
         "clauses_with_status": 0,
         "no_runtime_exec_count": 0,
@@ -517,6 +518,18 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
                 report["invalid_call_count"] += 1
             else:
                 report["unavailable_call_count"] += 1
+            invalid_reasons = call.get("invalid_reasons")
+            if isinstance(invalid_reasons, list):
+                for reason in invalid_reasons:
+                    if not isinstance(reason, dict):
+                        continue
+                    kind = str(reason.get("kind") or "unknown")
+                    _increment_count(report["invalid_reason_counts"], kind)
+                    detail = reason.get("detail")
+                    if quality != "ok" and isinstance(detail, str) and detail:
+                        report["warnings"].append(
+                            f"{path.name}: {kind}: {detail}"
+                        )
             clauses = call.get("clauses")
             if isinstance(clauses, list):
                 for clause in clauses:

@@ -422,3 +422,43 @@ Validation in this Windows workspace:
 - The live `host-openclaw-sandbox` acceptance command could not run here
   because it requires the user's Linux host with Docker, cgroup v2, BCC/eBPF
   privileges, OpenClaw, and the configured upstream LLM credentials.
+
+### Follow-up run at 09:03 UTC
+
+The next pasted Linux run still did not enter the fork lifecycle. All four
+managed executions reached `/v2/executions/claim`, but the sidecar log contains
+no `/started` or `/exited` request. The eBPF diagnostic consequently reported
+`matched=0`; all four calls had zero mapped clauses and produced unhealthy
+artifacts. Prediction envelopes were present for all 17 tool calls and two
+continuous predictions were usable, so prediction integration was alive but
+could not receive new clause evidence.
+
+The configured `CLAW_LAUNCH_MODE` is now forwarded by the plugin and the
+launcher exposes a `diagnose` command. Host-sandbox preflight executes that
+command inside the mounted task image with `CLAW_LAUNCH_MODE=fork-exec`; a
+stale bundle, unsupported platform, missing `os.fork`, or wrong mode now stops
+before the model run. Artifact inspection also reports aggregated
+`invalid_reason_counts` and the underlying invalid-reason details.
+
+The supplied Windows directory
+`C:\Users\user\Desktop\0b01001001__spectree-64` was empty at inspection time,
+so the four Stage-2 JSON files referenced by the pasted report were not
+available for a deeper offline audit.
+
+The directory was subsequently populated and confirmed both findings. The
+copied plugin source/dist contains no `CLAW_LAUNCH_MODE`, and
+`launcher-preflight.log` exposes only the old `{run}` command, proving this run
+predates the mode-forwarding and `diagnose` changes. All four collectors were
+kernel-healthy (`cleanup=ok`, active before close, zero unavailable calls, and
+tens of thousands of kprobe hits), but every call failed analysis with
+`disconnected_command_trees`. The artifacts contain dozens to hundreds of
+unrelated host roots because the fallback added every system-wide exec
+boundary's cgroup merely for overlapping the tool window.
+
+Dynamic cgroup discovery now accepts a cgroup only when an event is tied to an
+already authenticated/container PID (including the launcher trusted root) or
+the container PID namespace. A pure unit test ensures unrelated exec
+boundaries are rejected. This makes a missing `/started` lifecycle fail as
+missing target evidence instead of contaminating telemetry with host process
+trees; the fork-mode preflight prevents that state in the maintained
+host-sandbox route.

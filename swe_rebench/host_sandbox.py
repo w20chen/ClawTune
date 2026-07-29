@@ -241,6 +241,8 @@ def _verify_sandbox_launcher(trace_dir: Path, workspace: Path, platform: str = "
                 *_docker_platform_args(platform),
                 "--network",
                 "none",
+                "--env",
+                "CLAW_LAUNCH_MODE=fork-exec",
                 "--user",
                 "65534:65534",
                 "--mount",
@@ -251,7 +253,7 @@ def _verify_sandbox_launcher(trace_dir: Path, workspace: Path, platform: str = "
                 "/bin/sh",
                 "openclaw-sandbox:bookworm-slim",
                 "/workspace/.claw/bin/claw-launch",
-                "--help",
+                "diagnose",
             ],
             stdout=log,
             stderr=log,
@@ -260,7 +262,8 @@ def _verify_sandbox_launcher(trace_dir: Path, workspace: Path, platform: str = "
     if result.returncode != 0:
         raise RuntimeError(
             "sandbox_launcher_preflight_failed: the mounted claw-launch must "
-            f"be readable and executable by the sandbox: {_tail_text(log_path, 2000)}"
+            "be readable and select a supported fork-exec runtime in the "
+            f"sandbox: {_tail_text(log_path, 2000)}"
         )
 
 

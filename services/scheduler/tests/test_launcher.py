@@ -44,6 +44,35 @@ def test_launcher_rejects_unknown_mode(monkeypatch) -> None:
         launcher.run_execution("http://sidecar", "exec-1", "token-1")
 
 
+def test_launcher_diagnostics_confirms_fork_exec_support(monkeypatch) -> None:
+    monkeypatch.setenv("CLAW_LAUNCH_MODE", "fork-exec")
+    monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
+    monkeypatch.setattr(launcher.os, "fork", lambda: 123, raising=False)
+
+    assert launcher.launcher_diagnostics() == {
+        "mode": "fork-exec",
+        "fork_supported": True,
+        "ready": True,
+    }
+
+
+def test_launcher_diagnose_command_reports_selected_mode(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(
+        launcher,
+        "launcher_diagnostics",
+        lambda: {"mode": "fork-exec", "fork_supported": True, "ready": True},
+    )
+    monkeypatch.setattr("sys.argv", ["claw-launch", "diagnose"])
+
+    with pytest.raises(SystemExit) as exc:
+        launcher.main()
+
+    assert exc.value.code == 0
+    assert '"mode": "fork-exec"' in capsys.readouterr().out
+
+
 def test_launcher_claims_starts_and_returns_child_exit_code(monkeypatch) -> None:
     posts: list[tuple[str, dict[str, Any]]] = []
 

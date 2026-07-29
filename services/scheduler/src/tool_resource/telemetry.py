@@ -2971,6 +2971,35 @@ def _container_pid_set(
     return pids
 
 
+def _observed_container_cgroup_ids(
+    events: Sequence[Mapping[str, Any]],
+    container_pids: set[int],
+    pid_namespace_inodes: set[int],
+) -> set[int]:
+    """Return cgroups supported by container identity, never window timing alone.
+
+    Stage-2 attaches system-wide probes. An exec boundary merely occurring
+    during a tool window is therefore not evidence that its cgroup belongs to
+    the sandbox. Accept only events tied to an already authenticated PID or
+    the container PID namespace; the launcher-bound trusted root is added to
+    ``container_pids`` by the caller before this function runs.
+    """
+
+    discovered: set[int] = set()
+    for event in events:
+        cgroup_id = int(event.get("cgroup_id", 0) or 0)
+        if cgroup_id <= 0:
+            continue
+        host_pid = int(event.get("host_pid", 0) or 0)
+        pid_namespace_inode = int(event.get("pid_namespace_inode", 0) or 0)
+        if host_pid in container_pids or (
+            pid_namespace_inodes
+            and pid_namespace_inode in pid_namespace_inodes
+        ):
+            discovered.add(cgroup_id)
+    return discovered
+
+
 def _event_row(table: Any, data: int) -> dict[str, Any]:
     event = table.event(data)
     row = {
@@ -3522,34 +3551,14 @@ class ClauseTelemetryCollector:
                 # calls can match these cgroups without relying solely on
                 # the static _discover_leaf_cgroup_inodes scan.
                 #
-                # Strategy 1: events whose host_pid is already in container_pids.
-                _dynamic_cgroups: set[int] = set()
-                for _e in self._events:
-                    _pid = _e.get("host_pid", 0)
-                    _cg = _e.get("cgroup_id", 0)
-                    if _pid > 0 and _pid in container_pids and _cg > 0:
-                        _dynamic_cgroups.add(_cg)
-                # Strategy 2: events whose pid_namespace_inode matches the
-                # container's (authoritative when available, catches events
-                # whose cgroup is not yet tracked).
-                if self.pid_namespace_inodes:
-                    for _e in self._events:
-                        _cg = _e.get("cgroup_id", 0)
-                        _ns = _e.get("pid_namespace_inode", 0)
-                        if _cg > 0 and _ns in self.pid_namespace_inodes:
-                            _dynamic_cgroups.add(_cg)
-                # Strategy 3: collect ALL cgroup IDs from exec_boundary events
-                # in the current time window.  This is a safe heuristic
-                # because exec events captured during an active tool call
-                # window are overwhelmingly from the target container.
-                # Strategy 1+2 fail when pid_namespace_inode is 0 (common
-                # at exec return time due to BPF probe limitations).
-                for _e in self._events:
-                    if _e.get("type") != "exec_boundary":
-                        continue
-                    _cg = _e.get("cgroup_id", 0)
-                    if _cg > 0:
-                        _dynamic_cgroups.add(_cg)
+                # Identity must come from an authenticated/root-descendant PID
+                # or the container PID namespace. Window overlap alone is not
+                # sufficient because these probes are attached system-wide.
+                _dynamic_cgroups = _observed_container_cgroup_ids(
+                    self._events,
+                    container_pids,
+                    self.pid_namespace_inodes,
+                )
                 if _dynamic_cgroups - self.cgroup_inodes:
                     self.cgroup_inodes |= _dynamic_cgroups
                     # Persist newly discovered cgroups for the next
