@@ -3238,21 +3238,26 @@ class ClauseTelemetryCollector:
                 import sys as _sys
                 _all_types: dict[str, int] = {}
                 _exec_pids: set[int] = set()
+                _exec_cgroups: dict[int, int] = {}
                 for _e in self._events:
                     _t = _e.get("type", "?")
                     _all_types[_t] = _all_types.get(_t, 0) + 1
                     if _t == "exec_boundary":
-                        _exec_pids.add(_e.get("host_pid", 0))
+                        _pid = _e.get("host_pid", 0)
+                        _cg = _e.get("cgroup_id", 0)
+                        _exec_pids.add(_pid)
+                        _exec_cgroups[_cg] = _exec_cgroups.get(_cg, 0) + 1
+                _matched = sum(
+                    1 for _p in _exec_pids if _p in container_pids
+                )
                 print(
                     f"[telemetry:diag] call={token.tool_call_id} "
-                    f"total_events={len(self._events)} "
-                    f"cgroup_inodes={sorted(self.cgroup_inodes)} "
-                    f"init_pid={self.init_pid} "
                     f"container_pids={sorted(container_pids)} "
-                    f"event_types={_all_types} "
-                    f"exec_pids={sorted(_exec_pids)} "
-                    f"window=[{token.started_ns}, {ended_ns}] "
-                    f"cgroup_inodes_count={len(self.cgroup_inodes)}",
+                    f"exec_pids_count={len(_exec_pids)} "
+                    f"exec_pids_matched={_matched} "
+                    f"exec_cgroup_dist={sorted(_exec_cgroups.items())} "
+                    f"cgroup_inodes={sorted(self.cgroup_inodes)} "
+                    f"total_events={len(self._events)}",
                     file=_sys.stderr,
                 )
                 # --- end diagnostic ---
