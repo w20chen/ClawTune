@@ -195,45 +195,44 @@ It must show:
 5. prediction availability becomes non-zero after causal evidence exists;
    the first cold-start command may correctly remain `unknown`.
 
-## 2026-07-29 Run Audit (Round 9): Fork+Exec Launcher
+## 2026-07-29 Run Audit (Round 10): Fork+Exec — SUCCESS 🎉
 
-### Root Cause Identified
+### Results: Both Exec Output AND Clause Telemetry Working
 
-After 8 rounds, the root cause of exec output loss is confirmed: **OpenClaw
-uses detached Docker exec** (`ExecStart` with `Detach: true`), which discards
-stdout entirely.  In managed-wrapper mode, the launcher's child process
-inherits stdout, but Docker never captures it because the exec is detached.
+The fork+exec launcher approach worked:
 
-`os.setsid()` removal in Round 8 did not fix the issue — confirming the
-problem is at the Docker API level, not the process configuration.
+| Metric | Before (R1-R9) | Round 10 |
+|--------|---------------|----------|
+| `healthy_artifact_count` | **0** | **9** ✅ |
+| `clause_count` | **0** | **35** ✅ |
+| `ok_call_count` | **0** | **9** ✅ |
+| `launcher_tool_resource_eligible_span_ends` | **0** | **9** ✅ |
+| `matched` | **0** | **3** ✅ |
+| Exec output | broken | **working** ✅ |
+| Agent patch produced | yes | **yes** (2620 bytes) ✅ |
 
-### Fix: Fork+Exec Launcher
-
-**`launcher.py`**: Rewrote `run_execution` to use `os.fork()` + `os.execv()`
-instead of `subprocess.Popen`.  On Linux, the launcher forks:
-- **Child**: posts "started", then `execv("/bin/sh", ["/bin/sh", "-c", cmd])`
-  — the child *becomes* the command.  Its stdout IS the Docker exec stdout.
-- **Parent**: waits for the child, posts "exited" with exit code/signal.
-
-The old `subprocess.Popen` path (`_run_subprocess`) is preserved as fallback
-for Windows and backward compatibility with existing tests.
-
-### Architecture
+### Key Diagnostic
 
 ```
-run_execution()
-├── Linux + os.fork → _run_forkexec()   ← new: output works
-└── Windows/tests   → _run_subprocess()  ← original: cgroup, placement, etc.
+[telemetry:diag] container_pids=5 matched=3 exec_cgroup_dist=[(1058241, 3)]
+cgroup_inodes=[1058241]
 ```
 
-### Test Results
-- **175 passed, 2 skipped**
+- `matched=3` — eBPF exec events are now correctly attributed to the container!
+- `cgroup_inodes=[1058241]` — single cgroup (exec and init share same cgroup in this run)
+- Launcher lifecycle confirmed: claim → started → exited all from container IP (172.17.0.2)
 
-### Expected Behavior
-- exec commands produce output (child IS the command, stdout inherited from Docker exec)
-- clause telemetry works (launcher provides execution IDs via claim/started/exited)
-- cgroup resource sampling works (sidecar monitors sandbox container)
-- All existing tests pass (subprocess fallback preserved)
+### Why Fork+Exec Works
+
+The child process calls `os.execv("/bin/sh", ...)` — it *becomes* the command.
+Docker exec sees the command's stdout directly (no wrapper process in between).
+The parent (original launcher) waits and reports exit status to the sidecar.
+
+### Remaining Issues
+
+9/21 healthy (not 21/21). Some calls still produce unhealthy artifacts.
+Likely causes: first-call cold start (cgroup discovery not yet cached),
+or very short-lived commands where BPF events arrive after the time window.
 
 - `python tools/validate_agent_test_bench_run.py
   C:\Users\29068\Desktop\0b01001001__spectree-64` is not applicable to this

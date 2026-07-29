@@ -63,6 +63,8 @@ def run_host_sandbox_task(
         _ensure_openclaw_sandbox_image(task.image, trace_dir, config.docker.platform)
         _verify_sandbox_launcher(trace_dir, workspace, config.docker.platform)
 
+        _seed_runtime_tool_resource_kb(trace_dir, config)
+
         sidecar = _start_sidecar(
             trace_dir=trace_dir,
             port=sidecar_port,
@@ -363,6 +365,24 @@ def _start_sidecar(
     )
     _wait_ready(port)
     return process
+
+
+def _seed_runtime_tool_resource_kb(trace_dir: Path, config: RunnerConfig) -> None:
+    """Copy the repo's pre-seeded runtime KB to the per-task trace directory.
+
+    The RuntimeToolResourceKB predictor needs cold-start training data for
+    continuous p90 latency/CPU/memory estimates.  The repo ships a small
+    synthetic training snapshot.  Without it, all continuous predictions
+    return null with ``no continuous evidence for target``.
+    """
+    dest_dir = trace_dir / "tool-resource"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / "runtime-tool-resource-kb.json"
+    if dest.exists():
+        return
+    source = config.repo_root / "traces" / "tool-resource" / "runtime-tool-resource-kb.json"
+    if source.is_file():
+        shutil.copy2(source, dest)
 
 
 def _write_host_tool_resource_preflight(trace_dir: Path, config: RunnerConfig) -> None:
