@@ -2669,6 +2669,58 @@ def _discover_leaf_cgroup_inodes(cgroup: Path) -> set[int]:
     return inodes
 
 
+def _discover_cgroup_inodes_from_proc(init_pid: int) -> set[int]:
+    """Discover container cgroup inodes by scanning /proc for processes.
+
+    This is more reliable than directory scanning because it finds the
+    ACTUAL cgroups where container processes run, regardless of naming
+    conventions or cgroup tree layout.
+
+    Walks all PIDs in /proc that share the same PID namespace as
+    *init_pid*, reads their cgroup v2 path from /proc/<pid>/cgroup, and
+    collects the inode of each unique cgroup directory.
+    """
+    if init_pid <= 0:
+        return set()
+    # Get the PID namespace of the container init process.
+    try:
+        init_ns = os.readlink(f"/proc/{init_pid}/ns/pid")
+    except OSError:
+        return set()
+    inodes: set[int] = set()
+    try:
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            pid = int(entry.name)
+            if pid == init_pid:
+                continue
+            try:
+                ns = os.readlink(entry / "ns" / "pid")
+            except OSError:
+                continue
+            if ns != init_ns:
+                continue
+            # This process is in the same PID namespace → read its cgroup.
+            try:
+                cgroup_text = (entry / "cgroup").read_text(encoding="utf-8")
+            except OSError:
+                continue
+            for line in cgroup_text.splitlines():
+                if not line.startswith("0::"):
+                    continue
+                cgroup_rel = line[3:]
+                cgroup_path = Path("/sys/fs/cgroup") / cgroup_rel.lstrip("/")
+                try:
+                    inodes.add(cgroup_path.stat().st_ino)
+                except OSError:
+                    pass
+                break  # Only need the unified (v2) hierarchy line.
+    except OSError:
+        pass
+    return inodes
+
+
 def _add_container_cgroup_inodes_broad(
     cgroup: Path,
     inodes: set[int],
@@ -3050,6 +3102,15 @@ class ClauseTelemetryCollector:
         )
         if not self.cgroup_inodes and self.cgroup_id:
             self.cgroup_inodes = {self.cgroup_id}
+        # Supplement directory-based discovery with /proc scanning.
+        # Docker exec processes often run in cgroups that are not
+        # reachable via directory traversal (e.g., systemd transient
+        # scopes in a different slice).  Scanning /proc for processes
+        # in the same PID namespace finds their actual cgroups.
+        if init_pid > 0:
+            proc_cgroup_inodes = _discover_cgroup_inodes_from_proc(init_pid)
+            if proc_cgroup_inodes:
+                self.cgroup_inodes |= proc_cgroup_inodes
         self.init_pid = init_pid
         init_pid_ns = _pid_namespace_inode_for_pid(init_pid) if init_pid > 0 else None
         self.pid_namespace_inodes = {init_pid_ns} if init_pid_ns is not None else set()

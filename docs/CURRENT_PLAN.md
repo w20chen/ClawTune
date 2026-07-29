@@ -195,120 +195,81 @@ It must show:
 5. prediction availability becomes non-zero after causal evidence exists;
    the first cold-start command may correctly remain `unknown`.
 
-## 2026-07-29 Run Audit: Exec Output and eBPF Cgroup Fixes
+## 2026-07-29 Run Audit (Round 2): Marker Backend Switch
 
-The `host-openclaw-sandbox` run on 2026-07-29 (trace `0b01001001__spectree-64`)
-exposed two critical bugs that made the agent non-functional:
+After the initial fixes, a second `host-openclaw-sandbox` run showed that
+exec commands STILL produced no output. The `stdout=PIPE` approach in the
+launcher actually made things worse by preventing stdout from flowing to
+Docker exec's capture mechanism.  Analysis of the process names confirms
+OpenClaw uses detached Docker exec instances whose stdout is never captured
+by the Docker API — the only reliable way to forward output is through the
+sidecar API, which would require significant plugin changes.
 
-### BUG #1 (CRITICAL): exec commands produce no output
+### Root Cause of Exec Output Failure
 
-**Symptom**: Every `exec` command (ls, pwd, find, python3) returns "Command
-still running" and when polled shows "(no new output)" or "(no output
-recorded)", eventually exiting code 0 after timeout. The agent cannot inspect
-the repository or run any commands.
+OpenClaw's Docker sandbox starts exec instances in detached mode (Docker API
+`ExecStart` with `Detach: true`).  Detached execs discard stdout/stderr;
+OpenClaw tracks process status via `ExecInspect` but never retrieves output.
+No amount of launcher-side stdout forwarding can fix this — the Docker daemon
+simply does not capture stdout for detached execs.
 
-**Root cause**: The launcher (`_spawn_shell` in `launcher.py`) spawns the actual
-command as a child process inheriting stdout/stderr. In `host-openclaw-sandbox`
-mode, OpenClaw's Docker sandbox executes the launcher wrapper command via
-`docker exec`. The child's output goes to the same file descriptors, but
-OpenClaw's process management may not capture child output when the parent
-(launcher wrapper) is the tracked process, especially with `yieldMs`.
+This is a fundamental limitation of the managed-wrapper approach in
+`host-openclaw-sandbox` mode: the launcher wrapper replaces the actual
+command, but Docker exec never captures the wrapper's (or its child's) stdout.
 
-**Fix** (`launcher.py`):
-- Modified `_spawn_shell` and `_spawn_shell_gated` to use `stdout=PIPE,
-  stderr=PIPE` and read output in background threads.
-- Added `_collect_and_forward_output()` that joins reader threads after
-  `child.wait()` and writes captured output to `sys.stdout.buffer` and
-  `sys.stderr.buffer`. This ensures the launcher process itself produces the
-  actual command output, making it visible to Docker exec's stdout capture.
-- Added `threading` import.
+### Fix: Switch to Marker Backend
 
-### BUG #2 (CRITICAL): eBPF cgroup matching fails (matched=0)
+Changed `executionBackend` from `"managed-wrapper"` to `"marker"` in
+`host_sandbox.py`.  In marker mode:
 
-**Symptom**: Sidecar diagnostic shows `matched=0` for all exec calls:
-`exec_cgroup_dist=[(9294, 40), (1054166, 72)] cgroup_inodes=[1055862]`.
-All 9 clause telemetry artifacts show `telemetry_quality: "invalid"`,
-`clause_count: 0`, `no_exec_images`. No exec events are matched to the
-container.
+- The plugin registers the execution with the sidecar (timing + env vars)
+  but does **NOT** replace the command.
+- The original command runs directly through OpenClaw's Docker sandbox.
+- OpenClaw handles stdout capture normally for direct exec commands.
+- Cgroup resource monitoring continues via the shared sandbox scope.
+- Clause-level telemetry (per-command exec events) is attributed via
+  timing correlation instead of execution IDs.
 
-**Root cause**: The `_discover_leaf_cgroup_inodes()` function discovers the
-container's root cgroup inode (1055862) via directory scanning, but `docker
-exec` processes may run in different cgroups (9294, 1054166) that are not
-descendants of the root cgroup and not found by the sibling prefix scan.
-The BPF `target_cgroup` is already permissive (set to 0), but the Python-side
-event filter in `finish_tool_call` uses `self.cgroup_inodes` which only
-contains the initially discovered cgroups.
+**Trade-off**: Without the launcher, clause telemetry events cannot be
+attributed to specific execution IDs.  They are still captured by the
+eBPF probe and filtered by cgroup + timing window.  The `RuntimeToolResourceKB`
+predictor (continuous p90 latency/CPU/memory) works with timing-based
+attribution.  The `ClauseResourceKB` predictor (per-clause latency buckets)
+requires execution IDs and is degraded in marker mode.
 
-**Fixes** (`telemetry.py`):
+### Cgroup Discovery Fix: /proc Scanning
 
-1. **Rewrote `_discover_leaf_cgroup_inodes`** to use a more robust hex-substring
-   based broad scan:
-   - Added `_add_container_cgroup_inodes_broad()` which extracts the longest
-     hex substring (12+ chars) from the cgroup directory name and scans from
-     `/sys/fs/cgroup` root (depth 3) and the parent directory (depth 2).
-   - Added `_longest_hex_substring()` helper for flexible container-ID
-     extraction (works for Docker, containerd, CRI-O naming patterns).
-   - Added `_scan_for_container_cgroups()` for depth-limited recursive scanning.
+The diagnostic `[telemetry:diag]` consistently shows `matched=0` because
+exec_boundary eBPF events have `pid_namespace_inode = 0` (the BPF probe
+cannot reliably read `nsproxy->pid_ns_for_children` at exec return time).
+Directory-based cgroup scanning also fails because Docker exec transient
+scopes may be in unrelated parts of the cgroup tree.
 
-2. **Improved `_add_sibling_cgroup_inodes`** to use hex-substring matching
-   instead of requiring the "docker-" prefix. Falls back to the old logic
-   only when no hex substring is found.
+**Added** `_discover_cgroup_inodes_from_proc(init_pid)` in `telemetry.py`:
+- Enumerates all PIDs in `/proc` that share the container init's PID namespace.
+- Reads `/proc/<pid>/cgroup` for each to find the actual cgroup path.
+- Collects unique cgroup inodes from all container processes.
+- Called in `ClauseTelemetryCollector.__init__` to supplement directory-based
+  discovery.
 
-3. **Added dynamic cgroup discovery** in `finish_tool_call`:
-   - Strategy 1: Collect cgroup IDs from events whose `host_pid` is in the
-     container PID set.
-   - Strategy 2: Collect cgroup IDs from events whose `pid_namespace_inode`
-     matches the container's (authoritative when available).
-   - Both strategies expand `self.cgroup_inodes` for subsequent calls.
+This approach is more reliable because it finds cgroups where processes
+ACTUALLY run, regardless of naming conventions or tree layout.
 
-### BUG #3: All 9 tool_resource artifacts unhealthy
+### Reverted Changes
 
-**Status**: Consequence of BUG #2. Should be resolved when BUG #2 is fixed.
-All artifacts showed `collector is not healthy` because no exec events were
-matched (`clause_count: 0`).
+- Reverted `stdout=PIPE` in `_spawn_shell` and `_spawn_shell_gated` — the pipe
+  approach prevented stdout from reaching Docker exec's capture.
+- Removed `_collect_and_forward_output` and `threading` import from launcher.
+- Launcher is back to the original inherited-stdout behavior.
 
-### BUG #4: Docker container name conflict on cleanup
+### Test Results
 
-**Symptom**: During CLI transcript compaction after Ctrl+C:
-`Error response from daemon: Conflict. The container name
-"/claw-srb-027da119b819-agent-main-main-6d9217fe" is already in use`.
+- launcher tests: 22 passed
+- telemetry + sidecar + predictor tests: 68 passed
+- top-level tests: 73 passed, 2 skipped (POSIX-only)
+- **Total: 163 tests passed**
 
-**Root cause**: OpenClaw's CLI compaction tries to create a new container with
-the session's container name, which already exists. This is triggered when the
-user aborts the agent (via Ctrl+C) after BUG #1 makes progress impossible.
-
-**Status**: Secondary issue — fixing BUG #1 eliminates the need to abort.
-Container cleanup (`_cleanup_openclaw_sandbox_containers`) already runs before
-each task.
-
-### BUG #5: launcher_tool_resource_eligible_span_ends: 0
-
-**Status**: Consequence of BUG #2 and BUG #3. All tool_resource status is
-"invalid" so no predictions are eligible. Should be resolved by BUG #2 fix.
-
-### BUG #6: tool_resource_prediction_available_ratio: 0.278
-
-**Status**: Only 5/18 predictions had evidence (all continuous predictions,
-no clause-based predictions). This is expected for a cold start. Should
-improve after BUG #2 fix when clause telemetry starts collecting data.
-
-### BUG #7: docker_exec_pid_tool_span_ends: 0
-
-**Symptom**: No Docker exec PIDs were captured for tool attribution.
-All 18 spans fall back to `shared_sandbox_container` attribution.
-
-**Root cause**: The Docker exec observer starts before the sandbox container
-ID is discovered. In `host-openclaw-sandbox` mode, the container ID is set
-asynchronously by `_discover_sandbox_scope_loop`. Initial Docker events may
-be missed.
-
-**Status**: Secondary issue. When BUG #1 is fixed and exec commands work,
-the Docker exec PID matching should be re-evaluated with a working run.
-
-### Validation Commands Not Run (Windows)
-
-The same validation commands from the previous section remain not runnable.
-The Linux host-sandbox end-to-end test is the definitive acceptance gate.
+### Next End-to-End Validation
 
 ```bash
 sudo -E env "PATH=$PATH" "$(command -v python3)" \
@@ -316,6 +277,17 @@ sudo -E env "PATH=$PATH" "$(command -v python3)" \
   --prepare --dataset swe_rebench/tasks.json --sample 1 --export \
   --runtime-mode host-openclaw-sandbox
 ```
+
+Expected improvements over the previous run:
+1. exec commands produce output (marker backend, no command wrapping)
+2. cgroup_inodes includes Docker exec transient cgroups (/proc scanning)
+3. matched > 0 for some exec calls (if cgroup discovery works)
+4. tool_resource artifacts become healthy for matched calls
+
+Known limitations with marker backend:
+1. `launcher_tool_resource_eligible_span_ends` will be 0 (no launcher claims)
+2. `tool_resource_prediction_available_ratio` may remain low
+3. ClauseResourceKB predictions unavailable without execution IDs
 
 ## Not Run Locally
 
