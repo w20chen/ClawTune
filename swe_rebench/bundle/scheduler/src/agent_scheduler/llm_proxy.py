@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import time
 from typing import Any
 from uuid import uuid4
@@ -118,6 +120,42 @@ async def proxy_chat_completions(
     # Merge reasoning_content → content for reasoning models (deepseek-v4-flash, etc.)
     # so OpenClaw sees readable text instead of empty content.
     _merge_reasoning(response_payload)
+    response_message = _message_from_response(response_payload)
+    if (
+        response.status_code < 400
+        and not _assistant_message_has_payload(response_message)
+    ):
+        error = "upstream_empty_response"
+        _write_proxy_debug(
+            config,
+            action_id=action_id,
+            upstream=upstream,
+            payload=payload,
+            status_code=response.status_code,
+            chunk_count=0,
+            message=response_message or {"role": "assistant", "content": ""},
+            raw_preview=response.content,
+            error=error,
+        )
+        _record_proxy_trace(
+            trace_writer,
+            action_id=action_id,
+            payload=payload,
+            response_payload=response_payload,
+            started_at=started_at,
+            status_code=502,
+            stream=False,
+            error=error,
+        )
+        return JSONResponse(
+            {
+                "error": {
+                    "message": "Upstream model returned no content or tool calls",
+                    "type": error,
+                }
+            },
+            status_code=502,
+        )
     response_content = json.dumps(response_payload).encode("utf-8") if isinstance(response_payload, dict) else response.content
     _record_proxy_trace(
         trace_writer,
@@ -155,6 +193,7 @@ async def _stream_chat(
     # Buffer for SSE data that may span across HTTP chunk boundaries.
     # httpx's aiter_bytes() does not guarantee SSE-event-aligned chunks.
     sse_buffer = b""
+    done_seen = False
     try:
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream("POST", upstream, headers=headers, content=body) as response:
@@ -165,10 +204,18 @@ async def _stream_chat(
                     # Extract complete SSE events (delimited by double-newline).
                     events, sse_buffer = _parse_sse_buffer(sse_buffer)
                     for event in events:
-                        if event is not None:
+                        if event is None:
+                            done_seen = True
+                        else:
                             # Merge reasoning_content → content for reasoning models.
                             _merge_reasoning(event)
                             chunks.append(event)
+                            if isinstance(event.get("error"), dict):
+                                error = str(
+                                    event["error"].get("type")
+                                    or "upstream_stream_error"
+                                )
+                    events = [event for event in events if event is not None]
                     if events:
                         # Only forward complete SSE events. Forwarding raw
                         # partial chunks corrupts JSON when the event is later
@@ -178,9 +225,17 @@ async def _stream_chat(
         if sse_buffer:
             events, _ = _parse_sse_buffer(sse_buffer + b"\n\n")
             for event in events:
-                if event is not None:
+                if event is None:
+                    done_seen = True
+                else:
                     _merge_reasoning(event)
                     chunks.append(event)
+                    if isinstance(event.get("error"), dict):
+                        error = str(
+                            event["error"].get("type")
+                            or "upstream_stream_error"
+                        )
+            events = [event for event in events if event is not None]
             if events:
                 yield _serialize_sse(events)
     except Exception as exc:
@@ -189,6 +244,42 @@ async def _stream_chat(
         yield f"data: {json.dumps({'error': {'message': str(exc), 'type': 'proxy_error'}})}\n\n".encode(
             "utf-8"
         )
+    else:
+        message = _message_from_stream_chunks(chunks)
+        if error is None and status_code >= 400:
+            error = f"upstream_http_{status_code}"
+            yield _serialize_sse(
+                [
+                    {
+                        "error": {
+                            "message": f"Upstream model returned HTTP {status_code}",
+                            "type": error,
+                        }
+                    },
+                    None,
+                ]
+            )
+            done_seen = False
+        elif (
+            error is None
+            and status_code < 400
+            and not _assistant_message_has_payload(message)
+        ):
+            error = "upstream_empty_response"
+            yield _serialize_sse(
+                [
+                    {
+                        "error": {
+                            "message": "Upstream model returned no content or tool calls",
+                            "type": error,
+                        }
+                    },
+                    None,
+                ]
+            )
+            done_seen = False
+        if error is None and done_seen:
+            yield _serialize_sse([None])
     finally:
         message = _message_from_stream_chunks(chunks)
         effective_error = error if error else (None if status_code < 400 else f"upstream_http_{status_code}")
@@ -274,7 +365,8 @@ def _write_proxy_debug(
     raw_preview: bytes,
     error: str | None,
 ) -> None:
-    if not config.llm_proxy_debug_dump:
+    automatic_empty_diagnostic = error == "upstream_empty_response"
+    if not config.llm_proxy_debug_dump and not automatic_empty_diagnostic:
         return
     try:
         config.trace_dir.mkdir(parents=True, exist_ok=True)
@@ -290,8 +382,12 @@ def _write_proxy_debug(
             "has_tool_calls": bool(message.get("tool_calls")),
             "finish_reason": message.get("finish_reason"),
             "error": error,
-            "raw_preview": raw_preview.decode("utf-8", errors="replace"),
+            "raw_preview_bytes": len(raw_preview),
+            "raw_preview_sha256": hashlib.sha256(raw_preview).hexdigest(),
+            "automatic_empty_diagnostic": automatic_empty_diagnostic,
         }
+        if config.llm_proxy_debug_dump:
+            body["raw_preview"] = raw_preview.decode("utf-8", errors="replace")
         path.write_text(json.dumps(body, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     except OSError:
         return
@@ -435,26 +531,24 @@ def _json_or_text(content: bytes) -> Any:
 def _parse_sse_buffer(buffer: bytes) -> tuple[list[dict[str, Any] | None], bytes]:
     """Parse complete SSE events from a byte buffer.
 
-    SSE events are delimited by double-newline (\\n\\n).  Events that span
-    across HTTP chunk boundaries are kept in the returned remainder buffer
-    so they can be reassembled when the next chunk arrives.
+    SSE events are delimited by an LF or CRLF blank line. Events that span
+    HTTP chunk boundaries stay in the returned remainder buffer.
 
     Returns (events, remainder) where remainder is the trailing incomplete
     event bytes (may be empty).
     """
     events: list[dict[str, Any] | None] = []
-    # Find the last complete event boundary.
-    # An SSE event ends with \\n\\n; everything after the last \\n\\n is
-    # a partial event that needs more data.
-    last_delim = buffer.rfind(b"\n\n")
-    if last_delim == -1:
+    # Find the last complete LF/CRLF event boundary.
+    boundaries = list(re.finditer(rb"\r?\n\r?\n", buffer))
+    if not boundaries:
         # No complete event yet — whole buffer is partial, keep it all.
         return events, buffer
 
-    complete = buffer[: last_delim + 2]  # include the trailing \n\n
-    remainder = buffer[last_delim + 2:]   # partial event after last delimiter
+    last_delim_end = boundaries[-1].end()
+    complete = buffer[:last_delim_end]
+    remainder = buffer[last_delim_end:]
 
-    text = complete.decode("utf-8", errors="replace")
+    text = complete.decode("utf-8", errors="replace").replace("\r\n", "\n")
     # SSE events may use \n or \r\n; normalize to \n for splitting.
     current_data: list[str] = []
     for raw_line in text.split("\n"):
@@ -574,6 +668,29 @@ def _message_from_stream_chunks(chunks: list[dict[str, Any]]) -> dict[str, Any]:
     if finish_reason is not None:
         message["finish_reason"] = finish_reason
     return message
+
+
+def _assistant_message_has_payload(message: dict[str, Any] | None) -> bool:
+    if not isinstance(message, dict):
+        return False
+    if _assistant_content_has_payload(message.get("content")):
+        return True
+    tool_calls = message.get("tool_calls")
+    return isinstance(tool_calls, list) and bool(tool_calls)
+
+
+def _assistant_content_has_payload(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(_assistant_content_has_payload(item) for item in value)
+    if isinstance(value, dict):
+        return any(
+            _assistant_content_has_payload(value.get(key))
+            for key in ("text", "content", "reasoning_content")
+            if key in value
+        )
+    return False
 
 
 def _merge_tool_call_deltas(

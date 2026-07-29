@@ -31,6 +31,9 @@ def test_bpf_program_uses_wrapper_aware_syscall_kprobes() -> None:
     assert "(const char *)PT_REGS_PARM2(regs)" in BPF_PROGRAM
     assert "(const char *const *)PT_REGS_PARM3(regs)" in BPF_PROGRAM
     assert "PT_REGS_RC(ctx)" in BPF_PROGRAM
+    assert "u64 pid_namespace_inode;" in BPF_PROGRAM
+    assert "current_pid_namespace_inode" in BPF_PROGRAM
+    assert "pid_ns_for_children" in BPF_PROGRAM
 
 
 def test_syscall_symbol_candidates_include_bcc_and_common_kernel_names() -> None:
@@ -227,6 +230,8 @@ def _event(
     return {
         "type": event_type,
         "ts_ns": ts_ns,
+        "cgroup_id": 0,
+        "pid_namespace_inode": 0,
         "host_pid": host_pid,
         "host_tid": host_pid,
         "child_host_pid": child_host_pid,
@@ -237,6 +242,35 @@ def _event(
         "arg": arg,
         "exit_code": 0,
     }
+
+
+def test_container_pid_set_uses_pid_namespace_when_cgroup_mismatches() -> None:
+    from tool_resource.telemetry import _container_pid_set
+
+    pids = _container_pid_set(
+        [
+            {
+                "type": "exec_boundary",
+                "cgroup_id": 1054166,
+                "pid_namespace_inode": 777,
+                "host_pid": 42,
+                "child_host_pid": 0,
+            },
+            {
+                "type": "exec_boundary",
+                "cgroup_id": 9294,
+                "pid_namespace_inode": 1,
+                "host_pid": 99,
+                "child_host_pid": 0,
+            },
+        ],
+        10,
+        cgroup_inodes={1055634},
+        pid_namespace_inodes={777},
+    )
+
+    assert 42 in pids
+    assert 99 not in pids
 
 
 def _shell_tree(

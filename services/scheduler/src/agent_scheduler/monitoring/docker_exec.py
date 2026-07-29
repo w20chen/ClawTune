@@ -92,7 +92,7 @@ class DockerExecObserver:
                 self.container_prefix = container_name
 
     def begin_tool(self, request: ToolBeforeRequest) -> None:
-        if not self.enabled or request.tool_name == "exec":
+        if not self.enabled:
             return
         if request.resource_scope is not None and not _is_shared_runtime_scope(request.resource_scope):
             return
@@ -111,7 +111,7 @@ class DockerExecObserver:
         self._notify_scope(key, active, record)
 
     def infer_scope(self, event: ToolCompletedEvent) -> ResourceScope | None:
-        if not self.enabled or event.execution_id is not None or event.tool_name == "exec":
+        if not self.enabled or event.execution_id is not None:
             return None
         if event.resource_scope is not None and not _is_shared_runtime_scope(event.resource_scope):
             return None
@@ -432,6 +432,7 @@ def _exec_command(info: dict[str, Any] | None) -> str | None:
 
 def _tool_command_rank(tool_name: str):
     needles = {
+        "exec": ("claw-launch", "/bin/sh", "sh -c", "bash -lc"),
         "read": ("openclaw-sandbox-fs", "readlink", "cat ", "sed "),
         "write": ("openclaw-sandbox-fs", "python3", "mv "),
         "edit": ("openclaw-sandbox-fs", "python3", "patch"),

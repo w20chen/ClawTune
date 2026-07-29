@@ -1,7 +1,7 @@
 import {isRecord} from "./config.js";
 
 export function extractToolExitCode(value: unknown, toolName: string): number | null {
-  if (toolName !== "exec") return null;
+  void toolName;
   if (typeof value === "number" && Number.isInteger(value)) return value;
   if (!isRecord(value)) return null;
   const direct = extractInteger(value, ["exit_code", "exitCode"]);

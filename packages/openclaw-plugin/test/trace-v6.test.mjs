@@ -338,6 +338,16 @@ test("sanitizer redacts Bearer token in strings", () => {
   assert.ok(!result.includes("sk-abc123def456"));
 });
 
+test("tool exit code extraction applies to process results too", () => {
+  assert.equal(
+    toolResult.extractToolExitCode(
+      { details: { status: "failed", exitCode: 0, timedOut: true } },
+      "process"
+    ),
+    0
+  );
+});
+
 test("sanitizer redacts --token flag", () => {
   const result = traceSanitizer.sanitizeString("claw-launch run --token=abc123 --other");
   assert.ok(result.includes("<redacted>"));

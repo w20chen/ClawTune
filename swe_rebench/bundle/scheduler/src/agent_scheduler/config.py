@@ -28,6 +28,7 @@ class SchedulerConfig:
     resource_poll_interval_ms: int = 50
     resource_timeline_max_points: int = 2_000
     sandbox_cgroup_path: str | None = None
+    execution_cgroup_root: str | None = None
     sandbox_container_id: str | None = None
     sandbox_root_pid: int | None = None
     docker_exec_observer_enabled: bool = False
@@ -95,6 +96,7 @@ class SchedulerConfig:
             resource_poll_interval_ms=int(os.getenv("AGENT_SCHEDULER_RESOURCE_POLL_INTERVAL_MS", "50")),
             resource_timeline_max_points=int(os.getenv("AGENT_SCHEDULER_RESOURCE_TIMELINE_MAX_POINTS", "2000")),
             sandbox_cgroup_path=os.getenv("AGENT_SCHEDULER_SANDBOX_CGROUP_PATH"),
+            execution_cgroup_root=os.getenv("AGENT_SCHEDULER_EXECUTION_CGROUP_ROOT"),
             sandbox_container_id=os.getenv("AGENT_SCHEDULER_SANDBOX_CONTAINER_ID"),
             sandbox_root_pid=_optional_int(os.getenv("AGENT_SCHEDULER_SANDBOX_ROOT_PID")),
             docker_exec_observer_enabled=os.getenv("AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER", "false").lower()

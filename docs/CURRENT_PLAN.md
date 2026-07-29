@@ -160,6 +160,15 @@ python -m pytest tests/test_swe_rebench_runner_inspection.py \
 Latest Windows validation:
 
 - `python tools/validate_contracts.py`: all 9 contract examples passed.
+- `python -m pytest --basetemp .pytest-tmp-current-fix\basetemp
+  services\scheduler\tests\test_tool_resource_telemetry.py
+  services\scheduler\tests\test_tool_runtime_monitor.py
+  services\scheduler\tests\test_sidecar.py`: 52 passed.
+- `cd packages/openclaw-plugin && npm.cmd test -- --runInBand`: 62 passed,
+  including TypeScript build.
+- `cd swe_rebench\bundle\scheduler && python -m pytest --basetemp
+  C:\Users\29068\Desktop\claw\.pytest-tmp-current-fix\bundle-basetemp
+  tests\test_sidecar.py`: 38 passed.
 - `python -m pytest tests -q --basetemp .pytest-tmp-final2-root`:
   65 passed, 1 POSIX-permission test skipped on Windows.
 - Not run in this Windows workspace: full `sudo -E env "PATH=$PATH"

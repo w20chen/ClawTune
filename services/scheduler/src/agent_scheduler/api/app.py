@@ -497,9 +497,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
             SchedulingContext(prediction=prediction, placement=PlacementAdvice()),
         )
         if decision.action == "allow":
+            s.tool_monitor.begin(request, prediction.resource_class)
             if s.docker_exec_observer is not None:
                 s.docker_exec_observer.begin_tool(original_request)
-            s.tool_monitor.begin(request, prediction.resource_class)
         s.metrics.inc("scheduler_tool_decisions_total")
         s.metrics.decision_latencies.append(time.monotonic() - start)
         return decision
@@ -530,10 +530,15 @@ def create_app(state: AppState | None = None) -> FastAPI:
         sample = s.tool_monitor.complete(event)
         telemetry = None
         if event.execution_id is not None:
+            record = s.executions.get(event.execution_id)
+            exit_code = record.exit_code if record is not None else None
+            signal = record.signal if record is not None else None
+            if exit_code is None and signal is None and event.succeeded:
+                exit_code = 0
             telemetry = s.predictor.finish_execution(
                 execution_id=event.execution_id,
-                exit_code=0 if event.succeeded else None,
-                signal=None,
+                exit_code=exit_code,
+                signal=signal,
             )
             if s.trace_writer is not None:
                 s.trace_writer.record_tool_resource_telemetry(

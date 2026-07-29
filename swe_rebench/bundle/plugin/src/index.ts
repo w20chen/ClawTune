@@ -48,7 +48,7 @@ const pluginVersion = "0.1.1";
 // ── Plugin-wide state ──────────────────────────────────────────────────
 let registry: SpanRegistry | null = null;
 
-/** Unique instance ID generated once per plugin load (�?per CLI launch). */
+/** Unique instance ID generated once per plugin load (�?per CLI launch). */
 const instanceId = randomUUID();
 
 /** Per-run trace writers, keyed by normalized run identity. */
@@ -108,7 +108,7 @@ async function getRunWriter(
     const run = safeFilename(runId);
     // Note: agent_id is included per-record in the JSONL content.
     // It is omitted from the filename because model hooks (model_call_started,
-    // model_call_ended) do not expose agent_id �?an OpenClaw limitation.
+    // model_call_ended) do not expose agent_id �?an OpenClaw limitation.
     const filename = `${session}_${run}.jsonl`;
     const { join } = await import("node:path");
     const filePath = join(traceDir, filename);
@@ -157,8 +157,10 @@ export default definePluginEntry({
       sendRawParams: {type: "boolean", default: false},
       recordRawTrace: {type: "boolean", default: false},
       logLevel: {enum: ["error", "warn", "info", "debug"], default: "info"},
+      consoleMode: {enum: ["verbose", "quiet"], default: "verbose"},
       executionBackend: {enum: ["hook-only", "marker", "managed-wrapper"], default: "managed-wrapper"},
       launcherPath: {type: "string", default: "/opt/claw/bin/claw-launch"},
+      launcherInterpreter: {type: ["string", "null"], default: null},
       collectorSocket: {type: "string", default: "/run/claw/collector.sock"},
       instrumentHosts: {type: "array", items: {type: "string"}, default: ["gateway"]},
       instrumentTools: {type: "array", items: {type: "string"}, default: ["exec"]},
@@ -199,6 +201,136 @@ export default definePluginEntry({
   registry = new SpanRegistry();
   const traceCfg = config.trace;
 
+  // ── Console turn-by-turn logging (verbose mode) ──────────────────
+  const CONSOLE_PREFIX = "[openclaw]";
+  let turnCounter = 0;
+  const pendingToolNames = new Map<string, string>(); // toolCallId -> toolName
+
+  function consoleVerbose(msg: string): void {
+    if (config.consoleMode !== "verbose") return;
+    console.log(`${CONSOLE_PREFIX} ${msg}`);
+  }
+
+  function truncateStr(s: string, maxLen: number): string {
+    if (s.length <= maxLen) return s;
+    return s.slice(0, maxLen) + `...<truncated ${s.length - maxLen} chars>`;
+  }
+
+  function summarizeMessages(messages: unknown): string {
+    if (!Array.isArray(messages)) return "? messages";
+    const roles = new Map<string, number>();
+    for (const m of messages) {
+      if (!isRecord(m)) continue;
+      const role = String((m as Record<string, unknown>).role ?? "unknown");
+      roles.set(role, (roles.get(role) ?? 0) + 1);
+    }
+    const parts = Array.from(roles.entries()).map(([r, c]) => `${r}×${c}`);
+    return parts.length > 0 ? parts.join(", ") : `${messages.length} messages`;
+  }
+
+  function extractTextContent(output: unknown): string | null {
+    if (!isRecord(output)) return null;
+    const o = output as Record<string, unknown>;
+    // OpenAI style: choices[0].message.content
+    const choices = o.choices;
+    if (Array.isArray(choices) && choices.length > 0 && isRecord(choices[0])) {
+      const msg = (choices[0] as Record<string, unknown>).message ?? (choices[0] as Record<string, unknown>).delta;
+      if (isRecord(msg)) {
+        const content = (msg as Record<string, unknown>).content;
+        if (typeof content === "string" && content.length > 0) return content;
+      }
+    }
+    // Direct content field
+    const content = o.content;
+    if (typeof content === "string" && content.length > 0) return content;
+    // text field
+    const text = o.text;
+    if (typeof text === "string" && text.length > 0) return text;
+    return null;
+  }
+
+  function extractToolCallsForDisplay(output: unknown): Array<{name: string; id: string}> {
+    const result: Array<{name: string; id: string}> = [];
+    if (!isRecord(output)) return result;
+    const o = output as Record<string, unknown>;
+
+    // OpenAI style: choices[0].message.tool_calls
+    const choices = o.choices;
+    if (Array.isArray(choices) && choices.length > 0 && isRecord(choices[0])) {
+      const msg = (choices[0] as Record<string, unknown>).message ?? (choices[0] as Record<string, unknown>).delta;
+      if (isRecord(msg)) {
+        const toolCalls = (msg as Record<string, unknown>).tool_calls;
+        if (Array.isArray(toolCalls)) {
+          for (const tc of toolCalls) {
+            if (!isRecord(tc)) continue;
+            const tcRec = tc as Record<string, unknown>;
+            const fn = tcRec.function;
+            const name = isRecord(fn) ? String((fn as Record<string, unknown>).name ?? "?") : "?";
+            const id = String(tcRec.id ?? "");
+            result.push({name, id});
+          }
+        }
+        return result;
+      }
+    }
+    // Direct tool_calls
+    const directCalls = o.tool_calls;
+    if (Array.isArray(directCalls)) {
+      for (const tc of directCalls) {
+        if (!isRecord(tc)) continue;
+        const tcRec = tc as Record<string, unknown>;
+        const fn = tcRec.function;
+        const name = isRecord(fn) ? String((fn as Record<string, unknown>).name ?? "?") : "?";
+        const id = String(tcRec.id ?? "");
+        result.push({name, id});
+      }
+    }
+    return result;
+  }
+
+  function summarizeToolParams(event: unknown): string {
+    if (!isRecord(event)) return "";
+    const params = (event as Record<string, unknown>).params ?? (event as Record<string, unknown>).arguments ?? (event as Record<string, unknown>).input;
+    if (params === null || params === undefined) return "";
+    if (typeof params === "string") return truncateStr(params, 200);
+    if (isRecord(params)) {
+      const keys = Object.keys(params as Record<string, unknown>);
+      if (keys.length === 0) return "{}";
+      // For known tools, print key fields
+      const p = params as Record<string, unknown>;
+      const cmd = p.command ?? p.cmd;
+      if (typeof cmd === "string") return `command="${truncateStr(cmd, 150)}"`;
+      const filePath = p.file_path ?? p.path ?? p.filePath ?? p.file;
+      if (typeof filePath === "string") {
+        const content = p.content ?? p.text;
+        const contentLen = typeof content === "string" ? ` (${content.length} chars)` : "";
+        return `path="${filePath}"${contentLen}`;
+      }
+      // Generic: list key=value pairs
+      const entries = keys.slice(0, 3).map(k => {
+        const v = p[k];
+        const vs = typeof v === "string" ? truncateStr(v, 60) : (typeof v === "object" ? "{...}" : String(v));
+        return `${k}=${vs}`;
+      });
+      return entries.join(", ") + (keys.length > 3 ? ` +${keys.length - 3} more` : "");
+    }
+    return truncateStr(String(params), 200);
+  }
+
+  function summarizeToolResult(event: unknown): string {
+    if (!isRecord(event)) return "";
+    const result = (event as Record<string, unknown>).result ?? (event as Record<string, unknown>).output ?? (event as Record<string, unknown>).response;
+    if (result === null || result === undefined) return "(no output)";
+    if (typeof result === "string") return truncateStr(result, 300);
+    if (isRecord(result)) {
+      const r = result as Record<string, unknown>;
+      const text = r.text ?? r.content ?? r.message ?? r.stdout;
+      if (typeof text === "string") return truncateStr(text, 300);
+      return truncateStr(JSON.stringify(result), 300);
+    }
+    return truncateStr(String(result), 300);
+  }
+
   // ── Debug: dump OpenClaw hook payload keys (once per hook type) ──
   const debugDumped = new Set<string>();
   function dumpHookShape(event: unknown, context: unknown, hookName: string): void {
@@ -226,6 +358,12 @@ export default definePluginEntry({
     dumpHookShape(event, context, "before_tool_call");
     const toolName = extractString(event, ["tool_name", "toolName", "name"]) ?? "unknown";
     const toolCallId = extractString(event, ["tool_call_id", "toolCallId", "id"]);
+
+    // ── verbose console: tool call ──
+    if (toolCallId) pendingToolNames.set(toolCallId, toolName);
+    const paramStr = summarizeToolParams(event);
+    consoleVerbose(`■ ${toolName}${paramStr ? ` ${paramStr}` : ""}`);
+
     // Use OpenClaw-provided IDs only. No self-generated fallback.
     const runId = extractString(event, ["run_id", "runId"]) ?? extractString(context, ["runId", "run_id"]);
     const sessionId = extractString(event, ["session_id", "sessionId"]) ?? extractString(context, ["sessionId", "session_id"]);
@@ -380,6 +518,8 @@ export default definePluginEntry({
     if (toolCallId && registry) {
       registry.clearToolCallParent(toolCallId);
     }
+    // Clean up pending tool name mapping
+    if (toolCallId) pendingToolNames.delete(toolCallId);
 
     const startMono = activeSpan?.startMonotonicTimeNs ?? endMono;
     const startWall = activeSpan?.startWallTimeNs ?? endWall;
@@ -401,15 +541,31 @@ export default definePluginEntry({
         logger.warn("Agent Scheduler execution scope lookup failed", classifyError(error));
       }
     }
+    let toolResourceTelemetry: unknown | null = null;
     try {
       await client.reportCompletion(completion);
     } catch (error) {
       logger.warn("Agent Scheduler completion report failed", classifyError(error));
     }
+    if (completion.execution_id !== null) {
+      try {
+        toolResourceTelemetry = await client.getExecutionTelemetry(completion.execution_id);
+      } catch (error) {
+        logger.warn("Agent Scheduler execution telemetry lookup failed", classifyError(error));
+      }
+    }
 
     // Determine status code
     const toolExitCode = extractToolExitCode(completion.raw_result, completion.tool_name);
     const toolSucceeded = completion.succeeded && (toolExitCode === null || toolExitCode === 0);
+
+    // ── verbose console: tool result ──
+    const durMs = completion.duration_ms ?? Math.round(Number(durNs) / 1e6);
+    const exitStr = toolExitCode !== null ? ` exit=${toolExitCode}` : "";
+    const statusStr = completion.succeeded ? "ok" : (completion.error_type ?? "failed");
+    const resultStr = summarizeToolResult(event);
+    consoleVerbose(`■ ${toolName} done (${durMs}ms) ${statusStr}${exitStr}${resultStr ? ` | ${resultStr}` : ""}`);
+
     let statusCode: StatusCode = "unknown";
     if (toolSucceeded) {
       statusCode = "ok";
@@ -439,6 +595,7 @@ export default definePluginEntry({
       cgroup_path: scope?.cgroup_path ?? null,
       cgroup_id: null,
       pid_role: scope?.root_pid ? "payload_root" : (scope?.pid ? "payload_root" : null),
+      tool_resource: toolResourceTelemetry,
     };
 
     // Sanitize command fields for trace
@@ -520,6 +677,7 @@ export default definePluginEntry({
         wall_time_ns: endWall.toString(),
         monotonic_time_ns: endMono.toString(),
         duration_ns: durNs.toString(),
+        duration_sec: (Number(durNs) / 1e9).toString(),
         observed_duration_ms: completion.duration_ms ?? null,
         status: {
           code: statusCode,
@@ -559,6 +717,11 @@ export default definePluginEntry({
     const model = extractString(event, ["model"]) ?? "unknown-model";
     const provider = extractString(event, ["provider"]);
     const traceId = runId ?? sessionId ?? "unknown-run";
+
+    // ── verbose console: turn start ──
+    turnCounter++;
+    const inputMessages = extractModelInput(event);
+    consoleVerbose(`── Turn ${turnCounter} ── model: ${model} | input: ${summarizeMessages(inputMessages)}`);
 
     llmSeqCounter++;
     const spanId = callId ?? `${traceId}:model:${llmSeqCounter}`;
@@ -662,6 +825,17 @@ export default definePluginEntry({
     const outcome = extractString(event, ["outcome", "status"]);
     const durationMs = extractNumber(event, ["duration_ms", "durationMs"]);
 
+    // ── verbose console: model response ──
+    const modelOutput = extractModelOutput(event);
+    const textContent = extractTextContent(modelOutput);
+    const displayToolCalls = extractToolCallsForDisplay(modelOutput);
+    if (textContent) {
+      consoleVerbose(`→ ${truncateStr(textContent, 500)}`);
+    }
+    for (const tc of displayToolCalls) {
+      consoleVerbose(`→ tool: ${tc.name}`);
+    }
+
     // Extract tool calls from the response to set up parent mapping
     if (registry) {
       const toolCalls = extractToolCallsFromResponse(event);
@@ -703,6 +877,7 @@ export default definePluginEntry({
         wall_time_ns: endWall.toString(),
         monotonic_time_ns: endMono.toString(),
         duration_ns: durNs.toString(),
+        duration_sec: (Number(durNs) / 1e9).toString(),
         observed_duration_ms: durationMs ?? null,
         status: {
           code: statusCode,
@@ -770,6 +945,7 @@ export default definePluginEntry({
           wall_time_ns: endWall.toString(),
           monotonic_time_ns: endMono.toString(),
           duration_ns: durNs.toString(),
+          duration_sec: (Number(durNs) / 1e9).toString(),
           status: {
             code: "interrupted",
             message: "plugin shutdown before span completion",
@@ -809,15 +985,17 @@ export default definePluginEntry({
 // ── Helper functions ───────────────────────────────────────────────────
 
 function common(event: unknown): CommonEvent {
+  const runtimeSessionKey = getRuntimeSessionKey();
+  const sessionKey = extractString(event, ["session_key", "sessionKey"]) ?? runtimeSessionKey;
   return {
     schema_version: "scheduler.v1",
     event_id: randomUUID(),
     occurred_at: new Date().toISOString(),
     plugin_version: pluginVersion,
-    run_id: extractString(event, ["run_id", "runId"]),
-    session_id: extractString(event, ["session_id", "sessionId"]),
-    session_key: extractString(event, ["session_key", "sessionKey"]),
-    agent_id: extractString(event, ["agent_id", "agentId"])
+    run_id: extractString(event, ["run_id", "runId"]) ?? getRuntimeRunId(),
+    session_id: extractString(event, ["session_id", "sessionId"]) ?? sessionKey,
+    session_key: sessionKey,
+    agent_id: extractString(event, ["agent_id", "agentId"]) ?? getRuntimeAgentId()
   };
 }
 
@@ -846,10 +1024,11 @@ function buildToolBefore(event: unknown, config: PluginConfig): ToolBeforeReques
 }
 
 function mergeContext(payload: CommonEvent, context: unknown): void {
-  payload.run_id = payload.run_id ?? extractString(context, ["runId", "run_id"]);
-  payload.session_id = payload.session_id ?? extractString(context, ["sessionId", "session_id"]);
-  payload.session_key = payload.session_key ?? extractString(context, ["sessionKey", "session_key"]);
-  payload.agent_id = payload.agent_id ?? extractString(context, ["agentId", "agent_id"]);
+  const runtimeSessionKey = getRuntimeSessionKey();
+  payload.run_id = payload.run_id ?? extractString(context, ["runId", "run_id"]) ?? getRuntimeRunId();
+  payload.session_key = payload.session_key ?? extractString(context, ["sessionKey", "session_key"]) ?? runtimeSessionKey;
+  payload.session_id = payload.session_id ?? extractString(context, ["sessionId", "session_id"]) ?? payload.session_key;
+  payload.agent_id = payload.agent_id ?? extractString(context, ["agentId", "agent_id"]) ?? getRuntimeAgentId();
 }
 
 function buildCompletion(
@@ -865,6 +1044,7 @@ function buildCompletion(
     : null;
   const toolName = extractString(event, ["tool_name", "toolName", "name"]) ?? "unknown";
   const exitCode = extractToolExitCode(rawResult, toolName);
+  const explicitSucceeded = extractBoolean(event, ["succeeded", "success"]);
   const rawEvent = includeRaw && isRecord(event)
     ? (config.trace.redact_sensitive_data ? redact(event) : jsonSafe(event))
     : null;
@@ -876,7 +1056,7 @@ function buildCompletion(
     execution_id: prior?.executionId ?? null,
     tool_name: toolName,
     duration_ms: extractNumber(event, ["duration_ms", "durationMs"]) ?? 0,
-    succeeded: extractBoolean(event, ["succeeded", "success"]) ?? (errorType === null && (exitCode === null || exitCode === 0)),
+    succeeded: exitCode === 0 ? true : (explicitSucceeded ?? (errorType === null && exitCode === null)),
     error_type: errorType,
     error_digest: null,
     result_size_bytes: extractNumber(event, ["result_size_bytes", "resultSizeBytes"]),
@@ -1030,6 +1210,48 @@ function extractString(value: unknown, keys: string[]): string | null {
   for (const key of keys) {
     const item = rec[key];
     if (typeof item === "string" && item.length > 0) return item;
+  }
+  return null;
+}
+
+function getRuntimeSessionKey(): string | null {
+  return argvValue("--session-key");
+}
+
+function getRuntimeRunId(): string | null {
+  return firstEnvString([
+    "OPENCLAW_RUN_ID",
+    "OPENCLAW_AGENT_RUN_ID",
+    "CLAW_RUN_ID",
+  ]) ?? argvValue("--run-id");
+}
+
+function getRuntimeAgentId(): string | null {
+  return firstEnvString([
+    "OPENCLAW_AGENT_ID",
+    "CLAW_AGENT_ID",
+  ]) ?? argvValue("--agent");
+}
+
+function firstEnvString(keys: string[]): string | null {
+  for (const key of keys) {
+    const value = process.env[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return null;
+}
+
+function argvValue(name: string): string | null {
+  for (let index = 0; index < process.argv.length; index += 1) {
+    const arg = process.argv[index];
+    if (arg === name) {
+      const next = process.argv[index + 1];
+      return typeof next === "string" && next.length > 0 ? next : null;
+    }
+    const prefix = name + "=";
+    if (arg.startsWith(prefix) && arg.length > prefix.length) {
+      return arg.slice(prefix.length);
+    }
   }
   return null;
 }

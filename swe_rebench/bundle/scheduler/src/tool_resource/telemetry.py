@@ -31,6 +31,7 @@ import ctypes
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -46,6 +47,160 @@ if TYPE_CHECKING:
 # (attribution, windowing, aggregation) can be imported and unit-tested without
 # a bcc/BPF runtime.
 
+_BCC_SEARCH_ROOTS = (Path("/usr/lib"), Path("/usr/lib64"), Path("/usr/local/lib"))
+
+
+def _ensure_bcc_importable() -> None:
+    """Make distro BCC bindings visible to non-system Python interpreters."""
+
+    try:
+        import bcc  # noqa: F401
+        return
+    except ImportError as first_error:
+        for root in _BCC_SEARCH_ROOTS:
+            if not root.exists():
+                continue
+            for package_dir in root.glob("**/site-packages/bcc"):
+                parent = str(package_dir.parent)
+                if parent not in sys.path:
+                    sys.path.append(parent)
+                try:
+                    import bcc  # noqa: F401
+                    return
+                except ImportError:
+                    continue
+            for package_dir in root.glob("**/dist-packages/bcc"):
+                parent = str(package_dir.parent)
+                if parent not in sys.path:
+                    sys.path.append(parent)
+                try:
+                    import bcc  # noqa: F401
+                    return
+                except ImportError:
+                    continue
+        raise first_error
+
+
+def _bpf_runtime_diagnostics() -> dict[str, Any]:
+    """Small environment snapshot for BCC/BPF compile failures."""
+
+    def run(args: Sequence[str]) -> str | None:
+        try:
+            result = subprocess.run(
+                list(args),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+        except Exception:
+            return None
+        output = (result.stdout or result.stderr).strip()
+        return output.splitlines()[0] if output else None
+
+    kernel = run(["uname", "-r"])
+    headers: list[str] = []
+    if kernel:
+        candidates = (
+            Path("/lib/modules") / kernel / "build",
+            Path("/usr/src") / f"linux-headers-{kernel}",
+        )
+        headers = [str(path) for path in candidates if path.exists()]
+    bcc_file = None
+    try:
+        _ensure_bcc_importable()
+        import bcc
+
+        bcc_file = getattr(bcc, "__file__", None)
+    except ImportError:
+        pass
+    return {
+        "euid": os.geteuid() if hasattr(os, "geteuid") else None,
+        "python": sys.executable,
+        "bcc_file": bcc_file,
+        "clang": shutil.which("clang"),
+        "llc": shutil.which("llc"),
+        "bpftool": shutil.which("bpftool"),
+        "kernel_release": kernel,
+        "kernel_headers": headers,
+        "lib_modules_exists": Path("/lib/modules").exists(),
+        "cgroup_v2": Path("/sys/fs/cgroup/cgroup.controllers").is_file(),
+    }
+
+
+_BPF_PERMISSION_ERROR_PATTERNS = (
+    "operation not permitted",
+    "permission denied",
+    "failed to create bpf map",
+    "could not open bpf map",
+    "perf_event_open",
+)
+
+
+def _is_bpf_permission_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return any(pattern in message for pattern in _BPF_PERMISSION_ERROR_PATTERNS)
+
+
+def _bpf_setup_error_message(phase: str, exc: BaseException) -> str:
+    diagnostics = json.dumps(_bpf_runtime_diagnostics(), sort_keys=True)
+    detail = f"{type(exc).__name__}: {exc}"
+    if _is_bpf_permission_error(exc):
+        return (
+            f"{phase}: permission denied while creating BPF maps/probes/events; "
+            "Stage-2 clause telemetry requires root or the kernel capabilities "
+            "needed for BPF and perf_event access; "
+            f"detail={detail}; diagnostics={diagnostics}"
+        )
+    return f"{phase}: {detail}; diagnostics={diagnostics}"
+
+
+def _decode_symbol(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return str(value)
+
+
+def _syscall_symbol_candidates(bpf_cls: Any, name: str) -> tuple[str, ...]:
+    candidates: list[str] = []
+    try:
+        candidates.append(_decode_symbol(bpf_cls.get_syscall_fnname(name)))
+    except Exception:
+        pass
+    candidates.extend(
+        [
+            f"__x64_sys_{name}",
+            f"__ia32_sys_{name}",
+            f"__arm64_sys_{name}",
+            f"sys_{name}",
+        ]
+    )
+    return tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
+
+
+def _attach_first_kprobe(
+    bpf: Any,
+    bpf_cls: Any,
+    *,
+    syscall: str,
+    fn_name: str,
+    retprobe: bool = False,
+) -> str:
+    errors: list[str] = []
+    for event in _syscall_symbol_candidates(bpf_cls, syscall):
+        try:
+            if retprobe:
+                bpf.attach_kretprobe(event=event, fn_name=fn_name)
+            else:
+                bpf.attach_kprobe(event=event, fn_name=fn_name)
+            return event
+        except Exception as exc:
+            errors.append(f"{event}: {type(exc).__name__}: {exc}")
+    probe_kind = "kretprobe" if retprobe else "kprobe"
+    raise RuntimeError(
+        f"cannot attach {probe_kind} for syscall {syscall}: {'; '.join(errors)}"
+    )
+
 SAMPLE_PERIOD_NS = 10_000_000  # ~10 ms CPU-time per perf callback
 WINDOW_NS = 500_000_000  # 500 ms wall label window (resource_timeline semantics)
 ALIGN_BIN_NS = 20_000_000  # 20 ms aligned bins for RSS summation
@@ -57,7 +212,7 @@ MAX_ARG_WORD_BYTES = (ARG_BYTES - 1) * MAX_ARG_CHUNKS
 ARG_FLAG_TRUNCATED = 1
 ARG_FLAG_ARGV_CAPPED = 2
 ARG_FLAG_CONTINUED = 4
-PAGE = os.sysconf("SC_PAGE_SIZE")
+PAGE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
 _NPROC = os.cpu_count() or 1
 LOSS_COUNTER_NAMES = (
     "ringbuf_reserve_failures",
@@ -80,6 +235,8 @@ TYPE_NAMES = {
 BPF_PROGRAM = r"""
 #include <linux/binfmts.h>
 #include <linux/mm_types.h>
+#include <linux/nsproxy.h>
+#include <linux/pid_namespace.h>
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
 #include <uapi/linux/bpf_perf_event.h>
@@ -103,6 +260,7 @@ BPF_PROGRAM = r"""
 struct event_t {
     u64 timestamp_ns;
     u64 cgroup_id;
+    u64 pid_namespace_inode;
     u64 exec_seq;
     u64 cpu_ns;         /* per-task cumulative utime+stime at sample time */
     u64 rss_pages;      /* CURRENT rss = file+anon+shmem (not hiwater) */
@@ -130,6 +288,7 @@ BPF_ARRAY(ringbuf_reserve_failures, u64, 1);
 BPF_ARRAY(argv_read_failures, u64, 1);
 BPF_ARRAY(argv_boundary_read_failures, u64, 1);
 BPF_ARRAY(perf_sample_count, u64, 1);
+BPF_ARRAY(kprobe_total_hits, u64, 1);
 BPF_QUEUE(exec_sequences, u64, 65536);
 BPF_ARRAY(sequence_ready, u32, 1);
 struct task_key_t {
@@ -147,8 +306,15 @@ BPF_HASH(pending_seq, struct task_key_t, struct pending_exec_t);
 
 static int wanted(void) {
     u32 zero = 0;
+    u64 *counter = kprobe_total_hits.lookup(&zero);
+    if (counter) __sync_fetch_and_add(counter, 1);
     u64 *t = target_cgroup.lookup(&zero);
-    return t && *t && *t == bpf_get_current_cgroup_id();
+    /* When no cgroup is configured (t==NULL or *t==0), allow all events.
+     * This is intentionally permissive: if the container cgroup cannot be
+     * reliably identified (e.g. Docker creates child cgroups under the
+     * scope), we capture everything and let userspace filter by cgroup_id. */
+    if (!t || !*t) return 1;
+    return *t == bpf_get_current_cgroup_id();
 }
 
 static void lost(u64 *counter) {
@@ -177,6 +343,23 @@ static u32 parent_tgid(void) {
     bpf_probe_read_kernel(&parent, sizeof(parent), &task->real_parent);
     if (parent) bpf_probe_read_kernel(&tgid, sizeof(tgid), &parent->tgid);
     return tgid;
+}
+
+static u64 current_pid_namespace_inode(struct task_struct *task) {
+    struct nsproxy *nsproxy = 0;
+    struct pid_namespace *pid_ns = 0;
+    u32 inum = 0;
+    bpf_probe_read_kernel(&nsproxy, sizeof(nsproxy), &task->nsproxy);
+    if (!nsproxy) return 0;
+    bpf_probe_read_kernel(&pid_ns, sizeof(pid_ns), &nsproxy->pid_ns_for_children);
+    if (!pid_ns) return 0;
+    bpf_probe_read_kernel(&inum, sizeof(inum), &pid_ns->ns.inum);
+    return (u64)inum;
+}
+
+static void fill_identity(struct event_t *e, struct task_struct *task) {
+    e->cgroup_id = bpf_get_current_cgroup_id();
+    e->pid_namespace_inode = current_pid_namespace_inode(task);
 }
 
 static u64 current_rss_pages(struct task_struct *task, u64 *mm_out) {
@@ -242,7 +425,7 @@ static void capture_argv(
             }
             __builtin_memset(e, 0, sizeof(*e));
             e->timestamp_ns = bpf_ktime_get_ns();
-            e->cgroup_id = bpf_get_current_cgroup_id();
+            fill_identity(e, (struct task_struct *)bpf_get_current_task());
             e->exec_seq = seq;
             e->type = TYPE_EXEC_ARG;
             e->host_pid = pid_tgid >> 32;
@@ -295,7 +478,7 @@ static void capture_argv(
         } else {
             __builtin_memset(e, 0, sizeof(*e));
             e->timestamp_ns = bpf_ktime_get_ns();
-            e->cgroup_id = bpf_get_current_cgroup_id();
+            fill_identity(e, (struct task_struct *)bpf_get_current_task());
             e->exec_seq = seq;
             e->type = TYPE_EXEC_ARG;
             e->host_pid = pid_tgid >> 32;
@@ -318,7 +501,7 @@ static void emit_kernel_exec_meta(
     }
     __builtin_memset(e, 0, sizeof(*e));
     e->timestamp_ns = bpf_ktime_get_ns();
-    e->cgroup_id = bpf_get_current_cgroup_id();
+    fill_identity(e, (struct task_struct *)bpf_get_current_task());
     e->exec_seq = seq;
     e->type = type;
     e->host_pid = pid_tgid >> 32;
@@ -359,7 +542,7 @@ static int capture_enter(const char *filename, const char *const *argv) {
     } else {
         __builtin_memset(e, 0, sizeof(*e));
         e->timestamp_ns = bpf_ktime_get_ns();
-        e->cgroup_id = bpf_get_current_cgroup_id();
+        fill_identity(e, (struct task_struct *)bpf_get_current_task());
         e->exec_seq = seq;
         e->type = TYPE_EXEC_META;
         e->host_pid = pid_tgid >> 32;
@@ -375,12 +558,61 @@ static int capture_enter(const char *filename, const char *const *argv) {
     return 0;
 }
 
-TRACEPOINT_PROBE(syscalls, sys_enter_execve) {
-    return capture_enter(args->filename, (const char *const *)args->argv);
+/*
+ * CONFIG_ARCH_HAS_SYSCALL_WRAPPER kernels (including x86_64 and arm64) pass
+ * one pointer to the saved syscall register frame to __*_sys_execve*. The outer
+ * kprobe frame therefore does not contain the syscall arguments directly.
+ * Treating PT_REGS_PARM1(ctx) as filename saves the inner pt_regs pointer as a
+ * user address and makes every later filename/argv read fail.
+ */
+static struct pt_regs *syscall_argument_regs(struct pt_regs *ctx) {
+#ifdef CONFIG_ARCH_HAS_SYSCALL_WRAPPER
+    return (struct pt_regs *)PT_REGS_PARM1(ctx);
+#else
+    return ctx;
+#endif
 }
 
-TRACEPOINT_PROBE(syscalls, sys_enter_execveat) {
-    return capture_enter(args->filename, (const char *const *)args->argv);
+int capture_sys_execve(struct pt_regs *ctx) {
+    struct pt_regs *regs = syscall_argument_regs(ctx);
+#ifdef CONFIG_ARCH_HAS_SYSCALL_WRAPPER
+    u64 filename = 0;
+    u64 argv = 0;
+    bpf_probe_read_kernel(
+        &filename, sizeof(filename), &PT_REGS_PARM1(regs)
+    );
+    bpf_probe_read_kernel(&argv, sizeof(argv), &PT_REGS_PARM2(regs));
+    return capture_enter(
+        (const char *)filename,
+        (const char *const *)argv
+    );
+#else
+    return capture_enter(
+        (const char *)PT_REGS_PARM1(regs),
+        (const char *const *)PT_REGS_PARM2(regs)
+    );
+#endif
+}
+
+int capture_sys_execveat(struct pt_regs *ctx) {
+    struct pt_regs *regs = syscall_argument_regs(ctx);
+#ifdef CONFIG_ARCH_HAS_SYSCALL_WRAPPER
+    u64 filename = 0;
+    u64 argv = 0;
+    bpf_probe_read_kernel(
+        &filename, sizeof(filename), &PT_REGS_PARM2(regs)
+    );
+    bpf_probe_read_kernel(&argv, sizeof(argv), &PT_REGS_PARM3(regs));
+    return capture_enter(
+        (const char *)filename,
+        (const char *const *)argv
+    );
+#else
+    return capture_enter(
+        (const char *)PT_REGS_PARM2(regs),
+        (const char *const *)PT_REGS_PARM3(regs)
+    );
+#endif
 }
 
 /* copy_strings() has faulted the original argv pages before bprm_execve.
@@ -464,7 +696,7 @@ static int on_exec_return(long ret) {
         } else {
             __builtin_memset(e, 0, sizeof(*e));
             e->timestamp_ns = bpf_ktime_get_ns();
-            e->cgroup_id = bpf_get_current_cgroup_id();
+            fill_identity(e, (struct task_struct *)bpf_get_current_task());
             e->exec_seq = pending->seq;
             e->type = ret < 0 ? TYPE_FAILED_EXEC_ATTEMPT : TYPE_EXEC_BOUNDARY;
             e->host_pid = pid_tgid >> 32;
@@ -484,8 +716,13 @@ static int on_exec_return(long ret) {
     return 0;
 }
 
-TRACEPOINT_PROBE(syscalls, sys_exit_execve) { return on_exec_return(args->ret); }
-TRACEPOINT_PROBE(syscalls, sys_exit_execveat) { return on_exec_return(args->ret); }
+int capture_sys_execve_return(struct pt_regs *ctx) {
+    return on_exec_return(PT_REGS_RC(ctx));
+}
+
+int capture_sys_execveat_return(struct pt_regs *ctx) {
+    return on_exec_return(PT_REGS_RC(ctx));
+}
 
 /* Fork lineage must be TGID-consistent with every other event (which key on
  * tgid = pid_tgid>>32). The tracepoint's parent_pid/child_pid are TIDs; using
@@ -508,7 +745,7 @@ RAW_TRACEPOINT_PROBE(sched_process_fork) {
     if (!e) { ringbuf_reserve_failed(); return 0; }
     __builtin_memset(e, 0, sizeof(*e));
     e->timestamp_ns = bpf_ktime_get_ns();
-    e->cgroup_id = bpf_get_current_cgroup_id();
+    fill_identity(e, (struct task_struct *)bpf_get_current_task());
     e->exec_seq = ~0ULL;
     e->type = TYPE_FORK;
     e->host_pid = bpf_get_current_pid_tgid() >> 32;  /* parent TGID */
@@ -542,7 +779,7 @@ TRACEPOINT_PROBE(sched, sched_process_exit) {
     __builtin_memset(e, 0, sizeof(*e));
     fill_counters(e, task);
     e->timestamp_ns = bpf_ktime_get_ns();
-    e->cgroup_id = bpf_get_current_cgroup_id();
+    fill_identity(e, task);
     e->exec_seq = seq ? *seq : ~0ULL;
     e->hiwater_pages = hiwater;
     e->type = TYPE_EXIT_BOUNDARY;
@@ -587,7 +824,7 @@ int on_cpu_clock(struct bpf_perf_event_data *ctx) {
     __builtin_memset(e, 0, sizeof(*e));
     fill_counters(e, task);
     e->timestamp_ns = bpf_ktime_get_ns();
-    e->cgroup_id = bpf_get_current_cgroup_id();
+    fill_identity(e, task);
     e->exec_seq = seq ? *seq : ~0ULL;
     e->type = TYPE_PERF;
     e->host_pid = pid_tgid >> 32;
@@ -752,6 +989,19 @@ def _replay_tool_result(
     return result
 
 
+def _runtime_response_exit_code(
+    replay_response: Mapping[str, Any] | None,
+) -> int | None:
+    """Read either SDK or scheduler naming for a completed process status."""
+
+    if replay_response is None:
+        return None
+    raw = replay_response.get("returncode")
+    if raw is None:
+        raw = replay_response.get("exit_code")
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) else None
+
+
 def shell_command_lookup_failure_evidence(
     *,
     command: str,
@@ -763,54 +1013,64 @@ def shell_command_lookup_failure_evidence(
     replay_stderr: str,
     replay_exit_code: int | None,
 ) -> ShellCommandLookupFailure | None:
-    """Return strict source/replay command-lookup evidence, else no evidence."""
+    """Return strict command-lookup evidence, else no evidence.
+
+    Offline replay uses independent source and replay results.  A live
+    managed-wrapper call has only one authoritative execution result; requiring
+    a synthetic source action there made ordinary ``missing | tail`` pipelines
+    permanently invalid even though the anchored shell diagnostic and parser
+    semantics were unambiguous.
+    """
 
     from tool_resource.clause_bridge import (
         ShellCommandLookupFailure,
         shell_lookup_exit_semantics,
     )
 
-    if (
-        not source_tool_call_id
-        or not replay_tool_call_id
-        or source_command != command
-        or replay_exit_code not in {0, 127}
-    ):
+    if not replay_tool_call_id or replay_exit_code not in {0, 127}:
         return None
-    source_exit_code = _strict_exit_code(source_tool_result)
-    if source_exit_code != replay_exit_code:
-        return None
-    source_match = _anchored_command_not_found(source_tool_result)
     replay_channel = "raw_stderr" if replay_stderr else "tool_result"
     replay_match = _anchored_command_not_found(
         replay_stderr if replay_stderr else replay_result
     )
-    if (
-        source_match is None
-        or replay_match is None
-        or source_match[0] != replay_match[0]
-    ):
+    if replay_match is None:
         return None
+    source_match: tuple[str, str] | None = None
+    source_exit_code = replay_exit_code
+    evidence_mode = "live_execution"
+    source_channel = "unavailable"
+    if source_tool_call_id:
+        if source_command != command:
+            return None
+        source_exit_code = _strict_exit_code(source_tool_result)
+        if source_exit_code != replay_exit_code:
+            return None
+        source_match = _anchored_command_not_found(source_tool_result)
+        if source_match is None or source_match[0] != replay_match[0]:
+            return None
+        evidence_mode = "source_replay"
+        source_channel = "source_tool_result"
     exit_code_semantics = shell_lookup_exit_semantics(
         command,
-        source_match[0],
-        source_exit_code,
+        replay_match[0],
+        replay_exit_code,
     )
     if exit_code_semantics is None:
         return None
     return ShellCommandLookupFailure(
-        executable_head=source_match[0],
+        executable_head=replay_match[0],
         command=command,
         source_tool_call_id=source_tool_call_id,
         replay_tool_call_id=replay_tool_call_id,
         source_exit_code=source_exit_code,
         replay_exit_code=replay_exit_code,
-        source_diagnostic=source_match[1],
+        source_diagnostic=source_match[1] if source_match is not None else "",
         replay_diagnostic=replay_match[1],
-        source_channel="source_tool_result",
+        source_channel=source_channel,
         replay_channel=replay_channel,
         parser="anchored_shell_command_not_found_v1",
         exit_code_semantics=exit_code_semantics,
+        evidence_mode=evidence_mode,
     )
 
 
@@ -872,11 +1132,38 @@ def _rmdir_with_retry(cg: Path, attempts: int = 25, delay_s: float = 0.02) -> No
 def collect_case(command: str, tag: str, *, marker: str = "") -> RawRun:
     """Attach the sampler, run ``sh -c command`` in a fresh cgroup, analyze raw."""
 
+    _ensure_bcc_importable()
     from bcc import BPF, PerfSWConfig, PerfType
 
     cg = _new_cgroup(tag)
     cgroup_id = cg.stat().st_ino
     bpf = BPF(text=BPF_PROGRAM)
+    _attach_first_kprobe(
+        bpf,
+        BPF,
+        syscall="execve",
+        fn_name="capture_sys_execve",
+    )
+    _attach_first_kprobe(
+        bpf,
+        BPF,
+        syscall="execveat",
+        fn_name="capture_sys_execveat",
+    )
+    _attach_first_kprobe(
+        bpf,
+        BPF,
+        syscall="execve",
+        fn_name="capture_sys_execve_return",
+        retprobe=True,
+    )
+    _attach_first_kprobe(
+        bpf,
+        BPF,
+        syscall="execveat",
+        fn_name="capture_sys_execveat_return",
+        retprobe=True,
+    )
     bpf.attach_kprobe(event="bprm_execve", fn_name="capture_bprm_argv")
     bpf.attach_kprobe(
         event="bprm_change_interp", fn_name="capture_interp_change"
@@ -969,6 +1256,61 @@ def collect_case(command: str, tag: str, *, marker: str = "") -> RawRun:
         argv_read_failures=loss_counts["argv_read_failures"],
         argv_boundary_read_failures=loss_counts["argv_boundary_read_failures"],
     )
+
+
+def validate_clause_telemetry_smoke() -> dict[str, Any]:
+    """Exercise the real exec/cgroup path and reject semantically empty BPF data."""
+
+    marker = "claw-stage2-preflight"
+    raw = collect_case(
+        f"printf {marker}",
+        f"preflight_{os.getpid()}",
+        marker=marker,
+    )
+    argv = [
+        str(event.get("arg") or "")
+        for event in raw.events
+        if event.get("type") == "exec_arg"
+    ]
+    requested_paths = [
+        str(event.get("arg") or "")
+        for event in raw.events
+        if event.get("type") == "exec_meta"
+    ]
+    exec_boundaries = sum(
+        event.get("type") == "exec_boundary" for event in raw.events
+    )
+    errors: list[str] = []
+    if raw.status != 0:
+        errors.append(f"smoke command exited {raw.status}")
+    if not raw.marker:
+        errors.append("smoke stdout marker was not observed")
+    if raw.loss_count:
+        detail = ", ".join(
+            f"{name}={count}" for name, count in raw.loss_counts.items() if count
+        )
+        errors.append(f"telemetry loss={raw.loss_count} ({detail})")
+    if not any(argv):
+        errors.append("no non-empty exec argv was captured")
+    if not any(requested_paths):
+        errors.append("no non-empty requested executable path was captured")
+    if exec_boundaries < 1:
+        errors.append("no successful exec boundary was captured")
+    uncleared = {
+        name: count for name, count in raw.lifecycle_map_entries.items() if count
+    }
+    if uncleared:
+        errors.append(f"lifecycle maps were not drained: {uncleared}")
+    if errors:
+        raise RuntimeError("Stage-2 semantic smoke failed: " + "; ".join(errors))
+    return {
+        "ok": True,
+        "event_count": len(raw.events),
+        "exec_arg_count": len(argv),
+        "exec_boundary_count": exec_boundaries,
+        "requested_executable_count": len(requested_paths),
+        "loss_counts": raw.loss_counts,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2118,6 +2460,87 @@ def _command_tree_provenance(
     return entries[0], set(roots), provenance
 
 
+def _isolate_call_events(
+    events: list[dict[str, Any]],
+    command: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Select one exact launcher command tree from a shared-cgroup window.
+
+    Concurrent exec calls can have independent collectors targeting the same
+    sandbox cgroup.  Their monotonic windows may overlap, so timestamp and
+    cgroup alone do not delimit a call.  The launcher provides a stronger
+    boundary: the root shell argv contains the exact registered command.
+    Ambiguous or absent matches remain unfiltered and therefore fail closed in
+    ``_command_tree_provenance``.
+    """
+
+    clauses, fork_parent = _clauses_and_lineage(events)
+    exec_pids = {clause.host_pid for clause in clauses}
+    root_pids: set[int] = set()
+    for pid in exec_pids:
+        current = fork_parent.get(pid, 0)
+        seen = {pid}
+        has_exec_ancestor = False
+        while current and current not in seen:
+            if current in exec_pids:
+                has_exec_ancestor = True
+                break
+            seen.add(current)
+            current = fork_parent.get(current, 0)
+        if not has_exec_ancestor:
+            root_pids.add(pid)
+
+    candidates = {
+        clause.host_pid
+        for clause in clauses
+        if clause.host_pid in root_pids
+        and len(clause.argv) >= 3
+        and Path(clause.argv[0]).name in {"sh", "dash", "bash"}
+        and clause.argv[1] in {"-c", "-lc"}
+        and clause.argv[2] == command
+    }
+    selection = {
+        "mode": "not_needed" if len(root_pids) <= 1 else "unresolved",
+        "window_root_pids": sorted(root_pids),
+        "matching_root_pids": sorted(candidates),
+        "raw_window_event_count": len(events),
+        "selected_event_count": len(events),
+    }
+    if len(root_pids) <= 1:
+        return events, selection
+    if len(candidates) != 1:
+        return events, selection
+
+    selected_root = next(iter(candidates))
+    selected_pids = {selected_root}
+    changed = True
+    while changed:
+        changed = False
+        for child, parent in fork_parent.items():
+            if parent in selected_pids and child not in selected_pids:
+                selected_pids.add(child)
+                changed = True
+
+    selected_events = [
+        event
+        for event in events
+        if int(event.get("host_pid", 0)) in selected_pids
+        or (
+            event.get("type") == "fork"
+            and int(event.get("child_host_pid", 0)) in selected_pids
+        )
+    ]
+    selection.update(
+        {
+            "mode": "exact_launcher_command",
+            "selected_root_pid": selected_root,
+            "selected_pid_count": len(selected_pids),
+            "selected_event_count": len(selected_events),
+        }
+    )
+    return selected_events, selection
+
+
 def validate_clause_telemetry_runtime(
     *,
     container_executable: str | None,
@@ -2137,11 +2560,23 @@ def validate_clause_telemetry_runtime(
     if not Path("/sys/fs/cgroup/cgroup.controllers").is_file():
         raise ValueError("clause telemetry requires cgroup v2")
     try:
-        import bcc  # noqa: F401
+        _ensure_bcc_importable()
     except ImportError as exc:
         raise ValueError(
             "clause telemetry requires BCC Python bindings in the active interpreter"
         ) from exc
+
+
+def _is_root_cgroup_str(cgroup_path: str) -> bool:
+    """Return True when *cgroup_path* is the host cgroup v2 root.
+
+    The root cgroup (``/sys/fs/cgroup``) is never the correct eBPF target
+    because every process belongs to a leaf cgroup whose inode differs from
+    the root.  Using it would cause the BPF ``wanted()`` filter to silently
+    match zero events.
+    """
+    normalized = cgroup_path.replace("\\", "/").rstrip("/")
+    return normalized in {"/sys/fs/cgroup", "/sys/fs/cgroup/unified"}
 
 
 def _container_cgroup(
@@ -2177,12 +2612,174 @@ def _container_cgroup(
     return cgroup, init_pid
 
 
+def _pid_namespace_inode_for_pid(pid: int) -> int | None:
+    try:
+        target = os.readlink(f"/proc/{pid}/ns/pid")
+    except OSError:
+        return None
+    if target.startswith("pid:[") and target.endswith("]"):
+        try:
+            return int(target[5:-1])
+        except ValueError:
+            return None
+    return None
+
+
+def _discover_leaf_cgroup_inodes(cgroup: Path) -> set[int]:
+    """Return inode numbers for *cgroup* and all related cgroups.
+
+    On Docker / cgroup v2 with systemd, ``docker exec`` often creates a
+    *sibling* transient scope under the same parent directory (e.g.
+    ``/sys/fs/cgroup/system.slice/``) rather than a *child* cgroup under
+    the container's scope.  The sibling and the container scope share a
+    common container-ID prefix in their directory names, so we scan the
+    parent directory for all entries with the same prefix in addition to
+    walking the descendant tree.
+    """
+    inodes: set[int] = set()
+    try:
+        inodes.add(cgroup.stat().st_ino)
+    except OSError:
+        pass
+
+    # Child cgroups (legacy / nested container runtimes).
+    try:
+        for entry in cgroup.rglob("*"):
+            if entry.is_dir():
+                try:
+                    inodes.add(entry.stat().st_ino)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+    # Sibling cgroups sharing the same container-id prefix
+    # (e.g. systemd transient scopes for docker exec).
+    _add_sibling_cgroup_inodes(cgroup, inodes)
+
+    return inodes
+
+
+def _add_sibling_cgroup_inodes(
+    cgroup: Path,
+    inodes: set[int],
+) -> None:
+    """Add inodes of sibling cgroups whose name starts with the same prefix.
+
+    Docker scope names follow the pattern
+    ``docker-<container_id>[(.<suffix>)].scope``.  Systemd transient scopes
+    for ``docker exec`` are siblings of the container scope and share the
+    container-id prefix.
+    """
+    parent = cgroup.parent
+    if parent is None:
+        return
+    # Extract the container-id prefix from the cgroup directory name.
+    # Typical name: "docker-8de5ac85ada8….scope"
+    # The sibling for exec might be "docker-8de5ac85ada8….scope" (different suffix)
+    # or a systemd transient like "docker-8de5ac85ada8….scope:<uuid>".
+    name = cgroup.name
+    # Find the longest common prefix with other directory entries.
+    # We look for entries that share at least the first 32 hex chars of
+    # the container id (which always follows "docker-").
+    if not name.startswith("docker-"):
+        return
+    try:
+        prefix = name[: 7 + 32]  # "docker-" + 32 hex chars
+    except IndexError:
+        return
+    try:
+        for entry in parent.iterdir():
+            if not entry.is_dir():
+                continue
+            if entry == cgroup:
+                continue
+            if entry.name.startswith(prefix):
+                try:
+                    inodes.add(entry.stat().st_ino)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
+def _container_pid_set(
+    events: list[dict[str, Any]],
+    init_pid: int,
+    *,
+    cgroup_inodes: set[int] | None = None,
+    pid_namespace_inodes: set[int] | None = None,
+) -> set[int]:
+    """Return the set of host PIDs belonging to the container rooted at *init_pid*.
+
+    Discovery is done in two modes:
+
+    *When *cgroup_inodes* is provided (non-empty)* — PIDs are discovered
+    via cgroup membership: any ``host_pid`` or ``child_host_pid`` whose
+    event ``cgroup_id`` matches a known container cgroup inode is added.
+    This correctly handles Docker exec processes whose ``real_parent``
+    points outside the container (e.g. containerd-shim), breaking the
+    fork/exec lineage chain.  Lineage traversal is skipped because
+    cgroup membership is authoritative.
+
+    *When *cgroup_inodes* is ``None`` or empty* — the legacy fork/exec
+    lineage pass runs: fork events grow the tree, and exec events whose
+    ``parent_host_pid`` is already known add their ``host_pid``.  This
+    handles long-lived processes that were forked before the collector
+    started.
+    """
+    if init_pid <= 0:
+        return set()
+    pids: set[int] = {init_pid}
+
+    # --- namespace/cgroup-based discovery (authoritative when available) ---
+    if cgroup_inodes or pid_namespace_inodes:
+        for event in events:
+            cg = event.get("cgroup_id", 0)
+            pid_ns = event.get("pid_namespace_inode", 0)
+            if (
+                (not cgroup_inodes or cg not in cgroup_inodes)
+                and (not pid_namespace_inodes or pid_ns not in pid_namespace_inodes)
+            ):
+                continue
+            host = event.get("host_pid", 0)
+            child = event.get("child_host_pid", 0)
+            if host > 0:
+                pids.add(host)
+            if child > 0:
+                pids.add(child)
+        return pids
+
+    # --- lineage pass (legacy, no cgroup info available) ------------------
+    changed = True
+    while changed:
+        changed = False
+        for event in events:
+            host = event.get("host_pid", 0)
+            parent = event.get("parent_host_pid", 0)
+            child = event.get("child_host_pid", 0)
+            if host > 0 and host not in pids:
+                if parent in pids:
+                    pids.add(host)
+                    changed = True
+                elif event.get("type") == "fork" and host in pids:
+                    if child > 0 and child not in pids:
+                        pids.add(child)
+                        changed = True
+            elif host > 0 and event.get("type") == "fork" and host in pids:
+                if child > 0 and child not in pids:
+                    pids.add(child)
+                    changed = True
+    return pids
+
+
 def _event_row(table: Any, data: int) -> dict[str, Any]:
     event = table.event(data)
     row = {
         "type": TYPE_NAMES[int(event.type)],
         "ts_ns": int(event.timestamp_ns),
         "cgroup_id": int(event.cgroup_id),
+        "pid_namespace_inode": int(event.pid_namespace_inode),
         "exec_seq": int(event.exec_seq),
         "cpu_ns": int(event.cpu_ns),
         "rss_pages": int(event.rss_pages),
@@ -2318,15 +2915,48 @@ class ClauseTelemetryCollector:
         container_executable: str,
         repo: str,
         artifact_path: Path,
+        cgroup_path: str | None = None,
         source_actions: Sequence[Mapping[str, Any]] = (),
     ) -> None:
+        _ensure_bcc_importable()
         from bcc import BPF, PerfSWConfig, PerfType
 
-        cgroup, init_pid = _container_cgroup(container_id, container_executable)
+        if cgroup_path is not None and not _is_root_cgroup_str(cgroup_path):
+            cgroup = Path(cgroup_path)
+            if not cgroup.is_dir():
+                raise RuntimeError(f"explicit cgroup path does not exist: {cgroup}")
+            # Resolve init_pid from container for informational purposes only;
+            # entry_pid for analysis is derived from events, not from init_pid.
+            result = subprocess.run(
+                [container_executable, "inspect", container_id, "--format", "{{.State.Pid}}"],
+                capture_output=True, text=True, check=False,
+            )
+            init_pid = int(result.stdout.strip()) if result.stdout.strip().isdigit() else 0
+        else:
+            if cgroup_path is not None:
+                # The host root cgroup (/sys/fs/cgroup) is never the correct
+                # eBPF target.  Every process belongs to a leaf cgroup whose
+                # inode differs from the root, so the BPF wanted() filter
+                # would silently match zero events.  Fall through to
+                # container-based discovery instead.
+                pass
+            cgroup, init_pid = _container_cgroup(container_id, container_executable)
         self.container_id = container_id
         self.cgroup = cgroup
         self.cgroup_id = cgroup.stat().st_ino
+        # Discover all cgroup inodes under the container scope so the
+        # Python event filter can match processes in child cgroups that
+        # Docker/containerd may create.  The BPF wanted() filter is left
+        # permissive (target_cgroup=0) to avoid silent event loss when the
+        # exact leaf cgroup is not known ahead of time.
+        self.cgroup_inodes = (
+            _discover_leaf_cgroup_inodes(cgroup) if cgroup else {self.cgroup_id}
+        )
+        if not self.cgroup_inodes and self.cgroup_id:
+            self.cgroup_inodes = {self.cgroup_id}
         self.init_pid = init_pid
+        init_pid_ns = _pid_namespace_inode_for_pid(init_pid) if init_pid > 0 else None
+        self.pid_namespace_inodes = {init_pid_ns} if init_pid_ns is not None else set()
         self.quota_cores = observed_quota_cores(cgroup)
         self.repo = repo
         self.artifact_path = artifact_path
@@ -2352,8 +2982,41 @@ class ClauseTelemetryCollector:
         ]
         self._source_exec_index = 0
 
-        self._bpf = BPF(text=BPF_PROGRAM)
         try:
+            self._bpf = BPF(text=BPF_PROGRAM)
+        except BaseException as exc:
+            self._closed = True
+            self._cleanup_status = "not_started"
+            raise RuntimeError(
+                _bpf_setup_error_message("BPF module load failed", exc)
+            ) from exc
+        try:
+            _attach_first_kprobe(
+                self._bpf,
+                BPF,
+                syscall="execve",
+                fn_name="capture_sys_execve",
+            )
+            _attach_first_kprobe(
+                self._bpf,
+                BPF,
+                syscall="execveat",
+                fn_name="capture_sys_execveat",
+            )
+            _attach_first_kprobe(
+                self._bpf,
+                BPF,
+                syscall="execve",
+                fn_name="capture_sys_execve_return",
+                retprobe=True,
+            )
+            _attach_first_kprobe(
+                self._bpf,
+                BPF,
+                syscall="execveat",
+                fn_name="capture_sys_execveat_return",
+                retprobe=True,
+            )
             self._bpf.attach_kprobe(
                 event="bprm_execve", fn_name="capture_bprm_argv"
             )
@@ -2364,9 +3027,8 @@ class ClauseTelemetryCollector:
             for sequence in range(8192):
                 queue.push(ctypes.c_ulonglong(sequence))
             self._bpf["sequence_ready"][ctypes.c_int(0)] = ctypes.c_uint(1)
-            self._bpf["target_cgroup"][ctypes.c_int(0)] = ctypes.c_ulonglong(
-                self.cgroup_id
-            )
+            # target_cgroup stays 0 → wanted() is permissive (allow all).
+            # Python-side filtering by self.cgroup_inodes discards noise.
             self._table = self._bpf["events"]
 
             def receive(_ctx: int, data: int, _size: int) -> int:
@@ -2399,7 +3061,7 @@ class ClauseTelemetryCollector:
             )
             self._perf_type = PerfType
             self._perf_config = PerfSWConfig
-        except BaseException:
+        except BaseException as exc:
             self._stop_poll.set()
             poller = getattr(self, "_poller", None)
             if poller is not None:
@@ -2407,7 +3069,9 @@ class ClauseTelemetryCollector:
             self._bpf.cleanup()
             self._closed = True
             self._cleanup_status = "ok"
-            raise
+            raise RuntimeError(
+                _bpf_setup_error_message("BPF collector attach failed", exc)
+            ) from exc
 
     @classmethod
     def unavailable(
@@ -2425,7 +3089,9 @@ class ClauseTelemetryCollector:
         collector.container_id = container_id
         collector.cgroup = None
         collector.cgroup_id = 0
+        collector.cgroup_inodes = set()
         collector.init_pid = 0
+        collector.pid_namespace_inodes = set()
         collector.quota_cores = 0.0
         collector.repo = repo
         collector.artifact_path = artifact_path
@@ -2601,12 +3267,53 @@ class ClauseTelemetryCollector:
                 _counter(self._bpf, "perf_sample_count") - token.perf_sample_count
             )
             with self._events_lock:
+                # Build the container PID set from *all* captured events
+                # (not just the time window) because fork events that
+                # created long-lived container processes may predate the
+                # current command's start time.
+                container_pids = _container_pid_set(
+                    list(self._events),
+                    self.init_pid,
+                    cgroup_inodes=self.cgroup_inodes,
+                    pid_namespace_inodes=self.pid_namespace_inodes,
+                )
+                # --- diagnostic logging ---
+                import sys as _sys
+                _exec_cgroups: dict[int, int] = {}
+                for _e in self._events:
+                    if _e.get("type") == "exec_boundary":
+                        _cg = _e.get("cgroup_id", 0)
+                        _exec_cgroups[_cg] = _exec_cgroups.get(_cg, 0) + 1
+                _matched = sum(
+                    1 for _p in (e.get("host_pid",0) for e in self._events if e.get("type")=="exec_boundary")
+                    if _p in container_pids
+                )
+                print(
+                    f"[telemetry:diag] call={token.tool_call_id} "
+                    f"container_pids={len(container_pids)} "
+                    f"matched={_matched} "
+                    f"exec_cgroup_dist={sorted(_exec_cgroups.items())} "
+                    f"cgroup_inodes={sorted(self.cgroup_inodes)} "
+                    f"pid_namespace_inodes={sorted(self.pid_namespace_inodes)}",
+                    file=_sys.stderr,
+                )
+                # --- end diagnostic ---
+                _runtime_identity_available = bool(
+                    self.cgroup_inodes or self.pid_namespace_inodes
+                )
                 events = sorted(
                     (
                         event
                         for event in self._events
                         if token.started_ns <= event["ts_ns"] <= ended_ns
-                        and event["cgroup_id"] == self.cgroup_id
+                        and (
+                            not _runtime_identity_available
+                            or event.get("cgroup_id", 0) in self.cgroup_inodes
+                            or event.get("pid_namespace_inode", 0)
+                            in self.pid_namespace_inodes
+                            or event.get("host_pid", 0) in container_pids
+                            or event.get("child_host_pid", 0) in container_pids
+                        )
                     ),
                     key=lambda event: event["ts_ns"],
                 )
@@ -2626,15 +3333,7 @@ class ClauseTelemetryCollector:
             if replay_response is not None
             else ""
         )
-        raw_replay_exit = (
-            replay_response.get("returncode") if replay_response is not None else None
-        )
-        replay_exit_code = (
-            raw_replay_exit
-            if isinstance(raw_replay_exit, int)
-            and not isinstance(raw_replay_exit, bool)
-            else None
-        )
+        replay_exit_code = _runtime_response_exit_code(replay_response)
         protocol_timeout = _is_protocol_timeout(
             replay_exit_code,
             replay_result,
@@ -2660,9 +3359,12 @@ class ClauseTelemetryCollector:
             ),
         }
         control_flow_fidelity["short_circuit_eligible"] = (
-            control_flow_fidelity["source_command_matches"]
-            and control_flow_fidelity["exit_code_matches"]
-            and control_flow_fidelity["tool_result_exact"]
+            not control_flow_fidelity["source_action_available"]
+            or (
+                control_flow_fidelity["source_command_matches"]
+                and control_flow_fidelity["exit_code_matches"]
+                and control_flow_fidelity["tool_result_exact"]
+            )
         )
         lookup_failure = shell_command_lookup_failure_evidence(
             command=token.command,
@@ -2704,6 +3406,8 @@ class ClauseTelemetryCollector:
                 "invalid_reasons": [
                     {"kind": "analysis_failure", "detail": message}
                 ],
+                "clauses": [],
+                "no_runtime_exec": [],
                 "integrity": {"status": "failed", "errors": [message]},
             }
             if isinstance(exc, ClauseTelemetryIntegrityError):
@@ -2788,6 +3492,8 @@ class ClauseTelemetryCollector:
                 "invalid_reasons": [
                     {"kind": "analysis_failure", "detail": message}
                 ],
+                "clauses": [],
+                "no_runtime_exec": [],
                 "integrity": {"status": "failed", "errors": [message]},
             }
             violations = [message]
@@ -2812,6 +3518,9 @@ class ClauseTelemetryCollector:
     ) -> tuple[dict[str, Any], list[str]]:
         from tool_resource.clause_bridge import bridge_command
 
+        collector_perf_samples = perf_samples
+        events, event_isolation = _isolate_call_events(events, token.command)
+        perf_samples = sum(event["type"] == "perf" for event in events)
         normalized_loss_counts = {
             name: int(loss_counts.get(name, 0)) for name in LOSS_COUNTER_NAMES
         }
@@ -2977,6 +3686,7 @@ class ClauseTelemetryCollector:
                 "peak_cpu_cores": bridged.observation.peak_cpu_cores,
                 "sampled_peak_rss_mb": bridged.observation.sampled_peak_rss_mb,
                 "cpu_ns_cumulative": bridged.observation.cpu_ns_cumulative,
+                "status": bridged.status,
                 "in_loop": bridged.observation.in_loop,
                 "in_pipe": bridged.observation.in_pipe,
                 "in_subst": bridged.observation.in_subst,
@@ -3010,6 +3720,14 @@ class ClauseTelemetryCollector:
                 "availability": resolved.availability,
                 "mapping_evidence": resolved.mapping_evidence,
                 "attempt_count": len(resolved.attempts),
+                "status": {
+                    "state": "not_executed",
+                    "exit_code": None,
+                    "signal": None,
+                    "succeeded": False,
+                    "reason": resolved.mapping_evidence,
+                    "source": "explicit_no_runtime_evidence",
+                },
             }
             if resolved.safety_guard_blocked is not None:
                 evidence = resolved.safety_guard_blocked
@@ -3035,6 +3753,7 @@ class ClauseTelemetryCollector:
                 return row
             if resolved.command_lookup_failure is None:
                 row["errno"] = sorted({attempt.errno for attempt in resolved.attempts})
+                row["status"]["state"] = "exec_failed"
                 row["provenance"] = {
                     "evidence_kind": "failed_execve",
                     "failed_exec_attempts": [
@@ -3049,8 +3768,21 @@ class ClauseTelemetryCollector:
                 }
                 return row
             evidence = resolved.command_lookup_failure
+            row["status"].update(
+                {
+                    "state": "exited",
+                    "exit_code": evidence.replay_exit_code,
+                    "reason": "shell_command_lookup_failure",
+                    "source": (
+                        "live_shell_exit_code"
+                        if evidence.evidence_mode == "live_execution"
+                        else "source_replay_exit_code"
+                    ),
+                }
+            )
             row["provenance"] = {
                 "evidence_kind": "shell_command_lookup_failure",
+                "evidence_mode": evidence.evidence_mode,
                 "parser": evidence.parser,
                 "command": evidence.command,
                 "executable_head": evidence.executable_head,
@@ -3074,7 +3806,7 @@ class ClauseTelemetryCollector:
             no_runtime_exec_row(resolved) for resolved in bridge.no_runtime_exec
         ]
         target_availability: dict[str, Any] = {}
-        for target in ("latency", "cpu", "memory"):
+        for target in ("latency", "cpu", "memory", "disk_io", "status"):
             values = [
                 clause["availability"][target]
                 for clause in [*clauses, *no_runtime_exec]
@@ -3152,10 +3884,12 @@ class ClauseTelemetryCollector:
                 **normalized_loss_counts,
                 "total": loss,
                 "perf_sample_count": perf_samples,
+                "collector_perf_sample_count": collector_perf_samples,
             },
             "ring_loss": {
                 "reserve_failures": loss,
                 "perf_sample_count": perf_samples,
+                "collector_perf_sample_count": collector_perf_samples,
             },
             "clauses": clauses,
             "no_runtime_exec": no_runtime_exec,
@@ -3170,6 +3904,7 @@ class ClauseTelemetryCollector:
                 "raw_event_count": len(events),
                 "exec_image_count": len(metrics),
                 "command_tree": command_tree,
+                "event_isolation": event_isolation,
                 "source_replay_control_flow_fidelity": (
                     dict(control_flow_fidelity)
                     if control_flow_fidelity is not None
@@ -3250,6 +3985,15 @@ class ClauseTelemetryCollector:
             total_loss_counts = dict.fromkeys(LOSS_COUNTER_NAMES, 0)
             self._disable(f"collector counter read failed: {type(exc).__name__}: {exc}")
         total_loss = sum(total_loss_counts.values())
+        # Read diagnostic kprobe counter to determine if kprobes fired at all.
+        try:
+            kprobe_hits = (
+                int(self._bpf["kprobe_total_hits"][ctypes.c_int(0)].value)
+                if self.state == "active" and hasattr(self, "_bpf")
+                else 0
+            )
+        except BaseException:
+            kprobe_hits = 0
         if self._active is not None:
             self._disable(
                 f"unterminated exec delimiter: {self._active.tool_call_id}",
@@ -3296,13 +4040,22 @@ class ClauseTelemetryCollector:
             and total_loss == 0
             and unavailable_count == 0
         )
-        telemetry_quality = "ok" if collector_healthy else "unavailable"
+        if not collector_healthy:
+            telemetry_quality = "unavailable"
+        elif invalid_count:
+            telemetry_quality = "invalid"
+        else:
+            telemetry_quality = "ok"
         formal_completeness = (
             "unavailable"
             if not collector_healthy
             else ("complete" if eligible_count == len(self.calls) else "partial")
         )
-        collection_validity = "valid" if collector_healthy else "invalid"
+        collection_validity = (
+            "valid"
+            if collector_healthy and invalid_count == 0
+            else "invalid"
+        )
         call_errors = {
             str(error)
             for call in self.calls
@@ -3321,6 +4074,7 @@ class ClauseTelemetryCollector:
         self.artifact_path.write_text(
             json.dumps(
                 {
+                    "schema": "clause_telemetry_v2",
                     "version": 2,
                     "mode": "clause",
                     "status_model": "call_granular_v1",
@@ -3346,6 +4100,7 @@ class ClauseTelemetryCollector:
                         "invalid_call_count": invalid_count,
                         "unavailable_call_count": unavailable_count,
                         "eligible_call_count": eligible_count,
+                        "kprobe_total_hits": kprobe_hits,
                     },
                     "call_coverage": {
                         "total_call_count": len(self.calls),
@@ -3360,7 +4115,11 @@ class ClauseTelemetryCollector:
                     "formal_completeness": formal_completeness,
                     "collection_validity": collection_validity,
                     "integrity": {
-                        "status": "ok" if collector_healthy else "failed",
+                        "status": (
+                            "ok"
+                            if collector_healthy and invalid_count == 0
+                            else "failed"
+                        ),
                         "errors": collector_errors,
                     },
                     "provenance": {
@@ -3420,5 +4179,6 @@ __all__ = [
     "analyze",
     "cpu_window_profile",
     "rss_bin_profile",
+    "validate_clause_telemetry_smoke",
     "validate_clause_telemetry_runtime",
 ]

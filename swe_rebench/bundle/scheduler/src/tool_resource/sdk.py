@@ -26,6 +26,7 @@ class DockerExecutionContext:
     container_executable: str
     repo: str
     artifact_path: Path
+    cgroup_path: str | None = None
     source_actions: Sequence[Mapping[str, Any]] = ()
 
     def __post_init__(self) -> None:
@@ -66,6 +67,7 @@ class DockerCommandObserver:
                 container_executable=context.container_executable,
                 repo=context.repo,
                 artifact_path=context.artifact_path,
+                cgroup_path=context.cgroup_path,
                 source_actions=context.source_actions,
             )
         except BaseException as exc:
@@ -82,6 +84,19 @@ class DockerCommandObserver:
     def calls(self) -> list[dict[str, Any]]:
         calls = getattr(self._collector, "calls", None)
         return calls if isinstance(calls, list) else []
+
+    @property
+    def telemetry_available(self) -> bool:
+        """Whether the eBPF collector is armed, not merely fail-isolated."""
+
+        return getattr(self._collector, "state", None) == "active"
+
+    @property
+    def unavailable_reason(self) -> str | None:
+        if self.telemetry_available:
+            return None
+        reason = getattr(self._collector, "_disabled_reason", None)
+        return str(reason) if reason else "collector_unavailable"
 
     def start(self, tool_call_id: str, command: str) -> CommandObservationToken:
         """Start observation immediately before the Docker runner executes."""

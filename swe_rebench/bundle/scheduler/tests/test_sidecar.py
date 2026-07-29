@@ -2,18 +2,48 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
+import agent_scheduler.api.app as app_module
 from agent_scheduler.api.app import create_app
 from agent_scheduler.api.dependencies import build_state
 from agent_scheduler.config import SchedulerConfig
-from agent_scheduler.llm_proxy import _forward_headers, _upstream_url
+from agent_scheduler.contracts.models import ParamFeatures, ToolBeforeRequest
+from agent_scheduler.llm_proxy import (
+    _forward_headers,
+    _parse_sse_buffer,
+    _upstream_url,
+)
 from agent_scheduler.monitoring.docker_exec import DockerExecObserver, _docker_events_command
 from agent_scheduler.monitoring.tool_runtime import _relative_timeline
+from agent_scheduler.trace import _coverage, _tool_timestamps
+
+
+def test_tool_action_window_uses_reported_duration_not_monitor_window() -> None:
+    sample = SimpleNamespace(started_at=100.0, ended_at=101.0)
+
+    assert _tool_timestamps(sample, 100) == (100.9, 101.0)
+
+
+def test_coverage_ratio_is_defensively_bounded() -> None:
+    duration_ns, ratio, reason = _coverage(
+        action_start_wall_ns=1_000,
+        action_end_wall_ns=2_000,
+        action_duration_ns=100,
+        monitor_start_wall_ns=900,
+        monitor_end_wall_ns=2_100,
+        has_pid=True,
+    )
+
+    assert duration_ns == 100
+    assert ratio == 1.0
+    assert reason == "full_window"
 
 
 def _read_trace_records(trace_dir: Path) -> list[dict]:
@@ -53,6 +83,7 @@ def _trace_client_with_sandbox_cgroup(tmp_path: Path, cgroup_path: Path) -> tupl
             trace_dir=trace_dir,
             sandbox_cgroup_path=str(cgroup_path),
             sandbox_container_id="sandbox-1",
+            tool_resource_stage2_required=False,
         )
     )
     return TestClient(create_app(state)), trace_dir
@@ -232,14 +263,38 @@ def test_metrics_endpoint(tmp_path: Path) -> None:
     assert "scheduler_tool_net_tx_bytes_per_second" in response.text
 
 
-def test_internal_tool_uses_shared_sandbox_cgroup_fallback(tmp_path: Path) -> None:
+def test_internal_tool_prefers_shared_sandbox_over_shared_runtime_scope(
+    tmp_path: Path,
+) -> None:
     cgroup = tmp_path / "cgroup"
+    runtime_cgroup = tmp_path / "runtime-cgroup"
     cgroup.mkdir()
+    runtime_cgroup.mkdir()
     (cgroup / "cpu.stat").write_text("usage_usec 100000\n", encoding="utf-8")
     (cgroup / "memory.current").write_text("4096\n", encoding="utf-8")
     (cgroup / "io.stat").write_text("8:0 rbytes=10 wbytes=20\n", encoding="utf-8")
     (cgroup / "cgroup.procs").write_text("", encoding="utf-8")
+    (runtime_cgroup / "cpu.stat").write_text("usage_usec 900000\n", encoding="utf-8")
+    (runtime_cgroup / "memory.current").write_text("8192\n", encoding="utf-8")
+    (runtime_cgroup / "io.stat").write_text(
+        "8:0 rbytes=100 wbytes=200\n", encoding="utf-8"
+    )
+    (runtime_cgroup / "cgroup.procs").write_text("", encoding="utf-8")
     client, trace_dir = _trace_client_with_sandbox_cgroup(tmp_path, cgroup)
+    shared_runtime_scope = {
+        "kind": "cgroup-v2",
+        "execution_id": None,
+        "pid": os.getpid(),
+        "root_pid": os.getpid(),
+        "process_start_time": None,
+        "root_starttime_ticks": None,
+        "cgroup_path": str(runtime_cgroup),
+        "pid_namespace_inode": None,
+        "container_id": None,
+        "include_children": True,
+        "source": "openclaw-runtime",
+        "attribution_source": "shared-runtime-process",
+    }
     request: dict[str, object] = {
         "schema_version": "scheduler.v1",
         "event_id": "evt-read-start",
@@ -264,7 +319,7 @@ def test_internal_tool_uses_shared_sandbox_cgroup_fallback(tmp_path: Path) -> No
             "has_command_like_field": False,
         },
         "raw_params": {"path": "README.md"},
-        "resource_scope": None,
+        "resource_scope": shared_runtime_scope,
     }
     decision = client.post("/v1/decisions/tool", json=request).json()
     (cgroup / "cpu.stat").write_text("usage_usec 200000\n", encoding="utf-8")
@@ -288,14 +343,20 @@ def test_internal_tool_uses_shared_sandbox_cgroup_fallback(tmp_path: Path) -> No
         "error_digest": None,
         "result_size_bytes": 4,
         "raw_result": "data",
-        "resource_scope": None,
+        "resource_scope": shared_runtime_scope,
     }
 
     assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
 
+    trace_records = _read_trace_records(trace_dir)
+    tool_start = [
+        record
+        for record in trace_records
+        if record.get("record_type") == "span_start" and record.get("kind") == "tool"
+    ][0]
     tool_end = [
         record
-        for record in _read_trace_records(trace_dir)
+        for record in trace_records
         if record.get("record_type") == "span_end" and record.get("kind") == "tool"
     ][0]
     assert tool_end["execution"]["cgroup_path"] == str(cgroup)
@@ -304,6 +365,10 @@ def test_internal_tool_uses_shared_sandbox_cgroup_fallback(tmp_path: Path) -> No
     assert tool_end["resources"]["coverage_reason"] == "shared_sandbox_container"
     assert tool_end["resources"]["monitor_duration_ns"] is not None
     assert tool_end["resources"]["cgroup_cpu_time_s"] is not None
+    assert (
+        int(tool_end["monotonic_time_ns"]) - int(tool_start["monotonic_time_ns"])
+        == int(tool_end["duration_ns"])
+    )
 
 
 def test_internal_tool_uses_docker_exec_inferred_scope_before_fallback(tmp_path: Path) -> None:
@@ -390,9 +455,11 @@ def test_internal_tool_uses_docker_exec_inferred_scope_before_fallback(tmp_path:
         for record in _read_trace_records(trace_dir)
         if record.get("record_type") == "span_end" and record.get("kind") == "tool"
     ][0]
-    assert tool_end["execution"]["cgroup_path"] == str(inferred_cgroup)
+    assert tool_end["execution"]["cgroup_path"] is None
+    assert tool_end["execution"]["payload_pid"] == os.getpid()
     assert tool_end["execution"]["source"] == "docker-events"
-    assert tool_end["resources"]["attribution_source"] == "docker-exec-inferred"
+    assert tool_end["resources"]["scope"] == "process_tree"
+    assert tool_end["resources"]["attribution_source"] == "docker-exec-pid"
     assert tool_end["resources"]["attribution_status"] == "attributed"
     assert tool_end["resources"]["coverage_reason"] != "shared_sandbox_container"
 
@@ -495,9 +562,11 @@ def test_internal_tool_overrides_shared_runtime_scope_with_docker_exec(tmp_path:
         for record in _read_trace_records(trace_dir)
         if record.get("record_type") == "span_end" and record.get("kind") == "tool"
     ][0]
-    assert tool_end["execution"]["cgroup_path"] == str(inferred_cgroup)
+    assert tool_end["execution"]["cgroup_path"] is None
+    assert tool_end["execution"]["payload_pid"] == os.getpid()
     assert tool_end["execution"]["source"] == "docker-events"
-    assert tool_end["resources"]["attribution_source"] == "docker-exec-inferred"
+    assert tool_end["resources"]["scope"] == "process_tree"
+    assert tool_end["resources"]["attribution_source"] == "docker-exec-pid"
     assert tool_end["resources"]["coverage_reason"] != "shared_runtime_process"
 
 
@@ -541,7 +610,56 @@ def test_docker_exec_event_uses_exec_id_attribute_not_container_id() -> None:
     assert observer._records[0].exec_id == "exec-real-id"
 
 
-def test_docker_exec_observer_subscribes_to_container_exec_start_events() -> None:
+def test_docker_exec_observer_binds_live_pid_before_completion() -> None:
+    bound = []
+    observer = DockerExecObserver(
+        enabled=True,
+        container_id="sandbox-1",
+        autostart=False,
+        on_scope=lambda tool_call_id, scope: (
+            bound.append((tool_call_id, scope)) or True
+        ),
+    )
+    observer.begin_tool(
+        ToolBeforeRequest(
+            schema_version="scheduler.v1",
+            event_id="evt-read",
+            occurred_at="2026-07-16T03:23:00Z",
+            plugin_version="0.1.0",
+            run_id="run-1",
+            session_id="session-1",
+            session_key=None,
+            agent_id=None,
+            tool_call_id="call-read",
+            tool_name="read",
+            tool_kind="file",
+            tool_input_kind="json",
+            derived_paths=[],
+            params_digest="sha256:" + "a" * 64,
+            param_features=ParamFeatures(
+                serialized_size_bytes=1,
+                string_length=1,
+                list_item_count=0,
+                path_count=1,
+                has_command_like_field=False,
+            ),
+        )
+    )
+
+    observer.record_exec_start(
+        exec_id="exec-read",
+        container_id="sandbox-1",
+        pid=os.getpid(),
+        command="openclaw-sandbox-fs read README.md",
+    )
+
+    assert bound[0][0] == "call-read"
+    assert bound[0][1].kind == "pid"
+    assert bound[0][1].pid == os.getpid()
+    assert bound[0][1].attribution_source == "docker-exec-pid"
+
+
+def test_docker_exec_observer_subscribes_before_container_exec_start() -> None:
     command = _docker_events_command("docker")
 
     assert command == [
@@ -551,6 +669,8 @@ def test_docker_exec_observer_subscribes_to_container_exec_start_events() -> Non
         "{{json .}}",
         "--filter",
         "type=container",
+        "--filter",
+        "event=exec_create",
         "--filter",
         "event=exec_start",
     ]
@@ -629,6 +749,652 @@ def test_exec_tool_can_use_shared_sandbox_cgroup_fallback(tmp_path: Path) -> Non
     assert tool_end["resources"]["coverage_reason"] == "shared_sandbox_container"
 
 
+@pytest.mark.parametrize("launcher_cgroup_path", ["/sys/fs/cgroup", None])
+def test_exec_unusable_launcher_scope_falls_back_to_shared_sandbox(
+    tmp_path: Path,
+    launcher_cgroup_path: str | None,
+) -> None:
+    cgroup = tmp_path / "cgroup"
+    cgroup.mkdir()
+    (cgroup / "cpu.stat").write_text("usage_usec 100000\n", encoding="utf-8")
+    (cgroup / "memory.current").write_text("4096\n", encoding="utf-8")
+    (cgroup / "io.stat").write_text("8:0 rbytes=10 wbytes=20\n", encoding="utf-8")
+    (cgroup / "cgroup.procs").write_text("", encoding="utf-8")
+    client, trace_dir = _trace_client_with_sandbox_cgroup(tmp_path, cgroup)
+    request: dict[str, object] = {
+        "schema_version": "scheduler.v1",
+        "event_id": "evt-exec-start",
+        "occurred_at": "2026-07-16T03:23:00Z",
+        "plugin_version": "0.1.0",
+        "run_id": "run-sandbox-root-exec",
+        "session_id": "session-sandbox-root-exec",
+        "session_key": None,
+        "agent_id": None,
+        "tool_call_id": "call-exec",
+        "tool_name": "exec",
+        "tool_kind": "shell",
+        "tool_input_kind": "json",
+        "operation_hint": "ls",
+        "derived_paths": [],
+        "params_digest": "sha256:" + "b" * 64,
+        "param_features": {
+            "serialized_size_bytes": 10,
+            "string_length": 5,
+            "list_item_count": 0,
+            "path_count": 0,
+            "has_command_like_field": True,
+        },
+        "raw_params": {"command": "ls"},
+        "resource_scope": None,
+    }
+    decision = client.post("/v1/decisions/tool", json=request).json()
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-sandbox-root-exec",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "ls",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"mode": "off"},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": os.getpid(),
+        },
+    ).json()
+    client.post(
+        "/v2/executions/call-exec/started",
+        json={
+            "update_token": claim["update_token"],
+            "launcher_pid": os.getpid(),
+            # A container PID can collide with a real host PID.  It must not
+            # replace the host-side sandbox cgroup sampler merely because the
+            # numeric PID happens to be readable on the sidecar host.
+            "child_pid": os.getpid(),
+            "process_starttime_ticks": 123,
+            "cgroup_path": launcher_cgroup_path,
+            "pid_namespace_inode": 456,
+            "container_id": "sandbox-1",
+        },
+    )
+    (cgroup / "cpu.stat").write_text("usage_usec 200000\n", encoding="utf-8")
+    completion = {
+        "schema_version": "scheduler.v1",
+        "event_id": "evt-exec-end",
+        "occurred_at": "2026-07-16T03:23:01Z",
+        "plugin_version": "0.1.0",
+        "run_id": "run-sandbox-root-exec",
+        "session_id": "session-sandbox-root-exec",
+        "session_key": None,
+        "agent_id": None,
+        "tool_call_id": "call-exec",
+        "decision_id": decision["decision_id"],
+        "lease_id": decision["lease_id"],
+        "execution_id": "call-exec",
+        "tool_name": "exec",
+        "duration_ms": 100,
+        "succeeded": True,
+        "error_type": None,
+        "error_digest": None,
+        "result_size_bytes": None,
+        "raw_result": {"details": {"exitCode": 0}},
+        "resource_scope": None,
+    }
+
+    assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
+
+    tool_end = next(
+        r
+        for r in _read_trace_records(trace_dir)
+        if r.get("record_type") == "span_end" and r.get("kind") == "tool"
+    )
+    assert tool_end["execution"]["cgroup_path"] == str(cgroup)
+    assert tool_end["resources"]["attribution_source"] == "shared-sandbox-container"
+    assert tool_end["resources"]["attribution_status"] == "partially_attributed"
+    assert tool_end["resources"]["coverage_reason"] == "shared_sandbox_container"
+
+
+def test_stage2_execution_waits_for_sandbox_container_scope(tmp_path: Path) -> None:
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=tmp_path / "traces",
+            tool_resource_stage2_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
+    begin_calls: list[dict[str, object]] = []
+    started_execution_ids: set[str] = set()
+
+    def begin_execution(**kwargs):
+        if kwargs["execution_id"] in started_execution_ids:
+            return False
+        started_execution_ids.add(kwargs["execution_id"])
+        begin_calls.append(kwargs)
+        return True
+
+    state.predictor.begin_execution = begin_execution  # type: ignore[method-assign]
+
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-launcher-exec",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi && true",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"mode": "off"},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": os.getpid(),
+        },
+    ).json()
+    assert begin_calls == []
+
+    client.post(
+        "/v1/runtime/sandbox-scope",
+        json={
+            "kind": "cgroup-v2",
+            "execution_id": None,
+            "pid": os.getpid(),
+            "root_pid": os.getpid(),
+            "process_start_time": None,
+            "root_starttime_ticks": None,
+            "cgroup_path": str(tmp_path / "sandbox-cgroup"),
+            "pid_namespace_inode": None,
+            "container_id": "b" * 64,
+            "include_children": True,
+            "source": "openclaw-sandbox",
+            "attribution_source": "shared-sandbox-container",
+        },
+    )
+    client.post(
+        "/v2/executions/call-exec/started",
+        json={
+            "update_token": claim["update_token"],
+            "launcher_pid": os.getpid(),
+            "child_pid": os.getpid(),
+            "process_starttime_ticks": 123,
+            "cgroup_path": str(tmp_path / "call-cgroup"),
+            "pid_namespace_inode": 456,
+            "container_id": None,
+        },
+    )
+
+    assert begin_calls == [
+        {
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "command": "echo hi && true",
+            "container_id": "b" * 64,
+            "repo": "openclaw",
+        }
+    ]
+
+
+def test_stage2_execution_starts_on_claim_when_sandbox_scope_is_known(tmp_path: Path) -> None:
+    sandbox_cgroup = tmp_path / "sandbox-cgroup"
+    _write_cgroup_fixture(sandbox_cgroup)
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=tmp_path / "traces",
+            sandbox_cgroup_path=str(sandbox_cgroup),
+            sandbox_container_id="b" * 64,
+            tool_resource_stage2_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
+    begin_calls: list[dict[str, object]] = []
+
+    def begin_execution(**kwargs):
+        begin_calls.append(kwargs)
+        return True
+
+    state.predictor.begin_execution = begin_execution  # type: ignore[method-assign]
+
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-launcher-exec",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi && true",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"enable_cgroup": True},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+    client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": os.getpid(),
+        },
+    )
+
+    assert begin_calls == [
+        {
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "command": "echo hi && true",
+            "container_id": "b" * 64,
+            "repo": "openclaw",
+        }
+    ]
+
+
+def test_exec_completion_finalizes_stage2_before_trace_write(tmp_path: Path) -> None:
+    sandbox_cgroup = tmp_path / "sandbox-cgroup"
+    _write_cgroup_fixture(sandbox_cgroup)
+    trace_dir = tmp_path / "traces"
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=trace_dir,
+            sandbox_cgroup_path=str(sandbox_cgroup),
+            sandbox_container_id="b" * 64,
+            tool_resource_stage2_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
+    finish_calls: list[dict[str, object]] = []
+    telemetry_by_execution_id: dict[str, dict[str, object | None]] = {}
+
+    def finish_execution(**kwargs):
+        finish_calls.append(kwargs)
+        telemetry = {
+            "execution_id": kwargs["execution_id"],
+            "tool_call_id": kwargs["execution_id"],
+            "artifact_path": None,
+            "started": False,
+            "status": "unavailable",
+            "unavailable_reason": "execution_not_exited",
+        }
+        telemetry_by_execution_id[str(kwargs["execution_id"])] = telemetry
+        return telemetry
+
+    def execution_telemetry(execution_id: str):
+        return telemetry_by_execution_id.get(execution_id)
+
+    state.predictor.finish_execution = finish_execution  # type: ignore[method-assign]
+    state.predictor.execution_telemetry = execution_telemetry  # type: ignore[method-assign]
+    completion = {
+        "schema_version": "scheduler.v1",
+        "event_id": "evt-exec-end",
+        "occurred_at": "2026-07-16T03:23:01Z",
+        "plugin_version": "0.1.0",
+        "run_id": "run-launcher-exec",
+        "session_id": "session-launcher-exec",
+        "session_key": None,
+        "agent_id": None,
+        "tool_call_id": "call-exec",
+        "decision_id": None,
+        "lease_id": None,
+        "execution_id": "call-exec",
+        "tool_name": "exec",
+        "duration_ms": 100,
+        "succeeded": True,
+        "error_type": None,
+        "error_digest": None,
+        "result_size_bytes": None,
+        "raw_result": {"details": {"status": "running"}},
+        "resource_scope": None,
+    }
+
+    assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
+    assert client.get("/v2/executions/call-exec/telemetry").json() == {
+        "tool_resource": {
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "artifact_path": None,
+            "started": False,
+            "status": "unavailable",
+            "unavailable_reason": "execution_not_exited",
+        }
+    }
+
+    assert finish_calls == [
+        {"execution_id": "call-exec", "exit_code": 0, "signal": None}
+    ]
+    tool_end = next(
+        r
+        for r in _read_trace_records(trace_dir)
+        if r.get("record_type") == "span_end" and r.get("kind") == "tool"
+    )
+    assert tool_end["execution"]["tool_resource"]["execution_id"] == "call-exec"
+    assert tool_end["execution"]["tool_resource"]["status"] == "unavailable"
+    assert (
+        tool_end["execution"]["tool_resource"]["unavailable_reason"]
+        == "execution_not_exited"
+    )
+
+
+def test_execution_started_host_cgroup_gate_creates_exact_scope(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sandbox_cgroup = tmp_path / "sandbox-cgroup"
+    _write_cgroup_fixture(sandbox_cgroup)
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=tmp_path / "traces",
+            sandbox_cgroup_path=str(sandbox_cgroup),
+            sandbox_container_id="b" * 64,
+            execution_cgroup_root=str(tmp_path / "exact-root"),
+            tool_resource_stage2_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
+    begin_calls: list[dict[str, object]] = []
+
+    def begin_execution(**kwargs):
+        begin_calls.append(kwargs)
+        return True
+
+    state.predictor.begin_execution = begin_execution  # type: ignore[method-assign]
+    monkeypatch.setattr(app_module, "_resolve_host_pid", lambda *_args, **_kwargs: 4242)
+    monkeypatch.setattr(app_module, "_pid_starttime_ticks", lambda _pid: 99)
+    monkeypatch.setattr(app_module, "_pid_namespace_inode", lambda _pid: 123)
+
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-host-gate",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"enable_cgroup": True},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": 100,
+        },
+    ).json()
+    assert begin_calls == []
+    started = client.post(
+        "/v2/executions/call-exec/started",
+        json={
+            "update_token": claim["update_token"],
+            "launcher_pid": 100,
+            "child_pid": 7,
+            "process_starttime_ticks": 99,
+            "cgroup_path": None,
+            "pid_namespace_inode": 123,
+            "container_id": None,
+            "host_cgroup_gate": True,
+        },
+    )
+
+    exact = tmp_path / "exact-root" / "call-exec"
+    assert started.status_code == 200
+    assert started.json() == {"stored": True, "cgroup_path": str(exact)}
+    assert (exact / "cgroup.procs").read_text(encoding="utf-8") == "4242"
+    scope = client.get("/v2/executions/call-exec/scope").json()["execution_scope"]
+    assert scope["cgroup_path"] == str(exact)
+    assert scope["pid"] == 4242
+    assert scope["attribution_source"] == "exclusive-execution-cgroup"
+    assert begin_calls[-1]["cgroup_path"] == str(exact)
+
+
+def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(tmp_path: Path) -> None:
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=tmp_path / "traces",
+            tool_resource_stage2_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
+    begin_calls: list[dict[str, object]] = []
+
+    def begin_execution(**kwargs):
+        begin_calls.append(kwargs)
+        return True
+
+    state.predictor.begin_execution = begin_execution  # type: ignore[method-assign]
+
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-launcher-exec",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi && true",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"mode": "off"},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": os.getpid(),
+        },
+    ).json()
+    client.post(
+        "/v2/executions/call-exec/started",
+        json={
+            "update_token": claim["update_token"],
+            "launcher_pid": os.getpid(),
+            "child_pid": os.getpid(),
+            "process_starttime_ticks": 123,
+            "cgroup_path": str(tmp_path / "call-cgroup"),
+            "pid_namespace_inode": 456,
+            "container_id": None,
+        },
+    )
+    assert begin_calls == [
+        {
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "command": "echo hi && true",
+            "container_id": None,
+            "repo": "openclaw",
+            "cgroup_path": str(tmp_path / "call-cgroup"),
+        }
+    ]
+    begin_calls.clear()
+
+    client.post(
+        "/v1/runtime/sandbox-scope",
+        json={
+            "kind": "cgroup-v2",
+            "execution_id": None,
+            "pid": os.getpid(),
+            "root_pid": os.getpid(),
+            "process_start_time": None,
+            "root_starttime_ticks": None,
+            "cgroup_path": str(tmp_path / "sandbox-cgroup"),
+            "pid_namespace_inode": None,
+            "container_id": "b" * 64,
+            "include_children": True,
+            "source": "openclaw-sandbox",
+            "attribution_source": "shared-sandbox-container",
+        },
+    )
+
+    assert begin_calls == [
+        {
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "command": "echo hi && true",
+            "container_id": "b" * 64,
+            "repo": "openclaw",
+        }
+    ]
+
+
+def test_required_stage2_defers_claim_without_container_id(tmp_path: Path) -> None:
+    state = build_state(SchedulerConfig(trace_dir=tmp_path / "traces"))
+    client = TestClient(create_app(state))
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-launcher-exec",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi && true",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"mode": "off"},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": os.getpid(),
+        },
+    )
+
+    assert claim.status_code == 200
+
+
+def test_required_stage2_rejects_unavailable_collector_during_started(
+    tmp_path: Path,
+) -> None:
+    state = build_state(SchedulerConfig(trace_dir=tmp_path / "traces"))
+    client = TestClient(create_app(state))
+    state.predictor.begin_execution = lambda **kwargs: False  # type: ignore[method-assign]
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-launcher-exec",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"mode": "off"},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": os.getpid(),
+        },
+    ).json()
+
+    started = client.post(
+        "/v2/executions/call-exec/started",
+        json={
+            "update_token": claim["update_token"],
+            "launcher_pid": os.getpid(),
+            "child_pid": os.getpid(),
+            "process_starttime_ticks": 123,
+            "cgroup_path": str(tmp_path / "call-cgroup"),
+            "pid_namespace_inode": 456,
+            "container_id": "b" * 64,
+        },
+    )
+
+    assert started.status_code == 503
+    assert started.json()["detail"] == "tool_resource_stage2_start_failed"
+
+
+def test_required_stage2_starts_during_claim_with_sandbox_container_id(tmp_path: Path) -> None:
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=tmp_path / "traces",
+            sandbox_container_id="b" * 64,
+        )
+    )
+    client = TestClient(create_app(state))
+    begin_calls: list[dict[str, object]] = []
+
+    def begin_execution(**kwargs):
+        begin_calls.append(kwargs)
+        return True
+
+    state.predictor.begin_execution = begin_execution  # type: ignore[method-assign]
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-launcher-exec",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi && true",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"mode": "off"},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": os.getpid(),
+        },
+    )
+
+    assert claim.status_code == 200
+    assert begin_calls == [
+        {
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "command": "echo hi && true",
+            "container_id": "b" * 64,
+            "repo": "openclaw",
+        }
+    ]
+
+
 def test_exec_completion_uses_registered_launcher_scope(tmp_path: Path) -> None:
     cgroup = tmp_path / "launcher-cgroup"
     cgroup.mkdir()
@@ -636,7 +1402,14 @@ def test_exec_completion_uses_registered_launcher_scope(tmp_path: Path) -> None:
     (cgroup / "memory.current").write_text("4096\n", encoding="utf-8")
     (cgroup / "io.stat").write_text("8:0 rbytes=10 wbytes=20\n", encoding="utf-8")
     (cgroup / "cgroup.procs").write_text("", encoding="utf-8")
-    client, trace_dir = _trace_client(tmp_path)
+    trace_dir = tmp_path / "traces"
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=trace_dir,
+            tool_resource_stage2_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
     request: dict[str, object] = {
         "schema_version": "scheduler.v1",
         "event_id": "evt-exec-start",
@@ -1390,6 +2163,72 @@ def test_llm_proxy_buffers_fragmented_sse_events(tmp_path: Path, monkeypatch) ->
     assert response.text.count("data: ") == 2
     assert '"content": "hello"' in response.text
     assert "[DONE]" in response.text
+
+
+def test_llm_proxy_parses_crlf_sse_before_end_of_stream() -> None:
+    first = b'data: {"choices":[{"delta":{"content":"hello"}}]}\r\n\r\n'
+    second = b"data: [DONE]\r\n\r\n"
+
+    events, remainder = _parse_sse_buffer(first + second[:8])
+
+    assert len(events) == 1
+    assert events[0]["choices"][0]["delta"]["content"] == "hello"
+    assert remainder == second[:8]
+
+
+def test_llm_proxy_surfaces_empty_stream_and_writes_safe_diagnostic(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client, trace_dir = _trace_proxy_client(tmp_path)
+
+    class FakeStream:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def aiter_bytes(self):
+            yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+            yield b"data: [DONE]\n\n"
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def stream(self, method, url, headers=None, content=None):
+            return FakeStream()
+
+    monkeypatch.setattr("agent_scheduler.llm_proxy.httpx.AsyncClient", FakeAsyncClient)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert "upstream_empty_response" in response.text
+    assert response.text.rstrip().endswith("data: [DONE]")
+    debug_files = list(trace_dir.glob("llm_proxy_debug_*.json"))
+    assert len(debug_files) == 1
+    diagnostic = json.loads(debug_files[0].read_text(encoding="utf-8"))
+    assert diagnostic["automatic_empty_diagnostic"] is True
+    assert diagnostic["raw_preview_bytes"] > 0
+    assert "raw_preview_sha256" in diagnostic
+    assert "raw_preview" not in diagnostic
 
 
 def test_llm_proxy_writes_debug_dump_only_when_enabled(tmp_path: Path, monkeypatch) -> None:

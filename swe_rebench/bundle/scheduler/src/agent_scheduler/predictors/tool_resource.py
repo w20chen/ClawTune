@@ -14,6 +14,7 @@ from agent_scheduler.contracts.models import ToolBeforeRequest, ToolCompletedEve
 from agent_scheduler.monitoring.tool_runtime import ToolRuntimeSample
 from agent_scheduler.tool_resource_commands import extract_command
 from tool_resource.features import parse_command_clauses
+from tool_resource.metrics import ecdf_quantile
 from tool_resource.runtime_kb import (
     ClauseObservation,
     ClauseResourceKB,
@@ -83,6 +84,7 @@ class ToolResourcePredictor:
         artifact_dir: Path | None = None,
         container_executable: str = "docker",
         clause_kb_snapshot_path: Path | None = None,
+        runtime_kb_snapshot_path: Path | None = None,
     ) -> None:
         self.kb = kb
         self.continuous_kb = RuntimeToolResourceKB()
@@ -92,6 +94,7 @@ class ToolResourcePredictor:
         self.artifact_dir = artifact_dir
         self.container_executable = container_executable
         self.clause_kb_snapshot_path = clause_kb_snapshot_path
+        self.runtime_kb_snapshot_path = runtime_kb_snapshot_path
         self._sdk = ToolResourceSDK(kb, buckets)
         self._runs_by_execution_id: dict[str, CommandRun] = {}
         self._telemetry_by_execution_id: dict[str, ExecutionTelemetrySummary] = {}
@@ -119,9 +122,6 @@ class ToolResourcePredictor:
             try:
                 artifact = _read_stage2_artifact(path)
                 observations.extend(_stage2_observations(artifact, fallback_repo=repo))
-                continuous_observations.extend(
-                    _stage2_completed_calls(artifact, fallback_repo=repo)
-                )
                 stage2_loaded += 1
             except ValueError as exc:
                 rejections.append(f"{path}: {exc}")
@@ -136,10 +136,10 @@ class ToolResourcePredictor:
                 continue
             openclaw_accepted += 1
             openclaw_spans_seen += loaded.tool_spans_seen
-            observations.extend(loaded.observations)
             continuous_observations.extend(loaded.completed_calls)
 
         snapshot_path = _clause_kb_snapshot_path(artifact_dir)
+        runtime_snapshot_path = _runtime_kb_snapshot_path(artifact_dir)
         kb: ClauseResourceKB
         kb_has_public_evidence = False
         loaded_snapshot = _load_clause_kb_snapshot(snapshot_path, rejections)
@@ -184,11 +184,20 @@ class ToolResourcePredictor:
             artifact_dir=artifact_dir,
             container_executable=container_executable,
             clause_kb_snapshot_path=snapshot_path,
+            runtime_kb_snapshot_path=runtime_snapshot_path,
         )
+        loaded_runtime_snapshot = _load_runtime_kb_snapshot(
+            runtime_snapshot_path,
+            rejections,
+        )
+        if loaded_runtime_snapshot is not None:
+            predictor.continuous_kb = loaded_runtime_snapshot
         for call in continuous_observations:
             predictor.continuous_kb.observe_completed_call(call)
         if observations or loaded_snapshot is not None:
             predictor._persist_clause_kb()
+        if continuous_observations or loaded_runtime_snapshot is not None:
+            predictor._persist_runtime_kb()
         return predictor
 
     @classmethod
@@ -213,6 +222,7 @@ class ToolResourcePredictor:
         ambient_before_mb: float | None = None,
     ) -> ToolPrediction:
         command = _command_for_request(request)
+        query_ts = time.time()
         try:
             clauses, parse_failed = clauses_from_tool_request(
                 request.tool_name,
@@ -221,7 +231,7 @@ class ToolResourcePredictor:
             prediction = self.kb.predict_command_latency_bucket_from_clauses(
                 self.repo,
                 clauses,
-                time.time(),
+                query_ts,
                 self.buckets,
                 command=command or request.tool_name,
                 parse_failed=parse_failed,
@@ -230,11 +240,18 @@ class ToolResourcePredictor:
             continuous_predictions = self._continuous_predictions_for_request(
                 request,
                 command,
-                time.time(),
+                query_ts,
                 ambient_before_mb=ambient_before_mb,
             )
+            runtime_p50_ms, runtime_p90_ms = self._continuous_latency_topline_ms(
+                request,
+                command,
+                query_ts,
+            )
             return ToolPrediction(
-                resource_class="unknown",
+                duration_p50_ms=runtime_p50_ms,
+                duration_p90_ms=runtime_p90_ms,
+                resource_class=_resource_class_for_duration_ms(runtime_p90_ms),
                 tool_resource=_tool_resource_prediction_payload(
                     _unavailable_prediction_for_request(
                         request,
@@ -248,12 +265,19 @@ class ToolResourcePredictor:
         continuous_predictions = self._continuous_predictions_for_request(
             request,
             command,
-            time.time(),
+            query_ts,
             ambient_before_mb=ambient_before_mb,
         )
         if prediction.prediction is None:
+            runtime_p50_ms, runtime_p90_ms = self._continuous_latency_topline_ms(
+                request,
+                command,
+                query_ts,
+            )
             return ToolPrediction(
-                resource_class="unknown",
+                duration_p50_ms=runtime_p50_ms,
+                duration_p90_ms=runtime_p90_ms,
+                resource_class=_resource_class_for_duration_ms(runtime_p90_ms),
                 tool_resource=_tool_resource_prediction_payload(
                     prediction,
                     continuous_predictions=continuous_predictions,
@@ -261,6 +285,11 @@ class ToolResourcePredictor:
             )
 
         bucket_prediction = prediction.prediction
+        runtime_p50_ms, runtime_p90_ms = self._continuous_latency_topline_ms(
+            request,
+            command,
+            query_ts,
+        )
         duration_p50_ms = _bucket_percentile_ms(
             bucket_prediction.probability_by_bucket,
             self.buckets,
@@ -272,9 +301,13 @@ class ToolResourcePredictor:
             0.9,
         )
         return ToolPrediction(
-            duration_p50_ms=duration_p50_ms,
-            duration_p90_ms=duration_p90_ms,
-            resource_class=_resource_class_for_bucket(bucket_prediction.bucket_id),
+            duration_p50_ms=runtime_p50_ms if runtime_p50_ms is not None else duration_p50_ms,
+            duration_p90_ms=runtime_p90_ms if runtime_p90_ms is not None else duration_p90_ms,
+            resource_class=(
+                _resource_class_for_duration_ms(runtime_p90_ms)
+                if runtime_p90_ms is not None
+                else _resource_class_for_bucket(bucket_prediction.bucket_id)
+            ),
             confidence=max(bucket_prediction.probability_by_bucket, default=0.0),
             tool_resource=_tool_resource_prediction_payload(
                 prediction,
@@ -293,7 +326,6 @@ class ToolResourcePredictor:
         start = self._starts.pop(_tool_key(event.tool_call_id, event.event_id), None)
         if start is None and event.tool_call_id is not None:
             start = self._pop_start_by_tool_call_id(event.tool_call_id)
-        observation = observation_from_completion(event, sample, repo=self.repo, start=start)
         completed_call = completed_call_from_completion(
             event,
             sample,
@@ -302,11 +334,8 @@ class ToolResourcePredictor:
         )
         if completed_call is not None:
             self.continuous_kb.observe_completed_call(completed_call)
-        if observation is None:
-            return 1 if completed_call is not None else 0
-        self.kb.observe_completed_clause(observation)
-        self._persist_clause_kb()
-        return 1
+            self._persist_runtime_kb()
+        return 1 if completed_call is not None else 0
 
     def begin_execution(
         self,
@@ -316,9 +345,15 @@ class ToolResourcePredictor:
         command: str,
         container_id: str | None,
         repo: str | None = None,
+        cgroup_path: str | None = None,
     ) -> bool:
         if execution_id in self._runs_by_execution_id:
-            return False
+            existing = self._runs_by_execution_id[execution_id]
+            observer = getattr(existing, "_observer", None)
+            return bool(getattr(observer, "telemetry_available", True))
+        previous = self._telemetry_by_execution_id.get(execution_id)
+        if previous is not None and previous.started:
+            return previous.status != "unavailable"
         if self.artifact_dir is None or not container_id:
             reason = (
                 "artifact_dir_unconfigured"
@@ -340,6 +375,7 @@ class ToolResourcePredictor:
             container_executable=self.container_executable,
             repo=repo or self.repo,
             artifact_path=artifact_path,
+            cgroup_path=cgroup_path,
         )
         try:
             run = self._sdk.start_command(context, tool_call_id or execution_id, command)
@@ -353,15 +389,25 @@ class ToolResourcePredictor:
                 unavailable_reason=f"start_failed:{type(exc).__name__}: {exc}",
             )
             return False
+        observer = getattr(run, "_observer", None)
+        telemetry_available = bool(
+            getattr(observer, "telemetry_available", True)
+        )
+        unavailable_reason = (
+            getattr(observer, "unavailable_reason", None)
+            if not telemetry_available
+            else None
+        )
         self._runs_by_execution_id[execution_id] = run
         self._telemetry_by_execution_id[execution_id] = ExecutionTelemetrySummary(
             execution_id=execution_id,
             tool_call_id=tool_call_id,
             artifact_path=str(artifact_path),
             started=True,
-            status="started",
+            status="started" if telemetry_available else "unavailable",
+            unavailable_reason=unavailable_reason,
         )
-        return True
+        return telemetry_available
 
     def finish_execution(
         self,
@@ -402,12 +448,6 @@ class ToolResourcePredictor:
             )
             self._telemetry_by_execution_id[execution_id] = summary
             return summary
-        if isinstance(result.telemetry_artifact, dict):
-            for call in _stage2_completed_calls(
-                result.telemetry_artifact,
-                fallback_repo=self.repo,
-            ):
-                self.continuous_kb.observe_completed_call(call)
         if result.kb_observations_added:
             self._persist_clause_kb()
         call_telemetry = (
@@ -434,11 +474,23 @@ class ToolResourcePredictor:
         self._telemetry_by_execution_id[execution_id] = summary
         return summary
 
+    def execution_telemetry(self, execution_id: str) -> ExecutionTelemetrySummary | None:
+        return self._telemetry_by_execution_id.get(execution_id)
+
     def _persist_clause_kb(self) -> bool:
         if self.clause_kb_snapshot_path is None:
             return False
         try:
             _write_json_atomic(self.clause_kb_snapshot_path, self.kb.to_json_obj())
+            return True
+        except Exception:
+            return False
+
+    def _persist_runtime_kb(self) -> bool:
+        if self.runtime_kb_snapshot_path is None:
+            return False
+        try:
+            _write_json_atomic(self.runtime_kb_snapshot_path, self.continuous_kb.to_json_obj())
             return True
         except Exception:
             return False
@@ -479,11 +531,48 @@ class ToolResourcePredictor:
                     "key_kind": None,
                     "evidence_count": 0,
                     "fallback_path": [],
-                    "note": f"unavailable: {exc}",
+                    "note": _continuous_unavailable_note(target, exc),
                 }
                 continue
             predictions[target] = _target_prediction_payload(prediction)
         return predictions
+
+    def _continuous_latency_topline_ms(
+        self,
+        request: ToolBeforeRequest,
+        command: str | None,
+        ts_start: float,
+    ) -> tuple[int | None, int | None]:
+        query = ToolCallQuery(
+            repo=self.repo,
+            tool_name=request.tool_name,
+            command=command,
+            ts_start=ts_start,
+        )
+        try:
+            self.continuous_kb._advance(ts_start)  # type: ignore[attr-defined]
+        except AttributeError:
+            try:
+                self.continuous_kb.query(query)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        try:
+            values, _scope, _kind, _path = self.continuous_kb._select(  # type: ignore[attr-defined]
+                self.repo,
+                "latency_ms",
+                request.tool_name,
+                command,
+            )
+        except Exception:
+            return None, None
+        if not values:
+            return None, None
+        return (
+            max(0, int(round(ecdf_quantile(values, 0.5)))),
+            max(0, int(round(ecdf_quantile(values, 0.9)))),
+        )
 
     def _pop_start_by_tool_call_id(self, tool_call_id: str) -> ToolBeforeRequest | None:
         for key, request in list(self._starts.items()):
@@ -527,9 +616,6 @@ def load_openclaw_trace_observations(path: Path, *, repo: str) -> _LoadedTrace:
                 continue
             tool_spans_seen += 1
             start = starts.get(span_id)
-            observation = _observation_from_tool_span(start, record, repo=repo)
-            if observation is not None:
-                observations.append(observation)
             completed_call = _completed_call_from_tool_span(start, record, repo=repo)
             if completed_call is not None:
                 completed_calls.append(completed_call)
@@ -791,6 +877,12 @@ def _stage2_status(
         if quality in {"invalid", "unavailable"}:
             return str(quality)
     if isinstance(artifact, Mapping):
+        calls = artifact.get("calls")
+        if isinstance(calls, list) and any(
+            isinstance(call, Mapping) and call.get("telemetry_quality") == "invalid"
+            for call in calls
+        ):
+            return "invalid"
         quality = artifact.get("telemetry_quality")
         if quality == "ok":
             return "ok" if kb_update_error is None else "collected_not_eligible"
@@ -814,6 +906,15 @@ def _stage2_unavailable_reason(
         if quality == "unavailable":
             return "call_telemetry_unavailable"
     if isinstance(artifact, Mapping):
+        calls = artifact.get("calls")
+        if isinstance(calls, list):
+            invalid = [
+                call
+                for call in calls
+                if isinstance(call, Mapping) and call.get("telemetry_quality") == "invalid"
+            ]
+            if invalid:
+                return "artifact_contains_invalid_call_telemetry"
         reason = artifact.get("unavailable_reason") or artifact.get("reason")
         if isinstance(reason, str) and reason:
             return reason
@@ -840,7 +941,8 @@ def _compact_artifact_summary(artifact: Any) -> dict[str, Any] | None:
         return None
     calls = artifact.get("calls")
     return {
-        "schema_version": artifact.get("schema_version"),
+        "schema": artifact.get("schema"),
+        "schema_version": artifact.get("version"),
         "mode": artifact.get("mode"),
         "collector": artifact.get("collector"),
         "container_id": artifact.get("container_id"),
@@ -1023,6 +1125,16 @@ def _resource_class_for_bucket(bucket_id: int) -> str:
     return "latency_long"
 
 
+def _resource_class_for_duration_ms(duration_ms: int | None) -> str:
+    if duration_ms is None:
+        return "unknown"
+    if duration_ms <= 500:
+        return "latency_short"
+    if duration_ms <= 2_000:
+        return "latency_medium"
+    return "latency_long"
+
+
 def _tool_resource_prediction_payload(
     prediction: CommandLatencyBucketPrediction,
     *,
@@ -1086,6 +1198,12 @@ def _clause_kb_snapshot_path(artifact_dir: Path | None) -> Path | None:
     return artifact_dir / "clause-resource-kb.json"
 
 
+def _runtime_kb_snapshot_path(artifact_dir: Path | None) -> Path | None:
+    if artifact_dir is None:
+        return None
+    return artifact_dir / "runtime-tool-resource-kb.json"
+
+
 def _load_clause_kb_snapshot(
     path: Path | None,
     rejections: list[str],
@@ -1096,6 +1214,19 @@ def _load_clause_kb_snapshot(
         return ClauseResourceKB.from_json_obj(json.loads(path.read_text(encoding="utf-8")))
     except Exception as exc:
         rejections.append(f"{path}: clause KB snapshot rejected: {exc}")
+        return None
+
+
+def _load_runtime_kb_snapshot(
+    path: Path | None,
+    rejections: list[str],
+) -> RuntimeToolResourceKB | None:
+    if path is None or not path.is_file():
+        return None
+    try:
+        return RuntimeToolResourceKB.from_json_obj(json.loads(path.read_text(encoding="utf-8")))
+    except Exception as exc:
+        rejections.append(f"{path}: runtime KB snapshot rejected: {exc}")
         return None
 
 
@@ -1125,6 +1256,13 @@ def _target_prediction_payload(prediction: TargetPrediction) -> dict[str, Any]:
         "fallback_path": list(prediction.fallback_path),
         "note": prediction.note,
     }
+
+
+def _continuous_unavailable_note(target: str, exc: Exception) -> str:
+    message = str(exc)
+    if message == f"no public global node for target {target!r}":
+        return "no continuous evidence for target"
+    return f"unavailable: {message}"
 
 
 def _prediction_algorithms_payload() -> dict[str, Any]:

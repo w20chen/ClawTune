@@ -338,6 +338,16 @@ test("sanitizer redacts Bearer token in strings", () => {
   assert.ok(!result.includes("sk-abc123def456"));
 });
 
+test("tool exit code extraction applies to process results too", () => {
+  assert.equal(
+    toolResult.extractToolExitCode(
+      { details: { status: "failed", exitCode: 0, timedOut: true } },
+      "process"
+    ),
+    0
+  );
+});
+
 test("sanitizer redacts --token flag", () => {
   const result = traceSanitizer.sanitizeString("claw-launch run --token=abc123 --other");
   assert.ok(result.includes("<redacted>"));
@@ -417,7 +427,7 @@ test("validator reports valid trace", () => {
   const lines = [
     '{"schema_version":6,"record_type":"trace_metadata","trace_format_version":6,"scaffold":"test","mode":"collect","created_at":"2026-01-01T00:00:00Z"}',
     '{"schema_version":6,"record_type":"span_start","trace_id":"r1","span_id":"s1","parent_span_id":null,"session_id":null,"run_id":"r1","agent_id":null,"sequence_no":1,"kind":"tool","name":"exec","wall_time_ns":"100","monotonic_time_ns":"100","input":{"requested_args":{}},"execution":{"mode":null,"execution_id":null}}',
-    '{"schema_version":6,"record_type":"span_end","trace_id":"r1","span_id":"s1","parent_span_id":null,"session_id":null,"run_id":"r1","agent_id":null,"sequence_no":1,"kind":"tool","name":"exec","wall_time_ns":"200","monotonic_time_ns":"200","duration_ns":"100","status":{"code":"ok","message":null},"output":{},"execution":{"mode":null,"execution_id":null},"resources":{"attribution_status":"unattributed","scope":"none","quality":"unknown","monitor_start_wall_time_ns":null,"monitor_end_wall_time_ns":null,"monitor_start_monotonic_ns":null,"monitor_end_monotonic_ns":null,"coverage_duration_ns":null,"action_duration_ns":"100","coverage_ratio":null,"coverage_reason":"pid_unavailable"}}',
+    '{"schema_version":6,"record_type":"span_end","trace_id":"r1","span_id":"s1","parent_span_id":null,"session_id":null,"run_id":"r1","agent_id":null,"sequence_no":1,"kind":"tool","name":"exec","wall_time_ns":"200","monotonic_time_ns":"200","duration_ns":"100","duration_sec":"1e-7","status":{"code":"ok","message":null},"output":{},"execution":{"mode":null,"execution_id":null},"resources":{"attribution_status":"unattributed","scope":"none","quality":"unknown","monitor_start_wall_time_ns":null,"monitor_end_wall_time_ns":null,"monitor_start_monotonic_ns":null,"monitor_end_monotonic_ns":null,"coverage_duration_ns":null,"action_duration_ns":"100","coverage_ratio":null,"coverage_reason":"pid_unavailable"}}',
   ];
   const result = traceValidator.validateTrace(lines);
   assert.equal(result.records, 3);
@@ -441,7 +451,7 @@ test("validator detects incomplete spans", () => {
 test("validator detects invalid coverage ratio", () => {
   const lines = [
     '{"schema_version":6,"record_type":"span_start","trace_id":"r1","span_id":"s1","parent_span_id":null,"session_id":null,"run_id":"r1","agent_id":null,"sequence_no":1,"kind":"tool","name":"exec","wall_time_ns":"100","monotonic_time_ns":"100","input":{"requested_args":{}},"execution":{"mode":null,"execution_id":null}}',
-    '{"schema_version":6,"record_type":"span_end","trace_id":"r1","span_id":"s1","parent_span_id":null,"session_id":null,"run_id":"r1","agent_id":null,"sequence_no":1,"kind":"tool","name":"exec","wall_time_ns":"200","monotonic_time_ns":"200","duration_ns":"100","status":{"code":"ok","message":null},"output":{},"execution":{"mode":null,"execution_id":null},"resources":{"attribution_status":"attributed","scope":"process_tree","quality":"complete","monitor_start_wall_time_ns":null,"monitor_end_wall_time_ns":null,"monitor_start_monotonic_ns":null,"monitor_end_monotonic_ns":null,"coverage_duration_ns":"100","action_duration_ns":"100","coverage_ratio":1.5,"coverage_reason":"full_window"}}',
+    '{"schema_version":6,"record_type":"span_end","trace_id":"r1","span_id":"s1","parent_span_id":null,"session_id":null,"run_id":"r1","agent_id":null,"sequence_no":1,"kind":"tool","name":"exec","wall_time_ns":"200","monotonic_time_ns":"200","duration_ns":"100","duration_sec":"1e-7","status":{"code":"ok","message":null},"output":{},"execution":{"mode":null,"execution_id":null},"resources":{"attribution_status":"attributed","scope":"process_tree","quality":"complete","monitor_start_wall_time_ns":null,"monitor_end_wall_time_ns":null,"monitor_start_monotonic_ns":null,"monitor_end_monotonic_ns":null,"coverage_duration_ns":"100","action_duration_ns":"100","coverage_ratio":1.5,"coverage_reason":"full_window"}}',
   ];
   const result = traceValidator.validateTrace(lines);
   assert.equal(result.invalidCoverageRatios, 1);

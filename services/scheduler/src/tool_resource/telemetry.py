@@ -235,6 +235,8 @@ TYPE_NAMES = {
 BPF_PROGRAM = r"""
 #include <linux/binfmts.h>
 #include <linux/mm_types.h>
+#include <linux/nsproxy.h>
+#include <linux/pid_namespace.h>
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
 #include <uapi/linux/bpf_perf_event.h>
@@ -258,6 +260,7 @@ BPF_PROGRAM = r"""
 struct event_t {
     u64 timestamp_ns;
     u64 cgroup_id;
+    u64 pid_namespace_inode;
     u64 exec_seq;
     u64 cpu_ns;         /* per-task cumulative utime+stime at sample time */
     u64 rss_pages;      /* CURRENT rss = file+anon+shmem (not hiwater) */
@@ -342,6 +345,23 @@ static u32 parent_tgid(void) {
     return tgid;
 }
 
+static u64 current_pid_namespace_inode(struct task_struct *task) {
+    struct nsproxy *nsproxy = 0;
+    struct pid_namespace *pid_ns = 0;
+    u32 inum = 0;
+    bpf_probe_read_kernel(&nsproxy, sizeof(nsproxy), &task->nsproxy);
+    if (!nsproxy) return 0;
+    bpf_probe_read_kernel(&pid_ns, sizeof(pid_ns), &nsproxy->pid_ns_for_children);
+    if (!pid_ns) return 0;
+    bpf_probe_read_kernel(&inum, sizeof(inum), &pid_ns->ns.inum);
+    return (u64)inum;
+}
+
+static void fill_identity(struct event_t *e, struct task_struct *task) {
+    e->cgroup_id = bpf_get_current_cgroup_id();
+    e->pid_namespace_inode = current_pid_namespace_inode(task);
+}
+
 static u64 current_rss_pages(struct task_struct *task, u64 *mm_out) {
     struct mm_struct *mm = 0;
     bpf_probe_read_kernel(&mm, sizeof(mm), &task->mm);
@@ -405,7 +425,7 @@ static void capture_argv(
             }
             __builtin_memset(e, 0, sizeof(*e));
             e->timestamp_ns = bpf_ktime_get_ns();
-            e->cgroup_id = bpf_get_current_cgroup_id();
+            fill_identity(e, (struct task_struct *)bpf_get_current_task());
             e->exec_seq = seq;
             e->type = TYPE_EXEC_ARG;
             e->host_pid = pid_tgid >> 32;
@@ -458,7 +478,7 @@ static void capture_argv(
         } else {
             __builtin_memset(e, 0, sizeof(*e));
             e->timestamp_ns = bpf_ktime_get_ns();
-            e->cgroup_id = bpf_get_current_cgroup_id();
+            fill_identity(e, (struct task_struct *)bpf_get_current_task());
             e->exec_seq = seq;
             e->type = TYPE_EXEC_ARG;
             e->host_pid = pid_tgid >> 32;
@@ -481,7 +501,7 @@ static void emit_kernel_exec_meta(
     }
     __builtin_memset(e, 0, sizeof(*e));
     e->timestamp_ns = bpf_ktime_get_ns();
-    e->cgroup_id = bpf_get_current_cgroup_id();
+    fill_identity(e, (struct task_struct *)bpf_get_current_task());
     e->exec_seq = seq;
     e->type = type;
     e->host_pid = pid_tgid >> 32;
@@ -522,7 +542,7 @@ static int capture_enter(const char *filename, const char *const *argv) {
     } else {
         __builtin_memset(e, 0, sizeof(*e));
         e->timestamp_ns = bpf_ktime_get_ns();
-        e->cgroup_id = bpf_get_current_cgroup_id();
+        fill_identity(e, (struct task_struct *)bpf_get_current_task());
         e->exec_seq = seq;
         e->type = TYPE_EXEC_META;
         e->host_pid = pid_tgid >> 32;
@@ -676,7 +696,7 @@ static int on_exec_return(long ret) {
         } else {
             __builtin_memset(e, 0, sizeof(*e));
             e->timestamp_ns = bpf_ktime_get_ns();
-            e->cgroup_id = bpf_get_current_cgroup_id();
+            fill_identity(e, (struct task_struct *)bpf_get_current_task());
             e->exec_seq = pending->seq;
             e->type = ret < 0 ? TYPE_FAILED_EXEC_ATTEMPT : TYPE_EXEC_BOUNDARY;
             e->host_pid = pid_tgid >> 32;
@@ -725,7 +745,7 @@ RAW_TRACEPOINT_PROBE(sched_process_fork) {
     if (!e) { ringbuf_reserve_failed(); return 0; }
     __builtin_memset(e, 0, sizeof(*e));
     e->timestamp_ns = bpf_ktime_get_ns();
-    e->cgroup_id = bpf_get_current_cgroup_id();
+    fill_identity(e, (struct task_struct *)bpf_get_current_task());
     e->exec_seq = ~0ULL;
     e->type = TYPE_FORK;
     e->host_pid = bpf_get_current_pid_tgid() >> 32;  /* parent TGID */
@@ -759,7 +779,7 @@ TRACEPOINT_PROBE(sched, sched_process_exit) {
     __builtin_memset(e, 0, sizeof(*e));
     fill_counters(e, task);
     e->timestamp_ns = bpf_ktime_get_ns();
-    e->cgroup_id = bpf_get_current_cgroup_id();
+    fill_identity(e, task);
     e->exec_seq = seq ? *seq : ~0ULL;
     e->hiwater_pages = hiwater;
     e->type = TYPE_EXIT_BOUNDARY;
@@ -804,7 +824,7 @@ int on_cpu_clock(struct bpf_perf_event_data *ctx) {
     __builtin_memset(e, 0, sizeof(*e));
     fill_counters(e, task);
     e->timestamp_ns = bpf_ktime_get_ns();
-    e->cgroup_id = bpf_get_current_cgroup_id();
+    fill_identity(e, task);
     e->exec_seq = seq ? *seq : ~0ULL;
     e->type = TYPE_PERF;
     e->host_pid = pid_tgid >> 32;
@@ -2592,6 +2612,19 @@ def _container_cgroup(
     return cgroup, init_pid
 
 
+def _pid_namespace_inode_for_pid(pid: int) -> int | None:
+    try:
+        target = os.readlink(f"/proc/{pid}/ns/pid")
+    except OSError:
+        return None
+    if target.startswith("pid:[") and target.endswith("]"):
+        try:
+            return int(target[5:-1])
+        except ValueError:
+            return None
+    return None
+
+
 def _discover_leaf_cgroup_inodes(cgroup: Path) -> set[int]:
     """Return inode numbers for *cgroup* and all related cgroups.
 
@@ -2675,6 +2708,7 @@ def _container_pid_set(
     init_pid: int,
     *,
     cgroup_inodes: set[int] | None = None,
+    pid_namespace_inodes: set[int] | None = None,
 ) -> set[int]:
     """Return the set of host PIDs belonging to the container rooted at *init_pid*.
 
@@ -2698,11 +2732,15 @@ def _container_pid_set(
         return set()
     pids: set[int] = {init_pid}
 
-    # --- cgroup-based discovery (authoritative when available) ------------
-    if cgroup_inodes:
+    # --- namespace/cgroup-based discovery (authoritative when available) ---
+    if cgroup_inodes or pid_namespace_inodes:
         for event in events:
             cg = event.get("cgroup_id", 0)
-            if cg not in cgroup_inodes:
+            pid_ns = event.get("pid_namespace_inode", 0)
+            if (
+                (not cgroup_inodes or cg not in cgroup_inodes)
+                and (not pid_namespace_inodes or pid_ns not in pid_namespace_inodes)
+            ):
                 continue
             host = event.get("host_pid", 0)
             child = event.get("child_host_pid", 0)
@@ -2741,6 +2779,7 @@ def _event_row(table: Any, data: int) -> dict[str, Any]:
         "type": TYPE_NAMES[int(event.type)],
         "ts_ns": int(event.timestamp_ns),
         "cgroup_id": int(event.cgroup_id),
+        "pid_namespace_inode": int(event.pid_namespace_inode),
         "exec_seq": int(event.exec_seq),
         "cpu_ns": int(event.cpu_ns),
         "rss_pages": int(event.rss_pages),
@@ -2916,6 +2955,8 @@ class ClauseTelemetryCollector:
         if not self.cgroup_inodes and self.cgroup_id:
             self.cgroup_inodes = {self.cgroup_id}
         self.init_pid = init_pid
+        init_pid_ns = _pid_namespace_inode_for_pid(init_pid) if init_pid > 0 else None
+        self.pid_namespace_inodes = {init_pid_ns} if init_pid_ns is not None else set()
         self.quota_cores = observed_quota_cores(cgroup)
         self.repo = repo
         self.artifact_path = artifact_path
@@ -3050,6 +3091,7 @@ class ClauseTelemetryCollector:
         collector.cgroup_id = 0
         collector.cgroup_inodes = set()
         collector.init_pid = 0
+        collector.pid_namespace_inodes = set()
         collector.quota_cores = 0.0
         collector.repo = repo
         collector.artifact_path = artifact_path
@@ -3233,6 +3275,7 @@ class ClauseTelemetryCollector:
                     list(self._events),
                     self.init_pid,
                     cgroup_inodes=self.cgroup_inodes,
+                    pid_namespace_inodes=self.pid_namespace_inodes,
                 )
                 # --- diagnostic logging ---
                 import sys as _sys
@@ -3250,23 +3293,24 @@ class ClauseTelemetryCollector:
                     f"container_pids={len(container_pids)} "
                     f"matched={_matched} "
                     f"exec_cgroup_dist={sorted(_exec_cgroups.items())} "
-                    f"cgroup_inodes={sorted(self.cgroup_inodes)}",
+                    f"cgroup_inodes={sorted(self.cgroup_inodes)} "
+                    f"pid_namespace_inodes={sorted(self.pid_namespace_inodes)}",
                     file=_sys.stderr,
                 )
                 # --- end diagnostic ---
-                # When cgroup_inodes is available, trust the time window
-                # and downstream command matching (_isolate_call_events)
-                # to isolate the right events.  PID/cgroup filtering is
-                # skipped because docker exec and launcher processes may
-                # run in transient cgroups unknown at discovery time.
-                _use_pid_filter = not self.cgroup_inodes and container_pids
+                _runtime_identity_available = bool(
+                    self.cgroup_inodes or self.pid_namespace_inodes
+                )
                 events = sorted(
                     (
                         event
                         for event in self._events
                         if token.started_ns <= event["ts_ns"] <= ended_ns
                         and (
-                            not _use_pid_filter
+                            not _runtime_identity_available
+                            or event.get("cgroup_id", 0) in self.cgroup_inodes
+                            or event.get("pid_namespace_inode", 0)
+                            in self.pid_namespace_inodes
                             or event.get("host_pid", 0) in container_pids
                             or event.get("child_host_pid", 0) in container_pids
                         )

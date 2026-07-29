@@ -1044,6 +1044,7 @@ function buildCompletion(
     : null;
   const toolName = extractString(event, ["tool_name", "toolName", "name"]) ?? "unknown";
   const exitCode = extractToolExitCode(rawResult, toolName);
+  const explicitSucceeded = extractBoolean(event, ["succeeded", "success"]);
   const rawEvent = includeRaw && isRecord(event)
     ? (config.trace.redact_sensitive_data ? redact(event) : jsonSafe(event))
     : null;
@@ -1055,7 +1056,7 @@ function buildCompletion(
     execution_id: prior?.executionId ?? null,
     tool_name: toolName,
     duration_ms: extractNumber(event, ["duration_ms", "durationMs"]) ?? 0,
-    succeeded: extractBoolean(event, ["succeeded", "success"]) ?? (errorType === null && (exitCode === null || exitCode === 0)),
+    succeeded: exitCode === 0 ? true : (explicitSucceeded ?? (errorType === null && exitCode === null)),
     error_type: errorType,
     error_digest: null,
     result_size_bytes: extractNumber(event, ["result_size_bytes", "resultSizeBytes"]),
