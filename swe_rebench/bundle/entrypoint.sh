@@ -335,13 +335,13 @@ EOF_PROMPT
             --agent main \
             --model "$OPENCLAW_MODEL_REF" \
             --message-file /tmp/problem_statement.txt
-    ) >"$TRACE_DIR/agent-stdout.txt" 2>"$TRACE_DIR/agent-stderr.txt" || AGENT_EXIT=$?
+    ) > >(tee "$TRACE_DIR/agent-stdout.txt") 2> >(tee "$TRACE_DIR/agent-stderr.txt" >&2) || AGENT_EXIT=$?
 else
     echo "[claw] WARNING: PROBLEM_STATEMENT not set"
     (
         cd "$AGENT_CWD"
         bash "$CLAW_ROOT/run_agent.sh"
-    ) >"$TRACE_DIR/agent-stdout.txt" 2>"$TRACE_DIR/agent-stderr.txt" || AGENT_EXIT=$?
+    ) > >(tee "$TRACE_DIR/agent-stdout.txt") 2> >(tee "$TRACE_DIR/agent-stderr.txt" >&2) || AGENT_EXIT=$?
 fi
 echo "[claw] agent exited code=$AGENT_EXIT"
 

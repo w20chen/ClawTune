@@ -708,3 +708,22 @@ sudo -E env "PATH=$PATH" "$(command -v python3)" \
   --export \
   --runtime-mode container-openclaw
 ```
+
+## 2026-07-29 Container-OpenClaw Live Output
+
+`container-openclaw` now mirrors the agent's stdout and stderr to both its
+existing trace files and the container log. The Docker SDK and CLI fallback
+follow that log while waiting, so the invoking terminal receives phase and
+agent progress without changing the `host-openclaw-sandbox` path.
+
+Validation in this workspace:
+
+- `python -m pytest tests/test_swe_rebench_selection.py -q --basetemp
+  .pytest-tmp-live-logs`: 68 passed, 2 skipped.
+- `python -m swe_rebench.runner prepare --config swe_rebench/config.yaml` and
+  both `container-openclaw` / `host-openclaw-sandbox` `--dry-run` commands:
+  passed.
+- `git diff --check`: passed.
+
+The same live Linux acceptance command above remains unavailable from this
+Windows workspace and is required to verify real Docker log timing.

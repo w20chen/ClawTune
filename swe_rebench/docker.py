@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -235,6 +236,7 @@ def _run_container_sdk(
         )
         container_id = container.id
         _log(f"[{task_id}] container {container_id[:12]} started")
+        log_thread = _stream_sdk_container_logs(container, task_id)
 
         try:
             result = container.wait(timeout=timeout_seconds if timeout_seconds > 0 else None)
@@ -249,6 +251,7 @@ def _run_container_sdk(
             exit_code = 124
             error = f"container_timeout_or_wait_failed: {exc}"
         finally:
+            _join_log_thread(log_thread)
             _write_sdk_container_log(container, trace_dir)
             try:
                 container.remove(force=True)
@@ -329,6 +332,7 @@ def _run_container_cli(
         result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
         container_id = result.stdout.strip()
         _log(f"[{task_id}] container {container_id[:12]} started (CLI fallback)")
+        log_process, log_thread = _stream_cli_container_logs(container_id, task_id)
 
         # Wait for container, then capture logs before removing it.
         wait_cmd = ["docker", "wait", container_id]
@@ -346,6 +350,7 @@ def _run_container_cli(
                 _log(f"[{task_id}] timeout, killing container")
                 subprocess.run(["docker", "kill", container_id], capture_output=True)
                 subprocess.run(["docker", "wait", container_id], capture_output=True, text=True)
+                _stop_cli_log_stream(log_process, log_thread)
                 _write_cli_container_log(container_id, trace_dir)
                 subprocess.run(["docker", "rm", "-f", container_id], capture_output=True, text=True)
                 duration = time.monotonic() - started
@@ -360,6 +365,7 @@ def _run_container_cli(
         else:
             wait_result = subprocess.run(wait_cmd, capture_output=True, text=True, check=True)
         exit_code = int(wait_result.stdout.strip())
+        _stop_cli_log_stream(log_process, log_thread)
         _write_cli_container_log(container_id, trace_dir)
         subprocess.run(["docker", "rm", "-f", container_id], capture_output=True, text=True)
 
@@ -401,6 +407,67 @@ def _write_sdk_container_log(container: Any, trace_dir: Path) -> None:
     else:
         text = str(raw)
     (trace_dir / "container.log").write_text(text, encoding="utf-8")
+
+
+def _stream_sdk_container_logs(container: Any, task_id: str) -> threading.Thread:
+    """Print Docker output as it arrives while retaining the trace copy later."""
+    def forward() -> None:
+        try:
+            for chunk in container.logs(stdout=True, stderr=True, follow=True, stream=True):
+                text = chunk.decode("utf-8", errors="replace") if isinstance(chunk, bytes) else str(chunk)
+                for line in text.rstrip("\n").splitlines():
+                    _log(f"[{task_id}] {line}")
+        except Exception as exc:
+            # Log streaming is observability only; container.wait remains authoritative.
+            _log(f"[{task_id}] live container log stream ended: {exc}")
+
+    thread = threading.Thread(target=forward, name=f"docker-logs-{task_id}", daemon=True)
+    thread.start()
+    return thread
+
+
+def _join_log_thread(thread: threading.Thread) -> None:
+    """Give a completed container a brief chance to flush its final log lines."""
+    thread.join(timeout=5)
+
+
+def _stream_cli_container_logs(container_id: str, task_id: str) -> tuple[Any | None, threading.Thread | None]:
+    """Follow CLI fallback logs without delaying the container wait."""
+    import subprocess
+
+    try:
+        process = subprocess.Popen(
+            ["docker", "logs", "--follow", container_id],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except OSError as exc:
+        _log(f"[{task_id}] cannot start live container log stream: {exc}")
+        return None, None
+
+    def forward() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            _log(f"[{task_id}] {line.rstrip()}")
+
+    thread = threading.Thread(target=forward, name=f"docker-cli-logs-{task_id}", daemon=True)
+    thread.start()
+    return process, thread
+
+
+def _stop_cli_log_stream(process: Any | None, thread: threading.Thread | None) -> None:
+    if process is None:
+        return
+    try:
+        process.wait(timeout=5)
+    except Exception:
+        try:
+            process.terminate()
+        except Exception:
+            pass
+    if thread is not None:
+        _join_log_thread(thread)
 
 
 def _write_cli_container_log(container_id: str, trace_dir: Path) -> None:

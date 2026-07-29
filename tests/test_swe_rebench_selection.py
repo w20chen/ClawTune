@@ -384,6 +384,8 @@ def test_entrypoint_uses_runtime_llm_env_and_writes_task_manifest() -> None:
     assert 'agent-cwd.txt' in _ENTRYPOINT_TEMPLATE
     assert 'agent_prompt.txt' in _ENTRYPOINT_TEMPLATE
     assert 'agent-stdout.txt' in _ENTRYPOINT_TEMPLATE
+    assert '> >(tee "$TRACE_DIR/agent-stdout.txt")' in _ENTRYPOINT_TEMPLATE
+    assert '> >(tee "$TRACE_DIR/agent-stderr.txt" >&2)' in _ENTRYPOINT_TEMPLATE
     assert 'sidecar.log' in _ENTRYPOINT_TEMPLATE
     assert 'model.patch' in _ENTRYPOINT_TEMPLATE
     assert 'result_summary.json' in _ENTRYPOINT_TEMPLATE
