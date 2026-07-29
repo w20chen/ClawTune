@@ -13,6 +13,11 @@ cp swe_rebench/config.example.yaml swe_rebench/config.yaml
 python -m swe_rebench.runner prepare --config swe_rebench/config.yaml
 ```
 
+Generated bundles, traces, exports, and reports default to
+`swe_rebench/.runtime/`, which is Git-ignored. Keep Git commands unprivileged;
+if a live eBPF run needs elevated privileges, its generated files will no
+longer dirty or change ownership of tracked repository files.
+
 Default provider config is DeepSeek:
 
 ```yaml

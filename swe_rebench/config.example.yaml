@@ -91,14 +91,14 @@ batch:
 output:
   # Root directory for per-task trace output.
   # Each task creates a subdirectory: <trace_root>/<task_id>/
-  trace_root: "./swe_rebench/traces"
+  trace_root: "./swe_rebench/.runtime/traces"
 
   # Summary report written after the batch completes.
-  report_path: "./swe_rebench/report.json"
+  report_path: "./swe_rebench/.runtime/report.json"
 
   # Also copy the final trace.jsonl to a flat directory keyed by task ID.
   # Set to empty string to disable.
-  flat_export_dir: "./swe_rebench/export"
+  flat_export_dir: "./swe_rebench/.runtime/export"
 
 # ── Runtime Bundle ────────────────────────────────────────────────
 bundle:
@@ -106,8 +106,8 @@ bundle:
   plugin_source: "packages/openclaw-plugin"
   scheduler_source: "services/scheduler"
 
-  # Where the bundle is assembled.
-  output_dir: "swe_rebench/bundle"
+  # Generated runtime files stay outside the Git-tracked bundle template.
+  output_dir: "swe_rebench/.runtime/bundle"
 
 # ── Agent ─────────────────────────────────────────────────────────
 agent:

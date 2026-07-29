@@ -756,3 +756,12 @@ Validation unavailable in this Windows workspace:
   `bcc_import.ok: true` and `stage2_ready: true` in
   `tool_resource_preflight.json`; then confirm the tool-resource artifacts no
   longer report `collector_disabled`.
+
+## 2026-07-30 Git-Safe Runtime Output
+
+The default SWE-Rebench bundle and all generated run outputs now live under
+`swe_rebench/.runtime/`, which is ignored by Git. This prevents a root-required
+live runner from rewriting tracked `swe_rebench/bundle` files and blocking a
+server-side fast-forward-only pull. Git operations must remain unprivileged;
+if an earlier run already created root-owned repository files, repair ownership
+once with `sudo chown -R <user>:<group> <repo>` before using Git normally.

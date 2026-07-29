@@ -153,14 +153,14 @@ class OutputConfig:
 class BundleConfig:
     plugin_source: str = "packages/openclaw-plugin"
     scheduler_source: str = "services/scheduler"
-    output_dir: str = "swe_rebench/bundle"
+    output_dir: str = "swe_rebench/.runtime/bundle"
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "BundleConfig":
         return cls(
             plugin_source=str(d.get("plugin_source", "packages/openclaw-plugin")),
             scheduler_source=str(d.get("scheduler_source", "services/scheduler")),
-            output_dir=str(d.get("output_dir", "swe_rebench/bundle")),
+            output_dir=str(d.get("output_dir", "swe_rebench/.runtime/bundle")),
         )
 
 

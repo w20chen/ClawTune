@@ -19,6 +19,7 @@ build/
 *.egg-info/
 .env
 swe_rebench/llm_api_key.txt
+swe_rebench/.runtime/
 .DS_Store
 .gateway-run.*.log
 /services/scheduler/traces/tool-resource/
