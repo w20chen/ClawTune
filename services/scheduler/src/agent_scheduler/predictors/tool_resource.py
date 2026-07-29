@@ -13,9 +13,14 @@ from typing import Any
 from agent_scheduler.contracts.models import ToolBeforeRequest, ToolCompletedEvent, ToolPrediction
 from agent_scheduler.monitoring.tool_runtime import ToolRuntimeSample
 from agent_scheduler.tool_resource_commands import extract_command
-from tool_resource.features import parse_command_clauses
+from tool_resource.features import (
+    parse_command_clauses,
+    shell_bin_requires_exec_evidence,
+)
 from tool_resource.metrics import ecdf_quantile
 from tool_resource.runtime_kb import (
+    ClauseLatencyBucketOutcome,
+    ClauseLatencyBucketPrediction,
     ClauseObservation,
     ClauseResourceKB,
     CommandLatencyBucketPrediction,
@@ -235,6 +240,7 @@ class ToolResourcePredictor:
                 self.buckets,
                 command=command or request.tool_name,
                 parse_failed=parse_failed,
+                shell_command=request.tool_name == "exec",
             )
         except Exception as exc:
             continuous_predictions = self._continuous_predictions_for_request(
@@ -423,7 +429,14 @@ class ToolResourcePredictor:
         signal: int | None,
         raw_result: Any | None = None,
         succeeded: bool | None = None,
+        incomplete_reason: str | None = None,
     ) -> ExecutionTelemetrySummary:
+        if incomplete_reason is not None and (
+            exit_code is not None or signal is not None
+        ):
+            raise ValueError(
+                "incomplete Stage-2 finalization cannot carry launcher exit status"
+            )
         run = self._runs_by_execution_id.pop(execution_id, None)
         if run is None:
             return self._telemetry_by_execution_id.get(
@@ -437,12 +450,18 @@ class ToolResourcePredictor:
                     unavailable_reason="no_active_stage2_run",
                 ),
             )
-        replay_execution = "completed" if exit_code == 0 and signal is None else "failed"
+        replay_execution = (
+            "incomplete"
+            if incomplete_reason is not None
+            else ("completed" if exit_code == 0 and signal is None else "failed")
+        )
         workload_result = _stage2_workload_result(
             raw_result,
             exit_code=exit_code,
             signal=signal,
-            succeeded=succeeded,
+            # A terminal OpenClaw hook is not an authoritative process exit.
+            # Do not copy its optimistic success bit into an orphaned run.
+            succeeded=None if incomplete_reason is not None else succeeded,
         )
         try:
             result = self._sdk.finish_command(
@@ -451,13 +470,17 @@ class ToolResourcePredictor:
                 replay_execution=replay_execution,
             )
         except Exception as exc:
+            finish_error = f"finish_failed:{type(exc).__name__}: {exc}"
             summary = ExecutionTelemetrySummary(
                 execution_id=execution_id,
                 tool_call_id=run.tool_call_id,
                 artifact_path=str(run._observer.context.artifact_path),
                 started=True,
                 status="unavailable",
-                unavailable_reason=f"finish_failed:{type(exc).__name__}: {exc}",
+                unavailable_reason=incomplete_reason or finish_error,
+                kb_update_error=(
+                    finish_error if incomplete_reason is not None else None
+                ),
             )
             self._telemetry_by_execution_id[execution_id] = summary
             return summary
@@ -473,11 +496,23 @@ class ToolResourcePredictor:
             tool_call_id=run.tool_call_id,
             artifact_path=str(run._observer.context.artifact_path),
             started=True,
-            status=_stage2_status(result.telemetry_artifact, call_telemetry, result.kb_update_error),
-            unavailable_reason=_stage2_unavailable_reason(
-                result.telemetry_artifact,
-                call_telemetry,
-                result.kb_update_error,
+            status=(
+                "unavailable"
+                if incomplete_reason is not None
+                else _stage2_status(
+                    result.telemetry_artifact,
+                    call_telemetry,
+                    result.kb_update_error,
+                )
+            ),
+            unavailable_reason=(
+                incomplete_reason
+                if incomplete_reason is not None
+                else _stage2_unavailable_reason(
+                    result.telemetry_artifact,
+                    call_telemetry,
+                    result.kb_update_error,
+                )
             ),
             kb_observations_added=result.kb_observations_added,
             kb_update_error=result.kb_update_error,
@@ -1037,6 +1072,7 @@ def _compact_artifact_summary(artifact: Any) -> dict[str, Any] | None:
         "schema": artifact.get("schema"),
         "schema_version": artifact.get("version"),
         "mode": artifact.get("mode"),
+        "replay_execution": artifact.get("replay_execution"),
         "collector": artifact.get("collector"),
         "container_id": artifact.get("container_id"),
         "telemetry_quality": artifact.get("telemetry_quality"),
@@ -1239,21 +1275,35 @@ def _tool_resource_prediction_payload(
         "command": prediction.command,
         "parse_failed": prediction.parse_failed,
         "clause_bins": list(prediction.clause_bins),
-        "prediction": (
-            None
-            if clause_prediction is None
-            else {
-                "bucket_id": clause_prediction.bucket_id,
-                "probability_by_bucket": list(clause_prediction.probability_by_bucket),
-                "scope": clause_prediction.scope,
-                "key_kind": clause_prediction.key_kind,
-                "evidence_count": clause_prediction.evidence_count,
-                "fallback_path": list(clause_prediction.fallback_path),
+        "clause_predictions": [
+            {
+                "clause_index": item.clause_index,
+                "bin": item.bin,
+                "argv": list(item.argv),
+                "prediction": _clause_bucket_prediction_payload(item.prediction),
+                "unavailable_reason": item.unavailable_reason,
             }
-        ),
+            for item in prediction.clause_predictions
+        ],
+        "prediction": _clause_bucket_prediction_payload(clause_prediction),
         "unavailable_reason": prediction.unavailable_reason,
         "continuous_predictions": continuous_predictions or {},
         "prediction_algorithms": _prediction_algorithms_payload(),
+    }
+
+
+def _clause_bucket_prediction_payload(
+    prediction: ClauseLatencyBucketPrediction | None,
+) -> dict[str, Any] | None:
+    if prediction is None:
+        return None
+    return {
+        "bucket_id": prediction.bucket_id,
+        "probability_by_bucket": list(prediction.probability_by_bucket),
+        "scope": prediction.scope,
+        "key_kind": prediction.key_kind,
+        "evidence_count": prediction.evidence_count,
+        "fallback_path": list(prediction.fallback_path),
     }
 
 
@@ -1275,6 +1325,18 @@ def _unavailable_prediction_for_request(
         clause_bins=tuple(str(clause["bin"]) for clause in clauses),
         prediction=None,
         unavailable_reason=reason,
+        clause_predictions=tuple(
+            ClauseLatencyBucketOutcome(
+                clause_index=index,
+                bin=str(clause["bin"]),
+                argv=tuple(clause["argv"]),
+                prediction=None,
+                unavailable_reason=reason,
+            )
+            for index, clause in enumerate(clauses)
+            if request.tool_name != "exec"
+            or shell_bin_requires_exec_evidence(str(clause["bin"]))
+        ),
     )
 
 

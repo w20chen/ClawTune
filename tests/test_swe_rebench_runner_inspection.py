@@ -389,6 +389,45 @@ def test_trace_inspection_reports_stage2_failures_and_prediction_fallbacks(tmp_p
     assert summary["tool_resource_prediction_available_ratio"] == 1.0
 
 
+def test_trace_inspection_accepts_honest_compound_clause_bucket(tmp_path):
+    trace = tmp_path / "trace.jsonl"
+    bucket = {
+        "bucket_id": 1,
+        "probability_by_bucket": [0.0, 1.0, 0.0],
+        "scope": "public",
+        "key_kind": "global",
+        "evidence_count": 8,
+        "fallback_path": ["public:bin", "public:global"],
+    }
+    record = {
+        "record_type": "span_start",
+        "kind": "tool",
+        "name": "exec",
+        "prediction": {
+            "tool_resource": {
+                "prediction": None,
+                "unavailable_reason": "compound_command_uncomposed",
+                "clause_predictions": [
+                    {
+                        "clause_index": 1,
+                        "bin": "python3",
+                        "argv": ["python3", "-m", "pytest"],
+                        "prediction": bucket,
+                        "unavailable_reason": None,
+                    }
+                ],
+                "continuous_predictions": {},
+            }
+        },
+    }
+    trace.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    inspected = _inspect_trace(trace, "")
+
+    assert inspected["tool_resource_prediction_available_span_starts"] == 1
+    assert inspected["clause_bucket_prediction_available_span_starts"] == 1
+
+
 def test_required_telemetry_audits_all_tool_samples_and_async_artifacts(tmp_path):
     trace_dir = tmp_path / "trace"
     artifact_dir = trace_dir / "tool-resource"

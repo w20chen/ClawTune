@@ -10,6 +10,7 @@ import pytest
 from swe_rebench.config import RunnerConfig
 from swe_rebench.docker import ContainerResult
 from swe_rebench.host_sandbox import (
+    _SANDBOX_TASK_PATH,
     _cleanup_openclaw_sandbox_containers,
     _cleanup_runtime_artifacts,
     _docker_sandbox_container_ids,
@@ -23,6 +24,7 @@ from swe_rebench.host_sandbox import (
     _run_openclaw_agent,
     _reset_directory,
     _sandbox_container_prefix,
+    _seed_runtime_tool_resource_kb,
     _stage_plugin_for_openclaw_if_needed,
     _start_sidecar,
     _verify_sandbox_launcher,
@@ -636,7 +638,7 @@ def test_host_sandbox_openclaw_config_uses_only_public_top_level_keys(tmp_path: 
     )
     parsed = json.loads(raw)
 
-    assert set(parsed) == {"agents", "plugins", "env"}
+    assert set(parsed) == {"agents", "tools", "plugins", "env"}
     assert parsed["agents"]["defaults"]["workspace"] == str(tmp_path / "workspace")
     assert parsed["agents"]["defaults"]["repoRoot"] == str(tmp_path / "workspace")
     docker_cfg = parsed["agents"]["defaults"]["sandbox"]["docker"]
@@ -653,12 +655,9 @@ def test_host_sandbox_openclaw_config_uses_only_public_top_level_keys(tmp_path: 
     assert parsed["env"]["CLAW_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
     assert parsed["env"]["CLAW_ENABLE_CGROUP"] == "1"
     assert parsed["env"]["CLAW_LAUNCH_MODE"] == "fork-exec"
-    sandbox_path = parsed["env"]["PATH"].split(":")
-    assert sandbox_path[:3] == [
-        "/workspace/.claw/bin",
-        "/opt/miniconda3/envs/testbed/bin",
-        "/opt/conda/envs/testbed/bin",
-    ]
+    assert "PATH" not in parsed["env"]
+    assert parsed["tools"]["deny"] == ["process"]
+    assert parsed["tools"]["exec"]["pathPrepend"] == _SANDBOX_TASK_PATH.split(":")
 
 
 def test_host_sandbox_openclaw_config_passes_docker_platform(tmp_path: Path) -> None:
@@ -802,6 +801,54 @@ def test_host_sandbox_installs_testbed_pip_wrappers(tmp_path: Path) -> None:
         )
 
 
+def test_host_sandbox_launcher_exports_testbed_path_but_uses_system_python(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    package = tmp_path / "bundle" / "scheduler" / "src" / "agent_scheduler"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+
+    _install_sandbox_launcher(workspace, tmp_path / "bundle")
+
+    launcher = (workspace / ".claw" / "bin" / "claw-launch").read_text(
+        encoding="utf-8"
+    )
+    assert f'export PATH="{_SANDBOX_TASK_PATH}"\n' in launcher
+    assert "_CLAW_LAUNCHER_PYTHON=/usr/bin/python3" in launcher
+    assert "command -v python3" not in launcher
+
+
+def test_host_sandbox_seeds_runtime_and_clause_predictor_kbs(tmp_path: Path) -> None:
+    source_dir = tmp_path / "traces" / "tool-resource"
+    source_dir.mkdir(parents=True)
+    runtime_payload = '{"schema":"runtime_tool_resource_kb_v2"}\n'
+    clause_payload = '{"schema":"runtime_clause_resource_kb_v4"}\n'
+    (source_dir / "runtime-tool-resource-kb.json").write_text(
+        runtime_payload,
+        encoding="utf-8",
+    )
+    (source_dir / "clause-resource-kb.json").write_text(
+        clause_payload,
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("", encoding="utf-8")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    assert config.config_path == config_path.resolve()
+    trace_dir = tmp_path / "task-trace"
+
+    _seed_runtime_tool_resource_kb(trace_dir, config)
+
+    seeded_dir = trace_dir / "tool-resource"
+    assert (seeded_dir / "runtime-tool-resource-kb.json").read_text(
+        encoding="utf-8"
+    ) == runtime_payload
+    assert (seeded_dir / "clause-resource-kb.json").read_text(
+        encoding="utf-8"
+    ) == clause_payload
+
+
 def test_host_sandbox_verifies_mounted_launcher_before_agent(
     tmp_path: Path,
     monkeypatch,
@@ -810,30 +857,77 @@ def test_host_sandbox_verifies_mounted_launcher_before_agent(
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "mode": "fork-exec",
+                    "fork_supported": True,
+                    "ready": True,
+                    "payload_python3": "/opt/miniconda3/envs/testbed/bin/python3",
+                    "payload_pip": "/workspace/.claw/bin/pip",
+                    "payload_pip3": "/workspace/.claw/bin/pip3",
+                }
+            ),
+            stderr="",
+        )
 
     monkeypatch.setattr(
         "swe_rebench.host_sandbox._require_executable",
         lambda name: "/usr/bin/docker",
     )
     monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "setup.py").write_text("", encoding="utf-8")
 
-    _verify_sandbox_launcher(tmp_path, tmp_path / "workspace", "linux/amd64")
+    _verify_sandbox_launcher(tmp_path, workspace, "linux/amd64")
 
     command = calls[0][0]
     assert command[:5] == ["/usr/bin/docker", "run", "--rm", "--platform", "linux/amd64"]
     assert command[command.index("--network") + 1] == "none"
     assert command[command.index("--env") + 1] == "CLAW_LAUNCH_MODE=fork-exec"
-    assert any(
-        part.startswith(
-            "PATH=/workspace/.claw/bin:/opt/miniconda3/envs/testbed/bin:"
-        )
-        for part in command
-    )
+    assert not any(part.startswith("PATH=") for part in command)
     assert command[command.index("--user") + 1] == "65534:65534"
     assert command[command.index("--entrypoint") + 1] == "/bin/sh"
     assert command[-2] == "/workspace/.claw/bin/claw-launch"
     assert command[-1] == "diagnose"
+
+
+def test_host_sandbox_launcher_preflight_rejects_system_python(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "setup.py").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._require_executable",
+        lambda name: "/usr/bin/docker",
+    )
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox.subprocess.run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "mode": "fork-exec",
+                    "fork_supported": True,
+                    "ready": True,
+                    "payload_python3": "/usr/bin/python3",
+                    "payload_pip": None,
+                    "payload_pip3": None,
+                }
+            ),
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="payload_environment_failed"):
+        _verify_sandbox_launcher(tmp_path, workspace)
 
 
 def test_host_sandbox_verifies_python_task_environment(
@@ -971,12 +1065,29 @@ def test_host_sandbox_prompt_uses_relative_paths(tmp_path: Path) -> None:
     task = TaskDef(instance_id="task-1", image="image:latest", problem_statement="fix")
     trace_dir = tmp_path / "trace"
     workspace = tmp_path / "workspace"
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    fingerprint = {
+        "schema": "swe_rebench_bundle_source_fingerprint_v1",
+        "digest": "sha256:" + "a" * 64,
+        "file_count": 1,
+        "files": ["swe_rebench/runner.py"],
+    }
+    (bundle_dir / "bundle-source-fingerprint.json").write_text(
+        json.dumps(fingerprint),
+        encoding="utf-8",
+    )
 
-    _write_task_inputs(trace_dir, task, config, workspace)
+    _write_task_inputs(trace_dir, task, config, workspace, bundle_dir)
     prompt = (trace_dir / "agent_prompt.txt").read_text(encoding="utf-8")
+    manifest = json.loads(
+        (trace_dir / "task_manifest.json").read_text(encoding="utf-8")
+    )
 
     assert "Use relative paths" in prompt
     assert "repository mounted at /workspace" not in prompt
+    assert manifest["runner_config"] == str(config_path.resolve())
+    assert manifest["bundle_source_fingerprint"] == fingerprint
 
 
 def test_host_sandbox_agent_forces_sandbox_exec_workdir(monkeypatch, tmp_path: Path) -> None:

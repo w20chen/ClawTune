@@ -62,9 +62,12 @@ Clause latency bucket predictor (``ClauseResourceKB``)
 
 The current canonical stage predicts latency buckets with explicit boundaries.
 The KB reuses mvdan clause identity, frozen public priors, and causal repo
-refinement. Compound commands remain explicitly unavailable: partial evidence
-is distinguished from a fully evidenced but uncomposed command, because
-sequential and pipeline timing require different physical composition rules.
+refinement. Compound commands remain explicitly unavailable at the top level,
+while each exec-producing clause exposes its own prediction or unavailable
+reason. Partial evidence is distinguished from a fully evidenced but
+uncomposed command, because sequential and pipeline timing require different
+physical composition rules. Shell builtins that create no exec image remain in
+the raw clause list but are excluded from the eBPF-evidence requirement.
 
 ``ClauseObservation`` is one *static mvdan clause* (identity = ``bin`` + ordered
 ``argv``), aggregated by ``tool_resource.clause_bridge`` from the Stage-2 eBPF
@@ -86,7 +89,10 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from tool_resource.features import parse_command_clauses
+from tool_resource.features import (
+    parse_command_clauses,
+    shell_bin_requires_exec_evidence,
+)
 from tool_resource.metrics import ecdf_quantile
 from tool_time.command import shell_command_heads, shell_command_prefix_tokens
 
@@ -528,8 +534,32 @@ class ClauseLatencyBucketPrediction:
 
 
 @dataclass(frozen=True)
+class ClauseLatencyBucketOutcome:
+    """Prediction or explicit unavailability for one exec-producing clause."""
+
+    clause_index: int
+    bin: str
+    argv: tuple[str, ...]
+    prediction: ClauseLatencyBucketPrediction | None
+    unavailable_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.clause_index < 0:
+            raise ValueError("clause_index must be non-negative")
+        if not self.bin or not self.argv:
+            raise ValueError("clause outcome requires non-empty bin and argv")
+        if (self.prediction is None) == (self.unavailable_reason is None):
+            raise ValueError(
+                "clause outcome requires exactly one of prediction or "
+                "unavailable_reason"
+            )
+        if self.unavailable_reason == "":
+            raise ValueError("unavailable_reason must be non-empty")
+
+
+@dataclass(frozen=True)
 class CommandLatencyBucketPrediction:
-    """Command result with explicit incomplete compound-evidence handling."""
+    """Command result with honest per-clause compound evidence."""
 
     repo: str
     command: str
@@ -537,6 +567,29 @@ class CommandLatencyBucketPrediction:
     clause_bins: tuple[str, ...]
     prediction: ClauseLatencyBucketPrediction | None
     unavailable_reason: str | None = None
+    clause_predictions: tuple[ClauseLatencyBucketOutcome, ...] = ()
+
+
+def _unavailable_clause_outcome(
+    clause_index: int,
+    clause: Mapping[str, Any],
+    reason: str,
+) -> ClauseLatencyBucketOutcome:
+    return ClauseLatencyBucketOutcome(
+        clause_index=clause_index,
+        bin=str(clause["bin"]),
+        argv=tuple(clause["argv"]),
+        prediction=None,
+        unavailable_reason=reason,
+    )
+
+
+def _clause_unavailable_reason(exc: Exception) -> str:
+    if isinstance(exc, ValueError) and "no public global clause latency node" in str(
+        exc
+    ):
+        return "no_clause_latency_evidence"
+    return f"clause_prediction_error:{type(exc).__name__}"
 
 
 def _clause_value(obs: ClauseObservation, source: str) -> float | None:
@@ -697,45 +750,52 @@ class ClauseResourceKB:
         *,
         command: str = "",
         parse_failed: bool = False,
+        shell_command: bool = True,
     ) -> CommandLatencyBucketPrediction:
-        """Predict one clause; classify compound evidence without composing it."""
+        """Predict exec-producing clauses without composing compound latency.
+
+        ``clause_bins`` preserves every parsed clause, including shell builtins
+        such as ``cd`` which run inside the shell and create no eBPF exec image.
+        ``clause_predictions`` contains only clauses that should create an exec
+        image, retaining their raw clause indexes for transparent correlation.
+        """
 
         self._advance(ts_start)
         effective = list(clauses)
         clause_bins = tuple(str(c["bin"]) for c in effective)
-        reason = None
-        prediction = None
+        executable = [
+            (index, clause)
+            for index, clause in enumerate(effective)
+            if not shell_command
+            or shell_bin_requires_exec_evidence(str(clause["bin"]))
+        ]
+        clause_predictions: tuple[ClauseLatencyBucketOutcome, ...] = ()
+        reason: str | None = None
+        prediction: ClauseLatencyBucketPrediction | None = None
         if parse_failed:
             reason = "parse_failed"
+            clause_predictions = tuple(
+                _unavailable_clause_outcome(index, clause, reason)
+                for index, clause in executable
+            )
         elif len(effective) == 0:
             reason = "empty_command"
-        elif len(effective) == 1:
-            clause = effective[0]
-            prediction = self.predict_clause_latency_bucket(
-                repo,
-                str(clause["bin"]),
-                tuple(clause["argv"]),
-                buckets,
-            )
+        elif len(effective) == 1 and not executable:
+            reason = "no_executable_clauses"
         else:
-            # Compound command: predict each clause and take the worst case.
-            clause_predictions: list[ClauseLatencyBucketPrediction] = []
-            for clause in effective:
-                try:
-                    cp = self.predict_clause_latency_bucket(
-                        repo,
-                        str(clause["bin"]),
-                        tuple(clause["argv"]),
-                        buckets,
-                    )
-                    clause_predictions.append(cp)
-                except (ValueError, KeyError):
-                    pass
-            reason = (
-                "compound_clause_evidence_incomplete"
-                if len(clause_predictions) != len(effective)
-                else "compound_command_uncomposed"
+            clause_predictions = tuple(
+                self._predict_clause_outcome(repo, index, clause, buckets)
+                for index, clause in executable
             )
+            if len(effective) == 1:
+                prediction = clause_predictions[0].prediction
+                reason = clause_predictions[0].unavailable_reason
+            else:
+                reason = (
+                    "compound_clause_evidence_incomplete"
+                    if any(item.prediction is None for item in clause_predictions)
+                    else "compound_command_uncomposed"
+                )
         return CommandLatencyBucketPrediction(
             repo=repo,
             command=command,
@@ -743,6 +803,38 @@ class ClauseResourceKB:
             clause_bins=clause_bins,
             prediction=prediction,
             unavailable_reason=reason,
+            clause_predictions=clause_predictions,
+        )
+
+    def _predict_clause_outcome(
+        self,
+        repo: str,
+        clause_index: int,
+        clause: Mapping[str, Any],
+        buckets: LatencyBuckets,
+    ) -> ClauseLatencyBucketOutcome:
+        bin_ = str(clause["bin"])
+        argv = tuple(clause["argv"])
+        try:
+            prediction = self.predict_clause_latency_bucket(
+                repo,
+                bin_,
+                argv,
+                buckets,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            return ClauseLatencyBucketOutcome(
+                clause_index=clause_index,
+                bin=bin_,
+                argv=argv,
+                prediction=None,
+                unavailable_reason=_clause_unavailable_reason(exc),
+            )
+        return ClauseLatencyBucketOutcome(
+            clause_index=clause_index,
+            bin=bin_,
+            argv=argv,
+            prediction=prediction,
         )
 
     def predict_command_latency_bucket(
@@ -836,6 +928,7 @@ class ClauseResourceKB:
 
 __all__ = [
     "TARGETS",
+    "ClauseLatencyBucketOutcome",
     "ClauseLatencyBucketPrediction",
     "ClauseObservation",
     "ClauseResourceKB",

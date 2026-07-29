@@ -206,10 +206,20 @@ collectors, telemetry loss, missing non-OK reasons, or any non-OK call marked
 KB-eligible. `runtime-tool-resource-kb.json` is a separate historical
 call-level KB and is excluded from the Stage-2 artifact count.
 Host-sandbox required mode also requires at least one usable clause-bucket
-prediction and at least one finite, non-negative, evidence-backed continuous
+prediction (a command-level prediction for a single executable clause or an
+independent entry in `clause_predictions` for a compound command) and at least
+one finite, non-negative, evidence-backed continuous
 `conditional_p90` for each of `latency_ms`, `peak_cpu_cores`, and
 `peak_memory_mb`. It also matches every trace execution/tool-call reference to
 exactly one on-disk artifact and requires an explicit launcher exit status.
+
+The maintained host route seeds both runtime and clause cold-start snapshots.
+It exports the task-image testbed `PATH` from the mounted `claw-launch` itself,
+while the launcher continues to run on `/usr/bin/python3`. OpenClaw's official
+`tools.exec.pathPrepend` carries the same preference into sandbox exec, and the
+route denies the `process` tool so exec stays synchronous. This one-call/one-
+payload lifecycle is required for exact Stage-2 causal endings; background
+sessions are intentionally outside this benchmark route.
 
 **Diagnostics:**
 

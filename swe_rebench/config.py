@@ -187,6 +187,7 @@ class RunnerConfig:
     bundle: BundleConfig
     agent: AgentConfig
     repo_root: Path
+    config_path: Path | None = None
 
     @classmethod
     def from_yaml(cls, path: str | Path, repo_root: Path | None = None) -> "RunnerConfig":
@@ -209,6 +210,7 @@ class RunnerConfig:
             bundle=BundleConfig.from_dict(raw.get("bundle", {})),
             agent=AgentConfig.from_dict(raw.get("agent", {})),
             repo_root=repo_root,
+            config_path=path.resolve(),
         )
 
 

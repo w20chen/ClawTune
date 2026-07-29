@@ -30,6 +30,40 @@ _REPO_SUFFIX_RE = re.compile(r"-\d+$")
 _WRAPPER_BINS = frozenset(
     {"bash", "env", "nice", "nohup", "sh", "sudo", "timeout", "xargs"}
 )
+# Static shell clauses headed by these builtins execute inside the already
+# running shell. They cannot, and therefore must not, be made contingent on a
+# new eBPF exec-image observation. Keep the raw clause in parser output so
+# callers can preserve command structure and clause indexes.
+NOEXEC_SHELL_BUILTINS = frozenset(
+    {
+        "cd",
+        "export",
+        "unset",
+        "set",
+        "true",
+        "false",
+        ":",
+        "alias",
+        "umask",
+        "shift",
+        "local",
+        "read",
+        "echo",
+        "printf",
+        "test",
+        "[",
+        "wait",
+        "eval",
+        "source",
+        ".",
+        "pwd",
+        "exit",
+        "return",
+        "break",
+        "continue",
+        "trap",
+    }
+)
 _GIT_READ = frozenset(
     {"blame", "branch", "describe", "diff", "grep", "log", "show", "status"}
 )
@@ -136,6 +170,12 @@ def repo_of(task_id: str) -> str:
     """Strip the trailing instance number from a task ID."""
 
     return _REPO_SUFFIX_RE.sub("", task_id)
+
+
+def shell_bin_requires_exec_evidence(bin_: str) -> bool:
+    """Whether a static shell clause head should create a new exec image."""
+
+    return bin_ not in NOEXEC_SHELL_BUILTINS
 
 
 def assign_repo_folds(

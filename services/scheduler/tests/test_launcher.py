@@ -48,11 +48,21 @@ def test_launcher_diagnostics_confirms_fork_exec_support(monkeypatch) -> None:
     monkeypatch.setenv("CLAW_LAUNCH_MODE", "fork-exec")
     monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
     monkeypatch.setattr(launcher.os, "fork", lambda: 123, raising=False)
+    monkeypatch.setenv("PATH", "/task/bin:/usr/bin")
+    monkeypatch.setattr(
+        launcher,
+        "which",
+        lambda name, *, path=None: f"/resolved/{name}" if path else None,
+    )
 
     assert launcher.launcher_diagnostics() == {
         "mode": "fork-exec",
         "fork_supported": True,
         "ready": True,
+        "payload_path": "/task/bin:/usr/bin",
+        "payload_python3": "/resolved/python3",
+        "payload_pip": "/resolved/pip",
+        "payload_pip3": "/resolved/pip3",
     }
 
 
@@ -71,6 +81,49 @@ def test_launcher_diagnose_command_reports_selected_mode(
 
     assert exc.value.code == 0
     assert '"mode": "fork-exec"' in capsys.readouterr().out
+
+
+def test_launcher_retries_exit_report_with_short_bounded_timeout(
+    monkeypatch,
+    capsys,
+) -> None:
+    attempts: list[tuple[str, float, dict[str, Any]]] = []
+    sleeps: list[float] = []
+    update_token = "private-update-token"
+
+    def fake_post(
+        _endpoint: str,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        attempts.append((path, timeout_seconds, payload))
+        if len(attempts) < 3:
+            raise TimeoutError("sidecar busy")
+        return {"stored": True}
+
+    monkeypatch.setattr(launcher, "_post_json_with_timeout", fake_post)
+    monkeypatch.setattr(launcher.time, "sleep", sleeps.append)
+
+    result = launcher._post_json_best_effort(
+        "http://sidecar",
+        "/v2/executions/exec-1/exited",
+        {"update_token": update_token, "exit_code": 0, "signal": None},
+    )
+
+    assert result == {"stored": True}
+    assert len(attempts) == launcher._EXIT_REPORT_ATTEMPTS == 3
+    assert {timeout for _path, timeout, _payload in attempts} == {
+        launcher._EXIT_REPORT_TIMEOUT_SECONDS
+    }
+    assert sleeps == [
+        launcher._EXIT_REPORT_RETRY_DELAY_SECONDS,
+        launcher._EXIT_REPORT_RETRY_DELAY_SECONDS,
+    ]
+    captured = capsys.readouterr()
+    assert update_token not in captured.out
+    assert update_token not in captured.err
 
 
 def test_launcher_claims_starts_and_returns_child_exit_code(monkeypatch) -> None:

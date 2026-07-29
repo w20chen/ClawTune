@@ -197,8 +197,15 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                     report["tool_resource_prediction_span_starts"] += 1
                     continuous = prediction.get("continuous_predictions")
                     has_continuous = _has_available_continuous_prediction(continuous)
+                    # A compound shell command deliberately has no synthetic
+                    # command-level bucket: sequential and pipeline latencies
+                    # have different composition laws.  Its independently
+                    # evidenced executable clauses are still real predictor
+                    # outputs and satisfy clause-level coverage.
                     has_bucket = _bucket_prediction_available(
                         prediction.get("prediction")
+                    ) or _has_available_clause_bucket_prediction(
+                        prediction.get("clause_predictions")
                     )
                     if has_bucket or has_continuous:
                         report["tool_resource_prediction_available_span_starts"] += 1
@@ -1367,6 +1374,16 @@ def _bucket_prediction_available(value: Any) -> bool:
     )
 
 
+def _has_available_clause_bucket_prediction(value: Any) -> bool:
+    if not isinstance(value, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and _bucket_prediction_available(item.get("prediction"))
+        for item in value
+    )
+
+
 def _continuous_target_prediction_available(value: Any, target: str) -> bool:
     if not isinstance(value, dict):
         return False
@@ -1533,7 +1550,7 @@ def run_batch(
 
     client = get_docker_client(config.docker)
     report = BatchReport(
-        config_path="",
+        config_path=str(config.config_path or ""),
         total_tasks=len(tasks),
         started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     )
@@ -1804,7 +1821,7 @@ def collect_traces(config: RunnerConfig) -> BatchReport:
     trace_root = config.output.trace_root
     if not trace_root.exists():
         _log(f"Trace root not found: {trace_root}")
-        return BatchReport(config_path="", total_tasks=0)
+        return BatchReport(config_path=str(config.config_path or ""), total_tasks=0)
 
     results: list[dict[str, Any]] = []
     task_dirs = sorted(trace_root.iterdir())
@@ -1826,7 +1843,7 @@ def collect_traces(config: RunnerConfig) -> BatchReport:
         })
 
     report = BatchReport(
-        config_path="",
+        config_path=str(config.config_path or ""),
         total_tasks=len(results),
         completed=len(results),
         results=results,

@@ -33,6 +33,7 @@ from agent_scheduler.security.auth import verify_bearer
 
 
 _STAGE2_COMPLETION_GRACE_SECONDS = 10.0
+_STAGE2_ORPHAN_GRACE_SECONDS = 1.0
 
 
 def _sample_summary(sample: ToolRuntimeSample) -> dict[str, object]:
@@ -112,6 +113,18 @@ def _defer_stage2_until_started(record: object) -> bool:
         and getattr(request, "backend", None) == "managed-wrapper"
         and _profiling_enabled(getattr(request, "profiling", None), "enable_cgroup")
     )
+
+
+def _completion_reports_running(raw_result: object) -> bool:
+    """Return whether OpenClaw yielded a still-running background exec."""
+
+    if not isinstance(raw_result, dict):
+        return False
+    details = raw_result.get("details")
+    if not isinstance(details, dict):
+        return False
+    status = details.get("status")
+    return isinstance(status, str) and status.lower() == "running"
 
 
 def _safe_cgroup_name(value: str) -> str:
@@ -392,6 +405,69 @@ def create_app(state: AppState | None = None) -> FastAPI:
             finalize_stage2_after_grace(s, execution_id, exit_code, signal)
         )
 
+    def finish_stage2_from_completion(
+        s: AppState,
+        event: ToolCompletedEvent,
+        *,
+        record: object | None,
+        incomplete_reason: str | None = None,
+    ) -> None:
+        execution_id = event.execution_id
+        if execution_id is None:
+            return
+        cancel_stage2_fallback(s, execution_id)
+        exit_code = getattr(record, "exit_code", None)
+        signal = getattr(record, "signal", None)
+        if (
+            incomplete_reason is None
+            and exit_code is None
+            and signal is None
+            and event.succeeded
+        ):
+            exit_code = 0
+        finish_kwargs: dict[str, Any] = {
+            "execution_id": execution_id,
+            "exit_code": None if incomplete_reason is not None else exit_code,
+            "signal": None if incomplete_reason is not None else signal,
+            "raw_result": event.raw_result,
+            "succeeded": None if incomplete_reason is not None else event.succeeded,
+        }
+        if incomplete_reason is not None:
+            finish_kwargs["incomplete_reason"] = incomplete_reason
+        telemetry = s.predictor.finish_execution(**finish_kwargs)
+        record_stage2_telemetry(s, execution_id, telemetry)
+
+    async def finalize_stage2_from_completion(
+        s: AppState,
+        event: ToolCompletedEvent,
+    ) -> None:
+        execution_id = event.execution_id
+        if execution_id is None or _completion_reports_running(event.raw_result):
+            return
+        record = s.executions.get(execution_id)
+        if record is not None and record.exited:
+            finish_stage2_from_completion(s, event, record=record)
+            return
+        if not stage2_needs_finalization(s, execution_id):
+            return
+
+        # The launcher normally reports /exited before the wrapped command
+        # returns to OpenClaw. Give a delayed retry a short reconciliation
+        # window, then close the collector as explicitly incomplete. Awaiting
+        # here keeps both cleanup and the final telemetry attached to this
+        # completion before the host runner can stop the sidecar.
+        await asyncio.sleep(_STAGE2_ORPHAN_GRACE_SECONDS)
+        record = s.executions.get(execution_id)
+        if record is not None and record.exited:
+            finish_stage2_from_completion(s, event, record=record)
+        elif stage2_needs_finalization(s, execution_id):
+            finish_stage2_from_completion(
+                s,
+                event,
+                record=record,
+                incomplete_reason="launcher_exit_missing",
+            )
+
     def with_sandbox_fallback(request: ToolBeforeRequest, s: AppState) -> ToolBeforeRequest:
         if (
             request.resource_scope is not None
@@ -587,21 +663,12 @@ def create_app(state: AppState | None = None) -> FastAPI:
             # time out its completion POST and issue a telemetry GET; keeping
             # this synchronous section first prevents that GET from observing
             # (or formerly finalizing) a run without the authoritative result.
-            if event.execution_id is not None:
-                cancel_stage2_fallback(s, event.execution_id)
-                record = s.executions.get(event.execution_id)
-                exit_code = record.exit_code if record is not None else None
-                signal = record.signal if record is not None else None
-                if exit_code is None and signal is None and event.succeeded:
-                    exit_code = 0
-                telemetry = s.predictor.finish_execution(
-                    execution_id=event.execution_id,
-                    exit_code=exit_code,
-                    signal=signal,
-                    raw_result=event.raw_result,
-                    succeeded=event.succeeded,
-                )
-                record_stage2_telemetry(s, event.execution_id, telemetry)
+            # OpenClaw emits a normal-looking tool completion when exec merely
+            # yields to its background process manager. That result is not the
+            # workload's causal end. A genuinely terminal completion without
+            # the launcher's exit is instead closed after a short grace period
+            # as explicitly incomplete, never as an inferred success.
+            await finalize_stage2_from_completion(s, event)
 
             event = await completed_with_execution_scope(event, s)
             inferred_scope = (

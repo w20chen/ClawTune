@@ -2,6 +2,73 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://openclaw.ai/schemas/scheduler/tool-decision.schema.json",
   "type": "object",
+  "$defs": {
+    "clauseLatencyBucketPrediction": {
+      "type": "object",
+      "properties": {
+        "bucket_id": {"type": "integer", "minimum": 0},
+        "probability_by_bucket": {
+          "type": "array",
+          "items": {"type": "number", "minimum": 0, "maximum": 1}
+        },
+        "scope": {"type": "string"},
+        "key_kind": {"type": "string"},
+        "evidence_count": {"type": "integer", "minimum": 0},
+        "fallback_path": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": [
+        "bucket_id",
+        "probability_by_bucket",
+        "scope",
+        "key_kind",
+        "evidence_count",
+        "fallback_path"
+      ],
+      "additionalProperties": false
+    },
+    "clauseLatencyBucketOutcome": {
+      "type": "object",
+      "description": "Latency-bucket result for one static clause that requires a runtime exec image. Shell builtins that execute inside the shell are intentionally omitted; clause_index maps each result back to the unfiltered clause_bins sequence.",
+      "properties": {
+        "clause_index": {"type": "integer", "minimum": 0},
+        "bin": {"type": "string", "minLength": 1},
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string"}
+        },
+        "prediction": {
+          "anyOf": [
+            {"$ref": "#/$defs/clauseLatencyBucketPrediction"},
+            {"type": "null"}
+          ]
+        },
+        "unavailable_reason": {"type": ["string", "null"]}
+      },
+      "required": [
+        "clause_index",
+        "bin",
+        "argv",
+        "prediction",
+        "unavailable_reason"
+      ],
+      "oneOf": [
+        {
+          "properties": {
+            "prediction": {"$ref": "#/$defs/clauseLatencyBucketPrediction"},
+            "unavailable_reason": {"type": "null"}
+          }
+        },
+        {
+          "properties": {
+            "prediction": {"type": "null"},
+            "unavailable_reason": {"type": "string", "minLength": 1}
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
   "required": ["decision_id", "action", "reason_code", "reason", "policy_name", "policy_version", "lease_id", "prediction", "placement_advice"],
   "properties": {
     "decision_id": {"type": "string", "minLength": 1},
@@ -27,28 +94,15 @@
             "command": {"type": "string"},
             "parse_failed": {"type": "boolean"},
             "clause_bins": {"type": "array", "items": {"type": "string"}},
+            "clause_predictions": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/clauseLatencyBucketOutcome"}
+            },
             "prediction": {
-              "type": ["object", "null"],
-              "properties": {
-                "bucket_id": {"type": "integer", "minimum": 0},
-                "probability_by_bucket": {
-                  "type": "array",
-                  "items": {"type": "number", "minimum": 0, "maximum": 1}
-                },
-                "scope": {"type": "string"},
-                "key_kind": {"type": "string"},
-                "evidence_count": {"type": "integer", "minimum": 0},
-                "fallback_path": {"type": "array", "items": {"type": "string"}}
-              },
-              "required": [
-                "bucket_id",
-                "probability_by_bucket",
-                "scope",
-                "key_kind",
-                "evidence_count",
-                "fallback_path"
-              ],
-              "additionalProperties": false
+              "anyOf": [
+                {"$ref": "#/$defs/clauseLatencyBucketPrediction"},
+                {"type": "null"}
+              ]
             },
             "unavailable_reason": {"type": ["string", "null"]},
             "continuous_predictions": {
@@ -119,6 +173,7 @@
             "command",
             "parse_failed",
             "clause_bins",
+            "clause_predictions",
             "prediction",
             "unavailable_reason",
             "continuous_predictions",

@@ -122,9 +122,25 @@ export type ToolResourceCommandPrediction = {
   command: string;
   parse_failed: boolean;
   clause_bins: string[];
+  clause_predictions: ToolResourceClausePredictionOutcome[];
   prediction: ToolResourceClausePrediction | null;
   unavailable_reason: string | null;
 };
+
+export type ToolResourceClausePredictionOutcome = {
+  clause_index: number;
+  bin: string;
+  argv: string[];
+} & (
+  | {
+      prediction: ToolResourceClausePrediction;
+      unavailable_reason: null;
+    }
+  | {
+      prediction: null;
+      unavailable_reason: string;
+    }
+);
 
 export type ToolResourceClausePrediction = {
   bucket_id: number;

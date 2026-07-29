@@ -83,7 +83,7 @@ def run_host_sandbox_task(
         _export_testbed_from_image(task.image, workspace, config.docker.pull_policy, config.docker.platform)
         _make_sandbox_workspace_writable(workspace)
         _install_sandbox_launcher(workspace, bundle_dir)
-        _write_task_inputs(trace_dir, task, config, workspace)
+        _write_task_inputs(trace_dir, task, config, workspace, bundle_dir)
         _ensure_openclaw_sandbox_image(task.image, trace_dir, config.docker.platform)
         _verify_sandbox_launcher(trace_dir, workspace, config.docker.platform)
         _verify_sandbox_task_environment(trace_dir, workspace, config.docker.platform)
@@ -253,44 +253,65 @@ def _ensure_openclaw_sandbox_image(task_image: str, trace_dir: Path, platform: s
 
 
 def _verify_sandbox_launcher(trace_dir: Path, workspace: Path, platform: str = "") -> None:
-    """Execute the mounted launcher help path before spending an agent run."""
+    """Verify launcher mode and the environment its payload will inherit."""
 
     docker = _require_executable("docker")
     log_path = trace_dir / "launcher-preflight.log"
-    with log_path.open("w", encoding="utf-8") as log:
-        result = subprocess.run(
-            [
-                docker,
-                "run",
-                "--rm",
-                *_docker_platform_args(platform),
-                "--network",
-                "none",
-                "--env",
-                "CLAW_LAUNCH_MODE=fork-exec",
-                "--env",
-                f"PATH={_SANDBOX_TASK_PATH}",
-                "--user",
-                "65534:65534",
-                "--mount",
-                f"type=bind,src={workspace},dst=/workspace",
-                "--workdir",
-                "/workspace",
-                "--entrypoint",
-                "/bin/sh",
-                "openclaw-sandbox:bookworm-slim",
-                "/workspace/.claw/bin/claw-launch",
-                "diagnose",
-            ],
-            stdout=log,
-            stderr=log,
-            text=True,
-        )
+    result = subprocess.run(
+        [
+            docker,
+            "run",
+            "--rm",
+            *_docker_platform_args(platform),
+            "--network",
+            "none",
+            "--env",
+            "CLAW_LAUNCH_MODE=fork-exec",
+            "--user",
+            "65534:65534",
+            "--mount",
+            f"type=bind,src={workspace},dst=/workspace",
+            "--workdir",
+            "/workspace",
+            "--entrypoint",
+            "/bin/sh",
+            "openclaw-sandbox:bookworm-slim",
+            "/workspace/.claw/bin/claw-launch",
+            "diagnose",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    _write_text(log_path, (result.stdout or "") + (result.stderr or ""))
     if result.returncode != 0:
         raise RuntimeError(
             "sandbox_launcher_preflight_failed: the mounted claw-launch must "
             "be readable and select a supported fork-exec runtime in the "
             f"sandbox: {_tail_text(log_path, 2000)}"
+        )
+    python_markers = ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt")
+    if not any((workspace / marker).is_file() for marker in python_markers):
+        return
+    try:
+        diagnostics = json.loads((result.stdout or "").strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError):
+        diagnostics = {}
+    python3 = diagnostics.get("payload_python3")
+    if not (
+        isinstance(python3, str)
+        and python3.startswith(
+            (
+                "/opt/miniconda3/envs/testbed/bin/",
+                "/opt/conda/envs/testbed/bin/",
+            )
+        )
+        and diagnostics.get("payload_pip") == "/workspace/.claw/bin/pip"
+        and diagnostics.get("payload_pip3") == "/workspace/.claw/bin/pip3"
+    ):
+        raise RuntimeError(
+            "sandbox_launcher_payload_environment_failed: managed-wrapper "
+            "payload must resolve testbed python and mounted pip wrappers: "
+            f"{_tail_text(log_path, 2000)}"
         )
 
 
@@ -370,6 +391,7 @@ def _install_sandbox_launcher(workspace: Path, bundle_dir: Path) -> None:
     launcher = target_bin / "claw-launch"
     launcher.write_text(
         "#!/bin/sh\n"
+        f'export PATH="{_SANDBOX_TASK_PATH}"\n'
         "export CLAW_LAUNCHER_PYTHONPATH=/workspace/.claw/scheduler/src\n"
         "export PYTHONPATH=\"$CLAW_LAUNCHER_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}\"\n"
         # Keep the launcher on the image's modern system Python even when the
@@ -377,9 +399,7 @@ def _install_sandbox_launcher(workspace: Path, bundle_dir: Path) -> None:
         # The forked /bin/sh payload still inherits _SANDBOX_TASK_PATH.
         "_CLAW_LAUNCHER_PYTHON=/usr/bin/python3\n"
         "if [ ! -x \"$_CLAW_LAUNCHER_PYTHON\" ]; then "
-        "_CLAW_LAUNCHER_PYTHON=$(command -v python3 || true); fi\n"
-        "if [ -z \"$_CLAW_LAUNCHER_PYTHON\" ]; then "
-        "echo 'claw-launch: Python 3 is unavailable' >&2; exit 127; fi\n"
+        "echo 'claw-launch: /usr/bin/python3 is unavailable' >&2; exit 127; fi\n"
         "exec \"$_CLAW_LAUNCHER_PYTHON\" -m agent_scheduler.launcher \"$@\"\n",
         encoding="utf-8",
     )
@@ -477,21 +497,25 @@ def _start_sidecar(
 
 
 def _seed_runtime_tool_resource_kb(trace_dir: Path, config: RunnerConfig) -> None:
-    """Copy the repo's pre-seeded runtime KB to the per-task trace directory.
+    """Copy the repo's pre-seeded predictor KBs to the task trace directory.
 
     The RuntimeToolResourceKB predictor needs cold-start training data for
     continuous p90 latency/CPU/memory estimates.  The repo ships a small
-    synthetic training snapshot.  Without it, all continuous predictions
-    return null with ``no continuous evidence for target``.
+    synthetic runtime snapshot and a clause-latency snapshot.  Without them,
+    continuous predictions and clause latency-bucket predictions have no
+    cold-start evidence.
     """
     dest_dir = trace_dir / "tool-resource"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / "runtime-tool-resource-kb.json"
-    if dest.exists():
-        return
-    source = config.repo_root / "traces" / "tool-resource" / "runtime-tool-resource-kb.json"
-    if source.is_file():
-        shutil.copy2(source, dest)
+    source_dir = config.repo_root / "traces" / "tool-resource"
+    for filename in (
+        "runtime-tool-resource-kb.json",
+        "clause-resource-kb.json",
+    ):
+        dest = dest_dir / filename
+        source = source_dir / filename
+        if not dest.exists() and source.is_file():
+            shutil.copy2(source, dest)
 
 
 def _write_host_tool_resource_preflight(trace_dir: Path, config: RunnerConfig) -> None:
@@ -834,6 +858,19 @@ def _openclaw_config(
                     },
                 },
             },
+            "tools": {
+                # Background process sessions split one logical command across
+                # exec/process calls and therefore cannot provide an exact
+                # one-call/one-process resource lifecycle.  Keep this required
+                # telemetry route synchronous.
+                "deny": ["process"],
+                "exec": {
+                    # OpenClaw's supported sandbox-exec PATH extension.  The
+                    # launcher repeats the complete value so the forked shell
+                    # also inherits it regardless of gateway sanitisation.
+                    "pathPrepend": _SANDBOX_TASK_PATH.split(":"),
+                },
+            },
             "plugins": {
                 "entries": {
                     "agent-scheduler": {
@@ -882,9 +919,6 @@ def _openclaw_config(
                 "CLAW_ENABLE_CGROUP": "1",
                 "CLAW_LAUNCH_MODE": "fork-exec",
                 "CLAW_LAUNCH_DEBUG": "1",
-                # Select the task image's own testbed environment rather than
-                # silently falling back to the image's system Python.
-                "PATH": _SANDBOX_TASK_PATH,
             },
         },
         indent=2,
@@ -1178,7 +1212,13 @@ def _looks_like_container_id(value: str) -> bool:
     return len(stripped) >= 12 and all(ch.isalnum() or ch in {"_", "-", "."} for ch in stripped)
 
 
-def _write_task_inputs(trace_dir: Path, task: TaskDef, config: RunnerConfig, workspace: Path) -> None:
+def _write_task_inputs(
+    trace_dir: Path,
+    task: TaskDef,
+    config: RunnerConfig,
+    workspace: Path,
+    bundle_dir: Path | None = None,
+) -> None:
     prompt = (
         "You are running a SWE-Rebench task in an OpenClaw Docker sandbox.\n\n"
         "Goal: solve the task by editing the repository in the current workspace.\n\n"
@@ -1199,6 +1239,11 @@ def _write_task_inputs(trace_dir: Path, task: TaskDef, config: RunnerConfig, wor
         prompt += f"\nHint:\n{task.hint_text}\n"
     _write_text(trace_dir / "agent_prompt.txt", prompt)
     _write_text(trace_dir / "agent-cwd.txt", str(workspace) + "\n")
+    bundle_fingerprint = _read_json_object(
+        bundle_dir / "bundle-source-fingerprint.json"
+        if bundle_dir is not None
+        else None
+    )
     _write_text(
         trace_dir / "task_manifest.json",
         json.dumps(
@@ -1210,6 +1255,8 @@ def _write_task_inputs(trace_dir: Path, task: TaskDef, config: RunnerConfig, wor
                 "openclaw_model_ref": config.llm.openclaw_model_ref,
                 "runtime_mode": "host-openclaw-sandbox",
                 "workspace": str(workspace),
+                "runner_config": str(config.config_path or ""),
+                "bundle_source_fingerprint": bundle_fingerprint,
                 "problem_statement_bytes": len(task.problem_statement),
                 "hint_text_bytes": len(task.hint_text),
             },
@@ -1217,6 +1264,16 @@ def _write_task_inputs(trace_dir: Path, task: TaskDef, config: RunnerConfig, wor
         )
         + "\n",
     )
+
+
+def _read_json_object(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
 
 
 _RUNTIME_ARTIFACTS = (

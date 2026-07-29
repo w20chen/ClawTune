@@ -17,6 +17,11 @@ from shutil import which
 from typing import Any
 
 
+_EXIT_REPORT_ATTEMPTS = 3
+_EXIT_REPORT_TIMEOUT_SECONDS = 0.75
+_EXIT_REPORT_RETRY_DELAY_SECONDS = 0.05
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="claw-launch")
     sub = parser.add_subparsers(dest="command_name", required=True)
@@ -78,10 +83,16 @@ def _selected_launch_mode() -> str:
 def launcher_diagnostics() -> dict[str, Any]:
     mode = _selected_launch_mode()
     fork_supported = _supports_posix_controls() and hasattr(os, "fork")
+    payload_env = _payload_environment()
+    payload_path = payload_env.get("PATH", "")
     return {
         "mode": mode,
         "fork_supported": fork_supported,
         "ready": mode == "subprocess" or (mode == "fork-exec" and fork_supported),
+        "payload_path": payload_path,
+        "payload_python3": which("python3", path=payload_path),
+        "payload_pip": which("pip", path=payload_path),
+        "payload_pip3": which("pip3", path=payload_path),
     }
 
 
@@ -543,6 +554,23 @@ def _install_signal_forwarders(child: subprocess.Popen[bytes]) -> None:
 
 
 def _post_json_best_effort(endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if path.endswith("/exited"):
+        # Exit delivery closes the eBPF collector, so tolerate a short local
+        # sidecar race without ever delaying command return for tens of
+        # seconds. The opaque update token stays only in the request body and
+        # is never included in diagnostics.
+        for attempt in range(_EXIT_REPORT_ATTEMPTS):
+            try:
+                return _post_json_with_timeout(
+                    endpoint,
+                    path,
+                    payload,
+                    timeout_seconds=_EXIT_REPORT_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                if attempt + 1 < _EXIT_REPORT_ATTEMPTS:
+                    time.sleep(_EXIT_REPORT_RETRY_DELAY_SECONDS)
+        return {}
     try:
         return _post_json(endpoint, path, payload)
     except Exception:
@@ -550,6 +578,16 @@ def _post_json_best_effort(endpoint: str, path: str, payload: dict[str, Any]) ->
 
 
 def _post_json(endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return _post_json_with_timeout(endpoint, path, payload, timeout_seconds=10.0)
+
+
+def _post_json_with_timeout(
+    endpoint: str,
+    path: str,
+    payload: dict[str, Any],
+    *,
+    timeout_seconds: float,
+) -> dict[str, Any]:
     data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     request = urllib.request.Request(
         endpoint.rstrip("/") + path,
@@ -561,7 +599,7 @@ def _post_json(endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, A
     if bearer:
         request.add_header("authorization", f"Bearer {bearer}")
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             raw = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")

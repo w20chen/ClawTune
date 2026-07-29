@@ -142,6 +142,8 @@ def _bundle_source_fingerprint(config: RunnerConfig) -> dict[str, Any]:
     roots = [
         repo / config.bundle.plugin_source,
         repo / config.bundle.scheduler_source,
+        repo / "contracts",
+        repo / "traces" / "tool-resource",
         Path(__file__).resolve(),
         repo / "swe_rebench" / "runner.py",
         repo / "swe_rebench" / "host_sandbox.py",

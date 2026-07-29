@@ -533,3 +533,82 @@ sudo -E env "PATH=$PATH" "$(command -v python3)" \
   --export \
   --runtime-mode host-openclaw-sandbox
 ```
+
+## 2026-07-29 Spectree Compound-Prediction and Payload-Environment Follow-up
+
+The newly downloaded run contains 22 launcher Stage-2 artifacts and all 22
+collectors are healthy: claim/start/exit coverage is complete, each artifact
+has a trusted launcher root, and no telemetry or ring-buffer loss is reported.
+Twenty-one calls are Clause-KB eligible. The sole invalid call is the
+long-running `pip | tail` execution: OpenClaw reported `status=running` after
+ten seconds, and Stage-2 finalized before the later real launcher exit, leaving
+the `pip` and `tail` images with `no_causal_end`.
+
+The run failed only at the required prediction gate. It recorded 33 prediction
+envelopes and 23 usable continuous latency/CPU/memory predictions, but zero
+command-level clause buckets. Every launcher-backed shell command was compound
+(for example, `cd /workspace && python3 ...`), and the predictor deliberately
+refused to invent a single top-level duration bucket without a valid sequential
+or pipeline composition rule. The old response exposed no independent clause
+outcomes, so the runner could not recognize the real per-clause evidence.
+
+The sandbox runtime preflight itself selected the testbed interpreter, but the
+actual OpenClaw exec payloads resolved `python3` to `/usr/bin/python3`; that
+explains the missing `pydantic`, `pip`, and `pytest` seen in the agent output.
+The preflight had injected PATH only into its standalone Docker command, while
+the actual OpenClaw sandbox exec did not inherit that override.
+
+The maintained path now addresses all three causes:
+
+- The public tool-decision JSON Schema requires `clause_predictions`. A
+  compound command keeps its top-level prediction unavailable, while every
+  exec-producing clause returns either a real evidence-backed bucket or an
+  explicit unavailable reason. Shell builtins such as `cd` and `export` retain
+  their clause indexes but do not require impossible eBPF exec evidence. The
+  runner accepts a valid per-clause bucket without pretending it is a composed
+  command duration.
+- The host route seeds both runtime and clause snapshots. The clause snapshot
+  is an explicit synthetic public/global cold-start prior (16 observations at
+  1200 ms); it is advisory evidence, not learned task-specific truth, and is
+  superseded by causal repo evidence as completed calls become available.
+- `claw-launch` exports the complete testbed-first PATH before starting the
+  scheduler, while OpenClaw also receives `tools.exec.pathPrepend`. Launcher
+  diagnostics now report the exact payload `python3`, `pip`, and `pip3`, and
+  Python-task preflight fails unless they resolve to the testbed interpreter
+  and mounted wrappers.
+- The required host route denies the OpenClaw `process` tool so exec remains a
+  single synchronous lifecycle. Independently, a completion event whose raw
+  result is still `status=running` no longer finalizes Stage-2; the later real
+  `/exited` event owns completion and the existing grace fallback.
+- Task manifests now record the resolved runner config and bundle source
+  fingerprint, and the bundle fingerprint includes the contracts and shipped
+  tool-resource snapshots. This makes a stale Linux bundle visible and causes
+  `--prepare` to rebuild it.
+
+Validation in this Windows workspace after integration:
+
+- `python -m pytest tests -q --basetemp .pytest-tmp-final-root-new`: 83 passed,
+  2 skipped.
+- `python -m pytest services\scheduler\tests -q --basetemp
+  .pytest-tmp-final-scheduler-proof`: 120 passed (one third-party Starlette
+  deprecation warning).
+- `npm.cmd test` from `packages/openclaw-plugin`: TypeScript build passed and
+  all 62 tests passed.
+- `python tools\validate_contracts.py`: all nine schema examples passed.
+- `python -m py_compile` for every changed production Python module, focused
+  Ruff for all changed Python and test files, and `git diff --check`: passed.
+
+Project-wide static baselines that cannot pass unchanged are recorded here as
+required. `python -m ruff check .` reports 14 existing errors confined to
+`scripts/check_cgroup.py`, `scripts/debug_cgroup.py`, and
+`scripts/remote_diag.py`. `python -m mypy .` reports 238 existing/project-wide
+errors, including unavailable BCC/setuptools/jsonschema stubs, Windows typing
+for POSIX-only launcher APIs, generated-bundle duplicates, and existing typed
+data-shape issues. Neither command identified a focused Ruff failure in this
+change; mypy is not currently configured as a clean repository-wide gate.
+
+The external trace copy was inspected read-only and was not modified. The live
+post-fix acceptance run still cannot execute in this Windows workspace because
+it requires the user's Linux Docker/cgroup-v2/BCC environment and credentials;
+rerun the same `--prepare --runtime-mode host-openclaw-sandbox` command above
+to prove the final end-to-end route.

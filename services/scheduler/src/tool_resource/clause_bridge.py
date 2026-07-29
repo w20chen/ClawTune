@@ -47,7 +47,7 @@ from fnmatch import fnmatchcase
 from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Sequence
 
-from tool_resource.features import parse_command_clauses
+from tool_resource.features import NOEXEC_SHELL_BUILTINS, parse_command_clauses
 from tool_resource.runtime_kb import ClauseObservation
 
 # Kept in sync with the Stage-2 collector's windowing constants.
@@ -63,36 +63,7 @@ _SHELL_LOOKUP_DIAGNOSTIC = re.compile(
     r"(?P<head>[A-Za-z0-9_./+@%-]+): "
     r"(?:(?:command )?not found)$"
 )
-_NOEXEC_BUILTINS = frozenset(
-    {
-        "cd",
-        "export",
-        "unset",
-        "set",
-        "true",
-        "false",
-        ":",
-        "alias",
-        "umask",
-        "shift",
-        "local",
-        "read",
-        "echo",
-        "printf",
-        "test",
-        "[",
-        "wait",
-        "eval",
-        "source",
-        ".",
-        "pwd",
-        "exit",
-        "return",
-        "break",
-        "continue",
-        "trap",
-    }
-)
+_NOEXEC_BUILTINS = NOEXEC_SHELL_BUILTINS
 # `source` is a bash-ism: the ONLY _NOEXEC_BUILTINS member a real POSIX sh
 # (dash/ash) can report "not found" for. Every other member is mandated or
 # universally built in, so a "not found" diagnostic naming it can only be

@@ -59,6 +59,12 @@ payload under `prediction.tool_resource`: the clause latency bucket predictor,
 the continuous empirical conditional-p90 predictions for latency, CPU, and
 memory, and a `prediction_algorithms` section that explicitly lists enabled
 non-MLP algorithms while marking `tool_resource.mlp` as excluded.
+`clause_predictions` reports each executable shell clause independently. A
+compound command intentionally keeps its command-level `prediction` null,
+because `&&`, `||`, and pipelines do not share one valid bucket-composition
+rule; its evidence-backed clause predictions remain available to policy and
+coverage audits. Shell builtins such as `cd` are retained in `clause_bins` for
+parse transparency but are not treated as missing executable telemetry.
 When no persisted or seeded clause latency evidence exists, the native payload
 still appears with `unavailable_reason: "no_clause_latency_evidence"` so
 operators can distinguish "predictor ran but had no evidence" from integration
