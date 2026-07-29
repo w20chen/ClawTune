@@ -108,9 +108,11 @@ PY
 
 PYTHONPATH="${CLAW_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" $_CLW_PYTHON - <<'PY' > "$TRACE_DIR/tool_resource_preflight.json" 2>&1 || true
 import json
+import http.client
 import os
 import platform
 import shutil
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -118,6 +120,43 @@ from pathlib import Path
 container_id = os.environ.get("AGENT_SCHEDULER_SANDBOX_CONTAINER_ID") or os.environ.get("CLAW_SANDBOX_CONTAINER_ID")
 docker = shutil.which("docker")
 docker_inspect = {"ok": False, "detail": "docker or container id unavailable"}
+
+
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, socket_path, timeout=1.0):
+        super().__init__("localhost", timeout=timeout)
+        self.socket_path = socket_path
+
+    def connect(self):
+        connected = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connected.settimeout(self.timeout)
+        connected.connect(self.socket_path)
+        self.sock = connected
+
+
+def _inspect_from_socket(value):
+    socket_path = os.environ.get("AGENT_SCHEDULER_DOCKER_SOCKET", "/var/run/docker.sock")
+    if not os.path.exists(socket_path):
+        return None
+    connection = _UnixHTTPConnection(socket_path)
+    try:
+        connection.request("GET", f"/containers/{value}/json")
+        response = connection.getresponse()
+        payload = response.read()
+    except OSError:
+        return None
+    finally:
+        connection.close()
+    if response.status != 200:
+        return None
+    try:
+        document = json.loads(payload.decode("utf-8"))
+        pid = document.get("State", {}).get("Pid")
+    except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+        return None
+    return pid if isinstance(pid, int) and pid > 0 else None
+
+
 if docker and container_id:
     result = subprocess.run(
         [docker, "inspect", container_id, "--format", "{{.State.Pid}}"],
@@ -131,6 +170,14 @@ if docker and container_id:
         "stderr": result.stderr.strip(),
         "returncode": result.returncode,
     }
+if container_id and not docker_inspect.get("ok"):
+    socket_pid = _inspect_from_socket(container_id)
+    if socket_pid is not None:
+        docker_inspect = {
+            "ok": True,
+            "pid": socket_pid,
+            "source": "docker-unix-socket",
+        }
 try:
     import bcc  # noqa: F401
     bcc_import = {"ok": True, "error": None}

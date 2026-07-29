@@ -420,6 +420,7 @@ def test_setup_installs_scheduler_runtime_dependencies() -> None:
     assert 'linux-headers-"$(uname -r)"' in _SETUP_TEMPLATE
     assert "/tmp/.claw_bcc_pythonpath" in _SETUP_TEMPLATE
     assert "import bcc" in _SETUP_TEMPLATE
+    assert '"source": "docker-unix-socket"' in _ENTRYPOINT_TEMPLATE
 
 
 def test_docker_runner_config_sets_sandbox_container_prefix_placeholder(tmp_path: Path) -> None:

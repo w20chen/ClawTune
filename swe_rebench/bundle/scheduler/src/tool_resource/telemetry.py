@@ -28,14 +28,17 @@ teardown semantics remain a Stage-1b concern). Root required.
 from __future__ import annotations
 
 import ctypes
+import http.client
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
 import time
+from urllib.parse import quote
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
@@ -2633,22 +2636,7 @@ def _container_cgroup(
     container_id: str,
     container_executable: str,
 ) -> tuple[Path, int]:
-    result = subprocess.run(
-        [
-            container_executable,
-            "inspect",
-            container_id,
-            "--format",
-            "{{.State.Pid}}",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0 or not result.stdout.strip().isdigit():
-        detail = result.stderr.strip() or result.stdout.strip()
-        raise RuntimeError(f"cannot resolve container host pid: {detail}")
-    init_pid = int(result.stdout.strip())
+    init_pid = _container_init_pid(container_id, container_executable)
     cgroup_lines = Path(f"/proc/{init_pid}/cgroup").read_text().splitlines()
     unified = next(
         (line.split(":", 2)[2] for line in cgroup_lines if line.startswith("0::")),
@@ -2660,6 +2648,75 @@ def _container_cgroup(
     if not cgroup.is_dir():
         raise RuntimeError(f"container cgroup does not exist: {cgroup}")
     return cgroup, init_pid
+
+
+def _container_init_pid(container_id: str, container_executable: str) -> int:
+    """Resolve the host PID without depending exclusively on Docker CLI API age.
+
+    The task container has the daemon socket mounted for the observer.  Debian
+    task images can provide a Docker CLI older than the host daemon's minimum
+    API version, even though the mounted socket remains usable.  Preserve the
+    CLI as the normal route and use the socket only as a local fallback.
+    """
+    try:
+        result = subprocess.run(
+            [
+                container_executable,
+                "inspect",
+                container_id,
+                "--format",
+                "{{.State.Pid}}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as cli_error:
+        cli_detail = str(cli_error)
+    else:
+        if result.returncode == 0 and result.stdout.strip().isdigit():
+            return int(result.stdout.strip())
+        cli_detail = result.stderr.strip() or result.stdout.strip() or "docker inspect failed"
+    try:
+        return _container_init_pid_from_socket(container_id)
+    except (OSError, ValueError, json.JSONDecodeError) as socket_error:
+        raise RuntimeError(
+            "cannot resolve container host pid: "
+            f"docker CLI: {cli_detail}; Docker socket fallback: {socket_error}"
+        ) from socket_error
+
+
+def _container_init_pid_from_socket(container_id: str) -> int:
+    socket_path = os.getenv("AGENT_SCHEDULER_DOCKER_SOCKET", "/var/run/docker.sock")
+    if not os.path.exists(socket_path):
+        raise OSError(f"Docker socket is unavailable: {socket_path}")
+    connection = _DockerUnixHTTPConnection(socket_path, timeout=1.0)
+    try:
+        connection.request("GET", f"/containers/{quote(container_id, safe='')}/json")
+        response = connection.getresponse()
+        payload = response.read()
+    finally:
+        connection.close()
+    if response.status != 200:
+        raise OSError(f"Docker socket inspect returned HTTP {response.status}")
+    document = json.loads(payload.decode("utf-8"))
+    state = document.get("State") if isinstance(document, dict) else None
+    pid = state.get("Pid") if isinstance(state, dict) else None
+    if not isinstance(pid, int) or pid <= 0:
+        raise ValueError("Docker socket inspect returned no running container PID")
+    return pid
+
+
+class _DockerUnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, socket_path: str, timeout: float) -> None:
+        super().__init__("localhost", timeout=timeout)
+        self.socket_path = socket_path
+
+    def connect(self) -> None:
+        connected = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connected.settimeout(self.timeout)
+        connected.connect(self.socket_path)
+        self.sock = connected
 
 
 def _pid_namespace_inode_for_pid(pid: int) -> int | None:

@@ -728,21 +728,31 @@ Validation in this workspace:
 The same live Linux acceptance command above remains unavailable from this
 Windows workspace and is required to verify real Docker log timing.
 
-## 2026-07-29 Container-OpenClaw eBPF Runtime Library Repair
+## 2026-07-29 Container-OpenClaw eBPF Recovery Follow-up
 
-The container-only BCC bootstrap now explicitly installs Debian's `libelf1`
-alongside `python3-bpfcc`, `bpfcc-tools`, and `libbpfcc`. A live
-`container-openclaw` trace showed that BCC imported from the system package
-directory but failed to load `libelf.so.1`; that disabled Stage 2 for every
-tool call. The change is confined to the generated container `setup.sh` and
-does not alter `host-openclaw-sandbox` startup, its preflight, or its
-fork-exec runtime.
+The container bootstrap explicitly installs `libelf1` with the BCC packages.
+The generated preflight and the Stage-2 container-cgroup resolver now retain
+Docker CLI as the first choice but fall back to the already-mounted Docker Unix
+socket when the image's CLI is too old for the host daemon. This is isolated to
+the container route; `host-openclaw-sandbox` keeps its existing startup and
+fork-exec telemetry path.
+
+Validation in this Windows workspace:
+
+- `python -m pytest tests\\test_swe_rebench_selection.py -q --basetemp
+  .pytest-tmp-container-socket`: 68 passed, 2 skipped.
+- `PYTHONPATH=src python -m pytest tests\\test_tool_resource_telemetry.py -q
+  --basetemp ..\\.pytest-tmp-container-socket-scheduler` from
+  `services\\scheduler`: 17 passed.
+- `python -m swe_rebench.runner prepare --config swe_rebench/config.yaml`, and
+  both runtime-mode `--dry-run` commands: passed.
+- `git diff --check`: passed.
 
 Validation unavailable in this Windows workspace:
 
-- The live `container-openclaw` acceptance command above cannot run here: it
-  requires the Linux Docker/cgroup-v2/eBPF host environment, task image, and
-  model credentials. Re-run it and require
-  `tool_resource_preflight.json` to report `bcc_import.ok: true` and
-  `stage2_ready: true` before treating the resulting resource telemetry as
-  valid.
+- A live `container-openclaw` run remains unavailable because it requires the
+  Linux Docker/cgroup-v2/eBPF environment, task image, and model credentials.
+  Run the documented acceptance command and require both
+  `bcc_import.ok: true` and `stage2_ready: true` in
+  `tool_resource_preflight.json`; then confirm the tool-resource artifacts no
+  longer report `collector_disabled`.

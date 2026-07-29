@@ -13,6 +13,7 @@ from tool_resource.telemetry import (
     _bpf_setup_error_message,
     _clauses_and_lineage,
     _command_tree_provenance,
+    _container_init_pid,
     _isolate_call_events,
     _observed_container_cgroup_ids,
     _runtime_response_exit_code,
@@ -20,6 +21,21 @@ from tool_resource.telemetry import (
     shell_command_lookup_failure_evidence,
     validate_clause_telemetry_smoke,
 )
+
+
+def test_container_init_pid_falls_back_to_docker_socket_after_cli_api_failure(monkeypatch) -> None:
+    class FailedInspect:
+        returncode = 1
+        stdout = ""
+        stderr = "client version 1.41 is too old"
+
+    monkeypatch.setattr("tool_resource.telemetry.subprocess.run", lambda *args, **kwargs: FailedInspect())
+    monkeypatch.setattr(
+        "tool_resource.telemetry._container_init_pid_from_socket",
+        lambda container_id: 4321,
+    )
+
+    assert _container_init_pid("abc123", "docker") == 4321
 
 
 def test_bpf_program_uses_wrapper_aware_syscall_kprobes() -> None:
