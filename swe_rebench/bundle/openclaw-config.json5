@@ -1,12 +1,26 @@
 {
   "agents": {
     "defaults": {
+      "workspace": "/testbed",
+      "repoRoot": "/testbed",
+      "tools": {
+        "elevated": {
+          "enabled": true
+        }
+      },
       "sandbox": {
         "docker": {
           "containerPrefix": "__SANDBOX_CONTAINER_PREFIX__"
         }
       }
     }
+  },
+  "env": {
+    "CLAW_SCHEDULER_ENDPOINT": "http://127.0.0.1:8765",
+    "OPENCLAW_SCHEDULER_ENDPOINT": "http://127.0.0.1:8765",
+    "CLAW_EXEC_WORKDIR": "/testbed",
+    "OPENCLAW_WORKSPACE_DIR": "/testbed",
+    "OPENCLAW_REPO_ROOT": "/testbed"
   },
   "plugins": {
     "entries": {
@@ -21,6 +35,7 @@
           "sendRawParams": false,
           "recordRawTrace": false,
           "logLevel": "info",
+          "consoleMode": "verbose",
           "executionBackend": "managed-wrapper",
           "launcherPath": "/opt/claw/bin/claw-launch",
           "instrumentHosts": [

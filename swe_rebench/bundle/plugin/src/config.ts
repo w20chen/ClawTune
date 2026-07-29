@@ -9,8 +9,10 @@ const defaults: PluginConfig = {
   sendRawParams: false,
   recordRawTrace: false,
   logLevel: "info",
+  consoleMode: "verbose",
   executionBackend: "managed-wrapper",
   launcherPath: "/opt/claw/bin/claw-launch",
+  launcherInterpreter: null,
   collectorSocket: "/run/claw/collector.sock",
   instrumentHosts: ["gateway"],
   instrumentTools: ["exec"],
@@ -77,6 +79,10 @@ export function loadConfig(input: unknown): PluginConfig {
   if (typeof config.launcherPath !== "string" || config.launcherPath.length === 0) {
     throw new Error("launcherPath must be a non-empty string");
   }
+  if (config.launcherInterpreter !== null
+      && (typeof config.launcherInterpreter !== "string" || config.launcherInterpreter.length === 0)) {
+    throw new Error("launcherInterpreter must be null or a non-empty string");
+  }
   if (typeof config.collectorSocket !== "string" || config.collectorSocket.length === 0) {
     throw new Error("collectorSocket must be a non-empty string");
   }
@@ -100,6 +106,9 @@ export function loadConfig(input: unknown): PluginConfig {
   }
   if (config.executionBackend === "managed-wrapper") {
     validateManagedWrapperLauncherPath(config.launcherPath);
+    if (config.launcherInterpreter !== null) {
+      validateAbsolutePath(config.launcherInterpreter, "launcherInterpreter");
+    }
   }
   return config as PluginConfig;
 }
@@ -112,6 +121,7 @@ function envOverrides(): Partial<PluginConfig> {
   const output: Partial<PluginConfig> = {};
   setString(output, "endpoint", schedulerEnv("ENDPOINT"));
   setString(output, "mode", schedulerEnv("MODE"));
+  setString(output, "consoleMode", schedulerEnv("CONSOLE_MODE"));
   setString(output, "launcherPath", schedulerEnv("LAUNCHER_PATH"));
   setString(output, "executionBackend", schedulerEnv("EXECUTION_BACKEND"));
   setBoolean(output, "failOpen", schedulerEnv("FAIL_OPEN"));
@@ -194,5 +204,11 @@ function validateManagedWrapperLauncherPath(value: string): void {
   }
   if (!value.startsWith("/")) {
     throw new Error("managed-wrapper launcherPath must be an absolute path");
+  }
+}
+
+function validateAbsolutePath(value: string, key: string): void {
+  if (!value.startsWith("/")) {
+    throw new Error(`${key} must be an absolute path`);
   }
 }

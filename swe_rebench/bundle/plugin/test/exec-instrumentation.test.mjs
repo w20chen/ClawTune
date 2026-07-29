@@ -13,6 +13,7 @@ const baseConfig = {
   logLevel: "info",
   executionBackend: "marker",
   launcherPath: "/opt/claw/bin/claw-launch",
+  launcherInterpreter: null,
   collectorSocket: "/run/claw/collector.sock",
   instrumentHosts: ["gateway"],
   instrumentTools: ["exec"],
@@ -147,15 +148,21 @@ test("exec instrumentation forwards launcher cgroup environment", async () => {
     "CLAW_CGROUP_ROOT",
     "CLAW_CGROUP_REQUIRED",
     "CLAW_CGROUP_DEBUG",
+    "CLAW_LAUNCH_MODE",
     "CLAW_LAUNCH_DEBUG",
-    "CLAW_SCHEDULER_ENDPOINT"
+    "CLAW_SCHEDULER_ENDPOINT",
+    "CLAW_SANDBOX_CONTAINER_ID",
+    "AGENT_SCHEDULER_SANDBOX_CONTAINER_ID"
   ];
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   process.env.CLAW_CGROUP_ROOT = "/sys/fs/cgroup/claw";
   process.env.CLAW_CGROUP_REQUIRED = "1";
   process.env.CLAW_CGROUP_DEBUG = "1";
+  process.env.CLAW_LAUNCH_MODE = "fork-exec";
   process.env.CLAW_LAUNCH_DEBUG = "1";
   process.env.CLAW_SCHEDULER_ENDPOINT = "http://host.docker.internal:8765";
+  process.env.CLAW_SANDBOX_CONTAINER_ID = "5a423f3b2078";
+  process.env.AGENT_SCHEDULER_SANDBOX_CONTAINER_ID = "5a423f3b2078";
   const client = {
     async registerExecution() {
       return {one_time_token: "token-1"};
@@ -169,8 +176,11 @@ test("exec instrumentation forwards launcher cgroup environment", async () => {
     assert.equal(result.params.env.CLAW_CGROUP_ROOT, "/sys/fs/cgroup/claw");
     assert.equal(result.params.env.CLAW_CGROUP_REQUIRED, "1");
     assert.equal(result.params.env.CLAW_CGROUP_DEBUG, "1");
+    assert.equal(result.params.env.CLAW_LAUNCH_MODE, "fork-exec");
     assert.equal(result.params.env.CLAW_LAUNCH_DEBUG, "1");
     assert.equal(result.params.env.CLAW_SCHEDULER_ENDPOINT, "http://host.docker.internal:8765");
+    assert.equal(result.params.env.CLAW_SANDBOX_CONTAINER_ID, "5a423f3b2078");
+    assert.equal(result.params.env.AGENT_SCHEDULER_SANDBOX_CONTAINER_ID, "5a423f3b2078");
   } finally {
     for (const name of names) {
       if (previous[name] === undefined) {
@@ -240,4 +250,33 @@ test("managed-wrapper passes the claim token outside the process argv", async ()
   assert.equal(result.params.env.CLAW_EXECUTION_ID, "call-1");
   assert.equal(result.params.env.CLAW_EXECUTION_TOKEN, "-token-1");
   assert.equal(result.params.env.CLAW_SCHEDULER_ENDPOINT, "http://localhost:8765");
+});
+
+test("managed-wrapper can invoke a launcher on a noexec workspace through an interpreter", async () => {
+  const client = {
+    async registerExecution() {
+      return {one_time_token: "token-1"};
+    }
+  };
+  const event = {toolName: "exec", toolCallId: "call-1", params: {command: "echo raw-command"}};
+
+  const result = await instrumentExecParams(
+    event,
+    {},
+    payload,
+    decision,
+    client,
+    {
+      ...baseConfig,
+      executionBackend: "managed-wrapper",
+      securityBoundaryAccepted: true,
+      launcherPath: "/workspace/.claw/bin/claw-launch",
+      launcherInterpreter: "/bin/sh"
+    }
+  );
+
+  assert.equal(
+    result.params.command,
+    "'/bin/sh' -c 'exec '\\''/bin/sh'\\'' '\\''/workspace/.claw/bin/claw-launch'\\'' run --execution-id='\\''call-1'\\'''"
+  );
 });

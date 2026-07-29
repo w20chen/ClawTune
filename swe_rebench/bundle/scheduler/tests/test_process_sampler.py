@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from agent_scheduler.contracts.models import ResourceScope
 from agent_scheduler.monitoring.process import ProcessResourceSampler
 
@@ -90,3 +92,49 @@ def test_cgroup_v2_requires_core_cgroup_metrics(tmp_path, monkeypatch) -> None:
     assert snapshot.net_rx_bytes == 100
     assert snapshot.net_tx_bytes == 200
     assert snapshot.available is False
+
+
+def test_cgroup_v2_scope_does_not_fall_back_to_process_tree(tmp_path) -> None:
+    snapshot = ProcessResourceSampler().snapshot(
+        ResourceScope(
+            kind="cgroup-v2",
+            execution_id="exec-1",
+            pid=os.getpid(),
+            root_pid=os.getpid(),
+            process_start_time=None,
+            root_starttime_ticks=None,
+            cgroup_path=str(tmp_path),
+            pid_namespace_inode=None,
+            container_id=None,
+            include_children=True,
+            source="claw-launch",
+            attribution_source="claw-launch",
+        )
+    )
+
+    assert snapshot.available is False
+    assert snapshot.source == "cgroup-v2"
+    assert snapshot.target_pid == os.getpid()
+
+
+def test_process_sampler_rejects_cgroup_root_scope() -> None:
+    snapshot = ProcessResourceSampler().snapshot(
+        ResourceScope(
+            kind="cgroup-v2",
+            execution_id="exec-1",
+            pid=123,
+            root_pid=123,
+            process_start_time=None,
+            root_starttime_ticks=None,
+            cgroup_path="/sys/fs/cgroup",
+            pid_namespace_inode=None,
+            container_id=None,
+            include_children=True,
+            source="claw-launch",
+            attribution_source="claw-launch",
+        )
+    )
+
+    assert snapshot.available is False
+    assert snapshot.source == "cgroup-root-unattributed"
+    assert snapshot.target_pid is None

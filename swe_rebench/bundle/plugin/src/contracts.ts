@@ -26,8 +26,15 @@ export type PluginConfig = {
   sendRawParams: boolean;
   recordRawTrace: boolean;
   logLevel: "error" | "warn" | "info" | "debug";
+  /**
+   * Console output mode for turn-by-turn logging.
+   * - "verbose": Print LLM messages, tool calls, and tool results to stdout.
+   * - "quiet": Suppress turn-by-turn console output (only internal logs).
+   */
+  consoleMode: "verbose" | "quiet";
   executionBackend: ExecutionBackend;
   launcherPath: string;
+  launcherInterpreter: string | null;
   collectorSocket: string;
   instrumentHosts: string[];
   instrumentTools: string[];
@@ -115,9 +122,25 @@ export type ToolResourceCommandPrediction = {
   command: string;
   parse_failed: boolean;
   clause_bins: string[];
+  clause_predictions: ToolResourceClausePredictionOutcome[];
   prediction: ToolResourceClausePrediction | null;
   unavailable_reason: string | null;
 };
+
+export type ToolResourceClausePredictionOutcome = {
+  clause_index: number;
+  bin: string;
+  argv: string[];
+} & (
+  | {
+      prediction: ToolResourceClausePrediction;
+      unavailable_reason: null;
+    }
+  | {
+      prediction: null;
+      unavailable_reason: string;
+    }
+);
 
 export type ToolResourceClausePrediction = {
   bucket_id: number;
@@ -142,6 +165,10 @@ export type ToolCompletedEvent = CommonEvent & {
   raw_result: unknown | null;
   raw_event: unknown | null;
   resource_scope: ResourceScope | null;
+};
+
+export type ExecutionTelemetryResponse = {
+  tool_resource: unknown | null;
 };
 
 export type ModelEvent = CommonEvent & {

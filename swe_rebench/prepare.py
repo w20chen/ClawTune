@@ -262,7 +262,7 @@ def _copy_scheduler(repo: Path, bundle_dir: Path, config: RunnerConfig) -> None:
     src = repo / config.bundle.scheduler_source
     dst = bundle_dir / "scheduler"
     _copytree_selective(src, dst, skip={
-        "__pycache__", ".pytest_cache", "*.egg-info", "traces",
+        "__pycache__", ".pytest_cache", ".pytest-tmp*", "*.egg-info", "traces",
         "scheduler.sqlite3*", "dist", "*.whl", "*.tar.gz",
     })
     _log(f"  Copied scheduler source ({_count_files(dst)} files)")

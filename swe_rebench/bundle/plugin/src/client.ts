@@ -1,6 +1,7 @@
 import type {
   ExecutionRegistrationRequest,
   ExecutionRegistrationResponse,
+  ExecutionTelemetryResponse,
   PluginConfig,
   ResourceScope,
   ToolBeforeRequest,
@@ -36,6 +37,14 @@ export class SidecarClient {
     return response.execution_scope;
   }
 
+  async getExecutionTelemetry(executionId: string): Promise<unknown | null> {
+    const response = await this.get<ExecutionTelemetryResponse>(
+      `/v2/executions/${encodeURIComponent(executionId)}/telemetry`,
+      this.config.reportTimeoutMs
+    );
+    return response.tool_resource;
+  }
+
   private async post<T>(path: string, payload: unknown, timeoutMs: number): Promise<T> {
     return this.request<T>(path, {method: "POST", body: JSON.stringify(payload)}, timeoutMs);
   }
@@ -54,11 +63,25 @@ export class SidecarClient {
         signal: controller.signal
       });
       if (!response.ok) {
-        throw new Error(`sidecar_http_${response.status}`);
+        throw new Error(`sidecar_http_${response.status}: ${await responseErrorPreview(response)}`);
       }
       return (await response.json()) as T;
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error(`sidecar_timeout_${timeoutMs}ms`);
+      }
+      throw error;
     } finally {
       clearTimeout(timeout);
     }
+  }
+}
+
+async function responseErrorPreview(response: Response): Promise<string> {
+  try {
+    const text = await response.text();
+    return text.slice(0, 1000);
+  } catch {
+    return response.statusText || "no response body";
   }
 }

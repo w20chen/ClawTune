@@ -47,7 +47,7 @@ from fnmatch import fnmatchcase
 from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Sequence
 
-from tool_resource.features import parse_command_clauses
+from tool_resource.features import NOEXEC_SHELL_BUILTINS, parse_command_clauses
 from tool_resource.runtime_kb import ClauseObservation
 
 # Kept in sync with the Stage-2 collector's windowing constants.
@@ -63,36 +63,7 @@ _SHELL_LOOKUP_DIAGNOSTIC = re.compile(
     r"(?P<head>[A-Za-z0-9_./+@%-]+): "
     r"(?:(?:command )?not found)$"
 )
-_NOEXEC_BUILTINS = frozenset(
-    {
-        "cd",
-        "export",
-        "unset",
-        "set",
-        "true",
-        "false",
-        ":",
-        "alias",
-        "umask",
-        "shift",
-        "local",
-        "read",
-        "echo",
-        "printf",
-        "test",
-        "[",
-        "wait",
-        "eval",
-        "source",
-        ".",
-        "pwd",
-        "exit",
-        "return",
-        "break",
-        "continue",
-        "trap",
-    }
-)
+_NOEXEC_BUILTINS = NOEXEC_SHELL_BUILTINS
 # `source` is a bash-ism: the ONLY _NOEXEC_BUILTINS member a real POSIX sh
 # (dash/ash) can report "not found" for. Every other member is mandated or
 # universally built in, so a "not found" diagnostic naming it can only be
@@ -157,7 +128,13 @@ class FailedExecAttempt:
 
 @dataclass(frozen=True)
 class ShellCommandLookupFailure:
-    """Source/replay-agreed shell command-not-found evidence."""
+    """Strict shell command-not-found evidence.
+
+    Historical offline replay required an exact source/replay agreement.  Live
+    managed-wrapper execution has no separate source action: the launcher
+    result is the source of truth.  ``evidence_mode`` distinguishes those
+    protocols so live evidence is not made to impersonate a replay pair.
+    """
 
     executable_head: str
     command: str
@@ -171,6 +148,7 @@ class ShellCommandLookupFailure:
     replay_channel: str
     parser: str
     exit_code_semantics: str
+    evidence_mode: str = "source_replay"
 
 
 @dataclass(frozen=True)
@@ -200,6 +178,7 @@ class BridgedClause:
     disk_read_bytes_total: int | None
     disk_write_bytes_total: int | None
     disk_cancelled_write_bytes_total: int | None
+    status: dict[str, Any]
     availability: dict[str, str]
     provenance: dict[str, Any]
 
@@ -221,6 +200,7 @@ class NoRuntimeExec:
             "cpu": "unknown:no_runtime_exec",
             "memory": "unknown:no_runtime_exec",
             "disk_io": "unknown:no_runtime_exec",
+            "status": "unknown:no_runtime_exec",
         }
     )
 
@@ -433,19 +413,31 @@ def _valid_lookup_failure(
     expected_semantics = _lookup_exit_semantics(
         static,
         evidence.executable_head,
-        evidence.source_exit_code,
+        evidence.replay_exit_code,
     )
-    return (
-        bool(evidence.source_tool_call_id)
-        and bool(evidence.replay_tool_call_id)
+    common = (
+        bool(evidence.replay_tool_call_id)
         and evidence.command == command
-        and evidence.source_exit_code == evidence.replay_exit_code
-        and source_head == replay_head == evidence.executable_head
-        and evidence.source_channel == "source_tool_result"
+        and replay_head == evidence.executable_head
         and evidence.replay_channel in {"raw_stderr", "tool_result"}
         and evidence.parser == "anchored_shell_command_not_found_v1"
         and expected_semantics is not None
         and evidence.exit_code_semantics == expected_semantics
+    )
+    if evidence.evidence_mode == "live_execution":
+        return (
+            common
+            and not evidence.source_tool_call_id
+            and not evidence.source_diagnostic
+            and evidence.source_channel == "unavailable"
+        )
+    return (
+        common
+        and evidence.evidence_mode == "source_replay"
+        and bool(evidence.source_tool_call_id)
+        and evidence.source_exit_code == evidence.replay_exit_code
+        and source_head == replay_head
+        and evidence.source_channel == "source_tool_result"
     )
 
 
@@ -1344,6 +1336,11 @@ def _aggregate(
     peak_cpu, cpu_reason = _merge_cpu(owned_images, t_exec, t_end, quota)
     peak_rss, rss_reason = _merge_rss(owned_images)
     disk_io, disk_io_reason = _merge_disk_io(owned_images)
+    status = _clause_status(
+        owned_pids,
+        owned_images,
+        protocol_timeout_terminated=protocol_timeout_terminated,
+    )
     exit_signals = [i.exit_signal for i in owned_images if i.exit_signal]
 
     obs = ClauseObservation(
@@ -1363,7 +1360,7 @@ def _aggregate(
     )
     availability = (
         dict.fromkeys(
-            ("latency", "cpu", "memory", "disk_io"),
+            ("latency", "cpu", "memory", "disk_io", "status"),
             "unknown:protocol_timeout",
         )
         if protocol_timeout_terminated
@@ -1372,6 +1369,11 @@ def _aggregate(
             "cpu": "ok" if peak_cpu is not None else f"unknown:{cpu_reason}",
             "memory": "ok" if peak_rss is not None else f"unknown:{rss_reason}",
             "disk_io": ("ok" if disk_io is not None else f"unknown:{disk_io_reason}"),
+            "status": (
+                "ok"
+                if status["state"] in {"exited", "signaled"}
+                else f"unknown:{status['reason'] or 'missing_terminal_status'}"
+            ),
         }
     )
     provenance = {
@@ -1429,9 +1431,56 @@ def _aggregate(
         disk_read_bytes_total=disk_io[0] if disk_io is not None else None,
         disk_write_bytes_total=disk_io[1] if disk_io is not None else None,
         disk_cancelled_write_bytes_total=(disk_io[2] if disk_io is not None else None),
+        status=status,
         availability=availability,
         provenance=provenance,
     )
+
+
+def _clause_status(
+    owned_pids: Sequence[int],
+    owned_images: Sequence[ExecImageRecord],
+    *,
+    protocol_timeout_terminated: bool = False,
+) -> dict[str, Any]:
+    """Return the shell-visible status of the mapped clause's root exec chain."""
+
+    base = {
+        "state": "unavailable",
+        "exit_code": None,
+        "signal": None,
+        "succeeded": None,
+        "reason": None,
+        "source": "root_exec_chain_terminal",
+    }
+    if protocol_timeout_terminated:
+        return {**base, "reason": "protocol_timeout"}
+    if not owned_pids:
+        return {**base, "reason": "missing_owned_root"}
+    root_images = sorted(
+        (image for image in owned_images if image.host_pid == owned_pids[0]),
+        key=lambda image: (image.t_exec_ns, image.exec_seq),
+    )
+    if not root_images:
+        return {**base, "reason": "missing_root_exec_chain"}
+    terminal = root_images[-1]
+    if not terminal.terminal or not terminal.has_causal_end:
+        return {**base, "reason": "missing_causal_terminal"}
+    if terminal.exit_signal is not None:
+        return {
+            **base,
+            "state": "signaled",
+            "signal": terminal.exit_signal,
+            "succeeded": False,
+        }
+    if terminal.normal_exit_status is not None:
+        return {
+            **base,
+            "state": "exited",
+            "exit_code": terminal.normal_exit_status,
+            "succeeded": terminal.normal_exit_status == 0,
+        }
+    return {**base, "reason": "missing_terminal_status"}
 
 
 __all__ = [

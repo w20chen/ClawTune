@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from threading import Event
 from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1007,89 +1008,226 @@ def test_stage2_execution_starts_on_claim_when_sandbox_scope_is_known(tmp_path: 
     ]
 
 
-def test_exec_completion_finalizes_stage2_before_trace_write(tmp_path: Path) -> None:
-    sandbox_cgroup = tmp_path / "sandbox-cgroup"
-    _write_cgroup_fixture(sandbox_cgroup)
-    trace_dir = tmp_path / "traces"
+def test_execution_exit_waits_for_completion_result_before_stage2_finish(
+    tmp_path: Path,
+) -> None:
     state = build_state(
         SchedulerConfig(
-            trace_dir=trace_dir,
-            sandbox_cgroup_path=str(sandbox_cgroup),
-            sandbox_container_id="b" * 64,
+            trace_dir=tmp_path / "traces",
             tool_resource_stage2_required=False,
         )
     )
     client = TestClient(create_app(state))
     finish_calls: list[dict[str, object]] = []
-    telemetry_by_execution_id: dict[str, dict[str, object | None]] = {}
 
     def finish_execution(**kwargs):
         finish_calls.append(kwargs)
-        telemetry = {
+        return {
             "execution_id": kwargs["execution_id"],
-            "tool_call_id": kwargs["execution_id"],
+            "tool_call_id": "call-result",
             "artifact_path": None,
-            "started": False,
-            "status": "unavailable",
-            "unavailable_reason": "execution_not_exited",
+            "started": True,
+            "status": "ok",
+            "unavailable_reason": None,
         }
-        telemetry_by_execution_id[str(kwargs["execution_id"])] = telemetry
-        return telemetry
-
-    def execution_telemetry(execution_id: str):
-        return telemetry_by_execution_id.get(execution_id)
 
     state.predictor.finish_execution = finish_execution  # type: ignore[method-assign]
-    state.predictor.execution_telemetry = execution_telemetry  # type: ignore[method-assign]
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "exec-result",
+            "tool_call_id": "call-result",
+            "run_id": "run-result",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "d" * 64,
+            "command": "pip install -e . 2>&1 | tail -10",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"mode": "off"},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "exec-result",
+            "token": registration["one_time_token"],
+            "launcher_pid": 100,
+        },
+    ).json()
+
+    assert client.post(
+        "/v2/executions/exec-result/exited",
+        json={
+            "update_token": claim["update_token"],
+            "exit_code": 0,
+            "signal": None,
+        },
+    ).json() == {"stored": True}
+    assert finish_calls == []
+    # Telemetry reads must never acquire/finalize the active Stage-2 run.
+    client.get("/v2/executions/exec-result/telemetry")
+    assert finish_calls == []
+
+    original_scope = state.executions.scope
+
+    def scope_after_stage2_finish(execution_id: str):
+        # Completion finalization must happen before the route's async scope
+        # lookup, otherwise an 800 ms plugin timeout can race a raw-less GET.
+        assert finish_calls
+        return original_scope(execution_id)
+
+    state.executions.scope = scope_after_stage2_finish  # type: ignore[method-assign]
+
     completion = {
         "schema_version": "scheduler.v1",
-        "event_id": "evt-exec-end",
-        "occurred_at": "2026-07-16T03:23:01Z",
+        "event_id": "evt-result",
+        "occurred_at": "2026-07-29T00:00:00Z",
         "plugin_version": "0.1.0",
-        "run_id": "run-launcher-exec",
-        "session_id": "session-launcher-exec",
+        "run_id": "run-result",
+        "session_id": "session-result",
         "session_key": None,
         "agent_id": None,
-        "tool_call_id": "call-exec",
+        "tool_call_id": "call-result",
         "decision_id": None,
         "lease_id": None,
-        "execution_id": "call-exec",
+        "execution_id": "exec-result",
         "tool_name": "exec",
         "duration_ms": 100,
         "succeeded": True,
         "error_type": None,
         "error_digest": None,
         "result_size_bytes": None,
-        "raw_result": {"details": {"status": "running"}},
+        "raw_result": {
+            "details": {
+                "exitCode": 0,
+                "aggregated": "/bin/sh: 1: pip: not found",
+            }
+        },
         "resource_scope": None,
     }
-
-    assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
-    assert client.get("/v2/executions/call-exec/telemetry").json() == {
-        "tool_resource": {
-            "execution_id": "call-exec",
-            "tool_call_id": "call-exec",
-            "artifact_path": None,
-            "started": False,
-            "status": "unavailable",
-            "unavailable_reason": "execution_not_exited",
-        }
+    assert client.post("/v1/events/tool-completed", json=completion).json() == {
+        "stored": True
     }
+    assert finish_calls == [
+        {
+            "execution_id": "exec-result",
+            "exit_code": 0,
+            "signal": None,
+            "raw_result": completion["raw_result"],
+            "succeeded": True,
+        }
+    ]
+
+
+def test_running_exec_completion_waits_for_real_exit_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sandbox_cgroup = tmp_path / "sandbox-cgroup"
+    _write_cgroup_fixture(sandbox_cgroup)
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=tmp_path / "traces",
+            sandbox_cgroup_path=str(sandbox_cgroup),
+            sandbox_container_id="b" * 64,
+            tool_resource_stage2_required=False,
+        )
+    )
+    monkeypatch.setattr(app_module, "_STAGE2_COMPLETION_GRACE_SECONDS", 0.01)
+    finish_calls: list[dict[str, object]] = []
+    finalized = Event()
+
+    def finish_execution(**kwargs):
+        finish_calls.append(kwargs)
+        finalized.set()
+        return {
+            "execution_id": kwargs["execution_id"],
+            "tool_call_id": kwargs["execution_id"],
+            "artifact_path": None,
+            "started": True,
+            "status": "ok",
+            "unavailable_reason": None,
+        }
+
+    state.predictor.begin_execution = lambda **_kwargs: True  # type: ignore[method-assign]
+    state.predictor.execution_active = lambda _execution_id: True  # type: ignore[method-assign]
+    state.predictor.finish_execution = finish_execution  # type: ignore[method-assign]
+    with TestClient(create_app(state)) as client:
+        registration = client.post(
+            "/v2/executions",
+            json={
+                "execution_id": "call-exec",
+                "tool_call_id": "call-exec",
+                "run_id": "run-launcher-exec",
+                "session_key_hash": None,
+                "command_digest": "sha256:" + "d" * 64,
+                "command": "pip install flask falcon starlette | tail",
+                "workdir": "/workspace",
+                "host": "gateway",
+                "placement": None,
+                "profiling": {"mode": "off"},
+                "backend": "managed-wrapper",
+            },
+        ).json()
+        claim = client.post(
+            "/v2/executions/claim",
+            json={
+                "execution_id": "call-exec",
+                "token": registration["one_time_token"],
+                "launcher_pid": 100,
+            },
+        ).json()
+        completion = {
+            "schema_version": "scheduler.v1",
+            "event_id": "evt-exec-yielded",
+            "occurred_at": "2026-07-16T03:23:01Z",
+            "plugin_version": "0.1.0",
+            "run_id": "run-launcher-exec",
+            "session_id": "session-launcher-exec",
+            "session_key": None,
+            "agent_id": None,
+            "tool_call_id": "call-exec",
+            "decision_id": None,
+            "lease_id": None,
+            "execution_id": "call-exec",
+            "tool_name": "exec",
+            "duration_ms": 100,
+            "succeeded": True,
+            "error_type": None,
+            "error_digest": None,
+            "result_size_bytes": None,
+            "raw_result": {"details": {"status": "running"}},
+            "resource_scope": {
+                "kind": "cgroup-v2",
+                "execution_id": "call-exec",
+                "cgroup_path": str(sandbox_cgroup),
+            },
+        }
+
+        assert client.post("/v1/events/tool-completed", json=completion).json() == {
+            "stored": True
+        }
+        assert finish_calls == []
+
+        assert client.post(
+            "/v2/executions/call-exec/exited",
+            json={
+                "update_token": claim["update_token"],
+                "exit_code": 0,
+                "signal": None,
+            },
+        ).json() == {"stored": True}
+        assert finalized.wait(timeout=1.0)
 
     assert finish_calls == [
-        {"execution_id": "call-exec", "exit_code": 0, "signal": None}
+        {
+            "execution_id": "call-exec",
+            "exit_code": 0,
+            "signal": None,
+        }
     ]
-    tool_end = next(
-        r
-        for r in _read_trace_records(trace_dir)
-        if r.get("record_type") == "span_end" and r.get("kind") == "tool"
-    )
-    assert tool_end["execution"]["tool_resource"]["execution_id"] == "call-exec"
-    assert tool_end["execution"]["tool_resource"]["status"] == "unavailable"
-    assert (
-        tool_end["execution"]["tool_resource"]["unavailable_reason"]
-        == "execution_not_exited"
-    )
 
 
 def test_execution_started_host_cgroup_gate_creates_exact_scope(
@@ -1169,7 +1307,11 @@ def test_execution_started_host_cgroup_gate_creates_exact_scope(
     assert begin_calls[-1]["cgroup_path"] == str(exact)
 
 
-def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(tmp_path: Path) -> None:
+def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(app_module, "_resolve_host_pid", lambda *_args, **_kwargs: 4242)
     state = build_state(
         SchedulerConfig(
             trace_dir=tmp_path / "traces",
@@ -1229,6 +1371,7 @@ def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(tmp_pa
             "container_id": None,
             "repo": "openclaw",
             "cgroup_path": str(tmp_path / "call-cgroup"),
+            "trusted_root_pid": 4242,
         }
     ]
     begin_calls.clear()
@@ -1258,6 +1401,7 @@ def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(tmp_pa
             "command": "echo hi && true",
             "container_id": "b" * 64,
             "repo": "openclaw",
+            "trusted_root_pid": 4242,
         }
     ]
 

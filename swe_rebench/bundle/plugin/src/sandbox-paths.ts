@@ -149,6 +149,10 @@ function mapWorkspacePath(
       return targetWorkspace === null ? suffix : `${targetWorkspace}/${suffix}`;
     }
   }
+  if (targetWorkspace !== null && isRelativePath(value)) {
+    if (normalized === ".") return targetWorkspace;
+    return `${targetWorkspace}/${normalized}`;
+  }
   return value;
 }
 
@@ -170,6 +174,14 @@ function normalizePathEnv(value: string | undefined): string | null {
 
 function normalizePathString(value: string): string {
   return value.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/+$/g, "") || "/";
+}
+
+function isRelativePath(value: string): boolean {
+  if (value.length === 0) return false;
+  const normalized = normalizePathString(value);
+  if (normalized.startsWith("/")) return false;
+  if (/^[A-Za-z]:\//.test(normalized)) return false;
+  return normalized === "." || !normalized.startsWith("~");
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

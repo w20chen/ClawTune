@@ -22,7 +22,7 @@ test("sandbox path normalization maps file tool host paths to workspace-relative
   assert.equal(result.params.cwd, ".");
 });
 
-test("sandbox path normalization leaves relative paths alone", () => {
+test("sandbox path normalization leaves relative file tool paths alone", () => {
   const result = normalizeSandboxToolParams(
     {
       path: "setup.py",
@@ -50,6 +50,19 @@ test("sandbox path normalization maps container task-directory aliases for file 
   assert.equal(result.changed, true);
   assert.equal(result.params.path, "README.md");
   assert.equal(result.params.cwd, ".");
+});
+
+test("sandbox path normalization maps file tool container root to workspace root", () => {
+  const result = normalizeSandboxToolParams(
+    {
+      path: "/workspace",
+    },
+    "read",
+    env
+  );
+
+  assert.equal(result.changed, true);
+  assert.equal(result.params.path, ".");
 });
 
 test("sandbox path normalization strips gateway override from exec in sandbox mode", () => {

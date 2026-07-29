@@ -1875,13 +1875,23 @@ def _attribute(
             if target is None:
                 target = _ancestor_clause_pid(pid, ts, clause_by_pid, fork_parent)
         if target is None:
+            trusted_root_setup = (
+                seq == SENTINEL
+                and pid == entry_pid
+                and bool(clause_by_pid.get(pid))
+                and ts < min(clause.t_exec_ns for clause in clause_by_pid[pid])
+            )
             gaps.append(
                 {
                     **e,
                     "reason": (
-                        "sentinel_exec_seq_without_active_exec_image_or_owned_ancestor"
-                        if seq == SENTINEL
-                        else "exec_seq_without_matching_exec_image_or_owned_ancestor"
+                        "trusted_root_pre_exec_structural_setup"
+                        if trusted_root_setup
+                        else (
+                            "sentinel_exec_seq_without_active_exec_image_or_owned_ancestor"
+                            if seq == SENTINEL
+                            else "exec_seq_without_matching_exec_image_or_owned_ancestor"
+                        )
                     ),
                 }
             )
@@ -2345,8 +2355,9 @@ def _command_tree_provenance(
     fork_parent: Mapping[int, int],
     *,
     fork_records: Mapping[int, Sequence[Mapping[str, Any]]] | None = None,
+    trusted_root_pid: int | None = None,
 ) -> tuple[int, set[int], dict[str, Any]]:
-    """Identify transitive exec roots and their one observed outside parent."""
+    """Identify one command tree rooted in observed or launcher-bound identity."""
 
     exec_pids = {metric.host_pid for metric in metrics}
     ancestry: list[dict[str, Any]] = []
@@ -2362,8 +2373,9 @@ def _command_tree_provenance(
         ancestor_ts_bound = min(
             metric.t_exec_ns for metric in metrics if metric.host_pid == pid
         )
-        while current in fork_parent or (
-            fork_records is not None and current in fork_records
+        while current != trusted_root_pid and (
+            current in fork_parent
+            or (fork_records is not None and current in fork_records)
         ):
             eligible_records = (
                 [
@@ -2424,7 +2436,9 @@ def _command_tree_provenance(
         is_root = nearest_exec_ancestor is None
         if is_root:
             roots.append(pid)
-            if chain:
+            if trusted_root_pid is not None and current == trusted_root_pid:
+                entry_by_root[pid] = trusted_root_pid
+            elif chain:
                 entry_by_root[pid] = chain[-1]
             else:
                 failure = failure or "missing_root_ancestry"
@@ -2448,6 +2462,14 @@ def _command_tree_provenance(
         "entry_pid": entries[0] if not failure else None,
         "root_pids": roots,
         "exec_ancestry": ancestry,
+        "identity_anchor": (
+            {
+                "kind": "launcher_started",
+                "host_pid": trusted_root_pid,
+            }
+            if trusted_root_pid is not None
+            else {"kind": "observed_fork_ancestry"}
+        ),
     }
     if fork_ambiguities:
         provenance["fork_ambiguities"] = fork_ambiguities
@@ -2463,6 +2485,8 @@ def _command_tree_provenance(
 def _isolate_call_events(
     events: list[dict[str, Any]],
     command: str,
+    *,
+    trusted_root_pid: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Select one exact launcher command tree from a shared-cgroup window.
 
@@ -2475,6 +2499,32 @@ def _isolate_call_events(
     """
 
     clauses, fork_parent = _clauses_and_lineage(events)
+    if trusted_root_pid is not None:
+        selected_pids = {trusted_root_pid}
+        changed = True
+        while changed:
+            changed = False
+            for child, parent in fork_parent.items():
+                if parent in selected_pids and child not in selected_pids:
+                    selected_pids.add(child)
+                    changed = True
+        selected_events = [
+            event
+            for event in events
+            if int(event.get("host_pid", 0)) in selected_pids
+            or (
+                event.get("type") == "fork"
+                and int(event.get("child_host_pid", 0)) in selected_pids
+            )
+        ]
+        return selected_events, {
+            "mode": "trusted_execution_root",
+            "trusted_root_pid": trusted_root_pid,
+            "selected_pid_count": len(selected_pids),
+            "raw_window_event_count": len(events),
+            "selected_event_count": len(selected_events),
+        }
+
     exec_pids = {clause.host_pid for clause in clauses}
     root_pids: set[int] = set()
     for pid in exec_pids:
@@ -2628,13 +2678,19 @@ def _pid_namespace_inode_for_pid(pid: int) -> int | None:
 def _discover_leaf_cgroup_inodes(cgroup: Path) -> set[int]:
     """Return inode numbers for *cgroup* and all related cgroups.
 
-    On Docker / cgroup v2 with systemd, ``docker exec`` often creates a
-    *sibling* transient scope under the same parent directory (e.g.
-    ``/sys/fs/cgroup/system.slice/``) rather than a *child* cgroup under
-    the container's scope.  The sibling and the container scope share a
-    common container-ID prefix in their directory names, so we scan the
-    parent directory for all entries with the same prefix in addition to
-    walking the descendant tree.
+    On Docker / cgroup v2 with systemd, ``docker exec`` often creates
+    transient scopes that may live in a different part of the cgroup
+    tree than the container's root scope.  We use three strategies:
+
+    1. Add the container root cgroup inode.
+    2. Walk all descendant cgroups.
+    3. Extract the container-id prefix from the cgroup directory name
+       and scan broadly for any cgroup directory (not just in the parent)
+       whose name contains that prefix.  This catches sibling scopes,
+       systemd transient scopes, and scopes in other slices.
+
+    The container-id is typically a 64-char hex string embedded in the
+    directory name after ``docker-`` or ``cri-containerd-``.
     """
     inodes: set[int] = set()
     try:
@@ -2653,11 +2709,139 @@ def _discover_leaf_cgroup_inodes(cgroup: Path) -> set[int]:
     except OSError:
         pass
 
-    # Sibling cgroups sharing the same container-id prefix
-    # (e.g. systemd transient scopes for docker exec).
-    _add_sibling_cgroup_inodes(cgroup, inodes)
+    # Broad scan: find ALL cgroup directories whose name contains the
+    # container-id substring (at least 12 hex chars).  This catches
+    # sibling scopes, systemd transient scopes in different slices, and
+    # any other container-related cgroups that are not descendants of
+    # the root scope.
+    _add_container_cgroup_inodes_broad(cgroup, inodes)
 
     return inodes
+
+
+def _discover_cgroup_inodes_from_proc(init_pid: int) -> set[int]:
+    """Discover container cgroup inodes by scanning /proc for processes.
+
+    This is more reliable than directory scanning because it finds the
+    ACTUAL cgroups where container processes run, regardless of naming
+    conventions or cgroup tree layout.
+
+    Walks all PIDs in /proc that share the same PID namespace as
+    *init_pid*, reads their cgroup v2 path from /proc/<pid>/cgroup, and
+    collects the inode of each unique cgroup directory.
+    """
+    if init_pid <= 0:
+        return set()
+    # Get the PID namespace of the container init process.
+    try:
+        init_ns = os.readlink(f"/proc/{init_pid}/ns/pid")
+    except OSError:
+        return set()
+    inodes: set[int] = set()
+    try:
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            pid = int(entry.name)
+            if pid == init_pid:
+                continue
+            try:
+                ns = os.readlink(entry / "ns" / "pid")
+            except OSError:
+                continue
+            if ns != init_ns:
+                continue
+            # This process is in the same PID namespace → read its cgroup.
+            try:
+                cgroup_text = (entry / "cgroup").read_text(encoding="utf-8")
+            except OSError:
+                continue
+            for line in cgroup_text.splitlines():
+                if not line.startswith("0::"):
+                    continue
+                cgroup_rel = line[3:]
+                cgroup_path = Path("/sys/fs/cgroup") / cgroup_rel.lstrip("/")
+                try:
+                    inodes.add(cgroup_path.stat().st_ino)
+                except OSError:
+                    pass
+                break  # Only need the unified (v2) hierarchy line.
+    except OSError:
+        pass
+    return inodes
+
+
+def _add_container_cgroup_inodes_broad(
+    cgroup: Path,
+    inodes: set[int],
+) -> None:
+    """Scan the cgroup tree for directories related to the same container.
+
+    Extracts the longest hex substring from *cgroup*'s directory name and
+    searches all cgroup directories for names containing that substring.
+    Limited to 12+ hex chars to avoid false positives.
+    """
+    name = cgroup.name
+    # Extract the longest hex substring from the directory name.
+    # Docker scope names: docker-<64hex>.scope or docker-<64hex>.scope:<uuid>
+    # containerd: cri-containerd-<64hex>.scope
+    hex_substring = _longest_hex_substring(name)
+    if hex_substring is None or len(hex_substring) < 12:
+        # Fall back to prefix-based scan in the parent directory.
+        _add_sibling_cgroup_inodes(cgroup, inodes)
+        return
+
+    # Search from the cgroup root (max depth 4) and also from the
+    # container's parent directory.  Most systemd/Docker layouts put
+    # scopes within 3 levels of /sys/fs/cgroup.
+    cgroup_root = Path("/sys/fs/cgroup")
+    _scan_for_container_cgroups(cgroup_root, hex_substring, inodes, depth=3)
+    # Also search from the parent for sibling scopes (common pattern).
+    parent = cgroup.parent
+    if parent is not None and parent != cgroup_root:
+        _scan_for_container_cgroups(parent, hex_substring, inodes, depth=2)
+
+
+def _longest_hex_substring(name: str) -> str | None:
+    """Return the longest contiguous hex substring in *name*, or None."""
+    best = ""
+    current = ""
+    for ch in name:
+        if ch in "0123456789abcdefABCDEF":
+            current += ch
+        else:
+            if len(current) > len(best):
+                best = current
+            current = ""
+    if len(current) > len(best):
+        best = current
+    return best.lower() if len(best) >= 12 else None
+
+
+def _scan_for_container_cgroups(
+    root: Path,
+    hex_substring: str,
+    inodes: set[int],
+    *,
+    depth: int = 2,
+) -> None:
+    """Walk *root* up to *depth* levels, adding inodes of matching dirs."""
+    if depth <= 0:
+        return
+    try:
+        for entry in root.iterdir():
+            if not entry.is_dir():
+                continue
+            if hex_substring in entry.name.lower():
+                try:
+                    inodes.add(entry.stat().st_ino)
+                except OSError:
+                    pass
+            # Recurse one level for nested scopes (e.g. systemd transient).
+            if depth > 1:
+                _scan_for_container_cgroups(entry, hex_substring, inodes, depth=depth - 1)
+    except OSError:
+        pass
 
 
 def _add_sibling_cgroup_inodes(
@@ -2669,19 +2853,33 @@ def _add_sibling_cgroup_inodes(
     Docker scope names follow the pattern
     ``docker-<container_id>[(.<suffix>)].scope``.  Systemd transient scopes
     for ``docker exec`` are siblings of the container scope and share the
-    container-id prefix.
+    container-id prefix.  For containerd/cri-o the prefix may differ
+    (e.g. ``cri-containerd-<id>.scope``); we extract any common hex prefix.
     """
     parent = cgroup.parent
     if parent is None:
         return
-    # Extract the container-id prefix from the cgroup directory name.
-    # Typical name: "docker-8de5ac85ada8….scope"
-    # The sibling for exec might be "docker-8de5ac85ada8….scope" (different suffix)
-    # or a systemd transient like "docker-8de5ac85ada8….scope:<uuid>".
     name = cgroup.name
-    # Find the longest common prefix with other directory entries.
-    # We look for entries that share at least the first 32 hex chars of
-    # the container id (which always follows "docker-").
+    # Try to find a hex-based prefix of at least 12 chars to match
+    # container-id substrings in sibling directory names.
+    hex_substring = _longest_hex_substring(name)
+    if hex_substring is not None and len(hex_substring) >= 12:
+        try:
+            for entry in parent.iterdir():
+                if not entry.is_dir():
+                    continue
+                if entry == cgroup:
+                    continue
+                if hex_substring in entry.name.lower():
+                    try:
+                        inodes.add(entry.stat().st_ino)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        return
+
+    # Legacy: match on "docker-" prefix (at least 32 hex chars).
     if not name.startswith("docker-"):
         return
     try:
@@ -2771,6 +2969,35 @@ def _container_pid_set(
                     pids.add(child)
                     changed = True
     return pids
+
+
+def _observed_container_cgroup_ids(
+    events: Sequence[Mapping[str, Any]],
+    container_pids: set[int],
+    pid_namespace_inodes: set[int],
+) -> set[int]:
+    """Return cgroups supported by container identity, never window timing alone.
+
+    Stage-2 attaches system-wide probes. An exec boundary merely occurring
+    during a tool window is therefore not evidence that its cgroup belongs to
+    the sandbox. Accept only events tied to an already authenticated PID or
+    the container PID namespace; the launcher-bound trusted root is added to
+    ``container_pids`` by the caller before this function runs.
+    """
+
+    discovered: set[int] = set()
+    for event in events:
+        cgroup_id = int(event.get("cgroup_id", 0) or 0)
+        if cgroup_id <= 0:
+            continue
+        host_pid = int(event.get("host_pid", 0) or 0)
+        pid_namespace_inode = int(event.get("pid_namespace_inode", 0) or 0)
+        if host_pid in container_pids or (
+            pid_namespace_inodes
+            and pid_namespace_inode in pid_namespace_inodes
+        ):
+            discovered.add(cgroup_id)
+    return discovered
 
 
 def _event_row(table: Any, data: int) -> dict[str, Any]:
@@ -2905,6 +3132,13 @@ def _event_type_counts(events: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+# Cross-instance cache of discovered cgroup inodes keyed by container_id.
+# Each ClauseTelemetryCollector instance starts fresh, but Docker exec
+# transient cgroups discovered by one instance must be visible to the
+# next so that _container_pid_set can match exec events immediately.
+_cgroup_inodes_cache: dict[str, set[int]] = {}
+
+
 class ClauseTelemetryCollector:
     """One BPF program, armed once, delimiting serial exec tool calls."""
 
@@ -2916,6 +3150,7 @@ class ClauseTelemetryCollector:
         repo: str,
         artifact_path: Path,
         cgroup_path: str | None = None,
+        trusted_root_pid: int | None = None,
         source_actions: Sequence[Mapping[str, Any]] = (),
     ) -> None:
         _ensure_bcc_importable()
@@ -2954,7 +3189,25 @@ class ClauseTelemetryCollector:
         )
         if not self.cgroup_inodes and self.cgroup_id:
             self.cgroup_inodes = {self.cgroup_id}
+        # Supplement directory-based discovery with /proc scanning.
+        # Docker exec processes often run in cgroups that are not
+        # reachable via directory traversal (e.g., systemd transient
+        # scopes in a different slice).  Scanning /proc for processes
+        # in the same PID namespace finds their actual cgroups.
+        if init_pid > 0:
+            proc_cgroup_inodes = _discover_cgroup_inodes_from_proc(init_pid)
+            if proc_cgroup_inodes:
+                self.cgroup_inodes |= proc_cgroup_inodes
+        # Seed from cross-instance cache: exec transient cgroups discovered
+        # by a previous collector instance for the same container.
+        if container_id:
+            cached = _cgroup_inodes_cache.get(container_id)
+            if cached:
+                self.cgroup_inodes |= cached
         self.init_pid = init_pid
+        self.trusted_root_pid: int | None = None
+        if trusted_root_pid is not None:
+            self.bind_trusted_root(trusted_root_pid)
         init_pid_ns = _pid_namespace_inode_for_pid(init_pid) if init_pid > 0 else None
         self.pid_namespace_inodes = {init_pid_ns} if init_pid_ns is not None else set()
         self.quota_cores = observed_quota_cores(cgroup)
@@ -3091,6 +3344,7 @@ class ClauseTelemetryCollector:
         collector.cgroup_id = 0
         collector.cgroup_inodes = set()
         collector.init_pid = 0
+        collector.trusted_root_pid = None
         collector.pid_namespace_inodes = set()
         collector.quota_cores = 0.0
         collector.repo = repo
@@ -3117,6 +3371,16 @@ class ClauseTelemetryCollector:
         ]
         collector._source_exec_index = 0
         return collector
+
+    def bind_trusted_root(self, host_pid: int) -> None:
+        if host_pid <= 0:
+            raise ValueError("trusted root host PID must be positive")
+        current = getattr(self, "trusted_root_pid", None)
+        if current is not None and current != host_pid:
+            raise ClauseTelemetryIntegrityError(
+                f"trusted execution root changed from {current} to {host_pid}"
+            )
+        self.trusted_root_pid = host_pid
 
     def _disable(self, reason: str, *, tool_call_id: str | None = None) -> None:
         if self.state == "closed":
@@ -3277,6 +3541,34 @@ class ClauseTelemetryCollector:
                     cgroup_inodes=self.cgroup_inodes,
                     pid_namespace_inodes=self.pid_namespace_inodes,
                 )
+                if self.trusted_root_pid is not None:
+                    container_pids.add(self.trusted_root_pid)
+                # --- dynamic cgroup discovery ---
+                # Docker exec often creates transient cgroups (e.g., systemd
+                # scopes) that are not reachable from the container's root
+                # cgroup via directory traversal.  Collect every cgroup_id
+                # seen on events that belong to the container so subsequent
+                # calls can match these cgroups without relying solely on
+                # the static _discover_leaf_cgroup_inodes scan.
+                #
+                # Identity must come from an authenticated/root-descendant PID
+                # or the container PID namespace. Window overlap alone is not
+                # sufficient because these probes are attached system-wide.
+                _dynamic_cgroups = _observed_container_cgroup_ids(
+                    self._events,
+                    container_pids,
+                    self.pid_namespace_inodes,
+                )
+                if _dynamic_cgroups - self.cgroup_inodes:
+                    self.cgroup_inodes |= _dynamic_cgroups
+                    # Persist newly discovered cgroups for the next
+                    # collector instance (each execution gets a fresh
+                    # collector, but cgroups are container-scoped).
+                    if self.container_id:
+                        _cgroup_inodes_cache.setdefault(
+                            self.container_id, set()
+                        ).update(_dynamic_cgroups)
+                # --- end dynamic cgroup discovery ---
                 # --- diagnostic logging ---
                 import sys as _sys
                 _exec_cgroups: dict[int, int] = {}
@@ -3519,7 +3811,11 @@ class ClauseTelemetryCollector:
         from tool_resource.clause_bridge import bridge_command
 
         collector_perf_samples = perf_samples
-        events, event_isolation = _isolate_call_events(events, token.command)
+        events, event_isolation = _isolate_call_events(
+            events,
+            token.command,
+            trusted_root_pid=self.trusted_root_pid,
+        )
         perf_samples = sum(event["type"] == "perf" for event in events)
         normalized_loss_counts = {
             name: int(loss_counts.get(name, 0)) for name in LOSS_COUNTER_NAMES
@@ -3567,6 +3863,7 @@ class ClauseTelemetryCollector:
                 clauses,
                 fork_parent,
                 fork_records=fork_records,
+                trusted_root_pid=self.trusted_root_pid,
             )
         metrics, attribution_gaps = analyze(run, entry_pid=entry_pid)
 
@@ -3584,9 +3881,15 @@ class ClauseTelemetryCollector:
             structural_setup_reasons = {
                 "entry_fork_pre_exec_structural_setup",
                 "initial_exec_pending_pre_boundary_structural_setup",
+                "trusted_root_pre_exec_structural_setup",
             }
             if event["reason"] in structural_setup_reasons:
                 relation = event["reason"]
+            elif (
+                self.trusted_root_pid is not None
+                and event["host_pid"] == self.trusted_root_pid
+            ):
+                relation = "trusted_execution_root"
             elif event["host_pid"] == entry_pid:
                 relation = (
                     "entry_parent"
@@ -3637,6 +3940,7 @@ class ClauseTelemetryCollector:
                 "entry_parent_thread",
                 "entry_fork_pre_exec_structural_setup",
                 "initial_exec_pending_pre_boundary_structural_setup",
+                "trusted_root_pre_exec_structural_setup",
             }
         ]
         structural_gaps = [
@@ -3648,6 +3952,7 @@ class ClauseTelemetryCollector:
                 "entry_parent_thread",
                 "entry_fork_pre_exec_structural_setup",
                 "initial_exec_pending_pre_boundary_structural_setup",
+                "trusted_root_pre_exec_structural_setup",
             }
         ]
         exec_image_records = [_exec_image_record(metric) for metric in metrics]

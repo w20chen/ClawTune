@@ -29,7 +29,9 @@ class ExecutionRecord:
     launcher_pid: int | None = None
     exit_code: int | None = None
     signal: int | None = None
+    exited: bool = False
     owned_cgroup_path: str | None = None
+    trusted_root_pid: int | None = None
 
 
 class ExecutionRegistry:
@@ -68,7 +70,23 @@ class ExecutionRegistry:
         return [
             record
             for record in self._by_execution_id.values()
-            if record.claimed and record.exit_code is None and record.signal is None
+            if record.claimed and not record.exited
+        ]
+
+    def pending_marker(self) -> list[ExecutionRecord]:
+        """Return unclaimed marker-backend executions that haven't expired.
+
+        In marker mode, executions are registered but never claimed by
+        a launcher.  These records still need Stage-2 telemetry activation
+        once the sandbox container scope is discovered.
+        """
+        self._sweep()
+        return [
+            record
+            for record in self._by_execution_id.values()
+            if not record.claimed
+            and getattr(record.request, "backend", None) == "marker"
+            and record.expires_at > datetime.now(UTC)
         ]
 
     def claim(self, request: ExecutionClaimRequest) -> ExecutionClaimResponse:
@@ -131,10 +149,24 @@ class ExecutionRegistry:
         if owned_cgroup_path is not None:
             record.owned_cgroup_path = owned_cgroup_path
 
+    def bind_trusted_root(self, execution_id: str, host_pid: int) -> None:
+        record = self._by_execution_id.get(execution_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="execution_not_found")
+        if host_pid <= 0:
+            raise HTTPException(status_code=422, detail="invalid_trusted_root_pid")
+        if (
+            record.trusted_root_pid is not None
+            and record.trusted_root_pid != host_pid
+        ):
+            raise HTTPException(status_code=409, detail="trusted_execution_root_changed")
+        record.trusted_root_pid = host_pid
+
     def exited(self, execution_id: str, request: ExecutionExitedRequest) -> ExecutionUpdateResponse:
         record = self._require_update(execution_id, request.update_token)
         record.exit_code = request.exit_code
         record.signal = request.signal
+        record.exited = True
         return ExecutionUpdateResponse(stored=True)
 
     def _require_update(self, execution_id: str, update_token: str) -> ExecutionRecord:

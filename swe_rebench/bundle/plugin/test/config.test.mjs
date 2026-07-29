@@ -2,6 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {loadConfig} from "../dist/config.js";
 
+test("loadConfig uses managed-wrapper as the default exec path", () => {
+  const config = loadConfig({});
+
+  assert.equal(config.executionBackend, "managed-wrapper");
+  assert.equal(config.securityBoundaryAccepted, true);
+});
+
 test("loadConfig deep-merges partial trace config", () => {
   const config = loadConfig({
     trace: {
@@ -90,6 +97,14 @@ test("loadConfig reads agent scheduler environment overrides", () => {
       process.env.OPENCLAW_AGENT_SCHEDULER_PLUGIN_TRACE_DIR = previousPluginTraceDir;
     }
   }
+});
+
+test("loadConfig validates launcherInterpreter when configured", () => {
+  assert.equal(loadConfig({launcherInterpreter: "/bin/sh"}).launcherInterpreter, "/bin/sh");
+  assert.throws(
+    () => loadConfig({launcherInterpreter: "sh"}),
+    /launcherInterpreter must be an absolute path/
+  );
 });
 
 test("loadConfig does not treat sidecar trace dir env as plugin trace output", () => {

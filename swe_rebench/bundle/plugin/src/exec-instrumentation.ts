@@ -122,11 +122,7 @@ export async function instrumentExecParams(
       if (config.mode === "observe" || config.failOpen) return empty;
       throw new Error("execution_registration_failed");
     }
-    effectiveCommand = [
-      shellQuote(config.launcherPath),
-      "run",
-      `--execution-id=${shellQuote(executionId)}`
-    ].join(" ");
+    effectiveCommand = buildLauncherCommand(config, executionId);
     params.command = effectiveCommand;
     // payloadCommand stays as the original requestedCommand
   } else if (config.executionBackend === "marker") {
@@ -208,9 +204,12 @@ function launcherEnv(): Record<string, string> {
     "CLAW_CGROUP_REQUIRED",
     "CLAW_CGROUP_DEBUG",
     "CLAW_ENABLE_CGROUP",
+    "CLAW_LAUNCH_MODE",
     "CLAW_LAUNCH_DEBUG",
     "CLAW_SCHEDULER_ENDPOINT",
     "OPENCLAW_SCHEDULER_ENDPOINT",
+    "CLAW_SANDBOX_CONTAINER_ID",
+    "AGENT_SCHEDULER_SANDBOX_CONTAINER_ID",
   ]) {
     const value = process.env[key];
     if (typeof value === "string" && value.length > 0) output[key] = value;
@@ -221,6 +220,24 @@ function launcherEnv(): Record<string, string> {
 function launcherWorkdirOverride(): string | null {
   const value = process.env.CLAW_EXEC_WORKDIR;
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function buildLauncherCommand(config: PluginConfig, executionId: string): string {
+  const launcherInvocation = [
+    ...(config.launcherInterpreter === null ? [] : [shellQuote(config.launcherInterpreter)]),
+    shellQuote(config.launcherPath),
+    "run",
+    `--execution-id=${shellQuote(executionId)}`
+  ].join(" ");
+  if (config.launcherInterpreter === null) return launcherInvocation;
+  // OpenClaw's exec transport treats direct shell-script invocations specially.
+  // Use an inline shell payload so the launcher script is read by the trusted
+  // interpreter without being reinterpreted as a system.run script target.
+  return [
+    shellQuote(config.launcherInterpreter),
+    "-c",
+    shellQuote(`exec ${launcherInvocation}`)
+  ].join(" ");
 }
 
 function shellQuote(value: string): string {

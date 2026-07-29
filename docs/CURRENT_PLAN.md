@@ -612,3 +612,52 @@ post-fix acceptance run still cannot execute in this Windows workspace because
 it requires the user's Linux Docker/cgroup-v2/BCC environment and credentials;
 rerun the same `--prepare --runtime-mode host-openclaw-sandbox` command above
 to prove the final end-to-end route.
+
+## 2026-07-29 Runtime Mode Audit
+
+The `host-openclaw-sandbox` path is the maintained complete telemetry route:
+the runner keeps OpenClaw and the sidecar on the host, exports `/testbed` from
+the task image into a host workspace, tags the task image as the OpenClaw
+sandbox image, and runs tools through the host OpenClaw Docker sandbox. Passing
+`--runtime-mode host-openclaw-sandbox` also makes Stage-2 telemetry required
+unless `--no-stage2-required` is supplied.
+
+The `container-openclaw` path runs OpenClaw, the plugin, and the sidecar inside
+each SWE-Rebench task image through `/claw/entrypoint.sh`. It is intentionally
+best-effort for Stage-2 by default. Its main failure surface is setup-heavy:
+the task image must be able to install or already contain Node/OpenClaw,
+sidecar Python dependencies, Docker CLI access to the mounted daemon socket,
+and optionally cgroup/BCC tooling.
+
+This audit found one local `--prepare` blocker: `swe_rebench.prepare` copied
+`services/scheduler/.pytest-tmp-root`, and Windows denied access to that
+temporary directory. The scheduler bundle copy now skips `.pytest-tmp*`
+directories, matching the existing treatment of `.pytest_cache` and generated
+artifacts.
+
+Validation in this Windows workspace:
+
+- `python -m swe_rebench.runner run --config swe_rebench/config.yaml
+  --dataset swe_rebench/tasks.json --sample 1 --runtime-mode
+  container-openclaw --dry-run`: passed.
+- `python -m swe_rebench.runner run --config swe_rebench/config.yaml
+  --dataset swe_rebench/tasks.json --sample 1 --runtime-mode
+  host-openclaw-sandbox --dry-run`: passed.
+- `python -m swe_rebench.runner prepare --config swe_rebench/config.yaml`:
+  initially failed with `PermissionError` copying
+  `services/scheduler/.pytest-tmp-root`; passed after skipping `.pytest-tmp*`.
+- `python -m pytest tests\test_swe_rebench_selection.py
+  tests\test_swe_rebench_runner_inspection.py`: cannot use the default
+  Windows temp root because access to
+  `C:\Users\29068\AppData\Local\Temp\pytest-of-29068` is denied. The same
+  suite passed with `--basetemp .pytest-tmp-runtime-audit`.
+- `python -m pytest tests\test_swe_rebench_selection.py
+  tests\test_swe_rebench_runner_inspection.py -q --basetemp
+  .pytest-tmp-runtime-audit`: 80 passed, 2 skipped.
+- `python tools\validate_contracts.py`: all nine schema examples passed.
+- `git diff --check`: passed.
+
+Still not runnable here: a live `container-openclaw` or
+`host-openclaw-sandbox` SWE-Rebench task execution, because this Windows
+workspace lacks the Linux Docker/cgroup/eBPF host environment, task-image
+runtime, and upstream LLM credentials used by the benchmark runner.

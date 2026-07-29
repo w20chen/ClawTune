@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import shlex
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from jsonschema import Draft202012Validator
 
 import agent_scheduler.predictors.tool_resource as tool_resource_predictor
 from agent_scheduler.api.app import create_app
@@ -18,7 +21,14 @@ from agent_scheduler.predictors.tool_resource import (
     ToolResourcePredictor,
     load_openclaw_trace_observations,
 )
-from tool_resource.runtime_kb import LatencyBuckets
+from tool_resource.runtime_kb import (
+    ClauseObservation,
+    ClauseResourceKB,
+    CompletedCall,
+    LatencyBuckets,
+    RuntimeToolResourceKB,
+    ToolCallQuery,
+)
 import tool_resource.runtime_kb as tool_resource_runtime_kb
 
 
@@ -32,13 +42,64 @@ def _test_parse_command(command: str) -> dict:
     return {"clauses": clauses, "parse_failed": not clauses}
 
 
+def test_stage2_workload_result_preserves_masked_lookup_diagnostic() -> None:
+    workload = tool_resource_predictor._stage2_workload_result(
+        {
+            "content": [{"type": "text", "text": "/bin/sh: 1: pip: not found"}],
+            "details": {
+                "aggregated": "/bin/sh: 1: pip: not found",
+                "exitCode": 0,
+            },
+        },
+        exit_code=0,
+        signal=None,
+        succeeded=True,
+    )
+
+    assert workload == {
+        "exit_code": 0,
+        "signal": None,
+        "ok": True,
+        "result": "/bin/sh: 1: pip: not found",
+        "stderr": "",
+    }
+
+
+class _FakeToolResourceSDK:
+    def __init__(self) -> None:
+        self.started: list[tuple[str, str, str]] = []
+        self.contexts: list[object] = []
+
+    def start_command(self, context, tool_call_id: str, command: str):
+        self.contexts.append(context)
+        self.started.append((context.container_id, tool_call_id, command))
+        return SimpleNamespace(
+            tool_call_id=tool_call_id,
+            _observer=SimpleNamespace(
+                telemetry_available=True,
+                unavailable_reason=None,
+            ),
+        )
+
+
 @pytest.fixture(autouse=True)
 def _native_parser_fixture(monkeypatch) -> None:
     monkeypatch.setattr(tool_resource_predictor, "parse_command_clauses", _test_parse_command)
     monkeypatch.setattr(tool_resource_runtime_kb, "parse_command_clauses", _test_parse_command)
 
 
-def _write_trace(path: Path, *, command: str = "python -m pytest tests -q") -> None:
+def _write_trace(
+    path: Path,
+    *,
+    command: str = "python -m pytest tests -q",
+    memory_rss_bytes_before: int | None = None,
+) -> None:
+    resources = {
+        "cpu_utilization_avg_cores": 1.5,
+        "rss_peak_bytes": 104857600,
+    }
+    if memory_rss_bytes_before is not None:
+        resources["memory_rss_bytes_before"] = memory_rss_bytes_before
     records = [
         {
             "schema_version": 6,
@@ -83,16 +144,118 @@ def _write_trace(path: Path, *, command: str = "python -m pytest tests -q") -> N
             "status": {"code": "ok", "message": None},
             "output": {"exit_code": 0, "result": None},
             "execution": {"mode": "launcher", "execution_id": "call-1"},
-            "resources": {
-                "cpu_utilization_avg_cores": 1.5,
-                "rss_peak_bytes": 104857600,
-            },
+            "resources": resources,
         },
     ]
     path.write_text(
         "\n".join(json.dumps(record, separators=(",", ":")) for record in records) + "\n",
         encoding="utf-8",
     )
+
+
+def test_predictor_retries_stage2_after_container_id_arrives(tmp_path: Path) -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0)),
+        repo="repo-1",
+        artifact_dir=tmp_path / "tool-resource",
+    )
+    fake_sdk = _FakeToolResourceSDK()
+    predictor._sdk = fake_sdk  # type: ignore[assignment]
+
+    assert not predictor.begin_execution(
+        execution_id="exec-1",
+        tool_call_id="call-1",
+        command="echo hi && true",
+        container_id=None,
+        repo="repo-1",
+    )
+    assert predictor.begin_execution(
+        execution_id="exec-1",
+        tool_call_id="call-1",
+        command="echo hi && true",
+        container_id="a" * 64,
+        repo="repo-1",
+    )
+
+    assert fake_sdk.started == [("a" * 64, "call-1", "echo hi && true")]
+
+
+def test_predictor_passes_and_rebinds_trusted_execution_root(tmp_path: Path) -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0)),
+        repo="repo-1",
+        artifact_dir=tmp_path / "tool-resource",
+    )
+    bound_roots: list[int] = []
+
+    class SDK:
+        def start_command(self, context, tool_call_id: str, command: str):
+            assert context.trusted_root_pid == 4242
+            return SimpleNamespace(
+                tool_call_id=tool_call_id,
+                _observer=SimpleNamespace(
+                    telemetry_available=True,
+                    unavailable_reason=None,
+                    bind_trusted_root=bound_roots.append,
+                ),
+            )
+
+    predictor._sdk = SDK()  # type: ignore[assignment]
+
+    assert predictor.begin_execution(
+        execution_id="exec-1",
+        tool_call_id="call-1",
+        command="echo hi",
+        container_id="a" * 64,
+        trusted_root_pid=4242,
+    )
+    assert predictor.begin_execution(
+        execution_id="exec-1",
+        tool_call_id="call-1",
+        command="echo hi",
+        container_id="a" * 64,
+        trusted_root_pid=4242,
+    )
+    assert bound_roots == [4242]
+
+
+def test_predictor_does_not_report_fail_isolated_collector_as_started(
+    tmp_path: Path,
+) -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0)),
+        repo="repo-1",
+        artifact_dir=tmp_path / "tool-resource",
+    )
+
+    class UnavailableSDK:
+        def start_command(self, context, tool_call_id: str, command: str):
+            return SimpleNamespace(
+                tool_call_id=tool_call_id,
+                _observer=SimpleNamespace(
+                    telemetry_available=False,
+                    unavailable_reason="collector attach failed: permission denied",
+                ),
+            )
+
+    predictor._sdk = UnavailableSDK()  # type: ignore[assignment]
+
+    assert not predictor.begin_execution(
+        execution_id="exec-1",
+        tool_call_id="call-1",
+        command="echo hi",
+        container_id="a" * 64,
+    )
+    summary = predictor._telemetry_by_execution_id["exec-1"]
+    assert summary.started is True
+    assert summary.status == "unavailable"
+    assert summary.unavailable_reason == "collector attach failed: permission denied"
 
 
 def test_openclaw_trace_v6_loads_as_tool_resource_observations(tmp_path: Path) -> None:
@@ -102,13 +265,14 @@ def test_openclaw_trace_v6_loads_as_tool_resource_observations(tmp_path: Path) -
     loaded = load_openclaw_trace_observations(trace, repo="repo-1")
 
     assert loaded.tool_spans_seen == 1
-    assert len(loaded.observations) == 1
-    observation = loaded.observations[0]
-    assert observation.repo == "repo-1"
-    assert observation.bin == "python"
-    assert observation.argv == ("python", "-m", "pytest", "tests", "-q")
-    assert observation.latency_ms == 1200
-    assert observation.sampled_peak_rss_mb == 100
+    assert loaded.observations == ()
+    assert len(loaded.completed_calls) == 1
+    completed = loaded.completed_calls[0]
+    assert completed.repo == "repo-1"
+    assert completed.tool_name == "exec"
+    assert completed.command == "python -m pytest tests -q"
+    assert completed.ts_end - completed.ts_start == pytest.approx(1.2)
+    assert completed.peak_memory_mb == 100
 
 
 def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) -> None:
@@ -147,8 +311,9 @@ def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) ->
     result = asyncio.run(predictor.predict(request))
 
     assert result.resource_class == "latency_medium"
-    assert result.duration_p50_ms == 1250
-    assert result.confidence == 1.0
+    assert result.duration_p50_ms == 1200
+    assert result.duration_p90_ms == 1200
+    assert result.confidence is None
     continuous = result.tool_resource["continuous_predictions"]
     without_continuous = result.tool_resource | {"continuous_predictions": {}}
     assert without_continuous == {
@@ -156,15 +321,17 @@ def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) ->
         "command": "python -m pytest tests -q",
         "parse_failed": False,
         "clause_bins": ["python"],
-        "prediction": {
-            "bucket_id": 2,
-            "probability_by_bucket": [0.0, 0.0, 1.0, 0.0],
-            "scope": "repo",
-            "key_kind": "exact_clause",
-            "evidence_count": 1,
-            "fallback_path": ["repo:exact_clause"],
-        },
-        "unavailable_reason": None,
+        "clause_predictions": [
+            {
+                "clause_index": 0,
+                "bin": "python",
+                "argv": ["python", "-m", "pytest", "tests", "-q"],
+                "prediction": None,
+                "unavailable_reason": "no_clause_latency_evidence",
+            }
+        ],
+        "prediction": None,
+        "unavailable_reason": "no_clause_latency_evidence",
         "continuous_predictions": {},
         "prediction_algorithms": _prediction_algorithms(),
     }
@@ -263,6 +430,15 @@ def test_stage2_clause_identity_matches_online_prediction(tmp_path: Path, monkey
     assert result.tool_resource["prediction"]["scope"] == "repo"
     assert result.tool_resource["prediction"]["key_kind"] == "exact_clause"
     assert result.tool_resource["prediction"]["evidence_count"] == 1
+    assert result.tool_resource["clause_predictions"] == [
+        {
+            "clause_index": 0,
+            "bin": "python",
+            "argv": ["python", "-m", "pytest", "tests", "-q"],
+            "prediction": result.tool_resource["prediction"],
+            "unavailable_reason": None,
+        }
+    ]
     assert result.tool_resource["continuous_predictions"]["peak_cpu_cores"][
         "conditional_p90"
     ] is None
@@ -282,16 +458,18 @@ def test_openclaw_trace_history_populates_repo_argv_prefix(tmp_path: Path) -> No
     )
 
     assert result.resource_class == "latency_medium"
-    assert result.tool_resource["prediction"]["scope"] == "repo"
-    assert result.tool_resource["prediction"]["key_kind"] == "argv_prefix_depth_3"
-    assert result.tool_resource["prediction"]["fallback_path"] == [
-        "repo:exact_clause",
-        "repo:argv_prefix_depth_4",
-        "repo:argv_prefix_depth_3",
+    assert result.tool_resource["prediction"] is None
+    latency = result.tool_resource["continuous_predictions"]["latency_ms"]
+    assert latency["scope"] == "repo"
+    assert latency["key_kind"] == "command_prefix_depth_3"
+    assert latency["fallback_path"] == [
+        "repo:exact_command",
+        "repo:command_prefix_depth_4",
+        "repo:command_prefix_depth_3",
     ]
 
 
-def test_openclaw_trace_cold_start_persists_clause_kb(tmp_path: Path) -> None:
+def test_openclaw_trace_cold_start_persists_runtime_kb(tmp_path: Path) -> None:
     trace = tmp_path / "trace.jsonl"
     artifact_dir = tmp_path / "tool-resource"
     _write_trace(trace, command="python -m pytest tests -q")
@@ -304,8 +482,8 @@ def test_openclaw_trace_cold_start_persists_clause_kb(tmp_path: Path) -> None:
         artifact_dir=artifact_dir,
     )
 
-    snapshot = artifact_dir / "clause-resource-kb.json"
-    assert snapshot.is_file()
+    assert not (artifact_dir / "clause-resource-kb.json").is_file()
+    assert (artifact_dir / "runtime-tool-resource-kb.json").is_file()
 
     reloaded = ToolResourcePredictor.from_traces(
         openclaw_trace_paths=(),
@@ -318,8 +496,95 @@ def test_openclaw_trace_cold_start_persists_clause_kb(tmp_path: Path) -> None:
         reloaded.predict(_tool_request("evt-prefix", "call-prefix", "python -m pytest integration -q"))
     )
 
-    assert result.tool_resource["prediction"]["scope"] == "repo"
-    assert result.tool_resource["prediction"]["key_kind"] == "argv_prefix_depth_3"
+    assert result.resource_class == "latency_medium"
+    assert result.tool_resource["prediction"] is None
+    assert result.tool_resource["continuous_predictions"]["latency_ms"]["key_kind"] == "command_prefix_depth_3"
+
+
+def test_shipped_clause_snapshot_produces_public_global_single_clause_bucket(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "tool-resource"
+    artifact_dir.mkdir()
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "traces"
+        / "tool-resource"
+        / "clause-resource-kb.json"
+    )
+    shutil.copyfile(source, artifact_dir / "clause-resource-kb.json")
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0, 10_000.0)),
+        repo="repo-1",
+        artifact_dir=artifact_dir,
+    )
+
+    result = asyncio.run(
+        predictor.predict(_tool_request("evt-public", "call-public", "python -V"))
+    )
+
+    prediction = result.tool_resource["prediction"]
+    assert predictor.report.kb_available is True
+    assert prediction["bucket_id"] == 2
+    assert prediction["scope"] == "public"
+    assert prediction["key_kind"] == "global"
+    assert prediction["evidence_count"] == 16
+    assert result.tool_resource["clause_predictions"] == [
+        {
+            "clause_index": 0,
+            "bin": "python",
+            "argv": ["python", "-V"],
+            "prediction": prediction,
+            "unavailable_reason": None,
+        }
+    ]
+
+
+def test_shipped_clause_snapshot_predicts_exec_clause_in_real_compound_command(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "tool-resource"
+    artifact_dir.mkdir()
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "traces"
+        / "tool-resource"
+        / "clause-resource-kb.json"
+    )
+    shutil.copyfile(source, artifact_dir / "clause-resource-kb.json")
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0, 10_000.0)),
+        repo="repo-1",
+        artifact_dir=artifact_dir,
+    )
+
+    result = asyncio.run(
+        predictor.predict(
+            _tool_request(
+                "evt-compound-public",
+                "call-compound-public",
+                "cd /workspace && python3 -m pytest tests -q",
+            )
+        )
+    )
+
+    tool_resource = result.tool_resource
+    assert tool_resource["clause_bins"] == ["cd", "python3"]
+    assert tool_resource["prediction"] is None
+    assert tool_resource["unavailable_reason"] == "compound_command_uncomposed"
+    assert len(tool_resource["clause_predictions"]) == 1
+    clause = tool_resource["clause_predictions"][0]
+    assert clause["clause_index"] == 1
+    assert clause["bin"] == "python3"
+    assert clause["prediction"]["bucket_id"] == 2
+    assert clause["prediction"]["scope"] == "public"
+    assert clause["prediction"]["key_kind"] == "global"
+    assert clause["prediction"]["evidence_count"] == 16
+    assert clause["unavailable_reason"] is None
 
 
 def test_stage2_loader_uses_native_sdk_artifact_validation(tmp_path: Path) -> None:
@@ -386,7 +651,7 @@ def test_tool_resource_predictor_exposes_native_unavailable_reason(
         predictor.predict(_tool_request("evt-1", "call-1", "python -m pytest && git status"))
     )
 
-    assert result.resource_class == "unknown"
+    assert result.resource_class == "latency_medium"
     continuous = result.tool_resource["continuous_predictions"]
     without_continuous = result.tool_resource | {"continuous_predictions": {}}
     assert without_continuous == {
@@ -394,8 +659,24 @@ def test_tool_resource_predictor_exposes_native_unavailable_reason(
         "command": "python -m pytest && git status",
         "parse_failed": False,
         "clause_bins": ["python", "git"],
+        "clause_predictions": [
+            {
+                "clause_index": 0,
+                "bin": "python",
+                "argv": ["python", "-m", "pytest"],
+                "prediction": None,
+                "unavailable_reason": "no_clause_latency_evidence",
+            },
+            {
+                "clause_index": 1,
+                "bin": "git",
+                "argv": ["git", "status"],
+                "prediction": None,
+                "unavailable_reason": "no_clause_latency_evidence",
+            },
+        ],
         "prediction": None,
-        "unavailable_reason": "compound_command_uncomposed",
+        "unavailable_reason": "compound_clause_evidence_incomplete",
         "continuous_predictions": {},
         "prediction_algorithms": _prediction_algorithms(),
     }
@@ -404,6 +685,202 @@ def test_tool_resource_predictor_exposes_native_unavailable_reason(
     assert continuous["peak_cpu_cores"]["conditional_p90"] == 1.5
     assert continuous["peak_cpu_cores"]["key_kind"] == "command_prefix_depth_3"
     assert continuous["peak_memory_mb"]["note"] == "memory prediction requires ambient_before_mb anchor"
+
+
+def test_compound_prediction_requires_evidence_for_every_effective_clause() -> None:
+    kb = ClauseResourceKB()
+    buckets = LatencyBuckets((100.0, 500.0))
+    clauses = (
+        {"bin": "python", "argv": ("python", "-m", "pytest")},
+        {"bin": "apt-get", "argv": ("apt-get", "update")},
+    )
+    kb.observe_completed_clause(
+        ClauseObservation(
+            repo="repo-1",
+            bin="python",
+            argv=("python", "-m", "pytest"),
+            ts_start=1.0,
+            ts_end=1.08,
+            latency_ms=80.0,
+        )
+    )
+
+    incomplete = kb.predict_command_latency_bucket_from_clauses(
+        "repo-1",
+        clauses,
+        2.0,
+        buckets,
+        command="python -m pytest && apt-get update",
+    )
+
+    assert incomplete.prediction is None
+    assert incomplete.unavailable_reason == "compound_clause_evidence_incomplete"
+    assert incomplete.clause_bins == ("python", "apt-get")
+    assert [item.clause_index for item in incomplete.clause_predictions] == [0, 1]
+    assert incomplete.clause_predictions[0].prediction is not None
+    assert incomplete.clause_predictions[0].unavailable_reason is None
+    assert incomplete.clause_predictions[1].prediction is None
+    assert (
+        incomplete.clause_predictions[1].unavailable_reason
+        == "no_clause_latency_evidence"
+    )
+
+    kb.observe_completed_clause(
+        ClauseObservation(
+            repo="repo-1",
+            bin="apt-get",
+            argv=("apt-get", "update"),
+            ts_start=2.1,
+            ts_end=3.0,
+            latency_ms=900.0,
+        )
+    )
+    complete = kb.predict_command_latency_bucket_from_clauses(
+        "repo-1",
+        clauses,
+        4.0,
+        buckets,
+        command="python -m pytest && apt-get update",
+    )
+
+    assert complete.prediction is None
+    assert complete.unavailable_reason == "compound_command_uncomposed"
+    assert all(item.prediction is not None for item in complete.clause_predictions)
+    assert all(item.unavailable_reason is None for item in complete.clause_predictions)
+
+
+def test_compound_prediction_ignores_noexec_builtins_but_preserves_raw_bins() -> None:
+    kb = ClauseResourceKB()
+    buckets = LatencyBuckets((100.0, 500.0))
+    kb.observe_completed_clause(
+        ClauseObservation(
+            repo="repo-1",
+            bin="python",
+            argv=("python", "-m", "pytest"),
+            ts_start=1.0,
+            ts_end=1.2,
+            latency_ms=200.0,
+        )
+    )
+
+    compound = kb.predict_command_latency_bucket_from_clauses(
+        "repo-1",
+        (
+            {"bin": "cd", "argv": ("cd", "/workspace")},
+            {"bin": "python", "argv": ("python", "-m", "pytest")},
+        ),
+        2.0,
+        buckets,
+        command="cd /workspace && python -m pytest",
+    )
+
+    assert compound.clause_bins == ("cd", "python")
+    assert compound.prediction is None
+    assert compound.unavailable_reason == "compound_command_uncomposed"
+    assert len(compound.clause_predictions) == 1
+    assert compound.clause_predictions[0].clause_index == 1
+    assert compound.clause_predictions[0].bin == "python"
+    assert compound.clause_predictions[0].prediction is not None
+
+    builtin_only = kb.predict_command_latency_bucket_from_clauses(
+        "repo-1",
+        ({"bin": "cd", "argv": ("cd", "/workspace")},),
+        3.0,
+        buckets,
+        command="cd /workspace",
+    )
+
+    assert builtin_only.clause_bins == ("cd",)
+    assert builtin_only.clause_predictions == ()
+    assert builtin_only.prediction is None
+    assert builtin_only.unavailable_reason == "no_executable_clauses"
+
+    builtin_compound = kb.predict_command_latency_bucket_from_clauses(
+        "repo-1",
+        (
+            {"bin": "cd", "argv": ("cd", "/workspace")},
+            {"bin": "export", "argv": ("export", "MODE=test")},
+        ),
+        4.0,
+        buckets,
+        command="cd /workspace && export MODE=test",
+    )
+
+    assert builtin_compound.clause_bins == ("cd", "export")
+    assert builtin_compound.clause_predictions == ()
+    assert builtin_compound.prediction is None
+    assert builtin_compound.unavailable_reason == "compound_command_uncomposed"
+
+
+@pytest.mark.parametrize("tool_name", ["read", "edit"])
+def test_commandless_repo_tool_name_learning_is_causal_and_survives_snapshot(
+    tool_name: str,
+) -> None:
+    kb = RuntimeToolResourceKB()
+    kb.observe_completed_call(
+        CompletedCall(
+            repo="repo-1",
+            tool_name=tool_name,
+            command=None,
+            ts_start=1.0,
+            ts_end=1.2,
+            peak_cpu_cores=0.25,
+            peak_cpu_cores_eligible=True,
+            peak_memory_mb=64.0,
+            peak_memory_mb_eligible=True,
+            ambient_before_mb=40.0,
+        )
+    )
+
+    second_call = kb.query(
+        ToolCallQuery(
+            repo="repo-1",
+            tool_name=tool_name,
+            command=None,
+            ts_start=2.0,
+            ambient_before_mb=50.0,
+        )
+    )
+
+    assert second_call["latency_ms"].conditional_p90 == pytest.approx(200.0)
+    assert second_call["peak_cpu_cores"].conditional_p90 == pytest.approx(0.25)
+    assert second_call["peak_memory_mb"].conditional_p90 == pytest.approx(74.0)
+    for prediction in second_call.values():
+        assert prediction.scope == "repo"
+        assert prediction.key_kind == "tool_name"
+        assert prediction.evidence_count == 1
+        assert prediction.fallback_path == ("repo:tool_name",)
+
+    kb.observe_completed_call(
+        CompletedCall(
+            repo="repo-1",
+            tool_name=tool_name,
+            command=None,
+            ts_start=2.1,
+            ts_end=2.5,
+            peak_cpu_cores=0.5,
+            peak_cpu_cores_eligible=True,
+            peak_memory_mb=80.0,
+            peak_memory_mb_eligible=True,
+            ambient_before_mb=50.0,
+        )
+    )
+    restored = RuntimeToolResourceKB.from_json_obj(kb.to_json_obj())
+
+    third_call = restored.query(
+        ToolCallQuery(
+            repo="repo-1",
+            tool_name=tool_name,
+            command=None,
+            ts_start=3.0,
+            ambient_before_mb=60.0,
+        )
+    )
+
+    assert third_call["latency_ms"].conditional_p90 == pytest.approx(400.0)
+    assert third_call["peak_cpu_cores"].conditional_p90 == pytest.approx(0.5)
+    assert third_call["peak_memory_mb"].conditional_p90 == pytest.approx(90.0)
+    assert all(prediction.evidence_count == 2 for prediction in third_call.values())
 
 
 def test_tool_resource_predictor_learns_from_completion_without_cold_start() -> None:
@@ -448,7 +925,10 @@ def test_tool_resource_predictor_learns_from_completion_without_cold_start() -> 
 
     assert added == 1
     assert result.resource_class == "latency_medium"
-    assert result.duration_p50_ms == 1250
+    assert result.duration_p50_ms == 1200
+    assert result.duration_p90_ms == 1200
+    assert result.tool_resource["prediction"] is None
+    assert result.tool_resource["unavailable_reason"] == "no_clause_latency_evidence"
     assert result.tool_resource["continuous_predictions"]["peak_cpu_cores"][
         "conditional_p90"
     ] == 0.8
@@ -475,10 +955,34 @@ def test_tool_resource_predictor_explains_unknown_without_cold_start() -> None:
     assert result.tool_resource["clause_bins"] == ["python"]
     assert result.tool_resource["prediction"] is None
     assert result.tool_resource["unavailable_reason"] == "no_clause_latency_evidence"
+    continuous = result.tool_resource["continuous_predictions"]
+    assert continuous["latency_ms"]["note"] == "no continuous evidence for target"
+    assert continuous["peak_cpu_cores"]["note"] == "no continuous evidence for target"
+    assert continuous["peak_memory_mb"]["note"] == "memory prediction requires ambient_before_mb anchor"
     assert [item["name"] for item in result.tool_resource["prediction_algorithms"]["enabled"]] == [
         "clause_latency_bucket",
         "runtime_tool_resource_conditional_p90",
     ]
+
+
+def test_tool_resource_predictor_explains_empty_continuous_memory_with_anchor() -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+    )
+
+    result = asyncio.run(
+        predictor.predict(
+            _tool_request("evt-1", "call-1", "python -m pytest tests -q"),
+            ambient_before_mb=10.0,
+        )
+    )
+
+    memory = result.tool_resource["continuous_predictions"]["peak_memory_mb"]
+    assert memory["conditional_p90"] is None
+    assert memory["note"] == "no continuous evidence for target"
 
 
 def test_exec_prediction_uses_fallback_parser_when_mvdan_fails(
@@ -505,15 +1009,10 @@ def test_exec_prediction_uses_fallback_parser_when_mvdan_fails(
     )
 
     assert result.resource_class == "latency_medium"
-    assert result.tool_resource["unavailable_reason"] is None
-    assert result.tool_resource["prediction"]["scope"] == "repo"
-    assert result.tool_resource["prediction"]["key_kind"] in {
-        "exact_clause",
-        "argv_prefix_depth_4",
-        "argv_prefix_depth_3",
-        "argv_prefix_depth_2",
-        "bin",
-    }
+    assert result.tool_resource["unavailable_reason"] == "no_clause_latency_evidence"
+    assert result.tool_resource["prediction"] is None
+    assert result.tool_resource["continuous_predictions"]["latency_ms"]["scope"] == "repo"
+    assert result.tool_resource["continuous_predictions"]["latency_ms"]["key_kind"] == "exact_command"
 
 
 def test_tool_resource_predictor_persists_clause_kb_prefixes(tmp_path: Path) -> None:
@@ -554,7 +1053,8 @@ def test_tool_resource_predictor_persists_clause_kb_prefixes(tmp_path: Path) -> 
         ),
         _runtime_sample("evt-1", "call-1"),
     ) == 1
-    assert (artifact_dir / "clause-resource-kb.json").is_file()
+    assert not (artifact_dir / "clause-resource-kb.json").is_file()
+    assert (artifact_dir / "runtime-tool-resource-kb.json").is_file()
 
     reloaded = ToolResourcePredictor.from_traces(
         openclaw_trace_paths=(),
@@ -568,8 +1068,9 @@ def test_tool_resource_predictor_persists_clause_kb_prefixes(tmp_path: Path) -> 
     )
 
     assert result.resource_class == "latency_medium"
-    assert result.tool_resource["prediction"]["scope"] == "repo"
-    assert result.tool_resource["prediction"]["key_kind"] == "argv_prefix_depth_3"
+    assert result.tool_resource["prediction"] is None
+    assert result.tool_resource["unavailable_reason"] == "no_clause_latency_evidence"
+    assert result.tool_resource["continuous_predictions"]["latency_ms"]["key_kind"] == "command_prefix_depth_3"
 
 
 def test_tool_resource_predictor_continuous_memory_uses_ambient_anchor() -> None:
@@ -629,6 +1130,7 @@ def test_sidecar_uses_tool_resource_predictor_when_configured(tmp_path: Path) ->
         SchedulerConfig(
             tool_resource_trace_paths=(trace,),
             tool_resource_latency_buckets_ms=(100.0, 500.0, 2_000.0),
+            tool_resource_artifact_dir=tmp_path / "tool-resource",
         )
     )
     client = TestClient(create_app(state))
@@ -664,7 +1166,67 @@ def test_sidecar_uses_tool_resource_predictor_when_configured(tmp_path: Path) ->
     )
 
     assert response.status_code == 200
+    schema = json.loads(
+        (
+            Path(__file__).resolve().parents[3]
+            / "contracts"
+            / "tool-decision.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    Draft202012Validator(schema).validate(response.json())
     assert response.json()["prediction"]["resource_class"] == "latency_medium"
+
+
+def test_sidecar_defaults_exec_memory_anchor_for_new_execution_cgroup(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.jsonl"
+    _write_trace(trace, memory_rss_bytes_before=0)
+    state = build_state(
+        SchedulerConfig(
+            tool_resource_trace_paths=(trace,),
+            tool_resource_latency_buckets_ms=(100.0, 500.0, 2_000.0),
+            tool_resource_artifact_dir=tmp_path / "tool-resource",
+        )
+    )
+    client = TestClient(create_app(state))
+
+    response = client.post(
+        "/v1/decisions/tool",
+        json={
+            "schema_version": "scheduler.v1",
+            "event_id": "evt-1",
+            "occurred_at": "2026-07-24T17:29:44Z",
+            "plugin_version": "0.1.0",
+            "run_id": "run-2",
+            "session_id": "session-1",
+            "session_key": None,
+            "agent_id": "main",
+            "tool_call_id": "call-2",
+            "tool_name": "exec",
+            "tool_kind": "shell",
+            "tool_input_kind": "json",
+            "operation_hint": None,
+            "derived_paths": [],
+            "params_digest": "sha256:" + "a" * 64,
+            "param_features": {
+                "serialized_size_bytes": 10,
+                "string_length": 10,
+                "list_item_count": 0,
+                "path_count": 0,
+                "has_command_like_field": True,
+            },
+            "raw_params": {"command": "python -m pytest tests -q"},
+            "resource_scope": None,
+        },
+    )
+
+    assert response.status_code == 200
+    memory = response.json()["prediction"]["tool_resource"]["continuous_predictions"][
+        "peak_memory_mb"
+    ]
+    assert memory["conditional_p90"] == pytest.approx(100.0)
+    assert memory["scope"] == "repo"
+    assert memory["key_kind"] == "exact_command"
+    assert memory["note"] == "residual quantile plus query ambient_before_mb"
 
 
 def test_trace_writes_tool_prediction_payload(tmp_path: Path) -> None:
@@ -743,7 +1305,13 @@ def test_trace_writes_tool_prediction_payload(tmp_path: Path) -> None:
         if record.get("record_type") == "span_start" and record.get("kind") == "tool"
     )
     assert tool_start["prediction"] == decision["prediction"]
-    assert tool_start["prediction"]["tool_resource"]["prediction"]["bucket_id"] == 2
+    assert tool_start["prediction"]["duration_p50_ms"] == 1200
+    assert tool_start["prediction"]["duration_p90_ms"] == 1200
+    assert tool_start["prediction"]["tool_resource"]["prediction"] is None
+    assert (
+        tool_start["prediction"]["tool_resource"]["continuous_predictions"]["latency_ms"]["key_kind"]
+        == "exact_command"
+    )
     algorithms = tool_start["prediction"]["tool_resource"]["prediction_algorithms"]
     assert [item["name"] for item in algorithms["enabled"]] == [
         "clause_latency_bucket",

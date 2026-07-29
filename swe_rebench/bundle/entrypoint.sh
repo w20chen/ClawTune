@@ -39,6 +39,7 @@ fi
 export AGENT_SCHEDULER_DB_PATH="/tmp/scheduler.sqlite3"
 export AGENT_SCHEDULER_TRACE_DIR="$TRACE_DIR"
 export AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER="${AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER:-true}"
+export AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED="${AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED:-false}"
 export AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL="${LLM_UPSTREAM_BASE_URL:-https://api.deepseek.com}"
 export AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY="${LLM_API_KEY:-}"
 export AGENT_SCHEDULER_LLM_PROXY_ENABLED="true"
@@ -49,6 +50,20 @@ export AGENT_SCHEDULER_LLM_PROXY_ENABLED="true"
 export AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL="${LLM_MODEL:-deepseek-v4-flash}"
 export AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL="${LLM_MODEL:-deepseek-v4-flash}"
 export AGENT_SCHEDULER_POLICY="observe-only"
+export CLAW_SCHEDULER_ENDPOINT="http://127.0.0.1:$SIDECAR_PORT"
+export OPENCLAW_SCHEDULER_ENDPOINT="$CLAW_SCHEDULER_ENDPOINT"
+export CLAW_EXEC_WORKDIR="/testbed"
+export OPENCLAW_WORKSPACE_DIR="/testbed"
+export OPENCLAW_REPO_ROOT="/testbed"
+CONTAINER_ID_CANDIDATE="$(hostname 2>/dev/null || true)"
+if [ -n "$CONTAINER_ID_CANDIDATE" ]; then
+    export AGENT_SCHEDULER_SANDBOX_CONTAINER_ID="${AGENT_SCHEDULER_SANDBOX_CONTAINER_ID:-$CONTAINER_ID_CANDIDATE}"
+    export CLAW_SANDBOX_CONTAINER_ID="${CLAW_SANDBOX_CONTAINER_ID:-$CONTAINER_ID_CANDIDATE}"
+fi
+if [ -s /tmp/.claw_bcc_pythonpath ]; then
+    CLAW_BCC_PYTHONPATH="$(cat /tmp/.claw_bcc_pythonpath)"
+    export PYTHONPATH="$CLAW_BCC_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}"
+fi
 mkdir -p "$TRACE_DIR"
 $_CLW_PYTHON - <<'PY' > "$TRACE_DIR/cgroup_probe.json" 2>/dev/null || true
 import json
@@ -75,8 +90,63 @@ probe = {
     "cgroup_mount_exists": mount.exists(),
     "cgroup_mount_writable": os.access(mount, os.W_OK),
     "self_cgroup_path": self_path,
+    "container_id": os.environ.get("AGENT_SCHEDULER_SANDBOX_CONTAINER_ID"),
 }
 print(json.dumps(probe, indent=2))
+PY
+
+$_CLW_PYTHON - <<'PY' > "$TRACE_DIR/tool_resource_preflight.json" 2>&1 || true
+import json
+import os
+import platform
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+container_id = os.environ.get("AGENT_SCHEDULER_SANDBOX_CONTAINER_ID") or os.environ.get("CLAW_SANDBOX_CONTAINER_ID")
+docker = shutil.which("docker")
+docker_inspect = {"ok": False, "detail": "docker or container id unavailable"}
+if docker and container_id:
+    result = subprocess.run(
+        [docker, "inspect", container_id, "--format", "{{.State.Pid}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    docker_inspect = {
+        "ok": result.returncode == 0 and result.stdout.strip().isdigit(),
+        "stdout": result.stdout.strip(),
+        "stderr": result.stderr.strip(),
+        "returncode": result.returncode,
+    }
+try:
+    import bcc  # noqa: F401
+    bcc_import = {"ok": True, "error": None}
+except Exception as exc:
+    bcc_import = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+preflight = {
+    "platform": platform.system().lower(),
+    "euid": os.geteuid() if hasattr(os, "geteuid") else None,
+    "python": sys.executable,
+    "pythonpath": os.environ.get("PYTHONPATH", ""),
+    "cgroup_v2": Path("/sys/fs/cgroup/cgroup.controllers").is_file(),
+    "docker": docker,
+    "clang": shutil.which("clang"),
+    "llc": shutil.which("llc"),
+    "bpftool": shutil.which("bpftool"),
+    "container_id": container_id,
+    "docker_inspect": docker_inspect,
+    "bcc_import": bcc_import,
+    "stage2_ready": (
+        platform.system().lower() == "linux"
+        and (not hasattr(os, "geteuid") or os.geteuid() == 0)
+        and Path("/sys/fs/cgroup/cgroup.controllers").is_file()
+        and docker_inspect.get("ok") is True
+        and bcc_import.get("ok") is True
+    ),
+}
+print(json.dumps(preflight, indent=2))
 PY
 
 cd "$CLAW_ROOT/scheduler"
@@ -85,8 +155,9 @@ cd "$CLAW_ROOT/scheduler"
 $_CLW_PIP install -e . --quiet 2>/dev/null || $_CLW_PIP install . --quiet 2>/dev/null || true
 
 # Start sidecar
-PYTHONPATH=src $_CLW_PYTHON -m agent_scheduler.main \
-    --host 127.0.0.1 --port "$SIDECAR_PORT" &
+PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" $_CLW_PYTHON -m agent_scheduler.main \
+    --host 127.0.0.1 --port "$SIDECAR_PORT" \
+    > "$TRACE_DIR/sidecar.log" 2>&1 &
 SIDECAR_PID=$!
 echo "[claw] sidecar PID=$SIDECAR_PID"
 
@@ -116,6 +187,11 @@ for i in $(seq 1 60); do
 done
 if [ "$READY" -eq 0 ]; then
     echo "[claw] FATAL: sidecar not ready after 60s"
+    {
+        echo ""
+        echo "=== sidecar readiness failure ==="
+        ps -p "$SIDECAR_PID" -o pid,ppid,stat,cmd || true
+    } >> "$TRACE_DIR/sidecar.log" 2>&1 || true
     kill "$SIDECAR_PID" 2>/dev/null || true
     exit 1
 fi

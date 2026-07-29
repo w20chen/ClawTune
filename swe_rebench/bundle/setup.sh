@@ -67,6 +67,33 @@ else
     echo "[claw] docker CLI not available (DockerExecObserver will idle)"
 fi
 
+echo "[claw] installing BCC/eBPF dependencies (best-effort)..."
+case "$PKG_MGR" in
+    apt) apt-get install -y -qq python3-bpfcc bpfcc-tools libbpfcc 2>/dev/null || true ;;
+    yum) yum install -y -q bcc-tools python3-bcc 2>/dev/null || true ;;
+    dnf) dnf install -y -q bcc-tools python3-bcc 2>/dev/null || true ;;
+    apk) apk add --no-cache bcc-tools bcc-python3 2>/dev/null || true ;;
+esac
+case "$PKG_MGR" in
+    apt)
+        apt-get install -y -qq clang llvm kmod linux-headers-"$(uname -r)" 2>/dev/null \
+            || apt-get install -y -qq clang llvm kmod linux-headers-generic 2>/dev/null \
+            || apt-get install -y -qq clang llvm kmod 2>/dev/null \
+            || true
+        ;;
+    yum) yum install -y -q clang llvm kmod kernel-headers kernel-devel 2>/dev/null || yum install -y -q clang llvm kmod 2>/dev/null || true ;;
+    dnf) dnf install -y -q clang llvm kmod kernel-headers kernel-devel 2>/dev/null || dnf install -y -q clang llvm kmod 2>/dev/null || true ;;
+    apk) apk add --no-cache clang llvm kmod linux-headers 2>/dev/null || true ;;
+esac
+if [ -d /usr/lib/python3/dist-packages/bcc ]; then
+    echo "/usr/lib/python3/dist-packages" > /tmp/.claw_bcc_pythonpath
+else
+    _CLAW_BCC_PATH="$(find /usr/lib /usr/lib64 -path '*/site-packages/bcc' -type d -print -quit 2>/dev/null || true)"
+    if [ -n "$_CLAW_BCC_PATH" ]; then
+        dirname "$_CLAW_BCC_PATH" > /tmp/.claw_bcc_pythonpath
+    fi
+fi
+
 # ── Python 3 (system fallback -- usually conda is already present) ──
 if ! $_CLW_PYTHON --version &>/dev/null 2>&1; then
     echo "[claw] installing python3..."
@@ -132,9 +159,19 @@ echo "[claw] openclaw $(openclaw --version 2>&1 | head -1)"
 # ── Sidecar Python deps ─────────────────────────────────────────
 echo "[claw] installing sidecar Python deps..."
 $_CLW_PIP install --quiet \
-    fastapi uvicorn pydantic psutil httpx prometheus-client \
+    fastapi uvicorn pydantic psutil httpx prometheus-client numpy \
     2>&1 | tail -1
-$_CLW_PYTHON -c "import fastapi, uvicorn, pydantic, psutil; print('[claw] sidecar deps OK')"
+if [ -s /tmp/.claw_bcc_pythonpath ]; then
+    export PYTHONPATH="$(cat /tmp/.claw_bcc_pythonpath)${PYTHONPATH:+:$PYTHONPATH}"
+fi
+$_CLW_PYTHON -c "import fastapi, uvicorn, pydantic, psutil, numpy; print('[claw] sidecar deps OK')"
+$_CLW_PYTHON - <<'PY' || true
+try:
+    import bcc  # noqa: F401
+    print("[claw] BCC Python binding OK")
+except Exception as exc:
+    print(f"[claw] BCC Python binding unavailable: {type(exc).__name__}: {exc}")
+PY
 
 # ── Done ────────────────────────────────────────────────────────
 touch "$SETUP_DONE"

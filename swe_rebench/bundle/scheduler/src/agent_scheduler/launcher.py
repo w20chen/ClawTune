@@ -17,6 +17,11 @@ from shutil import which
 from typing import Any
 
 
+_EXIT_REPORT_ATTEMPTS = 3
+_EXIT_REPORT_TIMEOUT_SECONDS = 0.75
+_EXIT_REPORT_RETRY_DELAY_SECONDS = 0.05
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="claw-launch")
     sub = parser.add_subparsers(dest="command_name", required=True)
@@ -29,8 +34,13 @@ def main() -> None:
         or os.environ.get("OPENCLAW_SCHEDULER_ENDPOINT")
         or "http://127.0.0.1:8765",
     )
+    sub.add_parser("diagnose")
     args = parser.parse_args()
 
+    if args.command_name == "diagnose":
+        diagnostics = launcher_diagnostics()
+        print(json.dumps(diagnostics, sort_keys=True))
+        raise SystemExit(0 if diagnostics["ready"] else 2)
     if args.command_name == "run":
         token = os.environ.pop("CLAW_EXECUTION_TOKEN", None) or args.token
         if not token:
@@ -49,6 +59,149 @@ def main() -> None:
 
 
 def run_execution(endpoint: str, execution_id: str, token: str) -> int:
+    """Claim and run one execution using the configured launcher strategy.
+
+    The OpenClaw Docker sandbox needs the payload to be a direct child that
+    replaces itself with the requested shell command. Keeping that behavior
+    opt-in preserves the richer local-host cgroup/placement path for normal
+    Linux installations while making the benchmark sandbox deterministic.
+    """
+    mode = _selected_launch_mode()
+    if mode == "fork-exec":
+        if not (_supports_posix_controls() and hasattr(os, "fork")):
+            raise RuntimeError("CLAW_LAUNCH_MODE=fork-exec requires POSIX os.fork")
+        return _run_forkexec(endpoint, execution_id, token)
+    if mode != "subprocess":
+        raise ValueError(f"unsupported CLAW_LAUNCH_MODE: {mode!r}")
+    return _run_subprocess(endpoint, execution_id, token)
+
+
+def _selected_launch_mode() -> str:
+    return os.environ.get("CLAW_LAUNCH_MODE", "subprocess").strip().lower()
+
+
+def launcher_diagnostics() -> dict[str, Any]:
+    mode = _selected_launch_mode()
+    fork_supported = _supports_posix_controls() and hasattr(os, "fork")
+    payload_env = _payload_environment()
+    payload_path = payload_env.get("PATH", "")
+    return {
+        "mode": mode,
+        "fork_supported": fork_supported,
+        "ready": mode == "subprocess" or (mode == "fork-exec" and fork_supported),
+        "payload_path": payload_path,
+        "payload_python3": which("python3", path=payload_path),
+        "payload_pip": which("pip", path=payload_path),
+        "payload_pip3": which("pip3", path=payload_path),
+    }
+
+
+def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
+    """Fork+exec path: the child becomes the command, parent reports exit."""
+    launcher_pid = os.getpid()
+    claim = _post_json(
+        endpoint, "/v2/executions/claim",
+        {"execution_id": execution_id, "token": token, "launcher_pid": launcher_pid},
+    )
+    command = str(claim["command"])
+    workdir = claim.get("workdir")
+    cwd = str(workdir) if isinstance(workdir, str) and workdir else None
+    update_token = str(claim["update_token"])
+
+    pid = os.fork()
+    if pid == 0:
+        # ── Child: become the payload command ──────────────────────
+        try:
+            if cwd:
+                os.chdir(cwd)
+            child_pid = os.getpid()
+            started_response = _post_started(
+                endpoint,
+                execution_id=execution_id,
+                update_token=update_token,
+                launcher_pid=launcher_pid,
+                child_pid=child_pid,
+                cgroup_path=None,
+                host_cgroup_gate=False,
+            )
+            if started_response.get("stored") is not True:
+                raise RuntimeError(
+                    "sidecar did not acknowledge the forked execution start"
+                )
+            os.execve(
+                "/bin/sh",
+                ["/bin/sh", "-c", command],
+                _payload_environment(),
+            )
+        except BaseException as exc:
+            if _env_enabled("CLAW_LAUNCH_DEBUG"):
+                print(
+                    "claw-launch child debug: "
+                    f"{type(exc).__name__}: {_redact_debug_message(str(exc))}",
+                    file=sys.stderr,
+                )
+        os._exit(126)
+
+    # ── Parent: wait for child, report exit status ─────────────────
+    restore_signal_handlers = _install_fork_signal_forwarders(pid)
+    try:
+        while True:
+            try:
+                _, status = os.waitpid(pid, 0)
+                break
+            except InterruptedError:
+                continue
+    except OSError:
+        return 1
+    finally:
+        restore_signal_handlers()
+    if os.WIFEXITED(status):
+        exit_code = os.WEXITSTATUS(status)
+        term_signal = None
+    elif os.WIFSIGNALED(status):
+        exit_code = None
+        term_signal = os.WTERMSIG(status)
+    else:
+        exit_code = None
+        term_signal = None
+    _post_json_best_effort(
+        endpoint, f"/v2/executions/{execution_id}/exited",
+        {"update_token": update_token, "exit_code": exit_code, "signal": term_signal},
+    )
+    return exit_code if exit_code is not None else _shell_exit_code(-int(term_signal or 1))
+
+
+def _install_fork_signal_forwarders(child_pid: int) -> Callable[[], None]:
+    """Forward launcher cancellation to a forked payload and return cleanup."""
+
+    previous: dict[int, Any] = {}
+
+    def forward(signum: int, _frame: Any) -> None:
+        try:
+            os.kill(child_pid, signum)
+        except OSError:
+            pass
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        try:
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, forward)
+        except (OSError, ValueError):
+            continue
+
+    def restore() -> None:
+        for signum, handler in previous.items():
+            try:
+                signal.signal(signum, handler)
+            except (OSError, ValueError):
+                pass
+
+    return restore
+
+
+def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
+    """Subprocess fallback: original spawn-wait-report behavior (cgroup,
+    placement, systemd scope support).  Used on Windows and in tests."""
     launcher_pid = os.getpid()
     claim = _post_json(
         endpoint,
@@ -74,29 +227,30 @@ def run_execution(endpoint: str, execution_id: str, token: str) -> int:
             launcher_pid=launcher_pid,
             child_pid=launcher_pid,
             cgroup_path=cgroup_path,
+            host_cgroup_gate=False,
         )
 
-    child = _spawn_shell(command, cwd, cgroup_path=cgroup_path, affinity_cpus=affinity_cpus)
-    # Track whether we own this cgroup (created by us) or are borrowing
-    # a pre-existing one (e.g. Docker container's read-only cgroup).
+    release_gate: Callable[[], None] | None = None
+    use_host_cgroup_gate = cgroup_path is None and _host_cgroup_gate_enabled(profiling)
+    if use_host_cgroup_gate:
+        child, release_gate = _spawn_shell_gated(command, cwd, affinity_cpus=affinity_cpus)
+    else:
+        child = _spawn_shell(command, cwd, cgroup_path=cgroup_path, affinity_cpus=affinity_cpus)
     cgroup_owned = cgroup_path is not None
     try:
         if cgroup_owned:
             if not _join_child_cgroup(child.pid, cgroup_path):
                 fallback = _restart_in_systemd_scope(
-                    child,
-                    command,
-                    cwd,
+                    child, command, cwd,
                     execution_id=execution_id,
-                    affinity_cpus=affinity_cpus,
-                    profiling=profiling,
+                    affinity_cpus=affinity_cpus, profiling=profiling,
                     on_cgroup_ready=lambda pid, path: _post_started(
                         endpoint,
                         execution_id=execution_id,
                         update_token=update_token,
                         launcher_pid=launcher_pid,
-                        child_pid=pid,
-                        cgroup_path=path,
+                        child_pid=pid, cgroup_path=path,
+                        host_cgroup_gate=False,
                     ),
                 )
                 if fallback is None:
@@ -113,20 +267,24 @@ def run_execution(endpoint: str, execution_id: str, token: str) -> int:
             _cleanup_cgroup(cgroup_path)
         raise
     _install_signal_forwarders(child)
-    _post_started(
+    started_response = _post_started(
         endpoint,
-        execution_id=execution_id,
-        update_token=update_token,
-        launcher_pid=launcher_pid,
-        child_pid=child.pid,
+        execution_id=execution_id, update_token=update_token,
+        launcher_pid=launcher_pid, child_pid=child.pid,
         cgroup_path=cgroup_path,
+        host_cgroup_gate=use_host_cgroup_gate,
     )
+    if cgroup_path is None and isinstance(started_response, dict):
+        response_cgroup = started_response.get("cgroup_path")
+        if isinstance(response_cgroup, str) and response_cgroup:
+            cgroup_path = response_cgroup
+    if release_gate is not None:
+        release_gate()
     returncode = child.wait()
     exit_code = returncode if returncode >= 0 else None
     term_signal = -returncode if returncode < 0 else None
     _post_json_best_effort(
-        endpoint,
-        f"/v2/executions/{execution_id}/exited",
+        endpoint, f"/v2/executions/{execution_id}/exited",
         {"update_token": update_token, "exit_code": exit_code, "signal": term_signal},
     )
     _cleanup_cgroup(cgroup_path) if cgroup_owned else None
@@ -142,7 +300,7 @@ def _spawn_shell(
 ) -> subprocess.Popen[bytes]:
     if _supports_posix_controls():
         return subprocess.Popen(
-            ["/bin/sh", "-lc", command],
+            ["/bin/sh", "-c", command],
             cwd=cwd,
             env=_payload_environment(),
             preexec_fn=_child_preexec(cgroup_path, affinity_cpus),
@@ -158,8 +316,9 @@ def _post_started(
     launcher_pid: int,
     child_pid: int,
     cgroup_path: str | None,
-) -> None:
-    _post_json_best_effort(
+    host_cgroup_gate: bool,
+) -> dict[str, Any]:
+    return _post_json_best_effort(
         endpoint,
         f"/v2/executions/{execution_id}/started",
         {
@@ -170,8 +329,67 @@ def _post_started(
             "cgroup_path": cgroup_path,
             "pid_namespace_inode": _pid_namespace_inode(child_pid),
             "container_id": _detect_container_id(),
+            "host_cgroup_gate": host_cgroup_gate,
         },
     )
+
+
+def _spawn_shell_gated(
+    command: str,
+    cwd: str | None,
+    *,
+    affinity_cpus: set[int] | None = None,
+) -> tuple[subprocess.Popen[bytes], Callable[[], None]]:
+    if not _supports_posix_controls():
+        return _spawn_shell(command, cwd, affinity_cpus=affinity_cpus), lambda: None
+    read_fd, write_fd = os.pipe()
+    released = False
+
+    def release() -> None:
+        nonlocal released
+        if released:
+            return
+        released = True
+        try:
+            os.write(write_fd, b"1")
+        except OSError:
+            pass
+        try:
+            os.close(write_fd)
+        except OSError:
+            pass
+
+    child = subprocess.Popen(
+        ["/bin/sh", "-c", command],
+        cwd=cwd,
+        env=_payload_environment(),
+        preexec_fn=_gated_child_preexec(read_fd, affinity_cpus),
+        pass_fds=(read_fd,),
+    )
+    try:
+        os.close(read_fd)
+    except OSError:
+        pass
+    return child, release
+
+
+def _gated_child_preexec(read_fd: int, affinity_cpus: set[int] | None):
+    def preexec() -> None:
+        if affinity_cpus and hasattr(os, "sched_setaffinity"):
+            try:
+                os.sched_setaffinity(0, affinity_cpus)
+            except OSError:
+                pass
+        try:
+            os.read(read_fd, 1)
+        except OSError:
+            pass
+        try:
+            os.close(read_fd)
+        except OSError:
+            pass
+
+    return preexec
 
 
 def _restart_in_systemd_scope(
@@ -203,7 +421,7 @@ def _restart_in_systemd_scope(
         'else printf "%s" "/sys/fs/cgroup" > "$CLAW_SYSTEMD_CGROUP_FILE"; fi; '
         'i=0; while [ ! -e "$CLAW_SYSTEMD_RELEASE_FILE" ] && [ "$i" -lt 500 ]; do '
         'i=$((i+1)); sleep 0.01; done; rm -f "$CLAW_SYSTEMD_RELEASE_FILE"; '
-        'exec /bin/sh -lc "$CLAW_SYSTEMD_PAYLOAD"'
+        'exec /bin/sh -c "$CLAW_SYSTEMD_PAYLOAD"'
     )
     env = _payload_environment()
     env["CLAW_SYSTEMD_PAYLOAD"] = command
@@ -219,7 +437,7 @@ def _restart_in_systemd_scope(
         "-p",
         "Delegate=yes",
         "/bin/sh",
-        "-lc",
+        "-c",
         wrapper,
     ]
     try:
@@ -255,6 +473,13 @@ def _systemd_scope_fallback_enabled(profiling: object) -> bool:
     if raw is not None:
         return raw.lower() not in {"0", "false", "no", "off"}
     return _enabled(profiling, "enable_cgroup", False)
+
+
+def _host_cgroup_gate_enabled(profiling: object) -> bool:
+    raw = os.environ.get("CLAW_HOST_CGROUP_GATE")
+    if raw is not None:
+        return raw.lower() not in {"0", "false", "no", "off"}
+    return _sidecar_is_remote() and _enabled(profiling, "enable_cgroup", False)
 
 
 def _systemd_unit_cgroup_path(unit: str) -> str | None:
@@ -300,10 +525,6 @@ def _unlink_best_effort(path: str) -> None:
 
 def _child_preexec(cgroup_path: str | None, affinity_cpus: set[int] | None):
     def preexec() -> None:
-        try:
-            os.setsid()
-        except OSError:
-            pass
         if cgroup_path:
             try:
                 _write_file(Path(cgroup_path) / "cgroup.procs", str(os.getpid()))
@@ -332,14 +553,41 @@ def _install_signal_forwarders(child: subprocess.Popen[bytes]) -> None:
         signal.signal(signum, forward)
 
 
-def _post_json_best_effort(endpoint: str, path: str, payload: dict[str, Any]) -> None:
+def _post_json_best_effort(endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if path.endswith("/exited"):
+        # Exit delivery closes the eBPF collector, so tolerate a short local
+        # sidecar race without ever delaying command return for tens of
+        # seconds. The opaque update token stays only in the request body and
+        # is never included in diagnostics.
+        for attempt in range(_EXIT_REPORT_ATTEMPTS):
+            try:
+                return _post_json_with_timeout(
+                    endpoint,
+                    path,
+                    payload,
+                    timeout_seconds=_EXIT_REPORT_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                if attempt + 1 < _EXIT_REPORT_ATTEMPTS:
+                    time.sleep(_EXIT_REPORT_RETRY_DELAY_SECONDS)
+        return {}
     try:
-        _post_json(endpoint, path, payload)
+        return _post_json(endpoint, path, payload)
     except Exception:
-        pass
+        return {}
 
 
 def _post_json(endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return _post_json_with_timeout(endpoint, path, payload, timeout_seconds=10.0)
+
+
+def _post_json_with_timeout(
+    endpoint: str,
+    path: str,
+    payload: dict[str, Any],
+    *,
+    timeout_seconds: float,
+) -> dict[str, Any]:
     data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     request = urllib.request.Request(
         endpoint.rstrip("/") + path,
@@ -351,7 +599,7 @@ def _post_json(endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, A
     if bearer:
         request.add_header("authorization", f"Bearer {bearer}")
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             raw = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
@@ -424,6 +672,12 @@ def _detect_container_id() -> str | None:
         detected = _normalize_container_id(value)
         if detected is not None:
             return detected
+    try:
+        detected = _container_id_from_text(Path("/proc/self/cgroup").read_text(encoding="utf-8"))
+    except OSError:
+        detected = None
+    if detected is not None:
+        return detected
     return None
 
 
@@ -438,7 +692,7 @@ def _normalize_container_id(value: str | None) -> str | None:
 
 def _container_id_from_text(value: str) -> str | None:
     for part in value.replace("\\", "/").split("/"):
-        token = part
+        token = part.strip()
         for prefix in ("docker-", "cri-containerd-", "crio-"):
             if token.startswith(prefix):
                 token = token[len(prefix):]
@@ -510,9 +764,15 @@ def _prepare_cgroup(
     # sub-cgroups, but we CAN read cpu.stat / memory.current / io.stat from
     # the container's existing cgroup.  The sidecar sampler only reads; it
     # never writes.
+    #
+    # When the sidecar runs on a different host (host-openclaw-sandbox mode),
+    # the container's cgroup view is not valid on the host side.  Return None
+    # and let the sidecar discover the correct host cgroup path independently.
     if not required:
         borrowed = _read_self_cgroup_path()
         if borrowed is not None:
+            if _sidecar_is_remote():
+                return None
             return borrowed
 
     if required:
@@ -841,7 +1101,41 @@ def _payload_environment() -> dict[str, str]:
         "OPENCLAW_SCHEDULER_TOKEN",
     ):
         env.pop(key, None)
+    launcher_pythonpath = env.pop("CLAW_LAUNCHER_PYTHONPATH", None)
+    if launcher_pythonpath:
+        payload_pythonpath = [
+            entry
+            for entry in env.get("PYTHONPATH", "").split(os.pathsep)
+            if entry and entry != launcher_pythonpath
+        ]
+        if payload_pythonpath:
+            env["PYTHONPATH"] = os.pathsep.join(payload_pythonpath)
+        else:
+            env.pop("PYTHONPATH", None)
     return env
+
+
+def _sidecar_is_remote() -> bool:
+    """Return True when the sidecar endpoint points to a different host.
+
+    When claw-launch runs inside a Docker container and the sidecar is on
+    the host (reachable through a host-gateway address), the container's
+    cgroup view from /proc/self/cgroup is meaningless to the sidecar.
+    The sidecar must discover the host cgroup path independently via
+    sandbox-scope discovery or ``docker inspect``.
+    """
+    endpoint = (
+        os.environ.get("CLAW_SCHEDULER_ENDPOINT")
+        or os.environ.get("OPENCLAW_SCHEDULER_ENDPOINT")
+        or ""
+    )
+    remote_markers = (
+        "host.docker.internal",
+        "host.containers.internal",
+        "gateway.docker.internal",
+        "host-gateway",
+    )
+    return any(marker in endpoint for marker in remote_markers)
 
 
 def _redact_debug_message(message: str) -> str:

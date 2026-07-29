@@ -13,9 +13,14 @@ from typing import Any
 from agent_scheduler.contracts.models import ToolBeforeRequest, ToolCompletedEvent, ToolPrediction
 from agent_scheduler.monitoring.tool_runtime import ToolRuntimeSample
 from agent_scheduler.tool_resource_commands import extract_command
-from tool_resource.features import parse_command_clauses
+from tool_resource.features import (
+    parse_command_clauses,
+    shell_bin_requires_exec_evidence,
+)
 from tool_resource.metrics import ecdf_quantile
 from tool_resource.runtime_kb import (
+    ClauseLatencyBucketOutcome,
+    ClauseLatencyBucketPrediction,
     ClauseObservation,
     ClauseResourceKB,
     CommandLatencyBucketPrediction,
@@ -235,6 +240,7 @@ class ToolResourcePredictor:
                 self.buckets,
                 command=command or request.tool_name,
                 parse_failed=parse_failed,
+                shell_command=request.tool_name == "exec",
             )
         except Exception as exc:
             continuous_predictions = self._continuous_predictions_for_request(
@@ -346,10 +352,15 @@ class ToolResourcePredictor:
         container_id: str | None,
         repo: str | None = None,
         cgroup_path: str | None = None,
+        trusted_root_pid: int | None = None,
     ) -> bool:
         if execution_id in self._runs_by_execution_id:
             existing = self._runs_by_execution_id[execution_id]
             observer = getattr(existing, "_observer", None)
+            if trusted_root_pid is not None:
+                bind_root = getattr(observer, "bind_trusted_root", None)
+                if callable(bind_root):
+                    bind_root(trusted_root_pid)
             return bool(getattr(observer, "telemetry_available", True))
         previous = self._telemetry_by_execution_id.get(execution_id)
         if previous is not None and previous.started:
@@ -376,6 +387,7 @@ class ToolResourcePredictor:
             repo=repo or self.repo,
             artifact_path=artifact_path,
             cgroup_path=cgroup_path,
+            trusted_root_pid=trusted_root_pid,
         )
         try:
             run = self._sdk.start_command(context, tool_call_id or execution_id, command)
@@ -415,7 +427,16 @@ class ToolResourcePredictor:
         execution_id: str,
         exit_code: int | None,
         signal: int | None,
+        raw_result: Any | None = None,
+        succeeded: bool | None = None,
+        incomplete_reason: str | None = None,
     ) -> ExecutionTelemetrySummary:
+        if incomplete_reason is not None and (
+            exit_code is not None or signal is not None
+        ):
+            raise ValueError(
+                "incomplete Stage-2 finalization cannot carry launcher exit status"
+            )
         run = self._runs_by_execution_id.pop(execution_id, None)
         if run is None:
             return self._telemetry_by_execution_id.get(
@@ -429,8 +450,19 @@ class ToolResourcePredictor:
                     unavailable_reason="no_active_stage2_run",
                 ),
             )
-        replay_execution = "completed" if exit_code == 0 and signal is None else "failed"
-        workload_result = {"exit_code": exit_code, "signal": signal}
+        replay_execution = (
+            "incomplete"
+            if incomplete_reason is not None
+            else ("completed" if exit_code == 0 and signal is None else "failed")
+        )
+        workload_result = _stage2_workload_result(
+            raw_result,
+            exit_code=exit_code,
+            signal=signal,
+            # A terminal OpenClaw hook is not an authoritative process exit.
+            # Do not copy its optimistic success bit into an orphaned run.
+            succeeded=None if incomplete_reason is not None else succeeded,
+        )
         try:
             result = self._sdk.finish_command(
                 run,
@@ -438,13 +470,17 @@ class ToolResourcePredictor:
                 replay_execution=replay_execution,
             )
         except Exception as exc:
+            finish_error = f"finish_failed:{type(exc).__name__}: {exc}"
             summary = ExecutionTelemetrySummary(
                 execution_id=execution_id,
                 tool_call_id=run.tool_call_id,
                 artifact_path=str(run._observer.context.artifact_path),
                 started=True,
                 status="unavailable",
-                unavailable_reason=f"finish_failed:{type(exc).__name__}: {exc}",
+                unavailable_reason=incomplete_reason or finish_error,
+                kb_update_error=(
+                    finish_error if incomplete_reason is not None else None
+                ),
             )
             self._telemetry_by_execution_id[execution_id] = summary
             return summary
@@ -460,11 +496,23 @@ class ToolResourcePredictor:
             tool_call_id=run.tool_call_id,
             artifact_path=str(run._observer.context.artifact_path),
             started=True,
-            status=_stage2_status(result.telemetry_artifact, call_telemetry, result.kb_update_error),
-            unavailable_reason=_stage2_unavailable_reason(
-                result.telemetry_artifact,
-                call_telemetry,
-                result.kb_update_error,
+            status=(
+                "unavailable"
+                if incomplete_reason is not None
+                else _stage2_status(
+                    result.telemetry_artifact,
+                    call_telemetry,
+                    result.kb_update_error,
+                )
+            ),
+            unavailable_reason=(
+                incomplete_reason
+                if incomplete_reason is not None
+                else _stage2_unavailable_reason(
+                    result.telemetry_artifact,
+                    call_telemetry,
+                    result.kb_update_error,
+                )
             ),
             kb_observations_added=result.kb_observations_added,
             kb_update_error=result.kb_update_error,
@@ -476,6 +524,11 @@ class ToolResourcePredictor:
 
     def execution_telemetry(self, execution_id: str) -> ExecutionTelemetrySummary | None:
         return self._telemetry_by_execution_id.get(execution_id)
+
+    def execution_active(self, execution_id: str) -> bool:
+        """Return whether this execution still owns an unfinished SDK run."""
+
+        return execution_id in self._runs_by_execution_id
 
     def _persist_clause_kb(self) -> bool:
         if self.clause_kb_snapshot_path is None:
@@ -865,6 +918,81 @@ def _stage2_completed_call(repo: str, row: Any) -> CompletedCall | None:
     )
 
 
+def _stage2_workload_result(
+    raw_result: Any,
+    *,
+    exit_code: int | None,
+    signal: int | None,
+    succeeded: bool | None,
+) -> dict[str, Any]:
+    """Build the bounded live-result envelope consumed by Stage-2.
+
+    The launcher supplies the authoritative exit status, while OpenClaw's
+    completion hook supplies stdout/stderr.  Keeping both lets the clause
+    bridge prove command-lookup failures even when a pipeline's final command
+    masks an earlier exit 127.
+    """
+
+    result = _stage2_result_text(raw_result)
+    stderr = _stage2_named_text(raw_result, "stderr")
+    return {
+        "exit_code": exit_code,
+        "signal": signal,
+        "ok": (
+            succeeded
+            if succeeded is not None
+            else exit_code == 0 and signal is None
+        ),
+        "result": _bounded_stage2_text(result),
+        "stderr": _bounded_stage2_text(stderr),
+    }
+
+
+def _stage2_result_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, Mapping):
+        return ""
+    details = value.get("details")
+    for container in (details, value):
+        if not isinstance(container, Mapping):
+            continue
+        for key in ("aggregated", "stdout", "text"):
+            text = container.get(key)
+            if isinstance(text, str) and text:
+                return text
+    content = value.get("content")
+    if isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
+        parts = [
+            item.get("text")
+            for item in content
+            if isinstance(item, Mapping) and isinstance(item.get("text"), str)
+        ]
+        if parts:
+            return "\n".join(parts)
+    nested = value.get("result")
+    return _stage2_result_text(nested) if nested is not value else ""
+
+
+def _stage2_named_text(value: Any, key: str) -> str:
+    if not isinstance(value, Mapping):
+        return ""
+    details = value.get("details")
+    for container in (details, value):
+        if isinstance(container, Mapping):
+            text = container.get(key)
+            if isinstance(text, str) and text:
+                return text
+    return ""
+
+
+def _bounded_stage2_text(value: str, limit: int = 65_536) -> str:
+    encoded = value.encode("utf-8", errors="replace")
+    if len(encoded) <= limit:
+        return value
+    return encoded[:limit].decode("utf-8", errors="ignore")
+
+
 def _stage2_status(
     artifact: Any,
     call_telemetry: Mapping[str, Any] | None,
@@ -944,6 +1072,7 @@ def _compact_artifact_summary(artifact: Any) -> dict[str, Any] | None:
         "schema": artifact.get("schema"),
         "schema_version": artifact.get("version"),
         "mode": artifact.get("mode"),
+        "replay_execution": artifact.get("replay_execution"),
         "collector": artifact.get("collector"),
         "container_id": artifact.get("container_id"),
         "telemetry_quality": artifact.get("telemetry_quality"),
@@ -1146,21 +1275,35 @@ def _tool_resource_prediction_payload(
         "command": prediction.command,
         "parse_failed": prediction.parse_failed,
         "clause_bins": list(prediction.clause_bins),
-        "prediction": (
-            None
-            if clause_prediction is None
-            else {
-                "bucket_id": clause_prediction.bucket_id,
-                "probability_by_bucket": list(clause_prediction.probability_by_bucket),
-                "scope": clause_prediction.scope,
-                "key_kind": clause_prediction.key_kind,
-                "evidence_count": clause_prediction.evidence_count,
-                "fallback_path": list(clause_prediction.fallback_path),
+        "clause_predictions": [
+            {
+                "clause_index": item.clause_index,
+                "bin": item.bin,
+                "argv": list(item.argv),
+                "prediction": _clause_bucket_prediction_payload(item.prediction),
+                "unavailable_reason": item.unavailable_reason,
             }
-        ),
+            for item in prediction.clause_predictions
+        ],
+        "prediction": _clause_bucket_prediction_payload(clause_prediction),
         "unavailable_reason": prediction.unavailable_reason,
         "continuous_predictions": continuous_predictions or {},
         "prediction_algorithms": _prediction_algorithms_payload(),
+    }
+
+
+def _clause_bucket_prediction_payload(
+    prediction: ClauseLatencyBucketPrediction | None,
+) -> dict[str, Any] | None:
+    if prediction is None:
+        return None
+    return {
+        "bucket_id": prediction.bucket_id,
+        "probability_by_bucket": list(prediction.probability_by_bucket),
+        "scope": prediction.scope,
+        "key_kind": prediction.key_kind,
+        "evidence_count": prediction.evidence_count,
+        "fallback_path": list(prediction.fallback_path),
     }
 
 
@@ -1182,6 +1325,18 @@ def _unavailable_prediction_for_request(
         clause_bins=tuple(str(clause["bin"]) for clause in clauses),
         prediction=None,
         unavailable_reason=reason,
+        clause_predictions=tuple(
+            ClauseLatencyBucketOutcome(
+                clause_index=index,
+                bin=str(clause["bin"]),
+                argv=tuple(clause["argv"]),
+                prediction=None,
+                unavailable_reason=reason,
+            )
+            for index, clause in enumerate(clauses)
+            if request.tool_name != "exec"
+            or shell_bin_requires_exec_evidence(str(clause["bin"]))
+        ),
     )
 
 
