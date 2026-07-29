@@ -7,6 +7,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 import tempfile
 import urllib.error
@@ -136,6 +137,9 @@ def run_execution(endpoint: str, execution_id: str, token: str) -> int:
     if release_gate is not None:
         release_gate()
     returncode = child.wait()
+    # Collect captured child output and forward to parent stdout/stderr
+    # so that the sandbox runtime (e.g. docker exec) can observe it.
+    _collect_and_forward_output(child)
     exit_code = returncode if returncode >= 0 else None
     term_signal = -returncode if returncode < 0 else None
     _post_json_best_effort(
@@ -154,14 +158,116 @@ def _spawn_shell(
     cgroup_path: str | None = None,
     affinity_cpus: set[int] | None = None,
 ) -> subprocess.Popen[bytes]:
-    if _supports_posix_controls():
-        return subprocess.Popen(
-            ["/bin/sh", "-c", command],
-            cwd=cwd,
-            env=_payload_environment(),
-            preexec_fn=_child_preexec(cgroup_path, affinity_cpus),
-        )
-    return subprocess.Popen(command, cwd=cwd, env=_payload_environment(), shell=True)
+    """Spawn a shell command, capturing stdout/stderr for telemetry.
+
+    Returns a ``Popen`` instance whose ``.captured_stdout`` and
+    ``.captured_stderr`` attributes will contain the child's output
+    after ``.wait()`` completes.  The captured output is also written
+    to the parent's original stdout/stderr so that Docker exec /
+    sandbox runtimes can observe it inline.
+    """
+    if not _supports_posix_controls():
+        return subprocess.Popen(command, cwd=cwd, env=_payload_environment(), shell=True)
+
+    # Capture child output so we can forward it regardless of how the
+    # sandbox runtime (e.g. docker exec) handles process stdout.
+    child = subprocess.Popen(
+        ["/bin/sh", "-c", command],
+        cwd=cwd,
+        env=_payload_environment(),
+        preexec_fn=_child_preexec(cgroup_path, affinity_cpus),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    # Read stdout/stderr in background threads to avoid deadlock when
+    # the child produces more output than the pipe buffer.
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+    t_out: threading.Thread | None = None
+    t_err: threading.Thread | None = None
+
+    if getattr(child, "stdout", None) is not None:
+
+        def _read_out(pipe: Any, chunks: list[bytes]) -> None:
+            try:
+                while True:
+                    data = pipe.read(65536)
+                    if not data:
+                        break
+                    chunks.append(data)
+            except (OSError, ValueError):
+                pass
+            finally:
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
+
+        t_out = threading.Thread(target=_read_out, args=(child.stdout, stdout_chunks), daemon=True)
+        t_out.start()
+
+    if getattr(child, "stderr", None) is not None:
+
+        def _read_err(pipe: Any, chunks: list[bytes]) -> None:
+            try:
+                while True:
+                    data = pipe.read(65536)
+                    if not data:
+                        break
+                    chunks.append(data)
+            except (OSError, ValueError):
+                pass
+            finally:
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
+
+        t_err = threading.Thread(target=_read_err, args=(child.stderr, stderr_chunks), daemon=True)
+        t_err.start()
+
+    # Attach captured output and reader threads to the Popen object so
+    # the caller can collect results after wait().
+    child._stdout_chunks = stdout_chunks  # type: ignore[attr-defined]
+    child._stderr_chunks = stderr_chunks  # type: ignore[attr-defined]
+    child._stdout_thread = t_out  # type: ignore[attr-defined]
+    child._stderr_thread = t_err  # type: ignore[attr-defined]
+    child.captured_stdout = b""  # type: ignore[attr-defined]
+    child.captured_stderr = b""  # type: ignore[attr-defined]
+    return child
+
+
+def _collect_and_forward_output(child: subprocess.Popen[bytes]) -> None:
+    """Join output reader threads and forward captured output to parent fds.
+
+    Must be called after ``child.wait()`` so the child's pipes are closed.
+    """
+    stdout_thread = getattr(child, "_stdout_thread", None)
+    stderr_thread = getattr(child, "_stderr_thread", None)
+    if stdout_thread is not None:
+        stdout_thread.join(timeout=5)
+    if stderr_thread is not None:
+        stderr_thread.join(timeout=5)
+    stdout_chunks: list[bytes] = getattr(child, "_stdout_chunks", [])
+    stderr_chunks: list[bytes] = getattr(child, "_stderr_chunks", [])
+    captured_stdout = b"".join(stdout_chunks)
+    captured_stderr = b"".join(stderr_chunks)
+    child.captured_stdout = captured_stdout  # type: ignore[attr-defined]
+    child.captured_stderr = captured_stderr  # type: ignore[attr-defined]
+    # Forward to the parent's stdout/stderr so that the sandbox runtime
+    # (Docker exec, etc.) can observe command output inline.
+    try:
+        if captured_stdout:
+            sys.stdout.buffer.write(captured_stdout)
+            sys.stdout.buffer.flush()
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        if captured_stderr:
+            sys.stderr.buffer.write(captured_stderr)
+            sys.stderr.buffer.flush()
+    except (OSError, ValueError, AttributeError):
+        pass
 
 
 def _post_started(
@@ -221,11 +327,66 @@ def _spawn_shell_gated(
         env=_payload_environment(),
         preexec_fn=_gated_child_preexec(read_fd, affinity_cpus),
         pass_fds=(read_fd,),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
     try:
         os.close(read_fd)
     except OSError:
         pass
+
+    # Capture output in background threads (same pattern as _spawn_shell).
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+    t_out: threading.Thread | None = None
+    t_err: threading.Thread | None = None
+
+    if getattr(child, "stdout", None) is not None:
+
+        def _read_out(pipe: Any, chunks: list[bytes]) -> None:
+            try:
+                while True:
+                    data = pipe.read(65536)
+                    if not data:
+                        break
+                    chunks.append(data)
+            except (OSError, ValueError):
+                pass
+            finally:
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
+
+        t_out = threading.Thread(target=_read_out, args=(child.stdout, stdout_chunks), daemon=True)
+        t_out.start()
+
+    if getattr(child, "stderr", None) is not None:
+
+        def _read_err(pipe: Any, chunks: list[bytes]) -> None:
+            try:
+                while True:
+                    data = pipe.read(65536)
+                    if not data:
+                        break
+                    chunks.append(data)
+            except (OSError, ValueError):
+                pass
+            finally:
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
+
+        t_err = threading.Thread(target=_read_err, args=(child.stderr, stderr_chunks), daemon=True)
+        t_err.start()
+
+    child._stdout_chunks = stdout_chunks  # type: ignore[attr-defined]
+    child._stderr_chunks = stderr_chunks  # type: ignore[attr-defined]
+    child._stdout_thread = t_out  # type: ignore[attr-defined]
+    child._stderr_thread = t_err  # type: ignore[attr-defined]
+    child.captured_stdout = b""  # type: ignore[attr-defined]
+    child.captured_stderr = b""  # type: ignore[attr-defined]
     return child, release
 
 

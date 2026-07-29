@@ -2628,13 +2628,19 @@ def _pid_namespace_inode_for_pid(pid: int) -> int | None:
 def _discover_leaf_cgroup_inodes(cgroup: Path) -> set[int]:
     """Return inode numbers for *cgroup* and all related cgroups.
 
-    On Docker / cgroup v2 with systemd, ``docker exec`` often creates a
-    *sibling* transient scope under the same parent directory (e.g.
-    ``/sys/fs/cgroup/system.slice/``) rather than a *child* cgroup under
-    the container's scope.  The sibling and the container scope share a
-    common container-ID prefix in their directory names, so we scan the
-    parent directory for all entries with the same prefix in addition to
-    walking the descendant tree.
+    On Docker / cgroup v2 with systemd, ``docker exec`` often creates
+    transient scopes that may live in a different part of the cgroup
+    tree than the container's root scope.  We use three strategies:
+
+    1. Add the container root cgroup inode.
+    2. Walk all descendant cgroups.
+    3. Extract the container-id prefix from the cgroup directory name
+       and scan broadly for any cgroup directory (not just in the parent)
+       whose name contains that prefix.  This catches sibling scopes,
+       systemd transient scopes, and scopes in other slices.
+
+    The container-id is typically a 64-char hex string embedded in the
+    directory name after ``docker-`` or ``cri-containerd-``.
     """
     inodes: set[int] = set()
     try:
@@ -2653,11 +2659,87 @@ def _discover_leaf_cgroup_inodes(cgroup: Path) -> set[int]:
     except OSError:
         pass
 
-    # Sibling cgroups sharing the same container-id prefix
-    # (e.g. systemd transient scopes for docker exec).
-    _add_sibling_cgroup_inodes(cgroup, inodes)
+    # Broad scan: find ALL cgroup directories whose name contains the
+    # container-id substring (at least 12 hex chars).  This catches
+    # sibling scopes, systemd transient scopes in different slices, and
+    # any other container-related cgroups that are not descendants of
+    # the root scope.
+    _add_container_cgroup_inodes_broad(cgroup, inodes)
 
     return inodes
+
+
+def _add_container_cgroup_inodes_broad(
+    cgroup: Path,
+    inodes: set[int],
+) -> None:
+    """Scan the cgroup tree for directories related to the same container.
+
+    Extracts the longest hex substring from *cgroup*'s directory name and
+    searches all cgroup directories for names containing that substring.
+    Limited to 12+ hex chars to avoid false positives.
+    """
+    name = cgroup.name
+    # Extract the longest hex substring from the directory name.
+    # Docker scope names: docker-<64hex>.scope or docker-<64hex>.scope:<uuid>
+    # containerd: cri-containerd-<64hex>.scope
+    hex_substring = _longest_hex_substring(name)
+    if hex_substring is None or len(hex_substring) < 12:
+        # Fall back to prefix-based scan in the parent directory.
+        _add_sibling_cgroup_inodes(cgroup, inodes)
+        return
+
+    # Search from the cgroup root (max depth 4) and also from the
+    # container's parent directory.  Most systemd/Docker layouts put
+    # scopes within 3 levels of /sys/fs/cgroup.
+    cgroup_root = Path("/sys/fs/cgroup")
+    _scan_for_container_cgroups(cgroup_root, hex_substring, inodes, depth=3)
+    # Also search from the parent for sibling scopes (common pattern).
+    parent = cgroup.parent
+    if parent is not None and parent != cgroup_root:
+        _scan_for_container_cgroups(parent, hex_substring, inodes, depth=2)
+
+
+def _longest_hex_substring(name: str) -> str | None:
+    """Return the longest contiguous hex substring in *name*, or None."""
+    best = ""
+    current = ""
+    for ch in name:
+        if ch in "0123456789abcdefABCDEF":
+            current += ch
+        else:
+            if len(current) > len(best):
+                best = current
+            current = ""
+    if len(current) > len(best):
+        best = current
+    return best.lower() if len(best) >= 12 else None
+
+
+def _scan_for_container_cgroups(
+    root: Path,
+    hex_substring: str,
+    inodes: set[int],
+    *,
+    depth: int = 2,
+) -> None:
+    """Walk *root* up to *depth* levels, adding inodes of matching dirs."""
+    if depth <= 0:
+        return
+    try:
+        for entry in root.iterdir():
+            if not entry.is_dir():
+                continue
+            if hex_substring in entry.name.lower():
+                try:
+                    inodes.add(entry.stat().st_ino)
+                except OSError:
+                    pass
+            # Recurse one level for nested scopes (e.g. systemd transient).
+            if depth > 1:
+                _scan_for_container_cgroups(entry, hex_substring, inodes, depth=depth - 1)
+    except OSError:
+        pass
 
 
 def _add_sibling_cgroup_inodes(
@@ -2669,19 +2751,33 @@ def _add_sibling_cgroup_inodes(
     Docker scope names follow the pattern
     ``docker-<container_id>[(.<suffix>)].scope``.  Systemd transient scopes
     for ``docker exec`` are siblings of the container scope and share the
-    container-id prefix.
+    container-id prefix.  For containerd/cri-o the prefix may differ
+    (e.g. ``cri-containerd-<id>.scope``); we extract any common hex prefix.
     """
     parent = cgroup.parent
     if parent is None:
         return
-    # Extract the container-id prefix from the cgroup directory name.
-    # Typical name: "docker-8de5ac85ada8….scope"
-    # The sibling for exec might be "docker-8de5ac85ada8….scope" (different suffix)
-    # or a systemd transient like "docker-8de5ac85ada8….scope:<uuid>".
     name = cgroup.name
-    # Find the longest common prefix with other directory entries.
-    # We look for entries that share at least the first 32 hex chars of
-    # the container id (which always follows "docker-").
+    # Try to find a hex-based prefix of at least 12 chars to match
+    # container-id substrings in sibling directory names.
+    hex_substring = _longest_hex_substring(name)
+    if hex_substring is not None and len(hex_substring) >= 12:
+        try:
+            for entry in parent.iterdir():
+                if not entry.is_dir():
+                    continue
+                if entry == cgroup:
+                    continue
+                if hex_substring in entry.name.lower():
+                    try:
+                        inodes.add(entry.stat().st_ino)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        return
+
+    # Legacy: match on "docker-" prefix (at least 32 hex chars).
     if not name.startswith("docker-"):
         return
     try:
@@ -3277,6 +3373,33 @@ class ClauseTelemetryCollector:
                     cgroup_inodes=self.cgroup_inodes,
                     pid_namespace_inodes=self.pid_namespace_inodes,
                 )
+                # --- dynamic cgroup discovery ---
+                # Docker exec often creates transient cgroups (e.g., systemd
+                # scopes) that are not reachable from the container's root
+                # cgroup via directory traversal.  Collect every cgroup_id
+                # seen on events that belong to the container so subsequent
+                # calls can match these cgroups without relying solely on
+                # the static _discover_leaf_cgroup_inodes scan.
+                #
+                # Strategy 1: events whose host_pid is already in container_pids.
+                _dynamic_cgroups: set[int] = set()
+                for _e in self._events:
+                    _pid = _e.get("host_pid", 0)
+                    _cg = _e.get("cgroup_id", 0)
+                    if _pid > 0 and _pid in container_pids and _cg > 0:
+                        _dynamic_cgroups.add(_cg)
+                # Strategy 2: events whose pid_namespace_inode matches the
+                # container's (authoritative when available, catches events
+                # whose cgroup is not yet tracked).
+                if self.pid_namespace_inodes:
+                    for _e in self._events:
+                        _cg = _e.get("cgroup_id", 0)
+                        _ns = _e.get("pid_namespace_inode", 0)
+                        if _cg > 0 and _ns in self.pid_namespace_inodes:
+                            _dynamic_cgroups.add(_cg)
+                if _dynamic_cgroups - self.cgroup_inodes:
+                    self.cgroup_inodes |= _dynamic_cgroups
+                # --- end dynamic cgroup discovery ---
                 # --- diagnostic logging ---
                 import sys as _sys
                 _exec_cgroups: dict[int, int] = {}

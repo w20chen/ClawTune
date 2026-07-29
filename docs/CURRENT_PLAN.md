@@ -195,6 +195,128 @@ It must show:
 5. prediction availability becomes non-zero after causal evidence exists;
    the first cold-start command may correctly remain `unknown`.
 
+## 2026-07-29 Run Audit: Exec Output and eBPF Cgroup Fixes
+
+The `host-openclaw-sandbox` run on 2026-07-29 (trace `0b01001001__spectree-64`)
+exposed two critical bugs that made the agent non-functional:
+
+### BUG #1 (CRITICAL): exec commands produce no output
+
+**Symptom**: Every `exec` command (ls, pwd, find, python3) returns "Command
+still running" and when polled shows "(no new output)" or "(no output
+recorded)", eventually exiting code 0 after timeout. The agent cannot inspect
+the repository or run any commands.
+
+**Root cause**: The launcher (`_spawn_shell` in `launcher.py`) spawns the actual
+command as a child process inheriting stdout/stderr. In `host-openclaw-sandbox`
+mode, OpenClaw's Docker sandbox executes the launcher wrapper command via
+`docker exec`. The child's output goes to the same file descriptors, but
+OpenClaw's process management may not capture child output when the parent
+(launcher wrapper) is the tracked process, especially with `yieldMs`.
+
+**Fix** (`launcher.py`):
+- Modified `_spawn_shell` and `_spawn_shell_gated` to use `stdout=PIPE,
+  stderr=PIPE` and read output in background threads.
+- Added `_collect_and_forward_output()` that joins reader threads after
+  `child.wait()` and writes captured output to `sys.stdout.buffer` and
+  `sys.stderr.buffer`. This ensures the launcher process itself produces the
+  actual command output, making it visible to Docker exec's stdout capture.
+- Added `threading` import.
+
+### BUG #2 (CRITICAL): eBPF cgroup matching fails (matched=0)
+
+**Symptom**: Sidecar diagnostic shows `matched=0` for all exec calls:
+`exec_cgroup_dist=[(9294, 40), (1054166, 72)] cgroup_inodes=[1055862]`.
+All 9 clause telemetry artifacts show `telemetry_quality: "invalid"`,
+`clause_count: 0`, `no_exec_images`. No exec events are matched to the
+container.
+
+**Root cause**: The `_discover_leaf_cgroup_inodes()` function discovers the
+container's root cgroup inode (1055862) via directory scanning, but `docker
+exec` processes may run in different cgroups (9294, 1054166) that are not
+descendants of the root cgroup and not found by the sibling prefix scan.
+The BPF `target_cgroup` is already permissive (set to 0), but the Python-side
+event filter in `finish_tool_call` uses `self.cgroup_inodes` which only
+contains the initially discovered cgroups.
+
+**Fixes** (`telemetry.py`):
+
+1. **Rewrote `_discover_leaf_cgroup_inodes`** to use a more robust hex-substring
+   based broad scan:
+   - Added `_add_container_cgroup_inodes_broad()` which extracts the longest
+     hex substring (12+ chars) from the cgroup directory name and scans from
+     `/sys/fs/cgroup` root (depth 3) and the parent directory (depth 2).
+   - Added `_longest_hex_substring()` helper for flexible container-ID
+     extraction (works for Docker, containerd, CRI-O naming patterns).
+   - Added `_scan_for_container_cgroups()` for depth-limited recursive scanning.
+
+2. **Improved `_add_sibling_cgroup_inodes`** to use hex-substring matching
+   instead of requiring the "docker-" prefix. Falls back to the old logic
+   only when no hex substring is found.
+
+3. **Added dynamic cgroup discovery** in `finish_tool_call`:
+   - Strategy 1: Collect cgroup IDs from events whose `host_pid` is in the
+     container PID set.
+   - Strategy 2: Collect cgroup IDs from events whose `pid_namespace_inode`
+     matches the container's (authoritative when available).
+   - Both strategies expand `self.cgroup_inodes` for subsequent calls.
+
+### BUG #3: All 9 tool_resource artifacts unhealthy
+
+**Status**: Consequence of BUG #2. Should be resolved when BUG #2 is fixed.
+All artifacts showed `collector is not healthy` because no exec events were
+matched (`clause_count: 0`).
+
+### BUG #4: Docker container name conflict on cleanup
+
+**Symptom**: During CLI transcript compaction after Ctrl+C:
+`Error response from daemon: Conflict. The container name
+"/claw-srb-027da119b819-agent-main-main-6d9217fe" is already in use`.
+
+**Root cause**: OpenClaw's CLI compaction tries to create a new container with
+the session's container name, which already exists. This is triggered when the
+user aborts the agent (via Ctrl+C) after BUG #1 makes progress impossible.
+
+**Status**: Secondary issue — fixing BUG #1 eliminates the need to abort.
+Container cleanup (`_cleanup_openclaw_sandbox_containers`) already runs before
+each task.
+
+### BUG #5: launcher_tool_resource_eligible_span_ends: 0
+
+**Status**: Consequence of BUG #2 and BUG #3. All tool_resource status is
+"invalid" so no predictions are eligible. Should be resolved by BUG #2 fix.
+
+### BUG #6: tool_resource_prediction_available_ratio: 0.278
+
+**Status**: Only 5/18 predictions had evidence (all continuous predictions,
+no clause-based predictions). This is expected for a cold start. Should
+improve after BUG #2 fix when clause telemetry starts collecting data.
+
+### BUG #7: docker_exec_pid_tool_span_ends: 0
+
+**Symptom**: No Docker exec PIDs were captured for tool attribution.
+All 18 spans fall back to `shared_sandbox_container` attribution.
+
+**Root cause**: The Docker exec observer starts before the sandbox container
+ID is discovered. In `host-openclaw-sandbox` mode, the container ID is set
+asynchronously by `_discover_sandbox_scope_loop`. Initial Docker events may
+be missed.
+
+**Status**: Secondary issue. When BUG #1 is fixed and exec commands work,
+the Docker exec PID matching should be re-evaluated with a working run.
+
+### Validation Commands Not Run (Windows)
+
+The same validation commands from the previous section remain not runnable.
+The Linux host-sandbox end-to-end test is the definitive acceptance gate.
+
+```bash
+sudo -E env "PATH=$PATH" "$(command -v python3)" \
+  -m swe_rebench.runner run --config swe_rebench/config.yaml \
+  --prepare --dataset swe_rebench/tasks.json --sample 1 --export \
+  --runtime-mode host-openclaw-sandbox
+```
+
 ## Not Run Locally
 
 - `python tools/validate_agent_test_bench_run.py
