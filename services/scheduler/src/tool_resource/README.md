@@ -20,6 +20,8 @@ context = DockerExecutionContext(
     container_executable="docker",
     repo=repo,
     artifact_path=Path("command-clause-telemetry.json"),
+    # Optional host PID verified by the authenticated launcher lifecycle.
+    trusted_root_pid=command_root_host_pid,
 )
 
 run = sdk.start_command(context, tool_call_id, command)
@@ -47,9 +49,10 @@ eligible fraction.
 
 The Docker runner owns execution, timeout, exit status, and container
 lifecycle. The observer resolves the init PID and cgroup from the supplied live
-container. Commands must descend from one long-lived in-container runner
-process; independent `docker exec` roots have no trustworthy fork ancestry and
-fail closed.
+container. A command must either descend from one long-lived observed runner
+or supply a root PID whose PID namespace and process start time were verified
+by the authenticated launcher lifecycle. Independent `docker exec` roots
+without either proof still fail closed.
 
 Bucket intervals are `[0, b1)`, `[b1, b2)`, ..., `[bk, +inf)`. A compound
 command returns `compound_command_uncomposed`; bucket IDs are never ORed or

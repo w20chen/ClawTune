@@ -1875,13 +1875,23 @@ def _attribute(
             if target is None:
                 target = _ancestor_clause_pid(pid, ts, clause_by_pid, fork_parent)
         if target is None:
+            trusted_root_setup = (
+                seq == SENTINEL
+                and pid == entry_pid
+                and bool(clause_by_pid.get(pid))
+                and ts < min(clause.t_exec_ns for clause in clause_by_pid[pid])
+            )
             gaps.append(
                 {
                     **e,
                     "reason": (
-                        "sentinel_exec_seq_without_active_exec_image_or_owned_ancestor"
-                        if seq == SENTINEL
-                        else "exec_seq_without_matching_exec_image_or_owned_ancestor"
+                        "trusted_root_pre_exec_structural_setup"
+                        if trusted_root_setup
+                        else (
+                            "sentinel_exec_seq_without_active_exec_image_or_owned_ancestor"
+                            if seq == SENTINEL
+                            else "exec_seq_without_matching_exec_image_or_owned_ancestor"
+                        )
                     ),
                 }
             )
@@ -2345,8 +2355,9 @@ def _command_tree_provenance(
     fork_parent: Mapping[int, int],
     *,
     fork_records: Mapping[int, Sequence[Mapping[str, Any]]] | None = None,
+    trusted_root_pid: int | None = None,
 ) -> tuple[int, set[int], dict[str, Any]]:
-    """Identify transitive exec roots and their one observed outside parent."""
+    """Identify one command tree rooted in observed or launcher-bound identity."""
 
     exec_pids = {metric.host_pid for metric in metrics}
     ancestry: list[dict[str, Any]] = []
@@ -2362,8 +2373,9 @@ def _command_tree_provenance(
         ancestor_ts_bound = min(
             metric.t_exec_ns for metric in metrics if metric.host_pid == pid
         )
-        while current in fork_parent or (
-            fork_records is not None and current in fork_records
+        while current != trusted_root_pid and (
+            current in fork_parent
+            or (fork_records is not None and current in fork_records)
         ):
             eligible_records = (
                 [
@@ -2424,7 +2436,9 @@ def _command_tree_provenance(
         is_root = nearest_exec_ancestor is None
         if is_root:
             roots.append(pid)
-            if chain:
+            if trusted_root_pid is not None and current == trusted_root_pid:
+                entry_by_root[pid] = trusted_root_pid
+            elif chain:
                 entry_by_root[pid] = chain[-1]
             else:
                 failure = failure or "missing_root_ancestry"
@@ -2448,6 +2462,14 @@ def _command_tree_provenance(
         "entry_pid": entries[0] if not failure else None,
         "root_pids": roots,
         "exec_ancestry": ancestry,
+        "identity_anchor": (
+            {
+                "kind": "launcher_started",
+                "host_pid": trusted_root_pid,
+            }
+            if trusted_root_pid is not None
+            else {"kind": "observed_fork_ancestry"}
+        ),
     }
     if fork_ambiguities:
         provenance["fork_ambiguities"] = fork_ambiguities
@@ -2463,6 +2485,8 @@ def _command_tree_provenance(
 def _isolate_call_events(
     events: list[dict[str, Any]],
     command: str,
+    *,
+    trusted_root_pid: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Select one exact launcher command tree from a shared-cgroup window.
 
@@ -2475,6 +2499,32 @@ def _isolate_call_events(
     """
 
     clauses, fork_parent = _clauses_and_lineage(events)
+    if trusted_root_pid is not None:
+        selected_pids = {trusted_root_pid}
+        changed = True
+        while changed:
+            changed = False
+            for child, parent in fork_parent.items():
+                if parent in selected_pids and child not in selected_pids:
+                    selected_pids.add(child)
+                    changed = True
+        selected_events = [
+            event
+            for event in events
+            if int(event.get("host_pid", 0)) in selected_pids
+            or (
+                event.get("type") == "fork"
+                and int(event.get("child_host_pid", 0)) in selected_pids
+            )
+        ]
+        return selected_events, {
+            "mode": "trusted_execution_root",
+            "trusted_root_pid": trusted_root_pid,
+            "selected_pid_count": len(selected_pids),
+            "raw_window_event_count": len(events),
+            "selected_event_count": len(selected_events),
+        }
+
     exec_pids = {clause.host_pid for clause in clauses}
     root_pids: set[int] = set()
     for pid in exec_pids:
@@ -3071,6 +3121,7 @@ class ClauseTelemetryCollector:
         repo: str,
         artifact_path: Path,
         cgroup_path: str | None = None,
+        trusted_root_pid: int | None = None,
         source_actions: Sequence[Mapping[str, Any]] = (),
     ) -> None:
         _ensure_bcc_importable()
@@ -3125,6 +3176,9 @@ class ClauseTelemetryCollector:
             if cached:
                 self.cgroup_inodes |= cached
         self.init_pid = init_pid
+        self.trusted_root_pid: int | None = None
+        if trusted_root_pid is not None:
+            self.bind_trusted_root(trusted_root_pid)
         init_pid_ns = _pid_namespace_inode_for_pid(init_pid) if init_pid > 0 else None
         self.pid_namespace_inodes = {init_pid_ns} if init_pid_ns is not None else set()
         self.quota_cores = observed_quota_cores(cgroup)
@@ -3261,6 +3315,7 @@ class ClauseTelemetryCollector:
         collector.cgroup_id = 0
         collector.cgroup_inodes = set()
         collector.init_pid = 0
+        collector.trusted_root_pid = None
         collector.pid_namespace_inodes = set()
         collector.quota_cores = 0.0
         collector.repo = repo
@@ -3287,6 +3342,16 @@ class ClauseTelemetryCollector:
         ]
         collector._source_exec_index = 0
         return collector
+
+    def bind_trusted_root(self, host_pid: int) -> None:
+        if host_pid <= 0:
+            raise ValueError("trusted root host PID must be positive")
+        current = getattr(self, "trusted_root_pid", None)
+        if current is not None and current != host_pid:
+            raise ClauseTelemetryIntegrityError(
+                f"trusted execution root changed from {current} to {host_pid}"
+            )
+        self.trusted_root_pid = host_pid
 
     def _disable(self, reason: str, *, tool_call_id: str | None = None) -> None:
         if self.state == "closed":
@@ -3447,6 +3512,8 @@ class ClauseTelemetryCollector:
                     cgroup_inodes=self.cgroup_inodes,
                     pid_namespace_inodes=self.pid_namespace_inodes,
                 )
+                if self.trusted_root_pid is not None:
+                    container_pids.add(self.trusted_root_pid)
                 # --- dynamic cgroup discovery ---
                 # Docker exec often creates transient cgroups (e.g., systemd
                 # scopes) that are not reachable from the container's root
@@ -3735,7 +3802,11 @@ class ClauseTelemetryCollector:
         from tool_resource.clause_bridge import bridge_command
 
         collector_perf_samples = perf_samples
-        events, event_isolation = _isolate_call_events(events, token.command)
+        events, event_isolation = _isolate_call_events(
+            events,
+            token.command,
+            trusted_root_pid=self.trusted_root_pid,
+        )
         perf_samples = sum(event["type"] == "perf" for event in events)
         normalized_loss_counts = {
             name: int(loss_counts.get(name, 0)) for name in LOSS_COUNTER_NAMES
@@ -3783,6 +3854,7 @@ class ClauseTelemetryCollector:
                 clauses,
                 fork_parent,
                 fork_records=fork_records,
+                trusted_root_pid=self.trusted_root_pid,
             )
         metrics, attribution_gaps = analyze(run, entry_pid=entry_pid)
 
@@ -3800,9 +3872,15 @@ class ClauseTelemetryCollector:
             structural_setup_reasons = {
                 "entry_fork_pre_exec_structural_setup",
                 "initial_exec_pending_pre_boundary_structural_setup",
+                "trusted_root_pre_exec_structural_setup",
             }
             if event["reason"] in structural_setup_reasons:
                 relation = event["reason"]
+            elif (
+                self.trusted_root_pid is not None
+                and event["host_pid"] == self.trusted_root_pid
+            ):
+                relation = "trusted_execution_root"
             elif event["host_pid"] == entry_pid:
                 relation = (
                     "entry_parent"
@@ -3853,6 +3931,7 @@ class ClauseTelemetryCollector:
                 "entry_parent_thread",
                 "entry_fork_pre_exec_structural_setup",
                 "initial_exec_pending_pre_boundary_structural_setup",
+                "trusted_root_pre_exec_structural_setup",
             }
         ]
         structural_gaps = [
@@ -3864,6 +3943,7 @@ class ClauseTelemetryCollector:
                 "entry_parent_thread",
                 "entry_fork_pre_exec_structural_setup",
                 "initial_exec_pending_pre_boundary_structural_setup",
+                "trusted_root_pre_exec_structural_setup",
             }
         ]
         exec_image_records = [_exec_image_record(metric) for metric in metrics]

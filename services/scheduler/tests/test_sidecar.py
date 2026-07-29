@@ -1169,7 +1169,11 @@ def test_execution_started_host_cgroup_gate_creates_exact_scope(
     assert begin_calls[-1]["cgroup_path"] == str(exact)
 
 
-def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(tmp_path: Path) -> None:
+def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(app_module, "_resolve_host_pid", lambda *_args, **_kwargs: 4242)
     state = build_state(
         SchedulerConfig(
             trace_dir=tmp_path / "traces",
@@ -1229,6 +1233,7 @@ def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(tmp_pa
             "container_id": None,
             "repo": "openclaw",
             "cgroup_path": str(tmp_path / "call-cgroup"),
+            "trusted_root_pid": 4242,
         }
     ]
     begin_calls.clear()
@@ -1258,6 +1263,7 @@ def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(tmp_pa
             "command": "echo hi && true",
             "container_id": "b" * 64,
             "repo": "openclaw",
+            "trusted_root_pid": 4242,
         }
     ]
 

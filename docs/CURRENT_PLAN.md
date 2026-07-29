@@ -40,6 +40,30 @@ own cgroup when cgroupfs is read-only.
 
 ## Current Host Stage-2 Fix
 
+### Trusted execution-root attribution (2026-07-29)
+
+The remaining `attribution_gap`,
+`sentinel_pre_exec_missing_fork_ancestry`, and `missing_generation` failures
+had one integration-specific cause: the fork+exec child posts `/started`
+synchronously before `exec`, but Stage-2 can be attached while handling that
+request. The collector therefore sees the exec, perf, and exit events while
+legitimately missing the earlier launcher-to-child fork.
+
+The authenticated `/started` lifecycle already carries `child_pid`,
+`process_starttime_ticks`, and `pid_namespace_inode`. The sidecar now resolves
+that tuple to one host PID, stores it on the execution record, and passes it to
+the vendored SDK as `trusted_root_pid`. The collector uses this identity as the
+command-tree anchor and follows only observed descendant forks. It also uses
+the root to isolate concurrent calls, including identical commands in one
+shared sandbox cgroup. A root that cannot be verified does not gain this
+exception; the existing observed-fork proof and fail-closed behavior remain.
+
+This root is rebound when Stage-2 started early at claim time and retained when
+the sandbox container ID arrives after `/started`. Healthy eligible artifacts
+continue into `ClauseResourceKB`; ordinary completed tool samples continue
+into `RuntimeToolResourceKB`, preserving the empirical latency bucket and
+conditional-p90 CPU/memory prediction paths.
+
 ### Second-run workspace ownership finding (2026-07-28)
 
 A follow-up `host-openclaw-sandbox` run proved that the coverage clamp and
@@ -159,7 +183,22 @@ python -m pytest tests/test_swe_rebench_runner_inspection.py \
 
 Latest Windows validation:
 
+- `$env:PYTHONPATH='services/scheduler/src'; python -m pytest
+  services/scheduler/tests -q --basetemp .pytest-tmp-scheduler-20260729b`:
+  105 passed.
+- `$env:PYTHONPATH='services/scheduler/src'; python -m pytest tests -q
+  --basetemp .pytest-tmp-root-20260729b`: 73 passed, 2 Windows/POSIX tests
+  skipped.
+- `cd packages/openclaw-plugin && npm.cmd test`: 62 passed, including the
+  TypeScript build.
 - `python tools/validate_contracts.py`: all 9 contract examples passed.
+- A parallel full-suite attempt using `--basetemp
+  .pytest-tmp-scheduler-all` could not complete because Windows denied pytest
+  cleanup of the shared temporary root. The scheduler suite passed when
+  rerun sequentially with the unique flat basetemp above.
+- A nested `--basetemp .pytest-tmp-scheduler-sequential\base` attempt could
+  not run because pytest does not create the missing parent directory. The
+  flat basetemp command above is the maintained validation.
 - `python -m pytest --basetemp .pytest-tmp-current-fix\basetemp
   services\scheduler\tests\test_tool_resource_telemetry.py
   services\scheduler\tests\test_tool_runtime_monitor.py
@@ -173,9 +212,9 @@ Latest Windows validation:
   65 passed, 1 POSIX-permission test skipped on Windows.
 - Not run in this Windows workspace: full `sudo -E env "PATH=$PATH"
   "$(command -v python3)" -m swe_rebench.runner run --config
-  swe_rebench/config.yaml --dataset swe_rebench/tasks.json --sample 1 --export
-  --runtime-mode host-openclaw-sandbox`. It requires the Linux/root Docker/eBPF
-  host-sandbox environment used by the benchmark runner.
+  swe_rebench/config.yaml --prepare --dataset swe_rebench/tasks.json --sample
+  1 --export --runtime-mode host-openclaw-sandbox`. It requires the Linux/root
+  Docker/eBPF host-sandbox environment used by the benchmark runner.
 - `$env:PYTHONPATH='services\scheduler\src'; python -m pytest
   services/scheduler/tests -q --basetemp .pytest-tmp-final2-scheduler`:
   101 passed.

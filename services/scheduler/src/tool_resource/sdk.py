@@ -27,6 +27,7 @@ class DockerExecutionContext:
     repo: str
     artifact_path: Path
     cgroup_path: str | None = None
+    trusted_root_pid: int | None = None
     source_actions: Sequence[Mapping[str, Any]] = ()
 
     def __post_init__(self) -> None:
@@ -36,6 +37,8 @@ class DockerExecutionContext:
             raise ValueError("container_executable is required")
         if not self.repo:
             raise ValueError("repo is required")
+        if self.trusted_root_pid is not None and self.trusted_root_pid <= 0:
+            raise ValueError("trusted_root_pid must be positive")
 
 
 @dataclass(frozen=True)
@@ -68,6 +71,7 @@ class DockerCommandObserver:
                 repo=context.repo,
                 artifact_path=context.artifact_path,
                 cgroup_path=context.cgroup_path,
+                trusted_root_pid=context.trusted_root_pid,
                 source_actions=context.source_actions,
             )
         except BaseException as exc:
@@ -110,6 +114,9 @@ class DockerCommandObserver:
         return CommandObservationToken(tool_call_id, command, token, error)
 
     begin_tool_call = start
+
+    def bind_trusted_root(self, host_pid: int) -> None:
+        self._collector.bind_trusted_root(host_pid)
 
     def finish(
         self,

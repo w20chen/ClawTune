@@ -346,10 +346,15 @@ class ToolResourcePredictor:
         container_id: str | None,
         repo: str | None = None,
         cgroup_path: str | None = None,
+        trusted_root_pid: int | None = None,
     ) -> bool:
         if execution_id in self._runs_by_execution_id:
             existing = self._runs_by_execution_id[execution_id]
             observer = getattr(existing, "_observer", None)
+            if trusted_root_pid is not None:
+                bind_root = getattr(observer, "bind_trusted_root", None)
+                if callable(bind_root):
+                    bind_root(trusted_root_pid)
             return bool(getattr(observer, "telemetry_available", True))
         previous = self._telemetry_by_execution_id.get(execution_id)
         if previous is not None and previous.started:
@@ -376,6 +381,7 @@ class ToolResourcePredictor:
             repo=repo or self.repo,
             artifact_path=artifact_path,
             cgroup_path=cgroup_path,
+            trusted_root_pid=trusted_root_pid,
         )
         try:
             run = self._sdk.start_command(context, tool_call_id or execution_id, command)

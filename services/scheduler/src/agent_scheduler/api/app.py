@@ -4,6 +4,7 @@ import asyncio
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
@@ -313,26 +314,29 @@ def create_app(state: AppState | None = None) -> FastAPI:
         execution_id: str,
         container_id: str | None,
         cgroup_path: str | None = None,
+        trusted_root_pid: int | None = None,
     ) -> bool:
         record = s.executions.get(execution_id)
         if record is None:
             return False
-        if cgroup_path is None:
-            return s.predictor.begin_execution(
-                execution_id=execution_id,
-                tool_call_id=record.request.tool_call_id,
-                command=record.request.command,
-                container_id=container_id,
-                repo=s.config.tool_resource_repo,
-            )
-        return s.predictor.begin_execution(
-            execution_id=execution_id,
-            tool_call_id=record.request.tool_call_id,
-            command=record.request.command,
-            container_id=container_id,
-            repo=s.config.tool_resource_repo,
-            cgroup_path=cgroup_path,
+        root_pid = (
+            trusted_root_pid
+            if trusted_root_pid is not None
+            else record.trusted_root_pid
         )
+        stage2_kwargs: dict[str, Any] = {
+            "execution_id": execution_id,
+            "tool_call_id": record.request.tool_call_id,
+            "command": record.request.command,
+            "container_id": container_id,
+            "repo": s.config.tool_resource_repo,
+        }
+        if root_pid is not None:
+            stage2_kwargs["trusted_root_pid"] = root_pid
+        if cgroup_path is None:
+            return s.predictor.begin_execution(**stage2_kwargs)
+        stage2_kwargs["cgroup_path"] = cgroup_path
+        return s.predictor.begin_execution(**stage2_kwargs)
 
     def with_sandbox_fallback(request: ToolBeforeRequest, s: AppState) -> ToolBeforeRequest:
         if (
@@ -677,6 +681,18 @@ def create_app(state: AppState | None = None) -> FastAPI:
         response = s.executions.started(execution_id, request)
         record = s.executions.get(execution_id)
         fallback_scope = sandbox_fallback_scope(s)
+        trusted_root_pid = (
+            _resolve_host_pid(
+                request.child_pid,
+                pid_namespace_inode=request.pid_namespace_inode,
+                starttime_ticks=request.process_starttime_ticks,
+            )
+            if request.pid_namespace_inode is not None
+            and request.process_starttime_ticks is not None
+            else None
+        )
+        if record is not None and trusted_root_pid is not None:
+            s.executions.bind_trusted_root(execution_id, trusted_root_pid)
         if record is not None and request.host_cgroup_gate:
             host_scope = _prepare_host_execution_cgroup(
                 execution_id,
@@ -723,6 +739,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 cgroup_path=_trusted_cgroup_path(
                     record.scope.cgroup_path if record.scope is not None else request.cgroup_path
                 ),
+                trusted_root_pid=trusted_root_pid,
             )
             if (
                 s.config.tool_resource_stage2_required

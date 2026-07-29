@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from tool_resource.clause_bridge import ExecImageRecord, _clause_status
 from tool_resource.telemetry import (
     BPF_PROGRAM,
     RawRun,
+    SENTINEL,
+    _attribute,
     _bpf_setup_error_message,
+    _clauses_and_lineage,
+    _command_tree_provenance,
     _isolate_call_events,
     _runtime_response_exit_code,
     _syscall_symbol_candidates,
@@ -357,3 +363,72 @@ def test_call_event_isolation_keeps_ambiguous_parallel_trees_fail_closed() -> No
     assert selected == events
     assert provenance["mode"] == "unresolved"
     assert provenance["matching_root_pids"] == [11, 21]
+
+
+def test_trusted_execution_root_isolates_identical_parallel_commands() -> None:
+    first = _shell_tree(
+        entry_pid=10,
+        shell_pid=11,
+        child_pid=12,
+        command="echo same",
+        start_ns=100,
+    )
+    second = _shell_tree(
+        entry_pid=20,
+        shell_pid=21,
+        child_pid=22,
+        command="echo same",
+        start_ns=105,
+    )
+
+    selected, provenance = _isolate_call_events(
+        sorted(first + second, key=lambda event: int(event["ts_ns"])),
+        "echo same",
+        trusted_root_pid=21,
+    )
+
+    assert provenance["mode"] == "trusted_execution_root"
+    assert provenance["trusted_root_pid"] == 21
+    assert {event["host_pid"] for event in selected} == {20, 21, 22}
+    assert not any(event["host_pid"] == 11 for event in selected)
+
+
+def test_trusted_execution_root_replaces_missing_initial_fork_ancestry() -> None:
+    metric = SimpleNamespace(host_pid=42, t_exec_ns=100)
+
+    entry_pid, root_pids, provenance = _command_tree_provenance(
+        [metric],
+        {},
+        fork_records={},
+        trusted_root_pid=42,
+    )
+
+    assert entry_pid == 42
+    assert root_pids == {42}
+    assert provenance["status"] == "ok"
+    assert provenance["identity_anchor"] == {
+        "kind": "launcher_started",
+        "host_pid": 42,
+    }
+
+
+def test_trusted_root_pre_exec_sample_is_structural_without_missing_generation() -> None:
+    events = [
+        _event("perf", 99, 42, exec_seq=SENTINEL),
+        _event("exec_arg", 100, 42, arg_index=0, arg="/bin/sh"),
+        _event("exec_boundary", 101, 42),
+        _event("exit_boundary", 102, 42),
+    ]
+    clauses, fork_parent = _clauses_and_lineage(events)
+
+    _per_clause, gaps = _attribute(
+        events,
+        clauses,
+        fork_parent,
+        entry_pid=42,
+    )
+
+    assert [gap["reason"] for gap in gaps] == [
+        "trusted_root_pre_exec_structural_setup"
+    ]
+    assert all("fork_resolution_failure" not in gap for gap in gaps)

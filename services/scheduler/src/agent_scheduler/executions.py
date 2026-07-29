@@ -30,6 +30,7 @@ class ExecutionRecord:
     exit_code: int | None = None
     signal: int | None = None
     owned_cgroup_path: str | None = None
+    trusted_root_pid: int | None = None
 
 
 class ExecutionRegistry:
@@ -146,6 +147,19 @@ class ExecutionRegistry:
         record.scope = scope
         if owned_cgroup_path is not None:
             record.owned_cgroup_path = owned_cgroup_path
+
+    def bind_trusted_root(self, execution_id: str, host_pid: int) -> None:
+        record = self._by_execution_id.get(execution_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="execution_not_found")
+        if host_pid <= 0:
+            raise HTTPException(status_code=422, detail="invalid_trusted_root_pid")
+        if (
+            record.trusted_root_pid is not None
+            and record.trusted_root_pid != host_pid
+        ):
+            raise HTTPException(status_code=409, detail="trusted_execution_root_changed")
+        record.trusted_root_pid = host_pid
 
     def exited(self, execution_id: str, request: ExecutionExitedRequest) -> ExecutionUpdateResponse:
         record = self._require_update(execution_id, request.update_token)
