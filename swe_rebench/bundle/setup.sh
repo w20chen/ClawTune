@@ -97,6 +97,39 @@ else
     fi
 fi
 
+# Some minimized benchmark images retain dpkg's "installed" record for
+# libelf1 after removing its shared-object payload.  A normal apt install then
+# becomes a no-op even though importing BCC fails.  Repair only that observed
+# container failure; all other optional BCC failures remain fail-open.
+if [ "$PKG_MGR" = "apt" ] && [ -s /tmp/.claw_bcc_pythonpath ]; then
+    _CLAW_BCC_PYTHONPATH="$(cat /tmp/.claw_bcc_pythonpath)"
+    if ! _CLAW_BCC_IMPORT_ERROR="$(
+        PYTHONPATH="${_CLAW_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" \
+            "$_CLW_PYTHON" -c "import bcc" 2>&1
+    )"; then
+        case "$_CLAW_BCC_IMPORT_ERROR" in
+            *"libelf.so.1"*)
+                echo "[claw] libelf.so.1 is missing; reinstalling libelf1..."
+                if DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --reinstall libelf1; then
+                    if command -v ldconfig &>/dev/null; then
+                        ldconfig 2>/dev/null || true
+                    fi
+                    if _CLAW_BCC_RECHECK_ERROR="$(
+                        PYTHONPATH="${_CLAW_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" \
+                            "$_CLW_PYTHON" -c "import bcc" 2>&1
+                    )"; then
+                        echo "[claw] libelf1 reinstall repaired the BCC runtime"
+                    else
+                        echo "[claw] BCC remains unavailable after libelf1 reinstall: $_CLAW_BCC_RECHECK_ERROR"
+                    fi
+                else
+                    echo "[claw] libelf1 reinstall failed (Stage-2 will remain unavailable)"
+                fi
+                ;;
+        esac
+    fi
+fi
+
 # ── Python 3 (system fallback -- usually conda is already present) ──
 if ! $_CLW_PYTHON --version &>/dev/null 2>&1; then
     echo "[claw] installing python3..."
@@ -123,19 +156,23 @@ if [ "$NODE_OK" -eq 0 ]; then
     case "$(uname -m)" in
         aarch64|arm64) NODE_ARCH="arm64" ;;
     esac
-    # Download the latest Node.js 24 LTS
-    NODE_URL="https://nodejs.org/dist/latest-v24.x/node-v24.15.0-linux-${NODE_ARCH}.tar.xz"
-    curl -fsSL "$NODE_URL" -o "/tmp/node.tar.xz" || {
-        # Fallback: try without specific patch version
-        NODE_URL="https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt"
-        LATEST=$(curl -fsSL "https://nodejs.org/dist/latest-v24.x/" 2>/dev/null | grep -oP 'node-v24\.[0-9]+\.[0-9]+-linux-x64\.tar\.xz' | head -1)
-        if [ -n "$LATEST" ]; then
-            curl -fsSL "https://nodejs.org/dist/latest-v24.x/${LATEST}" -o "/tmp/node.tar.xz"
-        else
-            echo "[claw] FATAL: cannot download Node.js"
-            exit 1
-        fi
-    }
+    # Resolve the current Node.js 24 archive instead of pinning a patch release
+    # that disappears from the latest-v24.x alias. Select the detected
+    # architecture from the checksum manifest so ARM does not fall back to x64.
+    NODE_BASE_URL="https://nodejs.org/dist/latest-v24.x"
+    if ! NODE_SHASUMS="$(curl -fsSL "$NODE_BASE_URL/SHASUMS256.txt")"; then
+        echo "[claw] FATAL: cannot resolve the latest Node.js 24 release"
+        exit 1
+    fi
+    LATEST="$(
+        printf '%s\n' "$NODE_SHASUMS" \
+            | awk -v arch="$NODE_ARCH" '$2 ~ ("-linux-" arch "\\.tar\\.xz$") { print $2; exit }'
+    )"
+    if [ -z "$LATEST" ]; then
+        echo "[claw] FATAL: no Node.js 24 archive for architecture $NODE_ARCH"
+        exit 1
+    fi
+    curl -fsSL "$NODE_BASE_URL/$LATEST" -o "/tmp/node.tar.xz"
     tar -xJf "/tmp/node.tar.xz" -C /usr/local --strip-components=1
     rm -f "/tmp/node.tar.xz"
 fi

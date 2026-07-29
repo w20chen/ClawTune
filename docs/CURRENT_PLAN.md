@@ -765,3 +765,65 @@ live runner from rewriting tracked `swe_rebench/bundle` files and blocking a
 server-side fast-forward-only pull. Git operations must remain unprivileged;
 if an earlier run already created root-owned repository files, repair ownership
 once with `sudo chown -R <user>:<group> <repo>` before using Git normally.
+
+## 2026-07-30 Container-OpenClaw libelf Payload Repair
+
+The latest live `container-openclaw` run completed the agent workload, produced
+a patch, and preserved full launcher/cgroup attribution, but every Stage-2
+artifact was rejected because importing BCC still failed with
+`libelf.so.1: cannot open shared object file`. The setup log showed BCC packages
+being installed without `libelf1` being unpacked even though the container
+template explicitly requested it. This is consistent with a minimized task
+image retaining dpkg package metadata after the shared-library payload was
+removed: a normal install treats the package as already present and does not
+restore the file.
+
+The container setup now probes the selected Python/BCC binding after package
+installation. Only when that probe specifically reports missing
+`libelf.so.1`, the apt path force-reinstalls `libelf1` and refreshes the dynamic
+linker cache. The retry stays best-effort, and all changes are confined to the
+container setup template/prebuilt setup script; `host_sandbox.py`, host
+preflight, and scheduler telemetry code are unchanged.
+
+The same setup log exposed a separate container-only portability bug: its
+hard-coded Node 24 patch URL returned HTTP 404, and the fallback archive pattern
+was fixed to x64. Setup now resolves the current v24 archive from
+`SHASUMS256.txt` using the detected x64/arm64 architecture. Root runtime-mode
+tests are now part of CI, and the host dispatch regression test explicitly
+fails if host mode enters the container runner.
+
+Validation in this Windows workspace:
+
+- `python -m pytest tests -q --basetemp
+  .pytest-tmp-libelf-final-root`: 86 passed, 2 skipped.
+- With `PYTHONPATH=src`, the scheduler launcher, sidecar, tool-resource
+  predictor, and telemetry suites: 110 passed.
+- `npm.cmd test` from `packages/openclaw-plugin`: 62 passed.
+- `python tools\validate_contracts.py`: all nine schema examples passed.
+- `python -m swe_rebench.runner prepare --config swe_rebench\config.yaml`:
+  passed; generated `setup.sh` matches the tracked template.
+- Both `container-openclaw` and `host-openclaw-sandbox` one-task dry-runs:
+  passed.
+- Python compilation, CI YAML parsing, and `git diff --check`: passed.
+
+Validation unavailable in this Windows workspace:
+
+- The live `container-openclaw` acceptance command cannot run because the
+  Docker CLI is not installed here (`docker version` is not recognized).
+- A WSL fallback is also unavailable: `wsl.exe --status` returns
+  `Wsl/EnumerateDistros/Service/E_ACCESSDENIED`.
+- `bash -n swe_rebench/bundle/setup.sh` cannot run locally for the same WSL
+  access reason; it is now an Ubuntu CI step.
+- Focused Ruff validation could not run because neither the system Python nor
+  `.venv` has the `ruff` module installed.
+- The next Linux acceptance run must show
+  `[claw] libelf.so.1 is missing; reinstalling libelf1...`, followed by
+  `[claw] libelf1 reinstall repaired the BCC runtime` and
+  `[claw] BCC Python binding OK`; `tool_resource_preflight.json` must then
+  report `bcc_import.ok: true`. If `stage2_ready` remains false, record its
+  separate Docker/cgroup/kernel precondition rather than treating the libelf
+  repair as failed.
+- The focused pytest command with
+  `--basetemp C:\tmp\claw-runtime-boundary-pytest` could not use that directory
+  because of local ACLs; rerunning the same selection below a writable
+  per-user temp directory passed.

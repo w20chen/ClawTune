@@ -423,6 +423,37 @@ def test_setup_installs_scheduler_runtime_dependencies() -> None:
     assert '"source": "docker-unix-socket"' in _ENTRYPOINT_TEMPLATE
 
 
+def test_setup_repairs_libelf_payload_removed_from_minimized_apt_image() -> None:
+    from swe_rebench.prepare import _SETUP_TEMPLATE
+
+    assert (
+        'if [ "$PKG_MGR" = "apt" ] && [ -s /tmp/.claw_bcc_pythonpath ]'
+        in _SETUP_TEMPLATE
+    )
+    assert '*"libelf.so.1"*)' in _SETUP_TEMPLATE
+    assert "apt-get install -y -qq --reinstall libelf1" in _SETUP_TEMPLATE
+    assert "libelf1 reinstall repaired the BCC runtime" in _SETUP_TEMPLATE
+    assert "BCC remains unavailable after libelf1 reinstall" in _SETUP_TEMPLATE
+    assert "libelf1 reinstall failed (Stage-2 will remain unavailable)" in _SETUP_TEMPLATE
+
+
+def test_setup_resolves_current_node_archive_for_detected_architecture() -> None:
+    from swe_rebench.prepare import _SETUP_TEMPLATE
+
+    assert "node-v24.15.0" not in _SETUP_TEMPLATE
+    assert 'NODE_BASE_URL="https://nodejs.org/dist/latest-v24.x"' in _SETUP_TEMPLATE
+    assert 'awk -v arch="$NODE_ARCH"' in _SETUP_TEMPLATE
+    assert "no Node.js 24 archive for architecture $NODE_ARCH" in _SETUP_TEMPLATE
+
+
+def test_tracked_setup_script_matches_generated_template() -> None:
+    from swe_rebench.prepare import _SETUP_TEMPLATE
+
+    setup_script = Path(__file__).parents[1] / "swe_rebench" / "bundle" / "setup.sh"
+
+    assert setup_script.read_text(encoding="utf-8") == _SETUP_TEMPLATE
+
+
 def test_docker_runner_config_sets_sandbox_container_prefix_placeholder(tmp_path: Path) -> None:
     _write_plugin_config(tmp_path)
 
@@ -573,6 +604,11 @@ bundle:
     import swe_rebench.runner as runner
 
     monkeypatch.setattr(runner, "run_host_sandbox_task", fake_host_runner)
+    monkeypatch.setattr(
+        runner,
+        "run_container",
+        lambda **kwargs: pytest.fail("host runtime dispatched into container-openclaw"),
+    )
 
     result = _run_one(
         client=object(),
