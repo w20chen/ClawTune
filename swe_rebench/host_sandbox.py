@@ -718,7 +718,7 @@ def _openclaw_config(
                             "recordRawTrace": False,
                             "logLevel": "warn",
                             "consoleMode": "verbose",
-                            "executionBackend": "marker",
+                            "executionBackend": "managed-wrapper",
                             "launcherPath": "/workspace/.claw/bin/claw-launch",
                             "launcherInterpreter": "/bin/sh",
                             "instrumentHosts": ["gateway", "*"],

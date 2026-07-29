@@ -1250,9 +1250,8 @@ def _apply_runtime_overrides(
         runtime_mode is not None
         and normalize_runtime_mode(runtime_mode) == "host-openclaw-sandbox"
     ):
-        # A CLI-selected host-sandbox run is expected to provide the mode's
-        # defining eBPF clause telemetry. Do not silently spend an entire
-        # benchmark run producing only unavailable Stage-2 artifacts.
+        # host-openclaw-sandbox with managed-wrapper backend provides
+        # full eBPF clause telemetry via the launcher lifecycle.
         config.runtime.stage2_required = True
 
 

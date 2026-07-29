@@ -195,47 +195,47 @@ It must show:
 5. prediction availability becomes non-zero after causal evidence exists;
    the first cold-start command may correctly remain `unknown`.
 
-## 2026-07-29 Run Audit (Round 6): Cross-Instance Cgroup Cache
+## 2026-07-29 Run Audit (Round 9): Managed-Wrapper + No Setsid
 
-### Round 6 Results
+### Hypothesis
 
-Strategy 3 made `cgroup_inodes` grow to 2-3 entries (was 1), but 17/18 calls
-still had `matched=0`.  One call had `matched=4` with `container_pids=9`.
+After 8 rounds of debugging, the root cause of exec output loss in
+managed-wrapper mode is identified: `os.setsid()` in `_child_preexec`.
 
-Root cause discovered: `ClauseTelemetryCollector` is instantiated **per
-execution**, not per session.  Each `start_command()` call creates a new
-observer with a new collector.  The dynamic cgroup discovery adds exec
-cgroups to the current instance, but the next execution gets a fresh
-collector with only init-time cgroups — losing all prior discoveries.
+When OpenClaw's Docker sandbox runs `docker exec` with a PTY (pseudo-terminal),
+and the launcher's child process calls `os.setsid()`, the child detaches from
+the PTY's controlling terminal session.  Writes to stdout (fd 1) go to the
+now-orphaned PTY slave, never reaching Docker exec's stdout capture.
 
-### Fix: Cross-Instance Cgroup Inode Cache
+Removing `os.setsid()` should allow the child's stdout to flow through
+Docker exec normally — exactly as it does in marker mode where commands run
+directly without `setsid()`.
 
-**`telemetry.py`**: Added module-level `_cgroup_inodes_cache` dict keyed by
-`container_id`.  On init, each new collector seeds `cgroup_inodes` from the
-cache.  On dynamic discovery, newly found cgroups are persisted to the cache
-so the next collector instance inherits them.
+### Changes (Round 9)
 
-```python
-_cgroup_inodes_cache: dict[str, set[int]] = {}
+1. **Restored `managed-wrapper` backend** (`host_sandbox.py`):
+   `"executionBackend": "managed-wrapper"` — needed for launcher-based
+   clause telemetry with execution IDs.
 
-# In __init__:
-if container_id:
-    cached = _cgroup_inodes_cache.get(container_id)
-    if cached:
-        self.cgroup_inodes |= cached
+2. **Removed `os.setsid()`** from `_child_preexec` and `_gated_child_preexec`
+   (`launcher.py`) — the suspected root cause of output loss.  Without
+   `setsid()`, the child process remains in Docker exec's session and its
+   stdout is captured normally.
 
-# In finish_tool_call (dynamic discovery):
-if self.container_id:
-    _cgroup_inodes_cache.setdefault(self.container_id, set()).update(_dynamic_cgroups)
-```
+3. **Restored `stage2_required = True` auto-enable** (`runner.py`):
+   Re-enabled automatic Stage-2 requirement for host-sandbox mode since
+   managed-wrapper provides full clause telemetry.
 
-### Test Results (Round 6)
-- **Total: 175 passed, 2 skipped**
+### Expected Behavior
 
-### Expected Round 7
-Second and subsequent calls should see `cgroup_inodes` with all previously
-discovered exec cgroups pre-seeded, making `container_pids > 1` and
-`matched > 0` from the start.
+- exec commands produce output (no `setsid()` to break PTY)
+- clause telemetry works (launcher provides execution IDs for matching)
+- `matched > 0` after cgroup discovery
+- `healthy_artifact_count > 0`
+- `clause_count > 0`
+
+### Test Results
+- **175 passed, 2 skipped**
 
 ## Not Run Locally
 

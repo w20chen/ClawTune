@@ -231,10 +231,6 @@ def _spawn_shell_gated(
 
 def _gated_child_preexec(read_fd: int, affinity_cpus: set[int] | None):
     def preexec() -> None:
-        try:
-            os.setsid()
-        except OSError:
-            pass
         if affinity_cpus and hasattr(os, "sched_setaffinity"):
             try:
                 os.sched_setaffinity(0, affinity_cpus)
@@ -385,10 +381,6 @@ def _unlink_best_effort(path: str) -> None:
 
 def _child_preexec(cgroup_path: str | None, affinity_cpus: set[int] | None):
     def preexec() -> None:
-        try:
-            os.setsid()
-        except OSError:
-            pass
         if cgroup_path:
             try:
                 _write_file(Path(cgroup_path) / "cgroup.procs", str(os.getpid()))
