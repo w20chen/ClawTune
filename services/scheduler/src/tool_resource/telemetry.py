@@ -3254,28 +3254,21 @@ class ClauseTelemetryCollector:
                     file=_sys.stderr,
                 )
                 # --- end diagnostic ---
-                # Also accept events whose cgroup_id matches any cgroup
-                # that contains a known container PID (handles transient
-                # scopes that Docker/systemd may create for exec'd processes).
-                _extra_cgroup_ids: set[int] = set()
-                if self.cgroup_inodes:
-                    for _e in self._events:
-                        _hid = _e.get("host_pid", 0)
-                        _chid = _e.get("child_host_pid", 0)
-                        _cg = _e.get("cgroup_id", 0)
-                        if (_hid in container_pids or _chid in container_pids) and _cg > 0:
-                            _extra_cgroup_ids.add(_cg)
+                # When cgroup_inodes is available, trust the time window
+                # and downstream command matching (_isolate_call_events)
+                # to isolate the right events.  PID/cgroup filtering is
+                # skipped because docker exec and launcher processes may
+                # run in transient cgroups unknown at discovery time.
+                _use_pid_filter = not self.cgroup_inodes and container_pids
                 events = sorted(
                     (
                         event
                         for event in self._events
                         if token.started_ns <= event["ts_ns"] <= ended_ns
                         and (
-                            not container_pids
+                            not _use_pid_filter
                             or event.get("host_pid", 0) in container_pids
                             or event.get("child_host_pid", 0) in container_pids
-                            or event.get("cgroup_id", 0) in self.cgroup_inodes
-                            or event.get("cgroup_id", 0) in _extra_cgroup_ids
                         )
                     ),
                     key=lambda event: event["ts_ns"],
