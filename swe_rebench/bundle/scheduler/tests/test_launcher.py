@@ -228,7 +228,7 @@ def test_launcher_uses_non_login_shell_for_payload(monkeypatch) -> None:
     assert "-l" not in captured["args"]
 
 
-def test_launcher_prebinds_cgroup_before_spawning_payload(monkeypatch, tmp_path) -> None:
+def test_launcher_reports_started_once_after_spawning_cgroup_payload(monkeypatch, tmp_path) -> None:
     events: list[str] = []
     posts: list[tuple[str, dict[str, Any]]] = []
 
@@ -274,12 +274,11 @@ def test_launcher_prebinds_cgroup_before_spawning_payload(monkeypatch, tmp_path)
     assert launcher.run_execution("http://sidecar", "exec-1", "token-1") == 7
     assert events[:3] == [
         "/v2/executions/claim",
-        "/v2/executions/exec-1/started",
         "spawn",
+        "/v2/executions/exec-1/started",
     ]
-    assert posts[1][1]["child_pid"] == posts[1][1]["launcher_pid"]
+    assert posts[1][1]["child_pid"] == 4242
     assert posts[1][1]["cgroup_path"] == str(tmp_path / "exec-1")
-    assert posts[2][1]["child_pid"] == 4242
 
 
 def test_launcher_uses_host_cgroup_gate_for_remote_sidecar(monkeypatch) -> None:
@@ -512,11 +511,11 @@ def test_launcher_join_failure_restarts_in_systemd_scope(monkeypatch, tmp_path) 
     monkeypatch.setattr(launcher, "_systemd_unit_cgroup_path", lambda _unit: systemd_cgroup)
 
     assert launcher.run_execution("http://sidecar", "exec-1", "token-1") == 0
-    assert posts[2] == (
+    assert posts[1] == (
         "/v2/executions/exec-1/started",
         {
             "update_token": "update-1",
-            "launcher_pid": posts[2][1]["launcher_pid"],
+                "launcher_pid": posts[1][1]["launcher_pid"],
             "child_pid": 5151,
             "process_starttime_ticks": 99,
             "cgroup_path": systemd_cgroup,
@@ -640,6 +639,9 @@ def test_payload_environment_removes_scheduler_credentials(monkeypatch) -> None:
     monkeypatch.setenv("OPENCLAW_SCHEDULER_TOKEN", "bearer")
     monkeypatch.setenv("CLAW_LAUNCHER_PYTHONPATH", launcher_path)
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join((launcher_path, original_path)))
+    monkeypatch.setenv("CLAW_TASK_PYTHON", "/opt/conda/bin/python3")
+    original_exec_path = os.pathsep.join(("/usr/local/bin", "/usr/bin"))
+    monkeypatch.setenv("PATH", original_exec_path)
     monkeypatch.setenv("KEEP", "value")
 
     env = launcher._payload_environment()
@@ -650,6 +652,9 @@ def test_payload_environment_removes_scheduler_credentials(monkeypatch) -> None:
     assert "OPENCLAW_SCHEDULER_TOKEN" not in env
     assert "CLAW_LAUNCHER_PYTHONPATH" not in env
     assert env["PYTHONPATH"] == original_path
+    assert env["PATH"] == os.pathsep.join(
+        ("/opt/claw/bin", "/opt/conda/bin", "/usr/local/bin", "/usr/bin")
+    )
 
 
 def test_launcher_main_hides_internal_wrapper_errors(monkeypatch, capsys) -> None:

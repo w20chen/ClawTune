@@ -661,3 +661,50 @@ Still not runnable here: a live `container-openclaw` or
 `host-openclaw-sandbox` SWE-Rebench task execution, because this Windows
 workspace lacks the Linux Docker/cgroup/eBPF host environment, task-image
 runtime, and upstream LLM credentials used by the benchmark runner.
+
+## 2026-07-29 Container-OpenClaw Recovery
+
+The downloaded `spectree` run reached Agent turn 8, then left a managed
+`pip install ...; pip list ...` execution without a launcher `/exited` event.
+The repair is isolated to the container route and the shared subprocess
+launcher path; `host-openclaw-sandbox` keeps its existing fork-exec runtime.
+
+- Container entrypoint now selects and exports the task Python, prepends its
+  bin directory, and ships `pip`/`pip3` wrappers that execute the same Python.
+  The launcher receives `CLAW_TASK_PYTHON` explicitly and reconstructs that
+  payload PATH after removing its scheduler-only `PYTHONPATH` entry.
+- The generated OpenClaw patch uses top-level `tools.exec.pathPrepend`, which
+  matches the current OpenClaw schema. A failed config patch is now fatal and
+  visible in `phase3.log` instead of silently running with plugin defaults.
+- Subprocess launchers now report `/started` once, after the payload PID is
+  known. This removes the former cgroup-path first report followed by a
+  trusted-root-changing second report (HTTP 409).
+
+Validation in this Windows workspace:
+
+- `python -m pytest tests/test_swe_rebench_selection.py
+  tests/test_swe_rebench_runner_inspection.py -q --basetemp
+  .pytest-tmp-container-repair-root`: 80 passed, 2 skipped.
+- `PYTHONPATH=src python -m pytest tests/test_launcher.py -q --basetemp
+  ../../.pytest-tmp-container-repair-scheduler` from `services/scheduler`:
+  28 passed.
+- `npm.cmd test` from `packages/openclaw-plugin`: 62 passed.
+- `python -m swe_rebench.runner prepare --config swe_rebench/config.yaml` and
+  both runtime-mode `--dry-run` commands passed; generated bundle JSON parsed
+  successfully and `git diff --check` passed.
+
+Still not runnable here: the live acceptance command for either mode requires
+the user's Linux Docker/cgroup-v2 environment, the task image runtime, and
+LLM credentials. In particular, the live command required to validate this
+container recovery is:
+
+```bash
+sudo -E env "PATH=$PATH" "$(command -v python3)" \
+  -m swe_rebench.runner run \
+  --config swe_rebench/config.yaml \
+  --prepare \
+  --dataset swe_rebench/tasks.json \
+  --sample 1 \
+  --export \
+  --runtime-mode container-openclaw
+```

@@ -150,6 +150,7 @@ test("exec instrumentation forwards launcher cgroup environment", async () => {
     "CLAW_CGROUP_DEBUG",
     "CLAW_LAUNCH_MODE",
     "CLAW_LAUNCH_DEBUG",
+    "CLAW_TASK_PYTHON",
     "CLAW_SCHEDULER_ENDPOINT",
     "CLAW_SANDBOX_CONTAINER_ID",
     "AGENT_SCHEDULER_SANDBOX_CONTAINER_ID"
@@ -160,6 +161,7 @@ test("exec instrumentation forwards launcher cgroup environment", async () => {
   process.env.CLAW_CGROUP_DEBUG = "1";
   process.env.CLAW_LAUNCH_MODE = "fork-exec";
   process.env.CLAW_LAUNCH_DEBUG = "1";
+  process.env.CLAW_TASK_PYTHON = "/opt/conda/bin/python3";
   process.env.CLAW_SCHEDULER_ENDPOINT = "http://host.docker.internal:8765";
   process.env.CLAW_SANDBOX_CONTAINER_ID = "5a423f3b2078";
   process.env.AGENT_SCHEDULER_SANDBOX_CONTAINER_ID = "5a423f3b2078";
@@ -178,6 +180,7 @@ test("exec instrumentation forwards launcher cgroup environment", async () => {
     assert.equal(result.params.env.CLAW_CGROUP_DEBUG, "1");
     assert.equal(result.params.env.CLAW_LAUNCH_MODE, "fork-exec");
     assert.equal(result.params.env.CLAW_LAUNCH_DEBUG, "1");
+    assert.equal(result.params.env.CLAW_TASK_PYTHON, "/opt/conda/bin/python3");
     assert.equal(result.params.env.CLAW_SCHEDULER_ENDPOINT, "http://host.docker.internal:8765");
     assert.equal(result.params.env.CLAW_SANDBOX_CONTAINER_ID, "5a423f3b2078");
     assert.equal(result.params.env.AGENT_SCHEDULER_SANDBOX_CONTAINER_ID, "5a423f3b2078");

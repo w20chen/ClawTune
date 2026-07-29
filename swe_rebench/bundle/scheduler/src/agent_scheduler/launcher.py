@@ -219,16 +219,26 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
     cgroup_path = _prepare_cgroup(execution_id, cpu_set, mems, profiling)
     parsed_affinity = _parse_cpu_list(cpu_set) if _enabled(profiling, "enable_affinity", True) else set()
     affinity_cpus = parsed_affinity or None
-    if cgroup_path is not None:
-        _post_started(
+    started_reported = False
+
+    def report_started(
+        child_pid: int,
+        child_cgroup_path: str | None,
+        *,
+        host_cgroup_gate: bool,
+    ) -> dict[str, Any]:
+        nonlocal started_reported
+        response = _post_started(
             endpoint,
             execution_id=execution_id,
             update_token=update_token,
             launcher_pid=launcher_pid,
-            child_pid=launcher_pid,
-            cgroup_path=cgroup_path,
-            host_cgroup_gate=False,
+            child_pid=child_pid,
+            cgroup_path=child_cgroup_path,
+            host_cgroup_gate=host_cgroup_gate,
         )
+        started_reported = True
+        return response
 
     release_gate: Callable[[], None] | None = None
     use_host_cgroup_gate = cgroup_path is None and _host_cgroup_gate_enabled(profiling)
@@ -244,13 +254,8 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
                     child, command, cwd,
                     execution_id=execution_id,
                     affinity_cpus=affinity_cpus, profiling=profiling,
-                    on_cgroup_ready=lambda pid, path: _post_started(
-                        endpoint,
-                        execution_id=execution_id,
-                        update_token=update_token,
-                        launcher_pid=launcher_pid,
-                        child_pid=pid, cgroup_path=path,
-                        host_cgroup_gate=False,
+                    on_cgroup_ready=lambda pid, path: report_started(
+                        pid, path, host_cgroup_gate=False,
                     ),
                 )
                 if fallback is None:
@@ -267,12 +272,14 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
             _cleanup_cgroup(cgroup_path)
         raise
     _install_signal_forwarders(child)
-    started_response = _post_started(
-        endpoint,
-        execution_id=execution_id, update_token=update_token,
-        launcher_pid=launcher_pid, child_pid=child.pid,
-        cgroup_path=cgroup_path,
-        host_cgroup_gate=use_host_cgroup_gate,
+    started_response = (
+        {}
+        if started_reported
+        else report_started(
+            child.pid,
+            cgroup_path,
+            host_cgroup_gate=use_host_cgroup_gate,
+        )
     )
     if cgroup_path is None and isinstance(started_response, dict):
         response_cgroup = started_response.get("cgroup_path")
@@ -1112,6 +1119,15 @@ def _payload_environment() -> dict[str, str]:
             env["PYTHONPATH"] = os.pathsep.join(payload_pythonpath)
         else:
             env.pop("PYTHONPATH", None)
+    task_python = env.get("CLAW_TASK_PYTHON")
+    if task_python and os.path.isabs(task_python):
+        task_bin = os.path.dirname(task_python)
+        current_path = env.get("PATH", "")
+        path_entries = current_path.split(os.pathsep) if current_path else []
+        preferred = ["/opt/claw/bin", task_bin]
+        env["PATH"] = os.pathsep.join(
+            [*preferred, *[entry for entry in path_entries if entry not in preferred]]
+        )
     return env
 
 

@@ -3,16 +3,23 @@
     "defaults": {
       "workspace": "/testbed",
       "repoRoot": "/testbed",
-      "tools": {
-        "elevated": {
-          "enabled": true
-        }
-      },
       "sandbox": {
         "docker": {
           "containerPrefix": "__SANDBOX_CONTAINER_PREFIX__"
         }
       }
+    }
+  },
+  "tools": {
+    "exec": {
+      "pathPrepend": [
+        "/opt/claw/bin",
+        "/opt/miniconda3/envs/testbed/bin",
+        "/opt/conda/envs/testbed/bin",
+        "/opt/miniconda3/condabin",
+        "/opt/miniconda3/bin",
+        "/opt/conda/bin"
+      ]
     }
   },
   "env": {
@@ -38,6 +45,7 @@
           "consoleMode": "verbose",
           "executionBackend": "managed-wrapper",
           "launcherPath": "/opt/claw/bin/claw-launch",
+          "launcherInterpreter": "/bin/sh",
           "instrumentHosts": [
             "gateway"
           ],

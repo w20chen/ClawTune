@@ -39,6 +39,10 @@ _PLUGIN_CONFIG: dict[str, Any] = {
     "consoleMode": "verbose",
     "executionBackend": "managed-wrapper",
     "launcherPath": "/opt/claw/bin/claw-launch",
+    # Run the shell wrapper through an explicit interpreter.  Recent OpenClaw
+    # exec transports special-case direct script paths, which is unsuitable for
+    # the managed launcher lifecycle.
+    "launcherInterpreter": "/bin/sh",
     "instrumentHosts": ["gateway"],
     "instrumentTools": ["exec"],
     "enableCgroup": True,
@@ -317,14 +321,25 @@ export OPENCLAW_SCHEDULER_ENDPOINT="$CLAW_SCHEDULER_ENDPOINT"
 export CLAW_EXEC_WORKDIR="/testbed"
 export OPENCLAW_WORKSPACE_DIR="/testbed"
 export OPENCLAW_REPO_ROOT="/testbed"
+# Keep managed exec payloads in the task image's Python environment.  The
+# sidecar itself deliberately uses _CLW_PYTHON, but bare python3/pip issued by
+# an agent must resolve to the same task interpreter instead of /usr/bin.
+if [ -x /opt/miniconda3/envs/testbed/bin/python3 ]; then
+    export CLAW_TASK_PYTHON="/opt/miniconda3/envs/testbed/bin/python3"
+elif [ -x /opt/conda/envs/testbed/bin/python3 ]; then
+    export CLAW_TASK_PYTHON="/opt/conda/envs/testbed/bin/python3"
+else
+    export CLAW_TASK_PYTHON="$_CLW_PYTHON"
+fi
+export PATH="/opt/claw/bin:$(dirname "$CLAW_TASK_PYTHON"):$PATH"
 CONTAINER_ID_CANDIDATE="$(hostname 2>/dev/null || true)"
 if [ -n "$CONTAINER_ID_CANDIDATE" ]; then
     export AGENT_SCHEDULER_SANDBOX_CONTAINER_ID="${AGENT_SCHEDULER_SANDBOX_CONTAINER_ID:-$CONTAINER_ID_CANDIDATE}"
     export CLAW_SANDBOX_CONTAINER_ID="${CLAW_SANDBOX_CONTAINER_ID:-$CONTAINER_ID_CANDIDATE}"
 fi
+CLAW_BCC_PYTHONPATH=""
 if [ -s /tmp/.claw_bcc_pythonpath ]; then
     CLAW_BCC_PYTHONPATH="$(cat /tmp/.claw_bcc_pythonpath)"
-    export PYTHONPATH="$CLAW_BCC_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}"
 fi
 mkdir -p "$TRACE_DIR"
 $_CLW_PYTHON - <<'PY' > "$TRACE_DIR/cgroup_probe.json" 2>/dev/null || true
@@ -357,7 +372,7 @@ probe = {
 print(json.dumps(probe, indent=2))
 PY
 
-$_CLW_PYTHON - <<'PY' > "$TRACE_DIR/tool_resource_preflight.json" 2>&1 || true
+PYTHONPATH="${CLAW_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" $_CLW_PYTHON - <<'PY' > "$TRACE_DIR/tool_resource_preflight.json" 2>&1 || true
 import json
 import os
 import platform
@@ -416,8 +431,13 @@ cd "$CLAW_ROOT/scheduler"
 # Install scheduler package (editable, best-effort)
 $_CLW_PIP install -e . --quiet 2>/dev/null || $_CLW_PIP install . --quiet 2>/dev/null || true
 
-# Start sidecar
-PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" $_CLW_PYTHON -m agent_scheduler.main \
+# Start sidecar.  BCC's system Python package is scoped to this process; do
+# not leak it into the agent's task interpreter.
+CLAW_SIDECAR_PYTHONPATH="src"
+if [ -n "$CLAW_BCC_PYTHONPATH" ]; then
+    CLAW_SIDECAR_PYTHONPATH="$CLAW_SIDECAR_PYTHONPATH:$CLAW_BCC_PYTHONPATH"
+fi
+PYTHONPATH="$CLAW_SIDECAR_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}" $_CLW_PYTHON -m agent_scheduler.main \
     --host 127.0.0.1 --port "$SIDECAR_PORT" \
     > "$TRACE_DIR/sidecar.log" 2>&1 &
 SIDECAR_PID=$!
@@ -429,13 +449,24 @@ echo "[claw] sidecar PID=$SIDECAR_PID"
 mkdir -p /opt/claw/bin
 cat > /opt/claw/bin/claw-launch <<'EOF_LAUNCHER'
 #!/bin/sh
-export PYTHONPATH="/claw/scheduler/src${PYTHONPATH:+:$PYTHONPATH}"
+export CLAW_LAUNCHER_PYTHONPATH="/claw/scheduler/src"
+export PYTHONPATH="$CLAW_LAUNCHER_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}"
 if [ -x /opt/conda/bin/python3 ]; then
     exec /opt/conda/bin/python3 -m agent_scheduler.launcher "$@"
 fi
 exec python3 -m agent_scheduler.launcher "$@"
 EOF_LAUNCHER
 chmod +x /opt/claw/bin/claw-launch
+for PIP_NAME in pip pip3; do
+    cat > "/opt/claw/bin/$PIP_NAME" <<'EOF_PIP'
+#!/bin/sh
+if [ -n "${CLAW_TASK_PYTHON:-}" ] && [ -x "$CLAW_TASK_PYTHON" ]; then
+    exec "$CLAW_TASK_PYTHON" -m pip "$@"
+fi
+exec python3 -m pip "$@"
+EOF_PIP
+    chmod +x "/opt/claw/bin/$PIP_NAME"
+done
 
 # Wait for ready
 READY=0
@@ -504,7 +535,10 @@ if [ -f "$CLAW_ROOT/openclaw-config.json5" ]; then
     echo "=== openclaw config patch ==="
     sed "s/__SANDBOX_CONTAINER_PREFIX__/${AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX:-}/g" \
         "$CLAW_ROOT/openclaw-config.json5" \
-        | openclaw config patch --stdin || echo "config patch FAILED (exit=$?)"
+        | openclaw config patch --stdin || {
+            echo "config patch FAILED (exit=$?)"
+            exit 1
+        }
     echo ""
 fi
 
@@ -867,16 +901,23 @@ def _write_plugin_config(bundle_dir: Path) -> None:
             "defaults": {
                 "workspace": "/testbed",
                 "repoRoot": "/testbed",
-                "tools": {
-                    "elevated": {
-                        "enabled": True,
-                    },
-                },
                 "sandbox": {
                     "docker": {
                         "containerPrefix": "__SANDBOX_CONTAINER_PREFIX__",
                     },
                 },
+            },
+        },
+        "tools": {
+            "exec": {
+                "pathPrepend": [
+                    "/opt/claw/bin",
+                    "/opt/miniconda3/envs/testbed/bin",
+                    "/opt/conda/envs/testbed/bin",
+                    "/opt/miniconda3/condabin",
+                    "/opt/miniconda3/bin",
+                    "/opt/conda/bin",
+                ],
             },
         },
         "env": {

@@ -206,6 +206,7 @@ function launcherEnv(): Record<string, string> {
     "CLAW_ENABLE_CGROUP",
     "CLAW_LAUNCH_MODE",
     "CLAW_LAUNCH_DEBUG",
+    "CLAW_TASK_PYTHON",
     "CLAW_SCHEDULER_ENDPOINT",
     "OPENCLAW_SCHEDULER_ENDPOINT",
     "CLAW_SANDBOX_CONTAINER_ID",

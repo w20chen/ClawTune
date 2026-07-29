@@ -402,8 +402,10 @@ def test_swe_rebench_plugin_config_uses_managed_wrapper_cgroup() -> None:
 
 def test_entrypoint_installs_stable_launcher_path() -> None:
     assert "cat > /opt/claw/bin/claw-launch" in _ENTRYPOINT_TEMPLATE
-    assert 'export PYTHONPATH="/claw/scheduler/src${PYTHONPATH:+:$PYTHONPATH}"' in _ENTRYPOINT_TEMPLATE
+    assert 'export CLAW_LAUNCHER_PYTHONPATH="/claw/scheduler/src"' in _ENTRYPOINT_TEMPLATE
     assert "python3 -m agent_scheduler.launcher" in _ENTRYPOINT_TEMPLATE
+    assert 'for PIP_NAME in pip pip3; do' in _ENTRYPOINT_TEMPLATE
+    assert 'exec "$CLAW_TASK_PYTHON" -m pip "$@"' in _ENTRYPOINT_TEMPLATE
 
 
 def test_setup_installs_scheduler_runtime_dependencies() -> None:
@@ -427,7 +429,8 @@ def test_docker_runner_config_sets_sandbox_container_prefix_placeholder(tmp_path
 
     assert agent_defaults["workspace"] == "/testbed"
     assert agent_defaults["repoRoot"] == "/testbed"
-    assert agent_defaults["tools"]["elevated"]["enabled"] is True
+    assert "tools" not in agent_defaults
+    assert parsed["tools"]["exec"]["pathPrepend"][0] == "/opt/claw/bin"
     assert docker_cfg["containerPrefix"] == "__SANDBOX_CONTAINER_PREFIX__"
     assert parsed["env"]["CLAW_EXEC_WORKDIR"] == "/testbed"
     assert parsed["env"]["CLAW_SCHEDULER_ENDPOINT"] == "http://127.0.0.1:8765"
@@ -438,6 +441,8 @@ def test_docker_runner_config_sets_sandbox_container_prefix_placeholder(tmp_path
 def test_entrypoint_exports_container_runtime_identity_for_launcher() -> None:
     assert 'export CLAW_SCHEDULER_ENDPOINT="http://127.0.0.1:$SIDECAR_PORT"' in _ENTRYPOINT_TEMPLATE
     assert 'export CLAW_EXEC_WORKDIR="/testbed"' in _ENTRYPOINT_TEMPLATE
+    assert 'export CLAW_TASK_PYTHON="$_CLW_PYTHON"' in _ENTRYPOINT_TEMPLATE
+    assert 'export PATH="/opt/claw/bin:$(dirname "$CLAW_TASK_PYTHON"):$PATH"' in _ENTRYPOINT_TEMPLATE
     assert "AGENT_SCHEDULER_SANDBOX_CONTAINER_ID" in _ENTRYPOINT_TEMPLATE
     assert "CLAW_SANDBOX_CONTAINER_ID" in _ENTRYPOINT_TEMPLATE
     assert '"container_id": os.environ.get("AGENT_SCHEDULER_SANDBOX_CONTAINER_ID")' in _ENTRYPOINT_TEMPLATE
