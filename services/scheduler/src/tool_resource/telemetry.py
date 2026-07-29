@@ -3124,7 +3124,7 @@ class ClauseTelemetryCollector:
             cached = _cgroup_inodes_cache.get(container_id)
             if cached:
                 self.cgroup_inodes |= cached
-        self.container_id = container_id
+        self.init_pid = init_pid
         init_pid_ns = _pid_namespace_inode_for_pid(init_pid) if init_pid > 0 else None
         self.pid_namespace_inodes = {init_pid_ns} if init_pid_ns is not None else set()
         self.quota_cores = observed_quota_cores(cgroup)
