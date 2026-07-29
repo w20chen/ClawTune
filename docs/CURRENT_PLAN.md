@@ -462,3 +462,74 @@ boundaries are rejected. This makes a missing `/started` lifecycle fail as
 missing target evidence instead of contaminating telemetry with host process
 trees; the fork-mode preflight prevents that state in the maintained
 host-sandbox route.
+
+## 2026-07-29 Clause Status Source Contract Alignment
+
+Stage-2 telemetry can use `live_shell_exit_code` when a live shell reports a
+command-lookup failure. The public clause-telemetry schema now includes that
+value in `clauseStatus.source`, and the maintained example exercises it on a
+`no_runtime_exec` status.
+
+Validation in this Windows workspace:
+
+- A focused Node JSON/enum fixture check passed for both
+  `root_exec_chain_terminal` and `live_shell_exit_code`.
+- `git diff --check -- contracts/clause-telemetry.schema.json
+  contracts/examples/clause-telemetry.json`: passed.
+- `python tools\validate_contracts.py`: passed for all nine schema examples
+  using the host Python interpreter.
+
+## 2026-07-29 Spectree Host-Sandbox Final Audit
+
+The downloaded `0b01001001__spectree-64` run proves that fork/exec and eBPF
+collection were active: all 15 launcher executions have a claim/start/exit,
+one trusted launcher root, a connected command tree, healthy active-to-closed
+collectors, positive kprobe hits, and zero ring/telemetry loss. Twelve calls are
+Clause-KB eligible. The other three are explicit command-semantic rejections
+(one shell parse failure and two masked missing pip commands), not collector
+failures, and contributed no Clause-KB observations.
+
+The maintained host route now selects the task image's testbed Python before
+system Python, removes the scheduler-only `PYTHONPATH` before payload exec, and
+installs `pip`/`pip3` wrappers backed by `python3 -m pip`. A sandbox runtime
+preflight checks Python and both pip entry points before the agent runs. Stage-2
+completion consumes bounded raw stdout/stderr before any async scope wait;
+telemetry GET is read-only, so it cannot race completion and discard masked
+command-lookup diagnostics. Fallback finalization uses the predictor's active
+run as its exactly-once authority.
+
+The required runner gate now separates artifact envelopes, collector health,
+trusted-root lifecycle, command semantics, and KB eligibility. It requires
+schema-valid call quality, explicit non-OK reasons, launcher exit status,
+one-to-one trace execution/tool-call references to disk artifacts, and usable
+finite evidence-backed bucket plus latency/CPU/memory predictions. Applying
+that stricter gate to the downloaded run gives 15/15 collector/artifact/
+lifecycle/reference coverage, 12 eligible + 3 explicitly rejected calls,
+9 bucket predictions, 6 predictions for each continuous target, no warnings,
+and no gate error.
+
+Validation in this Windows workspace:
+
+- `python -m pytest tests -q --basetemp .pytest-final-root`: 79 passed,
+  2 skipped.
+- `python -m pytest services\scheduler\tests -q --basetemp
+  .pytest-final-scheduler`: 117 passed.
+- `npm.cmd test` from `packages/openclaw-plugin`: 62 passed; its TypeScript
+  build also passed.
+- `python tools\validate_contracts.py`: all nine examples passed.
+- Focused Ruff, `py_compile`, and `git diff --check`: passed.
+
+The post-fix live command below cannot run in this Windows workspace because it
+requires the user's Linux Docker host, cgroup v2, BCC/eBPF privileges, OpenClaw,
+and configured upstream LLM credentials. It remains the final acceptance run:
+
+```bash
+sudo -E env "PATH=$PATH" "$(command -v python3)" \
+  -m swe_rebench.runner run \
+  --config swe_rebench/config.yaml \
+  --prepare \
+  --dataset swe_rebench/tasks.json \
+  --sample 1 \
+  --export \
+  --runtime-mode host-openclaw-sandbox
+```

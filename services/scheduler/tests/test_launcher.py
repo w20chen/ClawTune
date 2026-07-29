@@ -580,9 +580,13 @@ def test_launcher_prefers_execution_token_env_and_removes_it(monkeypatch) -> Non
 
 
 def test_payload_environment_removes_scheduler_credentials(monkeypatch) -> None:
+    launcher_path = "/workspace/.claw/scheduler/src"
+    original_path = "/task/pythonpath"
     monkeypatch.setenv("CLAW_EXECUTION_TOKEN", "claim-token")
     monkeypatch.setenv("CLAW_SCHEDULER_TOKEN", "legacy-bearer")
     monkeypatch.setenv("OPENCLAW_SCHEDULER_TOKEN", "bearer")
+    monkeypatch.setenv("CLAW_LAUNCHER_PYTHONPATH", launcher_path)
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join((launcher_path, original_path)))
     monkeypatch.setenv("KEEP", "value")
 
     env = launcher._payload_environment()
@@ -591,6 +595,8 @@ def test_payload_environment_removes_scheduler_credentials(monkeypatch) -> None:
     assert "CLAW_EXECUTION_TOKEN" not in env
     assert "CLAW_SCHEDULER_TOKEN" not in env
     assert "OPENCLAW_SCHEDULER_TOKEN" not in env
+    assert "CLAW_LAUNCHER_PYTHONPATH" not in env
+    assert env["PYTHONPATH"] == original_path
 
 
 def test_launcher_main_hides_internal_wrapper_errors(monkeypatch, capsys) -> None:

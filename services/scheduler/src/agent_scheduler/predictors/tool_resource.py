@@ -421,6 +421,8 @@ class ToolResourcePredictor:
         execution_id: str,
         exit_code: int | None,
         signal: int | None,
+        raw_result: Any | None = None,
+        succeeded: bool | None = None,
     ) -> ExecutionTelemetrySummary:
         run = self._runs_by_execution_id.pop(execution_id, None)
         if run is None:
@@ -436,7 +438,12 @@ class ToolResourcePredictor:
                 ),
             )
         replay_execution = "completed" if exit_code == 0 and signal is None else "failed"
-        workload_result = {"exit_code": exit_code, "signal": signal}
+        workload_result = _stage2_workload_result(
+            raw_result,
+            exit_code=exit_code,
+            signal=signal,
+            succeeded=succeeded,
+        )
         try:
             result = self._sdk.finish_command(
                 run,
@@ -482,6 +489,11 @@ class ToolResourcePredictor:
 
     def execution_telemetry(self, execution_id: str) -> ExecutionTelemetrySummary | None:
         return self._telemetry_by_execution_id.get(execution_id)
+
+    def execution_active(self, execution_id: str) -> bool:
+        """Return whether this execution still owns an unfinished SDK run."""
+
+        return execution_id in self._runs_by_execution_id
 
     def _persist_clause_kb(self) -> bool:
         if self.clause_kb_snapshot_path is None:
@@ -869,6 +881,81 @@ def _stage2_completed_call(repo: str, row: Any) -> CompletedCall | None:
         peak_memory_mb_eligible=False,
         ambient_before_mb=None,
     )
+
+
+def _stage2_workload_result(
+    raw_result: Any,
+    *,
+    exit_code: int | None,
+    signal: int | None,
+    succeeded: bool | None,
+) -> dict[str, Any]:
+    """Build the bounded live-result envelope consumed by Stage-2.
+
+    The launcher supplies the authoritative exit status, while OpenClaw's
+    completion hook supplies stdout/stderr.  Keeping both lets the clause
+    bridge prove command-lookup failures even when a pipeline's final command
+    masks an earlier exit 127.
+    """
+
+    result = _stage2_result_text(raw_result)
+    stderr = _stage2_named_text(raw_result, "stderr")
+    return {
+        "exit_code": exit_code,
+        "signal": signal,
+        "ok": (
+            succeeded
+            if succeeded is not None
+            else exit_code == 0 and signal is None
+        ),
+        "result": _bounded_stage2_text(result),
+        "stderr": _bounded_stage2_text(stderr),
+    }
+
+
+def _stage2_result_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, Mapping):
+        return ""
+    details = value.get("details")
+    for container in (details, value):
+        if not isinstance(container, Mapping):
+            continue
+        for key in ("aggregated", "stdout", "text"):
+            text = container.get(key)
+            if isinstance(text, str) and text:
+                return text
+    content = value.get("content")
+    if isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
+        parts = [
+            item.get("text")
+            for item in content
+            if isinstance(item, Mapping) and isinstance(item.get("text"), str)
+        ]
+        if parts:
+            return "\n".join(parts)
+    nested = value.get("result")
+    return _stage2_result_text(nested) if nested is not value else ""
+
+
+def _stage2_named_text(value: Any, key: str) -> str:
+    if not isinstance(value, Mapping):
+        return ""
+    details = value.get("details")
+    for container in (details, value):
+        if isinstance(container, Mapping):
+            text = container.get(key)
+            if isinstance(text, str) and text:
+                return text
+    return ""
+
+
+def _bounded_stage2_text(value: str, limit: int = 65_536) -> str:
+    encoded = value.encode("utf-8", errors="replace")
+    if len(encoded) <= limit:
+        return value
+    return encoded[:limit].decode("utf-8", errors="ignore")
 
 
 def _stage2_status(

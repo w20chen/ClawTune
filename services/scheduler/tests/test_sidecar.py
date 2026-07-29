@@ -1007,6 +1007,119 @@ def test_stage2_execution_starts_on_claim_when_sandbox_scope_is_known(tmp_path: 
     ]
 
 
+def test_execution_exit_waits_for_completion_result_before_stage2_finish(
+    tmp_path: Path,
+) -> None:
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=tmp_path / "traces",
+            tool_resource_stage2_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
+    finish_calls: list[dict[str, object]] = []
+
+    def finish_execution(**kwargs):
+        finish_calls.append(kwargs)
+        return {
+            "execution_id": kwargs["execution_id"],
+            "tool_call_id": "call-result",
+            "artifact_path": None,
+            "started": True,
+            "status": "ok",
+            "unavailable_reason": None,
+        }
+
+    state.predictor.finish_execution = finish_execution  # type: ignore[method-assign]
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "exec-result",
+            "tool_call_id": "call-result",
+            "run_id": "run-result",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "d" * 64,
+            "command": "pip install -e . 2>&1 | tail -10",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"mode": "off"},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "exec-result",
+            "token": registration["one_time_token"],
+            "launcher_pid": 100,
+        },
+    ).json()
+
+    assert client.post(
+        "/v2/executions/exec-result/exited",
+        json={
+            "update_token": claim["update_token"],
+            "exit_code": 0,
+            "signal": None,
+        },
+    ).json() == {"stored": True}
+    assert finish_calls == []
+    # Telemetry reads must never acquire/finalize the active Stage-2 run.
+    client.get("/v2/executions/exec-result/telemetry")
+    assert finish_calls == []
+
+    original_scope = state.executions.scope
+
+    def scope_after_stage2_finish(execution_id: str):
+        # Completion finalization must happen before the route's async scope
+        # lookup, otherwise an 800 ms plugin timeout can race a raw-less GET.
+        assert finish_calls
+        return original_scope(execution_id)
+
+    state.executions.scope = scope_after_stage2_finish  # type: ignore[method-assign]
+
+    completion = {
+        "schema_version": "scheduler.v1",
+        "event_id": "evt-result",
+        "occurred_at": "2026-07-29T00:00:00Z",
+        "plugin_version": "0.1.0",
+        "run_id": "run-result",
+        "session_id": "session-result",
+        "session_key": None,
+        "agent_id": None,
+        "tool_call_id": "call-result",
+        "decision_id": None,
+        "lease_id": None,
+        "execution_id": "exec-result",
+        "tool_name": "exec",
+        "duration_ms": 100,
+        "succeeded": True,
+        "error_type": None,
+        "error_digest": None,
+        "result_size_bytes": None,
+        "raw_result": {
+            "details": {
+                "exitCode": 0,
+                "aggregated": "/bin/sh: 1: pip: not found",
+            }
+        },
+        "resource_scope": None,
+    }
+    assert client.post("/v1/events/tool-completed", json=completion).json() == {
+        "stored": True
+    }
+    assert finish_calls == [
+        {
+            "execution_id": "exec-result",
+            "exit_code": 0,
+            "signal": None,
+            "raw_result": completion["raw_result"],
+            "succeeded": True,
+        }
+    ]
+
+
 def test_exec_completion_finalizes_stage2_before_trace_write(tmp_path: Path) -> None:
     sandbox_cgroup = tmp_path / "sandbox-cgroup"
     _write_cgroup_fixture(sandbox_cgroup)
@@ -1077,7 +1190,13 @@ def test_exec_completion_finalizes_stage2_before_trace_write(tmp_path: Path) -> 
     }
 
     assert finish_calls == [
-        {"execution_id": "call-exec", "exit_code": 0, "signal": None}
+        {
+            "execution_id": "call-exec",
+            "exit_code": 0,
+            "signal": None,
+            "raw_result": {"details": {"status": "running"}},
+            "succeeded": True,
+        }
     ]
     tool_end = next(
         r

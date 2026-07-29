@@ -26,6 +26,7 @@ from swe_rebench.host_sandbox import (
     _stage_plugin_for_openclaw_if_needed,
     _start_sidecar,
     _verify_sandbox_launcher,
+    _verify_sandbox_task_environment,
     _write_host_tool_resource_preflight,
     _write_task_inputs,
 )
@@ -652,6 +653,12 @@ def test_host_sandbox_openclaw_config_uses_only_public_top_level_keys(tmp_path: 
     assert parsed["env"]["CLAW_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
     assert parsed["env"]["CLAW_ENABLE_CGROUP"] == "1"
     assert parsed["env"]["CLAW_LAUNCH_MODE"] == "fork-exec"
+    sandbox_path = parsed["env"]["PATH"].split(":")
+    assert sandbox_path[:3] == [
+        "/workspace/.claw/bin",
+        "/opt/miniconda3/envs/testbed/bin",
+        "/opt/conda/envs/testbed/bin",
+    ]
 
 
 def test_host_sandbox_openclaw_config_passes_docker_platform(tmp_path: Path) -> None:
@@ -772,10 +779,27 @@ def test_host_sandbox_launcher_is_readable_under_restrictive_umask(
     runtime = workspace / ".claw"
     launcher = runtime / "bin" / "claw-launch"
     assert launcher.stat().st_mode & 0o777 == 0o755
+    assert (runtime / "bin" / "pip").stat().st_mode & 0o777 == 0o755
+    assert (runtime / "bin" / "pip3").stat().st_mode & 0o777 == 0o755
     assert runtime.stat().st_mode & 0o055 == 0o055
     assert (runtime / "scheduler").stat().st_mode & 0o055 == 0o055
     assert (runtime / "scheduler" / "src").stat().st_mode & 0o055 == 0o055
     assert (runtime / "scheduler" / "src" / "agent_scheduler" / "__init__.py").stat().st_mode & 0o044 == 0o044
+
+
+def test_host_sandbox_installs_testbed_pip_wrappers(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    package = tmp_path / "bundle" / "scheduler" / "src" / "agent_scheduler"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+
+    _install_sandbox_launcher(workspace, tmp_path / "bundle")
+
+    for name in ("pip", "pip3"):
+        wrapper = workspace / ".claw" / "bin" / name
+        assert wrapper.read_text(encoding="utf-8") == (
+            '#!/bin/sh\nexec python3 -m pip "$@"\n'
+        )
 
 
 def test_host_sandbox_verifies_mounted_launcher_before_agent(
@@ -800,10 +824,57 @@ def test_host_sandbox_verifies_mounted_launcher_before_agent(
     assert command[:5] == ["/usr/bin/docker", "run", "--rm", "--platform", "linux/amd64"]
     assert command[command.index("--network") + 1] == "none"
     assert command[command.index("--env") + 1] == "CLAW_LAUNCH_MODE=fork-exec"
+    assert any(
+        part.startswith(
+            "PATH=/workspace/.claw/bin:/opt/miniconda3/envs/testbed/bin:"
+        )
+        for part in command
+    )
     assert command[command.index("--user") + 1] == "65534:65534"
     assert command[command.index("--entrypoint") + 1] == "/bin/sh"
     assert command[-2] == "/workspace/.claw/bin/claw-launch"
     assert command[-1] == "diagnose"
+
+
+def test_host_sandbox_verifies_python_task_environment(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "setup.py").write_text("", encoding="utf-8")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._require_executable",
+        lambda name: "/usr/bin/docker",
+    )
+    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+
+    _verify_sandbox_task_environment(tmp_path, workspace, "linux/amd64")
+
+    command = calls[0][0]
+    assert command[:5] == [
+        "/usr/bin/docker",
+        "run",
+        "--rm",
+        "--platform",
+        "linux/amd64",
+    ]
+    assert any(
+        part.startswith(
+            "PATH=/workspace/.claw/bin:/opt/miniconda3/envs/testbed/bin:"
+        )
+        for part in command
+    )
+    assert "python3 -m pip --version" in command[-1]
+    assert "pip --version" in command[-1]
+    assert "pip3 --version" in command[-1]
+    assert (tmp_path / "sandbox-runtime-preflight.log").exists()
 
 
 def test_host_sandbox_exports_testbed_with_docker_platform(monkeypatch, tmp_path: Path) -> None:

@@ -19,7 +19,14 @@ from agent_scheduler.predictors.tool_resource import (
     ToolResourcePredictor,
     load_openclaw_trace_observations,
 )
-from tool_resource.runtime_kb import LatencyBuckets
+from tool_resource.runtime_kb import (
+    ClauseObservation,
+    ClauseResourceKB,
+    CompletedCall,
+    LatencyBuckets,
+    RuntimeToolResourceKB,
+    ToolCallQuery,
+)
 import tool_resource.runtime_kb as tool_resource_runtime_kb
 
 
@@ -31,6 +38,29 @@ def _test_parse_command(command: str) -> dict:
             continue
         clauses.append({"bin": Path(argv[0]).name, "argv": argv})
     return {"clauses": clauses, "parse_failed": not clauses}
+
+
+def test_stage2_workload_result_preserves_masked_lookup_diagnostic() -> None:
+    workload = tool_resource_predictor._stage2_workload_result(
+        {
+            "content": [{"type": "text", "text": "/bin/sh: 1: pip: not found"}],
+            "details": {
+                "aggregated": "/bin/sh: 1: pip: not found",
+                "exitCode": 0,
+            },
+        },
+        exit_code=0,
+        signal=None,
+        succeeded=True,
+    )
+
+    assert workload == {
+        "exit_code": 0,
+        "signal": None,
+        "ok": True,
+        "result": "/bin/sh: 1: pip: not found",
+        "stderr": "",
+    }
 
 
 class _FakeToolResourceSDK:
@@ -524,7 +554,7 @@ def test_tool_resource_predictor_exposes_native_unavailable_reason(
         "parse_failed": False,
         "clause_bins": ["python", "git"],
         "prediction": None,
-        "unavailable_reason": "compound_command_uncomposed",
+        "unavailable_reason": "compound_clause_evidence_incomplete",
         "continuous_predictions": {},
         "prediction_algorithms": _prediction_algorithms(),
     }
@@ -533,6 +563,129 @@ def test_tool_resource_predictor_exposes_native_unavailable_reason(
     assert continuous["peak_cpu_cores"]["conditional_p90"] == 1.5
     assert continuous["peak_cpu_cores"]["key_kind"] == "command_prefix_depth_3"
     assert continuous["peak_memory_mb"]["note"] == "memory prediction requires ambient_before_mb anchor"
+
+
+def test_compound_prediction_requires_evidence_for_every_effective_clause() -> None:
+    kb = ClauseResourceKB()
+    buckets = LatencyBuckets((100.0, 500.0))
+    clauses = (
+        {"bin": "python", "argv": ("python", "-m", "pytest")},
+        {"bin": "apt-get", "argv": ("apt-get", "update")},
+    )
+    kb.observe_completed_clause(
+        ClauseObservation(
+            repo="repo-1",
+            bin="python",
+            argv=("python", "-m", "pytest"),
+            ts_start=1.0,
+            ts_end=1.08,
+            latency_ms=80.0,
+        )
+    )
+
+    incomplete = kb.predict_command_latency_bucket_from_clauses(
+        "repo-1",
+        clauses,
+        2.0,
+        buckets,
+        command="python -m pytest && apt-get update",
+    )
+
+    assert incomplete.prediction is None
+    assert incomplete.unavailable_reason == "compound_clause_evidence_incomplete"
+    assert incomplete.clause_bins == ("python", "apt-get")
+
+    kb.observe_completed_clause(
+        ClauseObservation(
+            repo="repo-1",
+            bin="apt-get",
+            argv=("apt-get", "update"),
+            ts_start=2.1,
+            ts_end=3.0,
+            latency_ms=900.0,
+        )
+    )
+    complete = kb.predict_command_latency_bucket_from_clauses(
+        "repo-1",
+        clauses,
+        4.0,
+        buckets,
+        command="python -m pytest && apt-get update",
+    )
+
+    assert complete.prediction is None
+    assert complete.unavailable_reason == "compound_command_uncomposed"
+
+
+@pytest.mark.parametrize("tool_name", ["read", "edit"])
+def test_commandless_repo_tool_name_learning_is_causal_and_survives_snapshot(
+    tool_name: str,
+) -> None:
+    kb = RuntimeToolResourceKB()
+    kb.observe_completed_call(
+        CompletedCall(
+            repo="repo-1",
+            tool_name=tool_name,
+            command=None,
+            ts_start=1.0,
+            ts_end=1.2,
+            peak_cpu_cores=0.25,
+            peak_cpu_cores_eligible=True,
+            peak_memory_mb=64.0,
+            peak_memory_mb_eligible=True,
+            ambient_before_mb=40.0,
+        )
+    )
+
+    second_call = kb.query(
+        ToolCallQuery(
+            repo="repo-1",
+            tool_name=tool_name,
+            command=None,
+            ts_start=2.0,
+            ambient_before_mb=50.0,
+        )
+    )
+
+    assert second_call["latency_ms"].conditional_p90 == pytest.approx(200.0)
+    assert second_call["peak_cpu_cores"].conditional_p90 == pytest.approx(0.25)
+    assert second_call["peak_memory_mb"].conditional_p90 == pytest.approx(74.0)
+    for prediction in second_call.values():
+        assert prediction.scope == "repo"
+        assert prediction.key_kind == "tool_name"
+        assert prediction.evidence_count == 1
+        assert prediction.fallback_path == ("repo:tool_name",)
+
+    kb.observe_completed_call(
+        CompletedCall(
+            repo="repo-1",
+            tool_name=tool_name,
+            command=None,
+            ts_start=2.1,
+            ts_end=2.5,
+            peak_cpu_cores=0.5,
+            peak_cpu_cores_eligible=True,
+            peak_memory_mb=80.0,
+            peak_memory_mb_eligible=True,
+            ambient_before_mb=50.0,
+        )
+    )
+    restored = RuntimeToolResourceKB.from_json_obj(kb.to_json_obj())
+
+    third_call = restored.query(
+        ToolCallQuery(
+            repo="repo-1",
+            tool_name=tool_name,
+            command=None,
+            ts_start=3.0,
+            ambient_before_mb=60.0,
+        )
+    )
+
+    assert third_call["latency_ms"].conditional_p90 == pytest.approx(400.0)
+    assert third_call["peak_cpu_cores"].conditional_p90 == pytest.approx(0.5)
+    assert third_call["peak_memory_mb"].conditional_p90 == pytest.approx(90.0)
+    assert all(prediction.evidence_count == 2 for prediction in third_call.values())
 
 
 def test_tool_resource_predictor_learns_from_completion_without_cold_start() -> None:

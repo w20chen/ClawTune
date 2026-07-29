@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import errno
 import json
+import math
 import os
 import shutil
 import sys
@@ -132,6 +133,7 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         "tool_span_ends": 0,
         "launcher_tool_span_ends": 0,
         "launcher_stage2_expected_span_ends": 0,
+        "launcher_exit_status_span_ends": 0,
         "launcher_cgroup_tool_span_ends": 0,
         "launcher_attributed_tool_span_ends": 0,
         "unattributed_launcher_tool_span_ends": 0,
@@ -151,11 +153,18 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         "launcher_tool_resource_available_span_ends": 0,
         "launcher_tool_resource_eligible_span_ends": 0,
         "launcher_tool_resource_unavailable_span_ends": 0,
+        "launcher_stage2_lifecycle_span_ends": 0,
+        "launcher_stage2_artifact_envelope_span_ends": 0,
+        "launcher_stage2_artifact_refs": [],
         "launcher_tool_resource_unavailable_reasons": {},
         "launcher_tool_resource_disabled_reasons": {},
         "tool_resource_prediction_span_starts": 0,
         "tool_resource_prediction_available_span_starts": 0,
         "continuous_prediction_available_span_starts": 0,
+        "clause_bucket_prediction_available_span_starts": 0,
+        "continuous_latency_ms_prediction_available_span_starts": 0,
+        "continuous_peak_cpu_cores_prediction_available_span_starts": 0,
+        "continuous_peak_memory_mb_prediction_available_span_starts": 0,
         "warnings": [],
     }
     try:
@@ -188,10 +197,36 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                     report["tool_resource_prediction_span_starts"] += 1
                     continuous = prediction.get("continuous_predictions")
                     has_continuous = _has_available_continuous_prediction(continuous)
-                    if prediction.get("prediction") is not None or has_continuous:
+                    has_bucket = _bucket_prediction_available(
+                        prediction.get("prediction")
+                    )
+                    if has_bucket or has_continuous:
                         report["tool_resource_prediction_available_span_starts"] += 1
+                    if has_bucket:
+                        report[
+                            "clause_bucket_prediction_available_span_starts"
+                        ] += 1
                     if has_continuous:
                         report["continuous_prediction_available_span_starts"] += 1
+                    for target, counter in (
+                        (
+                            "latency_ms",
+                            "continuous_latency_ms_prediction_available_span_starts",
+                        ),
+                        (
+                            "peak_cpu_cores",
+                            "continuous_peak_cpu_cores_prediction_available_span_starts",
+                        ),
+                        (
+                            "peak_memory_mb",
+                            "continuous_peak_memory_mb_prediction_available_span_starts",
+                        ),
+                    ):
+                        if _continuous_target_prediction_available(
+                            continuous,
+                            target,
+                        ):
+                            report[counter] += 1
             if record_type == "span_end":
                 report["tool_span_ends"] += 1
                 status_code = _nested_get(record, ("status", "code"))
@@ -239,14 +274,31 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                         report["launcher_not_executable_span_ends"] += 1
                     if _is_launcher_command_not_found(record):
                         report["launcher_command_not_found_span_ends"] += 1
-                    if (
-                        _nested_get(record, ("execution", "execution_id"))
-                        and output_exit_code is not None
-                    ):
+                    if _nested_get(record, ("execution", "execution_id")):
                         report["launcher_stage2_expected_span_ends"] += 1
+                        if output_exit_code is not None:
+                            report["launcher_exit_status_span_ends"] += 1
                     tool_resource = _nested_get(record, ("execution", "tool_resource"))
                     if isinstance(tool_resource, dict):
                         report["launcher_tool_resource_span_ends"] += 1
+                        if _trace_stage2_lifecycle_complete(record, tool_resource):
+                            report["launcher_stage2_lifecycle_span_ends"] += 1
+                        if _trace_stage2_artifact_envelope_complete(
+                            record,
+                            tool_resource,
+                        ):
+                            report["launcher_stage2_artifact_envelope_span_ends"] += 1
+                            report["launcher_stage2_artifact_refs"].append(
+                                {
+                                    "execution_id": _nested_get(
+                                        record,
+                                        ("execution", "execution_id"),
+                                    ),
+                                    "tool_call_id": tool_resource.get(
+                                        "tool_call_id"
+                                    ),
+                                }
+                            )
                         if tool_resource.get("status") != "unavailable":
                             report["launcher_tool_resource_available_span_ends"] += 1
                         if tool_resource.get("kb_observations_added", 0):
@@ -309,6 +361,22 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         report["warnings"].append("launcher tool spans have no Stage-2 tool-resource telemetry")
     if report["launcher_tool_resource_unavailable_span_ends"]:
         report["warnings"].append("Stage-2 tool-resource telemetry is unavailable for some launcher tool spans")
+    if (
+        report["launcher_stage2_expected_span_ends"]
+        and report["launcher_stage2_lifecycle_span_ends"]
+        != report["launcher_stage2_expected_span_ends"]
+    ):
+        report["warnings"].append(
+            "some launcher tool spans have an incomplete Stage-2 lifecycle"
+        )
+    if (
+        report["launcher_stage2_expected_span_ends"]
+        and report["launcher_stage2_artifact_envelope_span_ends"]
+        != report["launcher_stage2_expected_span_ends"]
+    ):
+        report["warnings"].append(
+            "some launcher tool spans have an incomplete Stage-2 artifact envelope"
+        )
     if report["resource_sampled_tool_span_ends"] != report["tool_span_ends"]:
         report["warnings"].append("some tool spans have no complete cgroup/process resource samples")
     if report["cgroup_sampled_tool_span_ends"] != report["tool_span_ends"]:
@@ -316,11 +384,68 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
     return report
 
 
+def _trace_stage2_lifecycle_complete(
+    record: dict[str, Any],
+    tool_resource: dict[str, Any],
+) -> bool:
+    execution_id = _nested_get(record, ("execution", "execution_id"))
+    if not isinstance(execution_id, str) or not execution_id:
+        return False
+    if tool_resource.get("started") is not True:
+        return False
+    if tool_resource.get("execution_id") != execution_id:
+        return False
+    tool_call_id = tool_resource.get("tool_call_id")
+    if not isinstance(tool_call_id, str) or not tool_call_id:
+        return False
+    span_id = record.get("span_id")
+    if isinstance(span_id, str) and span_id and span_id != tool_call_id:
+        return False
+    call_telemetry = tool_resource.get("call_telemetry")
+    if isinstance(call_telemetry, dict):
+        telemetry_id = call_telemetry.get("tool_call_id")
+        if telemetry_id != tool_call_id:
+            return False
+    return True
+
+
+def _trace_stage2_artifact_envelope_complete(
+    record: dict[str, Any],
+    tool_resource: dict[str, Any],
+) -> bool:
+    if not _trace_stage2_lifecycle_complete(record, tool_resource):
+        return False
+    artifact_path = tool_resource.get("artifact_path")
+    artifact_summary = tool_resource.get("artifact_summary")
+    call_telemetry = tool_resource.get("call_telemetry")
+    if not isinstance(artifact_path, str) or not artifact_path:
+        return False
+    if not isinstance(artifact_summary, dict) or not isinstance(call_telemetry, dict):
+        return False
+    if artifact_summary.get("schema") != "clause_telemetry_v2":
+        return False
+    summary_call_count = artifact_summary.get("call_count")
+    if (
+        not isinstance(summary_call_count, int)
+        or isinstance(summary_call_count, bool)
+        or summary_call_count != 1
+    ):
+        return False
+    execution_id = _nested_get(record, ("execution", "execution_id"))
+    if Path(artifact_path).stem != execution_id:
+        return False
+    return True
+
+
 def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
     tool_span_ends = sum(int(item.get("tool_span_ends", 0)) for item in trace_inspection)
     launcher_tool_span_ends = sum(int(item.get("launcher_tool_span_ends", 0)) for item in trace_inspection)
     launcher_stage2_expected_span_ends = sum(
         int(item.get("launcher_stage2_expected_span_ends", 0))
+        for item in trace_inspection
+    )
+    launcher_exit_status_span_ends = sum(
+        int(item.get("launcher_exit_status_span_ends", 0))
         for item in trace_inspection
     )
     launcher_cgroup_tool_span_ends = sum(
@@ -369,6 +494,28 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         int(item.get("launcher_tool_resource_unavailable_span_ends", 0))
         for item in trace_inspection
     )
+    launcher_stage2_lifecycle_span_ends = sum(
+        int(item.get("launcher_stage2_lifecycle_span_ends", 0))
+        for item in trace_inspection
+    )
+    launcher_stage2_artifact_envelope_span_ends = sum(
+        int(item.get("launcher_stage2_artifact_envelope_span_ends", 0))
+        for item in trace_inspection
+    )
+    launcher_stage2_artifact_refs = sorted(
+        (
+            {
+                "execution_id": ref["execution_id"],
+                "tool_call_id": ref["tool_call_id"],
+            }
+            for item in trace_inspection
+            for ref in item.get("launcher_stage2_artifact_refs", [])
+            if isinstance(ref, dict)
+            and isinstance(ref.get("execution_id"), str)
+            and isinstance(ref.get("tool_call_id"), str)
+        ),
+        key=lambda ref: (ref["execution_id"], ref["tool_call_id"]),
+    )
     launcher_not_executable_span_ends = sum(
         int(item.get("launcher_not_executable_span_ends", 0))
         for item in trace_inspection
@@ -393,22 +540,71 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         int(item.get("continuous_prediction_available_span_starts", 0))
         for item in trace_inspection
     )
+    clause_bucket_prediction_available_span_starts = sum(
+        int(item.get("clause_bucket_prediction_available_span_starts", 0))
+        for item in trace_inspection
+    )
+    continuous_latency_ms_prediction_available_span_starts = sum(
+        int(
+            item.get(
+                "continuous_latency_ms_prediction_available_span_starts",
+                0,
+            )
+        )
+        for item in trace_inspection
+    )
+    continuous_peak_cpu_cores_prediction_available_span_starts = sum(
+        int(
+            item.get(
+                "continuous_peak_cpu_cores_prediction_available_span_starts",
+                0,
+            )
+        )
+        for item in trace_inspection
+    )
+    continuous_peak_memory_mb_prediction_available_span_starts = sum(
+        int(
+            item.get(
+                "continuous_peak_memory_mb_prediction_available_span_starts",
+                0,
+            )
+        )
+        for item in trace_inspection
+    )
     return {
         "tool_span_ends": tool_span_ends,
         "launcher_tool_span_ends": launcher_tool_span_ends,
         "launcher_stage2_expected_span_ends": launcher_stage2_expected_span_ends,
+        "launcher_exit_status_span_ends": launcher_exit_status_span_ends,
         "launcher_attributed_tool_span_ends": launcher_attributed_tool_span_ends,
         "launcher_cgroup_tool_span_ends": launcher_cgroup_tool_span_ends,
         "launcher_tool_resource_span_ends": launcher_tool_resource_span_ends,
         "launcher_tool_resource_available_span_ends": launcher_tool_resource_available_span_ends,
         "launcher_tool_resource_eligible_span_ends": launcher_tool_resource_eligible_span_ends,
         "launcher_tool_resource_unavailable_span_ends": launcher_tool_resource_unavailable_span_ends,
+        "launcher_stage2_lifecycle_span_ends": launcher_stage2_lifecycle_span_ends,
+        "launcher_stage2_artifact_envelope_span_ends": (
+            launcher_stage2_artifact_envelope_span_ends
+        ),
+        "launcher_stage2_artifact_refs": launcher_stage2_artifact_refs,
         "launcher_not_executable_span_ends": launcher_not_executable_span_ends,
         "launcher_command_not_found_span_ends": launcher_command_not_found_span_ends,
         "invalid_coverage_ratio_span_ends": invalid_coverage_ratio_span_ends,
         "tool_resource_prediction_span_starts": tool_resource_prediction_span_starts,
         "tool_resource_prediction_available_span_starts": tool_resource_prediction_available_span_starts,
         "continuous_prediction_available_span_starts": continuous_prediction_available_span_starts,
+        "clause_bucket_prediction_available_span_starts": (
+            clause_bucket_prediction_available_span_starts
+        ),
+        "continuous_latency_ms_prediction_available_span_starts": (
+            continuous_latency_ms_prediction_available_span_starts
+        ),
+        "continuous_peak_cpu_cores_prediction_available_span_starts": (
+            continuous_peak_cpu_cores_prediction_available_span_starts
+        ),
+        "continuous_peak_memory_mb_prediction_available_span_starts": (
+            continuous_peak_memory_mb_prediction_available_span_starts
+        ),
         "attributed_tool_span_ends": attributed_tool_span_ends,
         "resource_sampled_tool_span_ends": resource_sampled_tool_span_ends,
         "cgroup_sampled_tool_span_ends": cgroup_sampled_tool_span_ends,
@@ -454,22 +650,141 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _stage2_artifact_envelope_issues(artifact: dict[str, Any]) -> list[str]:
+    issues: list[str] = []
+    if artifact.get("schema") != "clause_telemetry_v2":
+        issues.append("schema")
+    if artifact.get("version") != 2:
+        issues.append("version")
+    if artifact.get("status_model") != "call_granular_v1":
+        issues.append("status_model")
+    if artifact.get("replay_execution") not in {"completed", "failed"}:
+        issues.append("replay_execution")
+    if not isinstance(artifact.get("calls"), list):
+        issues.append("calls")
+    container_id = artifact.get("container_id")
+    if not isinstance(container_id, str) or not container_id:
+        issues.append("container_id")
+    cgroup_id = artifact.get("cgroup_id")
+    if not isinstance(cgroup_id, int) or isinstance(cgroup_id, bool) or cgroup_id <= 0:
+        issues.append("cgroup_id")
+    return issues
+
+
+def _stage2_collector_issues(artifact: dict[str, Any]) -> list[str]:
+    issues = _stage2_artifact_envelope_issues(artifact)
+    collector = artifact.get("collector")
+    if not isinstance(collector, dict):
+        issues.append("collector")
+    else:
+        if collector.get("health") != "healthy":
+            issues.append("collector_health")
+        if collector.get("state_before_close") != "active":
+            issues.append("collector_not_active")
+        if collector.get("state") != "closed":
+            issues.append("collector_not_closed")
+        if collector.get("disabled_reason") not in {None, ""}:
+            issues.append("collector_disabled")
+        hits = collector.get("kprobe_total_hits")
+        if not isinstance(hits, int) or isinstance(hits, bool) or hits <= 0:
+            issues.append("no_kprobe_hits")
+    if artifact.get("cleanup") != "ok":
+        issues.append("cleanup")
+    if artifact.get("ring_loss_total") != 0:
+        issues.append("ring_loss")
+    telemetry_loss = artifact.get("telemetry_loss_total")
+    if not isinstance(telemetry_loss, dict) or telemetry_loss.get("total") != 0:
+        issues.append("telemetry_loss")
+    return list(dict.fromkeys(issues))
+
+
+def _stage2_call_lifecycle_complete(call: dict[str, Any]) -> bool:
+    tool_call_id = call.get("tool_call_id")
+    if not isinstance(tool_call_id, str) or not tool_call_id:
+        return False
+    if call.get("tool_trace_ref") != tool_call_id:
+        return False
+    provenance = call.get("provenance")
+    if not isinstance(provenance, dict):
+        return False
+    tree = provenance.get("command_tree")
+    isolation = provenance.get("event_isolation")
+    if not isinstance(tree, dict) or not isinstance(isolation, dict):
+        return False
+    root_pids = tree.get("root_pids")
+    anchor = tree.get("identity_anchor")
+    entry_pid = tree.get("entry_pid")
+    if (
+        tree.get("status") != "ok"
+        or tree.get("reason") is not None
+        or not isinstance(root_pids, list)
+        or len(root_pids) != 1
+        or root_pids[0] != entry_pid
+        or not isinstance(anchor, dict)
+        or anchor.get("kind") != "launcher_started"
+        or anchor.get("host_pid") != entry_pid
+    ):
+        return False
+    return (
+        isolation.get("mode") == "trusted_execution_root"
+        and isolation.get("trusted_root_pid") == entry_pid
+    )
+
+
+def _stage2_non_ok_reason_rows(call: dict[str, Any]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    invalid_reasons = call.get("invalid_reasons")
+    if isinstance(invalid_reasons, list):
+        for reason in invalid_reasons:
+            if not isinstance(reason, dict):
+                continue
+            kind = reason.get("kind")
+            if not isinstance(kind, str) or not kind:
+                continue
+            detail = reason.get("detail")
+            rows.append(
+                {
+                    "kind": kind,
+                    "detail": detail if isinstance(detail, str) else "",
+                }
+            )
+    if not rows:
+        fallback = call.get("unavailable_reason") or call.get("reason")
+        if isinstance(fallback, str) and fallback:
+            rows.append({"kind": fallback, "detail": ""})
+    return rows
+
+
 def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
-    """Audit finalized Stage-2 files, including async exec completions."""
+    """Audit finalized Stage-2 files without conflating collection and semantics."""
 
     report: dict[str, Any] = {
         "json_file_count": 0,
         "artifact_count": 0,
+        "artifact_envelope_count": 0,
+        "artifact_identity_count": 0,
+        "artifact_refs": [],
+        "collector_healthy_artifact_count": 0,
         "healthy_artifact_count": 0,
         "call_count": 0,
         "ok_call_count": 0,
+        "kb_eligible_call_count": 0,
         "invalid_call_count": 0,
         "unavailable_call_count": 0,
+        "non_ok_call_with_reason_count": 0,
+        "non_ok_call_without_reason_count": 0,
+        "explicit_semantic_rejection_call_count": 0,
+        "unexplained_non_ok_call_count": 0,
+        "unaccounted_semantic_call_count": 0,
+        "lifecycle_healthy_call_count": 0,
         "invalid_reason_counts": {},
+        "semantic_rejection_reason_counts": {},
+        "collector_failure_reason_counts": {},
         "clause_count": 0,
         "clauses_with_status": 0,
         "no_runtime_exec_count": 0,
         "status_states": {},
+        "semantic_rejections": [],
         "warnings": [],
     }
     if trace_dir is None:
@@ -477,7 +792,11 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
         return report
     artifact_dir = trace_dir / "tool-resource"
     for path in sorted(artifact_dir.glob("*.json")):
-        if path.name in {"clause-resource-kb.json", "clause-kb.json"}:
+        if path.name in {
+            "clause-resource-kb.json",
+            "clause-kb.json",
+            "runtime-tool-resource-kb.json",
+        }:
             continue
         report["json_file_count"] += 1
         try:
@@ -489,47 +808,115 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
             report["warnings"].append(f"{path.name}: not a clause telemetry artifact")
             continue
         report["artifact_count"] += 1
-        collector = artifact.get("collector")
-        healthy = (
-            artifact.get("schema") == "clause_telemetry_v2"
-            and artifact.get("telemetry_quality") == "ok"
-            and artifact.get("collection_validity") == "valid"
-            and artifact.get("cleanup") == "ok"
-            and isinstance(collector, dict)
-            and collector.get("health") == "healthy"
-        )
-        if healthy:
+        envelope_issues = _stage2_artifact_envelope_issues(artifact)
+        if not envelope_issues:
+            report["artifact_envelope_count"] += 1
+        collector_issues = _stage2_collector_issues(artifact)
+        if not collector_issues:
+            report["collector_healthy_artifact_count"] += 1
             report["healthy_artifact_count"] += 1
         else:
-            report["warnings"].append(f"{path.name}: collector is not healthy")
+            for issue in collector_issues:
+                _increment_count(report["collector_failure_reason_counts"], issue)
+            report["warnings"].append(
+                f"{path.name}: Stage-2 collector/infrastructure is not healthy: "
+                f"{','.join(collector_issues)}"
+            )
         calls = artifact.get("calls")
         if not isinstance(calls, list):
-            report["warnings"].append(f"{path.name}: calls is not an array")
             continue
+        if (
+            len(calls) == 1
+            and isinstance(calls[0], dict)
+            and isinstance(calls[0].get("tool_call_id"), str)
+            and bool(calls[0]["tool_call_id"])
+            and calls[0].get("tool_trace_ref") == calls[0]["tool_call_id"]
+        ):
+            report["artifact_identity_count"] += 1
+            report["artifact_refs"].append(
+                {
+                    "execution_id": path.stem,
+                    "tool_call_id": calls[0]["tool_call_id"],
+                }
+            )
+        else:
+            report["warnings"].append(
+                f"{path.name}: artifact does not contain exactly one "
+                "self-consistent call identity"
+            )
         for call in calls:
             if not isinstance(call, dict):
                 report["warnings"].append(f"{path.name}: call is not an object")
                 continue
             report["call_count"] += 1
+            if _stage2_call_lifecycle_complete(call):
+                report["lifecycle_healthy_call_count"] += 1
             quality = call.get("telemetry_quality")
+            eligibility = call.get("eligible_for_kb")
+            quality_contract_valid = quality in {"ok", "invalid", "unavailable"}
+            eligibility_contract_valid = isinstance(eligibility, bool)
+            call_contract_valid = (
+                quality_contract_valid and eligibility_contract_valid
+            )
+            eligible_for_kb = eligibility is True
+            if not call_contract_valid:
+                invalid_fields: list[str] = []
+                if not quality_contract_valid:
+                    invalid_fields.append("telemetry_quality")
+                if not eligibility_contract_valid:
+                    invalid_fields.append("eligible_for_kb")
+                report["warnings"].append(
+                    f"{path.name}: Stage-2 call has invalid semantic contract "
+                    f"fields: {','.join(invalid_fields)}"
+                )
+            if eligible_for_kb:
+                report["kb_eligible_call_count"] += 1
             if quality == "ok":
                 report["ok_call_count"] += 1
             elif quality == "invalid":
                 report["invalid_call_count"] += 1
             else:
                 report["unavailable_call_count"] += 1
-            invalid_reasons = call.get("invalid_reasons")
-            if isinstance(invalid_reasons, list):
-                for reason in invalid_reasons:
-                    if not isinstance(reason, dict):
-                        continue
-                    kind = str(reason.get("kind") or "unknown")
-                    _increment_count(report["invalid_reason_counts"], kind)
-                    detail = reason.get("detail")
-                    if quality != "ok" and isinstance(detail, str) and detail:
-                        report["warnings"].append(
-                            f"{path.name}: {kind}: {detail}"
+            reason_rows = _stage2_non_ok_reason_rows(call) if quality != "ok" else []
+            for reason in reason_rows:
+                _increment_count(report["invalid_reason_counts"], reason["kind"])
+            if quality != "ok":
+                if reason_rows:
+                    report["non_ok_call_with_reason_count"] += 1
+                else:
+                    report["non_ok_call_without_reason_count"] += 1
+                reason_kinds = {reason["kind"] for reason in reason_rows}
+                explicit_semantic_rejection = (
+                    call_contract_valid
+                    and not eligible_for_kb
+                    and bool(reason_kinds)
+                )
+                if explicit_semantic_rejection:
+                    report["explicit_semantic_rejection_call_count"] += 1
+                    for reason in reason_rows:
+                        _increment_count(
+                            report["semantic_rejection_reason_counts"],
+                            reason["kind"],
                         )
+                        suffix = f": {reason['detail']}" if reason["detail"] else ""
+                        report["semantic_rejections"].append(
+                            f"{path.name}: not eligible for Clause KB: "
+                            f"{reason['kind']}{suffix}"
+                        )
+                else:
+                    report["unexplained_non_ok_call_count"] += 1
+                    report["unaccounted_semantic_call_count"] += 1
+                    rendered = ",".join(sorted(reason_kinds)) or "missing_reason"
+                    report["warnings"].append(
+                        f"{path.name}: non-ok Stage-2 call is missing a reason "
+                        f"or is incorrectly KB-eligible: {rendered}"
+                    )
+            elif not eligible_for_kb:
+                report["unaccounted_semantic_call_count"] += 1
+                report["warnings"].append(
+                    f"{path.name}: telemetry quality is ok but the call is not "
+                    "eligible for Clause KB"
+                )
             clauses = call.get("clauses")
             if isinstance(clauses, list):
                 for clause in clauses:
@@ -545,6 +932,13 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
                 report["no_runtime_exec_count"] += len(no_runtime)
     if report["clauses_with_status"] != report["clause_count"]:
         report["warnings"].append("some mapped clauses have no explicit status")
+    if report["lifecycle_healthy_call_count"] != report["call_count"]:
+        report["warnings"].append(
+            "some Stage-2 calls lack a connected launcher-started trusted-root lifecycle"
+        )
+    report["artifact_refs"].sort(
+        key=lambda ref: (ref["execution_id"], ref["tool_call_id"])
+    )
     return report
 
 
@@ -685,6 +1079,37 @@ def _required_telemetry_error(
     expected_artifacts = int(resources.get("launcher_stage2_expected_span_ends", 0))
     if expected_artifacts == 0:
         return "required Stage-2 telemetry found no executed launcher commands"
+    trace_envelopes = int(resources.get("launcher_tool_resource_span_ends", 0))
+    if trace_envelopes != expected_artifacts:
+        return (
+            "required Stage-2 trace envelope coverage is incomplete: "
+            f"{trace_envelopes}/{expected_artifacts} launcher commands"
+        )
+    if config.runtime.mode == "host-openclaw-sandbox":
+        launcher_exit_status_spans = int(
+            resources.get("launcher_exit_status_span_ends", 0)
+        )
+        if launcher_exit_status_spans != expected_artifacts:
+            return (
+                "required launcher exit-status coverage is incomplete: "
+                f"{launcher_exit_status_spans}/{expected_artifacts} launcher commands"
+            )
+        lifecycle_spans = int(
+            resources.get("launcher_stage2_lifecycle_span_ends", 0)
+        )
+        if lifecycle_spans != expected_artifacts:
+            return (
+                "required Stage-2 launcher lifecycle coverage is incomplete: "
+                f"{lifecycle_spans}/{expected_artifacts} launcher commands"
+            )
+        artifact_envelope_spans = int(
+            resources.get("launcher_stage2_artifact_envelope_span_ends", 0)
+        )
+        if artifact_envelope_spans != expected_artifacts:
+            return (
+                "required Stage-2 trace artifact envelopes are incomplete: "
+                f"{artifact_envelope_spans}/{expected_artifacts} launcher commands"
+            )
     if artifact_count == 0:
         return "required Stage-2 telemetry produced no exec artifacts"
     if artifact_count != expected_artifacts:
@@ -692,18 +1117,90 @@ def _required_telemetry_error(
             "required Stage-2 artifact coverage is incomplete: "
             f"{artifact_count}/{expected_artifacts} executed launcher commands"
         )
-    healthy_count = int(artifacts.get("healthy_artifact_count", 0))
+    artifact_envelope_count = int(artifacts.get("artifact_envelope_count", 0))
+    if artifact_envelope_count != artifact_count:
+        return (
+            "required Stage-2 artifact envelopes are invalid: "
+            f"{artifact_envelope_count}/{artifact_count} valid envelopes"
+        )
+    if config.runtime.mode == "host-openclaw-sandbox":
+        artifact_identity_count = int(
+            artifacts.get("artifact_identity_count", 0)
+        )
+        if artifact_identity_count != artifact_count:
+            return (
+                "required Stage-2 artifact identities are incomplete: "
+                f"{artifact_identity_count}/{artifact_count} artifacts"
+            )
+        trace_refs = resources.get("launcher_stage2_artifact_refs")
+        disk_refs = artifacts.get("artifact_refs")
+        if not isinstance(trace_refs, list) or not isinstance(disk_refs, list):
+            return "required Stage-2 trace-to-artifact references are unavailable"
+        if trace_refs != disk_refs:
+            return (
+                "required Stage-2 trace-to-artifact references are inconsistent: "
+                f"trace={trace_refs!r} disk={disk_refs!r}"
+            )
+    healthy_count = int(artifacts.get("collector_healthy_artifact_count", 0))
     if healthy_count != artifact_count:
         return (
-            "required Stage-2 telemetry has unhealthy artifacts: "
-            f"{healthy_count}/{artifact_count} healthy"
+            "required Stage-2 collector/infrastructure health is incomplete: "
+            f"{healthy_count}/{artifact_count} healthy artifacts"
         )
     call_count = int(artifacts.get("call_count", 0))
-    ok_calls = int(artifacts.get("ok_call_count", 0))
-    if ok_calls != call_count:
+    if call_count != expected_artifacts:
         return (
-            "required Stage-2 clause telemetry is incomplete: "
-            f"{ok_calls}/{call_count} calls valid"
+            "required Stage-2 call envelope coverage is incomplete: "
+            f"{call_count}/{expected_artifacts} launcher commands"
+        )
+    if config.runtime.mode == "host-openclaw-sandbox":
+        lifecycle_calls = int(artifacts.get("lifecycle_healthy_call_count", 0))
+        if lifecycle_calls != call_count:
+            return (
+                "required Stage-2 trusted-root lifecycle is incomplete: "
+                f"{lifecycle_calls}/{call_count} calls"
+            )
+    non_ok_calls = int(artifacts.get("invalid_call_count", 0)) + int(
+        artifacts.get("unavailable_call_count", 0)
+    )
+    explained_non_ok = int(artifacts.get("non_ok_call_with_reason_count", 0))
+    if explained_non_ok != non_ok_calls:
+        return (
+            "required Stage-2 non-ok calls lack explicit reasons: "
+            f"{explained_non_ok}/{non_ok_calls} explained"
+        )
+    unexplained_non_ok = int(artifacts.get("unexplained_non_ok_call_count", 0))
+    if unexplained_non_ok:
+        return (
+            "required Stage-2 non-ok calls violate the explicit-reason/KB-withheld "
+            "contract: "
+            f"{unexplained_non_ok}/{call_count} calls"
+        )
+    unaccounted_semantic = int(
+        artifacts.get("unaccounted_semantic_call_count", 0)
+    )
+    if unaccounted_semantic:
+        return (
+            "required Stage-2 semantic/KB eligibility accounting is incomplete: "
+            f"{unaccounted_semantic}/{call_count} calls"
+        )
+    eligible_calls = int(artifacts.get("kb_eligible_call_count", 0))
+    semantic_rejections = int(
+        artifacts.get("explicit_semantic_rejection_call_count", 0)
+    )
+    if eligible_calls + semantic_rejections != call_count:
+        return (
+            "required Stage-2 semantic/KB eligibility accounting is incomplete: "
+            f"{eligible_calls} eligible + {semantic_rejections} explicitly rejected "
+            f"!= {call_count} calls"
+        )
+    trace_kb_updates = int(
+        resources.get("launcher_tool_resource_eligible_span_ends", 0)
+    )
+    if trace_kb_updates != eligible_calls:
+        return (
+            "required Stage-2 Clause KB update accounting is inconsistent: "
+            f"{trace_kb_updates} trace updates != {eligible_calls} eligible calls"
         )
     clause_count = int(artifacts.get("clause_count", 0))
     clauses_with_status = int(artifacts.get("clauses_with_status", 0))
@@ -729,6 +1226,42 @@ def _required_telemetry_error(
                 "required tool-resource prediction produced no usable "
                 "latency/CPU/memory estimate"
             )
+        bucket_predictions = int(
+            resources.get("clause_bucket_prediction_available_span_starts", 0)
+        )
+        if bucket_predictions == 0:
+            return (
+                "required tool-resource prediction produced no usable "
+                "clause latency-bucket estimate"
+            )
+        continuous_targets = {
+            "latency_ms": int(
+                resources.get(
+                    "continuous_latency_ms_prediction_available_span_starts",
+                    0,
+                )
+            ),
+            "peak_cpu_cores": int(
+                resources.get(
+                    "continuous_peak_cpu_cores_prediction_available_span_starts",
+                    0,
+                )
+            ),
+            "peak_memory_mb": int(
+                resources.get(
+                    "continuous_peak_memory_mb_prediction_available_span_starts",
+                    0,
+                )
+            ),
+        }
+        missing_targets = [
+            target for target, count in continuous_targets.items() if count == 0
+        ]
+        if missing_targets:
+            return (
+                "required tool-resource continuous predictions are missing usable "
+                f"conditional_p90 values for: {','.join(missing_targets)}"
+            )
     return None
 
 
@@ -745,20 +1278,20 @@ def _extract_trace_exit_code(value: Any) -> int | None:
     if not isinstance(value, dict):
         return None
     direct = value.get("exit_code")
-    if isinstance(direct, int):
+    if isinstance(direct, int) and not isinstance(direct, bool):
         return direct
     result = value.get("result")
     if not isinstance(result, dict):
         return None
     for key in ("exit_code", "exitCode"):
         item = result.get(key)
-        if isinstance(item, int):
+        if isinstance(item, int) and not isinstance(item, bool):
             return item
     details = result.get("details")
     if isinstance(details, dict):
         for key in ("exit_code", "exitCode"):
             item = details.get(key)
-            if isinstance(item, int):
+            if isinstance(item, int) and not isinstance(item, bool):
                 return item
     return None
 
@@ -790,10 +1323,88 @@ def _is_launcher_command_not_found(record: dict[str, Any]) -> bool:
 def _has_available_continuous_prediction(value: Any) -> bool:
     if not isinstance(value, dict):
         return False
-    for prediction in value.values():
-        if isinstance(prediction, dict) and prediction.get("conditional_p90") is not None:
-            return True
-    return False
+    return any(
+        _continuous_target_prediction_available(value, target)
+        for target in value
+        if isinstance(target, str)
+    )
+
+
+def _bucket_prediction_available(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    bucket_id = value.get("bucket_id")
+    probabilities = value.get("probability_by_bucket")
+    evidence_count = value.get("evidence_count")
+    fallback_path = value.get("fallback_path")
+    return (
+        isinstance(bucket_id, int)
+        and not isinstance(bucket_id, bool)
+        and bucket_id >= 0
+        and isinstance(probabilities, list)
+        and bool(probabilities)
+        and bucket_id < len(probabilities)
+        and all(
+            isinstance(item, (int, float))
+            and not isinstance(item, bool)
+            and math.isfinite(float(item))
+            and 0 <= float(item) <= 1
+            for item in probabilities
+        )
+        and math.isclose(
+            sum(float(item) for item in probabilities),
+            1.0,
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        )
+        and isinstance(value.get("scope"), str)
+        and isinstance(value.get("key_kind"), str)
+        and isinstance(evidence_count, int)
+        and not isinstance(evidence_count, bool)
+        and evidence_count > 0
+        and isinstance(fallback_path, list)
+        and all(isinstance(item, str) for item in fallback_path)
+    )
+
+
+def _continuous_target_prediction_available(value: Any, target: str) -> bool:
+    if not isinstance(value, dict):
+        return False
+    prediction = value.get(target)
+    conditional_p90 = (
+        prediction.get("conditional_p90")
+        if isinstance(prediction, dict)
+        else None
+    )
+    evidence_count = (
+        prediction.get("evidence_count")
+        if isinstance(prediction, dict)
+        else None
+    )
+    fallback_path = (
+        prediction.get("fallback_path")
+        if isinstance(prediction, dict)
+        else None
+    )
+    return (
+        isinstance(prediction, dict)
+        and prediction.get("target") == target
+        and isinstance(conditional_p90, (int, float))
+        and not isinstance(conditional_p90, bool)
+        and math.isfinite(float(conditional_p90))
+        and float(conditional_p90) >= 0
+        and isinstance(prediction.get("scope"), str)
+        and isinstance(prediction.get("key_kind"), str)
+        and isinstance(evidence_count, int)
+        and not isinstance(evidence_count, bool)
+        and evidence_count > 0
+        and isinstance(fallback_path, list)
+        and all(isinstance(item, str) for item in fallback_path)
+        and (
+            prediction.get("note") is None
+            or isinstance(prediction.get("note"), str)
+        )
+    )
 
 
 def _increment_count(counts: Any, key: str) -> None:

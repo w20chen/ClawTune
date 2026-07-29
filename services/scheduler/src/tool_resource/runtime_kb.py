@@ -22,11 +22,12 @@ wins — the evaluated baseline policy):
 2. repo ordered command prefix, deepest to shallowest (max depth 4, the
    frozen depth budget shared with the evaluated lattice)
 3. repo binary/head
-4. public binary/head
-5. public outer tool name (also the honest landing spot for compound
+4. repo outer tool name for commandless, non-shell tools
+5. public binary/head
+6. public outer tool name (also the honest landing spot for compound
    commands with no single head, untokenizable commands, and non-shell
    tools)
-6. public global
+7. public global
 
 Binary/head identity is the generic basenamed command head from
 ``tool_time.command``. A compound shell call (``make && pytest``) has no
@@ -61,9 +62,9 @@ Clause latency bucket predictor (``ClauseResourceKB``)
 
 The current canonical stage predicts latency buckets with explicit boundaries.
 The KB reuses mvdan clause identity, frozen public priors, and causal repo
-refinement. It deliberately does not compose compound-command buckets:
-categorical bucket IDs cannot be ORed, and sequential versus pipeline timing
-requires a separate physical contract.
+refinement. Compound commands remain explicitly unavailable: partial evidence
+is distinguished from a fully evidenced but uncomposed command, because
+sequential and pipeline timing require different physical composition rules.
 
 ``ClauseObservation`` is one *static mvdan clause* (identity = ``bin`` + ordered
 ``argv``), aggregated by ``tool_resource.clause_bridge`` from the Stage-2 eBPF
@@ -192,9 +193,11 @@ def _single_head(command: str | None) -> str | None:
     return heads[0] if len(heads) == 1 else None
 
 
-def _repo_keys(command: str | None) -> list[NodeKey]:
-    """Repo-layer node keys, deepest first: exact, prefixes, binary head."""
+def _repo_keys(tool_name: str, command: str | None) -> list[NodeKey]:
+    """Repo-layer keys for shell commands or commandless outer tools."""
 
+    if command is None:
+        return [("tool_name", tool_name)] if tool_name else []
     if not isinstance(command, str) or not command.strip():
         return []
     tokens = shell_command_prefix_tokens(command)
@@ -292,7 +295,7 @@ class RuntimeToolResourceKB:
             repo_targets = self._repo.setdefault(
                 call.repo, {target: {} for target in TARGETS}
             )
-            keys = _repo_keys(call.command)
+            keys = _repo_keys(call.tool_name, call.command)
             for target, value in _target_values(call).items():
                 for key in keys:
                     repo_targets[target].setdefault(key, []).append(value)
@@ -301,7 +304,7 @@ class RuntimeToolResourceKB:
         self, repo: str, target: str, tool_name: str, command: str | None
     ) -> Iterator[tuple[str, NodeKey, Sequence[float]]]:
         repo_nodes = self._repo.get(repo, {}).get(target, {})
-        for key in _repo_keys(command):
+        for key in _repo_keys(tool_name, command):
             yield "repo", key, repo_nodes.get(key, ())
         public_nodes = self._public[target]
         for key in _public_keys(tool_name, command):
@@ -526,7 +529,7 @@ class ClauseLatencyBucketPrediction:
 
 @dataclass(frozen=True)
 class CommandLatencyBucketPrediction:
-    """Command result; compound commands remain explicitly uncomposed."""
+    """Command result with explicit incomplete compound-evidence handling."""
 
     repo: str
     command: str
@@ -695,7 +698,7 @@ class ClauseResourceKB:
         command: str = "",
         parse_failed: bool = False,
     ) -> CommandLatencyBucketPrediction:
-        """Predict only a parsed single clause; never compose bucket IDs."""
+        """Predict one clause; classify compound evidence without composing it."""
 
         self._advance(ts_start)
         effective = list(clauses)
@@ -728,20 +731,11 @@ class ClauseResourceKB:
                     clause_predictions.append(cp)
                 except (ValueError, KeyError):
                     pass
-            if clause_predictions:
-                # Worst-case: take the highest bucket_id (longest latency)
-                # and the minimum evidence_count (most conservative).
-                worst = max(clause_predictions, key=lambda cp: cp.bucket_id)
-                prediction = ClauseLatencyBucketPrediction(
-                    bucket_id=worst.bucket_id,
-                    probability_by_bucket=worst.probability_by_bucket,
-                    scope=worst.scope,
-                    key_kind=f"compound({','.join(cp.key_kind or '?' for cp in clause_predictions)})",
-                    evidence_count=min(cp.evidence_count for cp in clause_predictions),
-                    fallback_path=worst.fallback_path,
-                )
-            else:
-                reason = "compound_command_uncomposed"
+            reason = (
+                "compound_clause_evidence_incomplete"
+                if len(clause_predictions) != len(effective)
+                else "compound_command_uncomposed"
+            )
         return CommandLatencyBucketPrediction(
             repo=repo,
             command=command,

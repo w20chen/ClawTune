@@ -1063,6 +1063,17 @@ def _payload_environment() -> dict[str, str]:
         "OPENCLAW_SCHEDULER_TOKEN",
     ):
         env.pop(key, None)
+    launcher_pythonpath = env.pop("CLAW_LAUNCHER_PYTHONPATH", None)
+    if launcher_pythonpath:
+        payload_pythonpath = [
+            entry
+            for entry in env.get("PYTHONPATH", "").split(os.pathsep)
+            if entry and entry != launcher_pythonpath
+        ]
+        if payload_pythonpath:
+            env["PYTHONPATH"] = os.pathsep.join(payload_pythonpath)
+        else:
+            env.pop("PYTHONPATH", None)
     return env
 
 

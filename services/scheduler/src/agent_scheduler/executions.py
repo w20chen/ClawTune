@@ -29,6 +29,7 @@ class ExecutionRecord:
     launcher_pid: int | None = None
     exit_code: int | None = None
     signal: int | None = None
+    exited: bool = False
     owned_cgroup_path: str | None = None
     trusted_root_pid: int | None = None
 
@@ -69,7 +70,7 @@ class ExecutionRegistry:
         return [
             record
             for record in self._by_execution_id.values()
-            if record.claimed and record.exit_code is None and record.signal is None
+            if record.claimed and not record.exited
         ]
 
     def pending_marker(self) -> list[ExecutionRecord]:
@@ -165,6 +166,7 @@ class ExecutionRegistry:
         record = self._require_update(execution_id, request.update_token)
         record.exit_code = request.exit_code
         record.signal = request.signal
+        record.exited = True
         return ExecutionUpdateResponse(stored=True)
 
     def _require_update(self, execution_id: str, update_token: str) -> ExecutionRecord:

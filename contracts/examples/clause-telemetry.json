@@ -8,7 +8,7 @@
   "calls": [
     {
       "tool_call_id": "call-example",
-      "command": "printf hello",
+      "command": "printf hello; missing-command",
       "telemetry_quality": "ok",
       "eligible_for_kb": true,
       "clauses": [
@@ -28,7 +28,20 @@
           }
         }
       ],
-      "no_runtime_exec": []
+      "no_runtime_exec": [
+        {
+          "bin": "missing-command",
+          "argv": ["missing-command"],
+          "status": {
+            "state": "exited",
+            "exit_code": 127,
+            "signal": null,
+            "succeeded": false,
+            "reason": "shell_command_lookup_failure",
+            "source": "live_shell_exit_code"
+          }
+        }
+      ]
     }
   ]
 }

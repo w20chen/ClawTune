@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from agent_scheduler.admission.leases import LeaseManager
@@ -32,6 +33,7 @@ class AppState:
     trace_writer: AgentTestBenchTraceWriter
     _sandbox_scope_override: ResourceScope | None
     _completed_tool_event_ids: set[str]  # dedup: track completed tool event_ids
+    _stage2_finalize_tasks: dict[str, asyncio.Task[None]]
     _recent_samples: list[dict[str, object]]  # recent tool runtime samples for /v1/tools/recent
     _max_recent_samples: int = 200  # max samples to keep in memory
 
@@ -89,5 +91,6 @@ def build_state(config: SchedulerConfig | None = None) -> AppState:
         ),
         _sandbox_scope_override=None,
         _completed_tool_event_ids=set(),
+        _stage2_finalize_tasks={},
         _recent_samples=[],
     )

@@ -30,6 +30,30 @@ from swe_rebench.task_source import TaskDef
 _print_lock = threading.Lock()
 
 
+# SWE-bench evaluation images keep the task environment under
+# /opt/miniconda3/envs/testbed.  Retain the older /opt/conda layout as a
+# fallback because some SWE-Rebench images use that prefix.  OpenClaw passes
+# this value directly into its Docker sandbox, so omitting the actual testbed
+# prefix silently falls back to /usr/bin/python3 and loses the task's installed
+# dependencies.
+_SANDBOX_TASK_PATH = ":".join(
+    (
+        "/workspace/.claw/bin",
+        "/opt/miniconda3/envs/testbed/bin",
+        "/opt/conda/envs/testbed/bin",
+        "/opt/miniconda3/condabin",
+        "/opt/miniconda3/bin",
+        "/opt/conda/bin",
+        "/usr/local/sbin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/usr/bin",
+        "/sbin",
+        "/bin",
+    )
+)
+
+
 def _log(msg: str) -> None:
     with _print_lock:
         print(msg, file=sys.stderr, flush=True)
@@ -62,6 +86,7 @@ def run_host_sandbox_task(
         _write_task_inputs(trace_dir, task, config, workspace)
         _ensure_openclaw_sandbox_image(task.image, trace_dir, config.docker.platform)
         _verify_sandbox_launcher(trace_dir, workspace, config.docker.platform)
+        _verify_sandbox_task_environment(trace_dir, workspace, config.docker.platform)
 
         _seed_runtime_tool_resource_kb(trace_dir, config)
 
@@ -243,6 +268,8 @@ def _verify_sandbox_launcher(trace_dir: Path, workspace: Path, platform: str = "
                 "none",
                 "--env",
                 "CLAW_LAUNCH_MODE=fork-exec",
+                "--env",
+                f"PATH={_SANDBOX_TASK_PATH}",
                 "--user",
                 "65534:65534",
                 "--mount",
@@ -267,6 +294,69 @@ def _verify_sandbox_launcher(trace_dir: Path, workspace: Path, platform: str = "
         )
 
 
+def _verify_sandbox_task_environment(
+    trace_dir: Path,
+    workspace: Path,
+    platform: str = "",
+) -> None:
+    """Fail early when a Python task would fall back outside its testbed env."""
+
+    python_markers = (
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "requirements.txt",
+    )
+    if not any((workspace / marker).is_file() for marker in python_markers):
+        return
+    docker = _require_executable("docker")
+    log_path = trace_dir / "sandbox-runtime-preflight.log"
+    script = (
+        "set -eu\n"
+        "printf 'PATH=%s\\n' \"$PATH\"\n"
+        "printf 'python3=%s\\n' \"$(command -v python3)\"\n"
+        "python3 -c 'import sys; print(sys.executable)'\n"
+        "python3 -m pip --version\n"
+        "printf 'pip=%s\\n' \"$(command -v pip)\"\n"
+        "pip --version\n"
+        "printf 'pip3=%s\\n' \"$(command -v pip3)\"\n"
+        "pip3 --version\n"
+    )
+    with log_path.open("w", encoding="utf-8") as log:
+        result = subprocess.run(
+            [
+                docker,
+                "run",
+                "--rm",
+                *_docker_platform_args(platform),
+                "--network",
+                "none",
+                "--env",
+                f"PATH={_SANDBOX_TASK_PATH}",
+                "--user",
+                "65534:65534",
+                "--mount",
+                f"type=bind,src={workspace},dst=/workspace",
+                "--workdir",
+                "/workspace",
+                "--entrypoint",
+                "/bin/sh",
+                "openclaw-sandbox:bookworm-slim",
+                "-c",
+                script,
+            ],
+            stdout=log,
+            stderr=log,
+            text=True,
+        )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "sandbox_task_environment_preflight_failed: the Python task image "
+            "must expose its testbed python and pip to the OpenClaw sandbox: "
+            f"{_tail_text(log_path, 2000)}"
+        )
+
+
 def _install_sandbox_launcher(workspace: Path, bundle_dir: Path) -> None:
     scheduler_src = bundle_dir / "scheduler" / "src"
     target_src = workspace / ".claw" / "scheduler" / "src"
@@ -280,8 +370,17 @@ def _install_sandbox_launcher(workspace: Path, bundle_dir: Path) -> None:
     launcher = target_bin / "claw-launch"
     launcher.write_text(
         "#!/bin/sh\n"
-        "export PYTHONPATH=\"/workspace/.claw/scheduler/src${PYTHONPATH:+:$PYTHONPATH}\"\n"
-        "exec python3 -m agent_scheduler.launcher \"$@\"\n",
+        "export CLAW_LAUNCHER_PYTHONPATH=/workspace/.claw/scheduler/src\n"
+        "export PYTHONPATH=\"$CLAW_LAUNCHER_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}\"\n"
+        # Keep the launcher on the image's modern system Python even when the
+        # payload PATH selects an older project-specific testbed interpreter.
+        # The forked /bin/sh payload still inherits _SANDBOX_TASK_PATH.
+        "_CLAW_LAUNCHER_PYTHON=/usr/bin/python3\n"
+        "if [ ! -x \"$_CLAW_LAUNCHER_PYTHON\" ]; then "
+        "_CLAW_LAUNCHER_PYTHON=$(command -v python3 || true); fi\n"
+        "if [ -z \"$_CLAW_LAUNCHER_PYTHON\" ]; then "
+        "echo 'claw-launch: Python 3 is unavailable' >&2; exit 127; fi\n"
+        "exec \"$_CLAW_LAUNCHER_PYTHON\" -m agent_scheduler.launcher \"$@\"\n",
         encoding="utf-8",
     )
     # The runner is commonly invoked through ``sudo -E`` for BPF access.
@@ -292,6 +391,13 @@ def _install_sandbox_launcher(workspace: Path, bundle_dir: Path) -> None:
     # container-facing permissions instead of merely adding execute bits.
     _make_sandbox_runtime_readable(workspace / ".claw", target_src)
     launcher.chmod(0o755)
+    for pip_name in ("pip", "pip3"):
+        pip_wrapper = target_bin / pip_name
+        pip_wrapper.write_text(
+            "#!/bin/sh\nexec python3 -m pip \"$@\"\n",
+            encoding="utf-8",
+        )
+        pip_wrapper.chmod(0o755)
 
 
 def _make_sandbox_runtime_readable(runtime_root: Path, scheduler_src: Path) -> None:
@@ -776,10 +882,9 @@ def _openclaw_config(
                 "CLAW_ENABLE_CGROUP": "1",
                 "CLAW_LAUNCH_MODE": "fork-exec",
                 "CLAW_LAUNCH_DEBUG": "1",
-                # Prepend conda paths so the agent finds pip/python from the
-                # task image's conda environment immediately, avoiding wasted
-                # turns on "pip: not found" / "apt-get install" failures.
-                "PATH": "/opt/conda/envs/testbed/bin:/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                # Select the task image's own testbed environment rather than
+                # silently falling back to the image's system Python.
+                "PATH": _SANDBOX_TASK_PATH,
             },
         },
         indent=2,

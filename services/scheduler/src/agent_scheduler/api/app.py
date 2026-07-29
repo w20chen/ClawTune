@@ -32,6 +32,9 @@ from agent_scheduler.policies.base import SchedulingContext
 from agent_scheduler.security.auth import verify_bearer
 
 
+_STAGE2_COMPLETION_GRACE_SECONDS = 10.0
+
+
 def _sample_summary(sample: ToolRuntimeSample) -> dict[str, object]:
     """Convert a ToolRuntimeSample into a JSON-serializable summary dict."""
     return {
@@ -338,6 +341,57 @@ def create_app(state: AppState | None = None) -> FastAPI:
         stage2_kwargs["cgroup_path"] = cgroup_path
         return s.predictor.begin_execution(**stage2_kwargs)
 
+    def cancel_stage2_fallback(s: AppState, execution_id: str) -> None:
+        task = s._stage2_finalize_tasks.pop(execution_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    def record_stage2_telemetry(
+        s: AppState,
+        execution_id: str,
+        telemetry: object,
+    ) -> None:
+        if s.trace_writer is not None:
+            s.trace_writer.record_tool_resource_telemetry(execution_id, telemetry)
+
+    def stage2_needs_finalization(s: AppState, execution_id: str) -> bool:
+        # Summary status alone is ambiguous: ``unavailable`` can describe
+        # either an active collector or an already finalized failure.  The
+        # predictor's active-run registry is the exactly-once authority.
+        return s.predictor.execution_active(execution_id)
+
+    async def finalize_stage2_after_grace(
+        s: AppState,
+        execution_id: str,
+        exit_code: int | None,
+        signal: int | None,
+    ) -> None:
+        """Finalize if the plugin never supplies its authoritative tool result."""
+
+        try:
+            await asyncio.sleep(_STAGE2_COMPLETION_GRACE_SECONDS)
+            telemetry = s.predictor.finish_execution(
+                execution_id=execution_id,
+                exit_code=exit_code,
+                signal=signal,
+            )
+            record_stage2_telemetry(s, execution_id, telemetry)
+        finally:
+            current = s._stage2_finalize_tasks.get(execution_id)
+            if current is asyncio.current_task():
+                s._stage2_finalize_tasks.pop(execution_id, None)
+
+    def schedule_stage2_fallback(
+        s: AppState,
+        execution_id: str,
+        exit_code: int | None,
+        signal: int | None,
+    ) -> None:
+        cancel_stage2_fallback(s, execution_id)
+        s._stage2_finalize_tasks[execution_id] = asyncio.create_task(
+            finalize_stage2_after_grace(s, execution_id, exit_code, signal)
+        )
+
     def with_sandbox_fallback(request: ToolBeforeRequest, s: AppState) -> ToolBeforeRequest:
         if (
             request.resource_scope is not None
@@ -523,52 +577,75 @@ def create_app(state: AppState | None = None) -> FastAPI:
         s: AppState = Depends(get_state),
         _: None = Depends(auth),
     ) -> dict[str, bool]:
-        event = await completed_with_execution_scope(event, s)
-        inferred_scope = (
-            s.docker_exec_observer.infer_scope(event)
-            if s.docker_exec_observer is not None
-            else None
-        )
-        if inferred_scope is not None:
-            s.tool_monitor.bind_scope(event.tool_call_id, inferred_scope)
-            event = event.model_copy(update={"resource_scope": inferred_scope})
-        else:
-            event = completed_with_sandbox_fallback(event, s)
-        # Dedup: reject duplicate tool completions (same event_id)
+        # Dedup before touching the deferred Stage-2 finalizer. A duplicate
+        # completion must not cancel the only remaining fallback task.
         if event.event_id in s._completed_tool_event_ids:
             return {"stored": False}
         s._completed_tool_event_ids.add(event.event_id)
-
-        await s.leases.release(event.lease_id)
-        sample = s.tool_monitor.complete(event)
-        telemetry = None
-        if event.execution_id is not None:
-            record = s.executions.get(event.execution_id)
-            exit_code = record.exit_code if record is not None else None
-            signal = record.signal if record is not None else None
-            if exit_code is None and signal is None and event.succeeded:
-                exit_code = 0
-            telemetry = s.predictor.finish_execution(
-                execution_id=event.execution_id,
-                exit_code=exit_code,
-                signal=signal,
-            )
-            if s.trace_writer is not None:
-                s.trace_writer.record_tool_resource_telemetry(
-                    event.execution_id,
-                    telemetry,
+        try:
+            # Finalize before the scope lookup's async wait.  The plugin may
+            # time out its completion POST and issue a telemetry GET; keeping
+            # this synchronous section first prevents that GET from observing
+            # (or formerly finalizing) a run without the authoritative result.
+            if event.execution_id is not None:
+                cancel_stage2_fallback(s, event.execution_id)
+                record = s.executions.get(event.execution_id)
+                exit_code = record.exit_code if record is not None else None
+                signal = record.signal if record is not None else None
+                if exit_code is None and signal is None and event.succeeded:
+                    exit_code = 0
+                telemetry = s.predictor.finish_execution(
+                    execution_id=event.execution_id,
+                    exit_code=exit_code,
+                    signal=signal,
+                    raw_result=event.raw_result,
+                    succeeded=event.succeeded,
                 )
-        if sample is not None:
-            s.predictor.observe_completion(event, sample)
-            s.metrics.observe_tool_runtime(sample)
-            s._recent_samples.insert(0, _sample_summary(sample))
-            if len(s._recent_samples) > s._max_recent_samples:
-                s._recent_samples.pop()
-            if s.trace_writer is not None:
-                s.trace_writer.record_tool(event, sample)
-        s.metrics.inc("scheduler_tool_completions_total")
-        s.metrics.tool_durations.append(event.duration_ms / 1000)
-        return {"stored": True}
+                record_stage2_telemetry(s, event.execution_id, telemetry)
+
+            event = await completed_with_execution_scope(event, s)
+            inferred_scope = (
+                s.docker_exec_observer.infer_scope(event)
+                if s.docker_exec_observer is not None
+                else None
+            )
+            if inferred_scope is not None:
+                s.tool_monitor.bind_scope(event.tool_call_id, inferred_scope)
+                event = event.model_copy(update={"resource_scope": inferred_scope})
+            else:
+                event = completed_with_sandbox_fallback(event, s)
+            await s.leases.release(event.lease_id)
+            sample = s.tool_monitor.complete(event)
+            if sample is not None:
+                s.predictor.observe_completion(event, sample)
+                s.metrics.observe_tool_runtime(sample)
+                s._recent_samples.insert(0, _sample_summary(sample))
+                if len(s._recent_samples) > s._max_recent_samples:
+                    s._recent_samples.pop()
+                if s.trace_writer is not None:
+                    s.trace_writer.record_tool(event, sample)
+            s.metrics.inc("scheduler_tool_completions_total")
+            s.metrics.tool_durations.append(event.duration_ms / 1000)
+            return {"stored": True}
+        except BaseException:
+            # Permit a genuine retry when a fallible downstream step failed.
+            # If finalization itself did not acquire the run, restore its
+            # launcher-exit fallback as well.
+            s._completed_tool_event_ids.discard(event.event_id)
+            if event.execution_id is not None:
+                record = s.executions.get(event.execution_id)
+                if (
+                    record is not None
+                    and record.exited
+                    and stage2_needs_finalization(s, event.execution_id)
+                ):
+                    schedule_stage2_fallback(
+                        s,
+                        event.execution_id,
+                        record.exit_code,
+                        record.signal,
+                    )
+            raise
 
     @app.post("/v1/events/model")
     async def model_event(
@@ -764,16 +841,21 @@ def create_app(state: AppState | None = None) -> FastAPI:
         _: None = Depends(auth),
     ) -> ExecutionUpdateResponse:
         response = s.executions.exited(execution_id, request)
-        telemetry = s.predictor.finish_execution(
-            execution_id=execution_id,
-            exit_code=request.exit_code,
-            signal=request.signal,
-        )
+        # The launcher knows process status first, but only OpenClaw's
+        # subsequent completion event carries bounded stdout/stderr. Keep the
+        # collector open briefly so a masked lookup failure such as
+        # ``missing | tail`` can be classified exactly. The timeout preserves
+        # finalization if the completion hook is lost.
+        if stage2_needs_finalization(s, execution_id):
+            schedule_stage2_fallback(
+                s,
+                execution_id,
+                request.exit_code,
+                request.signal,
+            )
         record = s.executions.get(execution_id)
         if record is not None:
             _cleanup_owned_cgroup(record.owned_cgroup_path)
-        if s.trace_writer is not None:
-            s.trace_writer.record_tool_resource_telemetry(execution_id, telemetry)
         return response
 
     return app

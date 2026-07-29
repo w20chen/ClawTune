@@ -41,6 +41,7 @@
           "enum": [
             "root_exec_chain_terminal",
             "explicit_no_runtime_evidence",
+            "live_shell_exit_code",
             "source_replay_exit_code"
           ]
         }

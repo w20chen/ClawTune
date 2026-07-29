@@ -480,7 +480,10 @@ def _validate_artifact(
     status_model = artifact.get("status_model")
     if status_model == "call_granular_v1":
         if artifact.get("telemetry_quality") != "ok":
-            raise ValueError(f"{path}: collector telemetry is unavailable")
+            raise ValueError(
+                f"{path}: artifact telemetry quality is "
+                f"{artifact.get('telemetry_quality')!r}; not eligible for KB"
+            )
         if artifact.get("collection_validity") != "valid":
             raise ValueError(f"{path}: collection is not valid")
         if artifact.get("formal_completeness") not in {"complete", "partial"}:

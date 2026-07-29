@@ -123,6 +123,14 @@ compilers, libraries, and tools that the upstream SWE-Rebench task expects.
 If the task image differs from the current sandbox tag, the runner re-tags it
 and writes `sandbox-image-build.log` under the task trace directory.
 
+Python task sandboxes put `/opt/miniconda3/envs/testbed/bin` first (with the
+older `/opt/conda/envs/testbed/bin` layout as fallback). The launcher itself
+stays on `/usr/bin/python3`, then removes its scheduler-only `PYTHONPATH` before
+fork/exec so the payload uses the task interpreter and dependencies. Mounted
+`pip` and `pip3` wrappers both dispatch through `python3 -m pip`. Before the
+agent starts, `sandbox-runtime-preflight.log` must prove that the task Python,
+pip module, and both pip entry points are usable as the sandbox UID.
+
 Resource attribution is best-effort:
 
 - `exec` still uses the managed wrapper at `/workspace/.claw/bin/claw-launch`.
@@ -188,6 +196,21 @@ or syscall argument decoding are unhealthy. Use `--no-stage2-required` only for
 an explicit best-effort diagnostic run; such a run does not satisfy
 clause-telemetry completeness.
 
+The final audit reports collector/infrastructure health separately from
+call semantics and Clause-KB eligibility. A non-OK call with an explicit
+reason (for example, a shell parse failure or an executable that was not
+found) remains strictly withheld from the Clause KB, but does not by itself
+turn a healthy eBPF collector into a task-level collector failure. Required
+mode still fails closed on missing lifecycle or artifact envelopes, unhealthy
+collectors, telemetry loss, missing non-OK reasons, or any non-OK call marked
+KB-eligible. `runtime-tool-resource-kb.json` is a separate historical
+call-level KB and is excluded from the Stage-2 artifact count.
+Host-sandbox required mode also requires at least one usable clause-bucket
+prediction and at least one finite, non-negative, evidence-backed continuous
+`conditional_p90` for each of `latency_ms`, `peak_cpu_cores`, and
+`peak_memory_mb`. It also matches every trace execution/tool-call reference to
+exactly one on-disk artifact and requires an explicit launcher exit status.
+
 **Diagnostics:**
 
 - `tool_resource_preflight_host.json` — written to the task trace directory;
@@ -195,6 +218,8 @@ clause-telemetry completeness.
   cgroup-v2 detection, and the semantic smoke result.
 - `sidecar-stderr.txt` — check for BPF setup errors (missing kernel headers,
   permission denied, etc.).
+- `sandbox-runtime-preflight.log` — records the task `PATH`, selected Python,
+  and pip/pip3 availability inside the actual OpenClaw sandbox image.
 - Trace inspection: `python tools/inspect_trace.py <trace.jsonl> --all --details`
   shows per-tool resource telemetry when stage2 is active.
 - `llm_proxy_debug_*.json` is automatically written for an empty HTTP-200
