@@ -49,6 +49,70 @@ def main() -> None:
 
 
 def run_execution(endpoint: str, execution_id: str, token: str) -> int:
+    """Claim an execution and run the payload command.
+
+    On Linux (POSIX with os.fork available), uses fork+exec so the
+    launcher process *becomes* the command — stdout/stderr flow directly
+    to the sandbox runtime.  Falls back to subprocess-based spawning
+    on Windows or when fork is unavailable.
+    """
+    if _supports_posix_controls() and hasattr(os, "fork"):
+        return _run_forkexec(endpoint, execution_id, token)
+    return _run_subprocess(endpoint, execution_id, token)
+
+
+def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
+    """Fork+exec path: the child becomes the command, parent reports exit."""
+    launcher_pid = os.getpid()
+    claim = _post_json(
+        endpoint, "/v2/executions/claim",
+        {"execution_id": execution_id, "token": token, "launcher_pid": launcher_pid},
+    )
+    command = str(claim["command"])
+    workdir = claim.get("workdir")
+    cwd = str(workdir) if isinstance(workdir, str) and workdir else None
+    update_token = str(claim["update_token"])
+
+    pid = os.fork()
+    if pid == 0:
+        # ── Child: become the payload command ──────────────────────
+        try:
+            if cwd:
+                os.chdir(cwd)
+        except OSError:
+            pass
+        _post_started(
+            endpoint, execution_id=execution_id, update_token=update_token,
+            launcher_pid=os.getpid(), child_pid=os.getpid(),
+            cgroup_path=None, host_cgroup_gate=False,
+        )
+        os.execv("/bin/sh", ["/bin/sh", "-c", command])
+        os._exit(126)
+
+    # ── Parent: wait for child, report exit status ─────────────────
+    try:
+        _, status = os.waitpid(pid, 0)
+    except OSError:
+        return 1
+    if os.WIFEXITED(status):
+        exit_code = os.WEXITSTATUS(status)
+        term_signal = None
+    elif os.WIFSIGNALED(status):
+        exit_code = None
+        term_signal = os.WTERMSIG(status)
+    else:
+        exit_code = None
+        term_signal = None
+    _post_json_best_effort(
+        endpoint, f"/v2/executions/{execution_id}/exited",
+        {"update_token": update_token, "exit_code": exit_code, "signal": term_signal},
+    )
+    return exit_code if exit_code is not None else 1
+
+
+def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
+    """Subprocess fallback: original spawn-wait-report behavior (cgroup,
+    placement, systemd scope support).  Used on Windows and in tests."""
     launcher_pid = os.getpid()
     claim = _post_json(
         endpoint,
@@ -83,26 +147,20 @@ def run_execution(endpoint: str, execution_id: str, token: str) -> int:
         child, release_gate = _spawn_shell_gated(command, cwd, affinity_cpus=affinity_cpus)
     else:
         child = _spawn_shell(command, cwd, cgroup_path=cgroup_path, affinity_cpus=affinity_cpus)
-    # Track whether we own this cgroup (created by us) or are borrowing
-    # a pre-existing one (e.g. Docker container's read-only cgroup).
     cgroup_owned = cgroup_path is not None
     try:
         if cgroup_owned:
             if not _join_child_cgroup(child.pid, cgroup_path):
                 fallback = _restart_in_systemd_scope(
-                    child,
-                    command,
-                    cwd,
+                    child, command, cwd,
                     execution_id=execution_id,
-                    affinity_cpus=affinity_cpus,
-                    profiling=profiling,
+                    affinity_cpus=affinity_cpus, profiling=profiling,
                     on_cgroup_ready=lambda pid, path: _post_started(
                         endpoint,
                         execution_id=execution_id,
                         update_token=update_token,
                         launcher_pid=launcher_pid,
-                        child_pid=pid,
-                        cgroup_path=path,
+                        child_pid=pid, cgroup_path=path,
                         host_cgroup_gate=False,
                     ),
                 )
@@ -122,10 +180,8 @@ def run_execution(endpoint: str, execution_id: str, token: str) -> int:
     _install_signal_forwarders(child)
     started_response = _post_started(
         endpoint,
-        execution_id=execution_id,
-        update_token=update_token,
-        launcher_pid=launcher_pid,
-        child_pid=child.pid,
+        execution_id=execution_id, update_token=update_token,
+        launcher_pid=launcher_pid, child_pid=child.pid,
         cgroup_path=cgroup_path,
         host_cgroup_gate=use_host_cgroup_gate,
     )
@@ -139,8 +195,7 @@ def run_execution(endpoint: str, execution_id: str, token: str) -> int:
     exit_code = returncode if returncode >= 0 else None
     term_signal = -returncode if returncode < 0 else None
     _post_json_best_effort(
-        endpoint,
-        f"/v2/executions/{execution_id}/exited",
+        endpoint, f"/v2/executions/{execution_id}/exited",
         {"update_token": update_token, "exit_code": exit_code, "signal": term_signal},
     )
     _cleanup_cgroup(cgroup_path) if cgroup_owned else None

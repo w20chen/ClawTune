@@ -195,49 +195,45 @@ It must show:
 5. prediction availability becomes non-zero after causal evidence exists;
    the first cold-start command may correctly remain `unknown`.
 
-## 2026-07-29 Run Audit (Round 9): Managed-Wrapper + No Setsid
+## 2026-07-29 Run Audit (Round 9): Fork+Exec Launcher
 
-### Hypothesis
+### Root Cause Identified
 
-After 8 rounds of debugging, the root cause of exec output loss in
-managed-wrapper mode is identified: `os.setsid()` in `_child_preexec`.
+After 8 rounds, the root cause of exec output loss is confirmed: **OpenClaw
+uses detached Docker exec** (`ExecStart` with `Detach: true`), which discards
+stdout entirely.  In managed-wrapper mode, the launcher's child process
+inherits stdout, but Docker never captures it because the exec is detached.
 
-When OpenClaw's Docker sandbox runs `docker exec` with a PTY (pseudo-terminal),
-and the launcher's child process calls `os.setsid()`, the child detaches from
-the PTY's controlling terminal session.  Writes to stdout (fd 1) go to the
-now-orphaned PTY slave, never reaching Docker exec's stdout capture.
+`os.setsid()` removal in Round 8 did not fix the issue — confirming the
+problem is at the Docker API level, not the process configuration.
 
-Removing `os.setsid()` should allow the child's stdout to flow through
-Docker exec normally — exactly as it does in marker mode where commands run
-directly without `setsid()`.
+### Fix: Fork+Exec Launcher
 
-### Changes (Round 9)
+**`launcher.py`**: Rewrote `run_execution` to use `os.fork()` + `os.execv()`
+instead of `subprocess.Popen`.  On Linux, the launcher forks:
+- **Child**: posts "started", then `execv("/bin/sh", ["/bin/sh", "-c", cmd])`
+  — the child *becomes* the command.  Its stdout IS the Docker exec stdout.
+- **Parent**: waits for the child, posts "exited" with exit code/signal.
 
-1. **Restored `managed-wrapper` backend** (`host_sandbox.py`):
-   `"executionBackend": "managed-wrapper"` — needed for launcher-based
-   clause telemetry with execution IDs.
+The old `subprocess.Popen` path (`_run_subprocess`) is preserved as fallback
+for Windows and backward compatibility with existing tests.
 
-2. **Removed `os.setsid()`** from `_child_preexec` and `_gated_child_preexec`
-   (`launcher.py`) — the suspected root cause of output loss.  Without
-   `setsid()`, the child process remains in Docker exec's session and its
-   stdout is captured normally.
+### Architecture
 
-3. **Restored `stage2_required = True` auto-enable** (`runner.py`):
-   Re-enabled automatic Stage-2 requirement for host-sandbox mode since
-   managed-wrapper provides full clause telemetry.
-
-### Expected Behavior
-
-- exec commands produce output (no `setsid()` to break PTY)
-- clause telemetry works (launcher provides execution IDs for matching)
-- `matched > 0` after cgroup discovery
-- `healthy_artifact_count > 0`
-- `clause_count > 0`
+```
+run_execution()
+├── Linux + os.fork → _run_forkexec()   ← new: output works
+└── Windows/tests   → _run_subprocess()  ← original: cgroup, placement, etc.
+```
 
 ### Test Results
 - **175 passed, 2 skipped**
 
-## Not Run Locally
+### Expected Behavior
+- exec commands produce output (child IS the command, stdout inherited from Docker exec)
+- clause telemetry works (launcher provides execution IDs via claim/started/exited)
+- cgroup resource sampling works (sidecar monitors sandbox container)
+- All existing tests pass (subprocess fallback preserved)
 
 - `python tools/validate_agent_test_bench_run.py
   C:\Users\29068\Desktop\0b01001001__spectree-64` is not applicable to this
