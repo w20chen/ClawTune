@@ -749,7 +749,10 @@ fi
 
 echo "[claw] installing BCC/eBPF dependencies (best-effort)..."
 case "$PKG_MGR" in
-    apt) apt-get install -y -qq python3-bpfcc bpfcc-tools libbpfcc 2>/dev/null || true ;;
+    # libbpfcc's Python extension dynamically links libelf.so.1.  Keep this
+    # container-only bootstrap fail-open, but install the runtime library
+    # explicitly: minimal task images do not always pull it transitively.
+    apt) apt-get install -y -qq python3-bpfcc bpfcc-tools libbpfcc libelf1 2>/dev/null || true ;;
     yum) yum install -y -q bcc-tools python3-bcc 2>/dev/null || true ;;
     dnf) dnf install -y -q bcc-tools python3-bcc 2>/dev/null || true ;;
     apk) apk add --no-cache bcc-tools bcc-python3 2>/dev/null || true ;;

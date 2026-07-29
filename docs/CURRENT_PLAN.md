@@ -727,3 +727,22 @@ Validation in this workspace:
 
 The same live Linux acceptance command above remains unavailable from this
 Windows workspace and is required to verify real Docker log timing.
+
+## 2026-07-29 Container-OpenClaw eBPF Runtime Library Repair
+
+The container-only BCC bootstrap now explicitly installs Debian's `libelf1`
+alongside `python3-bpfcc`, `bpfcc-tools`, and `libbpfcc`. A live
+`container-openclaw` trace showed that BCC imported from the system package
+directory but failed to load `libelf.so.1`; that disabled Stage 2 for every
+tool call. The change is confined to the generated container `setup.sh` and
+does not alter `host-openclaw-sandbox` startup, its preflight, or its
+fork-exec runtime.
+
+Validation unavailable in this Windows workspace:
+
+- The live `container-openclaw` acceptance command above cannot run here: it
+  requires the Linux Docker/cgroup-v2/eBPF host environment, task image, and
+  model credentials. Re-run it and require
+  `tool_resource_preflight.json` to report `bcc_import.ok: true` and
+  `stage2_ready: true` before treating the resulting resource telemetry as
+  valid.

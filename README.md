@@ -246,7 +246,7 @@ Useful selectors:
 ```bash
 python -m swe_rebench.runner run --config swe_rebench/config.yaml \
   --dataset swe_rebench/tasks.json \
-  --instance-ids django__django-12345,sympy__sympy-67890
+  --instance-ids 12rambau__sepal_ui-411,12rambau__sepal_ui-501
 
 python -m swe_rebench.runner run --config swe_rebench/config.yaml \
   --dataset swe_rebench/tasks.json \
