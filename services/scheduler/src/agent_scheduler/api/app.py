@@ -582,7 +582,17 @@ def create_app(state: AppState | None = None) -> FastAPI:
         s: AppState = Depends(get_state),
         _: None = Depends(auth),
     ) -> ExecutionRegistrationResponse:
-        return s.executions.register(request)
+        response = s.executions.register(request)
+        # For marker-backend executions, start Stage-2 eBPF telemetry
+        # immediately if the sandbox container is already known.  (For
+        # managed-wrapper, telemetry starts at claim/started time.)
+        if (
+            getattr(request, "backend", None) == "marker"
+        ):
+            container_id = sandbox_container_id(s)
+            if container_id:
+                begin_stage2_for_record(s, request.execution_id, container_id)
+        return response
 
     @app.get("/v2/executions/{execution_id}/scope", response_model=ExecutionScopeResponse)
     async def execution_scope(

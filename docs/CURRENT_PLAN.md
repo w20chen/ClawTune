@@ -195,68 +195,50 @@ It must show:
 5. prediction availability becomes non-zero after causal evidence exists;
    the first cold-start command may correctly remain `unknown`.
 
-## 2026-07-29 Run Audit (Round 3): Marker Backend + Stage-2 Fix
+## 2026-07-29 Run Audit (Round 4): Stage-2 Registration-Time Start
 
-### Round 3 Results (marker backend, /proc cgroup discovery)
+### Round 4 Results
 
-The marker backend switch was SUCCESSFUL:
-- **exec commands produce output** — `find`, `python3 -c`, `pip`, `apt-get`, `git diff` all work
-- **Agent completed the task** — produced 1774-byte patch to `spectree/utils.py`
-- **Smoke test PASSED** — `success: true, reason: "patch produced"`
-- **Agent exit code 0** — no crash, normal completion
-- **64 tools in 24 turns**, 16 exec + 8 native (read/edit)
+The `pending_marker()` fix in Round 3 didn't work. Stage-2 was still never
+started.  Analysis of the sidecar-stdout request order revealed the root cause:
 
-But Stage-2 eBPF telemetry was NEVER activated:
-- `sidecar-stderr.txt`: 352 bytes, only Uvicorn startup/shutdown — NO BCC warnings, NO `[telemetry:diag]` lines
-- `launcher_tool_resource_unavailable_reasons: {"no_active_stage2_run": 16}`
-- `tool_resource_artifacts.artifact_count: 0`
-- Run failed with: `"required Stage-2 telemetry produced no exec artifacts"`
-
-### Root Cause: Stage-2 Never Started for Marker Backend
-
-In marker mode, executions are registered but **never claimed** (no launcher).
-The `ExecutionRegistry.active()` method only returns **claimed** records.
-When the sandbox scope is discovered asynchronously, the
-`update_sandbox_scope` handler iterates `active()` records to start Stage-2,
-but finds none — all marker executions are still unclaimed.
-
-### Fix: Stage-2 Activation for Pending Marker Executions
-
-**`executions.py`**: Added `pending_marker()` method that returns unclaimed
-marker-backend executions that haven't expired:
-```python
-def pending_marker(self) -> list[ExecutionRecord]:
-    return [
-        record for record in self._by_execution_id.values()
-        if not record.claimed
-        and getattr(record.request, "backend", None) == "marker"
-        and record.expires_at > datetime.now(UTC)
-    ]
+```
+POST /v1/runtime/sandbox-scope HTTP/1.1 200 OK   ← sandbox scope set (T=0)
+POST /v2/executions HTTP/1.1 200 OK               ← first exec registered (T=+1)
 ```
 
-**`app.py`**: Updated `update_sandbox_scope` handler to also iterate
-`pending_marker()` records and start Stage-2 for them when the sandbox
-container is discovered. This arms the eBPF collector for subsequent
-tool calls.
+The sandbox scope arrives **before** any executions are registered.  When
+the sandbox-scope handler calls `pending_marker()`, the list is empty —
+no marker executions exist yet.  Conversely, when executions ARE registered,
+the sandbox scope is already set, but the registration handler doesn't
+trigger Stage-2.
 
-### Expected Behavior After Fix
+### Fix: Start Stage-2 at Execution Registration Time
 
-1. First 1-2 exec calls may have no telemetry (collector starts after sandbox discovery)
-2. Subsequent exec calls should have clause telemetry with `matched > 0`
-3. `tool_resource_artifacts.artifact_count > 0`
-4. `tool_resource_prediction_available_ratio` should increase as evidence accumulates
+**`app.py`**: Modified the `/v2/executions` handler to immediately start
+Stage-2 eBPF telemetry for marker-backend executions when the sandbox
+container is already known:
 
-### Cgroup Discovery Fix (from Round 2, retained)
+```python
+@app.post("/v2/executions", ...)
+async def register_execution(request, s, _):
+    response = s.executions.register(request)
+    if getattr(request, "backend", None) == "marker":
+        container_id = sandbox_container_id(s)
+        if container_id:
+            begin_stage2_for_record(s, request.execution_id, container_id)
+    return response
+```
 
-**`telemetry.py`**: Added `_discover_cgroup_inodes_from_proc(init_pid)` that
-scans `/proc` for processes sharing the container's PID namespace and
-collects their actual cgroup inodes. More reliable than directory scanning.
+The `pending_marker()` loop in the sandbox-scope handler is retained as a
+safety net for executions registered before scope discovery (though in
+practice the scope always arrives first).
 
-### Test Results
+### Test Results (Round 4)
 
-- scheduler tests (launcher + telemetry + sidecar + predictor): 90 passed
+- scheduler tests: 102 passed
 - top-level tests: 73 passed, 2 skipped
-- **Total: 163 tests passed**
+- **Total: 175 tests passed**
 
 ### Next End-to-End Validation
 
@@ -267,12 +249,8 @@ sudo -E env "PATH=$PATH" "$(command -v python3)" \
   --runtime-mode host-openclaw-sandbox
 ```
 
-Acceptance criteria:
-1. ✅ exec commands produce output (verified in Round 3)
-2. ✅ Agent can complete tasks (verified in Round 3)
-3. Stage-2 eBPF telemetry starts after sandbox scope discovery
-4. `tool_resource_artifacts.artifact_count > 0`
-5. BCC warnings / `[telemetry:diag]` lines appear in sidecar-stderr
+Expected: sidecar-stderr.txt should contain BCC compilation warnings and
+`[telemetry:diag]` lines, confirming the ClauseTelemetryCollector was armed.
 
 ## Not Run Locally
 
