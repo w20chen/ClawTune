@@ -3053,6 +3053,13 @@ def _event_type_counts(events: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+# Cross-instance cache of discovered cgroup inodes keyed by container_id.
+# Each ClauseTelemetryCollector instance starts fresh, but Docker exec
+# transient cgroups discovered by one instance must be visible to the
+# next so that _container_pid_set can match exec events immediately.
+_cgroup_inodes_cache: dict[str, set[int]] = {}
+
+
 class ClauseTelemetryCollector:
     """One BPF program, armed once, delimiting serial exec tool calls."""
 
@@ -3111,7 +3118,13 @@ class ClauseTelemetryCollector:
             proc_cgroup_inodes = _discover_cgroup_inodes_from_proc(init_pid)
             if proc_cgroup_inodes:
                 self.cgroup_inodes |= proc_cgroup_inodes
-        self.init_pid = init_pid
+        # Seed from cross-instance cache: exec transient cgroups discovered
+        # by a previous collector instance for the same container.
+        if container_id:
+            cached = _cgroup_inodes_cache.get(container_id)
+            if cached:
+                self.cgroup_inodes |= cached
+        self.container_id = container_id
         init_pid_ns = _pid_namespace_inode_for_pid(init_pid) if init_pid > 0 else None
         self.pid_namespace_inodes = {init_pid_ns} if init_pid_ns is not None else set()
         self.quota_cores = observed_quota_cores(cgroup)
@@ -3472,6 +3485,13 @@ class ClauseTelemetryCollector:
                         _dynamic_cgroups.add(_cg)
                 if _dynamic_cgroups - self.cgroup_inodes:
                     self.cgroup_inodes |= _dynamic_cgroups
+                    # Persist newly discovered cgroups for the next
+                    # collector instance (each execution gets a fresh
+                    # collector, but cgroups are container-scoped).
+                    if self.container_id:
+                        _cgroup_inodes_cache.setdefault(
+                            self.container_id, set()
+                        ).update(_dynamic_cgroups)
                 # --- end dynamic cgroup discovery ---
                 # --- diagnostic logging ---
                 import sys as _sys

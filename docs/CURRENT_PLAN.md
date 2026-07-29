@@ -195,71 +195,47 @@ It must show:
 5. prediction availability becomes non-zero after causal evidence exists;
    the first cold-start command may correctly remain `unknown`.
 
-## 2026-07-29 Run Audit (Round 5): Stage-2 Working, Cgroup Matching Fixed
+## 2026-07-29 Run Audit (Round 6): Cross-Instance Cgroup Cache
 
-### Round 5 Results (registration-time Stage-2 start)
+### Round 6 Results
 
-The registration-time Stage-2 fix WORKED:
-- **sidecar-stderr.txt: 56,678 bytes** (was 352) — BCC compilation warnings
-  and `[telemetry:diag]` lines present!
-- **`launcher_tool_resource_available_span_ends: 26`** (was 0) — all launcher
-  tool spans now have tool_resource available
-- **`artifact_count: 26`** (was 0) — 26 clause telemetry artifacts generated
-- **`call_count: 26`** (was 0) — all calls tracked
-- Agent completed the task and produced a 1774-byte patch
+Strategy 3 made `cgroup_inodes` grow to 2-3 entries (was 1), but 17/18 calls
+still had `matched=0`.  One call had `matched=4` with `container_pids=9`.
 
-But `healthy_artifact_count: 0` — all 26 artifacts still unhealthy because
-`matched=0` on every call.  The diagnostic showed:
-```
-container_pids=1 matched=0 exec_cgroup_dist=[(1056384, 6)] cgroup_inodes=[1057036]
-```
+Root cause discovered: `ClauseTelemetryCollector` is instantiated **per
+execution**, not per session.  Each `start_command()` call creates a new
+observer with a new collector.  The dynamic cgroup discovery adds exec
+cgroups to the current instance, but the next execution gets a fresh
+collector with only init-time cgroups — losing all prior discoveries.
 
-The exec events are in cgroup 1056384, but `cgroup_inodes` only has 1057036
-(the container init's cgroup).  The dynamic cgroup discovery (Strategies 1+2)
-failed because:
-- Strategy 1: `container_pids` has only 1 PID (init), exec events have
-  different host_pids
-- Strategy 2: exec_boundary eBPF events have `pid_namespace_inode=0` (BPF
-  probe limitation at exec return time)
+### Fix: Cross-Instance Cgroup Inode Cache
 
-### Fix: Aggressive Cgroup Collection (Strategy 3)
-
-**`telemetry.py`**: Added Strategy 3 to the dynamic cgroup discovery — collect
-ALL cgroup IDs from exec_boundary events regardless of pid_namespace_inode
-or container_pids.  This heuristic is safe because exec events captured during
-an active tool call time window are overwhelmingly from the target container.
+**`telemetry.py`**: Added module-level `_cgroup_inodes_cache` dict keyed by
+`container_id`.  On init, each new collector seeds `cgroup_inodes` from the
+cache.  On dynamic discovery, newly found cgroups are persisted to the cache
+so the next collector instance inherits them.
 
 ```python
-# Strategy 3: collect ALL cgroup IDs from exec_boundary events
-for _e in self._events:
-    if _e.get("type") != "exec_boundary":
-        continue
-    _cg = _e.get("cgroup_id", 0)
-    if _cg > 0:
-        _dynamic_cgroups.add(_cg)
+_cgroup_inodes_cache: dict[str, set[int]] = {}
+
+# In __init__:
+if container_id:
+    cached = _cgroup_inodes_cache.get(container_id)
+    if cached:
+        self.cgroup_inodes |= cached
+
+# In finish_tool_call (dynamic discovery):
+if self.container_id:
+    _cgroup_inodes_cache.setdefault(self.container_id, set()).update(_dynamic_cgroups)
 ```
 
-After the first call adds cgroup 1056384 to `cgroup_inodes`, subsequent
-calls should have `matched > 0`.
+### Test Results (Round 6)
+- **Total: 175 passed, 2 skipped**
 
-### Test Results (Round 5)
-
-- scheduler tests: 102 passed
-- top-level tests: 73 passed, 2 skipped  
-- **Total: 175 tests passed**
-
-### Next End-to-End Validation
-
-```bash
-sudo -E env "PATH=$PATH" "$(command -v python3)" \
-  -m swe_rebench.runner run --config swe_rebench/config.yaml \
-  --prepare --dataset swe_rebench/tasks.json --sample 1 --export \
-  --runtime-mode host-openclaw-sandbox
-```
-
-Expected: `cgroup_inodes` should grow beyond 1 element after the first call.
-`matched` should become > 0.  `healthy_artifact_count` should become > 0.
-`clause_count` should become > 0.
+### Expected Round 7
+Second and subsequent calls should see `cgroup_inodes` with all previously
+discovered exec cgroups pre-seeded, making `container_pids > 1` and
+`matched > 0` from the start.
 
 ## Not Run Locally
 
