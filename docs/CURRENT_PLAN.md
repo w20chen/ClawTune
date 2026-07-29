@@ -903,3 +903,46 @@ separately; the host kernel is 6.8 while the task image currently installs
 Debian 6.1 headers, so matching kernel headers may be the next objective
 container limitation. Do not pre-emptively mount or mutate host kernel-header
 trees without live evidence.
+
+## 2026-07-30 Container-OpenClaw Host Kernel Headers
+
+The subsequent Linux evidence identified that objective mismatch. The running
+host kernel is `5.15.0-179-generic`, and its build link resolves to the existing
+host directory `/usr/src/linux-headers-5.15.0-179-generic`; the container
+instead installed Debian 6.1 headers. BCC imports successfully after the scoped
+libstdc++ repair, but cannot compile a BPF module without headers for the
+running host kernel.
+
+`run_container` now discovers headers only for a local Linux Docker daemon. It
+mounts the exact `/lib/modules/<uname -r>` directory and the exact resolved
+`build` target at their identical container paths, both read-only. The build
+target must resolve to an existing directory below `/usr/src`; malformed kernel
+release values, missing paths, resolution errors, targets outside `/usr/src`,
+non-Linux runners, and remote Docker daemons all skip the mounts. This preserves
+the existing best-effort Stage-2 fallback instead of making container launch
+depend on host-header availability.
+
+The change is confined to the container runner. `host-openclaw-sandbox`, shared
+scheduler code, JSON Schema, OpenClaw core, and
+`services/scheduler/src/tool_resource` are unchanged.
+
+Validation in this Windows workspace:
+
+- `python -m pytest tests/test_swe_rebench_selection.py -q -p
+  no:cacheprovider --basetemp .pytest-tmp-kheaders`: 76 passed, 2 skipped.
+- `python -m pytest tests -q -p no:cacheprovider --basetemp
+  .pytest-tmp-kheaders-full`: 91 passed, 2 skipped.
+- `python -m compileall -q swe_rebench tests`: passed.
+- `python tools\validate_contracts.py`: all nine schema examples passed.
+- `git diff --check`: passed.
+
+Validation unavailable in this Windows workspace:
+
+- A live Linux `container-openclaw` run cannot be performed here because this
+  workspace has no usable Linux Docker/cgroup-v2/eBPF runtime or model
+  credentials. The next host run must log
+  `container kernel headers: mounting host
+  /lib/modules/5.15.0-179-generic and
+  /usr/src/linux-headers-5.15.0-179-generic read-only`. Its preflight should
+  then list the matching header directory. A later verifier/attach failure
+  should be treated as a separate kernel capability limitation.

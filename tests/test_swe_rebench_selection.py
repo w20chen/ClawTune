@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from swe_rebench.config import RunnerConfig
-from swe_rebench.docker import ContainerResult
+from swe_rebench.docker import ContainerResult, _container_kernel_header_volumes
 from swe_rebench.host_sandbox import (
     _SANDBOX_TASK_PATH,
     _cleanup_openclaw_sandbox_containers,
@@ -1780,6 +1780,126 @@ def test_docker_cli_uses_wait_exit_code_with_rm_container(monkeypatch, tmp_path:
     assert "AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED=false" in docker_run
     assert "CLAW_CGROUP_REQUIRED=0" in docker_run
     assert (tmp_path / "trace" / "container.log").read_text(encoding="utf-8") == "container output\n"
+
+
+def test_container_kernel_headers_mount_exact_host_paths_read_only(
+    monkeypatch, tmp_path: Path
+) -> None:
+    modules_root = tmp_path / "lib" / "modules"
+    module_dir = modules_root / "5.15.0-test"
+    module_dir.mkdir(parents=True)
+    header_root = tmp_path / "usr" / "src"
+    header_dir = header_root / "linux-headers-5.15.0-test"
+    header_dir.mkdir(parents=True)
+
+    monkeypatch.setattr("swe_rebench.docker.sys.platform", "linux")
+    monkeypatch.setattr(
+        "swe_rebench.docker._resolve_kernel_build", lambda _build: header_dir
+    )
+
+    volumes = _container_kernel_header_volumes(
+        "unix:///var/run/docker.sock",
+        kernel_release="5.15.0-test",
+        modules_root=modules_root,
+        header_root=header_root,
+    )
+
+    assert volumes == {
+        str(module_dir): {"bind": str(module_dir), "mode": "ro"},
+        str(header_dir): {"bind": str(header_dir), "mode": "ro"},
+    }
+
+
+def test_container_kernel_headers_reject_unsafe_or_remote_mounts(
+    monkeypatch, tmp_path: Path
+) -> None:
+    modules_root = tmp_path / "lib" / "modules"
+    module_dir = modules_root / "5.15.0-test"
+    module_dir.mkdir(parents=True)
+    header_root = tmp_path / "usr" / "src"
+    header_root.mkdir(parents=True)
+    unsafe_target = tmp_path / "etc"
+    unsafe_target.mkdir()
+
+    monkeypatch.setattr("swe_rebench.docker.sys.platform", "linux")
+    monkeypatch.setattr(
+        "swe_rebench.docker._resolve_kernel_build", lambda _build: unsafe_target
+    )
+
+    kwargs = {
+        "kernel_release": "5.15.0-test",
+        "modules_root": modules_root,
+        "header_root": header_root,
+    }
+    assert _container_kernel_header_volumes(
+        "unix:///var/run/docker.sock", **kwargs
+    ) == {}
+    assert _container_kernel_header_volumes(
+        "tcp://docker.example:2376", **kwargs
+    ) == {}
+
+
+def test_docker_cli_adds_discovered_kernel_header_mounts(
+    monkeypatch, tmp_path: Path
+) -> None:
+    calls: list[list[str]] = []
+
+    class Result:
+        def __init__(self, stdout: str = "") -> None:
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:3] == ["docker", "run", "--detach"]:
+            return Result(stdout="abc123\n")
+        if cmd == ["docker", "wait", "abc123"]:
+            return Result(stdout="0\n")
+        if cmd == ["docker", "logs", "abc123"]:
+            return Result(stdout="")
+        if cmd == ["docker", "rm", "-f", "abc123"]:
+            return Result(stdout="abc123\n")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    header_volumes = {
+        "/lib/modules/5.15.0-test": {
+            "bind": "/lib/modules/5.15.0-test",
+            "mode": "ro",
+        },
+        "/usr/src/linux-headers-5.15.0-test": {
+            "bind": "/usr/src/linux-headers-5.15.0-test",
+            "mode": "ro",
+        },
+    }
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "swe_rebench.docker._container_kernel_header_volumes",
+        lambda _host: header_volumes,
+    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("", encoding="utf-8")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+
+    run_container(
+        client=None,
+        image="image:latest",
+        task_id="task-headers",
+        bundle_dir=tmp_path,
+        trace_dir=tmp_path / "trace",
+        problem_statement="fix",
+        config=config.docker,
+        llm_api_key="sk-test",
+        llm_upstream_url="https://example.invalid",
+        timeout_seconds=10,
+    )
+
+    docker_run = calls[0]
+    assert "/lib/modules/5.15.0-test:/lib/modules/5.15.0-test:ro" in docker_run
+    assert (
+        "/usr/src/linux-headers-5.15.0-test:"
+        "/usr/src/linux-headers-5.15.0-test:ro"
+    ) in docker_run
 
 
 def test_docker_cli_sets_required_cgroup_only_when_configured(monkeypatch, tmp_path: Path) -> None:

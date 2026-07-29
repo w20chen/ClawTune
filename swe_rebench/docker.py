@@ -36,6 +36,70 @@ def _docker_platform_args(platform: str) -> list[str]:
     return ["--platform", platform] if platform else []
 
 
+def _resolve_kernel_build(build_path: Path) -> Path:
+    """Resolve the host kernel's ``build`` link, requiring its target."""
+    return build_path.resolve(strict=True)
+
+
+def _container_kernel_header_volumes(
+    docker_host: str,
+    *,
+    kernel_release: str | None = None,
+    modules_root: Path = Path("/lib/modules"),
+    header_root: Path = Path("/usr/src"),
+) -> dict[str, dict[str, str]]:
+    """Return narrow read-only mounts for the local host's running kernel.
+
+    BCC compiles against the *host* kernel even though it runs in the task
+    container.  Distribution headers installed in the image can therefore be
+    the wrong version.  Only local Linux Docker daemons are eligible: paths on
+    this machine are not meaningful to a remote daemon.
+
+    Discovery is deliberately fail-open because Stage-2 is best effort in the
+    container runtime.  The resolved build target must remain below /usr/src;
+    an unexpected link can never turn into an arbitrary host-path mount.
+    """
+    if sys.platform != "linux" or _docker_host_socket(docker_host) is None:
+        return {}
+
+    try:
+        release = kernel_release if kernel_release is not None else os.uname().release
+    except (AttributeError, OSError):
+        return {}
+    if not release or release in {".", ".."} or "/" in release or "\\" in release:
+        return {}
+
+    module_dir = modules_root / release
+    if not module_dir.is_dir():
+        return {}
+
+    try:
+        resolved_header_root = header_root.resolve(strict=True)
+        header_dir = _resolve_kernel_build(module_dir / "build")
+    except (OSError, RuntimeError):
+        return {}
+    if not header_dir.is_dir() or (
+        header_dir != resolved_header_root
+        and resolved_header_root not in header_dir.parents
+    ):
+        _log(
+            "[warn] container kernel headers skipped: resolved build target "
+            f"is outside {resolved_header_root}: {header_dir}"
+        )
+        return {}
+
+    module_path = str(module_dir)
+    header_path = str(header_dir)
+    _log(
+        "[info] container kernel headers: mounting host "
+        f"{module_path} and {header_path} read-only"
+    )
+    return {
+        module_path: {"bind": module_path, "mode": "ro"},
+        header_path: {"bind": header_path, "mode": "ro"},
+    }
+
+
 @dataclass
 class ContainerResult:
     """Outcome of a single container run."""
@@ -188,6 +252,10 @@ def run_container(
         volumes[_host_socket] = {"bind": "/var/run/docker.sock", "mode": "rw"}
     if config.cgroup_mount_rw:
         volumes["/sys/fs/cgroup"] = {"bind": "/sys/fs/cgroup", "mode": "rw"}
+    # BCC must compile for the host kernel. Mount only the exact module tree
+    # and resolved header directory, and only for a local Linux Docker daemon.
+    # Missing or suspicious paths leave Stage-2 in its existing fail-open mode.
+    volumes.update(_container_kernel_header_volumes(config.host))
 
     if client is not None:
         return _run_container_sdk(
