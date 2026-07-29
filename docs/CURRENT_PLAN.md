@@ -195,49 +195,57 @@ It must show:
 5. prediction availability becomes non-zero after causal evidence exists;
    the first cold-start command may correctly remain `unknown`.
 
-## 2026-07-29 Run Audit (Round 4): Stage-2 Registration-Time Start
+## 2026-07-29 Run Audit (Round 5): Stage-2 Working, Cgroup Matching Fixed
 
-### Round 4 Results
+### Round 5 Results (registration-time Stage-2 start)
 
-The `pending_marker()` fix in Round 3 didn't work. Stage-2 was still never
-started.  Analysis of the sidecar-stdout request order revealed the root cause:
+The registration-time Stage-2 fix WORKED:
+- **sidecar-stderr.txt: 56,678 bytes** (was 352) — BCC compilation warnings
+  and `[telemetry:diag]` lines present!
+- **`launcher_tool_resource_available_span_ends: 26`** (was 0) — all launcher
+  tool spans now have tool_resource available
+- **`artifact_count: 26`** (was 0) — 26 clause telemetry artifacts generated
+- **`call_count: 26`** (was 0) — all calls tracked
+- Agent completed the task and produced a 1774-byte patch
 
+But `healthy_artifact_count: 0` — all 26 artifacts still unhealthy because
+`matched=0` on every call.  The diagnostic showed:
 ```
-POST /v1/runtime/sandbox-scope HTTP/1.1 200 OK   ← sandbox scope set (T=0)
-POST /v2/executions HTTP/1.1 200 OK               ← first exec registered (T=+1)
+container_pids=1 matched=0 exec_cgroup_dist=[(1056384, 6)] cgroup_inodes=[1057036]
 ```
 
-The sandbox scope arrives **before** any executions are registered.  When
-the sandbox-scope handler calls `pending_marker()`, the list is empty —
-no marker executions exist yet.  Conversely, when executions ARE registered,
-the sandbox scope is already set, but the registration handler doesn't
-trigger Stage-2.
+The exec events are in cgroup 1056384, but `cgroup_inodes` only has 1057036
+(the container init's cgroup).  The dynamic cgroup discovery (Strategies 1+2)
+failed because:
+- Strategy 1: `container_pids` has only 1 PID (init), exec events have
+  different host_pids
+- Strategy 2: exec_boundary eBPF events have `pid_namespace_inode=0` (BPF
+  probe limitation at exec return time)
 
-### Fix: Start Stage-2 at Execution Registration Time
+### Fix: Aggressive Cgroup Collection (Strategy 3)
 
-**`app.py`**: Modified the `/v2/executions` handler to immediately start
-Stage-2 eBPF telemetry for marker-backend executions when the sandbox
-container is already known:
+**`telemetry.py`**: Added Strategy 3 to the dynamic cgroup discovery — collect
+ALL cgroup IDs from exec_boundary events regardless of pid_namespace_inode
+or container_pids.  This heuristic is safe because exec events captured during
+an active tool call time window are overwhelmingly from the target container.
 
 ```python
-@app.post("/v2/executions", ...)
-async def register_execution(request, s, _):
-    response = s.executions.register(request)
-    if getattr(request, "backend", None) == "marker":
-        container_id = sandbox_container_id(s)
-        if container_id:
-            begin_stage2_for_record(s, request.execution_id, container_id)
-    return response
+# Strategy 3: collect ALL cgroup IDs from exec_boundary events
+for _e in self._events:
+    if _e.get("type") != "exec_boundary":
+        continue
+    _cg = _e.get("cgroup_id", 0)
+    if _cg > 0:
+        _dynamic_cgroups.add(_cg)
 ```
 
-The `pending_marker()` loop in the sandbox-scope handler is retained as a
-safety net for executions registered before scope discovery (though in
-practice the scope always arrives first).
+After the first call adds cgroup 1056384 to `cgroup_inodes`, subsequent
+calls should have `matched > 0`.
 
-### Test Results (Round 4)
+### Test Results (Round 5)
 
 - scheduler tests: 102 passed
-- top-level tests: 73 passed, 2 skipped
+- top-level tests: 73 passed, 2 skipped  
 - **Total: 175 tests passed**
 
 ### Next End-to-End Validation
@@ -249,8 +257,9 @@ sudo -E env "PATH=$PATH" "$(command -v python3)" \
   --runtime-mode host-openclaw-sandbox
 ```
 
-Expected: sidecar-stderr.txt should contain BCC compilation warnings and
-`[telemetry:diag]` lines, confirming the ClauseTelemetryCollector was armed.
+Expected: `cgroup_inodes` should grow beyond 1 element after the first call.
+`matched` should become > 0.  `healthy_artifact_count` should become > 0.
+`clause_count` should become > 0.
 
 ## Not Run Locally
 

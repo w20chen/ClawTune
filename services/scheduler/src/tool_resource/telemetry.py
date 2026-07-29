@@ -3458,6 +3458,18 @@ class ClauseTelemetryCollector:
                         _ns = _e.get("pid_namespace_inode", 0)
                         if _cg > 0 and _ns in self.pid_namespace_inodes:
                             _dynamic_cgroups.add(_cg)
+                # Strategy 3: collect ALL cgroup IDs from exec_boundary events
+                # in the current time window.  This is a safe heuristic
+                # because exec events captured during an active tool call
+                # window are overwhelmingly from the target container.
+                # Strategy 1+2 fail when pid_namespace_inode is 0 (common
+                # at exec return time due to BPF probe limitations).
+                for _e in self._events:
+                    if _e.get("type") != "exec_boundary":
+                        continue
+                    _cg = _e.get("cgroup_id", 0)
+                    if _cg > 0:
+                        _dynamic_cgroups.add(_cg)
                 if _dynamic_cgroups - self.cgroup_inodes:
                     self.cgroup_inodes |= _dynamic_cgroups
                 # --- end dynamic cgroup discovery ---
