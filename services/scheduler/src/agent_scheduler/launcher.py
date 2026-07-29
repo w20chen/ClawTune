@@ -49,15 +49,7 @@ def main() -> None:
 
 
 def run_execution(endpoint: str, execution_id: str, token: str) -> int:
-    """Claim an execution and run the payload command.
-
-    On Linux (POSIX with os.fork available), uses fork+exec so the
-    launcher process *becomes* the command — stdout/stderr flow directly
-    to the sandbox runtime.  Falls back to subprocess-based spawning
-    on Windows or when fork is unavailable.
-    """
-    if _supports_posix_controls() and hasattr(os, "fork"):
-        return _run_forkexec(endpoint, execution_id, token)
+    """Claim an execution and run it through the instrumented launcher path."""
     return _run_subprocess(endpoint, execution_id, token)
 
 
