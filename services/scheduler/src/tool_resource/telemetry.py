@@ -3234,6 +3234,28 @@ class ClauseTelemetryCollector:
                     self.init_pid,
                     cgroup_inodes=self.cgroup_inodes,
                 )
+                # --- diagnostic logging ---
+                import sys as _sys
+                _all_types: dict[str, int] = {}
+                _exec_pids: set[int] = set()
+                for _e in self._events:
+                    _t = _e.get("type", "?")
+                    _all_types[_t] = _all_types.get(_t, 0) + 1
+                    if _t == "exec_boundary":
+                        _exec_pids.add(_e.get("host_pid", 0))
+                print(
+                    f"[telemetry:diag] call={token.tool_call_id} "
+                    f"total_events={len(self._events)} "
+                    f"cgroup_inodes={sorted(self.cgroup_inodes)} "
+                    f"init_pid={self.init_pid} "
+                    f"container_pids={sorted(container_pids)} "
+                    f"event_types={_all_types} "
+                    f"exec_pids={sorted(_exec_pids)} "
+                    f"window=[{token.started_ns}, {ended_ns}] "
+                    f"cgroup_inodes_count={len(self.cgroup_inodes)}",
+                    file=_sys.stderr,
+                )
+                # --- end diagnostic ---
                 events = sorted(
                     (
                         event
