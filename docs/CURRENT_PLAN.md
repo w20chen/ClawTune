@@ -195,78 +195,67 @@ It must show:
 5. prediction availability becomes non-zero after causal evidence exists;
    the first cold-start command may correctly remain `unknown`.
 
-## 2026-07-29 Run Audit (Round 2): Marker Backend Switch
+## 2026-07-29 Run Audit (Round 3): Marker Backend + Stage-2 Fix
 
-After the initial fixes, a second `host-openclaw-sandbox` run showed that
-exec commands STILL produced no output. The `stdout=PIPE` approach in the
-launcher actually made things worse by preventing stdout from flowing to
-Docker exec's capture mechanism.  Analysis of the process names confirms
-OpenClaw uses detached Docker exec instances whose stdout is never captured
-by the Docker API — the only reliable way to forward output is through the
-sidecar API, which would require significant plugin changes.
+### Round 3 Results (marker backend, /proc cgroup discovery)
 
-### Root Cause of Exec Output Failure
+The marker backend switch was SUCCESSFUL:
+- **exec commands produce output** — `find`, `python3 -c`, `pip`, `apt-get`, `git diff` all work
+- **Agent completed the task** — produced 1774-byte patch to `spectree/utils.py`
+- **Smoke test PASSED** — `success: true, reason: "patch produced"`
+- **Agent exit code 0** — no crash, normal completion
+- **64 tools in 24 turns**, 16 exec + 8 native (read/edit)
 
-OpenClaw's Docker sandbox starts exec instances in detached mode (Docker API
-`ExecStart` with `Detach: true`).  Detached execs discard stdout/stderr;
-OpenClaw tracks process status via `ExecInspect` but never retrieves output.
-No amount of launcher-side stdout forwarding can fix this — the Docker daemon
-simply does not capture stdout for detached execs.
+But Stage-2 eBPF telemetry was NEVER activated:
+- `sidecar-stderr.txt`: 352 bytes, only Uvicorn startup/shutdown — NO BCC warnings, NO `[telemetry:diag]` lines
+- `launcher_tool_resource_unavailable_reasons: {"no_active_stage2_run": 16}`
+- `tool_resource_artifacts.artifact_count: 0`
+- Run failed with: `"required Stage-2 telemetry produced no exec artifacts"`
 
-This is a fundamental limitation of the managed-wrapper approach in
-`host-openclaw-sandbox` mode: the launcher wrapper replaces the actual
-command, but Docker exec never captures the wrapper's (or its child's) stdout.
+### Root Cause: Stage-2 Never Started for Marker Backend
 
-### Fix: Switch to Marker Backend
+In marker mode, executions are registered but **never claimed** (no launcher).
+The `ExecutionRegistry.active()` method only returns **claimed** records.
+When the sandbox scope is discovered asynchronously, the
+`update_sandbox_scope` handler iterates `active()` records to start Stage-2,
+but finds none — all marker executions are still unclaimed.
 
-Changed `executionBackend` from `"managed-wrapper"` to `"marker"` in
-`host_sandbox.py`.  In marker mode:
+### Fix: Stage-2 Activation for Pending Marker Executions
 
-- The plugin registers the execution with the sidecar (timing + env vars)
-  but does **NOT** replace the command.
-- The original command runs directly through OpenClaw's Docker sandbox.
-- OpenClaw handles stdout capture normally for direct exec commands.
-- Cgroup resource monitoring continues via the shared sandbox scope.
-- Clause-level telemetry (per-command exec events) is attributed via
-  timing correlation instead of execution IDs.
+**`executions.py`**: Added `pending_marker()` method that returns unclaimed
+marker-backend executions that haven't expired:
+```python
+def pending_marker(self) -> list[ExecutionRecord]:
+    return [
+        record for record in self._by_execution_id.values()
+        if not record.claimed
+        and getattr(record.request, "backend", None) == "marker"
+        and record.expires_at > datetime.now(UTC)
+    ]
+```
 
-**Trade-off**: Without the launcher, clause telemetry events cannot be
-attributed to specific execution IDs.  They are still captured by the
-eBPF probe and filtered by cgroup + timing window.  The `RuntimeToolResourceKB`
-predictor (continuous p90 latency/CPU/memory) works with timing-based
-attribution.  The `ClauseResourceKB` predictor (per-clause latency buckets)
-requires execution IDs and is degraded in marker mode.
+**`app.py`**: Updated `update_sandbox_scope` handler to also iterate
+`pending_marker()` records and start Stage-2 for them when the sandbox
+container is discovered. This arms the eBPF collector for subsequent
+tool calls.
 
-### Cgroup Discovery Fix: /proc Scanning
+### Expected Behavior After Fix
 
-The diagnostic `[telemetry:diag]` consistently shows `matched=0` because
-exec_boundary eBPF events have `pid_namespace_inode = 0` (the BPF probe
-cannot reliably read `nsproxy->pid_ns_for_children` at exec return time).
-Directory-based cgroup scanning also fails because Docker exec transient
-scopes may be in unrelated parts of the cgroup tree.
+1. First 1-2 exec calls may have no telemetry (collector starts after sandbox discovery)
+2. Subsequent exec calls should have clause telemetry with `matched > 0`
+3. `tool_resource_artifacts.artifact_count > 0`
+4. `tool_resource_prediction_available_ratio` should increase as evidence accumulates
 
-**Added** `_discover_cgroup_inodes_from_proc(init_pid)` in `telemetry.py`:
-- Enumerates all PIDs in `/proc` that share the container init's PID namespace.
-- Reads `/proc/<pid>/cgroup` for each to find the actual cgroup path.
-- Collects unique cgroup inodes from all container processes.
-- Called in `ClauseTelemetryCollector.__init__` to supplement directory-based
-  discovery.
+### Cgroup Discovery Fix (from Round 2, retained)
 
-This approach is more reliable because it finds cgroups where processes
-ACTUALLY run, regardless of naming conventions or tree layout.
-
-### Reverted Changes
-
-- Reverted `stdout=PIPE` in `_spawn_shell` and `_spawn_shell_gated` — the pipe
-  approach prevented stdout from reaching Docker exec's capture.
-- Removed `_collect_and_forward_output` and `threading` import from launcher.
-- Launcher is back to the original inherited-stdout behavior.
+**`telemetry.py`**: Added `_discover_cgroup_inodes_from_proc(init_pid)` that
+scans `/proc` for processes sharing the container's PID namespace and
+collects their actual cgroup inodes. More reliable than directory scanning.
 
 ### Test Results
 
-- launcher tests: 22 passed
-- telemetry + sidecar + predictor tests: 68 passed
-- top-level tests: 73 passed, 2 skipped (POSIX-only)
+- scheduler tests (launcher + telemetry + sidecar + predictor): 90 passed
+- top-level tests: 73 passed, 2 skipped
 - **Total: 163 tests passed**
 
 ### Next End-to-End Validation
@@ -278,16 +267,12 @@ sudo -E env "PATH=$PATH" "$(command -v python3)" \
   --runtime-mode host-openclaw-sandbox
 ```
 
-Expected improvements over the previous run:
-1. exec commands produce output (marker backend, no command wrapping)
-2. cgroup_inodes includes Docker exec transient cgroups (/proc scanning)
-3. matched > 0 for some exec calls (if cgroup discovery works)
-4. tool_resource artifacts become healthy for matched calls
-
-Known limitations with marker backend:
-1. `launcher_tool_resource_eligible_span_ends` will be 0 (no launcher claims)
-2. `tool_resource_prediction_available_ratio` may remain low
-3. ClauseResourceKB predictions unavailable without execution IDs
+Acceptance criteria:
+1. ✅ exec commands produce output (verified in Round 3)
+2. ✅ Agent can complete tasks (verified in Round 3)
+3. Stage-2 eBPF telemetry starts after sandbox scope discovery
+4. `tool_resource_artifacts.artifact_count > 0`
+5. BCC warnings / `[telemetry:diag]` lines appear in sidecar-stderr
 
 ## Not Run Locally
 

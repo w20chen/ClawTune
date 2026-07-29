@@ -448,6 +448,15 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 s.tool_monitor.bind_scope(
                     record.request.tool_call_id, scope
                 )
+        # Marker-backend executions are registered but never claimed by a
+        # launcher.  Start Stage-2 for them once the sandbox container is
+        # discovered so eBPF clause telemetry can capture exec events.
+        for record in s.executions.pending_marker():
+            begin_stage2_for_record(
+                s,
+                record.request.execution_id,
+                scope.container_id,
+            )
         if stage2_start_failed:
             raise HTTPException(
                 status_code=503,

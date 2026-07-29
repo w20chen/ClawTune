@@ -71,6 +71,22 @@ class ExecutionRegistry:
             if record.claimed and record.exit_code is None and record.signal is None
         ]
 
+    def pending_marker(self) -> list[ExecutionRecord]:
+        """Return unclaimed marker-backend executions that haven't expired.
+
+        In marker mode, executions are registered but never claimed by
+        a launcher.  These records still need Stage-2 telemetry activation
+        once the sandbox container scope is discovered.
+        """
+        self._sweep()
+        return [
+            record
+            for record in self._by_execution_id.values()
+            if not record.claimed
+            and getattr(record.request, "backend", None) == "marker"
+            and record.expires_at > datetime.now(UTC)
+        ]
+
     def claim(self, request: ExecutionClaimRequest) -> ExecutionClaimResponse:
         self._sweep()
         record = self._by_execution_id.get(request.execution_id)
