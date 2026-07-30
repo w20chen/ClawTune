@@ -68,6 +68,7 @@ trap 'rm -f "$temporary_binary"' EXIT HUP INT TERM
 (
     cd "$adapter_root"
     GOMODCACHE="$cache_root/go-mod-cache" \
+        GOPROXY="https://goproxy.cn,https://proxy.golang.org,direct" \
         "$go_bin" build -buildvcs=false -trimpath -o "$temporary_binary" .
 )
 mv "$temporary_binary" "$binary"
