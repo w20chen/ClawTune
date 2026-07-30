@@ -946,3 +946,72 @@ Validation unavailable in this Windows workspace:
   /usr/src/linux-headers-5.15.0-179-generic read-only`. Its preflight should
   then list the matching header directory. A later verifier/attach failure
   should be treated as a separate kernel capability limitation.
+
+## 2026-07-30 Container-OpenClaw Tracefs Mount-Namespace Fix
+
+The latest downloaded live run advances beyond every earlier container
+bootstrap failure. Container `c1fc330b09fd` completed the agent workload and
+produced a 2,316-byte patch. `tool_resource_preflight.json` confirms root,
+cgroup v2, Docker inspection through the Unix socket, BCC import, the scoped
+system `libstdc++`, and matching `5.15.0-179-generic` host headers. It
+incorrectly reported `stage2_ready: true`, however, while every one of the 19
+tool-resource artifacts was withheld.
+
+The decisive sidecar error is:
+
+`open(/sys/kernel/tracing/events/sched/sched_process_exit/id): No such file or directory`
+
+This is a mount-namespace failure, not another package, ABI, header, cgroup, or
+BPF-permission failure. Docker `--privileged` grants the required capabilities
+but does not propagate the host tracefs mount into the task container.
+
+The container runner now inspects only the two standard local host tracefs
+roots. For a local Unix-socket Docker daemon, it selects the first root that
+actually contains `events/sched/sched_process_exit/id` and `kprobe_events`,
+then bind-mounts that exact root at the same container path read-write.
+Read-write is required because BCC can create dynamic kprobe events. Non-Linux
+runners, remote Docker daemons, roots without the required controls, and
+filesystem inspection errors add no mount and preserve the existing
+best-effort fallback.
+
+The generated container preflight now records the selected tracefs path,
+visibility of `sched_process_exit`, and whether `kprobe_events` is writable.
+`stage2_ready` cannot be true unless both conditions hold, eliminating the
+false-positive readiness state from this run. The change is confined to
+`container-openclaw`; `host-openclaw-sandbox`, OpenClaw core, JSON Schema
+contracts, shared scheduler behavior, and
+`services/scheduler/src/tool_resource` are unchanged.
+
+Validation in this Windows workspace:
+
+- `python -m pytest tests\test_swe_rebench_selection.py -q -p
+  no:cacheprovider --basetemp .pytest-tmp-tracefs`: 78 passed, 2 skipped.
+- `python -m pytest tests -q -p no:cacheprovider --basetemp
+  .pytest-tmp-tracefs-full`: 93 passed, 2 skipped.
+- With `PYTHONPATH=services\scheduler\src`,
+  `python -m pytest services\scheduler\tests -q -p no:cacheprovider
+  --basetemp .pytest-tmp-tracefs-scheduler`: 122 passed.
+- `python -m compileall -q swe_rebench tests`: passed.
+- `python tools\validate_contracts.py`: all nine schema examples passed.
+- `python -m swe_rebench.runner prepare --config
+  swe_rebench\config.yaml`: passed; the tracked and generated entrypoints and
+  the tracked/current source fingerprints match.
+- One-task `--dry-run` commands for both `container-openclaw` and
+  `host-openclaw-sandbox`: passed.
+- `git diff --check`: passed.
+
+Validation unavailable in this Windows workspace:
+
+- The user's live acceptance command cannot run here because `docker` is not
+  installed and this host is not a Linux cgroup-v2/eBPF environment:
+  `sudo -E env "PATH=$PATH" "$(command -v python3)" -m swe_rebench.runner run
+  --config swe_rebench/config.yaml --dataset swe_rebench/tasks.json --sample 1
+  --export --runtime-mode container-openclaw`.
+- The next Linux run must log `container tracefs: mounting host
+  /sys/kernel/tracing read-write` (or the standard
+  `/sys/kernel/debug/tracing` alternative). Its
+  `tool_resource_preflight.json` must contain
+  `tracefs.sched_process_exit: true`,
+  `tracefs.kprobe_events_writable: true`, and `stage2_ready: true`; at least
+  one launcher artifact must no longer report
+  `collector_disabled ... sched_process_exit ... No such file or directory`.

@@ -100,6 +100,50 @@ def _container_kernel_header_volumes(
     }
 
 
+def _container_tracefs_volumes(
+    docker_host: str,
+    *,
+    tracefs_roots: tuple[Path, ...] = (
+        Path("/sys/kernel/tracing"),
+        Path("/sys/kernel/debug/tracing"),
+    ),
+) -> dict[str, dict[str, str]]:
+    """Expose the local host tracefs needed by an in-container BCC collector.
+
+    A privileged container still has its own mount namespace.  Its tracefs
+    directory can therefore exist but be empty, making BCC compilation appear
+    healthy until the first tracepoint attach fails.  Bind only a known tracefs
+    root that exposes the scheduler exit tracepoint and dynamic-kprobe control
+    file used by the collector.
+
+    The mount is read-write because BCC may create dynamic kprobe events there.
+    This does not expand the default security boundary: container-openclaw's
+    complete telemetry configuration is already privileged.  Remote Docker
+    daemons and non-Linux runners are skipped because their host paths are not
+    local to this process.
+    """
+    if sys.platform != "linux" or _docker_host_socket(docker_host) is None:
+        return {}
+
+    tracepoint = Path("events/sched/sched_process_exit/id")
+    for root in tracefs_roots:
+        try:
+            if (
+                not root.is_dir()
+                or not (root / tracepoint).is_file()
+                or not (root / "kprobe_events").is_file()
+            ):
+                continue
+        except OSError:
+            continue
+        root_path = str(root)
+        _log(f"[info] container tracefs: mounting host {root_path} read-write")
+        return {
+            root_path: {"bind": root_path, "mode": "rw"},
+        }
+    return {}
+
+
 @dataclass
 class ContainerResult:
     """Outcome of a single container run."""
@@ -256,6 +300,10 @@ def run_container(
     # and resolved header directory, and only for a local Linux Docker daemon.
     # Missing or suspicious paths leave Stage-2 in its existing fail-open mode.
     volumes.update(_container_kernel_header_volumes(config.host))
+    # Privileged containers do not inherit the host tracefs mount through their
+    # mount namespace.  Without this narrow bind, BCC imports and compiles but
+    # every tracepoint attach fails at first use.
+    volumes.update(_container_tracefs_volumes(config.host))
 
     if client is not None:
         return _run_container_sdk(

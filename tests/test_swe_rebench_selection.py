@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from swe_rebench.config import RunnerConfig
-from swe_rebench.docker import ContainerResult, _container_kernel_header_volumes
+from swe_rebench.docker import (
+    ContainerResult,
+    _container_kernel_header_volumes,
+    _container_tracefs_volumes,
+)
 from swe_rebench.host_sandbox import (
     _SANDBOX_TASK_PATH,
     _cleanup_openclaw_sandbox_containers,
@@ -518,6 +522,10 @@ def test_entrypoint_exports_container_runtime_identity_for_launcher() -> None:
     assert "tool_resource_preflight.json" in _ENTRYPOINT_TEMPLATE
     assert '"stage2_ready"' in _ENTRYPOINT_TEMPLATE
     assert '"clang": shutil.which("clang")' in _ENTRYPOINT_TEMPLATE
+    assert '"tracefs": tracefs' in _ENTRYPOINT_TEMPLATE
+    assert 'candidate / "events/sched/sched_process_exit/id"' in _ENTRYPOINT_TEMPLATE
+    assert 'tracefs.get("sched_process_exit") is True' in _ENTRYPOINT_TEMPLATE
+    assert 'tracefs.get("kprobe_events_writable") is True' in _ENTRYPOINT_TEMPLATE
 
 
 def test_runner_config_enables_complete_cgroup_sampling() -> None:
@@ -1839,6 +1847,48 @@ def test_container_kernel_headers_reject_unsafe_or_remote_mounts(
     ) == {}
 
 
+def test_container_tracefs_mounts_scheduler_tracepoint_root_read_write(
+    monkeypatch, tmp_path: Path
+) -> None:
+    missing_root = tmp_path / "missing-tracefs"
+    tracefs_root = tmp_path / "sys" / "kernel" / "tracing"
+    tracepoint_id = tracefs_root / "events" / "sched" / "sched_process_exit" / "id"
+    tracepoint_id.parent.mkdir(parents=True)
+    tracepoint_id.write_text("314\n", encoding="utf-8")
+    (tracefs_root / "kprobe_events").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr("swe_rebench.docker.sys.platform", "linux")
+
+    volumes = _container_tracefs_volumes(
+        "unix:///var/run/docker.sock",
+        tracefs_roots=(missing_root, tracefs_root),
+    )
+
+    assert volumes == {
+        str(tracefs_root): {"bind": str(tracefs_root), "mode": "rw"},
+    }
+
+
+def test_container_tracefs_skips_missing_tracepoint_remote_and_non_linux(
+    monkeypatch, tmp_path: Path
+) -> None:
+    empty_root = tmp_path / "sys" / "kernel" / "tracing"
+    empty_root.mkdir(parents=True)
+    monkeypatch.setattr("swe_rebench.docker.sys.platform", "linux")
+
+    assert _container_tracefs_volumes(
+        "unix:///var/run/docker.sock", tracefs_roots=(empty_root,)
+    ) == {}
+    assert _container_tracefs_volumes(
+        "tcp://docker.example:2376", tracefs_roots=(empty_root,)
+    ) == {}
+
+    monkeypatch.setattr("swe_rebench.docker.sys.platform", "win32")
+    assert _container_tracefs_volumes(
+        "unix:///var/run/docker.sock", tracefs_roots=(empty_root,)
+    ) == {}
+
+
 def test_docker_cli_adds_discovered_kernel_header_mounts(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -1877,6 +1927,15 @@ def test_docker_cli_adds_discovered_kernel_header_mounts(
         "swe_rebench.docker._container_kernel_header_volumes",
         lambda _host: header_volumes,
     )
+    monkeypatch.setattr(
+        "swe_rebench.docker._container_tracefs_volumes",
+        lambda _host: {
+            "/sys/kernel/tracing": {
+                "bind": "/sys/kernel/tracing",
+                "mode": "rw",
+            }
+        },
+    )
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -1900,6 +1959,7 @@ def test_docker_cli_adds_discovered_kernel_header_mounts(
         "/usr/src/linux-headers-5.15.0-test:"
         "/usr/src/linux-headers-5.15.0-test:ro"
     ) in docker_run
+    assert "/sys/kernel/tracing:/sys/kernel/tracing:rw" in docker_run
 
 
 def test_docker_cli_sets_required_cgroup_only_when_configured(monkeypatch, tmp_path: Path) -> None:

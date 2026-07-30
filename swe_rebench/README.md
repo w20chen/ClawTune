@@ -104,6 +104,17 @@ degrade to the ordinary tool/resource trace instead of blocking `exec`.
 Setting `stage2_required: true` opts into fail-closed startup and final artifact
 completeness checks.
 
+For a local Linux Docker daemon, the container runner also attempts Stage-2
+telemetry when the host exposes the required kernel interfaces. It mounts the
+running kernel's exact module/header paths read-only and binds the first host
+tracefs root containing `sched_process_exit` at the identical path read-write.
+The latter is required because `--privileged` grants capabilities but does not
+copy the host tracefs mount into the container's mount namespace. The generated
+`tool_resource_preflight.json` reports the selected tracefs path and does not
+set `stage2_ready: true` unless that tracepoint is visible and the dynamic
+kprobe control file is writable. Remote Docker daemons, non-Linux runners, and
+missing host interfaces keep the documented fail-open behavior.
+
 To keep OpenClaw on the host and use OpenClaw's Docker sandbox for tools:
 
 ```bash
@@ -148,7 +159,7 @@ Resource attribution is best-effort:
   PIDs and are never sampled as host PIDs. The sidecar keeps the discovered
   host-side sandbox cgroup in that case.
 
-### Stage-2 eBPF Clause Telemetry (host-sandbox only)
+### Stage-2 eBPF Clause Telemetry
 
 Stage-2 telemetry uses BCC/BPF to collect **per-clause** `peak_cpu_cores` and
 `sampled_peak_rss` via in-kernel perf CPU-clock sampling and kprobe-based
@@ -246,9 +257,10 @@ sessions are intentionally outside this benchmark route.
 
 **Limitations:**
 
-- Only available in `host-openclaw-sandbox` mode.  `container-openclaw` mode
-  cannot load BPF programs inside Docker without `--privileged` and
-  `CAP_BPF`/`CAP_SYS_ADMIN`.
+- `host-openclaw-sandbox` is the maintained complete-telemetry route.
+  `container-openclaw` attempts the same collector only for a local Linux
+  Docker daemon with privileged BPF/perf access, matching host headers, cgroup
+  v2, and a host tracefs mount. Otherwise it deliberately remains best-effort.
 - The first tool execution of a session may start stage2 slightly late
   (after sandbox discovery), missing a few hundred ms of early process events.
   Subsequent executions use the already-discovered container id and start

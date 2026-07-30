@@ -468,6 +468,20 @@ try:
     bcc_import = {"ok": True, "error": None}
 except Exception as exc:
     bcc_import = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+tracefs = {"path": None, "sched_process_exit": False, "kprobe_events_writable": False}
+for candidate in (Path("/sys/kernel/tracing"), Path("/sys/kernel/debug/tracing")):
+    tracepoint_id = candidate / "events/sched/sched_process_exit/id"
+    try:
+        if not tracepoint_id.is_file():
+            continue
+        tracefs = {
+            "path": str(candidate),
+            "sched_process_exit": True,
+            "kprobe_events_writable": os.access(candidate / "kprobe_events", os.W_OK),
+        }
+        break
+    except OSError:
+        continue
 preflight = {
     "platform": platform.system().lower(),
     "euid": os.geteuid() if hasattr(os, "geteuid") else None,
@@ -482,12 +496,15 @@ preflight = {
     "container_id": container_id,
     "docker_inspect": docker_inspect,
     "bcc_import": bcc_import,
+    "tracefs": tracefs,
     "stage2_ready": (
         platform.system().lower() == "linux"
         and (not hasattr(os, "geteuid") or os.geteuid() == 0)
         and Path("/sys/fs/cgroup/cgroup.controllers").is_file()
         and docker_inspect.get("ok") is True
         and bcc_import.get("ok") is True
+        and tracefs.get("sched_process_exit") is True
+        and tracefs.get("kprobe_events_writable") is True
     ),
 }
 print(json.dumps(preflight, indent=2))
