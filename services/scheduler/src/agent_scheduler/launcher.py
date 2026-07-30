@@ -383,8 +383,7 @@ def _spawn_shell_gated(
     env["CLAW_GATED_PAYLOAD"] = command
     read_fd, write_fd = os.pipe()
     wrapper = (
-        f"IFS= read -r _claw_release <&{read_fd}; "
-        f"exec {read_fd}<&-; "
+        f"IFS= read -r _claw_release < /proc/self/fd/{read_fd}; "
         '_claw_payload="$CLAW_GATED_PAYLOAD"; '
         "unset CLAW_GATED_PAYLOAD; "
         'exec /bin/sh -c "$_claw_payload"'
