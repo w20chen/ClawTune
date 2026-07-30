@@ -6,12 +6,6 @@
 # ────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-SETUP_DONE="/tmp/.claw_setup_done"
-if [ -f "$SETUP_DONE" ]; then
-    echo "[claw] setup already complete, skipping."
-    return 0 2>/dev/null || exit 0
-fi
-
 # Detect python: prefer conda python shipped by swe-rebench images.
 if [ -x /opt/conda/bin/python3 ]; then
     _CLW_PYTHON="/opt/conda/bin/python3"
@@ -24,6 +18,28 @@ else
     _CLW_PIP="pip3"
 fi
 
+CLAW_ROOT="${CLAW_ROOT:-/claw}"
+SETUP_DONE="/tmp/.claw_setup_done"
+SETUP_REVISION="2:mvdan-protocol-3:mvdan-v3.13.1"
+MVDAN_STATUS="/tmp/.claw_mvdan_adapter_status.json"
+
+_claw_mvdan_adapter_ready() {
+    env "PYTHONPATH=$CLAW_ROOT/scheduler/src${PYTHONPATH:+:$PYTHONPATH}" \
+        "$_CLW_PYTHON" -c \
+        'from tool_resource.mvdan_client import MvdanClient, default_binary_path; client = MvdanClient(default_binary_path()); client.__enter__(); client.close()' \
+        >/dev/null 2>&1
+}
+
+if [ -f "$SETUP_DONE" ] \
+    && [ "$(cat "$SETUP_DONE" 2>/dev/null || true)" = "$SETUP_REVISION" ] \
+    && _claw_mvdan_adapter_ready
+then
+    echo "[claw] setup already complete, skipping."
+    return 0 2>/dev/null || exit 0
+fi
+if [ -f "$SETUP_DONE" ]; then
+    echo "[claw] stale setup marker or mvdan adapter; rerunning setup."
+fi
 
 echo "[claw] installing system dependencies..."
 
@@ -309,5 +325,77 @@ except Exception as exc:
 PY
 
 # ── Done ────────────────────────────────────────────────────────
-touch "$SETUP_DONE"
+echo "[claw] building/verifying pinned mvdan adapter..."
+if env "PYTHONPATH=$CLAW_ROOT/scheduler/src${PYTHONPATH:+:$PYTHONPATH}" \
+    "$_CLW_PYTHON" - "$MVDAN_STATUS" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+from tool_resource.mvdan_client import (
+    ADAPTER_PROTOCOL_VERSION,
+    PARSER_NAME,
+    PARSER_VERSION,
+    REQUIRED_CAPABILITIES,
+    MvdanClient,
+    default_binary_path,
+    ensure_compatible_adapter,
+)
+
+status_path = Path(sys.argv[1])
+binary_path = default_binary_path()
+status = {
+    "attempted": True,
+    "ok": False,
+    "binary_path": str(binary_path),
+    "cache_present_before": binary_path.is_file(),
+    "parser": {"name": PARSER_NAME, "version": PARSER_VERSION},
+    "protocol": {
+        "version": ADAPTER_PROTOCOL_VERSION,
+        "required_capabilities": sorted(REQUIRED_CAPABILITIES),
+    },
+    "error": None,
+}
+try:
+    built_path = ensure_compatible_adapter()
+    with MvdanClient(built_path):
+        pass
+    status.update(
+        {
+            "ok": True,
+            "binary_path": str(built_path),
+            "binary_exists": built_path.is_file(),
+            "binary_executable": os.access(built_path, os.X_OK),
+        }
+    )
+except Exception as exc:
+    status["error"] = f"{type(exc).__name__}: {exc}"
+
+status_path.parent.mkdir(parents=True, exist_ok=True)
+temporary_path = status_path.with_name(
+    f"{status_path.name}.{os.getpid()}.tmp"
+)
+temporary_path.write_text(
+    json.dumps(status, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+os.chmod(temporary_path, 0o600)
+os.replace(temporary_path, status_path)
+if not status["ok"]:
+    raise SystemExit(1)
+print(
+    "[claw] mvdan adapter OK "
+    f"({PARSER_NAME} {PARSER_VERSION}, protocol {ADAPTER_PROTOCOL_VERSION})"
+)
+PY
+then
+    printf '%s\n' "$SETUP_REVISION" > "$SETUP_DONE.$$"
+    chmod 0600 "$SETUP_DONE.$$"
+    mv -f "$SETUP_DONE.$$" "$SETUP_DONE"
+else
+    rm -f -- "$SETUP_DONE"
+    echo "[claw] mvdan adapter unavailable (Stage-2 will remain unavailable)"
+fi
+
 echo "[claw] setup complete."

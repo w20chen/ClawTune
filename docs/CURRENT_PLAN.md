@@ -1180,3 +1180,109 @@ Validation unavailable in this Windows workspace:
   `reason=no_exec_images`. The diagnostic log now distinguishes
   `pid_matched` from `cgroup_matched`; this environment is expected to show
   `pid_matched=0` but `cgroup_matched>0` before the explicit namespace remap.
+
+## 2026-07-30 Container-OpenClaw Mvdan Provisioning and Final Audit
+
+The latest downloaded run (task container `b98dab61a8c3`) proves that the
+pre-exec gate, exact cgroup filtering, and PID-namespace root remap are now
+working. All 12 calls reached `/started`, all 12 collectors saw two to eight
+exec boundaries in the exact per-call cgroup, and every diagnostic reported
+`pid_matched=0` with `cgroup_matched>0`, as expected before the explicit
+namespace remap.
+
+All 12 artifacts then failed at the next, previously unreachable stage:
+
+```text
+MvdanClientError: mvdan adapter is missing at
+/root/.cache/agent-sched-bench/mvdan-clause-adapter-protocol-3-mvdan-v3.13.1
+```
+
+This was a delivery/bootstrap omission. Every task container has a clean root
+cache, while setup never invoked the bundled deterministic builder. The
+builder itself is intentionally tracked as mode 0644, so the existing direct
+execution path would also have failed once called.
+
+The container delivery now:
+
+- invokes the pinned builder through `/bin/sh`, preserving its Go 1.26.1,
+  mvdan v3.13.1, protocol-v3, and archive-SHA256 pins;
+- builds and performs a real adapter protocol handshake during setup;
+- writes an atomic, versioned setup marker only after that handshake, and
+  revalidates the adapter before accepting the marker on a later setup call;
+- writes a separate atomic provisioning-status JSON on both success and
+  failure;
+- performs an independent, read-only mvdan handshake in
+  `tool_resource_preflight.json` and includes it in `stage2_ready`;
+- keeps the default optional container path fail-open for the agent when
+  Stage-2 is unavailable, while `stage2_required=true` now fails before the
+  sidecar or agent starts and preserves the complete preflight in
+  `result_summary.json`.
+
+Post-capture parser/bridge failures are now call-granular analysis failures.
+They no longer disable a healthy eBPF collector or replace real kprobe/loss
+counters with zero. The runner reports these separately from semantic
+rejections and fails closed in required mode. Its lifecycle audit also accepts
+the new PID-namespace remap mode only when all exact-root evidence is present.
+
+The one missing `/exited` event in the 12-call run was a separate bounded
+concurrency race. The second concurrent cold `/started` synchronously occupied
+the single sidecar event loop while the first short command tried to report
+exit. Container/subprocess exit delivery now uses a fast 0.75-second attempt
+followed by one bounded 10-second cold-start attempt. Normal calls retain the
+fast path; a dead sidecar still has a finite upper bound. The host fork-exec
+path retains its original three short 0.75-second attempts.
+
+The maintained `host-openclaw-sandbox` fork-exec launch path is unchanged.
+Changes under `services/scheduler/src/tool_resource` are limited to the
+necessary builder invocation and collector/analyzer health classification.
+OpenClaw core and public JSON Schema contracts are unchanged.
+
+Validation in this Windows workspace:
+
+- Main scheduler suite: 134 passed, 1 skipped.
+- Root runner suite (`python -m pytest tests -q`): 94 passed, 2 skipped.
+- Focused mvdan, telemetry, and launcher suite: 57 passed, 1 skipped.
+- Plugin suite through `npm.cmd test`: all 62 tests passed.
+- `python -m compileall -q swe_rebench services\scheduler\src
+  services\scheduler\tests tests`: passed.
+- `python tools\validate_contracts.py`: all nine public schema examples
+  passed.
+- `python -m swe_rebench.prepare --config swe_rebench/config.yaml`: passed;
+  the generated bundle contains the updated scheduler, setup, and entrypoint.
+- Generated setup/entrypoint text matches the tracked delivery templates, all
+  paired scheduler/bundle source files match, and
+  `bundle_needs_rebuild(...)` is false immediately after preparation.
+- The current fingerprint covers 126 source files:
+  `sha256:7a547a8eafa541c671d6f340c68ac19258347bbb1931b1b42887b7bac942ccf5`.
+- One-task dry-runs for both `container-openclaw` and
+  `host-openclaw-sandbox` passed and selected
+  `0b01001001__spectree-64`.
+
+Validation commands unavailable or unsuitable in this Windows workspace:
+
+- `bash -n swe_rebench/bundle/setup.sh` and the corresponding entrypoint
+  check could not start WSL (`Bash/Service/CreateInstance/E_ACCESSDENIED`);
+  the sandbox-external retry was unavailable. Linux CI/live execution must
+  perform these two read-only syntax checks.
+- `python -m ruff check swe_rebench services\scheduler\src
+  services\scheduler\tests tests` could not run because `ruff` is not
+  installed. Compileall and both supported Python suites passed instead.
+- Bare `npm test` is blocked by the local PowerShell execution policy for
+  `npm.ps1`; the equivalent `npm.cmd test` passed all 62 tests.
+- An unscoped root `python -m pytest -q` is not a supported aggregate command:
+  it collects the source scheduler, the tracked delivery copy, and
+  `tools/smoke_test.py` without a scheduler `src` on `PYTHONPATH`. The
+  supported root and scheduler suites above both pass.
+- Running pytest directly inside `swe_rebench/bundle/scheduler` produced 131
+  passes, 1 skip, and three fixture-path failures because that tracked
+  delivery copy intentionally has no sibling `contracts` or
+  `traces/tool-resource` tree. The identical main scheduler sources pass their
+  complete 133-test suite in the repository layout.
+- A real clean-cache mvdan download/build/handshake and Linux Docker/eBPF run
+  cannot execute here because this host lacks the Linux container/kernel
+  environment. The next live run must show
+  `tool_resource_preflight.mvdan_adapter.provision_status.ok=true`,
+  `tool_resource_preflight.mvdan_adapter.ok=true`,
+  `stage2_ready=true`, equal `/started` and `/exited` counts, no
+  `analysis_failure`, and at least one healthy artifact with a non-empty
+  command tree and clauses.

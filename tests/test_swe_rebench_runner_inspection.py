@@ -9,6 +9,7 @@ from swe_rebench.runner import (
     _inspect_trace,
     _required_telemetry_error,
     _resource_summary,
+    _stage2_call_lifecycle_complete,
 )
 
 
@@ -29,6 +30,23 @@ def _stage2_call_provenance(root_pid: int = 1234) -> dict:
             "trusted_root_pid": root_pid,
         },
     }
+
+
+def _stage2_pid_namespace_remap_provenance(
+    root_pid: int = 612345,
+    claimed_root_pid: int = 1234,
+) -> dict:
+    provenance = _stage2_call_provenance(root_pid)
+    provenance["event_isolation"] = {
+        "mode": "trusted_execution_root_pid_namespace_remap",
+        "trusted_root_pid": root_pid,
+        "claimed_trusted_root_pid": claimed_root_pid,
+        "remap_evidence": "exact_registered_root_shell",
+        "selected_pid_count": 2,
+        "raw_window_event_count": 12,
+        "selected_event_count": 8,
+    }
+    return provenance
 
 
 def _stage2_artifact(
@@ -75,6 +93,31 @@ def _stage2_artifact(
             }
         ],
     }
+
+
+def test_stage2_lifecycle_accepts_strict_pid_namespace_remap() -> None:
+    call = {
+        "tool_call_id": "call-remapped",
+        "tool_trace_ref": "call-remapped",
+        "provenance": _stage2_pid_namespace_remap_provenance(),
+    }
+
+    assert _stage2_call_lifecycle_complete(call) is True
+
+    invalid_mutations = [
+        ("claimed_trusted_root_pid", None),
+        ("claimed_trusted_root_pid", 612345),
+        ("claimed_trusted_root_pid", True),
+        ("remap_evidence", "argv_heuristic"),
+        ("selected_pid_count", 0),
+        ("raw_window_event_count", 0),
+        ("selected_event_count", 0),
+        ("selected_event_count", 13),
+    ]
+    for field, value in invalid_mutations:
+        invalid_call = json.loads(json.dumps(call))
+        invalid_call["provenance"]["event_isolation"][field] = value
+        assert _stage2_call_lifecycle_complete(invalid_call) is False
 
 
 def _stage2_clause(bin_: str = "printf", exit_code: int = 0) -> dict:
@@ -643,6 +686,31 @@ def test_required_stage2_accepts_explicit_semantic_rejections_but_not_for_kb(
         for warning in artifact_report["warnings"]
     )
     assert _required_telemetry_error(config, result) is None
+
+    parse_artifact["calls"][0]["invalid_reasons"] = [
+        {
+            "kind": "analysis_failure",
+            "detail": "MvdanClientError: adapter is unavailable",
+        }
+    ]
+    (artifact_dir / f"{parse_id}.json").write_text(
+        json.dumps(parse_artifact), encoding="utf-8"
+    )
+    analysis_failure_report = _inspect_tool_resource_artifacts(trace_dir)
+    result["tool_resource_artifacts"] = analysis_failure_report
+    assert analysis_failure_report["collector_healthy_artifact_count"] == 2
+    assert analysis_failure_report["analysis_failure_call_count"] == 1
+    assert analysis_failure_report["analysis_failure_reason_counts"] == {
+        "analysis_failure": 1,
+    }
+    assert analysis_failure_report["explicit_semantic_rejection_call_count"] == 1
+    assert analysis_failure_report["semantic_rejection_reason_counts"] == {
+        "unmatched_static_clause": 1,
+    }
+    assert len(analysis_failure_report["analysis_failures"]) == 1
+    assert "analysis is incomplete" in (
+        _required_telemetry_error(config, result) or ""
+    )
 
     parse_artifact["calls"][0]["invalid_reasons"] = []
     (artifact_dir / f"{parse_id}.json").write_text(

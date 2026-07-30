@@ -724,6 +724,9 @@ def _stage2_call_lifecycle_complete(call: dict[str, Any]) -> bool:
     if (
         tree.get("status") != "ok"
         or tree.get("reason") is not None
+        or not isinstance(entry_pid, int)
+        or isinstance(entry_pid, bool)
+        or entry_pid <= 0
         or not isinstance(root_pids, list)
         or len(root_pids) != 1
         or root_pids[0] != entry_pid
@@ -732,9 +735,33 @@ def _stage2_call_lifecycle_complete(call: dict[str, Any]) -> bool:
         or anchor.get("host_pid") != entry_pid
     ):
         return False
+    isolation_mode = isolation.get("mode")
+    if isolation.get("trusted_root_pid") != entry_pid:
+        return False
+    if isolation_mode == "trusted_execution_root":
+        return True
+    if isolation_mode != "trusted_execution_root_pid_namespace_remap":
+        return False
+
+    claimed_root_pid = isolation.get("claimed_trusted_root_pid")
+    selected_pid_count = isolation.get("selected_pid_count")
+    raw_event_count = isolation.get("raw_window_event_count")
+    selected_event_count = isolation.get("selected_event_count")
     return (
-        isolation.get("mode") == "trusted_execution_root"
-        and isolation.get("trusted_root_pid") == entry_pid
+        isinstance(claimed_root_pid, int)
+        and not isinstance(claimed_root_pid, bool)
+        and claimed_root_pid > 0
+        and claimed_root_pid != entry_pid
+        and isolation.get("remap_evidence") == "exact_registered_root_shell"
+        and isinstance(selected_pid_count, int)
+        and not isinstance(selected_pid_count, bool)
+        and selected_pid_count > 0
+        and isinstance(raw_event_count, int)
+        and not isinstance(raw_event_count, bool)
+        and raw_event_count > 0
+        and isinstance(selected_event_count, int)
+        and not isinstance(selected_event_count, bool)
+        and 0 < selected_event_count <= raw_event_count
     )
 
 
@@ -781,17 +808,20 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
         "non_ok_call_with_reason_count": 0,
         "non_ok_call_without_reason_count": 0,
         "explicit_semantic_rejection_call_count": 0,
+        "analysis_failure_call_count": 0,
         "unexplained_non_ok_call_count": 0,
         "unaccounted_semantic_call_count": 0,
         "lifecycle_healthy_call_count": 0,
         "invalid_reason_counts": {},
         "semantic_rejection_reason_counts": {},
+        "analysis_failure_reason_counts": {},
         "collector_failure_reason_counts": {},
         "clause_count": 0,
         "clauses_with_status": 0,
         "no_runtime_exec_count": 0,
         "status_states": {},
         "semantic_rejections": [],
+        "analysis_failures": [],
         "warnings": [],
     }
     if trace_dir is None:
@@ -893,12 +923,28 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
                 else:
                     report["non_ok_call_without_reason_count"] += 1
                 reason_kinds = {reason["kind"] for reason in reason_rows}
+                analysis_failure = "analysis_failure" in reason_kinds
                 explicit_semantic_rejection = (
                     call_contract_valid
                     and not eligible_for_kb
                     and bool(reason_kinds)
+                    and not analysis_failure
                 )
-                if explicit_semantic_rejection:
+                if analysis_failure:
+                    report["analysis_failure_call_count"] += 1
+                    for reason in reason_rows:
+                        if reason["kind"] != "analysis_failure":
+                            continue
+                        _increment_count(
+                            report["analysis_failure_reason_counts"],
+                            reason["kind"],
+                        )
+                        suffix = f": {reason['detail']}" if reason["detail"] else ""
+                        report["analysis_failures"].append(
+                            f"{path.name}: Stage-2 analysis failed"
+                            f"{suffix}"
+                        )
+                elif explicit_semantic_rejection:
                     report["explicit_semantic_rejection_call_count"] += 1
                     for reason in reason_rows:
                         _increment_count(
@@ -1175,6 +1221,12 @@ def _required_telemetry_error(
         return (
             "required Stage-2 non-ok calls lack explicit reasons: "
             f"{explained_non_ok}/{non_ok_calls} explained"
+        )
+    analysis_failures = int(artifacts.get("analysis_failure_call_count", 0))
+    if analysis_failures:
+        return (
+            "required Stage-2 analysis is incomplete: "
+            f"{analysis_failures}/{call_count} calls failed analysis"
         )
     unexplained_non_ok = int(artifacts.get("unexplained_non_ok_call_count", 0))
     if unexplained_non_ok:

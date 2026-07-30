@@ -238,7 +238,7 @@ def ensure_compatible_adapter() -> Path:
     except MvdanClientError:
         try:
             subprocess.run(
-                [str(_BUILD_SCRIPT)],
+                ["/bin/sh", str(_BUILD_SCRIPT)],
                 cwd=_BUILD_SCRIPT.parent,
                 check=True,
             )

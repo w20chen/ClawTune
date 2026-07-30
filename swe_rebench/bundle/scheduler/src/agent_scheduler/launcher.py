@@ -17,8 +17,8 @@ from shutil import which
 from typing import Any
 
 
-_EXIT_REPORT_ATTEMPTS = 3
-_EXIT_REPORT_TIMEOUT_SECONDS = 0.75
+_SUBPROCESS_EXIT_REPORT_TIMEOUTS_SECONDS = (0.75, 10.0)
+_FORK_EXEC_EXIT_REPORT_TIMEOUTS_SECONDS = (0.75, 0.75, 0.75)
 _EXIT_REPORT_RETRY_DELAY_SECONDS = 0.05
 
 
@@ -584,20 +584,26 @@ def _install_signal_forwarders(child: subprocess.Popen[bytes]) -> None:
 
 def _post_json_best_effort(endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
     if path.endswith("/exited"):
-        # Exit delivery closes the eBPF collector, so tolerate a short local
-        # sidecar race without ever delaying command return for tens of
-        # seconds. The opaque update token stays only in the request body and
-        # is never included in diagnostics.
-        for attempt in range(_EXIT_REPORT_ATTEMPTS):
+        # Exit delivery closes the eBPF collector.  Try the normal fast local
+        # path first, then allow one bounded wait for a concurrent cold
+        # Stage-2 attach that is synchronously occupying the sidecar event
+        # loop.  The opaque update token stays only in the request body and is
+        # never included in diagnostics.
+        timeout_budget = (
+            _FORK_EXEC_EXIT_REPORT_TIMEOUTS_SECONDS
+            if _selected_launch_mode() == "fork-exec"
+            else _SUBPROCESS_EXIT_REPORT_TIMEOUTS_SECONDS
+        )
+        for attempt, timeout_seconds in enumerate(timeout_budget):
             try:
                 return _post_json_with_timeout(
                     endpoint,
                     path,
                     payload,
-                    timeout_seconds=_EXIT_REPORT_TIMEOUT_SECONDS,
+                    timeout_seconds=timeout_seconds,
                 )
             except Exception:
-                if attempt + 1 < _EXIT_REPORT_ATTEMPTS:
+                if attempt + 1 < len(timeout_budget):
                     time.sleep(_EXIT_REPORT_RETRY_DELAY_SECONDS)
         return {}
     try:

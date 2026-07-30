@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from tool_resource.clause_bridge import ExecImageRecord, _clause_status
 from tool_resource.telemetry import (
     BPF_PROGRAM,
+    ClauseTelemetryCollector,
     RawRun,
     SENTINEL,
     _attribute,
@@ -21,6 +23,7 @@ from tool_resource.telemetry import (
     shell_command_lookup_failure_evidence,
     validate_clause_telemetry_smoke,
 )
+from tool_resource.mvdan_client import MvdanClientError
 
 
 def test_container_init_pid_falls_back_to_docker_socket_after_cli_api_failure(monkeypatch) -> None:
@@ -469,6 +472,121 @@ def test_trusted_execution_root_remaps_container_pid_to_exact_host_exec() -> Non
     assert entry_pid == 600_042
     assert root_pids == {600_042}
     assert command_tree["status"] == "ok"
+
+
+class _KprobeHitTable:
+    def __getitem__(self, _key: object) -> SimpleNamespace:
+        return SimpleNamespace(value=17)
+
+
+class _AnalysisTestBpf:
+    def __getitem__(self, name: str) -> _KprobeHitTable:
+        assert name == "kprobe_total_hits"
+        return _KprobeHitTable()
+
+
+def _active_test_collector(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> ClauseTelemetryCollector:
+    collector = ClauseTelemetryCollector.unavailable(
+        repo="/repo",
+        artifact_path=tmp_path / "artifact.json",
+        reason="test bootstrap",
+    )
+    collector.state = "active"
+    collector._disabled_reason = None
+    collector._first_disabled_call = None
+    collector._integrity_errors = []
+    collector._cleanup_status = "pending"
+    collector._bpf = _AnalysisTestBpf()
+    monkeypatch.setattr(
+        "tool_resource.telemetry._counter",
+        lambda _bpf, _name: 0,
+    )
+    monkeypatch.setattr(
+        "tool_resource.telemetry._loss_delta",
+        lambda _bpf, _token: {
+            "ringbuf_reserve_failures": 0,
+            "argv_read_failures": 0,
+            "argv_boundary_read_failures": 0,
+        },
+    )
+    monkeypatch.setattr(
+        "tool_resource.telemetry._loss_counts",
+        lambda _bpf: {
+            "ringbuf_reserve_failures": 0,
+            "argv_read_failures": 0,
+            "argv_boundary_read_failures": 0,
+        },
+    )
+    monkeypatch.setattr("tool_resource.telemetry.time.sleep", lambda _delay: None)
+
+    def close_bpf() -> None:
+        collector._closed = True
+        collector._cleanup_status = "ok"
+
+    monkeypatch.setattr(collector, "_close_bpf", close_bpf)
+    return collector
+
+
+def test_post_capture_analysis_failure_preserves_healthy_collector(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    collector = _active_test_collector(monkeypatch, tmp_path)
+    token = collector.begin_tool_call("call-analysis", "printf ok")
+
+    def fail_analysis(**_kwargs: object) -> None:
+        raise MvdanClientError("adapter unavailable")
+
+    monkeypatch.setattr(collector, "_summarize_call", fail_analysis)
+
+    call = collector.finish_tool_call(
+        token,
+        replay_response={"result": "ok", "stderr": "", "returncode": 0},
+    )
+
+    assert call["telemetry_quality"] == "invalid"
+    assert call["invalid_reasons"][0]["kind"] == "analysis_failure"
+    assert collector.state == "active"
+    assert collector._disabled_reason is None
+    assert collector._first_disabled_call is None
+
+    collector.finalize()
+    artifact = json.loads(collector.artifact_path.read_text(encoding="utf-8"))
+
+    assert artifact["collector"]["health"] == "healthy"
+    assert artifact["collector"]["state_before_close"] == "active"
+    assert artifact["collector"]["kprobe_total_hits"] == 17
+    assert artifact["collector"]["invalid_call_count"] == 1
+    assert artifact["collector"]["disabled_reason"] is None
+    assert artifact["telemetry_quality"] == "invalid"
+    assert artifact["formal_completeness"] == "partial"
+    assert artifact["collection_validity"] == "invalid"
+
+
+def test_safety_guard_analysis_failure_is_call_granular(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    collector = _active_test_collector(monkeypatch, tmp_path)
+
+    def fail_analysis(**_kwargs: object) -> None:
+        raise RuntimeError("bridge unavailable")
+
+    monkeypatch.setattr(collector, "_summarize_call", fail_analysis)
+
+    call = collector.record_safety_guard_blocked(
+        "call-guard",
+        "rm guarded",
+        "blocked",
+    )
+
+    assert call["telemetry_quality"] == "invalid"
+    assert call["invalid_reasons"][0]["kind"] == "analysis_failure"
+    assert collector.state == "active"
+    assert collector._disabled_reason is None
 
 
 def test_trusted_execution_root_pid_remap_requires_explicit_cgroup_permission() -> None:

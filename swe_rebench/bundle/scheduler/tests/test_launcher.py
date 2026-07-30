@@ -85,7 +85,7 @@ def test_launcher_diagnose_command_reports_selected_mode(
     assert '"mode": "fork-exec"' in capsys.readouterr().out
 
 
-def test_launcher_retries_exit_report_with_short_bounded_timeout(
+def test_launcher_retries_exit_report_with_bounded_cold_start_timeout(
     monkeypatch,
     capsys,
 ) -> None:
@@ -101,7 +101,7 @@ def test_launcher_retries_exit_report_with_short_bounded_timeout(
         timeout_seconds: float,
     ) -> dict[str, Any]:
         attempts.append((path, timeout_seconds, payload))
-        if len(attempts) < 3:
+        if len(attempts) < 2:
             raise TimeoutError("sidecar busy")
         return {"stored": True}
 
@@ -115,17 +115,86 @@ def test_launcher_retries_exit_report_with_short_bounded_timeout(
     )
 
     assert result == {"stored": True}
-    assert len(attempts) == launcher._EXIT_REPORT_ATTEMPTS == 3
-    assert {timeout for _path, timeout, _payload in attempts} == {
-        launcher._EXIT_REPORT_TIMEOUT_SECONDS
-    }
+    assert [timeout for _path, timeout, _payload in attempts] == list(
+        launcher._SUBPROCESS_EXIT_REPORT_TIMEOUTS_SECONDS
+    )
     assert sleeps == [
-        launcher._EXIT_REPORT_RETRY_DELAY_SECONDS,
         launcher._EXIT_REPORT_RETRY_DELAY_SECONDS,
     ]
     captured = capsys.readouterr()
     assert update_token not in captured.out
     assert update_token not in captured.err
+
+
+def test_launcher_exhausts_bounded_exit_report_timeouts_without_raising(
+    monkeypatch,
+    capsys,
+) -> None:
+    attempts: list[tuple[str, float, dict[str, Any]]] = []
+    sleeps: list[float] = []
+    update_token = "private-update-token"
+
+    def fake_post(
+        _endpoint: str,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        attempts.append((path, timeout_seconds, payload))
+        raise TimeoutError("sidecar still busy")
+
+    monkeypatch.setattr(launcher, "_post_json_with_timeout", fake_post)
+    monkeypatch.setattr(launcher.time, "sleep", sleeps.append)
+
+    result = launcher._post_json_best_effort(
+        "http://sidecar",
+        "/v2/executions/exec-1/exited",
+        {"update_token": update_token, "exit_code": 0, "signal": None},
+    )
+
+    assert result == {}
+    assert [timeout for _path, timeout, _payload in attempts] == list(
+        launcher._SUBPROCESS_EXIT_REPORT_TIMEOUTS_SECONDS
+    )
+    assert sleeps == [
+        launcher._EXIT_REPORT_RETRY_DELAY_SECONDS,
+    ]
+    captured = capsys.readouterr()
+    assert update_token not in captured.out
+    assert update_token not in captured.err
+
+
+def test_fork_exec_exit_report_keeps_original_short_retry_budget(
+    monkeypatch,
+) -> None:
+    attempts: list[float] = []
+    sleeps: list[float] = []
+    monkeypatch.setenv("CLAW_LAUNCH_MODE", "fork-exec")
+
+    def fake_post(
+        _endpoint: str,
+        _path: str,
+        _payload: dict[str, Any],
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        attempts.append(timeout_seconds)
+        raise TimeoutError("sidecar unavailable")
+
+    monkeypatch.setattr(launcher, "_post_json_with_timeout", fake_post)
+    monkeypatch.setattr(launcher.time, "sleep", sleeps.append)
+
+    assert (
+        launcher._post_json_best_effort(
+            "http://sidecar",
+            "/v2/executions/exec-1/exited",
+            {"update_token": "private", "exit_code": 0, "signal": None},
+        )
+        == {}
+    )
+    assert attempts == list(launcher._FORK_EXEC_EXIT_REPORT_TIMEOUTS_SECONDS)
+    assert sleeps == [launcher._EXIT_REPORT_RETRY_DELAY_SECONDS] * 2
 
 
 def test_launcher_claims_starts_and_returns_child_exit_code(monkeypatch) -> None:

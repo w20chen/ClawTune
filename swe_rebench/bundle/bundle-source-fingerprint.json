@@ -1,6 +1,6 @@
 {
-  "digest": "sha256:aae7c71d03e0f1a1ce095a06e37cbd9836d4088d8497c20f42b3dafd7a3b33c7",
-  "file_count": 125,
+  "digest": "sha256:7a547a8eafa541c671d6f340c68ac19258347bbb1931b1b42887b7bac942ccf5",
+  "file_count": 126,
   "files": [
     "contracts/clause-telemetry.schema.json",
     "contracts/common.schema.json",
@@ -118,6 +118,7 @@
     "services/scheduler/src/trace_collect/trace_data.py",
     "services/scheduler/tests/test_config.py",
     "services/scheduler/tests/test_launcher.py",
+    "services/scheduler/tests/test_mvdan_client.py",
     "services/scheduler/tests/test_process_sampler.py",
     "services/scheduler/tests/test_sidecar.py",
     "services/scheduler/tests/test_tool_resource_commands.py",

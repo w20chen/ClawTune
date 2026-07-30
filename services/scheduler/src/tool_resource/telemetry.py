@@ -3788,10 +3788,12 @@ class ClauseTelemetryCollector:
                 f"{token.tool_call_id}: telemetry analysis failed: "
                 f"{type(exc).__name__}: {exc}"
             )
-            if isinstance(exc, ClauseTelemetryIntegrityError):
+            # Event collection and delimiter accounting completed before
+            # _summarize_call.  Parser/bridge failures invalidate this call,
+            # but must not rewrite a healthy eBPF collector as unavailable or
+            # discard the collector's real loss/kprobe counters.
+            if message not in self._integrity_errors:
                 self._integrity_errors.append(message)
-            else:
-                self._disable(message, tool_call_id=token.tool_call_id)
             failed_call = {
                 "version": 2,
                 "tool_call_id": token.tool_call_id,
@@ -3874,10 +3876,11 @@ class ClauseTelemetryCollector:
                 f"{token.tool_call_id}: telemetry analysis failed: "
                 f"{type(exc).__name__}: {exc}"
             )
-            if isinstance(exc, ClauseTelemetryIntegrityError):
+            # A safety-guard record reaches analysis only after collector
+            # counters were read successfully.  Keep analysis availability
+            # call-granular for the same reason as finish_tool_call.
+            if message not in self._integrity_errors:
                 self._integrity_errors.append(message)
-            else:
-                self._disable(message, tool_call_id=token.tool_call_id)
             summary = {
                 "version": 2,
                 "tool_call_id": token.tool_call_id,

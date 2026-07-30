@@ -425,6 +425,21 @@ def test_setup_installs_scheduler_runtime_dependencies() -> None:
     assert 'linux-headers-"$(uname -r)"' in _SETUP_TEMPLATE
     assert "/tmp/.claw_bcc_pythonpath" in _SETUP_TEMPLATE
     assert "import bcc" in _SETUP_TEMPLATE
+    assert "ensure_compatible_adapter" in _SETUP_TEMPLATE
+    assert "with MvdanClient(built_path)" in _SETUP_TEMPLATE
+    assert 'SETUP_REVISION="2:mvdan-protocol-3:mvdan-v3.13.1"' in _SETUP_TEMPLATE
+    assert 'MVDAN_STATUS="/tmp/.claw_mvdan_adapter_status.json"' in _SETUP_TEMPLATE
+    assert 'mv -f "$SETUP_DONE.$$" "$SETUP_DONE"' in _SETUP_TEMPLATE
+    assert 'touch "$SETUP_DONE"' not in _SETUP_TEMPLATE
+    assert _SETUP_TEMPLATE.index("# Detect python:") < _SETUP_TEMPLATE.index(
+        'if [ -f "$SETUP_DONE" ]'
+    )
+    assert _SETUP_TEMPLATE.index("BCC Python binding") < _SETUP_TEMPLATE.index(
+        "building/verifying pinned mvdan adapter"
+    )
+    assert _SETUP_TEMPLATE.index(
+        "building/verifying pinned mvdan adapter"
+    ) < _SETUP_TEMPLATE.index('mv -f "$SETUP_DONE.$$" "$SETUP_DONE"')
     assert '"source": "docker-unix-socket"' in _ENTRYPOINT_TEMPLATE
 
 
@@ -524,9 +539,23 @@ def test_entrypoint_exports_container_runtime_identity_for_launcher() -> None:
     assert '"stage2_ready"' in _ENTRYPOINT_TEMPLATE
     assert '"clang": shutil.which("clang")' in _ENTRYPOINT_TEMPLATE
     assert '"tracefs": tracefs' in _ENTRYPOINT_TEMPLATE
+    assert '"mvdan_adapter": mvdan_adapter' in _ENTRYPOINT_TEMPLATE
+    assert "with mvdan_client.MvdanClient(binary_path)" in _ENTRYPOINT_TEMPLATE
+    assert 'mvdan_adapter.get("ok") is True' in _ENTRYPOINT_TEMPLATE
+    assert "required Stage-2 preflight failed" in _ENTRYPOINT_TEMPLATE
     assert 'candidate / "events/sched/sched_process_exit/id"' in _ENTRYPOINT_TEMPLATE
     assert 'tracefs.get("sched_process_exit") is True' in _ENTRYPOINT_TEMPLATE
     assert 'tracefs.get("kprobe_events_writable") is True' in _ENTRYPOINT_TEMPLATE
+    preflight_end = _ENTRYPOINT_TEMPLATE.index(
+        "print(json.dumps(preflight, indent=2))"
+    )
+    required_gate = _ENTRYPOINT_TEMPLATE.index(
+        'case "${AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED,,}"'
+    )
+    sidecar_start = _ENTRYPOINT_TEMPLATE.index(
+        '"$_CLW_PYTHON" -m agent_scheduler.main'
+    )
+    assert preflight_end < required_gate < sidecar_start
 
 
 def test_runner_config_enables_complete_cgroup_sampling() -> None:

@@ -394,7 +394,7 @@ print(json.dumps(probe, indent=2))
 PY
 
 env "${CLAW_BCC_RUNTIME_ENV[@]}" \
-    "PYTHONPATH=${CLAW_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" \
+    "PYTHONPATH=$CLAW_ROOT/scheduler/src${CLAW_BCC_PYTHONPATH:+:$CLAW_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" \
     "$_CLW_PYTHON" - <<'PY' > "$TRACE_DIR/tool_resource_preflight.json" 2>&1 || true
 import json
 import http.client
@@ -472,6 +472,50 @@ try:
     bcc_import = {"ok": True, "error": None}
 except Exception as exc:
     bcc_import = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+try:
+    from tool_resource import mvdan_client
+
+    binary_path = mvdan_client.default_binary_path()
+    builder_path = (
+        Path(mvdan_client.__file__).with_name("_mvdan_adapter") / "build.sh"
+    )
+    status_path = Path("/tmp/.claw_mvdan_adapter_status.json")
+    try:
+        provision_status = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        provision_status = None
+    mvdan_adapter = {
+        "ok": False,
+        "binary_path": str(binary_path),
+        "binary_exists": binary_path.is_file(),
+        "binary_executable": os.access(binary_path, os.X_OK),
+        "parser": {
+            "name": mvdan_client.PARSER_NAME,
+            "version": mvdan_client.PARSER_VERSION,
+        },
+        "protocol": {
+            "version": mvdan_client.ADAPTER_PROTOCOL_VERSION,
+            "required_capabilities": sorted(
+                mvdan_client.REQUIRED_CAPABILITIES
+            ),
+        },
+        "builder_path": str(builder_path),
+        "builder_exists": builder_path.is_file(),
+        "builder_mode": (
+            oct(builder_path.stat().st_mode & 0o777)
+            if builder_path.exists()
+            else None
+        ),
+        "provision_status": provision_status,
+        "error": None,
+    }
+    with mvdan_client.MvdanClient(binary_path):
+        pass
+    mvdan_adapter["ok"] = True
+except Exception as exc:
+    if "mvdan_adapter" not in locals():
+        mvdan_adapter = {"ok": False}
+    mvdan_adapter["error"] = f"{type(exc).__name__}: {exc}"
 tracefs = {"path": None, "sched_process_exit": False, "kprobe_events_writable": False}
 for candidate in (Path("/sys/kernel/tracing"), Path("/sys/kernel/debug/tracing")):
     tracepoint_id = candidate / "events/sched/sched_process_exit/id"
@@ -500,6 +544,7 @@ preflight = {
     "container_id": container_id,
     "docker_inspect": docker_inspect,
     "bcc_import": bcc_import,
+    "mvdan_adapter": mvdan_adapter,
     "tracefs": tracefs,
     "stage2_ready": (
         platform.system().lower() == "linux"
@@ -507,12 +552,59 @@ preflight = {
         and Path("/sys/fs/cgroup/cgroup.controllers").is_file()
         and docker_inspect.get("ok") is True
         and bcc_import.get("ok") is True
+        and mvdan_adapter.get("ok") is True
         and tracefs.get("sched_process_exit") is True
         and tracefs.get("kprobe_events_writable") is True
     ),
 }
 print(json.dumps(preflight, indent=2))
 PY
+
+case "${AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED,,}" in
+    1|true|yes|on)
+        if ! "$_CLW_PYTHON" - "$TRACE_DIR" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+trace_dir = Path(sys.argv[1])
+preflight_path = trace_dir / "tool_resource_preflight.json"
+try:
+    preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError) as exc:
+    preflight = {
+        "stage2_ready": False,
+        "preflight_error": f"{type(exc).__name__}: {exc}",
+    }
+if preflight.get("stage2_ready") is not True:
+    (trace_dir / "result_summary.json").write_text(
+        json.dumps(
+            {
+                "task_id": __import__("os").environ.get(
+                    "TASK_INSTANCE_ID", ""
+                ),
+                "agent_exit_code": 3,
+                "testbed_exists": Path("/testbed").is_dir(),
+                "patch_bytes": 0,
+                "has_patch": False,
+                "error": "required Stage-2 preflight failed",
+                "tool_resource_preflight": preflight,
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    raise SystemExit(1)
+PY
+        then
+            echo "[claw] FATAL: required Stage-2 preflight failed"
+            exit 3
+        fi
+        ;;
+esac
 
 cd "$CLAW_ROOT/scheduler"
 
@@ -787,13 +879,29 @@ _SETUP_TEMPLATE = r"""#!/bin/bash
 # Idempotent -- safe to run multiple times.
 # ────────────────────────────────────────────────────────────────
 set -euo pipefail
-
+""" + _BASH_PYTHON_DETECT + r"""
+CLAW_ROOT="${CLAW_ROOT:-/claw}"
 SETUP_DONE="/tmp/.claw_setup_done"
-if [ -f "$SETUP_DONE" ]; then
+SETUP_REVISION="2:mvdan-protocol-3:mvdan-v3.13.1"
+MVDAN_STATUS="/tmp/.claw_mvdan_adapter_status.json"
+
+_claw_mvdan_adapter_ready() {
+    env "PYTHONPATH=$CLAW_ROOT/scheduler/src${PYTHONPATH:+:$PYTHONPATH}" \
+        "$_CLW_PYTHON" -c \
+        'from tool_resource.mvdan_client import MvdanClient, default_binary_path; client = MvdanClient(default_binary_path()); client.__enter__(); client.close()' \
+        >/dev/null 2>&1
+}
+
+if [ -f "$SETUP_DONE" ] \
+    && [ "$(cat "$SETUP_DONE" 2>/dev/null || true)" = "$SETUP_REVISION" ] \
+    && _claw_mvdan_adapter_ready
+then
     echo "[claw] setup already complete, skipping."
     return 0 2>/dev/null || exit 0
 fi
-""" + _BASH_PYTHON_DETECT + r"""
+if [ -f "$SETUP_DONE" ]; then
+    echo "[claw] stale setup marker or mvdan adapter; rerunning setup."
+fi
 
 echo "[claw] installing system dependencies..."
 
@@ -1079,7 +1187,79 @@ except Exception as exc:
 PY
 
 # ── Done ────────────────────────────────────────────────────────
-touch "$SETUP_DONE"
+echo "[claw] building/verifying pinned mvdan adapter..."
+if env "PYTHONPATH=$CLAW_ROOT/scheduler/src${PYTHONPATH:+:$PYTHONPATH}" \
+    "$_CLW_PYTHON" - "$MVDAN_STATUS" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+from tool_resource.mvdan_client import (
+    ADAPTER_PROTOCOL_VERSION,
+    PARSER_NAME,
+    PARSER_VERSION,
+    REQUIRED_CAPABILITIES,
+    MvdanClient,
+    default_binary_path,
+    ensure_compatible_adapter,
+)
+
+status_path = Path(sys.argv[1])
+binary_path = default_binary_path()
+status = {
+    "attempted": True,
+    "ok": False,
+    "binary_path": str(binary_path),
+    "cache_present_before": binary_path.is_file(),
+    "parser": {"name": PARSER_NAME, "version": PARSER_VERSION},
+    "protocol": {
+        "version": ADAPTER_PROTOCOL_VERSION,
+        "required_capabilities": sorted(REQUIRED_CAPABILITIES),
+    },
+    "error": None,
+}
+try:
+    built_path = ensure_compatible_adapter()
+    with MvdanClient(built_path):
+        pass
+    status.update(
+        {
+            "ok": True,
+            "binary_path": str(built_path),
+            "binary_exists": built_path.is_file(),
+            "binary_executable": os.access(built_path, os.X_OK),
+        }
+    )
+except Exception as exc:
+    status["error"] = f"{type(exc).__name__}: {exc}"
+
+status_path.parent.mkdir(parents=True, exist_ok=True)
+temporary_path = status_path.with_name(
+    f"{status_path.name}.{os.getpid()}.tmp"
+)
+temporary_path.write_text(
+    json.dumps(status, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+os.chmod(temporary_path, 0o600)
+os.replace(temporary_path, status_path)
+if not status["ok"]:
+    raise SystemExit(1)
+print(
+    "[claw] mvdan adapter OK "
+    f"({PARSER_NAME} {PARSER_VERSION}, protocol {ADAPTER_PROTOCOL_VERSION})"
+)
+PY
+then
+    printf '%s\n' "$SETUP_REVISION" > "$SETUP_DONE.$$"
+    chmod 0600 "$SETUP_DONE.$$"
+    mv -f "$SETUP_DONE.$$" "$SETUP_DONE"
+else
+    rm -f -- "$SETUP_DONE"
+    echo "[claw] mvdan adapter unavailable (Stage-2 will remain unavailable)"
+fi
+
 echo "[claw] setup complete."
 """
 
