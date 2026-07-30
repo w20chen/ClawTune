@@ -115,6 +115,15 @@ set `stage2_ready: true` unless that tracepoint is visible and the dynamic
 kprobe control file is writable. Remote Docker daemons, non-Linux runners, and
 missing host interfaces keep the documented fail-open behavior.
 
+When Stage-2 is requested through the managed wrapper, the container launcher
+execs a small gate wrapper in the final per-call cgroup, reports `/started`,
+and waits for the sidecar to arm BPF before execing the requested shell. This
+prevents short commands from completing during BPF compilation and guarantees
+that the first payload exec boundary is observable. The gate uses a dedicated
+pipe and preserves the payload's original stdin. Container lifecycle/scope
+reports use a 10-second timeout because healthy BCC attach and final analysis
+can exceed the plugin's generic 800 ms default under concurrent calls.
+
 To keep OpenClaw on the host and use OpenClaw's Docker sandbox for tools:
 
 ```bash

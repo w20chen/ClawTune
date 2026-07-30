@@ -242,8 +242,27 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
 
     release_gate: Callable[[], None] | None = None
     use_host_cgroup_gate = cgroup_path is None and _host_cgroup_gate_enabled(profiling)
-    if use_host_cgroup_gate:
-        child, release_gate = _spawn_shell_gated(command, cwd, affinity_cpus=affinity_cpus)
+    # Stage-2 is armed by the /started request.  A normal Popen child can
+    # exec (and for short commands even exit) while the sidecar is still
+    # compiling/attaching BPF.  Gate every profiled POSIX payload after a
+    # lightweight wrapper has entered the final cgroup, then release it only
+    # after /started returns.  The wrapper itself has already execed, so Popen
+    # does not deadlock waiting for a blocking preexec_fn.
+    use_payload_gate = (
+        _supports_posix_controls()
+        and (
+            cgroup_path is not None
+            or use_host_cgroup_gate
+            or _enabled(profiling, "enable_cgroup", False)
+        )
+    )
+    if use_payload_gate:
+        child, release_gate = _spawn_shell_gated(
+            command,
+            cwd,
+            cgroup_path=cgroup_path,
+            affinity_cpus=affinity_cpus,
+        )
     else:
         child = _spawn_shell(command, cwd, cgroup_path=cgroup_path, affinity_cpus=affinity_cpus)
     cgroup_owned = cgroup_path is not None
@@ -268,6 +287,8 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
                 _verify_child_cgroup(child.pid, cgroup_path)
     except Exception:
         _terminate_child_best_effort(child)
+        if release_gate is not None:
+            release_gate()
         if cgroup_owned:
             _cleanup_cgroup(cgroup_path)
         raise
@@ -345,11 +366,42 @@ def _spawn_shell_gated(
     command: str,
     cwd: str | None,
     *,
+    cgroup_path: str | None = None,
     affinity_cpus: set[int] | None = None,
 ) -> tuple[subprocess.Popen[bytes], Callable[[], None]]:
     if not _supports_posix_controls():
-        return _spawn_shell(command, cwd, affinity_cpus=affinity_cpus), lambda: None
+        return (
+            _spawn_shell(
+                command,
+                cwd,
+                cgroup_path=cgroup_path,
+                affinity_cpus=affinity_cpus,
+            ),
+            lambda: None,
+        )
+    env = _payload_environment()
+    env["CLAW_GATED_PAYLOAD"] = command
     read_fd, write_fd = os.pipe()
+    wrapper = (
+        f"IFS= read -r _claw_release <&{read_fd}; "
+        f"exec {read_fd}<&-; "
+        '_claw_payload="$CLAW_GATED_PAYLOAD"; '
+        "unset CLAW_GATED_PAYLOAD; "
+        'exec /bin/sh -c "$_claw_payload"'
+    )
+    try:
+        child = subprocess.Popen(
+            ["/bin/sh", "-c", wrapper],
+            cwd=cwd,
+            env=env,
+            preexec_fn=_child_preexec(cgroup_path, affinity_cpus),
+            pass_fds=(read_fd,),
+        )
+    except BaseException:
+        os.close(read_fd)
+        os.close(write_fd)
+        raise
+    os.close(read_fd)
     released = False
 
     def release() -> None:
@@ -358,7 +410,7 @@ def _spawn_shell_gated(
             return
         released = True
         try:
-            os.write(write_fd, b"1")
+            os.write(write_fd, b"1\n")
         except OSError:
             pass
         try:
@@ -366,37 +418,7 @@ def _spawn_shell_gated(
         except OSError:
             pass
 
-    child = subprocess.Popen(
-        ["/bin/sh", "-c", command],
-        cwd=cwd,
-        env=_payload_environment(),
-        preexec_fn=_gated_child_preexec(read_fd, affinity_cpus),
-        pass_fds=(read_fd,),
-    )
-    try:
-        os.close(read_fd)
-    except OSError:
-        pass
     return child, release
-
-
-def _gated_child_preexec(read_fd: int, affinity_cpus: set[int] | None):
-    def preexec() -> None:
-        if affinity_cpus and hasattr(os, "sched_setaffinity"):
-            try:
-                os.sched_setaffinity(0, affinity_cpus)
-            except OSError:
-                pass
-        try:
-            os.read(read_fd, 1)
-        except OSError:
-            pass
-        try:
-            os.close(read_fd)
-        except OSError:
-            pass
-
-    return preexec
 
 
 def _restart_in_systemd_scope(

@@ -31,7 +31,11 @@ _PLUGIN_CONFIG: dict[str, Any] = {
     "endpoint": "http://127.0.0.1:8765",
     "mode": "observe",
     "decisionTimeoutMs": 800,
-    "reportTimeoutMs": 800,
+    # Starting/finalizing a healthy BCC collector can block the in-container
+    # sidecar for several seconds.  Keep lifecycle/scope/telemetry requests
+    # alive across that bounded work instead of dropping the first concurrent
+    # calls with the plugin's generic 800 ms default.
+    "reportTimeoutMs": 10000,
     "failOpen": True,
     "sendRawParams": False,
     "recordRawTrace": False,
@@ -1149,7 +1153,7 @@ def _write_plugin_config(bundle_dir: Path) -> None:
             "OPENCLAW_REPO_ROOT": "/testbed",
         },
         "plugins": {"entries": {"agent-scheduler": {"enabled": True, "config": _PLUGIN_CONFIG}}}
-    }, indent=2)
+    }, indent=2) + "\n"
     dest = bundle_dir / "openclaw-config.json5"
     dest.write_text(cfg, encoding="utf-8")
     _log("  Wrote openclaw-config.json5")

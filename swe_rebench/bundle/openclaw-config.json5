@@ -37,7 +37,7 @@
           "endpoint": "http://127.0.0.1:8765",
           "mode": "observe",
           "decisionTimeoutMs": 800,
-          "reportTimeoutMs": 800,
+          "reportTimeoutMs": 10000,
           "failOpen": true,
           "sendRawParams": false,
           "recordRawTrace": false,

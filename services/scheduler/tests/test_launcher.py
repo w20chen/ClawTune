@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import shlex
+import time
 from typing import Any
 
 import pytest
@@ -231,6 +233,13 @@ def test_launcher_uses_non_login_shell_for_payload(monkeypatch) -> None:
 def test_launcher_reports_started_once_after_spawning_cgroup_payload(monkeypatch, tmp_path) -> None:
     events: list[str] = []
     posts: list[tuple[str, dict[str, Any]]] = []
+    released = False
+
+    class GatedChild(_FakeChild):
+        def wait(self) -> int:
+            assert released is True
+            events.append("wait")
+            return 7
 
     def fake_post_json(_endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         events.append(path)
@@ -250,32 +259,40 @@ def test_launcher_reports_started_once_after_spawning_cgroup_payload(monkeypatch
         events.append(path)
         posts.append((path, payload))
 
-    def fake_spawn(
+    def fake_gated_spawn(
         _command: str,
         _cwd: str | None,
         *,
         cgroup_path: str | None = None,
         affinity_cpus: set[int] | None = None,
-    ) -> _FakeChild:
+    ):
         events.append("spawn")
         assert cgroup_path == str(tmp_path / "exec-1")
         assert affinity_cpus is None
-        return _FakeChild()
+
+        def release() -> None:
+            nonlocal released
+            released = True
+            events.append("release")
+
+        return GatedChild(), release
 
     monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
     monkeypatch.setenv("CLAW_CGROUP_ROOT", str(tmp_path))
     monkeypatch.setattr(launcher, "_post_json", fake_post_json)
     monkeypatch.setattr(launcher, "_post_json_best_effort", fake_best_effort)
-    monkeypatch.setattr(launcher, "_spawn_shell", fake_spawn)
+    monkeypatch.setattr(launcher, "_spawn_shell_gated", fake_gated_spawn)
     monkeypatch.setattr(launcher, "_install_signal_forwarders", lambda _child: None)
     monkeypatch.setattr(launcher, "_read_pid_starttime_ticks", lambda _pid: 99)
     monkeypatch.setattr(launcher, "_pid_namespace_inode", lambda _pid: 123)
 
     assert launcher.run_execution("http://sidecar", "exec-1", "token-1") == 7
-    assert events[:3] == [
+    assert events[:5] == [
         "/v2/executions/claim",
         "spawn",
         "/v2/executions/exec-1/started",
+        "release",
+        "wait",
     ]
     assert posts[1][1]["child_pid"] == 4242
     assert posts[1][1]["cgroup_path"] == str(tmp_path / "exec-1")
@@ -311,7 +328,14 @@ def test_launcher_uses_host_cgroup_gate_for_remote_sidecar(monkeypatch) -> None:
             return {"stored": True, "cgroup_path": "/sys/fs/cgroup/sandbox/claw-executions/exec-1"}
         return {"stored": True}
 
-    def fake_gated(_command: str, _cwd: str | None, *, affinity_cpus: set[int] | None = None):
+    def fake_gated(
+        _command: str,
+        _cwd: str | None,
+        *,
+        cgroup_path: str | None = None,
+        affinity_cpus: set[int] | None = None,
+    ):
+        assert cgroup_path is None
         assert affinity_cpus is None
 
         def release() -> None:
@@ -335,6 +359,68 @@ def test_launcher_uses_host_cgroup_gate_for_remote_sidecar(monkeypatch) -> None:
     assert posts[1][1]["child_pid"] == 5150
     assert posts[1][1]["cgroup_path"] is None
     assert posts[1][1]["host_cgroup_gate"] is True
+
+
+def test_gated_shell_execs_wrapper_before_waiting_for_release(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+    writes: list[tuple[int, bytes]] = []
+    closes: list[int] = []
+
+    class GatedChild:
+        pid = 6161
+
+    def fake_popen(args: list[str], **kwargs: Any) -> GatedChild:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return GatedChild()
+
+    sentinel_preexec = object()
+    monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
+    monkeypatch.setattr(launcher, "_child_preexec", lambda *_args: sentinel_preexec)
+    monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(launcher.os, "pipe", lambda: (71, 72))
+    monkeypatch.setattr(launcher.os, "write", lambda fd, data: writes.append((fd, data)))
+    monkeypatch.setattr(launcher.os, "close", closes.append)
+
+    _child, release = launcher._spawn_shell_gated(
+        "printf hello",
+        "/workspace",
+        cgroup_path="/sys/fs/cgroup/claw/exec-1",
+        affinity_cpus={2},
+    )
+
+    assert captured["args"][:2] == ["/bin/sh", "-c"]
+    wrapper = captured["args"][2]
+    assert wrapper.startswith("IFS= read -r _claw_release <&71; exec 71<&-;")
+    assert 'exec /bin/sh -c "$_claw_payload"' in wrapper
+    assert captured["kwargs"]["pass_fds"] == (71,)
+    assert captured["kwargs"]["preexec_fn"] is sentinel_preexec
+    assert captured["kwargs"]["env"]["CLAW_GATED_PAYLOAD"] == "printf hello"
+
+    release()
+    release()
+    assert writes == [(72, b"1\n")]
+    assert closes == [71, 72]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX subprocess controls")
+def test_gated_shell_cannot_exec_payload_before_release(tmp_path) -> None:
+    marker = tmp_path / "payload-ran"
+    child, release = launcher._spawn_shell_gated(
+        f"printf gated > {shlex.quote(str(marker))}",
+        str(tmp_path),
+    )
+    try:
+        time.sleep(0.05)
+        assert marker.exists() is False
+        release()
+        assert child.wait(timeout=5) == 0
+        assert marker.read_text(encoding="utf-8") == "gated"
+    finally:
+        release()
+        if child.poll() is None:
+            child.terminate()
+            child.wait(timeout=5)
 
 
 def test_launcher_extracts_cpu_and_numa_placement() -> None:
@@ -476,16 +562,16 @@ def test_launcher_join_failure_restarts_in_systemd_scope(monkeypatch, tmp_path) 
     def fake_best_effort(_endpoint: str, path: str, payload: dict[str, Any]) -> None:
         posts.append((path, payload))
 
-    def fake_spawn(
+    def fake_gated_spawn(
         _command: str,
         _cwd: str | None,
         *,
         cgroup_path: str | None = None,
         affinity_cpus: set[int] | None = None,
-    ) -> _FakeChild:
+    ):
         assert cgroup_path == str(original_cgroup)
         assert affinity_cpus is None
-        return _FakeChild()
+        return _FakeChild(), lambda: None
 
     def fake_popen(args: list[str], **_kwargs: Any) -> FakeSystemdChild:
         assert args[:4] == ["systemd-run", "--user", "--scope", "--quiet"]
@@ -500,7 +586,7 @@ def test_launcher_join_failure_restarts_in_systemd_scope(monkeypatch, tmp_path) 
     monkeypatch.setenv("CLAW_CGROUP_ROOT", str(tmp_path))
     monkeypatch.setattr(launcher, "_post_json", fake_post_json)
     monkeypatch.setattr(launcher, "_post_json_best_effort", fake_best_effort)
-    monkeypatch.setattr(launcher, "_spawn_shell", fake_spawn)
+    monkeypatch.setattr(launcher, "_spawn_shell_gated", fake_gated_spawn)
     monkeypatch.setattr(launcher, "_join_child_cgroup", lambda _pid, _path: False)
     monkeypatch.setattr(launcher, "_install_signal_forwarders", lambda _child: None)
     monkeypatch.setattr(launcher, "_read_pid_starttime_ticks", lambda _pid: 99)
@@ -545,22 +631,22 @@ def test_launcher_passes_placement_to_spawn(monkeypatch, tmp_path) -> None:
     def fake_best_effort(_endpoint: str, path: str, payload: dict[str, Any]) -> None:
         posts.append((path, payload))
 
-    def fake_spawn(
+    def fake_gated_spawn(
         _command: str,
         _cwd: str | None,
         *,
         cgroup_path: str | None = None,
         affinity_cpus: set[int] | None = None,
-    ) -> _FakeChild:
+    ):
         assert cgroup_path == str(tmp_path / "exec-1")
         assert affinity_cpus == {1, 3}
-        return _FakeChild()
+        return _FakeChild(), lambda: None
 
     monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
     monkeypatch.setenv("CLAW_CGROUP_ROOT", str(tmp_path))
     monkeypatch.setattr(launcher, "_post_json", fake_post_json)
     monkeypatch.setattr(launcher, "_post_json_best_effort", fake_best_effort)
-    monkeypatch.setattr(launcher, "_spawn_shell", fake_spawn)
+    monkeypatch.setattr(launcher, "_spawn_shell_gated", fake_gated_spawn)
     monkeypatch.setattr(launcher, "_install_signal_forwarders", lambda _child: None)
     monkeypatch.setattr(launcher, "_read_pid_starttime_ticks", lambda _pid: 99)
     monkeypatch.setattr(launcher, "_pid_namespace_inode", lambda _pid: 123)

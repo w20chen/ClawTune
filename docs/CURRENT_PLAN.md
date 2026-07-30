@@ -1015,3 +1015,96 @@ Validation unavailable in this Windows workspace:
   `tracefs.kprobe_events_writable: true`, and `stage2_ready: true`; at least
   one launcher artifact must no longer report
   `collector_disabled ... sched_process_exit ... No such file or directory`.
+
+## 2026-07-30 Container-OpenClaw Pre-Exec Stage-2 Gate
+
+The next downloaded live run confirms that the tracefs fix worked:
+container `f9f4075559ee` reported matching host headers, BCC import success,
+visible `sched_process_exit`, writable `kprobe_events`, and
+`stage2_ready: true`. All 16 Stage-2 artifacts had an active, healthy
+collector, zero ring loss, zero argv loss, clean shutdown, and hundreds of
+kprobe hits.
+
+Nevertheless, all 16 calls were rejected with
+`ClauseTelemetryIntegrityError ... reason=no_exec_images`. The per-call
+diagnostics make the new race conclusive: each collector's target cgroup inode
+contained no exec event, while its system-wide event stream contained execs
+from neighboring concurrent calls. The old subprocess lifecycle was:
+
+1. create the per-call cgroup;
+2. `Popen("/bin/sh -c ...")`, whose child immediately joins the cgroup and
+   execs the requested shell;
+3. only then post `/started`, which synchronously compiles and attaches BPF.
+
+In this live image step 3 takes roughly three seconds. Short commands finish
+before the collector is armed, and even longer commands lose their root shell
+and first executable boundary. Expanding cgroup discovery cannot recover
+events that were never observed.
+
+The subprocess launcher now starts a lightweight shell wrapper in the final
+cgroup. The wrapper blocks on a dedicated inherited pipe, while preserving the
+payload's stdin. The launcher posts `/started`; only after that request returns
+with Stage-2 armed does it release the pipe, and the wrapper replaces itself
+with `/bin/sh -c <payload>`. This guarantees an observable root exec without
+replaying or changing the requested command. The previous gate implementation,
+which blocked inside `preexec_fn`, was also replaced because POSIX `Popen`
+waits for the child exec-error pipe and can deadlock when `preexec_fn` waits
+for the parent.
+
+The downloaded run also showed seven plugin warnings for scope, completion,
+and telemetry requests. The container bundle still used the generic 800 ms
+report timeout while healthy BPF startup/finalization can occupy the
+in-container sidecar for several seconds. Its container-only report timeout is
+now 10 seconds, matching the already-established host-sandbox setting.
+
+Scope of change:
+
+- `container-openclaw` uses subprocess mode and receives the pre-exec gate.
+- `host-openclaw-sandbox` explicitly uses `CLAW_LAUNCH_MODE=fork-exec`, so its
+  maintained launch path is unchanged.
+- OpenClaw core, JSON Schema contracts, and
+  `services/scheduler/src/tool_resource` are unchanged.
+
+Validation in this Windows workspace:
+
+- `python -m pytest services\scheduler\tests\test_launcher.py -q -p
+  no:cacheprovider --basetemp .pytest-tmp-payload-gate-4`: 29 passed,
+  1 skipped.
+- `python -m pytest -q tests --basetemp
+  .pytest-tmp-final-root-tests`: 93 passed, 2 skipped.
+- From `services/scheduler`, with `PYTHONPATH=src`,
+  `python -m pytest -q tests --basetemp
+  ..\..\.pytest-tmp-final-scheduler`: 123 passed, 1 skipped.
+- `npm.cmd test` from `packages/openclaw-plugin`: all 62 tests passed.
+- `python -m compileall -q swe_rebench services\scheduler\src
+  services\scheduler\tests tests`: passed.
+- `python tools\validate_contracts.py`: all nine schema examples passed.
+- `python -m swe_rebench.runner prepare --config
+  swe_rebench\config.yaml`: passed; main scheduler source, tracked bundle, and
+  generated bundle agree.
+- The tracked source fingerprint matches the current 125-file source set:
+  `sha256:ffbbc4b4396d55ceb511cb3ba1c5a97e9d7f871c944061b789866e336b1b269f`.
+- One-task `--dry-run` commands for both `container-openclaw` and
+  `host-openclaw-sandbox`: passed and selected
+  `0b01001001__spectree-64`.
+- The POSIX-only test that starts a real gated shell and proves the payload
+  cannot execute before release is collected here but skipped on Windows; it
+  runs in Linux CI.
+
+Validation unavailable in this Windows workspace:
+
+- An unscoped `python -m pytest -q --basetemp .pytest-tmp-final-root`
+  cannot be used as a repository-wide test command: pytest simultaneously
+  collects the main scheduler, its tracked bundle copy, and `tools/smoke_test.py`
+  without either scheduler `src` directory on `PYTHONPATH`, producing 17
+  import errors during collection. The two supported suites above both pass.
+- The live Linux Docker/eBPF acceptance command cannot run because `docker` is
+  unavailable:
+  `sudo -E env "PATH=$PATH" "$(command -v python3)" -m swe_rebench.runner run
+  --config swe_rebench/config.yaml --dataset swe_rebench/tasks.json --sample 1
+  --export --runtime-mode container-openclaw`.
+- The next live run must have at least one KB-eligible call with a non-empty
+  command tree. `sidecar.log` should report `matched` greater than zero for
+  per-call target cgroups, artifacts must not contain
+  `reason=no_exec_images`, and `agent-stderr.txt` should contain no scheduler
+  scope/completion/telemetry timeout warnings.

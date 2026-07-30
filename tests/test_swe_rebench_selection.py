@@ -401,6 +401,7 @@ def test_swe_rebench_plugin_config_uses_managed_wrapper_cgroup() -> None:
     assert _PLUGIN_CONFIG["executionBackend"] == "managed-wrapper"
     assert _PLUGIN_CONFIG["launcherPath"] == "/opt/claw/bin/claw-launch"
     assert _PLUGIN_CONFIG["enableCgroup"] is True
+    assert _PLUGIN_CONFIG["reportTimeoutMs"] == 10000
     assert _PLUGIN_CONFIG["securityBoundaryAccepted"] is True
     assert _PLUGIN_CONFIG["recordRawTrace"] is False
     assert _PLUGIN_CONFIG["trace"]["include_raw_events"] is False
