@@ -30,7 +30,26 @@ else
     download_dir=$(mktemp -d "$cache_root/go-download.XXXXXX")
     trap 'rm -rf "$download_dir"' EXIT HUP INT TERM
     archive=$download_dir/go.tar.gz
-    curl -fL "https://go.dev/dl/go$go_version.linux-amd64.tar.gz" -o "$archive"
+    _go_mirrors="
+https://go.dev/dl/
+https://golang.google.cn/dl/
+https://mirrors.aliyun.com/golang/
+"
+    _downloaded=0
+    for _mirror in $_go_mirrors; do
+        _url="${_mirror}go$go_version.linux-amd64.tar.gz"
+        echo "Trying Go download: $_url" >&2
+        if curl -fL --connect-timeout 15 --max-time 120 "$_url" -o "$archive" 2>/dev/null; then
+            echo "Downloaded from $_mirror" >&2
+            _downloaded=1
+            break
+        fi
+        echo "Failed: $_url" >&2
+    done
+    if [ "$_downloaded" -ne 1 ]; then
+        echo "All Go mirrors failed." >&2
+        exit 1
+    fi
     printf '%s  %s\n' "$archive_sha256" "$archive" | sha256sum -c -
     tar -C "$download_dir" -xzf "$archive"
     if [ -e "$toolchain_dir" ]; then
