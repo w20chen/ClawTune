@@ -2490,6 +2490,7 @@ def _isolate_call_events(
     command: str,
     *,
     trusted_root_pid: int | None = None,
+    allow_trusted_root_pid_remap: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Select one exact launcher command tree from a shared-cgroup window.
 
@@ -2502,32 +2503,6 @@ def _isolate_call_events(
     """
 
     clauses, fork_parent = _clauses_and_lineage(events)
-    if trusted_root_pid is not None:
-        selected_pids = {trusted_root_pid}
-        changed = True
-        while changed:
-            changed = False
-            for child, parent in fork_parent.items():
-                if parent in selected_pids and child not in selected_pids:
-                    selected_pids.add(child)
-                    changed = True
-        selected_events = [
-            event
-            for event in events
-            if int(event.get("host_pid", 0)) in selected_pids
-            or (
-                event.get("type") == "fork"
-                and int(event.get("child_host_pid", 0)) in selected_pids
-            )
-        ]
-        return selected_events, {
-            "mode": "trusted_execution_root",
-            "trusted_root_pid": trusted_root_pid,
-            "selected_pid_count": len(selected_pids),
-            "raw_window_event_count": len(events),
-            "selected_event_count": len(selected_events),
-        }
-
     exec_pids = {clause.host_pid for clause in clauses}
     root_pids: set[int] = set()
     for pid in exec_pids:
@@ -2552,6 +2527,62 @@ def _isolate_call_events(
         and clause.argv[1] in {"-c", "-lc"}
         and clause.argv[2] == command
     }
+    effective_trusted_root_pid = trusted_root_pid
+    trusted_root_remapped = False
+    if trusted_root_pid is not None:
+        observed_pids = {
+            int(event.get(field, 0) or 0)
+            for event in events
+            for field in ("host_pid", "child_host_pid")
+        }
+        if (
+            allow_trusted_root_pid_remap
+            and trusted_root_pid not in observed_pids
+            and len(candidates) == 1
+        ):
+            # A sidecar inside the sandbox PID namespace sees the launcher's
+            # namespace-local PID, while bpf_get_current_pid_tgid() reports
+            # the init-namespace PID.  The pre-exec gate guarantees that the
+            # first exact ``/bin/sh -c <registered command>`` image in the
+            # exclusive per-execution cgroup is that same trusted process.
+            # Remap only on one exact root match; ambiguity still fails closed.
+            effective_trusted_root_pid = next(iter(candidates))
+            trusted_root_remapped = True
+
+    if effective_trusted_root_pid is not None:
+        selected_pids = {effective_trusted_root_pid}
+        changed = True
+        while changed:
+            changed = False
+            for child, parent in fork_parent.items():
+                if parent in selected_pids and child not in selected_pids:
+                    selected_pids.add(child)
+                    changed = True
+        selected_events = [
+            event
+            for event in events
+            if int(event.get("host_pid", 0)) in selected_pids
+            or (
+                event.get("type") == "fork"
+                and int(event.get("child_host_pid", 0)) in selected_pids
+            )
+        ]
+        provenance = {
+            "mode": (
+                "trusted_execution_root_pid_namespace_remap"
+                if trusted_root_remapped
+                else "trusted_execution_root"
+            ),
+            "trusted_root_pid": effective_trusted_root_pid,
+            "selected_pid_count": len(selected_pids),
+            "raw_window_event_count": len(events),
+            "selected_event_count": len(selected_events),
+        }
+        if trusted_root_remapped:
+            provenance["claimed_trusted_root_pid"] = trusted_root_pid
+            provenance["remap_evidence"] = "exact_registered_root_shell"
+        return selected_events, provenance
+
     selection = {
         "mode": "not_needed" if len(root_pids) <= 1 else "unresolved",
         "window_root_pids": sorted(root_pids),
@@ -3236,6 +3267,9 @@ class ClauseTelemetryCollector:
         self.container_id = container_id
         self.cgroup = cgroup
         self.cgroup_id = cgroup.stat().st_ino
+        self._trusted_root_pid_remap_allowed = (
+            cgroup_path is not None and not _is_root_cgroup_str(cgroup_path)
+        )
         # Discover all cgroup inodes under the container scope so the
         # Python event filter can match processes in child cgroups that
         # Docker/containerd may create.  The BPF wanted() filter is left
@@ -3402,6 +3436,7 @@ class ClauseTelemetryCollector:
         collector.cgroup_inodes = set()
         collector.init_pid = 0
         collector.trusted_root_pid = None
+        collector._trusted_root_pid_remap_allowed = False
         collector.pid_namespace_inodes = set()
         collector.quota_cores = 0.0
         collector.repo = repo
@@ -3633,14 +3668,26 @@ class ClauseTelemetryCollector:
                     if _e.get("type") == "exec_boundary":
                         _cg = _e.get("cgroup_id", 0)
                         _exec_cgroups[_cg] = _exec_cgroups.get(_cg, 0) + 1
-                _matched = sum(
-                    1 for _p in (e.get("host_pid",0) for e in self._events if e.get("type")=="exec_boundary")
+                _pid_matched = sum(
+                    1
+                    for _p in (
+                        event.get("host_pid", 0)
+                        for event in self._events
+                        if event.get("type") == "exec_boundary"
+                    )
                     if _p in container_pids
+                )
+                _cgroup_matched = sum(
+                    1
+                    for _e in self._events
+                    if _e.get("type") == "exec_boundary"
+                    and _e.get("cgroup_id", 0) in self.cgroup_inodes
                 )
                 print(
                     f"[telemetry:diag] call={token.tool_call_id} "
                     f"container_pids={len(container_pids)} "
-                    f"matched={_matched} "
+                    f"pid_matched={_pid_matched} "
+                    f"cgroup_matched={_cgroup_matched} "
                     f"exec_cgroup_dist={sorted(_exec_cgroups.items())} "
                     f"cgroup_inodes={sorted(self.cgroup_inodes)} "
                     f"pid_namespace_inodes={sorted(self.pid_namespace_inodes)}",
@@ -3872,6 +3919,12 @@ class ClauseTelemetryCollector:
             events,
             token.command,
             trusted_root_pid=self.trusted_root_pid,
+            allow_trusted_root_pid_remap=self._trusted_root_pid_remap_allowed,
+        )
+        effective_trusted_root_pid = (
+            int(event_isolation["trusted_root_pid"])
+            if event_isolation.get("trusted_root_pid") is not None
+            else self.trusted_root_pid
         )
         perf_samples = sum(event["type"] == "perf" for event in events)
         normalized_loss_counts = {
@@ -3920,7 +3973,7 @@ class ClauseTelemetryCollector:
                 clauses,
                 fork_parent,
                 fork_records=fork_records,
-                trusted_root_pid=self.trusted_root_pid,
+                trusted_root_pid=effective_trusted_root_pid,
             )
         metrics, attribution_gaps = analyze(run, entry_pid=entry_pid)
 
@@ -3943,8 +3996,8 @@ class ClauseTelemetryCollector:
             if event["reason"] in structural_setup_reasons:
                 relation = event["reason"]
             elif (
-                self.trusted_root_pid is not None
-                and event["host_pid"] == self.trusted_root_pid
+                effective_trusted_root_pid is not None
+                and event["host_pid"] == effective_trusted_root_pid
             ):
                 relation = "trusted_execution_root"
             elif event["host_pid"] == entry_pid:

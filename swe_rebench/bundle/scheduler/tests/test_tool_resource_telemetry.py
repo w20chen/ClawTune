@@ -435,6 +435,90 @@ def test_trusted_execution_root_isolates_identical_parallel_commands() -> None:
     assert not any(event["host_pid"] == 11 for event in selected)
 
 
+def test_trusted_execution_root_remaps_container_pid_to_exact_host_exec() -> None:
+    events = _shell_tree(
+        entry_pid=600_001,
+        shell_pid=600_042,
+        child_pid=600_043,
+        command="echo mapped",
+        start_ns=100,
+    )[1:]
+
+    selected, isolation = _isolate_call_events(
+        events,
+        "echo mapped",
+        trusted_root_pid=42,
+        allow_trusted_root_pid_remap=True,
+    )
+
+    assert isolation == {
+        "mode": "trusted_execution_root_pid_namespace_remap",
+        "trusted_root_pid": 600_042,
+        "claimed_trusted_root_pid": 42,
+        "remap_evidence": "exact_registered_root_shell",
+        "selected_pid_count": 2,
+        "raw_window_event_count": len(events),
+        "selected_event_count": len(events),
+    }
+    clauses, fork_parent = _clauses_and_lineage(selected)
+    entry_pid, root_pids, command_tree = _command_tree_provenance(
+        clauses,
+        fork_parent,
+        trusted_root_pid=isolation["trusted_root_pid"],
+    )
+    assert entry_pid == 600_042
+    assert root_pids == {600_042}
+    assert command_tree["status"] == "ok"
+
+
+def test_trusted_execution_root_pid_remap_requires_explicit_cgroup_permission() -> None:
+    events = _shell_tree(
+        entry_pid=600_001,
+        shell_pid=600_042,
+        child_pid=600_043,
+        command="echo mapped",
+        start_ns=100,
+    )[1:]
+
+    selected, isolation = _isolate_call_events(
+        events,
+        "echo mapped",
+        trusted_root_pid=42,
+    )
+
+    assert selected == []
+    assert isolation["mode"] == "trusted_execution_root"
+    assert isolation["trusted_root_pid"] == 42
+
+
+def test_trusted_execution_root_pid_remap_fails_closed_when_ambiguous() -> None:
+    first = _shell_tree(
+        entry_pid=600_001,
+        shell_pid=600_011,
+        child_pid=600_012,
+        command="echo same",
+        start_ns=100,
+    )
+    second = _shell_tree(
+        entry_pid=600_020,
+        shell_pid=600_021,
+        child_pid=600_022,
+        command="echo same",
+        start_ns=105,
+    )
+
+    selected, isolation = _isolate_call_events(
+        sorted(first + second, key=lambda event: int(event["ts_ns"])),
+        "echo same",
+        trusted_root_pid=42,
+        allow_trusted_root_pid_remap=True,
+    )
+
+    assert selected == []
+    assert isolation["mode"] == "trusted_execution_root"
+    assert isolation["trusted_root_pid"] == 42
+
+
 def test_trusted_execution_root_replaces_missing_initial_fork_ancestry() -> None:
     metric = SimpleNamespace(host_pid=42, t_exec_ns=100)
 

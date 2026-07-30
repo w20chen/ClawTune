@@ -1104,7 +1104,79 @@ Validation unavailable in this Windows workspace:
   --config swe_rebench/config.yaml --dataset swe_rebench/tasks.json --sample 1
   --export --runtime-mode container-openclaw`.
 - The next live run must have at least one KB-eligible call with a non-empty
-  command tree. `sidecar.log` should report `matched` greater than zero for
-  per-call target cgroups, artifacts must not contain
+  command tree. `sidecar.log` should report exec events in per-call target
+  cgroups, artifacts must not contain
   `reason=no_exec_images`, and `agent-stderr.txt` should contain no scheduler
   scope/completion/telemetry timeout warnings.
+
+## 2026-07-30 Container-OpenClaw PID-Namespace Root Remap
+
+The next downloaded live run (`23f3952ba214`) proves that the pre-exec gate
+and timeout fixes are active:
+
+- all ten managed-wrapper calls have healthy active collectors, no ring or
+  argv loss, and clean lifecycle HTTP responses;
+- `agent-stderr.txt` is empty, so the earlier scope/completion/telemetry
+  timeout warnings are gone;
+- every collector sees two to nine exec boundaries whose `cgroup_id` exactly
+  equals that call's exclusive target cgroup inode.
+
+The remaining `no_exec_images` failure was therefore post-capture identity
+filtering. The launcher and sidecar share the task container's PID namespace,
+so `/started` supplied a namespace-local child PID such as `3273`. Linux BPF
+`bpf_get_current_pid_tgid()` records the corresponding init-namespace host
+PID. The old code treated `3273` as a host PID, selected no events under that
+trusted root, and then reported an empty command tree even though the cgroup
+events were present.
+
+The Stage-2 event isolator now remaps this identity only when all of the
+following fail-closed evidence is available:
+
+1. the launcher-claimed PID is absent from captured host-PID fields;
+2. events already passed the exclusive cgroup and call-window filters;
+3. exactly one root exec image is `/bin/sh`, `dash`, or `bash` with `-c`/`-lc`;
+4. that image's argv payload exactly equals the command registered before
+   execution.
+
+The unique observed PID becomes the effective trusted root for descendant
+selection and command-tree provenance. Zero or multiple exact roots do not
+remap and remain invalid. Artifact provenance records both
+`claimed_trusted_root_pid` and the effective `trusted_root_pid`, with
+`remap_evidence: exact_registered_root_shell`.
+
+This is a necessary, narrow change inside
+`services/scheduler/src/tool_resource`: the failure occurs after correct BPF
+capture in the tool-resource identity boundary and cannot be repaired in the
+launcher without access to init-namespace host PIDs. JSON Schema contracts,
+OpenClaw core, and the host `fork-exec` launcher path are unchanged.
+
+Validation in this Windows workspace:
+
+- Focused tool-resource telemetry tests: 20 passed.
+- Full scheduler suite with `PYTHONPATH=src`: 126 passed, 1 skipped.
+- Root runner suite: 93 passed, 2 skipped.
+- The new tests prove both the unique exact-command remap and ambiguous
+  fail-closed behavior, plus that remapping remains disabled without an
+  explicit per-execution cgroup.
+- `python -m compileall -q swe_rebench services\scheduler\src
+  services\scheduler\tests tests`: passed.
+- `python tools\validate_contracts.py`: all nine schema examples passed.
+- `python -m swe_rebench.runner prepare --config
+  swe_rebench\config.yaml`: passed; generated and tracked scheduler bundle
+  sources agree.
+- One-task dry-runs for `container-openclaw` and
+  `host-openclaw-sandbox`: passed.
+- Current 125-file bundle source fingerprint:
+  `sha256:aae7c71d03e0f1a1ce095a06e37cbd9836d4088d8497c20f42b3dafd7a3b33c7`.
+
+Validation unavailable in this Windows workspace:
+
+- Live Linux Docker/eBPF acceptance remains unavailable because Docker and
+  the host kernel tracing environment are absent. Re-run the same
+  `container-openclaw` command on Linux.
+- Success requires at least one artifact with
+  `event_isolation.mode: trusted_execution_root_pid_namespace_remap`, a
+  non-empty successful `command_tree`, clauses present, and no
+  `reason=no_exec_images`. The diagnostic log now distinguishes
+  `pid_matched` from `cgroup_matched`; this environment is expected to show
+  `pid_matched=0` but `cgroup_matched>0` before the explicit namespace remap.

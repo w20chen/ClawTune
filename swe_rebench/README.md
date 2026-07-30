@@ -124,6 +124,13 @@ pipe and preserves the payload's original stdin. Container lifecycle/scope
 reports use a 10-second timeout because healthy BCC attach and final analysis
 can exceed the plugin's generic 800 ms default under concurrent calls.
 
+When the sidecar itself runs inside the task container, launcher lifecycle
+PIDs are relative to that container's PID namespace while eBPF reports
+init-namespace host PIDs. For an exclusive per-execution cgroup, Stage-2
+bridges those identities only when exactly one observed root shell has argv
+equal to the registered command. Missing or ambiguous matches remain invalid
+rather than weakening command-tree isolation.
+
 To keep OpenClaw on the host and use OpenClaw's Docker sandbox for tools:
 
 ```bash
