@@ -460,7 +460,7 @@ def test_gated_shell_execs_wrapper_before_waiting_for_release(monkeypatch) -> No
 
     assert captured["args"][:2] == ["/bin/sh", "-c"]
     wrapper = captured["args"][2]
-    assert wrapper.startswith("IFS= read -r _claw_release <&71; exec 71<&-;")
+    assert wrapper.startswith("IFS= read -r _claw_release < /proc/self/fd/71;")
     assert 'exec /bin/sh -c "$_claw_payload"' in wrapper
     assert captured["kwargs"]["pass_fds"] == (71,)
     assert captured["kwargs"]["preexec_fn"] is sentinel_preexec
