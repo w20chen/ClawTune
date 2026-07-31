@@ -1,133 +1,47 @@
 # Run OpenClaw with Tracing
 
-Use this guide for normal OpenClaw runs.
+This guide covers model proxy setup, smoke testing, and troubleshooting.
+For installation, sidecar startup, and plugin configuration, follow the
+[README](../README.md) quickstart first, then return here.
 
-## 1. Install Local Packages
+## 1. Configure OpenClaw Model Proxy
 
-```bash
-python -m pip install -e "services/scheduler[dev]"
+Route OpenClaw model traffic through the sidecar proxy. Any OpenAI-compatible
+provider works. The sidecar forwards OpenClaw's `Authorization` header
+upstream by default. Two common setups:
 
-cd packages/openclaw-plugin
-npm install
-npm run build
-cd ../..
-```
-
-Check the launcher:
-
-```bash
-claw-launch --help
-```
-
-Recommended runtime order:
-
-1. Start the sidecar.
-2. Route OpenClaw model traffic through the sidecar proxy.
-3. Install, enable, and configure the OpenClaw plugin.
-4. Run OpenClaw.
-
-The sidecar must be running before plugin hooks fire.
-
-## 2. Start Sidecar
-
-```bash
-cp .env.example .env
-python -m agent_scheduler.main --host 127.0.0.1 --port 8765
-```
-
-Health:
-
-```bash
-curl http://127.0.0.1:8765/health/ready
-```
-
-## 3. Configure OpenClaw Model Proxy
-
-If OpenClaw already has a `vllm` API-key profile, keep that key in OpenClaw and
-only update the vLLM provider base URL and model to:
+**DeepSeek (direct API):** Update the vLLM provider base URL and model:
 
 ```text
 http://127.0.0.1:8765/v1
 deepseek-v4-flash
 ```
 
-The sidecar LLM proxy is always on while using the plugin and forwards
-OpenClaw's `Authorization` header upstream by default, so the plugin does not
-need a second API key.
-
-If OpenClaw does not have a `vllm` API-key profile, onboard one pointing at the sidecar:
+Or onboard a new profile:
 
 ```bash
 openclaw onboard --non-interactive --accept-risk --skip-health \
   --mode local \
   --auth-choice vllm \
   --custom-base-url "http://127.0.0.1:8765/v1" \
-  --custom-api-key "<your provider API key>" \
+  --custom-api-key "<your DeepSeek API key>" \
   --custom-model-id "deepseek-v4-flash"
 ```
 
-For OpenRouter or another OpenAI-compatible upstream, set these in `.env` and
+**OpenRouter (or any OpenAI-compatible upstream):** Set these in `.env` and
 restart the sidecar:
 
 ```bash
 AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL=https://openrouter.ai/api/v1
 AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL=deepseek-v4-flash
 AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=deepseek/deepseek-v4-flash
-# Optional advanced override:
-# AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY_OVERRIDE=sk-...
 ```
 
-## 4. Install and Configure Plugin
+Set `AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY_OVERRIDE` only for an intentional
+sidecar API key override. Replace `deepseek-v4-flash` above with your
+provider's model ID.
 
-```bash
-openclaw plugins install --link ./packages/openclaw-plugin
-openclaw plugins enable agent-scheduler
-```
-
-Patch OpenClaw config.
-
-```bash
-LAUNCHER_PATH="$(command -v claw-launch)"
-test -n "$LAUNCHER_PATH"
-
-cat <<JSON5 | openclaw config patch --stdin
-{
-  plugins: {
-    entries: {
-      "agent-scheduler": {
-        enabled: true,
-        config: {
-          endpoint: "http://127.0.0.1:8765",
-          mode: "observe",
-          failOpen: true,
-          recordRawTrace: true,
-          executionBackend: "managed-wrapper",
-          launcherPath: "$LAUNCHER_PATH",
-          securityBoundaryAccepted: true
-        }
-      }
-    }
-  }
-}
-JSON5
-
-openclaw plugins inspect agent-scheduler --runtime --json
-```
-
-Debug-only fallback:
-
-```json5
-executionBackend: "hook-only"
-```
-
-## 5. Run
-
-```bash
-openclaw agent --local --agent main --model "vllm/deepseek-v4-flash" \
-  --message "Use the shell to run: python -c 'print(\"trace-ok\")'. Then summarize the result."
-```
-
-## 6. SWE-Rebench Host Sandbox
+## 2. SWE-Rebench Host Sandbox
 
 To run SWE-Rebench with OpenClaw on the host while OpenClaw's Docker
 sandbox executes tools:
@@ -150,21 +64,13 @@ shared sandbox container cgroup when the runner can discover it through
 `coverage_reason: "shared_sandbox_container"` because this is sandbox container
 time-window attribution, not a strict per-tool PID/cgroup.
 
-## 7. Inspect
+## 3. Smoke Test
+
+After completing the README quickstart and model proxy setup above, run this
+to verify the full pipeline end-to-end:
 
 ```bash
-curl "http://127.0.0.1:8765/v1/tools/recent?limit=5"
-curl http://127.0.0.1:8765/metrics
-ls data/traces
-python tools/inspect_trace.py data/traces/<trace-file>.jsonl --all --details
-```
-
-## 8. Smoke Test
-
-After completing steps 1-5, run this to verify the full pipeline end-to-end:
-
-```bash
-openclaw agent --local --agent main --model "vllm/deepseek-v4-flash" \
+openclaw agent --local --agent main --model "vllm/<your-model>" \
   --message "Run: python -c 'print(\"hello\")'. Then say 'ok'."
 ```
 
@@ -200,11 +106,57 @@ If any of these fail, see Troubleshooting below.
   cgroup v2 is present, but delegation is incomplete. Owning the destination
   `cgroup.procs` is not sufficient if the launcher process starts outside the
   delegated tree; cgroup v2 also checks migration permission through the source
-  and destination common ancestor. Use the README probe to verify this, then
-  start OpenClaw inside a delegated cgroup, for example with
-  `systemd-run --user --scope -p Delegate=yes ... openclaw agent ...`. If a
-  delegated scope is unavailable, unset `CLAW_CGROUP_REQUIRED` or set it to `0`
-  and rely on PID attribution until the host/container cgroup setup is fixed.
+  and destination common ancestor.
+
+  **Diagnose:** Confirm cgroup v2 and the permission failure mode:
+
+  ```bash
+  test -f /sys/fs/cgroup/cgroup.controllers   # confirm cgroup v2
+
+  probe=/sys/fs/cgroup/claw/probe-$$
+  sudo mkdir -p "$probe"
+  sudo chown "$USER:$USER" "$probe" "$probe/cgroup.procs"
+  echo $$ > "$probe/cgroup.procs"
+  ```
+
+  If the probe prints `Permission denied`, do not use `/sys/fs/cgroup/claw`
+  as a shared host-level root. Instead, start OpenClaw inside a delegated
+  cgroup scope:
+
+  ```bash
+  systemd-run --user --scope -p Delegate=yes bash -lc '
+    set -euo pipefail
+    self_cg="/sys/fs/cgroup$(awk -F: '\''$1=="0"{print $3}'\'' /proc/self/cgroup)"
+    export CLAW_CGROUP_ROOT="$self_cg/claw"
+    export CLAW_ENABLE_CGROUP=1
+    export CLAW_CGROUP_REQUIRED=1
+    export CLAW_CGROUP_DEBUG=1
+    export CLAW_LAUNCH_DEBUG=1
+    exec openclaw agent --local --agent main --model "vllm/<your-model>" \
+      --message "Use the shell to run: python -c '\''print(\"trace-ok\")'\''. Then summarize the result."
+  '
+  ```
+
+  `CLAW_CGROUP_ROOT` must be computed inside the `systemd-run` shell because
+  each delegated scope has its own cgroup path. For normal interactive use,
+  keep the same wrapper shape and replace the `--message ...` portion.
+
+  With cgroup enabled, `/v1/tools/recent` should report
+  `"attribution_status":"cgroup-v2"` or traces should show
+  `"resources":{"scope":"cgroup"}` for managed `exec` tools.
+
+  **Fallback:** If systemd user scopes are unavailable, disable cgroup and
+  use PID attribution until the host/container can provide a delegated cgroup
+  tree:
+
+  ```bash
+  export CLAW_ENABLE_CGROUP=0
+  export CLAW_CGROUP_REQUIRED=0
+  ```
+
+  Exit code `125` means `claw-launch` failed before the payload command
+  started. Keep `CLAW_LAUNCH_DEBUG=1` enabled while debugging to print the
+  underlying exception.
 - `claw-launch` not found: reinstall the scheduler package and patch the
   absolute launcher path.
 - On Windows PowerShell, use `npm.cmd` or `openclaw.cmd` if `.ps1` shims are

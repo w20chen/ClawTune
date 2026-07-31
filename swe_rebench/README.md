@@ -26,7 +26,9 @@ python -m swe_rebench.runner prepare --config swe_rebench/config.yaml
 Generated bundles, traces, exports, and reports default to
 `swe_rebench/.runtime/` (Git-ignored).
 
-Default provider config is DeepSeek:
+LLM provider config — any OpenAI-compatible API works. Examples:
+
+**DeepSeek:**
 
 ```yaml
 llm:
@@ -37,7 +39,7 @@ llm:
   openclaw_model_ref: "vllm/deepseek-v4-flash"
 ```
 
-OpenRouter example:
+**OpenRouter:**
 
 ```yaml
 llm:
