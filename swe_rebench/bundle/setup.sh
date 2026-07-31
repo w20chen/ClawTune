@@ -3,8 +3,13 @@
 # Environment setup inside swe-rebench containers.
 # Installs Node.js, npm, OpenClaw CLI, and Python deps.
 # Idempotent -- safe to run multiple times.
+#
+# Architecture support: x86_64 (amd64), aarch64 (arm64 / Kunpeng).
+# BCC/eBPF deps are best-effort and fail-open on all architectures.
 # ────────────────────────────────────────────────────────────────
 set -euo pipefail
+
+echo "[claw] host arch: $(uname -m)"
 
 # Detect python: prefer conda python shipped by swe-rebench images.
 if [ -x /opt/conda/bin/python3 ]; then

@@ -59,14 +59,28 @@ is_arm_host() {
   esac
 }
 
+kernel_supports_binfmt_misc() {
+  awk '$NF == "binfmt_misc" { found=1 } END { exit !found }' /proc/filesystems 2>/dev/null
+}
+
 ensure_binfmt_misc() {
   if [[ -e /proc/sys/fs/binfmt_misc/status ]]; then
     return 0
   fi
+  # Some Kunpeng/aarch64 kernels compile binfmt_misc built-in rather than as a
+  # module.  Check /proc/filesystems before attempting modprobe.
   if command -v modprobe >/dev/null 2>&1; then
-    run_cmd modprobe binfmt_misc
+    if kernel_supports_binfmt_misc; then
+      log "binfmt_misc is supported by the kernel (built-in or already loaded)"
+    else
+      run_cmd modprobe binfmt_misc 2>/dev/null || true
+    fi
   fi
   if [[ ! -e /proc/sys/fs/binfmt_misc/status ]]; then
+    if ! kernel_supports_binfmt_misc; then
+      log "binfmt_misc filesystem not available in this kernel"
+      return 1
+    fi
     run_cmd mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
   fi
 }

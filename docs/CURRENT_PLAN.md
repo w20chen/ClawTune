@@ -1286,3 +1286,121 @@ Validation commands unavailable or unsuitable in this Windows workspace:
   `stage2_ready=true`, equal `/started` and `/exited` counts, no
   `analysis_failure`, and at least one healthy artifact with a non-empty
   command tree and clauses.
+
+## 2026-07-31 Kunpeng/ARM64 Architecture Compatibility Audit
+
+### Status: ARM-aware / Kunpeng-ready in design, not yet certified on Kunpeng
+
+The codebase has been reviewed for Kunpeng aarch64 compatibility.
+Key findings and fixes applied:
+
+### Compatibility Foundation (already present)
+
+- `services/scheduler`: Python/FastAPI service with psutil, numpy, uvicorn
+  dependencies — all have aarch64 wheels or build from source.
+- `packages/openclaw-plugin`: TypeScript plugin, no native npm dependencies,
+  CPU-architecture neutral.
+- `services/scheduler/src/tool_resource/_mvdan_adapter/build.sh`: Recognizes
+  `Linux:aarch64` and `Linux:arm64`, downloads `linux-arm64` Go toolchain.
+- `swe_rebench`: `docker.platform` / `SWE_REBENCH_DOCKER_PLATFORM` supported
+  throughout the runner, host sandbox, pre-pull, and cleanup paths.
+- `docs/arm-qemu.md` + `scripts/setup/arm_qemu_setup.sh`: Full QEMU/binfmt
+  path for running amd64 SWE-Rebench images on ARM hosts.
+- `swe_rebench/bundle/setup.sh`: Node.js arch detection handles `aarch64|arm64`.
+- `services/scheduler/src/tool_resource/telemetry.py`: eBPF syscall symbols
+  include `__arm64_sys_` prefix; `CONFIG_ARCH_HAS_SYSCALL_WRAPPER` handling
+  is correct for both x86_64 and arm64.
+
+### Fixes Applied (2026-07-31)
+
+1. **`docker-compose.yml`**: Added platform comments for ARM hosts. The
+   `python:3.12-slim` base image is multi-arch; native builds resolve
+   automatically. Force with `platform: linux/arm64` if needed.
+2. **`services/scheduler/Dockerfile`** and
+   **`swe_rebench/bundle/scheduler/Dockerfile`**: Added multi-arch
+   documentation comments.
+3. **`swe_rebench/Dockerfile.runtime`**: Added ARM build instructions and
+   multi-arch documentation. `debian:bookworm-slim` + NodeSource + OpenClaw
+   CLI must be verified on arm64.
+4. **`scripts/setup/arm_qemu_setup.sh`**: Improved `ensure_binfmt_misc()` to
+   check `/proc/filesystems` before `modprobe`, handling Kunpeng kernels where
+   binfmt_misc is built-in rather than a module.
+5. **`swe_rebench/bundle/setup.sh`**: Added host arch logging at startup for
+   better diagnostics on Kunpeng.
+
+### Remaining Verification Required on Real Kunpeng/aarch64 Linux
+
+These commands must be run on a Kunpeng host and cannot execute in this
+Windows workspace:
+
+```bash
+# ── Core validation ──────────────────────────────────────────
+python tools/validate_contracts.py
+python -m pytest tests -q --basetemp .pytest-tmp-root
+cd packages/openclaw-plugin && npm test && npm run typecheck
+cd services/scheduler && python -m pytest tests -q --basetemp ../../.pytest-tmp-scheduler
+
+# ── Docker image build ───────────────────────────────────────
+docker build --platform linux/arm64 -t agent-scheduler services/scheduler
+docker build --platform linux/arm64 -t claw-runtime -f swe_rebench/Dockerfile.runtime .
+
+# ── mvdan adapter build on arm64 ─────────────────────────────
+bash services/scheduler/src/tool_resource/_mvdan_adapter/build.sh
+# Verify: the built binary must be an ELF aarch64 executable.
+
+# ── QEMU/binfmt smoke test (for amd64 task images) ───────────
+sudo bash scripts/setup/arm_qemu_setup.sh install
+sudo bash scripts/setup/arm_qemu_setup.sh check
+export SWE_REBENCH_DOCKER_PLATFORM=linux/amd64
+
+# ── End-to-end host-sandbox run ──────────────────────────────
+sudo -E env "PATH=$PATH" "$(command -v python3)" \
+  -m swe_rebench.runner run \
+  --config swe_rebench/config.yaml \
+  --prepare \
+  --dataset swe_rebench/tasks.json \
+  --sample 1 \
+  --export \
+  --runtime-mode host-openclaw-sandbox
+```
+
+### Known Risks on Kunpeng
+
+| Risk | Mitigation |
+|------|-----------|
+| SWE-Rebench task images are amd64-only | Use QEMU/binfmt path (`SWE_REBENCH_DOCKER_PLATFORM=linux/amd64`) |
+| OpenClaw CLI npm package may lack arm64 binary | Verify `npm install -g openclaw@2026.7.1` on arm64; fall back to source build |
+| BCC/eBPF kernel headers on EulerOS/openEuler | BCC is best-effort (fail-open); kernel-devel package names differ from Debian |
+| eBPF hardware counters (PERF_COUNT_HW_CPU_CYCLES) | Kunpeng 920 PMU differs from x86; perf_event_open may need `PERF_COUNT_HW_CPU_CYCLES` → ARMv8 PMU cycle counter mapping |
+| cgroup v2 layout on Kunpeng | `/sys/fs/cgroup` is the standard path; cgroup v2 is available on Linux 4.15+ (Kunpeng runs 4.19+ or 5.10+) |
+| `binfmt_misc` built into kernel vs. module | Handled by updated `arm_qemu_setup.sh` checking `/proc/filesystems` |
+
+### Not Yet Validated
+
+- `swe_rebench/bundle/setup.sh` BCC package names on EulerOS (`bcc` +
+  `python3-bcc` from EPEL) — the script already has yum/dnf fallbacks with
+  `|| true`.
+- `npm install -g openclaw@2026.7.1` on linux-arm64 — must confirm the
+  package publishes an arm64 binary or the npm registry has a fallback.
+- Live eBPF kprobe attachment on Kunpeng 5.10+ kernels — the syscall symbol
+  table includes `__arm64_sys_*`; walk-through verification is needed.
+- `docker run --platform linux/amd64` QEMU smoke test on Kunpeng with the
+  updated binfmt setup script.
+
+### Follow-up Fixes After Review
+
+- Corrected `scripts/setup/arm_qemu_setup.sh` to detect `binfmt_misc` by the
+  last field in `/proc/filesystems`, covering both `binfmt_misc` and
+  `nodev\tbinfmt_misc` formats on x86_64 and Kunpeng/aarch64 kernels.
+- Moved the commented `platform: linux/arm64` hint in `docker-compose.yml` to
+  the service level so uncommenting it affects the scheduler service platform
+  instead of suggesting a non-portable `build.platform` placement.
+- Corrected the `swe_rebench/Dockerfile.runtime` example build path.
+
+Validation commands unavailable or unsuitable in this Windows workspace:
+
+- `bash -n scripts/setup/arm_qemu_setup.sh` and
+  `bash -n swe_rebench/bundle/setup.sh` could not run because `bash` is not
+  installed in this PowerShell environment.
+- Real Kunpeng/aarch64 Docker build, QEMU/binfmt smoke, and eBPF/tracefs
+  attachment checks still require a Linux Kunpeng host.

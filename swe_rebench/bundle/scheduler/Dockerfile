@@ -1,3 +1,5 @@
+# Multi-arch base: python:3.12-slim supports linux/amd64 and linux/arm64 (Kunpeng).
+# Build with: docker build --platform linux/arm64 -t agent-scheduler .
 FROM python:3.12-slim
 
 WORKDIR /app
