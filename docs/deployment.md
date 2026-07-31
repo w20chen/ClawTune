@@ -31,8 +31,7 @@ openclaw plugins enable agent-scheduler
 docker compose up --build scheduler
 ```
 
-This only starts the sidecar. You still need to install/configure the OpenClaw
-plugin in your OpenClaw environment.
+This starts the sidecar. Install and configure the OpenClaw plugin separately.
 
 ## Package Builds
 
@@ -50,12 +49,25 @@ cd packages/openclaw-plugin
 npm pack
 ```
 
-## SWE-Rebench
+## Prerequisites
+
+- Python 3.10+
+- Node.js and npm
+- OpenClaw CLI 2026.7.1 or newer
+- Docker for SWE-Rebench
+
+Windows notes:
+
+- Use `npm.cmd` or `openclaw.cmd` if PowerShell blocks `.ps1` shims.
+- Use `--basetemp .pytest-tmp-root` for pytest.
+
+## Validate
 
 ```bash
-cp swe_rebench/config.example.yaml swe_rebench/config.yaml
-python -m swe_rebench.runner prepare --config swe_rebench/config.yaml
-python -m swe_rebench.discover --sample 20 --out swe_rebench/tasks.json
-python -m swe_rebench.runner run --config swe_rebench/config.yaml \
-  --dataset swe_rebench/tasks.json --sample 10 --export
+python tools/validate_contracts.py
+python -m pytest tests -q --basetemp .pytest-tmp-root
+
+cd packages/openclaw-plugin
+npm test
+npm run typecheck
 ```

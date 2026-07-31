@@ -26,9 +26,7 @@ Recommended runtime order:
 3. Install, enable, and configure the OpenClaw plugin.
 4. Run OpenClaw.
 
-Installing the plugin itself does not require an API key, but doing it after
-the sidecar readiness check keeps the first plugin hook pointed at a healthy
-endpoint.
+The sidecar must be running before plugin hooks fire.
 
 ## 2. Start Sidecar
 
@@ -57,10 +55,7 @@ The sidecar LLM proxy is always on while using the plugin and forwards
 OpenClaw's `Authorization` header upstream by default, so the plugin does not
 need a second API key.
 
-If OpenClaw does not already have a `vllm` API-key profile, `openclaw onboard`
-requires one. This includes the common case where OpenClaw was previously
-configured for DeepSeek directly, because the sidecar proxy is registered as a
-local vLLM-compatible provider. Onboard vLLM once and point it at the sidecar:
+If OpenClaw does not have a `vllm` API-key profile, onboard one pointing at the sidecar:
 
 ```bash
 openclaw onboard --non-interactive --accept-risk --skip-health \
@@ -71,9 +66,8 @@ openclaw onboard --non-interactive --accept-risk --skip-health \
   --custom-model-id "deepseek-v4-flash"
 ```
 
-For OpenRouter or another OpenAI-compatible upstream, edit `.env` and restart
-the sidecar. Keep using the provider key stored in OpenClaw unless you
-intentionally need an override.
+For OpenRouter or another OpenAI-compatible upstream, set these in `.env` and
+restart the sidecar:
 
 ```bash
 AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL=https://openrouter.ai/api/v1
@@ -133,9 +127,9 @@ openclaw agent --local --agent main --model "vllm/deepseek-v4-flash" \
   --message "Use the shell to run: python -c 'print(\"trace-ok\")'. Then summarize the result."
 ```
 
-## SWE-Rebench Host Sandbox Mode
+## 6. SWE-Rebench Host Sandbox
 
-SWE-Rebench can also run with OpenClaw on the host while OpenClaw's Docker
+To run SWE-Rebench with OpenClaw on the host while OpenClaw's Docker
 sandbox executes tools:
 
 ```bash
@@ -164,6 +158,33 @@ curl http://127.0.0.1:8765/metrics
 ls data/traces
 python tools/inspect_trace.py data/traces/<trace-file>.jsonl --all --details
 ```
+
+## 8. Smoke Test
+
+After completing steps 1-5, run this to verify the full pipeline end-to-end:
+
+```bash
+openclaw agent --local --agent main --model "vllm/deepseek-v4-flash" \
+  --message "Run: python -c 'print(\"hello\")'. Then say 'ok'."
+```
+
+Then check that the trace was recorded:
+
+```bash
+ls data/traces/*.jsonl
+python tools/inspect_trace.py data/traces/*.jsonl --all --details
+```
+
+What each check proves:
+
+| Check | What it validates |
+|---|---|
+| `openclaw agent ...` succeeds | OpenClaw CLI + plugin hooks are functional |
+| `data/traces/*.jsonl` exists | Sidecar is receiving and writing span events |
+| Tool span contains `resources` | `managed-wrapper` is intercepting `exec` and the launcher is sampling cgroup/PID |
+| LLM span has `input.messages` | Model proxy is capturing full request/response content |
+
+If any of these fail, see Troubleshooting below.
 
 ## Troubleshooting
 

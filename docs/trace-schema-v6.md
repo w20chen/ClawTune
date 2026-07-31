@@ -1,6 +1,24 @@
-# Trace Output
+# Trace & Protocol Reference
 
-Traces are JSONL files. With `.env.example`, they are written under:
+For operational guides see
+[operator-guide.md](operator-guide.md) or
+[../swe_rebench/README.md](../swe_rebench/README.md).
+
+Public protocol schemas live in `contracts/`. Stage-2 eBPF command artifacts are
+described by `contracts/clause-telemetry.schema.json`. Validate:
+
+```bash
+python tools/validate_contracts.py
+```
+
+Main event families:
+
+- `scheduler.v1` tool before/completed events
+- model start/end events
+- `scheduler.v2` managed execution registration and scope lookup
+- schema v6 trace records written as JSONL
+
+## Trace Format
 
 ```text
 data/traces/*.jsonl

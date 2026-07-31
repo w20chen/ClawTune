@@ -38,7 +38,7 @@ AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL=deepseek-v4-flash
 AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=deepseek/deepseek-v4-flash
 ```
 
-The sidecar always uses the vendored `tool_resource` predictor. It can
+The sidecar uses the built-in `tool_resource` predictor. It can
 cold-start from OpenClaw trace v6 JSONL files and native Stage-2 telemetry
 artifacts. Trace v6 is call-level, so the adapter maps each eligible tool span
 to one call-level pseudo-clause: `exec` spans use the primary command head and
@@ -109,3 +109,17 @@ curl "http://127.0.0.1:8765/v1/tools/recent?limit=5"
 ls data/traces
 python tools/inspect_trace.py data/traces/<trace-file>.jsonl --all --details
 ```
+
+## Security
+
+- The plugin runs as a normal OpenClaw plugin.
+- This project does not modify OpenClaw core.
+- Use `mode: "observe"` unless you intentionally want enforcement behavior.
+- `managed-wrapper` rewrites `exec` commands and therefore requires
+  `securityBoundaryAccepted: true`.
+- Do not store provider API keys in committed config files. Normal plugin runs
+  should use the key already configured in OpenClaw; the sidecar forwards
+  OpenClaw's `Authorization` header by default. Use `LLM_API_KEY` only for
+  SWE-Rebench automation, and use
+  `AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY_OVERRIDE` only for an intentional
+  sidecar override.

@@ -9,6 +9,10 @@ OpenClaw Agent Scheduler is an OpenClaw plugin plus a Python sidecar. It records
 OpenClaw model/tool traces and per-tool resource usage. It also includes a
 SWE-Rebench batch runner.
 
+**Platform:** This guide works on x86_64 Linux. ARM/Kunpeng users must also
+complete [docs/arm-qemu.md](docs/arm-qemu.md) before running SWE-Rebench —
+task images are x86_64-only and require QEMU emulation.
+
 ## Preliminaries
 
 Install OpenClaw (version 2026.7.1):
@@ -39,68 +43,21 @@ cd ../..
 
 ## Run with OpenClaw
 
-The recommended order is:
-
-1. Start the sidecar.
-2. Route OpenClaw model traffic through the sidecar proxy.
-3. Install, enable, and configure the OpenClaw plugin.
-4. Run OpenClaw.
-
-This keeps the first plugin hook and the first model request pointed at a
-healthy sidecar. Installing the plugin itself does not require an API key.
-
-Before starting the sidecar, ensure that port 8765 is not occupied. If the port
-is already in use by another process, you can forcefully release it with:
+For the full step-by-step guide with troubleshooting, see
+[docs/operator-guide.md](docs/operator-guide.md). Quick start:
 
 ```bash
-sudo lsof -t -i :8765 | xargs -r sudo kill -9
-```
-
-Start the sidecar and check readiness:
-
-```bash
+# 1. Start sidecar
 cp .env.example .env
-python3 -m agent_scheduler.main --host 127.0.0.1 --port 8765
-```
+python3 -m agent_scheduler.main --host 127.0.0.1 --port 8765 &
 
-```bash
-curl http://127.0.0.1:8765/health/ready   # {"ready":true}
-```
+# 2. Configure OpenClaw to route through sidecar proxy
+#    Set provider base URL to http://127.0.0.1:8765/v1, model to deepseek-v4-flash
 
-If OpenClaw already has a `vllm` API-key profile, keep that key in OpenClaw and
-only update the vLLM provider base URL and model to:
-
-```text
-http://127.0.0.1:8765/v1
-deepseek-v4-flash
-```
-
-The sidecar forwards OpenClaw's `Authorization` header upstream by default, so
-there is no separate plugin API key.
-
-If OpenClaw does not already have a `vllm` API-key profile, `openclaw onboard`
-requires one. This includes the common case where OpenClaw was previously
-configured for DeepSeek directly, because the sidecar proxy is registered as a
-local vLLM-compatible provider. Onboard vLLM once and point it at the sidecar:
-
-```bash
-openclaw onboard --non-interactive --accept-risk --skip-health \
-  --mode local \
-  --auth-choice vllm \
-  --custom-base-url "http://127.0.0.1:8765/v1" \
-  --custom-api-key "<your provider API key>" \
-  --custom-model-id "deepseek-v4-flash"
-```
-
-Install the plugin into OpenClaw, enable it, and patch its config.
-
-```bash
+# 3. Install and configure plugin
 openclaw plugins install --link ./packages/openclaw-plugin
 openclaw plugins enable agent-scheduler
-
 LAUNCHER_PATH="$(command -v claw-launch)"
-test -n "$LAUNCHER_PATH"
-
 cat <<JSON5 | openclaw config patch --stdin
 {
   plugins: {
@@ -123,14 +80,16 @@ cat <<JSON5 | openclaw config patch --stdin
 }
 JSON5
 
-openclaw plugins inspect agent-scheduler --runtime --json
+# 4. Run
+openclaw agent --local --agent main --model "vllm/deepseek-v4-flash" \
+  --message "Use the shell to run: python -c 'print(\"trace-ok\")'. Then summarize the result." \
+  --session-key "my-session"
 ```
 
-After completing the above configuration, one can run OpenClaw with the following command:
-
-```bash
-openclaw agent --local --agent main --model "vllm/deepseek-v4-flash"   --message "Use the shell to run: python -c '\''print(\"trace-ok\")'\''. Then summarize the result." --session-key <set a session key>
-```
+The sidecar must be running before the plugin hooks fire and before the first
+model request. See [operator-guide.md](docs/operator-guide.md) for model proxy
+configuration (vLLM onboarding, OpenRouter, API key setup) and smoke test
+verification.
 
 ### Linux Cgroup
 
@@ -182,7 +141,7 @@ With cgroup enabled, `/v1/tools/recent` should report
 process cannot be migrated into it, the launcher retries the payload in a
 transient user systemd scope with `Delegate=yes` and reports that scope's
 cgroup to the sidecar. Set `CLAW_CGROUP_AUTO_SYSTEMD=0` to disable this retry
-and keep the older process-tree fallback behavior.
+and use the process-tree fallback.
 
 ### Cgroup Troubleshooting
 
@@ -255,9 +214,32 @@ python -m swe_rebench.runner run --config swe_rebench/config.yaml \
   --dry-run
 ```
 
+## Supported Workflows
+
+- Run the sidecar locally on `127.0.0.1:8765`.
+- Install and enable the `agent-scheduler` OpenClaw plugin.
+- Route OpenClaw model traffic through the sidecar OpenAI-compatible proxy.
+- Record schema v6 JSONL traces under `data/traces`.
+- Record hook-visible tool args/results with `recordRawTrace: true`.
+- Attribute `exec` resource usage with `executionBackend: "managed-wrapper"`.
+- Run SWE-Rebench batches with `--sample`, `--skip`, `--instance-ids`,
+  `--repo`, and `--export`.
+
 ## More
 
+- Architecture: [docs/architecture.md](docs/architecture.md)
 - OpenClaw guide: [docs/operator-guide.md](docs/operator-guide.md)
-- SWE-Rebench guide: [swe_rebench/README.md](swe_rebench/README.md)
+- Sidecar reference: [docs/sidecar.md](docs/sidecar.md)
+- Trace & protocol: [docs/trace-schema-v6.md](docs/trace-schema-v6.md)
 - Deployment: [docs/deployment.md](docs/deployment.md)
-- Troubleshooting: [docs/operator-guide.md#troubleshooting](docs/operator-guide.md#troubleshooting)
+- ARM/QEMU setup: [docs/arm-qemu.md](docs/arm-qemu.md)
+- SWE-Rebench guide: [swe_rebench/README.md](swe_rebench/README.md)
+
+### Troubleshooting
+
+| Problem area | See |
+|---|---|
+| OpenClaw / plugin / sidecar errors | [operator-guide.md#troubleshooting](docs/operator-guide.md#troubleshooting) |
+| Cgroup permission errors | [Cgroup Troubleshooting](#cgroup-troubleshooting) above |
+| SWE-Rebench failures (Docker, timeout, eBPF) | [swe_rebench/README.md#troubleshooting](swe_rebench/README.md#troubleshooting) |
+| ARM/Kunpeng QEMU issues | [arm-qemu.md#kunpeng-troubleshooting](docs/arm-qemu.md#kunpeng-troubleshooting) |
