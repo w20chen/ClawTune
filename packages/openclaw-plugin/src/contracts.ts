@@ -43,6 +43,21 @@ export type PluginConfig = {
   enableNuma: boolean;
   profilingMode: ProfilingMode;
   securityBoundaryAccepted: boolean;
+  /**
+   * When true, the plugin will automatically start the scheduler sidecar
+   * if it is not already running on the configured endpoint.  Default: true.
+   */
+  autoStartSidecar: boolean;
+  /**
+   * Shell command to start the scheduler sidecar.  Used only when
+   * autoStartSidecar is true.  The command is executed via the system
+   * shell and should start the sidecar on the configured endpoint.
+   *
+   * Default: auto-detected from the project layout (prefers the
+   * services/scheduler directory relative to the configured
+   * SIDECAR_PROJECT_ROOT env var or the plugin working directory).
+   */
+  sidecarCommand: string;
   trace: TracePluginConfig;
 };
 

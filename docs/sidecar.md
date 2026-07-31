@@ -1,6 +1,46 @@
 # Sidecar Usage
 
-## Start & Health
+## Auto-Start (Recommended)
+
+By default the OpenClaw plugin automatically starts the scheduler sidecar on
+first use when it is not already running.  No manual terminal is needed.
+
+The plugin checks the configured endpoint (default `http://localhost:8765`)
+every 200 ms for up to 15 seconds.  If the sidecar is already running the
+plugin skips the launch step.
+
+Disable auto-start in your OpenClaw plugin config:
+
+```json5
+{
+  "autoStartSidecar": false
+}
+```
+
+Or set the env var:
+
+```bash
+export OPENCLAW_AGENT_SCHEDULER_AUTO_START_SIDECAR=0
+```
+
+Override the launch command:
+
+```json5
+{
+  "sidecarCommand": "cd /path/to/claw/services/scheduler && PYTHONPATH=src python -m agent_scheduler.main --host 127.0.0.1 --port 8765"
+}
+```
+
+Or via env:
+
+```bash
+export OPENCLAW_AGENT_SCHEDULER_SIDECAR_COMMAND="python -m agent_scheduler.main --host 127.0.0.1 --port 8765"
+```
+
+The plugin also respects `OPENCLAW_AGENT_SCHEDULER_PROJECT_ROOT` (or
+`SIDECAR_PROJECT_ROOT`) to auto-detect the project layout.
+
+## Manual Start (Legacy)
 
 Start:
 

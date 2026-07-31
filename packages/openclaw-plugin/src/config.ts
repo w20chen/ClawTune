@@ -21,6 +21,8 @@ const defaults: PluginConfig = {
   enableNuma: true,
   profilingMode: "off",
   securityBoundaryAccepted: true,
+  autoStartSidecar: true,
+  sidecarCommand: "",
   trace: {
     schema_version: 6,
     include_raw_events: false,
@@ -132,6 +134,8 @@ function envOverrides(): Partial<PluginConfig> {
     "securityBoundaryAccepted",
     schedulerEnv("SECURITY_BOUNDARY_ACCEPTED")
   );
+  setBoolean(output, "autoStartSidecar", schedulerEnv("AUTO_START_SIDECAR"));
+  setString(output, "sidecarCommand", schedulerEnv("SIDECAR_COMMAND"));
   const trace: Record<string, unknown> = {};
   const traceDir = schedulerEnv("PLUGIN_TRACE_DIR");
   if (traceDir !== undefined && traceDir.length > 0) trace.trace_dir = traceDir;

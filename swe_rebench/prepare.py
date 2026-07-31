@@ -54,6 +54,10 @@ _PLUGIN_CONFIG: dict[str, Any] = {
     "enableNuma": False,
     "profilingMode": "off",
     "securityBoundaryAccepted": True,
+    # Entrypoint starts the sidecar before OpenClaw.  Keep auto-start
+    # disabled so the plugin never tries to spawn a second sidecar in
+    # the container.
+    "autoStartSidecar": False,
     "trace": {
         "schema_version": 6,
         "include_raw_events": False,

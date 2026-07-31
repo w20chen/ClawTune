@@ -3,6 +3,20 @@
 Current objective: keep this repository easy to run as an OpenClaw plugin,
 sidecar, and SWE-Rebench batch runner.
 
+## Quick Start (Auto-Start)
+
+The plugin now auto-starts the sidecar by default.  Just:
+
+```bash
+python -m pip install -e "services/scheduler[dev]"
+cd packages/openclaw-plugin && npm install && npm run build && cd ../..
+cp .env.example .env
+```
+
+Then use OpenClaw normally — no separate sidecar terminal required.
+See [sidecar.md](sidecar.md) for the `autoStartSidecar` and `sidecarCommand`
+config options.
+
 ## User Commands
 
 Normal OpenClaw:

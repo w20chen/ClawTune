@@ -11,6 +11,7 @@ import type {InstrumentResult} from "./exec-instrumentation.js";
 import {consoleLogger} from "./logging.js";
 import {jsonSafe, paramFeatures, redact, stableDigest} from "./redaction.js";
 import {normalizeSandboxToolParams} from "./sandbox-paths.js";
+import {ensureSidecarRunning, type SidecarLauncherResult} from "./sidecar-launcher.js";
 import {
   SpanRegistry,
 } from "./trace/registry.js";
@@ -194,6 +195,35 @@ export default definePluginEntry({
   register(api: HookApi): void {
   const config = loadConfig(api.pluginConfig ?? {});
   const logger = api.logger ?? consoleLogger;
+
+  // ── Auto-start sidecar ───────────────────────────────────────────
+  let sidecarLauncher: SidecarLauncherResult | null = null;
+  /** Tracks the in-flight launch promise so beforeExit can await it. */
+  let sidecarLaunchPromise: Promise<void> | null = null;
+  if (config.autoStartSidecar) {
+    const launchPromise = ensureSidecarRunning({
+      endpoint: config.endpoint,
+      command: config.sidecarCommand,
+      healthPollMs: 200,
+      healthTimeoutMs: 15000,
+      logger: {
+        info: (msg, data) => logger.info?.(msg, data),
+        warn: (msg, data) => logger.warn?.(msg, data),
+        error: (msg, data) => logger.error?.(msg, data),
+      },
+    });
+    // Fire-and-forget the auto-start; if it fails the existing
+    // failOpen path will handle the missing sidecar gracefully.
+    // Track the promise so shutdown can await it before cleanup.
+    sidecarLaunchPromise = launchPromise.then((result) => {
+      sidecarLauncher = result;
+    }).catch((err) => {
+      logger.warn("sidecar auto-start failed, continuing without sidecar", {
+        error: String(err),
+      });
+    });
+  }
+
   const client = new SidecarClient(config);
   const correlation = new CorrelationMap(300_000, 10_000);
 
@@ -1039,8 +1069,29 @@ export default definePluginEntry({
   });
 
   // ── Shutdown handling ────────────────────────────────────────────────
-  // Write interrupted spans when plugin is being unloaded
-  process.on("beforeExit", async () => {
+  // Write interrupted spans and stop auto-started sidecar when plugin is
+  // being unloaded.
+  let shuttingDown = false;
+
+  async function performShutdown(): Promise<void> {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    // Wait for the sidecar launch to complete (or fail) so the
+    // launcher reference is populated before we try to clean it up.
+    if (sidecarLaunchPromise) {
+      try {
+        await sidecarLaunchPromise;
+      } catch {
+        // Already logged in the launch promise catch handler
+      }
+    }
+
+    // Clean up auto-started sidecar
+    if (sidecarLauncher) {
+      sidecarLauncher.cleanup();
+    }
+
     if (registry && runWriters.size > 0) {
       const activeSpans = registry.listActiveSpans();
       const endWall = wallClockNowNs();
@@ -1096,7 +1147,19 @@ export default definePluginEntry({
         await w.close();
       }
     }
-  });
+  }
+
+  process.on("beforeExit", performShutdown);
+
+  // On SIGINT (Ctrl+C) / SIGTERM, Node does not exit automatically when a
+  // listener is registered.  Run the same cleanup and then exit.
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      performShutdown().finally(() => {
+        process.exit(0);
+      });
+    });
+  }
 }
 });
 
