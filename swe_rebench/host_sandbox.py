@@ -8,6 +8,7 @@ workspace.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -1406,7 +1407,13 @@ def _chmod_and_retry(function: Any, path: str, _exc_info: Any) -> None:
         if isinstance(exc, BaseException):
             raise exc
         raise PermissionError(path)
-    function(path)
+    try:
+        function(path)
+    except OSError as exc:
+        if function is os.rmdir and getattr(exc, "errno", None) in {39, errno.ENOTEMPTY}:
+            shutil.rmtree(path, onerror=_chmod_and_retry)
+            return
+        raise
 
 
 def _reset_directory_with_docker(path: Path, image: str, platform: str = "") -> None:
