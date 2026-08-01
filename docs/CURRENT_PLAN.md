@@ -1703,3 +1703,10 @@ the tracked runtime bundle was regenerated. Shell syntax validation could not
 run in this Windows workspace because WSL returned
 `Bash/Service/CreateInstance/E_ACCESSDENIED`; run the normal setup on Kunpeng
 to validate the download, checksum, extraction, and adapter handshake.
+
+The next Kunpeng compile caught an arm64 kernel macro collision: Linux defines
+`current` as `get_current()`, while the new in-kernel cgroup filter used
+`current` as a local identifier. It is now named `current_cgroup_id`, with a
+source-level regression assertion. Focused telemetry/SWE-Rebench tests passed
+(`116 passed, 2 skipped`) and the tracked bundle was regenerated. The actual
+BCC compile/attach must be repeated by rerunning setup on the Kunpeng host.

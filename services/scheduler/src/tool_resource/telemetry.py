@@ -404,9 +404,9 @@ static int wanted(void) {
     /* A zero target is reserved for direct-host PID-lineage collection, where
      * the trusted process may move through cgroups after this program loads. */
     if (!t || !*t) return 1;
-    u64 current = bpf_get_current_cgroup_id();
-    if (*t == current) return 1;
-    if (allowed_cgroups.lookup(&current) != 0) return 1;
+    u64 current_cgroup_id = bpf_get_current_cgroup_id();
+    if (*t == current_cgroup_id) return 1;
+    if (allowed_cgroups.lookup(&current_cgroup_id) != 0) return 1;
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     u64 pid_ns = current_pid_namespace_inode(task);
     return pid_ns && allowed_pid_namespaces.lookup(&pid_ns) != 0;

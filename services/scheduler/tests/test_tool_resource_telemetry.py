@@ -137,7 +137,8 @@ def test_bpf_program_uses_wrapper_aware_syscall_kprobes() -> None:
 def test_bpf_program_filters_container_noise_before_ring_buffer() -> None:
     assert "BPF_HASH(allowed_cgroups" in BPF_PROGRAM
     assert "BPF_HASH(allowed_pid_namespaces" in BPF_PROGRAM
-    assert "allowed_cgroups.lookup(&current)" in BPF_PROGRAM
+    assert "allowed_cgroups.lookup(&current_cgroup_id)" in BPF_PROGRAM
+    assert "u64 current =" not in BPF_PROGRAM
     assert "allowed_pid_namespaces.lookup(&pid_ns)" in BPF_PROGRAM
 
 
