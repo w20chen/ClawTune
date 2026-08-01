@@ -19,19 +19,27 @@ python3 scripts/clawtune.py sidecar
 ```
 
 Both paths use `.env`, listen on `127.0.0.1:8765`, and ask for the kernel
-privileges needed by eBPF. Setup gives the plugin an exact sudo command, and a
-pre-agent hook waits for readiness to eliminate the old first-request race.
+privileges needed by eBPF. The plugin keeps `sidecarCommand` empty and resolves
+the current checkout, `.venv`, matching kernel build tree, and `sudo` launch at
+runtime. A pre-agent hook waits for an identified ClawTune health response to
+eliminate the old first-request race.
 
 ## Endpoints
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /health/live` | Process liveness |
-| `GET /health/ready` | API readiness |
+| `GET /health/live` | Identified process liveness |
+| `GET /health/ready` | Identified API readiness |
 | `GET /metrics` | Prometheus metrics |
 | `GET /v1/tools/recent` | Recent tool executions |
 | `GET /v1/models` | OpenAI-compatible model discovery |
 | `POST /v1/chat/completions` | Model proxy and tracing |
+
+Both health responses include `service: clawtune-scheduler` and
+`schema_version: scheduler.health.v1`. The launcher checks those fields instead
+of treating any HTTP server on port 8765 as ClawTune. An unrelated listener is
+therefore a port conflict and startup stops with an actionable error. The
+public response contract is `contracts/health.schema.json`.
 
 The health endpoints do not compile or attach probes on every request. Use
 `python3 scripts/clawtune.py check` for kernel collector readiness.

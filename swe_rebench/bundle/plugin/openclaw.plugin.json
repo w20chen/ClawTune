@@ -28,6 +28,8 @@
       "profilingMode": {"enum": ["off", "proc", "perf", "ksys", "vtune"], "default": "off"},
       "consoleMode": {"enum": ["verbose", "quiet"], "default": "verbose"},
       "securityBoundaryAccepted": {"type": "boolean", "default": true},
+      "autoStartSidecar": {"type": "boolean", "default": false, "description": "Automatically start the scheduler sidecar if it is not already running. ClawTune setup enables this with the privileged eBPF runtime."},
+      "sidecarCommand": {"type": "string", "default": "", "description": "Advanced custom shell command. Leave empty so the plugin resolves the checkout, venv, kernel headers, and sudo command at runtime."},
       "trace": {
         "type": "object",
         "additionalProperties": false,

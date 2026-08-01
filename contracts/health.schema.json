@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/scheduler/health.schema.json",
+  "type": "object",
+  "required": ["schema_version", "service"],
+  "properties": {
+    "schema_version": {"const": "scheduler.health.v1"},
+    "service": {"const": "clawtune-scheduler"},
+    "live": {"type": "boolean"},
+    "ready": {"type": "boolean"}
+  },
+  "anyOf": [
+    {"required": ["live"]},
+    {"required": ["ready"]}
+  ],
+  "additionalProperties": false
+}

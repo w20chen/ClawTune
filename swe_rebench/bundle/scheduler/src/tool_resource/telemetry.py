@@ -34,6 +34,7 @@ import http.client
 import importlib
 import json
 import os
+import platform
 import re
 import shutil
 import socket
@@ -203,14 +204,20 @@ def _syscall_symbol_candidates(bpf_cls: Any, name: str) -> tuple[str, ...]:
         candidates.append(_decode_symbol(bpf_cls.get_syscall_fnname(name)))
     except Exception:
         pass
-    candidates.extend(
-        [
+    machine = platform.machine().lower()
+    if machine in {"aarch64", "arm64"}:
+        architecture_candidates = (
+            f"__arm64_sys_{name}",
+            f"__x64_sys_{name}",
+            f"__ia32_sys_{name}",
+        )
+    else:
+        architecture_candidates = (
             f"__x64_sys_{name}",
             f"__ia32_sys_{name}",
             f"__arm64_sys_{name}",
-            f"sys_{name}",
-        ]
-    )
+        )
+    candidates.extend((*architecture_candidates, f"sys_{name}"))
     return tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
 
 
@@ -272,10 +279,10 @@ BPF_PROGRAM = r"""
 #include <linux/binfmts.h>
 #include <linux/mm_types.h>
 #include <linux/nsproxy.h>
+#include <linux/percpu_counter.h>
 #include <linux/pid_namespace.h>
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
-#include <linux/version.h>
 #include <uapi/linux/bpf_perf_event.h>
 
 #define TYPE_EXEC_ARG 1
@@ -294,20 +301,48 @@ BPF_PROGRAM = r"""
 #define ARG_FLAG_ARGV_CAPPED 2
 #define ARG_FLAG_CONTINUED 4
 
-/* Linux 6.2 changed mm_struct::rss_stat from a struct containing an
- * atomic_long_t array to an array of percpu_counter.  For the latter, reading
- * .count and clamping each member independently matches the kernel's fast
- * get_mm_rss()/percpu_counter_read_positive() approximation.  It deliberately
- * does not claim to include unbatched per-CPU residuals. */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 2, 0)
-typedef s64 claw_rss_counter_t;
-#define CLAW_RSS_COUNTER_ADDR(mm, index) (&(mm)->rss_stat[(index)].count)
-#define CLAW_RSS_COUNTER_BACKEND 2
-#else
-typedef long claw_rss_counter_t;
-#define CLAW_RSS_COUNTER_ADDR(mm, index) (&(mm)->rss_stat.count[(index)].counter)
-#define CLAW_RSS_COUNTER_BACKEND 1
-#endif
+/* mm_struct::rss_stat exists in two layouts in supported kernels: an
+ * atomic_long_t array wrapper, or an array of struct percpu_counter.  Do not
+ * infer the layout from LINUX_VERSION_CODE: distribution kernels routinely
+ * backport this change without changing their advertised base version.
+ *
+ * Instead, let clang inspect the type supplied by the *active kernel headers*.
+ * Both candidate member expressions go through explicit casts, so they remain
+ * syntactically valid on either layout; __builtin_choose_expr then selects the
+ * matching address and value type at compile time.  The size/alignment check
+ * recognizes the historical anonymous atomic wrapper and rejects incompatible
+ * layouts instead of silently reading the wrong bytes.
+ *
+ * For the percpu layout, reading .count and clamping each member independently
+ * matches the kernel's fast get_mm_rss()/percpu_counter_read_positive()
+ * approximation.  It deliberately does not claim to include unbatched
+ * per-CPU residuals. */
+#define CLAW_RSS_STAT_IS_PERCPU                                         \
+    __builtin_types_compatible_p(                                      \
+        __typeof__(((struct mm_struct *)0)->rss_stat),                  \
+        struct percpu_counter[NR_MM_COUNTERS])
+#define CLAW_RSS_STAT_IS_ATOMIC                                        \
+    (!CLAW_RSS_STAT_IS_PERCPU &&                                       \
+     sizeof(((struct mm_struct *)0)->rss_stat) ==                       \
+         sizeof(atomic_long_t[NR_MM_COUNTERS]) &&                       \
+     __alignof__(((struct mm_struct *)0)->rss_stat) ==                  \
+         __alignof__(atomic_long_t[NR_MM_COUNTERS]))
+typedef char claw_rss_stat_layout_must_be_supported[
+    (CLAW_RSS_STAT_IS_PERCPU || CLAW_RSS_STAT_IS_ATOMIC) ? 1 : -1
+];
+
+#define CLAW_RSS_PERCPU_COUNTER_ADDR(mm, index)                         \
+    (&((struct percpu_counter *)&((mm)->rss_stat))[(index)].count)
+#define CLAW_RSS_ATOMIC_COUNTER_ADDR(mm, index)                         \
+    (&((atomic_long_t *)&((mm)->rss_stat))[(index)].counter)
+#define CLAW_RSS_COUNTER_ADDR(mm, index)                                \
+    __builtin_choose_expr(                                             \
+        CLAW_RSS_STAT_IS_PERCPU,                                       \
+        CLAW_RSS_PERCPU_COUNTER_ADDR((mm), (index)),                    \
+        CLAW_RSS_ATOMIC_COUNTER_ADDR((mm), (index)))
+#define CLAW_RSS_COUNTER_BACKEND (CLAW_RSS_STAT_IS_PERCPU ? 2 : 1)
+typedef __typeof__(*CLAW_RSS_COUNTER_ADDR((struct mm_struct *)0, 0))
+    claw_rss_counter_t;
 
 struct event_t {
     u64 timestamp_ns;

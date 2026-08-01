@@ -43,6 +43,22 @@ export type PluginConfig = {
   enableNuma: boolean;
   profilingMode: ProfilingMode;
   securityBoundaryAccepted: boolean;
+  /**
+   * When true, the plugin will automatically start the scheduler sidecar
+   * if it is not already running on the configured endpoint.  Default: false.
+   * ClawTune setup enables this after its privileged eBPF preflight passes.
+   */
+  autoStartSidecar: boolean;
+  /**
+   * Shell command to start the scheduler sidecar.  Used only when
+   * autoStartSidecar is true.  The command is executed via the system
+   * shell and should start the sidecar on the configured endpoint.
+   *
+   * Default: auto-detected from the project layout. On Linux checkouts with a
+   * validated .venv this builds a direct sudo argv at runtime; no checkout
+   * path is persisted in OpenClaw config.
+   */
+  sidecarCommand: string;
   trace: TracePluginConfig;
 };
 
@@ -125,6 +141,8 @@ export type ToolResourceCommandPrediction = {
   clause_predictions: ToolResourceClausePredictionOutcome[];
   prediction: ToolResourceClausePrediction | null;
   unavailable_reason: string | null;
+  continuous_predictions?: Record<string, ToolResourceContinuousPrediction> | null;
+  prediction_algorithms?: ToolResourcePredictionAlgorithms | null;
 };
 
 export type ToolResourceClausePredictionOutcome = {
@@ -149,6 +167,31 @@ export type ToolResourceClausePrediction = {
   key_kind: string;
   evidence_count: number;
   fallback_path: string[];
+};
+
+export type ToolResourceContinuousPrediction = {
+  target: string;
+  conditional_p90: number | null;
+  scope: string | null;
+  key_kind: string | null;
+  evidence_count: number;
+  fallback_path: string[];
+  note: string | null;
+};
+
+export type ToolResourcePredictionAlgorithms = {
+  enabled?: Array<{
+    name?: string;
+    family?: string;
+    source?: string;
+    targets?: string[];
+    outputs?: string[];
+  }>;
+  excluded?: Array<{
+    name?: string;
+    source?: string;
+    reason?: string;
+  }>;
 };
 
 export type ToolCompletedEvent = CommonEvent & {

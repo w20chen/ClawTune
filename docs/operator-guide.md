@@ -1,7 +1,9 @@
 # Using ClawTune with OpenClaw
 
-Setup installs/enables the plugin, writes its absolute launcher path, and
-configures automatic privileged eBPF sidecar startup.
+Setup installs/enables the plugin, writes the trusted managed-execution
+`launcherPath`, and configures automatic privileged eBPF sidecar startup. The
+sidecar command itself stays empty: the plugin derives the current checkout,
+`.venv`, matching kernel tree, and `sudo` arguments at runtime.
 
 ## Route the model through ClawTune
 

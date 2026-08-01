@@ -54,6 +54,10 @@ _SANDBOX_TASK_PATH = ":".join(
     )
 )
 
+# OpenClaw talks only to the loopback Scheduler proxy in host-sandbox mode.
+# Keep the real upstream credential exclusively in the sidecar environment.
+_LOCAL_PROXY_API_KEY = "clawtune-local-proxy"
+
 
 def _log(msg: str) -> None:
     with _print_lock:
@@ -675,7 +679,7 @@ def _configure_openclaw(
                 "--custom-base-url",
                 f"{endpoint_host}/v1",
                 "--custom-api-key",
-                config.llm.api_key,
+                _LOCAL_PROXY_API_KEY,
                 "--custom-model-id",
                 config.llm.model,
             ],
@@ -683,7 +687,12 @@ def _configure_openclaw(
             log,
             "openclaw_onboard",
         )
-        _run_logged([openclaw, "plugins", "install", "--link", str(plugin_install_dir)], env, log, "plugin_install")
+        _run_logged(
+            [openclaw, "plugins", "install", "--link", str(plugin_install_dir)],
+            env,
+            log,
+            "plugin_install",
+        )
         _run_logged([openclaw, "plugins", "enable", "agent-scheduler"], env, log, "plugin_enable")
         patch = subprocess.run(
             [openclaw, "config", "patch", "--stdin"],
@@ -868,7 +877,6 @@ def _openclaw_config(
                             "network": "bridge",
                             "extraHosts": ["host.docker.internal:host-gateway"],
                             "dangerouslyAllowExternalBindSources": True,
-                            **({"platform": config.docker.platform} if config.docker.platform else {}),
                         },
                     },
                 },
@@ -1053,14 +1061,23 @@ def _openclaw_env(
     # healthy.
     for name in [key for key in env if key.startswith("OPENCLAW_GATEWAY_")]:
         env.pop(name, None)
+    # OpenClaw communicates with the local Scheduler proxy.  It must not pass
+    # the real upstream credential to its own process or Docker sandbox.
+    env.pop("AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY", None)
     env.update(
         {
             "OPENCLAW_HOME": str(openclaw_home),
             "OPENCLAW_STATE_DIR": str(openclaw_home / ".openclaw"),
-            "OPENCLAW_CONFIG_PATH": str(openclaw_home / ".openclaw" / "openclaw.json"),
-            "OPENCLAW_WORKSPACE_DIR": str(workspace if workspace is not None else openclaw_home / ".openclaw" / "workspace"),
-            "VLLM_API_KEY": config.llm.api_key or "sk-test",
-            "LLM_API_KEY": config.llm.api_key,
+            "OPENCLAW_CONFIG_PATH": str(
+                openclaw_home / ".openclaw" / "openclaw.json"
+            ),
+            "OPENCLAW_WORKSPACE_DIR": str(
+                workspace
+                if workspace is not None
+                else openclaw_home / ".openclaw" / "workspace"
+            ),
+            "VLLM_API_KEY": _LOCAL_PROXY_API_KEY,
+            "LLM_API_KEY": _LOCAL_PROXY_API_KEY,
             "CLAW_SCHEDULER_ENDPOINT": f"http://host.docker.internal:{sidecar_port}",
             "CLAW_EXEC_WORKDIR": "/workspace",
             "CLAW_SANDBOX_HOST_WORKSPACE": str(workspace) if workspace is not None else "",
@@ -1070,6 +1087,11 @@ def _openclaw_env(
             "CLAW_LAUNCH_DEBUG": "1",
         }
     )
+    if config.docker.platform:
+        # OpenClaw 2026.7.x rejects ``sandbox.docker.platform``.  Its Docker
+        # CLI subprocess inherits this standard Docker setting, while every
+        # runner-owned pull/create/run still gets an explicit ``--platform``.
+        env["DOCKER_DEFAULT_PLATFORM"] = config.docker.platform
     (openclaw_home / ".openclaw").mkdir(parents=True, exist_ok=True)
     return env
 
@@ -1382,7 +1404,14 @@ def _wait_ready(port: int) -> None:
     while time.monotonic() < deadline:
         try:
             with urllib.request.urlopen(url, timeout=1) as response:
-                if response.status == 200:
+                payload = json.loads(response.read().decode("utf-8"))
+                if (
+                    response.status == 200
+                    and isinstance(payload, dict)
+                    and payload.get("service") == "clawtune-scheduler"
+                    and payload.get("schema_version") == "scheduler.health.v1"
+                    and payload.get("ready") is True
+                ):
                     return
         except Exception:
             time.sleep(0.5)

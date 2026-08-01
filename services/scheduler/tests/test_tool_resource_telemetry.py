@@ -86,12 +86,18 @@ def test_bpf_program_uses_wrapper_aware_syscall_kprobes() -> None:
     assert "pid_ns_for_children" in BPF_PROGRAM
 
 
-def test_bpf_program_supports_both_linux_rss_stat_layouts() -> None:
-    assert "#include <linux/version.h>" in BPF_PROGRAM
-    assert "LINUX_VERSION_CODE >= KERNEL_VERSION(6, 2, 0)" in BPF_PROGRAM
-    assert "&(mm)->rss_stat[(index)].count" in BPF_PROGRAM
-    assert "&(mm)->rss_stat.count[(index)].counter" in BPF_PROGRAM
-    assert "CLAW_RSS_COUNTER_BACKEND 2" in BPF_PROGRAM
+def test_bpf_program_feature_probes_both_linux_rss_stat_layouts() -> None:
+    assert "#if LINUX_VERSION_CODE" not in BPF_PROGRAM
+    assert "#include <linux/percpu_counter.h>" in BPF_PROGRAM
+    assert "__builtin_types_compatible_p" in BPF_PROGRAM
+    assert "struct percpu_counter[NR_MM_COUNTERS]" in BPF_PROGRAM
+    assert "sizeof(atomic_long_t[NR_MM_COUNTERS])" in BPF_PROGRAM
+    assert "__alignof__(atomic_long_t[NR_MM_COUNTERS])" in BPF_PROGRAM
+    assert "claw_rss_stat_layout_must_be_supported" in BPF_PROGRAM
+    assert "__builtin_choose_expr" in BPF_PROGRAM
+    assert "((struct percpu_counter *)&((mm)->rss_stat))[(index)].count" in BPF_PROGRAM
+    assert "((atomic_long_t *)&((mm)->rss_stat))[(index)].counter" in BPF_PROGRAM
+    assert "CLAW_RSS_STAT_IS_PERCPU ? 2 : 1" in BPF_PROGRAM
     assert "(file > 0 ? (s64)file : 0)" in BPF_PROGRAM
     assert "(anon > 0 ? (s64)anon : 0)" in BPF_PROGRAM
     assert "(shmem > 0 ? (s64)shmem : 0)" in BPF_PROGRAM
@@ -167,6 +173,40 @@ def test_syscall_symbol_candidates_include_bcc_and_common_kernel_names() -> None
     assert "__x64_sys_execve" in candidates
     assert "__arm64_sys_execve" in candidates
     assert "sys_execve" in candidates
+
+
+def test_syscall_symbol_candidates_prefer_arm64_on_arm_host(monkeypatch) -> None:
+    class FakeBPF:
+        @staticmethod
+        def get_syscall_fnname(_name: str) -> bytes:
+            raise RuntimeError("kernel lookup unavailable")
+
+    monkeypatch.setattr("tool_resource.telemetry.platform.machine", lambda: "aarch64")
+
+    candidates = _syscall_symbol_candidates(FakeBPF, "execve")
+
+    assert candidates[:3] == (
+        "__arm64_sys_execve",
+        "__x64_sys_execve",
+        "__ia32_sys_execve",
+    )
+
+
+def test_syscall_symbol_candidates_prefer_x64_on_x86_host(monkeypatch) -> None:
+    class FakeBPF:
+        @staticmethod
+        def get_syscall_fnname(_name: str) -> bytes:
+            raise RuntimeError("kernel lookup unavailable")
+
+    monkeypatch.setattr("tool_resource.telemetry.platform.machine", lambda: "x86_64")
+
+    candidates = _syscall_symbol_candidates(FakeBPF, "execve")
+
+    assert candidates[:3] == (
+        "__x64_sys_execve",
+        "__ia32_sys_execve",
+        "__arm64_sys_execve",
+    )
 
 
 def test_bpf_permission_errors_are_reported_as_runtime_permission_failures() -> None:

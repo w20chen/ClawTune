@@ -18,6 +18,7 @@ from swe_rebench.host_sandbox import (
     _SANDBOX_TASK_PATH,
     _cleanup_openclaw_sandbox_containers,
     _cleanup_runtime_artifacts,
+    _configure_openclaw,
     _docker_sandbox_container_ids,
     _ensure_openclaw_sandbox_image,
     _export_testbed_from_image,
@@ -779,7 +780,7 @@ def test_host_sandbox_openclaw_config_uses_only_public_top_level_keys(tmp_path: 
     assert parsed["tools"]["exec"]["pathPrepend"] == _SANDBOX_TASK_PATH.split(":")
 
 
-def test_host_sandbox_openclaw_config_passes_docker_platform(tmp_path: Path) -> None:
+def test_host_sandbox_openclaw_config_omits_unsupported_docker_platform(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "docker:\n  platform: linux/amd64\n",
@@ -794,7 +795,7 @@ def test_host_sandbox_openclaw_config_passes_docker_platform(tmp_path: Path) -> 
     )
     docker_cfg = json.loads(raw)["agents"]["defaults"]["sandbox"]["docker"]
 
-    assert docker_cfg["platform"] == "linux/amd64"
+    assert "platform" not in docker_cfg
 
 
 def test_host_sandbox_container_prefix_is_stable_and_workspace_scoped(tmp_path: Path) -> None:
@@ -876,6 +877,80 @@ def test_host_sandbox_openclaw_env_points_workspace_dir_at_task_workspace(
     assert "OPENCLAW_GATEWAY_PASSWORD" not in env
     assert "OPENCLAW_GATEWAY_URL" not in env
     assert "OPENCLAW_GATEWAY_AUTH_TOKEN" not in env
+
+
+def test_host_sandbox_openclaw_env_uses_platform_and_local_proxy_key(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "llm:\n  api_key: sk-upstream-secret\n"
+        "docker:\n  platform: linux/amd64\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    monkeypatch.setenv("AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY", "stale-secret")
+
+    env = _openclaw_env(
+        tmp_path / "home",
+        8765,
+        config,
+        tmp_path / "workspace",
+    )
+
+    assert env["DOCKER_DEFAULT_PLATFORM"] == "linux/amd64"
+    assert env["VLLM_API_KEY"] == "clawtune-local-proxy"
+    assert env["LLM_API_KEY"] == "clawtune-local-proxy"
+    assert "sk-upstream-secret" not in env.values()
+    assert "stale-secret" not in env.values()
+
+
+def test_host_sandbox_onboard_does_not_put_upstream_key_in_argv(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "llm:\n  api_key: sk-upstream-secret\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    trace_dir = tmp_path / "trace"
+    trace_dir.mkdir()
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._require_executable",
+        lambda _name: "openclaw",
+    )
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._ensure_plugin_built",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._stage_plugin_for_openclaw_if_needed",
+        lambda **kwargs: kwargs["plugin_dir"],
+    )
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._run_logged",
+        lambda command, *_args: commands.append(list(command)),
+    )
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox.subprocess.run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0),
+    )
+
+    _configure_openclaw(
+        trace_dir=trace_dir,
+        openclaw_home=tmp_path / "home",
+        sidecar_port=8765,
+        workspace=tmp_path / "workspace",
+        config=config,
+    )
+
+    argv = [item for command in commands for item in command]
+    assert "sk-upstream-secret" not in argv
+    assert "clawtune-local-proxy" in argv
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not represented on Windows")

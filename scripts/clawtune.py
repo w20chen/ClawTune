@@ -7,7 +7,6 @@ import argparse
 import json
 import os
 import platform
-import shlex
 import shutil
 import subprocess
 import sys
@@ -23,6 +22,36 @@ ROOT = Path(__file__).resolve().parents[1]
 VENV = ROOT / ".venv"
 SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ARM_ARCHES = {"aarch64", "arm64"}
+PRIVILEGED_RUNTIME_PRESERVE_ENV = (
+    "DOCKER_HOST",
+    "DOCKER_CONTEXT",
+    "DOCKER_CONFIG",
+    "DOCKER_CERT_PATH",
+    "DOCKER_TLS_VERIFY",
+    "XDG_RUNTIME_DIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "all_proxy",
+    "LANG",
+    "LC_ALL",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+)
+BENCHMARK_PRESERVE_ENV = (
+    "LLM_API_KEY",
+    "LLM_API_KEY_FILE",
+    "AGENT_TEST_BENCH_ROOT",
+    "SWE_REBENCH_DOCKER_PLATFORM",
+    *PRIVILEGED_RUNTIME_PRESERVE_ENV,
+)
 
 
 class SetupError(RuntimeError):
@@ -47,6 +76,8 @@ def run(
         cwd=ROOT,
         check=check,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         input=input_text,
         env=env,
         stdout=subprocess.PIPE if capture else None,
@@ -56,11 +87,18 @@ def run(
 
 def require_linux() -> None:
     if platform.system() != "Linux":
-        raise SetupError("ClawTune 的 eBPF 运行环境必须是 Linux；Windows/macOS 仅适合开发和单元测试。")
+        raise SetupError(
+            "ClawTune eBPF runtime requires Linux; Windows and macOS support "
+            "development and unit tests only."
+        )
 
 
 def host_arch() -> str:
     return platform.machine().lower()
+
+
+def cgroup_v2_available() -> bool:
+    return Path("/sys/fs/cgroup/cgroup.controllers").is_file()
 
 
 def package_manager() -> str | None:
@@ -72,20 +110,32 @@ def package_manager() -> str | None:
 
 
 def kernel_build() -> Path:
-    release = platform.release()
-    candidate = Path("/lib/modules") / release / "build"
+    configured = os.getenv("BCC_KERNEL_SOURCE")
+    if configured:
+        candidate = Path(configured).expanduser()
+        if not candidate.is_absolute():
+            candidate = ROOT / candidate
+    else:
+        candidate = Path("/lib/modules") / platform.release() / "build"
     try:
         return candidate.resolve(strict=True)
     except FileNotFoundError:
-        return candidate
+        return candidate.resolve(strict=False)
 
 
 def python_has_bcc(executable: Path) -> bool:
-    probe = (
-        "import importlib.util,sys;"
-        "sys.exit(0 if (importlib.util.find_spec('bcc') or "
-        "importlib.util.find_spec('bpfcc')) else 1)"
-    )
+    probe = """
+import importlib
+
+for name in ("bcc", "bpfcc"):
+    try:
+        module = importlib.import_module(name)
+    except (ImportError, OSError):
+        continue
+    if all(hasattr(module, attribute) for attribute in ("BPF", "PerfSWConfig", "PerfType")):
+        raise SystemExit(0)
+raise SystemExit(1)
+"""
     return run([executable, "-c", probe], check=False, capture=True).returncode == 0
 
 
@@ -113,7 +163,8 @@ def install_host_packages() -> None:
     manager = package_manager()
     if manager is None:
         raise SetupError(
-            "未找到 dnf 或 apt。请安装 BCC Python 绑定、clang/LLVM、bpftool 和当前内核开发包后重试。"
+            "Neither dnf nor apt was found. Install the BCC Python bindings, "
+            "clang/LLVM, bpftool, and development package for the running kernel."
         )
 
     release = platform.release()
@@ -127,7 +178,7 @@ def install_host_packages() -> None:
             "python3-venv",
             f"linux-headers-{release}",
         ]
-        log("安装 Debian/Ubuntu eBPF 依赖（apt）")
+        log("Installing Debian/Ubuntu eBPF dependencies with apt")
         run(["sudo", "apt-get", "update"])
         run(["sudo", "apt-get", "install", "-y", *packages])
         return
@@ -144,8 +195,11 @@ def install_host_packages() -> None:
         if selected:
             packages.append(selected)
     if not packages:
-        raise SetupError("dnf 仓库中没有找到 Clang、内核开发包或 BCC；请先启用 openEuler OS/update 仓库。")
-    log("安装 openEuler/RHEL 系 eBPF 依赖（dnf）")
+        raise SetupError(
+            "The enabled dnf repositories do not provide Clang, kernel-devel, "
+            "or BCC. Enable the openEuler OS/update repositories and retry."
+        )
+    log("Installing openEuler/RHEL eBPF dependencies with dnf")
     run(["sudo", "dnf", "install", "-y", *dict.fromkeys(packages)])
 
 
@@ -158,7 +212,8 @@ def find_bcc_python(*, install: bool) -> Path:
         matches = bcc_pythons()
     if not matches:
         raise SetupError(
-            "系统 Python 仍无法导入 bcc/bpfcc。请运行 doctor；不要在 Conda 中另行 pip install BCC。"
+            "No system Python can import bcc/bpfcc. Run doctor; do not install "
+            "the unrelated PyPI BCC package into Conda."
         )
     return matches[0]
 
@@ -174,19 +229,23 @@ def required_commands() -> list[str]:
 def create_venv(system_python: Path) -> None:
     venv_python = VENV / "bin" / "python"
     if venv_python.exists() and python_has_bcc(venv_python):
-        log(f"复用 {VENV}")
+        log(f"Reusing {VENV}")
     else:
         if VENV.exists():
             raise SetupError(
-                f"{VENV} 已存在但看不到系统 BCC。请将它改名或删除后重新运行 setup。"
+                f"{VENV} exists but cannot import the system BCC bindings. "
+                "Move it aside and run setup again."
             )
-        log(f"使用 {system_python} 创建可访问系统 BCC 的 .venv")
+        log(f"Creating .venv with {system_python} and system BCC access")
         result = run(
             [system_python, "-m", "venv", "--system-site-packages", VENV],
             check=False,
         )
         if result.returncode != 0:
-            raise SetupError("创建 .venv 失败；请安装该发行版的 python3-venv/python3 包。")
+            raise SetupError(
+                "Could not create .venv. Install this distribution's "
+                "python3-venv or python3 package."
+            )
     run([venv_python, "-m", "pip", "install", "-e", "services/scheduler[dev]"])
 
 
@@ -197,7 +256,7 @@ def copy_defaults() -> None:
     ):
         if not target.exists():
             shutil.copy2(source, target)
-            log(f"已创建 {target.relative_to(ROOT)}")
+            log(f"Created {target.relative_to(ROOT)}")
 
 
 def repair_plugin_permissions() -> None:
@@ -209,14 +268,14 @@ def repair_plugin_permissions() -> None:
         return
     if not hasattr(os, "getuid"):
         return
-    log("修复此前由 root 生成的插件文件权限")
+    log("Repairing plugin files previously generated as root")
     run(["sudo", "chown", "-R", f"{os.getuid()}:{os.getgid()}", dist])
 
 
 def build_plugin() -> None:
     repair_plugin_permissions()
     plugin = ROOT / "packages" / "openclaw-plugin"
-    log("安装并构建 OpenClaw 插件")
+    log("Installing and building the OpenClaw plugin")
     subprocess.run(["npm", "install"], cwd=plugin, check=True)
     subprocess.run(["npm", "run", "build"], cwd=plugin, check=True)
 
@@ -246,8 +305,8 @@ def backup_openclaw_config() -> Path | None:
     try:
         shutil.copy2(config, backup)
     except OSError as exc:
-        raise SetupError(f"无法备份 OpenClaw 配置 {config}：{exc}") from exc
-    log(f"已备份 OpenClaw 配置：{backup}")
+        raise SetupError(f"Could not back up OpenClaw config {config}: {exc}") from exc
+    log(f"Backed up OpenClaw config to {backup}")
     return backup
 
 
@@ -257,7 +316,7 @@ def install_openclaw_plugin(openclaw: str, plugin: Path) -> None:
     combined = f"{installed.stdout}\n{installed.stderr}"
 
     if installed.returncode != 0 and stale_clawtune_plugin_link(combined):
-        log("发现已失效的 ClawTune 插件旧路径，正在安全修复 OpenClaw 配置")
+        log("Repairing a stale ClawTune plugin path in the OpenClaw config")
         backup_openclaw_config()
         repaired = run(
             [openclaw, "doctor", "--fix"],
@@ -266,7 +325,7 @@ def install_openclaw_plugin(openclaw: str, plugin: Path) -> None:
         )
         if repaired.returncode != 0:
             detail = (repaired.stderr or repaired.stdout).strip()
-            raise SetupError(f"OpenClaw 无法自动清理失效插件路径：\n{detail}")
+            raise SetupError(f"OpenClaw could not repair the stale plugin path:\n{detail}")
         installed = run(command, check=False, capture=True)
         combined = f"{installed.stdout}\n{installed.stderr}"
 
@@ -274,7 +333,7 @@ def install_openclaw_plugin(openclaw: str, plugin: Path) -> None:
         normalized = combined.lower()
         if "already" not in normalized and "exists" not in normalized:
             detail = (installed.stderr or installed.stdout).strip()
-            raise SetupError(f"OpenClaw 插件安装失败：\n{detail}")
+            raise SetupError(f"OpenClaw plugin installation failed:\n{detail}")
 
 
 def configure_openclaw() -> None:
@@ -292,7 +351,11 @@ def configure_openclaw() -> None:
                     "config": {
                         "endpoint": "http://127.0.0.1:8765",
                         "autoStartSidecar": True,
-                        "sidecarCommand": auto_sidecar_shell_command(),
+                        # Empty by design: the plugin resolves the checkout,
+                        # venv and running-kernel build tree when it starts.
+                        # Persisting those absolute paths makes the config
+                        # stale whenever the repository is moved.
+                        "sidecarCommand": "",
                         "recordRawTrace": True,
                         "executionBackend": "managed-wrapper",
                         "launcherPath": str(launcher),
@@ -304,17 +367,22 @@ def configure_openclaw() -> None:
         }
     }
     run([openclaw, "config", "patch", "--stdin"], input_text=json.dumps(patch))
-    log("OpenClaw 插件配置完成")
+    run([openclaw, "config", "validate"])
+    log("OpenClaw plugin configuration is ready")
 
 
 def setup_qemu_if_needed(skip_qemu: bool) -> None:
     if host_arch() not in ARM_ARCHES or skip_qemu:
         return
-    log("Kunpeng/ARM 主机：启用并验证 linux/amd64 容器模拟")
+    log("Kunpeng/ARM host: enabling and testing linux/amd64 container emulation")
     run(["sudo", "bash", "scripts/setup/arm_qemu_setup.sh", "install"])
 
 
-def privileged_command(module_args: Sequence[str | Path]) -> list[str]:
+def privileged_command(
+    module_args: Sequence[str | Path],
+    *,
+    preserve_env: Sequence[str] = (),
+) -> list[str]:
     build = kernel_build()
     runtime_path = SYSTEM_PATH
     command_dirs = [
@@ -328,8 +396,18 @@ def privileged_command(module_args: Sequence[str | Path]) -> list[str]:
     ]
     if command_dirs:
         runtime_path = ":".join(dict.fromkeys([*command_dirs, runtime_path]))
+    sudo_command = ["sudo"]
+    # Keep elevation predictable: preserve only explicitly allow-listed
+    # variables.  Their names, but never their values, enter the process argv.
+    present_names = [
+        name
+        for name in dict.fromkeys(preserve_env)
+        if name in os.environ
+    ]
+    if present_names:
+        sudo_command.append("--preserve-env=" + ",".join(present_names))
     return [
-        "sudo",
+        *sudo_command,
         "env",
         f"PATH={runtime_path}",
         f"PYTHONPATH={ROOT}",
@@ -351,13 +429,21 @@ def sidecar_health() -> dict[str, object]:
         with urlopen(endpoint, timeout=1.0) as response:  # noqa: S310 - fixed loopback URL
             status = response.status
             body = response.read(4096).decode("utf-8", errors="replace")
-    except (OSError, URLError) as exc:
+        payload = json.loads(body)
+    except (OSError, URLError, json.JSONDecodeError) as exc:
         return {"running": False, "endpoint": endpoint, "error": str(exc)}
+    identity_ok = (
+        isinstance(payload, dict)
+        and payload.get("service") == "clawtune-scheduler"
+        and payload.get("schema_version") == "scheduler.health.v1"
+        and payload.get("ready") is True
+    )
     return {
-        "running": 200 <= status < 300,
+        "running": 200 <= status < 300 and identity_ok,
         "endpoint": endpoint,
         "status": status,
         "response": body,
+        **({} if identity_ok else {"error": "port is not a compatible ClawTune sidecar"}),
     }
 
 
@@ -379,8 +465,13 @@ def doctor() -> int:
                 "openclaw",
                 "sudo",
                 "clang",
+                "llc",
                 "bpftool",
             )
+        },
+        "cgroup_v2": {
+            "path": "/sys/fs/cgroup/cgroup.controllers",
+            "present": cgroup_v2_available(),
         },
         "kernel_headers": {"path": str(build), "present": build.is_dir()},
         "bcc_pythons": [str(path) for path in bcc_pythons()],
@@ -395,26 +486,36 @@ def doctor() -> int:
     print(json.dumps(report, indent=2, ensure_ascii=False))
     healthy = (
         not required_commands()
+        and all(
+            report["commands"].get(name)
+            for name in ("clang", "llc", "bpftool")
+        )
         and report["kernel_headers"]["present"]
         and bool(report["bcc_pythons"])
         and report["venv"]["ready"]
+        and report["cgroup_v2"]["present"]
     )
     if healthy:
-        log("基础环境正常。运行 `python3 scripts/clawtune.py check` 做内核级 eBPF 验证。")
+        log(
+            "Base environment is ready. Run `python3 scripts/clawtune.py check` "
+            "for the eBPF check."
+        )
         if not report["sidecar"]["running"]:
             log(
-                "sidecar 当前未运行；这是正常的，交互式 `openclaw agent` "
-                "会在首次请求前自动启动并等待它。"
+                "The sidecar is not running; this is normal. `openclaw agent` "
+                "starts it automatically before the first request."
             )
         return 0
-    log("环境尚未就绪。运行 `python3 scripts/clawtune.py setup` 自动处理可安装项。")
+    log("Environment is not ready. Run `python3 scripts/clawtune.py setup`.")
     return 1
 
 
 def setup(args: argparse.Namespace) -> None:
     require_linux()
     if hasattr(os, "geteuid") and os.geteuid() == 0:
-        raise SetupError("请用普通用户运行 setup；需要提权的步骤会自行调用 sudo。")
+        raise SetupError(
+            "Run setup as a normal user; it invokes sudo only for privileged steps."
+        )
     build = kernel_build()
     missing_host_tools = [name for name in ("clang", "llc", "bpftool") if not shutil.which(name)]
     needs_host_packages = not bcc_pythons() or not build.is_dir() or bool(missing_host_tools)
@@ -423,16 +524,23 @@ def setup(args: argparse.Namespace) -> None:
     system_python = find_bcc_python(install=False)
     build = kernel_build()
     if not build.is_dir():
-        raise SetupError(f"找不到当前内核 {platform.release()} 的开发目录：{build}")
+        raise SetupError(
+            f"Development tree for running kernel {platform.release()} was not found: {build}"
+        )
     missing_host_tools = [name for name in ("clang", "llc", "bpftool") if not shutil.which(name)]
     if missing_host_tools:
-        raise SetupError("缺少 eBPF 工具：" + ", ".join(missing_host_tools))
+        raise SetupError("Missing eBPF tools: " + ", ".join(missing_host_tools))
+    if not cgroup_v2_available():
+        raise SetupError(
+            "cgroup v2 is not mounted at /sys/fs/cgroup. ClawTune's required "
+            "eBPF attribution cannot run on a cgroup-v1-only host."
+        )
     missing = required_commands()
     if missing:
         raise SetupError(
-            "缺少不会由脚本擅自安装的应用："
+            "Missing external applications that setup does not install automatically: "
             + ", ".join(missing)
-            + "。请按 docs/getting-started.md 的“外部软件”一节安装后重试。"
+            + ". Install them as described in docs/getting-started.md and retry."
         )
     create_venv(system_python)
     copy_defaults()
@@ -440,16 +548,16 @@ def setup(args: argparse.Namespace) -> None:
     setup_qemu_if_needed(args.skip_qemu)
     configure_openclaw()
     check_ebpf(ROOT / "data" / "ebpf-check.json")
-    log("安装和 eBPF 验证完成；验证进程已退出，不会留下常驻 sidecar。")
-    log("OpenClaw 插件会在首次请求前自动启动并等待 eBPF sidecar。")
-    log("现在可直接运行：openclaw agent <参数>")
-    log("运行 benchmark 则直接使用：python3 scripts/clawtune.py benchmark --sample 1")
+    log("Setup and eBPF validation passed; the validation process has exited.")
+    log("The OpenClaw plugin starts and waits for the eBPF sidecar automatically.")
+    log("Run an agent directly: openclaw agent <options>")
+    log("Run a benchmark: python3 scripts/clawtune.py benchmark --sample 1")
 
 
 def sidecar() -> None:
     require_linux()
     if not (VENV / "bin" / "python").exists():
-        raise SetupError(".venv 不存在，请先运行 setup。")
+        raise SetupError(".venv is missing; run setup first.")
     run(sidecar_command())
 
 
@@ -464,15 +572,16 @@ def sidecar_command() -> list[str]:
             "127.0.0.1",
             "--port",
             "8765",
-        ]
+        ],
+        preserve_env=(
+            *PRIVILEGED_RUNTIME_PRESERVE_ENV,
+            *(
+                name
+                for name in os.environ
+                if name.startswith(("LC_", "AGENT_SCHEDULER_", "CLAWTUNE_"))
+            ),
+        ),
     )
-
-
-def auto_sidecar_shell_command() -> str:
-    # sidecar-launcher uses `/bin/sh -c`. `exec` replaces that shell with sudo
-    # so OpenClaw's shutdown signal reaches sudo and is relayed to the root
-    # sidecar process instead of leaving an orphan.
-    return "exec " + shlex.join(sidecar_command())
 
 
 def wait_for_sidecar(child: subprocess.Popen[bytes], log_path: Path) -> None:
@@ -488,10 +597,10 @@ def wait_for_sidecar(child: subprocess.Popen[bytes], log_path: Path) -> None:
             except OSError:
                 pass
             raise SetupError(
-                f"自动启动 sidecar 失败（退出码 {return_code}）：\n{detail}"
+                f"Sidecar auto-start failed with exit code {return_code}:\n{detail}"
             )
         time.sleep(0.2)
-    raise SetupError(f"sidecar 在 30 秒内未就绪；日志：{log_path}")
+    raise SetupError(f"Sidecar was not ready within 30 seconds; log: {log_path}")
 
 
 def stop_managed_sidecar(child: subprocess.Popen[bytes]) -> None:
@@ -517,7 +626,7 @@ def stop_managed_sidecar(child: subprocess.Popen[bytes]) -> None:
         return result.returncode
 
     if signal_group("TERM", non_interactive=True) != 0:
-        log("停止特权 sidecar 需要再次确认 sudo")
+        log("Stopping the privileged sidecar requires sudo confirmation")
         signal_group("TERM", non_interactive=False)
     try:
         child.wait(timeout=5)
@@ -529,20 +638,20 @@ def stop_managed_sidecar(child: subprocess.Popen[bytes]) -> None:
 def agent(extra: Sequence[str]) -> None:
     require_linux()
     if not (VENV / "bin" / "python").exists():
-        raise SetupError(".venv 不存在，请先运行 setup。")
+        raise SetupError(".venv is missing; run setup first.")
     openclaw = shutil.which("openclaw")
     if openclaw is None:
-        raise SetupError("找不到 openclaw，请先安装并运行 setup。")
+        raise SetupError("openclaw was not found; install it and run setup.")
 
     managed_sidecar: subprocess.Popen[bytes] | None = None
     log_handle = None
     if sidecar_health()["running"]:
-        log("复用已经运行的 sidecar")
+        log("Reusing the running sidecar")
     else:
         log_path = ROOT / "data" / "sidecar-auto.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_handle = log_path.open("ab")
-        log("正在自动启动 eBPF sidecar；需要时 sudo 会请求密码")
+        log("Starting the eBPF sidecar; sudo may request your password")
         managed_sidecar = subprocess.Popen(
             sidecar_command(),
             cwd=ROOT,
@@ -557,13 +666,13 @@ def agent(extra: Sequence[str]) -> None:
             stop_managed_sidecar(managed_sidecar)
             log_handle.close()
             raise
-        log("sidecar 已就绪，正在启动 OpenClaw")
+        log("Sidecar is ready; starting OpenClaw")
 
     try:
         run([openclaw, "agent", *extra])
     finally:
         if managed_sidecar is not None:
-            log("OpenClaw 已结束，正在停止本次自动启动的 sidecar")
+            log("OpenClaw finished; stopping the sidecar started for this run")
             stop_managed_sidecar(managed_sidecar)
         if log_handle is not None:
             log_handle.close()
@@ -572,12 +681,15 @@ def agent(extra: Sequence[str]) -> None:
 def benchmark(extra: Sequence[str]) -> None:
     require_linux()
     if not (VENV / "bin" / "python").exists():
-        raise SetupError(".venv 不存在，请先运行 setup。")
+        raise SetupError(".venv is missing; run setup first.")
     config = ROOT / "swe_rebench" / "config.yaml"
     if not config.exists():
-        raise SetupError("缺少 swe_rebench/config.yaml，请先运行 setup。")
+        raise SetupError("swe_rebench/config.yaml is missing; run setup first.")
     env_items: list[str] = []
-    if host_arch() in ARM_ARCHES:
+    if (
+        host_arch() in ARM_ARCHES
+        and "SWE_REBENCH_DOCKER_PLATFORM" not in os.environ
+    ):
         env_items.append("SWE_REBENCH_DOCKER_PLATFORM=linux/amd64")
     command = privileged_command(
         [
@@ -591,7 +703,11 @@ def benchmark(extra: Sequence[str]) -> None:
             "--prepare",
             "--export",
             *extra,
-        ]
+        ],
+        preserve_env=(
+            *BENCHMARK_PRESERVE_ENV,
+            *(name for name in os.environ if name.startswith("LC_")),
+        ),
     )
     run(command)
 
@@ -626,7 +742,7 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args, extra = parser().parse_known_args(argv)
     if extra and args.command not in {"agent", "benchmark"}:
-        raise SetupError("无法识别的参数：" + " ".join(extra))
+        raise SetupError("Unrecognized arguments: " + " ".join(extra))
     try:
         if args.command == "setup":
             setup(args)
@@ -641,7 +757,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "benchmark":
             benchmark(extra)
     except (SetupError, subprocess.CalledProcessError) as exc:
-        log(f"失败：{exc}")
+        log(f"Failed: {exc}")
         return 1
     return 0
 

@@ -20,8 +20,10 @@ repository, daemon, proxy, and security settings are site-specific. Everything
 kernel/eBPF-related is handled by the project setup command on systems using
 `dnf` or `apt`.
 
-Docker must use a Linux daemon. The running kernel must provide cgroup v2 and
-matching development files must be available in the distribution repository.
+Docker must use a Linux daemon. The host needs Linux 5.8 or newer with cgroup
+v2, and matching development files must be available in the distribution
+repository. ClawTune supports both `x86_64` and `aarch64`; Kunpeng/openEuler is
+the primary bring-up target.
 
 ## Install ClawTune
 
@@ -46,28 +48,47 @@ single directory rather than attempting to combine incompatible interpreters.
 
 At the end, setup runs a real validation: compile the complete BPF program,
 attach its probes, create a test cgroup, execute a process, and verify usable
-events. The report is saved at `data/ebpf-check.json`.
+events. The report is saved at `data/ebpf-check.json`. Setup also runs
+`openclaw config validate`, so an unsupported OpenClaw key is rejected before
+the first agent run.
+
+A successful setup includes:
+
+```text
+[ClawTune] Setup and eBPF validation passed; the validation process has exited.
+```
+
+The process that exited is only the temporary validation. The plugin starts
+the long-running sidecar on demand.
 
 ## Configure a provider
 
 ### Benchmark runs
 
-Put the raw API key on one line in:
+The shortest-lived option is to export the provider key in the same shell that
+starts the benchmark:
 
-```text
-swe_rebench/llm_api_key.txt
+```bash
+export LLM_API_KEY="<provider-api-key>"
 ```
+
+The wrapper passes this value through `sudo` with a narrow environment
+allow-list; it does not use broad `sudo -E`. For a persistent local setup, put
+the raw key on one line in the Git-ignored file
+`swe_rebench/llm_api_key.txt` instead. `LLM_API_KEY_FILE` can point to another
+file when a site already manages secrets that way.
 
 Edit `swe_rebench/config.yaml` and set the upstream URL and model names. Most
 users do not need to change the runtime, Docker privilege, cgroup, bundle, or
-output sections. On arm64, the command-line wrapper selects the required Docker
-platform automatically.
+output sections. On arm64, the wrapper defaults the Docker platform to
+`linux/amd64`. An explicitly exported `SWE_REBENCH_DOCKER_PLATFORM` takes
+priority; x86 stays native by default.
 
 ### Normal OpenClaw runs
 
 The plugin is installed and enabled by setup. It expects the sidecar at
-`http://127.0.0.1:8765` and uses the absolute launcher installed in `.venv`.
-Configure the OpenClaw model provider with proxy base URL:
+`http://127.0.0.1:8765`. Configure the OpenClaw model provider with proxy base
+URL:
 
 ```text
 http://127.0.0.1:8765/v1
@@ -88,7 +109,15 @@ openclaw agent --local --agent main --model "vllm/<model>" \
 
 The plugin asks for sudo when needed, starts the eBPF sidecar with the verified
 `.venv` and kernel environment, and blocks the first agent turn until port 8765
-is ready. A pre-existing sidecar is reused.
+identifies itself as a compatible ClawTune sidecar. A pre-existing compatible
+sidecar is reused; an unrelated service on that port is rejected.
+
+The automatic sidecar command is deliberately not stored in OpenClaw's JSON.
+At each launch the plugin finds the current checkout from its own installed
+location, then resolves `.venv`, `.env`, the running kernel's build tree, and
+the required `sudo` arguments. The separate `launcherPath` remains absolute:
+it is the trusted managed-execution boundary used for instrumented tools, and
+setup refreshes it whenever the checkout moves.
 
 For a non-interactive service without a controlling terminal, either provide
 site-managed privilege or use the explicit long-lived form:
@@ -138,9 +167,12 @@ python3 scripts/clawtune.py setup
 ```
 
 It rebuilds the plugin, refreshes the editable Scheduler installation, retains
-your existing `.env` and benchmark config, and verifies eBPF again.
+your existing `.env` and benchmark config, validates the current OpenClaw
+schema, and verifies eBPF again.
 
 If the repository moved or only its path capitalization changed, setup detects
 an invalid old ClawTune link before plugin installation. It backs up
 `~/.openclaw/openclaw.json`, runs OpenClaw's repair command, and links the
-current checkout. Other valid plugin paths are retained by OpenClaw.
+current checkout. It also refreshes the absolute trusted `launcherPath`; the
+sidecar command stays empty and is rediscovered at runtime. Other valid plugin
+paths are retained by OpenClaw.

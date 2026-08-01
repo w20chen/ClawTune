@@ -21,6 +21,10 @@ const defaults: PluginConfig = {
   enableNuma: true,
   profilingMode: "off",
   securityBoundaryAccepted: true,
+  // Automatic startup is opt-in at the package level. ClawTune setup enables
+  // it after constructing and validating the privileged Python/BCC runtime.
+  autoStartSidecar: false,
+  sidecarCommand: "",
   trace: {
     schema_version: 6,
     include_raw_events: false,
@@ -101,6 +105,12 @@ export function loadConfig(input: unknown): PluginConfig {
   if (typeof config.enableNuma !== "boolean") {
     throw new Error("enableNuma must be a boolean");
   }
+  if (typeof config.autoStartSidecar !== "boolean") {
+    throw new Error("autoStartSidecar must be a boolean");
+  }
+  if (typeof config.sidecarCommand !== "string") {
+    throw new Error("sidecarCommand must be a string");
+  }
   if (config.executionBackend === "managed-wrapper" && config.securityBoundaryAccepted !== true) {
     throw new Error("managed-wrapper requires securityBoundaryAccepted=true");
   }
@@ -132,6 +142,8 @@ function envOverrides(): Partial<PluginConfig> {
     "securityBoundaryAccepted",
     schedulerEnv("SECURITY_BOUNDARY_ACCEPTED")
   );
+  setBoolean(output, "autoStartSidecar", schedulerEnv("AUTO_START_SIDECAR"));
+  setString(output, "sidecarCommand", schedulerEnv("SIDECAR_COMMAND"));
   const trace: Record<string, unknown> = {};
   const traceDir = schedulerEnv("PLUGIN_TRACE_DIR");
   if (traceDir !== undefined && traceDir.length > 0) trace.trace_dir = traceDir;

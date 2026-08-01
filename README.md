@@ -22,10 +22,11 @@ results.
 | Windows and macOS | Development only | They cannot run the Linux eBPF collector |
 
 The Linux host needs Docker, Node.js/npm, OpenClaw 2026.7.1 or newer, Python
-3.10 or newer, cgroup v2, and kernel development files matching the running
-kernel. The setup command installs the BCC/Clang/kernel packages it can safely
-identify; it reports Docker, Node.js, or OpenClaw as one consolidated missing-
-software list instead of attempting to replace an existing installation.
+3.10 or newer, Linux 5.8 or newer, cgroup v2, and development files matching
+the running kernel. The setup command installs the BCC/Clang/kernel packages
+it can safely identify; it reports Docker, Node.js, or OpenClaw as one
+consolidated missing-software list instead of attempting to replace an
+existing installation.
 
 ## From checkout to a running system
 
@@ -50,8 +51,11 @@ This one command:
 - enables and tests amd64 Docker images automatically on Kunpeng;
 - compiles, attaches, and exercises the real eBPF collector.
 
-Success ends with `安装完成`. You can rerun the command after an update; it
-reuses healthy state. To see every detected path in one report, run:
+A successful run prints `Setup and eBPF validation passed; the validation
+process has exited.` This means the temporary validation process finished; the
+plugin starts the real sidecar when OpenClaw needs it. You can rerun setup after
+an update because it reuses healthy state. To see every detected path in one
+report, run:
 
 ```bash
 python3 scripts/clawtune.py doctor
@@ -62,8 +66,16 @@ python3 scripts/clawtune.py doctor
 `setup` creates `.env` and `swe_rebench/config.yaml` without overwriting an
 existing file.
 
-For SWE-Rebench, put the provider key in the ignored file
-`swe_rebench/llm_api_key.txt`, then edit these two values in
+For SWE-Rebench, export the provider key in the shell that starts the run:
+
+```bash
+export LLM_API_KEY="<provider-api-key>"
+```
+
+The benchmark wrapper preserves only an explicit allow-list through `sudo`, so
+the key reaches the runner without `sudo -E` and without being copied into a
+command-line argument. As a persistent alternative, put the key on one line in
+the ignored file `swe_rebench/llm_api_key.txt`. Then edit the model values in
 `swe_rebench/config.yaml`:
 
 ```yaml
@@ -101,6 +113,9 @@ openclaw agent --local --agent main --model "vllm/<model>" \
 If a sidecar is already running, the plugin reuses it. The explicit
 `python3 scripts/clawtune.py agent ...` wrapper remains available for
 non-interactive environments where plugin-spawned sudo cannot use a terminal.
+The plugin resolves the current checkout, `.venv`, matching kernel build tree,
+and privileged launch arguments at runtime. It does not persist a generated
+absolute sidecar command that would become stale after the checkout moves.
 
 Traces are written under `data/traces/`. A healthy API alone is not used as
 proof of eBPF readiness; `setup` and `check` both execute a real instrumented
@@ -122,8 +137,11 @@ python3 scripts/clawtune.py benchmark \
   --dataset /path/to/tasks.json --sample 1
 ```
 
-On Kunpeng, the command automatically selects `linux/amd64`; on x86_64 it uses
-the native platform. Results are kept in `swe_rebench/.runtime/`.
+On Kunpeng, the wrapper defaults benchmark containers to `linux/amd64`; on
+x86_64 it uses the native platform. An explicit
+`SWE_REBENCH_DOCKER_PLATFORM` environment value always wins. ClawTune passes
+the selected platform to Docker without adding unsupported keys to OpenClaw's
+configuration. Results are kept in `swe_rebench/.runtime/`.
 
 ## Documentation
 

@@ -1,0 +1,5 @@
+{
+  "schema_version": "scheduler.health.v1",
+  "service": "clawtune-scheduler",
+  "ready": true
+}

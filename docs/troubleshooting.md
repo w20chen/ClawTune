@@ -81,6 +81,10 @@ running the old one. For a custom kernel, install/build the development tree
 for the exact output of `uname -r` and make the `build` link resolve to it.
 Generic headers for another kernel version are not sufficient.
 
+ClawTune's supported baseline is Linux 5.8 or newer with cgroup v2. A newer
+header package cannot make an older running kernel compatible; update and boot
+the kernel first, then install the development package for that exact release.
+
 ## The basic BPF example compiles but ClawTune does not
 
 A one-line BPF program only proves that Clang and BCC can run. Use the complete
@@ -93,7 +97,17 @@ python3 scripts/clawtune.py check
 It also attaches probes, exercises the cgroup/process path, and rejects missing
 events. If an error references `mm_struct.rss_stat.count` on Linux 6.2 or newer,
 the checkout is old: update ClawTune and rerun setup. Current code supports the
-array layout used by newer kernels as well as the older layout.
+array layout used by newer kernels as well as the older wrapped layout. It
+selects the access expression from the actual `mm_struct.rss_stat` type exposed
+by the running kernel's matching headers rather than from a hard-coded kernel
+version.
+
+Likewise, syscall kprobe names differ between `x86_64`, `aarch64`, and vendor
+kernels. ClawTune tries architecture-appropriate symbol candidates and uses
+the first attachable one. BCC may print `probe entry may not exist` while a
+candidate is being tested. If the final `check` reports success, those
+individual candidate messages are not a failure; if all candidates fail, keep
+the complete output in the bug report.
 
 ## eBPF check reports permission, tracefs, perf, or cgroup errors
 
@@ -146,16 +160,18 @@ curl -v http://127.0.0.1:8765/health/live
 curl -v http://127.0.0.1:8765/health/ready
 ```
 
-Stop the older sidecar or change the port consistently in `.env`, the plugin,
-and provider proxy URL.
+The JSON must identify `service` as `clawtune-scheduler` and `schema_version`
+as `scheduler.health.v1`. A `200` response from an unrelated program is not
+accepted. Stop the conflicting process before rerunning ClawTune; port 8765 is
+the supported setup default.
 
 ### OpenClaw reports `ECONNREFUSED 127.0.0.1:8765`
 
 Provider onboarding succeeded, but the local ClawTune proxy is not running.
 The eBPF validation performed by setup is temporary. Current setup configures
 the plugin to auto-start the privileged sidecar and wait before the first model
-request. After updating the checkout, rerun setup once so it rebuilds the
-plugin and writes that command:
+request. After updating the checkout, rerun setup once so it rebuilds and
+validates the plugin configuration:
 
 ```bash
 cd ~/ClawTune
@@ -197,6 +213,36 @@ Check that:
 
 Rerunning setup refreshes the plugin link and absolute launcher path after a
 checkout has moved.
+
+## Benchmark cannot find `LLM_API_KEY`
+
+Export the key in the same shell that invokes the unified command:
+
+```bash
+export LLM_API_KEY="<provider-api-key>"
+python3 scripts/clawtune.py benchmark --sample 1
+```
+
+The wrapper narrowly preserves `LLM_API_KEY` across its privileged boundary;
+do not replace it with `sudo -E`. If site policy forbids preserving that
+variable, put the key on one line in the Git-ignored
+`swe_rebench/llm_api_key.txt`, or export `LLM_API_KEY_FILE` with the path to a
+site-managed secret file.
+
+## OpenClaw rejects `agents.defaults.sandbox.docker.platform`
+
+That key is not part of the OpenClaw 2026.7.x configuration schema. Remove it
+from hand-written OpenClaw JSON and rerun setup:
+
+```bash
+python3 scripts/clawtune.py setup
+openclaw config validate
+```
+
+ClawTune communicates the selected architecture through its Docker operations
+and child environment. On Kunpeng the benchmark wrapper defaults to
+`linux/amd64`; an explicit `SWE_REBENCH_DOCKER_PLATFORM` value takes priority.
+On x86 the default is native.
 
 ## OpenClaw reports `plugins.load.paths: plugin path not found`
 

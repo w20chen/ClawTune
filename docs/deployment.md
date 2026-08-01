@@ -21,10 +21,12 @@ The wrapper supplies the exact `.venv`, kernel build tree, `.env`, and clean
 executable path that passed setup. It is the stable deployment command for both
 openEuler/Kunpeng and x86 Linux.
 
-Interactive OpenClaw use auto-starts this process with the exact privileged
-command installed by setup and waits for readiness. A managed service without a
-controlling terminal should start the long-lived sidecar explicitly because
-sudo cannot prompt there.
+Interactive OpenClaw use auto-starts this process and waits for readiness. The
+plugin derives the checkout, `.venv`, `.env`, matching kernel build tree, and
+`sudo` arguments when it launches; setup leaves `sidecarCommand` empty so a
+repository move cannot stale a persisted absolute shell command. A managed
+service without a controlling terminal should start the long-lived sidecar
+explicitly because sudo cannot prompt there.
 
 ## Health and observability
 
@@ -37,14 +39,19 @@ curl -fsS "http://127.0.0.1:8765/v1/tools/recent?limit=5"
 
 Health endpoints show that the API is available. Run
 `python3 scripts/clawtune.py check` after a kernel, BCC, or Clang update to
-verify the complete collector with a real process.
+verify the complete collector with a real process. ClawTune accepts a health
+response only when it carries the expected `clawtune-scheduler` service and
+`scheduler.health.v1` schema identity; another process on port 8765 is treated
+as a conflict.
 
 ## Service manager integration
 
 For a persistent machine, wrap the same `sidecar` command in the site's service
-manager and use the repository owner as the working user. The command itself
-invokes sudo, so unattended operation requires a tightly scoped local policy
-for the verified ClawTune launcher rather than a broad passwordless shell.
+manager and use the repository owner as the working user. There is no generic
+service unit in the repository because working directories, account names, and
+privilege policies are deployment-specific. The command itself invokes sudo,
+so unattended operation requires a tightly scoped local policy for the
+verified ClawTune launcher rather than a broad passwordless shell.
 
 Keep the service bound to `127.0.0.1` unless authentication, firewalling, and
 TLS termination have been designed for remote access. Provider credentials and
@@ -61,7 +68,8 @@ python3 scripts/clawtune.py benchmark --sample 1
 
 It prepares a current bundle, starts the verified sidecar for each task, and
 exports results. Kunpeng automatically uses amd64 task images through QEMU;
-x86 uses native images. See [SWE-Rebench usage](../swe_rebench/README.md).
+x86 uses native images. `SWE_REBENCH_DOCKER_PLATFORM` is the explicit override
+for either host. See [SWE-Rebench usage](../swe_rebench/README.md).
 
 ## Container-only development
 

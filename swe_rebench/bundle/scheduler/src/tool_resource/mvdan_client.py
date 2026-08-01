@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import platform
 from pathlib import Path
 import select
 import subprocess
@@ -36,9 +37,22 @@ def default_binary_path() -> Path:
         / "agent-sched-bench"
         / (
             f"mvdan-clause-adapter-protocol-{ADAPTER_PROTOCOL_VERSION}"
-            f"-mvdan-{PARSER_VERSION}"
+            f"-mvdan-{PARSER_VERSION}-{_cache_platform_tag()}"
         )
     )
+
+
+def _cache_platform_tag() -> str:
+    machine = platform.machine().lower()
+    architectures = {
+        "x86_64": "amd64",
+        "amd64": "amd64",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+    }
+    architecture = architectures.get(machine, machine or "unknown")
+    system = platform.system().lower() or "unknown"
+    return f"{system}-{architecture}"
 
 
 class MvdanClient:

@@ -108,18 +108,38 @@ install_amd64_emulation() {
     return 0
   fi
   log "tonistiigi/binfmt failed; falling back to qemu-user-static packages"
-  if ! command -v apt-get >/dev/null 2>&1; then
-    echo "apt-get is unavailable, and tonistiigi/binfmt install failed." >&2
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    run_cmd apt-get update
+    run_cmd apt-get install -y qemu-user-static binfmt-support
+    if command -v update-binfmts >/dev/null 2>&1; then
+      run_cmd update-binfmts --enable qemu-x86_64 || true
+    fi
+  elif command -v dnf >/dev/null 2>&1; then
+    local qemu_package=""
+    local candidate
+    for candidate in qemu-user-static qemu-user-binfmt; do
+      if dnf -q list "${candidate}" >/dev/null 2>&1; then
+        qemu_package="${candidate}"
+        break
+      fi
+    done
+    if [[ -z "${qemu_package}" ]]; then
+      echo "No qemu-user-static package is available from the enabled dnf repositories." >&2
+      echo "Enable the openEuler EPOL repository or make tonistiigi/binfmt available." >&2
+      return 1
+    fi
+    run_cmd dnf install -y "${qemu_package}"
+  else
+    echo "Neither apt-get nor dnf is available, and tonistiigi/binfmt failed." >&2
     return 1
-  fi
-  export DEBIAN_FRONTEND=noninteractive
-  run_cmd apt-get update
-  run_cmd apt-get install -y qemu-user-static binfmt-support
-  if command -v update-binfmts >/dev/null 2>&1; then
-    run_cmd update-binfmts --enable qemu-x86_64 || true
   fi
   if command -v systemctl >/dev/null 2>&1; then
     run_cmd systemctl restart systemd-binfmt || true
+  fi
+  if [[ ! -e /proc/sys/fs/binfmt_misc/qemu-x86_64 ]]; then
+    echo "qemu-x86_64 was installed but its binfmt handler was not registered." >&2
+    return 1
   fi
 }
 

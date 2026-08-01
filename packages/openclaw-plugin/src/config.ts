@@ -21,9 +21,8 @@ const defaults: PluginConfig = {
   enableNuma: true,
   profilingMode: "off",
   securityBoundaryAccepted: true,
-  // Strict Stage-2 requires an explicitly selected, privileged Python/BCC
-  // environment.  An OpenClaw child process cannot safely acquire that
-  // environment, so automatic startup is opt-in.
+  // Automatic startup is opt-in at the package level. ClawTune setup enables
+  // it after constructing and validating the privileged Python/BCC runtime.
   autoStartSidecar: false,
   sidecarCommand: "",
   trace: {

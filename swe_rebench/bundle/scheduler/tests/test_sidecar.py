@@ -90,6 +90,26 @@ def _trace_client_with_sandbox_cgroup(tmp_path: Path, cgroup_path: Path) -> tupl
     return TestClient(create_app(state)), trace_dir
 
 
+def test_health_endpoints_publish_stable_clawtune_identity(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    live = client.get("/health/live")
+    ready = client.get("/health/ready")
+
+    assert live.status_code == 200
+    assert live.json() == {
+        "schema_version": "scheduler.health.v1",
+        "service": "clawtune-scheduler",
+        "live": True,
+    }
+    assert ready.status_code == 200
+    assert ready.json() == {
+        "schema_version": "scheduler.health.v1",
+        "service": "clawtune-scheduler",
+        "ready": True,
+    }
+
+
 def _write_cgroup_fixture(path: Path, usage_usec: int = 100_000) -> None:
     path.mkdir()
     (path / "cpu.stat").write_text(f"usage_usec {usage_usec}\n", encoding="utf-8")

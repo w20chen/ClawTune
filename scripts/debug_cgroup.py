@@ -1,89 +1,135 @@
-"""Deep debug: trace exec event flow for docker exec commands."""
-import subprocess, sys, time, threading, tempfile
+#!/usr/bin/env python3
+"""Run a live eBPF/cgroup diagnostic against a Docker exec process."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
 from pathlib import Path
+from typing import Sequence
 
-print("=== Setup ===")
-result = subprocess.run(
-    ["docker", "ps", "-q", "--filter", "name=claw-srb"],
-    capture_output=True, text=True,
-)
-cids = [c for c in result.stdout.strip().split("\n") if c]
-cid = cids[0] if cids else ""
-if not cid:
-    result = subprocess.run(
-        ["docker", "run", "-d", "--rm", "--name", "claw-srb-dbg", "alpine", "sleep", "600"],
-        capture_output=True, text=True,
+
+ROOT = Path(__file__).resolve().parents[1]
+SCHEDULER_SRC = ROOT / "services" / "scheduler" / "src"
+if str(SCHEDULER_SRC) not in sys.path:
+    sys.path.insert(0, str(SCHEDULER_SRC))
+
+
+def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(args),
+        check=check,
+        capture_output=True,
+        text=True,
     )
-    cid = result.stdout.strip()
-print(f"Container: {cid}")
 
-result = subprocess.run(
-    ["docker", "inspect", cid, "--format", "{{.State.Pid}}"],
-    capture_output=True, text=True,
-)
-init_pid = int(result.stdout.strip()) if result.stdout.strip().isdigit() else 0
 
-cgroup_data = Path(f"/proc/{init_pid}/cgroup").read_text().strip()
-cgroup_rel = None
-for line in cgroup_data.split("\n"):
-    if "0::" in line:
-        cgroup_rel = line.split(":")[-1]
-        break
-cgroup_path = Path(f"/sys/fs/cgroup{cgroup_rel}") if cgroup_rel else None
-print(f"Init PID: {init_pid}, Cgroup: {cgroup_path}")
+def cgroup_path_for_pid(pid: int) -> Path:
+    for line in Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8").splitlines():
+        if line.startswith("0::"):
+            return Path("/sys/fs/cgroup") / line.split(":", 2)[2].lstrip("/")
+    raise RuntimeError(f"PID {pid} is not attached to cgroup v2")
 
-sys.path.insert(0, "/home/weitian/claw/services/scheduler/src")
-from tool_resource.telemetry import ClauseTelemetryCollector, _container_pid_set
 
-tmpdir = Path(tempfile.mkdtemp(prefix="claw_dbg_"))
-artifact_path = tmpdir / "artifacts"
-artifact_path.mkdir(parents=True, exist_ok=True)
+def parser() -> argparse.ArgumentParser:
+    cli = argparse.ArgumentParser(description=__doc__)
+    cli.add_argument("--container", help="Use an existing container ID or name.")
+    cli.add_argument(
+        "--image",
+        default="alpine:3.20",
+        help="Diagnostic image when a container is created.",
+    )
+    return cli
 
-collector = ClauseTelemetryCollector(
-    container_id=cid, container_executable="docker",
-    repo="openclaw", artifact_path=artifact_path,
-    cgroup_path=str(cgroup_path),
-)
-print(f"Collector: state={collector.state}, cgroup_inodes={sorted(collector.cgroup_inodes)}")
-time.sleep(0.5)
 
-# Test: docker exec
-print("\n=== Test: docker exec ===")
-token = collector.begin_tool_call("test1", "echo hello_world")
-subprocess.run(["docker", "exec", cid, "/bin/sh", "-c", "echo hello_world"], capture_output=True, timeout=10)
-time.sleep(0.5)
-summary = collector.finish_tool_call(token)
-print(f"Quality: {summary.get('telemetry_quality')}, Clauses: {len(summary.get('clauses',[]))}")
-if summary.get('invalid_reasons'):
-    for r in summary['invalid_reasons']:
-        print(f"  Reason: {r['detail'][:300]}")
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    created = False
+    container = args.container
+    if not container:
+        existing = run("docker", "ps", "-q", "--filter", "name=claw-srb").stdout.splitlines()
+        container = existing[0] if existing else None
+    if not container:
+        name = f"claw-srb-debug-{os.getpid()}"
+        container = run(
+            "docker",
+            "run",
+            "--detach",
+            "--rm",
+            "--name",
+            name,
+            args.image,
+            "sleep",
+            "600",
+        ).stdout.strip()
+        created = True
 
-# What events do we have?
-exec_pids = set()
-cgids = set()
-for e in collector._events:
-    cgids.add(e.get("cgroup_id", 0))
-    if e.get("type") == "exec_boundary":
-        exec_pids.add(e.get("host_pid"))
-evt_types = {}
-for e in collector._events:
-    evt_types[e.get("type")] = evt_types.get(e.get("type"), 0) + 1
+    temp_dir = Path(tempfile.mkdtemp(prefix="claw-cgroup-debug-"))
+    try:
+        raw_pid = run("docker", "inspect", container, "--format", "{{.State.Pid}}").stdout.strip()
+        if not raw_pid.isdigit() or int(raw_pid) <= 0:
+            raise RuntimeError(f"container is not running: {container}")
+        init_pid = int(raw_pid)
+        cgroup_path = cgroup_path_for_pid(init_pid)
+        print(f"Container: {container}")
+        print(f"Init PID: {init_pid}; cgroup: {cgroup_path}")
 
-print(f"\nTotal events: {len(collector._events)}, types: {evt_types}")
-print(f"Exec PIDs: {sorted(exec_pids)}")
-print(f"All cgroup_ids: {sorted(cgids)}")
-print(f"Collector cgroup_inodes: {sorted(collector.cgroup_inodes)}")
+        from tool_resource.telemetry import (  # noqa: PLC0415
+            ClauseTelemetryCollector,
+            _container_pid_set,
+        )
 
-pids_cg = _container_pid_set(collector._events, collector.init_pid, cgroup_inodes=collector.cgroup_inodes)
-pids_leg = _container_pid_set(collector._events, collector.init_pid)
-print(f"Container PIDs (cgroup): {sorted(pids_cg)}")
-print(f"Container PIDs (legacy): {sorted(pids_leg)}")
+        artifact_path = temp_dir / "artifacts"
+        artifact_path.mkdir()
+        collector = ClauseTelemetryCollector(
+            container_id=container,
+            container_executable="docker",
+            repo="openclaw",
+            artifact_path=artifact_path,
+            cgroup_path=str(cgroup_path),
+        )
+        try:
+            print(
+                f"Collector state={collector.state}; "
+                f"cgroup inodes={sorted(collector.cgroup_inodes)}"
+            )
+            time.sleep(0.5)
+            token = collector.begin_tool_call("debug-tool", "echo hello_world")
+            run("docker", "exec", container, "/bin/sh", "-c", "echo hello_world")
+            time.sleep(0.5)
+            summary = collector.finish_tool_call(token)
+            print(
+                f"Telemetry quality={summary.get('telemetry_quality')}; "
+                f"clauses={len(summary.get('clauses', []))}"
+            )
+            event_types: dict[str, int] = {}
+            for event in collector._events:
+                event_type = str(event.get("type"))
+                event_types[event_type] = event_types.get(event_type, 0) + 1
+            print(f"Event types: {event_types}")
+            pids = _container_pid_set(
+                collector._events,
+                collector.init_pid,
+                cgroup_inodes=collector.cgroup_inodes,
+            )
+            print(f"Attributed host PIDs: {sorted(pids)}")
+        finally:
+            collector.finalize()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        if created and container:
+            run("docker", "rm", "--force", container, check=False)
+    return 0
 
-# Detailed exec events
-for e in collector._events:
-    if e.get("type") in ("exec_boundary", "exec_meta", "bprm_meta", "fork"):
-        print(f"  [{e.get('type'):16s}] pid={e.get('host_pid'):7d} child={e.get('child_host_pid',0):7d} cgroup={e.get('cgroup_id')} parent={e.get('parent_host_pid',0):7d} arg={e.get('arg','')[:60]}")
 
-collector.finalize()
-import shutil; shutil.rmtree(tmpdir, ignore_errors=True)
-print("\n=== DONE ===")
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        print(f"live cgroup diagnostic failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc

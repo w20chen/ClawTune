@@ -21,7 +21,7 @@ esac
 adapter_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cache_root=${XDG_CACHE_HOME:-"${HOME}/.cache"}/agent-sched-bench
 toolchain_dir=$cache_root/go-toolchain-$go_version-$go_arch
-binary=$cache_root/mvdan-clause-adapter-protocol-$adapter_protocol_version-mvdan-$parser_version
+binary=$cache_root/mvdan-clause-adapter-protocol-$adapter_protocol_version-mvdan-$parser_version-linux-$go_arch
 go_bin=
 
 if command -v go >/dev/null 2>&1 &&

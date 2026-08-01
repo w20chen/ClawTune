@@ -46,7 +46,7 @@ export type PluginConfig = {
   /**
    * When true, the plugin will automatically start the scheduler sidecar
    * if it is not already running on the configured endpoint.  Default: false.
-   * Strict Stage-2 deployments start the privileged sidecar explicitly.
+   * ClawTune setup enables this after its privileged eBPF preflight passes.
    */
   autoStartSidecar: boolean;
   /**
@@ -54,9 +54,9 @@ export type PluginConfig = {
    * autoStartSidecar is true.  The command is executed via the system
    * shell and should start the sidecar on the configured endpoint.
    *
-   * Default: auto-detected from the project layout (prefers the
-   * services/scheduler directory relative to the configured
-   * SIDECAR_PROJECT_ROOT env var or the plugin working directory).
+   * Default: auto-detected from the project layout. On Linux checkouts with a
+   * validated .venv this builds a direct sudo argv at runtime; no checkout
+   * path is persisted in OpenClaw config.
    */
   sidecarCommand: string;
   trace: TracePluginConfig;

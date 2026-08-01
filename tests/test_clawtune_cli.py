@@ -32,6 +32,54 @@ def test_package_manager_uses_apt_when_dnf_is_absent(monkeypatch) -> None:
     assert clawtune.package_manager() == "apt"
 
 
+def test_kernel_build_honors_explicit_bcc_source(tmp_path, monkeypatch) -> None:
+    configured = tmp_path / "kernel-build"
+    configured.mkdir()
+    monkeypatch.setenv("BCC_KERNEL_SOURCE", str(configured))
+
+    assert clawtune.kernel_build() == configured.resolve()
+
+
+def test_bcc_probe_requires_the_real_runtime_api(monkeypatch) -> None:
+    commands = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(tuple(map(str, command)))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(clawtune, "run", fake_run)
+
+    assert clawtune.python_has_bcc(Path("/usr/bin/python3")) is True
+    probe = commands[0][-1]
+    assert "import_module" in probe
+    assert all(name in probe for name in ("BPF", "PerfSWConfig", "PerfType"))
+
+
+def test_doctor_does_not_report_ready_without_cgroup_v2(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    venv = tmp_path / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    venv_python = venv / "bin" / "python"
+    venv_python.touch()
+    kernel = tmp_path / "kernel-build"
+    kernel.mkdir()
+    monkeypatch.setattr(clawtune, "VENV", venv)
+    monkeypatch.setattr(clawtune, "require_linux", lambda: None)
+    monkeypatch.setattr(clawtune, "kernel_build", lambda: kernel)
+    monkeypatch.setattr(clawtune, "bcc_pythons", lambda: [venv_python])
+    monkeypatch.setattr(clawtune, "python_has_bcc", lambda _python: True)
+    monkeypatch.setattr(clawtune, "required_commands", lambda: [])
+    monkeypatch.setattr(clawtune, "cgroup_v2_available", lambda: False)
+    monkeypatch.setattr(clawtune, "sidecar_health", lambda: {"running": False})
+    monkeypatch.setattr(clawtune.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    assert clawtune.doctor() == 1
+    assert '"cgroup_v2"' in capsys.readouterr().out
+
+
 def test_runtime_config_accepts_user_facing_ebpf_name() -> None:
     from swe_rebench.config import RuntimeConfig
 
@@ -148,7 +196,10 @@ def test_sidecar_health_reports_ready_loopback_service(monkeypatch) -> None:
             return None
 
         def read(self, _limit):
-            return b'{"status":"ready"}'
+            return (
+                b'{"schema_version":"scheduler.health.v1",'
+                b'"service":"clawtune-scheduler","ready":true}'
+            )
 
     monkeypatch.setattr(clawtune, "urlopen", lambda *_args, **_kwargs: Response())
 
@@ -156,6 +207,27 @@ def test_sidecar_health_reports_ready_loopback_service(monkeypatch) -> None:
 
     assert health["running"] is True
     assert health["status"] == 200
+
+
+def test_sidecar_health_rejects_an_unrelated_service(monkeypatch) -> None:
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit):
+            return b'{"ready":true}'
+
+    monkeypatch.setattr(clawtune, "urlopen", lambda *_args, **_kwargs: Response())
+
+    health = clawtune.sidecar_health()
+
+    assert health["running"] is False
+    assert "compatible ClawTune sidecar" in health["error"]
 
 
 def test_sidecar_health_explains_connection_refusal(monkeypatch) -> None:
@@ -278,41 +350,81 @@ def test_managed_root_sidecar_is_stopped_through_sudo(tmp_path, monkeypatch) -> 
     ]
 
 
-def test_auto_sidecar_command_replaces_shell_and_uses_verified_environment(
+def test_benchmark_preserves_narrow_environment_without_secret_in_argv(
+    tmp_path,
     monkeypatch,
 ) -> None:
+    venv = tmp_path / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").touch()
+    config = tmp_path / "swe_rebench" / "config.yaml"
+    config.parent.mkdir()
+    config.write_text("", encoding="utf-8")
+    monkeypatch.setattr(clawtune, "ROOT", tmp_path)
+    monkeypatch.setattr(clawtune, "VENV", venv)
+    monkeypatch.setattr(clawtune, "require_linux", lambda: None)
+    monkeypatch.setattr(clawtune, "kernel_build", lambda: Path("/kernel/build"))
+    monkeypatch.setattr(clawtune, "host_arch", lambda: "aarch64")
+    monkeypatch.setenv("LLM_API_KEY", "super-secret-value")
+    monkeypatch.setenv("AGENT_TEST_BENCH_ROOT", "/data/bench")
+    monkeypatch.delenv("SWE_REBENCH_DOCKER_PLATFORM", raising=False)
+    commands = []
     monkeypatch.setattr(
         clawtune,
-        "sidecar_command",
-        lambda: [
-            "sudo",
-            "env",
-            "BCC_KERNEL_SOURCE=/lib/modules/current/build",
-            "/repo/.venv/bin/python",
-            "-m",
-            "agent_scheduler.main",
-        ],
+        "run",
+        lambda command, **_kwargs: commands.append(tuple(map(str, command))),
     )
 
-    command = clawtune.auto_sidecar_shell_command()
+    clawtune.benchmark(["--sample", "1"])
 
-    assert command.startswith("exec sudo env ")
-    assert "BCC_KERNEL_SOURCE=/lib/modules/current/build" in command
-    assert "/repo/.venv/bin/python -m agent_scheduler.main" in command
+    assert len(commands) == 1
+    command = commands[0]
+    preserve = next(item for item in command if item.startswith("--preserve-env="))
+    names = preserve.split("=", 1)[1].split(",")
+    assert "LLM_API_KEY" in names
+    assert "AGENT_TEST_BENCH_ROOT" in names
+    assert "super-secret-value" not in command
+    assert "SWE_REBENCH_DOCKER_PLATFORM=linux/amd64" in command
+
+
+def test_benchmark_keeps_explicit_platform_override(tmp_path, monkeypatch) -> None:
+    venv = tmp_path / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").touch()
+    config = tmp_path / "swe_rebench" / "config.yaml"
+    config.parent.mkdir()
+    config.write_text("", encoding="utf-8")
+    monkeypatch.setattr(clawtune, "ROOT", tmp_path)
+    monkeypatch.setattr(clawtune, "VENV", venv)
+    monkeypatch.setattr(clawtune, "require_linux", lambda: None)
+    monkeypatch.setattr(clawtune, "kernel_build", lambda: Path("/kernel/build"))
+    monkeypatch.setattr(clawtune, "host_arch", lambda: "aarch64")
+    monkeypatch.setenv("SWE_REBENCH_DOCKER_PLATFORM", "linux/arm64")
+    commands = []
+    monkeypatch.setattr(
+        clawtune,
+        "run",
+        lambda command, **_kwargs: commands.append(tuple(map(str, command))),
+    )
+
+    clawtune.benchmark([])
+
+    command = commands[0]
+    preserve = next(item for item in command if item.startswith("--preserve-env="))
+    assert "SWE_REBENCH_DOCKER_PLATFORM" in preserve.split("=", 1)[1].split(",")
+    assert "SWE_REBENCH_DOCKER_PLATFORM=linux/amd64" not in command
+    assert "linux/arm64" not in command
 
 
 def test_openclaw_config_enables_gated_privileged_sidecar(monkeypatch) -> None:
     monkeypatch.setattr(clawtune.shutil, "which", lambda _name: "/usr/bin/openclaw")
     monkeypatch.setattr(clawtune, "install_openclaw_plugin", lambda *_args: None)
-    monkeypatch.setattr(
-        clawtune,
-        "auto_sidecar_shell_command",
-        lambda: "exec sudo env BCC_KERNEL_SOURCE=/kernel /repo/.venv/bin/python -m sidecar",
-    )
     patches = []
+    commands = []
 
     def fake_run(command, **kwargs):
         rendered = tuple(map(str, command))
+        commands.append(rendered)
         if rendered[-3:] == ("config", "patch", "--stdin"):
             patches.append(kwargs["input_text"])
         return subprocess.CompletedProcess(rendered, 0, "", "")
@@ -326,4 +438,6 @@ def test_openclaw_config_enables_gated_privileged_sidecar(monkeypatch) -> None:
 
     entry = json.loads(patches[0])["plugins"]["entries"]["agent-scheduler"]
     assert entry["config"]["autoStartSidecar"] is True
-    assert entry["config"]["sidecarCommand"].startswith("exec sudo env ")
+    assert entry["config"]["sidecarCommand"] == ""
+    assert str(clawtune.ROOT) not in entry["config"]["sidecarCommand"]
+    assert ("/usr/bin/openclaw", "config", "validate") in commands

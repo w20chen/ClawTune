@@ -16,9 +16,14 @@ The command detects `aarch64`/`arm64`, installs the host's native BCC and kernel
 dependencies, then runs `scripts/setup/arm_qemu_setup.sh`. That helper registers
 an amd64 binfmt handler and starts a small amd64 container to prove it works.
 
-Benchmark commands automatically set Docker's platform to `linux/amd64` on
-arm64. Do not hard-code that value on x86, and do not run the eBPF sidecar in an
-amd64 emulation container—the collector must match the native host kernel.
+Benchmark commands default Docker's platform to `linux/amd64` on arm64. An
+explicit `SWE_REBENCH_DOCKER_PLATFORM` environment value takes priority; x86
+remains native when it is unset. The selected platform is passed to Docker and
+the OpenClaw child environment, not written as the unsupported
+`agents.defaults.sandbox.docker.platform` configuration key.
+
+Do not run the eBPF sidecar in an amd64 emulation container—the collector must
+match the native host kernel.
 
 ## Verify the two independent paths
 
@@ -43,8 +48,11 @@ prove that an amd64 image can start.
 The helper first uses Docker's `tonistiigi/binfmt` image. This works across
 openEuler and Debian-family hosts without guessing distribution package names.
 If that route fails, Debian/Ubuntu hosts can fall back to
-`qemu-user-static`/`binfmt-support`. On openEuler, fix access to the binfmt image
-or install the site's supported qemu-user-static package before retrying.
+`qemu-user-static`/`binfmt-support` through `apt`. On openEuler and related
+hosts it tries the available `qemu-user-static` or `qemu-user-binfmt` package
+through `dnf`; if neither enabled repository provides one, enable the
+appropriate openEuler EPOL/site repository or restore access to the binfmt
+image.
 
 The kernel must expose `binfmt_misc`. It may be built into the kernel; the
 helper checks `/proc/filesystems` before trying `modprobe`.

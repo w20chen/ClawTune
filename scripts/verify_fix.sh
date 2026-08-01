@@ -1,60 +1,60 @@
-#!/bin/bash
-# Verify the telemetry.py fix
-cd ~/claw
-source ~/miniconda3/etc/profile.d/conda.sh 2>/dev/null || true
-conda activate ML 2>/dev/null || true
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
+PYTHON="${REPO_ROOT}/.venv/bin/python"
+if [[ ! -x "${PYTHON}" ]]; then
+  PYTHON="$(command -v python3)"
+fi
+export PYTHONPATH="${REPO_ROOT}/services/scheduler/src${PYTHONPATH:+:${PYTHONPATH}}"
+export CLAWTUNE_TELEMETRY_SOURCE="${REPO_ROOT}/services/scheduler/src/tool_resource/telemetry.py"
 
 echo "=== Python version ==="
-python3 --version
+"${PYTHON}" --version
 
-echo "=== Syntax check ==="
-python3 -c "
-import py_compile
-py_compile.compile('/home/weitian/claw/services/scheduler/src/tool_resource/telemetry.py', doraise=True)
-print('SYNTAX OK')
-"
-
-echo "=== Import check ==="
-PYTHONPATH=/home/weitian/claw/services/scheduler/src python3 -c "
-from tool_resource.telemetry import _container_pid_set
+echo "=== Syntax and import checks ==="
+"${PYTHON}" - <<'PY'
 import inspect
-sig = inspect.signature(_container_pid_set)
-print('Function signature:', sig)
-print('Has cgroup_inodes param:', 'cgroup_inodes' in sig.parameters)
-print('IMPORT OK')
-"
+import os
+import py_compile
 
-echo "=== Cgroup PID set test ==="
-PYTHONPATH=/home/weitian/claw/services/scheduler/src python3 -c "
+py_compile.compile(os.environ["CLAWTUNE_TELEMETRY_SOURCE"], doraise=True)
 from tool_resource.telemetry import _container_pid_set
 
-# Test 1: cgroup-based discovery works
+signature = inspect.signature(_container_pid_set)
+assert "cgroup_inodes" in signature.parameters
+print("Syntax and import checks passed")
+PY
+
+echo "=== Cgroup attribution checks ==="
+"${PYTHON}" - <<'PY'
+from tool_resource.telemetry import _container_pid_set
+
 events = [
-    {'host_pid': 100, 'cgroup_id': 42, 'type': 'exec_boundary', 'parent_host_pid': 1},
-    {'host_pid': 200, 'cgroup_id': 42, 'type': 'exec_boundary', 'parent_host_pid': 100},
-    {'host_pid': 300, 'cgroup_id': 99, 'type': 'exec_boundary', 'parent_host_pid': 200},
+    {"host_pid": 100, "cgroup_id": 42, "type": "exec_boundary", "parent_host_pid": 1},
+    {"host_pid": 200, "cgroup_id": 42, "type": "exec_boundary", "parent_host_pid": 100},
+    {"host_pid": 300, "cgroup_id": 99, "type": "exec_boundary", "parent_host_pid": 200},
 ]
 result = _container_pid_set(events, 100, cgroup_inodes={42})
-print('Test 1 - cgroup discovery:', sorted(result))
-assert 100 in result and 200 in result, 'Cgroup-based PID discovery failed'
-assert 300 not in result, 'Foreign cgroup PID leaked in'
+assert 100 in result and 200 in result
+assert 300 not in result
 
-# Test 2: without cgroup_inodes, old behavior preserved
-result2 = _container_pid_set(events, 100)
-print('Test 2 - lineage only:', sorted(result2))
-
-# Test 3: Docker exec scenario (parent outside container)
-events3 = [
-    {'host_pid': 1000, 'cgroup_id': 1, 'type': 'fork', 'child_host_pid': 2000, 'parent_host_pid': 0},
-    {'host_pid': 2000, 'cgroup_id': 42, 'type': 'exec_boundary', 'parent_host_pid': 1000},
-    {'host_pid': 2000, 'cgroup_id': 42, 'type': 'fork', 'child_host_pid': 2001, 'parent_host_pid': 2000},
-    {'host_pid': 2001, 'cgroup_id': 42, 'type': 'exec_boundary', 'parent_host_pid': 2000},
+docker_exec_events = [
+    {"host_pid": 1000, "cgroup_id": 1, "type": "fork", "child_host_pid": 2000, "parent_host_pid": 0},
+    {"host_pid": 2000, "cgroup_id": 42, "type": "exec_boundary", "parent_host_pid": 1000},
+    {"host_pid": 2000, "cgroup_id": 42, "type": "fork", "child_host_pid": 2001, "parent_host_pid": 2000},
+    {"host_pid": 2001, "cgroup_id": 42, "type": "exec_boundary", "parent_host_pid": 2000},
 ]
-result3 = _container_pid_set(events3, 1, cgroup_inodes={42})
-print('Test 3 - Docker exec:', sorted(result3))
-assert 2000 in result3, 'Docker exec PID not discovered via cgroup'
-assert 2001 in result3, 'Docker exec child PID not discovered'
-print('ALL TESTS PASSED')
-"
+result = _container_pid_set(docker_exec_events, 1, cgroup_inodes={42})
+assert 2000 in result and 2001 in result
+assert 1000 not in result
 
-echo "=== DONE ==="
+lineage_events = [
+    {"host_pid": 100, "type": "fork", "child_host_pid": 200, "parent_host_pid": 0},
+    {"host_pid": 200, "type": "exec_boundary", "parent_host_pid": 100},
+]
+result = _container_pid_set(lineage_events, 100, cgroup_inodes=set())
+assert 100 in result and 200 in result
+print("All cgroup attribution checks passed")
+PY

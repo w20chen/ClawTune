@@ -3,15 +3,15 @@ import assert from "node:assert/strict";
 import {normalizeSandboxToolParams} from "../dist/sandbox-paths.js";
 
 const env = {
-  hostWorkspace: "/home/weitian/claw/swe_rebench/workspaces/0b01001001__spectree-64",
+  hostWorkspace: "/srv/clawtune-test/workspaces/0b01001001__spectree-64",
   containerWorkspace: "/workspace",
 };
 
 test("sandbox path normalization maps file tool host paths to workspace-relative paths", () => {
   const result = normalizeSandboxToolParams(
     {
-      path: "/home/weitian/claw/swe_rebench/workspaces/0b01001001__spectree-64/setup.py",
-      cwd: "/home/weitian/claw/swe_rebench/workspaces/0b01001001__spectree-64",
+      path: "/srv/clawtune-test/workspaces/0b01001001__spectree-64/setup.py",
+      cwd: "/srv/clawtune-test/workspaces/0b01001001__spectree-64",
     },
     "read",
     env
@@ -71,7 +71,7 @@ test("sandbox path normalization strips gateway override from exec in sandbox mo
       command: "pytest -q",
       host: "gateway",
       elevated: true,
-      workdir: "/home/weitian/claw/swe_rebench/workspaces/0b01001001__spectree-64",
+      workdir: "/srv/clawtune-test/workspaces/0b01001001__spectree-64",
     },
     "exec",
     env

@@ -125,6 +125,7 @@ def test_mvdan_versions_are_consistent_across_client_builder_and_go_module() -> 
     assert int(protocol_match.group(1)) == mvdan_client.ADAPTER_PROTOCOL_VERSION
     assert f"require mvdan.cc/sh/v3 {mvdan_client.PARSER_VERSION}" in go_module
     assert f"toolchain go{go_toolchain_match.group(1)}" in go_module
+    assert "-linux-$go_arch" in build_script
     assert (
         f"protocol-{mvdan_client.ADAPTER_PROTOCOL_VERSION}"
         in mvdan_client.default_binary_path().name
@@ -132,3 +133,20 @@ def test_mvdan_versions_are_consistent_across_client_builder_and_go_module() -> 
     assert f"mvdan-{mvdan_client.PARSER_VERSION}" in (
         mvdan_client.default_binary_path().name
     )
+    assert mvdan_client.default_binary_path().name.endswith(
+        mvdan_client._cache_platform_tag()
+    )
+
+
+def test_mvdan_cache_path_is_architecture_specific(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setattr(mvdan_client.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(mvdan_client.platform, "machine", lambda: "aarch64")
+    arm_path = mvdan_client.default_binary_path()
+
+    monkeypatch.setattr(mvdan_client.platform, "machine", lambda: "x86_64")
+    x86_path = mvdan_client.default_binary_path()
+
+    assert arm_path.name.endswith("linux-arm64")
+    assert x86_path.name.endswith("linux-amd64")
+    assert arm_path != x86_path

@@ -34,6 +34,8 @@ from agent_scheduler.security.auth import verify_bearer
 
 _STAGE2_COMPLETION_GRACE_SECONDS = 10.0
 _STAGE2_ORPHAN_GRACE_SECONDS = 1.0
+_HEALTH_SERVICE = "clawtune-scheduler"
+_HEALTH_SCHEMA_VERSION = "scheduler.health.v1"
 
 
 def _sample_summary(sample: ToolRuntimeSample) -> dict[str, object]:
@@ -520,12 +522,20 @@ def create_app(state: AppState | None = None) -> FastAPI:
             await asyncio.sleep(0.025)
 
     @app.get("/health/live")
-    async def live() -> dict[str, bool]:
-        return {"live": True}
+    async def live() -> dict[str, object]:
+        return {
+            "schema_version": _HEALTH_SCHEMA_VERSION,
+            "service": _HEALTH_SERVICE,
+            "live": True,
+        }
 
     @app.get("/health/ready")
-    async def ready() -> dict[str, bool]:
-        return {"ready": True}
+    async def ready() -> dict[str, object]:
+        return {
+            "schema_version": _HEALTH_SCHEMA_VERSION,
+            "service": _HEALTH_SERVICE,
+            "ready": True,
+        }
 
     @app.get("/v1/status", response_model=StatusResponse)
     async def status(s: AppState = Depends(get_state), _: None = Depends(auth)) -> StatusResponse:

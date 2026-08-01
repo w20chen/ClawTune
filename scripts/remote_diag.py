@@ -1,131 +1,156 @@
 #!/usr/bin/env python3
-"""Test script for diagnosing LLM API issues."""
+"""Diagnose an OpenAI-compatible endpoint without storing credentials."""
+
+from __future__ import annotations
+
+import argparse
 import json
-import urllib.request
-import sys
-
-API_KEY = "sk-08d88c7df9a048a29f6dae1cb3380565"
-BASE_URL = "https://api.deepseek.com"
-
-# Test 1: List models
-print("=== Test 1: List available models ===")
-try:
-    req = urllib.request.Request(
-        f"{BASE_URL}/v1/models",
-        headers={"Authorization": f"Bearer {API_KEY}"}
-    )
-    resp = urllib.request.urlopen(req, timeout=10)
-    data = json.loads(resp.read())
-    models = [m["id"] for m in data.get("data", [])]
-    print(f"Available models ({len(models)}):")
-    for m in models:
-        print(f"  - {m}")
-    print()
-except Exception as e:
-    print(f"ERROR listing models: {e}")
-    print()
-
-# Test 2: Test deepseek-v4-flash
-print("=== Test 2: deepseek-v4-flash ===")
-try:
-    body = json.dumps({
-        "model": "deepseek-v4-flash",
-        "messages": [{"role": "user", "content": "say hello in one word"}],
-        "max_tokens": 50
-    }).encode()
-    req = urllib.request.Request(
-        f"{BASE_URL}/v1/chat/completions",
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {API_KEY}"
-        }
-    )
-    resp = urllib.request.urlopen(req, timeout=15)
-    print(f"HTTP Status: {resp.status}")
-    data = json.loads(resp.read())
-    print(f"Response keys: {list(data.keys())}")
-    choices = data.get("choices", [])
-    if choices:
-        msg = choices[0].get("message", {})
-        print(f"Content: {msg.get('content', '<EMPTY>')!r}")
-        print(f"Finish reason: {choices[0].get('finish_reason')}")
-    else:
-        print("NO choices in response!")
-    print(f"Usage: {data.get('usage')}")
-    print(f"Full response: {json.dumps(data, indent=2)[:500]}")
-except Exception as e:
-    print(f"ERROR: {e}")
-
-# Test 3: Test deepseek-chat
-print()
-print("=== Test 3: deepseek-chat ===")
-try:
-    body = json.dumps({
-        "model": "deepseek-chat",
-        "messages": [{"role": "user", "content": "say hello in one word"}],
-        "max_tokens": 50
-    }).encode()
-    req = urllib.request.Request(
-        f"{BASE_URL}/v1/chat/completions",
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {API_KEY}"
-        }
-    )
-    resp = urllib.request.urlopen(req, timeout=15)
-    print(f"HTTP Status: {resp.status}")
-    data = json.loads(resp.read())
-    choices = data.get("choices", [])
-    if choices:
-        msg = choices[0].get("message", {})
-        print(f"Content: {msg.get('content', '<EMPTY>')!r}")
-        print(f"Finish reason: {choices[0].get('finish_reason')}")
-    else:
-        print("NO choices!")
-except Exception as e:
-    print(f"ERROR: {e}")
-
-# Test 4: Check trace file summary
-print()
-print("=== Test 4: Trace file summary ===")
 import os
-trace_dir = os.path.expanduser("~/claw/swe_rebench/traces/0b01001001__spectree-64")
-for f in sorted(os.listdir(trace_dir)):
-    if f.endswith(".jsonl"):
-        fpath = os.path.join(trace_dir, f)
-        with open(fpath) as fh:
-            lines = fh.readlines()
-        print(f"Trace: {f} ({len(lines)} lines)")
-        record_types = {}
-        for line in lines:
-            try:
-                rec = json.loads(line)
-                rt = rec.get("record_type") or rec.get("type") or "unknown"
-                record_types[rt] = record_types.get(rt, 0) + 1
-            except:
-                pass
-        print(f"  Record types: {record_types}")
-        
-        # Count LLM span ends and check output
-        llm_ends = 0
-        empty_llm = 0
-        for line in lines:
-            try:
-                rec = json.loads(line)
-                if rec.get("record_type") == "span_end" and rec.get("kind") == "llm":
-                    llm_ends += 1
-                    output = rec.get("output", {})
-                    if isinstance(output, dict):
-                        content = output.get("content")
-                        if isinstance(content, str) and not content.strip():
-                            empty_llm += 1
-                        elif isinstance(content, list) and len(content) == 0:
-                            empty_llm += 1
-                        elif content is None:
-                            empty_llm += 1
-            except:
-                pass
-        print(f"  LLM span_ends: {llm_ends}, empty: {empty_llm}")
-        break
+import sys
+import urllib.error
+import urllib.request
+from collections import Counter
+from pathlib import Path
+from typing import Any, Sequence
+
+
+DEFAULT_BASE_URL = "https://api.deepseek.com"
+DEFAULT_MODELS = ("deepseek-v4-flash", "deepseek-chat")
+
+
+def request_json(
+    url: str,
+    api_key: str,
+    *,
+    payload: dict[str, Any] | None = None,
+    timeout: float = 20.0,
+) -> dict[str, Any]:
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    headers = {"Authorization": f"Bearer {api_key}"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, headers=headers)
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        body = json.loads(response.read().decode("utf-8"))
+    if not isinstance(body, dict):
+        raise ValueError("endpoint returned a non-object JSON response")
+    return body
+
+
+def inspect_trace_directory(trace_dir: Path) -> None:
+    if not trace_dir.is_dir():
+        print(f"Trace directory does not exist: {trace_dir}")
+        return
+    files = sorted(trace_dir.glob("*.jsonl"))
+    if not files:
+        print(f"No JSONL traces found in: {trace_dir}")
+        return
+
+    path = files[0]
+    record_types: Counter[str] = Counter()
+    llm_ends = 0
+    empty_llm = 0
+    line_count = 0
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line_count += 1
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        record_type = str(record.get("record_type") or record.get("type") or "unknown")
+        record_types[record_type] += 1
+        if record_type != "span_end" or record.get("kind") != "llm":
+            continue
+        llm_ends += 1
+        output = record.get("output")
+        content = output.get("content") if isinstance(output, dict) else None
+        if content is None or content == [] or (isinstance(content, str) and not content.strip()):
+            empty_llm += 1
+
+    print(f"Trace: {path} ({line_count} lines)")
+    print(f"Record types: {dict(record_types)}")
+    print(f"LLM span ends: {llm_ends}; empty: {empty_llm}")
+
+
+def parser() -> argparse.ArgumentParser:
+    cli = argparse.ArgumentParser(description=__doc__)
+    cli.add_argument(
+        "--base-url",
+        default=os.getenv("AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL", DEFAULT_BASE_URL),
+        help="OpenAI-compatible API base URL.",
+    )
+    cli.add_argument(
+        "--api-key-env",
+        default="LLM_API_KEY",
+        help="Name of the environment variable containing the API key.",
+    )
+    cli.add_argument(
+        "--model",
+        action="append",
+        dest="models",
+        help="Model to probe; repeat for multiple models.",
+    )
+    cli.add_argument(
+        "--trace-dir",
+        type=Path,
+        help="Optional trace directory to summarize after the endpoint checks.",
+    )
+    return cli
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    api_key = os.getenv(args.api_key_env)
+    if not api_key:
+        print(
+            f"Missing API key: export {args.api_key_env} before running this diagnostic.",
+            file=sys.stderr,
+        )
+        return 2
+
+    base_url = args.base_url.rstrip("/")
+    models = tuple(args.models or DEFAULT_MODELS)
+    failed = False
+    try:
+        response = request_json(f"{base_url}/v1/models", api_key)
+        available = [
+            item.get("id")
+            for item in response.get("data", [])
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        ]
+        print(f"Available models ({len(available)}): {', '.join(available)}")
+    except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError) as exc:
+        failed = True
+        print(f"Model-list request failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+    for model in models:
+        try:
+            response = request_json(
+                f"{base_url}/v1/chat/completions",
+                api_key,
+                payload={
+                    "model": model,
+                    "messages": [{"role": "user", "content": "Say hello in one word."}],
+                    "max_tokens": 50,
+                },
+            )
+            choices = response.get("choices")
+            content = None
+            if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                message = choices[0].get("message")
+                if isinstance(message, dict):
+                    content = message.get("content")
+            print(f"{model}: OK; content={content!r}")
+        except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError) as exc:
+            failed = True
+            print(f"{model}: FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+    if args.trace_dir is not None:
+        inspect_trace_directory(args.trace_dir.expanduser().resolve())
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

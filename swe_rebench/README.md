@@ -9,8 +9,16 @@ Complete the root [installation guide](../docs/getting-started.md) first.
 ## Configure once
 
 `python3 scripts/clawtune.py setup` creates
-`swe_rebench/config.yaml`. Put the provider key on one line in the Git-ignored
-file:
+`swe_rebench/config.yaml`. Export the provider key in the shell that starts the
+run:
+
+```bash
+export LLM_API_KEY="<provider-api-key>"
+```
+
+The wrapper preserves only an explicit environment allow-list through `sudo`;
+it does not require `sudo -E`. For a persistent alternative, put the provider
+key on one line in the Git-ignored file:
 
 ```text
 swe_rebench/llm_api_key.txt
@@ -27,7 +35,10 @@ llm:
 ```
 
 Keep the runtime, eBPF, cgroup, and privileged Docker defaults. The wrapper
-chooses `linux/amd64` automatically on Kunpeng and leaves x86 native.
+defaults to `linux/amd64` on Kunpeng and leaves x86 native. An exported
+`SWE_REBENCH_DOCKER_PLATFORM` takes priority. ClawTune passes this selection to
+Docker without adding the unsupported `sandbox.docker.platform` key to
+OpenClaw's configuration.
 
 ## Select tasks
 
