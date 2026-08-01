@@ -1710,3 +1710,17 @@ The next Kunpeng compile caught an arm64 kernel macro collision: Linux defines
 source-level regression assertion. Focused telemetry/SWE-Rebench tests passed
 (`116 passed, 2 skipped`) and the tracked bundle was regenerated. The actual
 BCC compile/attach must be repeated by rerunning setup on the Kunpeng host.
+## 2026-08-02 container cached-image pull regression
+
+A Kunpeng `container-openclaw` run had the requested linux/amd64 task image in
+the local daemon, but the Docker CLI fallback interpreted `pull_policy:
+missing` as an unconditional registry pull whenever a platform was specified.
+The registry timeout then aborted before container creation. Container mode
+now inspects the cached image's OS and architecture and skips the pull only on
+an exact match. The maintained `host-openclaw-sandbox` pull/export path is
+unchanged.
+
+Container selection/cache and host regression suites passed (`118 passed, 2
+skipped` total); `git diff --check` passed. A live cached-image
+`container-openclaw` run remains unavailable in this Windows workspace and
+must be repeated on Kunpeng.

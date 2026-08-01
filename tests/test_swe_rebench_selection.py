@@ -13,6 +13,7 @@ from swe_rebench.docker import (
     ContainerResult,
     _container_kernel_header_volumes,
     _container_tracefs_volumes,
+    local_image_available,
 )
 from swe_rebench.host_sandbox import (
     _SANDBOX_TASK_PATH,
@@ -54,6 +55,7 @@ from swe_rebench.sandbox import sandbox_container_prefix
 from swe_rebench.task_source import filter_tasks, parse_instance_ids, tasks_from_records
 from swe_rebench.runner import (
     _apply_runtime_overrides,
+    _container_image_ready,
     _inspect_trace,
     _resource_summary,
     _run_one,
@@ -62,6 +64,50 @@ from swe_rebench.runner import (
     _smoke_summary,
     _task_artifacts,
 )
+
+
+def test_container_missing_pull_policy_reuses_matching_cli_image(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(list(command))
+        return subprocess.CompletedProcess(command, 0, "linux/amd64\n", "")
+
+    monkeypatch.setattr("swe_rebench.docker.subprocess.run", fake_run)
+
+    assert local_image_available(None, "task:latest", "linux/amd64") is True
+    assert calls == [[
+        "docker",
+        "image",
+        "inspect",
+        "--format",
+        "{{.Os}}/{{.Architecture}}",
+        "task:latest",
+    ]]
+
+
+def test_container_cached_image_does_not_contact_registry(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "swe_rebench.runner.local_image_available",
+        lambda *_args: True,
+    )
+    monkeypatch.setattr(
+        "swe_rebench.runner.pull_image",
+        lambda *_args: pytest.fail("cached image must not be pulled"),
+    )
+
+    assert _container_image_ready(None, "task:latest", "missing", "linux/amd64")
+
+
+def test_container_cached_image_must_match_requested_platform(monkeypatch) -> None:
+    class Images:
+        @staticmethod
+        def get(_image):
+            return type("Image", (), {"attrs": {"Os": "linux", "Architecture": "arm64"}})()
+
+    client = type("Client", (), {"images": Images()})()
+
+    assert local_image_available(client, "task:latest", "linux/amd64") is False
 
 
 def _records() -> list[dict[str, object]]:

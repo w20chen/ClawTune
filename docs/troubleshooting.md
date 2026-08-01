@@ -319,6 +319,11 @@ sudo bash scripts/setup/arm_qemu_setup.sh check
 If Docker cannot pull `tonistiigi/binfmt` or the smoke image, fix registry,
 proxy, or DNS access first. See [Kunpeng and arm64](arm-qemu.md).
 
+For benchmark task images, `pull_policy: missing` first checks the local image
+and verifies its requested OS/architecture. A matching cached amd64 image is
+used directly on Kunpeng even when Docker Hub is temporarily unreachable.
+Only an absent or wrong-architecture image requires registry access.
+
 ## Benchmark fails or produces no final report
 
 Look in the task directory under `swe_rebench/.runtime/traces/<task-id>/`:

@@ -44,7 +44,13 @@ from pathlib import Path
 from typing import Any
 
 from swe_rebench.config import RunnerConfig, normalize_runtime_mode
-from swe_rebench.docker import ContainerResult, get_docker_client, pull_image, run_container
+from swe_rebench.docker import (
+    ContainerResult,
+    get_docker_client,
+    local_image_available,
+    pull_image,
+    run_container,
+)
 from swe_rebench.host_sandbox import (
     _chmod_and_retry,
     _reset_directory_with_docker,
@@ -1609,7 +1615,15 @@ def run_batch(
     start_wall = time.monotonic()
 
     # Pre-pull images (best-effort)
-    _pre_pull_images(client, tasks, config.docker.pull_policy, config.docker.platform)
+    _pre_pull_images(
+        client,
+        tasks,
+        config.docker.pull_policy,
+        config.docker.platform,
+        prefer_local_cache=(
+            normalize_runtime_mode(config.runtime.mode) == "container-openclaw"
+        ),
+    )
 
     completed_count = 0
     failed_count = 0
@@ -1735,7 +1749,12 @@ def _run_one(
             _log(f"[{task.instance_id}] retry {attempt}/{retries}")
 
         # Pull image if needed
-        if not pull_image(client, task.image, config.docker.pull_policy, config.docker.platform):
+        if not _container_image_ready(
+            client,
+            task.image,
+            config.docker.pull_policy,
+            config.docker.platform,
+        ):
             return ContainerResult(
                 task_id=task.instance_id, image=task.image,
                 exit_code=-1, error=f"Failed to pull image: {task.image}",
@@ -1775,7 +1794,25 @@ def _run_one(
     )
 
 
-def _pre_pull_images(client: Any, tasks: list[TaskDef], policy: str, platform: str = "") -> None:
+def _container_image_ready(
+    client: Any,
+    image: str,
+    policy: str,
+    platform: str,
+) -> bool:
+    if policy == "missing" and local_image_available(client, image, platform):
+        return True
+    return pull_image(client, image, policy, platform)
+
+
+def _pre_pull_images(
+    client: Any,
+    tasks: list[TaskDef],
+    policy: str,
+    platform: str = "",
+    *,
+    prefer_local_cache: bool = False,
+) -> None:
     """Pre-pull all unique images."""
     unique = list({t.image for t in tasks if t.image})
     if not unique:
@@ -1783,8 +1820,12 @@ def _pre_pull_images(client: Any, tasks: list[TaskDef], policy: str, platform: s
     _log(f"Pre-pulling {len(unique)} unique images...")
     for img in unique:
         try:
-            ok = pull_image(client, img, policy, platform)
-            _log(f"  pull {img}: {'OK' if ok else 'FAIL'}")
+            ok = (
+                _container_image_ready(client, img, policy, platform)
+                if prefer_local_cache
+                else pull_image(client, img, policy, platform)
+            )
+            _log(f"  image {img}: {'OK' if ok else 'FAIL'}")
         except Exception as exc:
             _log(f"  pull {img}: {exc}")
 

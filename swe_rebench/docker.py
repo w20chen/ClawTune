@@ -8,6 +8,7 @@ create containers with volume mounts, wait for completion, and clean up.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -193,7 +194,6 @@ def pull_image(client: Any, image: str, policy: str = "missing", platform: str =
             _log(f"[error] pull {image}: {exc}")
             return False
     else:
-        import subprocess
         flag = "--always" if policy == "always" else ""
         cmd = ["docker", "pull", *_docker_platform_args(platform)]
         if flag:
@@ -201,6 +201,53 @@ def pull_image(client: Any, image: str, policy: str = "missing", platform: str =
         cmd.append(image)
         result = subprocess.run(cmd, capture_output=True, text=True)
         return result.returncode == 0
+
+
+def local_image_available(client: Any, image: str, platform: str = "") -> bool:
+    """Return whether a local image exists and matches the requested platform."""
+
+    expected = _normalized_image_platform(platform)
+    try:
+        if client is not None:
+            attrs = client.images.get(image).attrs
+            if expected is None:
+                return True
+            actual = _normalized_image_platform(
+                f"{attrs.get('Os', '')}/{attrs.get('Architecture', '')}"
+            )
+            return actual == expected
+
+        result = subprocess.run(
+            [
+                "docker",
+                "image",
+                "inspect",
+                "--format",
+                "{{.Os}}/{{.Architecture}}",
+                image,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return False
+        if expected is None:
+            return True
+        return _normalized_image_platform(result.stdout.strip()) == expected
+    except Exception:
+        return False
+
+
+def _normalized_image_platform(value: str) -> tuple[str, str] | None:
+    parts = value.strip().lower().split("/")
+    if len(parts) < 2 or not parts[0] or not parts[1]:
+        return None
+    aliases = {
+        "x86_64": "amd64",
+        "x64": "amd64",
+        "aarch64": "arm64",
+    }
+    return parts[0], aliases.get(parts[1], parts[1])
 
 
 def run_container(
