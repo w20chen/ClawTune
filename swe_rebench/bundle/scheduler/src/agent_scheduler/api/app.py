@@ -321,7 +321,7 @@ def _verified_host_execution_scope(
         container_id=None,
         include_children=True,
         source="claw-sidecar-host-derived",
-        attribution_source="trusted-execution-cgroup",
+        attribution_source="trusted-execution-root-pid",
     )
 
 
@@ -976,10 +976,31 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     cgroup_path=host_scope.cgroup_path,
                 )
             else:
-                host_cgroup_gate_failed = True
-                # Never expose or monitor the unverified namespace-local path
-                # stored by ``executions.started`` when the host gate failed.
-                record.scope = None
+                # Some systemd/openEuler hosts do not delegate creation of a
+                # child cgroup even to this privileged service. Keep eBPF
+                # mandatory, but fall back to the authenticated root PID and
+                # its sidecar-derived current cgroup. Telemetry then isolates
+                # only that PID's fork/exec descendants rather than treating
+                # the shared session cgroup as an identity boundary.
+                host_scope = (
+                    _verified_host_execution_scope(
+                        execution_id,
+                        request,
+                        trusted_root_pid,
+                    )
+                    if trusted_root_pid is not None
+                    else None
+                )
+                if host_scope is not None:
+                    s.executions.update_scope(execution_id, host_scope)
+                    record = s.executions.get(execution_id)
+                    response = ExecutionUpdateResponse(
+                        stored=True,
+                        cgroup_path=host_scope.cgroup_path,
+                    )
+                else:
+                    host_cgroup_gate_failed = True
+                    record.scope = None
         elif (
             record is not None
             and container_id is None

@@ -202,6 +202,32 @@ def test_host_cgroup_gate_uses_standard_v2_root_when_unconfigured(
     ) == "4242"
 
 
+def test_verified_host_scope_falls_back_to_authenticated_pid_lineage(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    shared = tmp_path / "session.scope"
+    shared.mkdir()
+    monkeypatch.setattr(
+        app_module,
+        "_host_cgroup_path_for_pid",
+        lambda _pid: str(shared),
+    )
+    monkeypatch.setattr(app_module, "_pid_starttime_ticks", lambda _pid: 99)
+    monkeypatch.setattr(app_module, "_pid_namespace_inode", lambda _pid: 123)
+
+    scope = app_module._verified_host_execution_scope(
+        "exec-1",
+        SimpleNamespace(cgroup_path=None),
+        4242,
+    )
+
+    assert scope is not None
+    assert scope.root_pid == 4242
+    assert scope.cgroup_path == str(shared)
+    assert scope.attribution_source == "trusted-execution-root-pid"
+
+
 def _trace_proxy_client_with_debug(tmp_path: Path) -> tuple[TestClient, Path]:
     trace_dir = tmp_path / "traces"
     state = build_state(

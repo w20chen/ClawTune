@@ -2952,7 +2952,11 @@ def _scope_identity_inodes(
     """Build cgroup/PID-namespace filters without widening host scopes."""
 
     if not container_id:
-        return _discover_descendant_cgroup_inodes(cgroup), set()
+        # A direct-host command may remain in a shared SSH/systemd session
+        # cgroup when the kernel refuses an exclusive child cgroup. Its
+        # authenticated root PID and fork lineage are the identity boundary;
+        # admitting the cgroup inode here would also admit unrelated shells.
+        return set(), set()
     cgroup_inodes = _discover_leaf_cgroup_inodes(cgroup)
     pid_namespace_inode = _isolated_pid_namespace_inode(init_pid)
     if pid_namespace_inode is not None:
@@ -3454,7 +3458,7 @@ class ClauseTelemetryCollector:
             init_pid,
             container_id,
         )
-        if not self.cgroup_inodes and self.cgroup_id:
+        if container_id and not self.cgroup_inodes and self.cgroup_id:
             self.cgroup_inodes = {self.cgroup_id}
         # Seed from cross-instance cache: exec transient cgroups discovered
         # by a previous collector instance for the same container.
@@ -3811,10 +3815,14 @@ class ClauseTelemetryCollector:
                 # Identity must come from an authenticated/root-descendant PID
                 # or the container PID namespace. Window overlap alone is not
                 # sufficient because these probes are attached system-wide.
-                _dynamic_cgroups = _observed_container_cgroup_ids(
-                    self._events,
-                    container_pids,
-                    self.pid_namespace_inodes,
+                _dynamic_cgroups = (
+                    _observed_container_cgroup_ids(
+                        self._events,
+                        container_pids,
+                        self.pid_namespace_inodes,
+                    )
+                    if self.container_id
+                    else set()
                 )
                 if _dynamic_cgroups - self.cgroup_inodes:
                     self.cgroup_inodes |= _dynamic_cgroups

@@ -1656,3 +1656,10 @@ Validation unavailable here: the final BCC attach and cgroup move require the
 target Linux kernel. On Kunpeng, run setup again and one direct agent command;
 the command must now fail with exit 125 instead of running unobserved if eBPF
 cannot be armed.
+
+Follow-up field validation found that openEuler could reject creation/migration
+of the exclusive child cgroup, which made the initial strict gate reject every
+shell command with exit 125. The fallback now keeps eBPF enabled and uses the
+sidecar-authenticated root PID plus fork/exec lineage; it does not use the
+shared session cgroup as an identity filter. Sidecar/predictor/telemetry tests
+after this correction: 103 passed.

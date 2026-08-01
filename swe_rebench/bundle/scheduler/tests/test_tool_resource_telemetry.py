@@ -43,7 +43,7 @@ def test_host_scope_never_expands_through_pid_namespace(monkeypatch, tmp_path) -
 
     cgroups, pid_namespaces = _scope_identity_inodes(cgroup, 4242, None)
 
-    assert cgroups == {cgroup.stat().st_ino, child.stat().st_ino}
+    assert cgroups == set()
     assert pid_namespaces == set()
 
 
