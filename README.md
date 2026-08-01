@@ -3,37 +3,63 @@
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-%E2%89%A52026.7.1-6e40c9.svg)](https://openclaw.ai/)
 [![Node.js](https://img.shields.io/badge/Node.js-24-green.svg?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/w20chen/claw)
 
-OpenClaw Agent Scheduler is an OpenClaw plugin plus a Python sidecar. It records
-OpenClaw model/tool traces and per-tool resource usage. It also includes a
-SWE-Rebench batch runner.
+OpenClaw Agent Scheduler is an OpenClaw plugin plus a Python sidecar. Its
+primary purpose is strict Stage-2 eBPF collection of clause-level CPU and RSS
+telemetry, together with OpenClaw model/tool traces and SWE-Rebench execution.
 
-**Platform:** This guide works on x86_64 Linux. ARM/Kunpeng users must also
-complete [docs/arm-qemu.md](docs/arm-qemu.md) before running SWE-Rebench —
-task images are x86_64-only and require QEMU emulation.
+## Supported Default
 
-## Preliminaries
+The default workflow is Linux-only and fails closed when eBPF telemetry is not
+healthy. It requires:
 
-Install OpenClaw (version 2026.7.1):
+- root for the maintained Stage-2 collector;
+- BCC/BPF Python bindings (`bcc` or openEuler's `bpfcc`);
+- Clang/LLVM and development headers matching the running kernel;
+- cgroup v2 and writable tracefs/kprobe controls;
+- Docker for OpenClaw sandbox and SWE-Rebench integration;
+- Python 3.10+, Node.js/npm, and OpenClaw 2026.7.1+.
+
+Process/cgroup-only collection exists solely as an explicit troubleshooting
+mode. Its output is not complete ClawTune Stage-2 telemetry.
+
+## eBPF-First Quick Start
+
+Run every command from the repository root. Use the system Python family for
+Stage-2; do not mix a Conda Python with BCC compiled for `/usr/bin/python3`.
+
+### 1. Install host packages
+
+Install BCC, its Python binding, Clang/LLVM, `bpftool`, Docker, and the kernel
+development package for the exact output of `uname -r`.
+
+On Debian/Ubuntu the package set is commonly:
 
 ```bash
-curl -fsSL --proto '=https' --tlsv1.2 \
-  https://openclaw.ai/install.sh \
-  | bash -s -- --install-method npm --version 2026.7.1
+sudo apt-get install -y \
+  bpfcc-tools python3-bpfcc clang llvm bpftool \
+  "linux-headers-$(uname -r)"
 ```
 
-Clone this repository:
+openEuler/EulerOS package names vary by release. Install the distribution BCC
+and kernel-devel packages, then verify that system Python imports `bpfcc`:
 
 ```bash
-git clone git@github.com:w20chen/claw.git
+/usr/bin/python3 -c 'import bpfcc; print(bpfcc.__file__)'
 ```
 
-## Install Local Packages
+ClawTune supports both `bcc` and `bpfcc`; no compatibility symlink is needed.
+
+### 2. Create one Stage-2 Python environment
+
+`--system-site-packages` makes the distribution BCC binding visible while pip
+installs the Scheduler dependencies into an isolated environment:
 
 ```bash
-cd claw
-python3 -m pip install -e "services/scheduler[dev]"
+/usr/bin/python3 -m venv --system-site-packages .venv-system
+source .venv-system/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e "services/scheduler[dev]"
 
 cd packages/openclaw-plugin
 npm install
@@ -41,23 +67,90 @@ npm run build
 cd ../..
 ```
 
-## Run with OpenClaw
-
-For model proxy setup, smoke testing, and troubleshooting, see
-[docs/operator-guide.md](docs/operator-guide.md). Quick start:
+Check that NumPy and a BCC binding belong to this selected interpreter:
 
 ```bash
-# 1. Start sidecar
+python - <<'PY'
+import importlib
+import numpy
+import sys
+
+print("Python:", sys.executable, sys.version)
+print("NumPy:", numpy.__version__)
+for name in ("bcc", "bpfcc"):
+    try:
+        module = importlib.import_module(name)
+    except ImportError:
+        continue
+    print("BCC:", module.__name__, module.__file__)
+    break
+else:
+    raise SystemExit("neither bcc nor bpfcc is importable")
+PY
+```
+
+### 3. Run the strict Stage-2 preflight
+
+This single command compiles the complete embedded BPF program, attaches the
+real probes and perf sampler, creates a test cgroup, executes a command, and
+rejects empty/lost lifecycle data:
+
+```bash
+export KERNEL_BUILD="$(readlink -f "/lib/modules/$(uname -r)/build")"
+STAGE2_PY="$PWD/.venv-system/bin/python"
+
+sudo env \
+  "PATH=/usr/sbin:/usr/bin:/sbin:/bin" \
+  "BCC_KERNEL_SOURCE=$KERNEL_BUILD" \
+  "$STAGE2_PY" tools/check_stage2.py \
+  --output /tmp/clawtune-stage2-preflight.json
+```
+
+Continue only when the command exits `0` and reports:
+
+```json
+{"stage2_ready": true}
+```
+
+This preflight covers the openEuler `bpfcc` binding and both pre-6.2 and
+Linux 6.2+ `mm_struct::rss_stat` layouts. See
+[troubleshooting](docs/troubleshooting.md) for any other result.
+
+### 4. Start the strict sidecar
+
+```bash
 cp .env.example .env
-python3 -m agent_scheduler.main --host 127.0.0.1 --port 8765 &
 
-# 2. Configure OpenClaw to route through sidecar proxy
-#    Set provider base URL to http://127.0.0.1:8765/v1, model to <your-model>
-#    Any OpenAI-compatible provider works. Examples:
+sudo env \
+  "PATH=/usr/sbin:/usr/bin:/sbin:/bin" \
+  "BCC_KERNEL_SOURCE=$KERNEL_BUILD" \
+  "AGENT_SCHEDULER_ENV_FILE=$PWD/.env" \
+  "$STAGE2_PY" -m agent_scheduler.main \
+  --host 127.0.0.1 \
+  --port 8765
+```
 
-# 3. Install and configure plugin
+Leave this terminal running. In another terminal:
+
+```bash
+curl -fsS http://127.0.0.1:8765/health/live
+curl -fsS http://127.0.0.1:8765/health/ready
+```
+
+The example `.env` keeps
+`AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED=true`, so managed executions
+fail instead of silently accepting coarse telemetry.
+
+### 5. Install and configure the OpenClaw plugin
+
+The plugin does not auto-start the sidecar by default: an unprivileged Node
+child cannot reproduce the verified root/Python/BCC environment.
+
+```bash
+source .venv-system/bin/activate
 openclaw plugins install --link ./packages/openclaw-plugin
 openclaw plugins enable agent-scheduler
+
 LAUNCHER_PATH="$(command -v claw-launch)"
 cat <<JSON5 | openclaw config patch --stdin
 {
@@ -67,8 +160,7 @@ cat <<JSON5 | openclaw config patch --stdin
         enabled: true,
         config: {
           endpoint: "http://127.0.0.1:8765",
-          mode: "observe",
-          failOpen: true,
+          autoStartSidecar: false,
           recordRawTrace: true,
           executionBackend: "managed-wrapper",
           launcherPath: "$LAUNCHER_PATH",
@@ -80,34 +172,39 @@ cat <<JSON5 | openclaw config patch --stdin
   }
 }
 JSON5
-
-# 4. Run
-openclaw agent --local --agent main --model "vllm/<your-model>" \
-  --message "Use the shell to run: python -c 'print(\"trace-ok\")'. Then summarize the result." \
-  --session-key "my-session"
 ```
 
-The sidecar must be running before the plugin hooks fire and before the first
-model request. See [operator-guide.md](docs/operator-guide.md) for model proxy
-configuration (vLLM onboarding, OpenRouter, API key setup) and smoke test
-verification.
+### 6. Configure the model proxy and verify a real tool call
 
-`enableCgroup: true` (the default) enables per-tool cgroup-v2 resource
-attribution. Most environments work out of the box. If you encounter
-`cgroup_join_failed ... Permission denied`, see
-[operator-guide.md#troubleshooting](docs/operator-guide.md#troubleshooting).
-
-## Run SWE-Rebench In Batch
+Set the OpenClaw provider base URL to `http://127.0.0.1:8765/v1`. Provider
+examples are in the [operator guide](docs/operator-guide.md).
 
 ```bash
-cp swe_rebench/config.example.yaml swe_rebench/config.yaml
-# SWE-Rebench is automated and does not read your host OpenClaw key.
-# Set LLM_API_KEY, edit llm.api_key, or use swe_rebench/llm_api_key.txt.
+openclaw agent --local --agent main --model "vllm/<your-model>" \
+  --message "Use the shell to run: python -c 'print(\"trace-ok\")'. Then summarize the result." \
+  --session-key "clawtune-ebpf-smoke"
 
-python -m swe_rebench.runner prepare --config swe_rebench/config.yaml
+curl -fsS "http://127.0.0.1:8765/v1/tools/recent?limit=5"
+```
+
+A complete result must include a managed execution, cgroup/process
+attribution, a finalized Stage-2 artifact, and a healthy collector without
+telemetry loss. HTTP health alone proves only that the API process is alive;
+the Stage-2 preflight and real tool call prove the kernel path.
+
+## Run SWE-Rebench with Required eBPF
+
+```bash
+source .venv-system/bin/activate
+cp swe_rebench/config.example.yaml swe_rebench/config.yaml
+export LLM_API_KEY="<your-provider-key>"
+
 python -m swe_rebench.discover --sample 20 --out swe_rebench/tasks.json
 
-sudo -E env "PATH=$PATH" "$(command -v python3)" \
+sudo -E env \
+  "PATH=$PATH" \
+  "BCC_KERNEL_SOURCE=$KERNEL_BUILD" \
+  "$(command -v python)" \
   -m swe_rebench.runner run \
   --config swe_rebench/config.yaml \
   --prepare \
@@ -117,40 +214,32 @@ sudo -E env "PATH=$PATH" "$(command -v python3)" \
   --runtime-mode host-openclaw-sandbox
 ```
 
-Useful selectors:
+CLI-selected `host-openclaw-sandbox` mode makes Stage-2 required by default
+and runs another semantic preflight before releasing the task.
+
+Official SWE-Rebench task images are amd64. ARM/Kunpeng hosts must first
+complete the [QEMU/binfmt setup](docs/arm-qemu.md) and select `linux/amd64`.
+
+## Troubleshooting-Only Degraded Run
+
+When diagnosing an unrelated model/plugin issue, you may temporarily set:
 
 ```bash
-python -m swe_rebench.runner run --config swe_rebench/config.yaml \
-  --dataset swe_rebench/tasks.json \
-  --instance-ids 12rambau__sepal_ui-411,12rambau__sepal_ui-501
+export AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED=false
+export CLAW_ENABLE_CGROUP=0
 ```
 
-## Supported Workflows
+This is fail-open diagnostic operation, not a successful eBPF deployment and
+not acceptable for complete telemetry evaluation. Restore strict mode before
+collecting results.
 
-- Run the sidecar locally on `127.0.0.1:8765`.
-- Install and enable the `agent-scheduler` OpenClaw plugin.
-- Route OpenClaw model traffic through the sidecar OpenAI-compatible proxy.
-- Record schema v6 JSONL traces under `data/traces`.
-- Record hook-visible tool args/results with `recordRawTrace: true`.
-- Attribute `exec` resource usage with `executionBackend: "managed-wrapper"`.
-- Run SWE-Rebench batches with `--sample`, `--skip`, `--instance-ids`,
-  `--repo`, and `--export`.
+## Documentation
 
-## More
-
-- Architecture: [docs/architecture.md](docs/architecture.md)
-- OpenClaw guide: [docs/operator-guide.md](docs/operator-guide.md)
-- Sidecar reference: [docs/sidecar.md](docs/sidecar.md)
-- Trace & protocol: [docs/trace-schema-v6.md](docs/trace-schema-v6.md)
-- Deployment: [docs/deployment.md](docs/deployment.md)
-- ARM/QEMU setup: [docs/arm-qemu.md](docs/arm-qemu.md)
-- SWE-Rebench guide: [swe_rebench/README.md](swe_rebench/README.md)
-
-### Troubleshooting
-
-| Problem area | See |
-|---|---|
-| OpenClaw / plugin / sidecar errors | [operator-guide.md#troubleshooting](docs/operator-guide.md#troubleshooting) |
-| Cgroup permission errors | [operator-guide.md#troubleshooting](docs/operator-guide.md#troubleshooting) |
-| SWE-Rebench failures (Docker, timeout, eBPF) | [swe_rebench/README.md#troubleshooting](swe_rebench/README.md#troubleshooting) |
-| ARM/Kunpeng QEMU issues | [arm-qemu.md#kunpeng-troubleshooting](docs/arm-qemu.md#kunpeng-troubleshooting) |
+- [Troubleshooting, Python/BCC, cgroup, and kernel errors](docs/troubleshooting.md)
+- [OpenClaw provider configuration and trace smoke test](docs/operator-guide.md)
+- [Sidecar reference](docs/sidecar.md)
+- [Deployment modes](docs/deployment.md)
+- [SWE-Rebench guide](swe_rebench/README.md)
+- [ARM/Kunpeng and QEMU](docs/arm-qemu.md)
+- [Architecture](docs/architecture.md)
+- [Trace schema v6](docs/trace-schema-v6.md)

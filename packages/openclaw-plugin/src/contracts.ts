@@ -45,7 +45,8 @@ export type PluginConfig = {
   securityBoundaryAccepted: boolean;
   /**
    * When true, the plugin will automatically start the scheduler sidecar
-   * if it is not already running on the configured endpoint.  Default: true.
+   * if it is not already running on the configured endpoint.  Default: false.
+   * Strict Stage-2 deployments start the privileged sidecar explicitly.
    */
   autoStartSidecar: boolean;
   /**

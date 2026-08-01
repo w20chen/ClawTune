@@ -1,15 +1,14 @@
 # Sidecar Usage
 
-## Auto-Start (Recommended)
+## Startup Options
 
-By default the OpenClaw plugin automatically starts the scheduler sidecar on
-first use when it is not already running.  No manual terminal is needed.
+### Strict Stage-2 Startup (Default)
 
-The plugin checks the configured endpoint (default `http://localhost:8765`)
-every 200 ms for up to 15 seconds.  If the sidecar is already running the
-plugin skips the launch step.
+Start the sidecar explicitly with the exact root/system-Python/BCC environment
+that passed `tools/check_stage2.py`. The complete command is in the
+[README eBPF-first quick start](../README.md#ebpf-first-quick-start).
 
-Disable auto-start in your OpenClaw plugin config:
+The plugin default is:
 
 ```json5
 {
@@ -17,10 +16,24 @@ Disable auto-start in your OpenClaw plugin config:
 }
 ```
 
-Or set the env var:
+This is intentional: an unprivileged OpenClaw child cannot reproduce the
+verified kernel-access environment.
+
+### Automatic Startup (Diagnostic Only)
+
+Automatic startup is opt-in. It is suitable for API/plugin diagnostics where
+strict eBPF is explicitly disabled, not for accepted Stage-2 collection:
+
+```json5
+{
+  "autoStartSidecar": true
+}
+```
+
+Or use the environment variable:
 
 ```bash
-export OPENCLAW_AGENT_SCHEDULER_AUTO_START_SIDECAR=0
+export OPENCLAW_AGENT_SCHEDULER_AUTO_START_SIDECAR=1
 ```
 
 Override the launch command:
@@ -37,17 +50,10 @@ Or via env:
 export OPENCLAW_AGENT_SCHEDULER_SIDECAR_COMMAND="python -m agent_scheduler.main --host 127.0.0.1 --port 8765"
 ```
 
-The plugin also respects `OPENCLAW_AGENT_SCHEDULER_PROJECT_ROOT` (or
-`SIDECAR_PROJECT_ROOT`) to auto-detect the project layout.
-
-## Manual Start (Legacy)
-
-Start:
-
-```bash
-cp .env.example .env
-python -m agent_scheduler.main --host 127.0.0.1 --port 8765
-```
+The custom command is executed through the system shell and is trusted
+administrator input. The plugin also respects
+`OPENCLAW_AGENT_SCHEDULER_PROJECT_ROOT` (or `SIDECAR_PROJECT_ROOT`) for project
+layout detection.
 
 Health:
 
@@ -67,7 +73,7 @@ Useful endpoints:
 
 ## Configuration
 
-Important `.env` values:
+The repository `.env.example` is the strict default. Important values:
 
 ```bash
 AGENT_SCHEDULER_DB_PATH=data/openclaw-trace.sqlite3

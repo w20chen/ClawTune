@@ -1,31 +1,31 @@
 # Current Plan
 
-Current objective: keep this repository easy to run as an OpenClaw plugin,
-sidecar, and SWE-Rebench batch runner.
+Current objective: make strict Stage-2 eBPF telemetry the clear, fail-closed
+default for the OpenClaw plugin, sidecar, and SWE-Rebench batch runner.
 
-## Quick Start (Auto-Start)
+## Quick Start (Strict Stage-2)
 
-The plugin now auto-starts the sidecar by default.  Just:
+Use the repository [eBPF-first quick start](../README.md#ebpf-first-quick-start).
+The required sequence is:
 
-```bash
-python -m pip install -e "services/scheduler[dev]"
-cd packages/openclaw-plugin && npm install && npm run build && cd ../..
-cp .env.example .env
-```
+1. create a system-Python virtual environment that can see distro BCC;
+2. run `tools/check_stage2.py` as root and require `stage2_ready=true`;
+3. start the sidecar explicitly with that verified root/Python/kernel setup;
+4. run OpenClaw normally with managed-wrapper and cgroup collection enabled.
 
-Then use OpenClaw normally — no separate sidecar terminal required.
-See [sidecar.md](sidecar.md) for the `autoStartSidecar` and `sidecarCommand`
-config options.
+Plugin auto-start is disabled by default because it cannot reproduce the
+required privileged BPF environment.
 
 ## User Commands
 
-Normal OpenClaw:
+Stage-2 preflight:
 
 ```bash
-python -m pip install -e "services/scheduler[dev]"
-cd packages/openclaw-plugin && npm install && npm run build && cd ../..
-cp .env.example .env
-python -m agent_scheduler.main --host 127.0.0.1 --port 8765
+export KERNEL_BUILD="$(readlink -f "/lib/modules/$(uname -r)/build")"
+STAGE2_PY="$PWD/.venv-system/bin/python"
+sudo env "PATH=/usr/sbin:/usr/bin:/sbin:/bin" \
+  "BCC_KERNEL_SOURCE=$KERNEL_BUILD" \
+  "$STAGE2_PY" tools/check_stage2.py
 ```
 
 SWE-Rebench:
@@ -34,7 +34,9 @@ SWE-Rebench:
 cp swe_rebench/config.example.yaml swe_rebench/config.yaml
 python -m swe_rebench.runner prepare --config swe_rebench/config.yaml
 python -m swe_rebench.discover --sample 20 --out swe_rebench/tasks.json
-python -m swe_rebench.runner run --config swe_rebench/config.yaml \
+sudo -E env "PATH=$PATH" "BCC_KERNEL_SOURCE=$KERNEL_BUILD" \
+  "$(command -v python)" -m swe_rebench.runner run \
+  --config swe_rebench/config.yaml --prepare \
   --dataset swe_rebench/tasks.json --sample 10 --export
 ```
 
@@ -47,10 +49,9 @@ sudo -E env "PATH=$PATH" "$(command -v python3)" \
   --dataset swe_rebench/tasks.json --sample 1 --export
 ```
 
-For broad Docker compatibility, leave `docker.cgroup_required: false` unless a
-container probe confirms `/sys/fs/cgroup/claw` can be created. With the default
-false value, cgroup sampling is best-effort and can borrow the task container's
-own cgroup when cgroupfs is read-only.
+The public configuration defaults `docker.cgroup_required: true`. A false
+value is troubleshooting-only and its output is not accepted as complete
+per-tool telemetry.
 
 ## Current Host Stage-2 Fix
 
@@ -637,8 +638,9 @@ sandbox image, and runs tools through the host OpenClaw Docker sandbox. Passing
 unless `--no-stage2-required` is supplied.
 
 The `container-openclaw` path runs OpenClaw, the plugin, and the sidecar inside
-each SWE-Rebench task image through `/claw/entrypoint.sh`. It is intentionally
-best-effort for Stage-2 by default. Its main failure surface is setup-heavy:
+each SWE-Rebench task image through `/claw/entrypoint.sh`. It is now an
+explicit legacy/diagnostic mode rather than the public default. Its main
+failure surface is setup-heavy:
 the task image must be able to install or already contain Node/OpenClaw,
 sidecar Python dependencies, Docker CLI access to the mounted daemon socket,
 and optionally cgroup/BCC tooling.
@@ -1301,7 +1303,6 @@ Validation commands unavailable or unsuitable in this Windows workspace:
   `analysis_failure`, and at least one healthy artifact with a non-empty
   command tree and clauses.
 
-<<<<<<< HEAD
 ## 2026-08-01 openEuler BCC and Linux 6.2+ RSS Compatibility
 
 The host Stage-2 collector now accepts both upstream Python binding names:
@@ -1348,7 +1349,6 @@ Validation commands unavailable or requiring an adjusted temp path:
 - A real `BPF(text=BPF_PROGRAM)` compile/load cannot run on this Windows host.
   The next openEuler Linux run must repeat the full-source compile using the
   running kernel build tree, then run the Stage-2 preflight/semantic smoke.
-=======
 ## 2026-07-31 Kunpeng/ARM64 Architecture Compatibility Audit
 
 ### Status: ARM-aware / Kunpeng-ready in design, not yet certified on Kunpeng
@@ -1432,7 +1432,7 @@ sudo -E env "PATH=$PATH" "$(command -v python3)" \
 |------|-----------|
 | SWE-Rebench task images are amd64-only | Use QEMU/binfmt path (`SWE_REBENCH_DOCKER_PLATFORM=linux/amd64`) |
 | OpenClaw CLI npm package may lack arm64 binary | Verify `npm install -g openclaw@2026.7.1` on arm64; fall back to source build |
-| BCC/eBPF kernel headers on EulerOS/openEuler | BCC is best-effort (fail-open); kernel-devel package names differ from Debian |
+| BCC/eBPF kernel headers on EulerOS/openEuler | Strict preflight fails closed; kernel-devel/BCC package names differ from Debian |
 | eBPF hardware counters (PERF_COUNT_HW_CPU_CYCLES) | Kunpeng 920 PMU differs from x86; perf_event_open may need `PERF_COUNT_HW_CPU_CYCLES` → ARMv8 PMU cycle counter mapping |
 | cgroup v2 layout on Kunpeng | `/sys/fs/cgroup` is the standard path; cgroup v2 is available on Linux 4.15+ (Kunpeng runs 4.19+ or 5.10+) |
 | `binfmt_misc` built into kernel vs. module | Handled by updated `arm_qemu_setup.sh` checking `/proc/filesystems` |
@@ -1466,4 +1466,47 @@ Validation commands unavailable or unsuitable in this Windows workspace:
   installed in this PowerShell environment.
 - Real Kunpeng/aarch64 Docker build, QEMU/binfmt smoke, and eBPF/tracefs
   attachment checks still require a Linux Kunpeng host.
->>>>>>> 7aed2829102bb5d5a81b66a68e4138976bdd53b5
+
+## 2026-08-01 eBPF-First Defaults and Operator Documentation
+
+The supported user path now treats strict Stage-2 eBPF telemetry as the
+project default instead of presenting process/cgroup polling as an equivalent
+quick start:
+
+- `.env.example` keeps
+  `AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED=true`;
+- the public SWE-Rebench configuration defaults to
+  `host-openclaw-sandbox`, required Stage-2, and required cgroup isolation;
+- `tools/check_stage2.py` provides one fail-closed host check that verifies the
+  selected Python/BCC binding, kernel headers, Docker, full BPF module load,
+  probe/perf attachment, cgroup creation, a real exec boundary, argv capture,
+  drained lifecycle maps, and telemetry loss;
+- plugin sidecar auto-start is opt-in because an unprivileged Node child cannot
+  reproduce the verified root/system-Python/BCC environment;
+- `tool_resource` public SDK exports are lazy, so importing the independent
+  telemetry module no longer eagerly imports NumPy-backed predictor modules;
+- README, deployment, sidecar, operator, SWE-Rebench, and troubleshooting
+  documentation use the same eBPF-first sequence. Degraded operation is
+  explicitly labelled troubleshooting-only and incomplete.
+
+The conflict markers accidentally committed around the 2026-07-31 Kunpeng and
+2026-08-01 openEuler compatibility records were removed while preserving both
+records.
+
+Validation completed in this workspace:
+
+- Root Python suite: 99 passed, 2 skipped.
+- Main Scheduler suite: 138 passed, 1 skipped.
+- Focused tracked delivery telemetry suite: 26 passed.
+- OpenClaw plugin suite: 64 passed; TypeScript typecheck passed.
+- Contract example/schema validation and Python compileall passed.
+- Local Markdown link validation and `git diff --check` passed.
+
+Linux-only validation unavailable in this Windows workspace:
+
+- `sudo env "PATH=/usr/sbin:/usr/bin:/sbin:/bin"
+  "BCC_KERNEL_SOURCE=$KERNEL_BUILD" "$STAGE2_PY"
+  tools/check_stage2.py` requires the user's Linux kernel, root, BCC, cgroup
+  v2, tracefs, perf events, and Docker. The user's openEuler host has already
+  shown `ClawTune BPF compile OK`; it must run the new semantic preflight and
+  require `stage2_ready=true` before the next accepted execution.

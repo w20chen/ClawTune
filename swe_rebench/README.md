@@ -7,13 +7,17 @@ agent-scheduler plugin and sidecar tracing enabled.
 
 | Platform | Runtime Mode | Prep |
 |---|---|---|
-| **x86_64** | `container-openclaw` (default) or `host-openclaw-sandbox` | None — native |
+| **x86_64** | `host-openclaw-sandbox` (strict default) | Complete the root README Stage-2 preflight |
 | **ARM/Kunpeng** | `host-openclaw-sandbox` | [QEMU setup](../docs/arm-qemu.md) first, then `docker.platform: "linux/amd64"` in config |
 
 ARM hosts must register amd64 binfmt before running any task. See
 [../docs/arm-qemu.md](../docs/arm-qemu.md).
 
 ## Setup (x86)
+
+First complete the repository
+[eBPF-first quick start](../README.md#ebpf-first-quick-start), including the
+root semantic preflight. Then configure the benchmark:
 
 ```bash
 cp swe_rebench/config.example.yaml swe_rebench/config.yaml
@@ -69,7 +73,12 @@ python -m swe_rebench.discover --instance-ids django__django-12345 --out one-tas
 ## Run A Batch
 
 ```bash
-python -m swe_rebench.runner run --config swe_rebench/config.yaml \
+source .venv-system/bin/activate
+export KERNEL_BUILD="$(readlink -f "/lib/modules/$(uname -r)/build")"
+
+sudo -E env "PATH=$PATH" "BCC_KERNEL_SOURCE=$KERNEL_BUILD" \
+  "$(command -v python)" -m swe_rebench.runner run \
+  --config swe_rebench/config.yaml \
   --prepare \
   --dataset swe_rebench/tasks.json \
   --sample 10 \
@@ -104,15 +113,17 @@ python -m swe_rebench.runner run --config swe_rebench/config.yaml \
   --sample 5
 ```
 
-### Host OpenClaw Sandbox Mode
+### Host OpenClaw Sandbox Mode (Default)
 
-The default mode is `container-openclaw`: each SWE-Rebench task container
-runs OpenClaw, the plugin, and the scheduler sidecar inside the image.
-In this mode `runtime.stage2_required: false` is propagated explicitly to the
-in-container sidecar, so unavailable BCC/eBPF, Docker-event, or cgroup features
-degrade to the ordinary tool/resource trace instead of blocking `exec`.
-Setting `stage2_required: true` opts into fail-closed startup and final artifact
-completeness checks.
+The default is `host-openclaw-sandbox` with `runtime.stage2_required: true`.
+OpenClaw and the privileged sidecar run on the host; tools execute in
+OpenClaw's Docker sandbox. The runner fails before the task if BCC/eBPF,
+kernel headers, probe attachment, cgroup creation, or the real exec semantic
+smoke is unhealthy.
+
+`container-openclaw` remains available only as an explicit legacy/diagnostic
+mode. If Stage-2 is disabled there, its output is not complete ClawTune
+telemetry.
 
 For a local Linux Docker daemon, the container runner also attempts Stage-2
 telemetry when the host exposes the required kernel interfaces. It mounts the
@@ -123,8 +134,8 @@ copy the host tracefs mount into the container's mount namespace. The generated
 `tool_resource_preflight.json` reports the selected tracefs path and does not
 set `stage2_ready: true` unless that tracepoint is visible and the dynamic
 kprobe control file is writable. Remote Docker daemons, non-Linux runners, and
-missing host interfaces keep the fail-open behavior: `exec` proceeds without
-Stage-2 telemetry.
+missing host interfaces make strict Stage-2 fail. Use
+`--no-stage2-required` only to diagnose the container path.
 
 When Stage-2 is requested through the managed wrapper, the container launcher
 executes a small gate wrapper in the final per-call cgroup, reports `/started`,
@@ -168,9 +179,10 @@ fork/exec so the payload uses the task interpreter and dependencies. Mounted
 agent starts, `sandbox-runtime-preflight.log` must prove that the task Python,
 pip module, and both pip entry points are usable as the sandbox UID.
 
-Resource attribution is best-effort:
+Resource attribution has two boundaries:
 
-- `exec` uses the managed wrapper at `/workspace/.claw/bin/claw-launch`.
+- `exec` uses the managed wrapper at `/workspace/.claw/bin/claw-launch` and is
+  required to produce its launcher-linked Stage-2 lifecycle and artifact.
 - Internal tools such as `read`, `edit`, and `apply_patch` are sampled from the
   shared sandbox container cgroup when it can be discovered.
 - Shared sandbox samples are marked
@@ -184,8 +196,8 @@ Resource attribution is best-effort:
 
 Stage-2 telemetry uses BCC/BPF to collect **per-clause** `peak_cpu_cores` and
 `sampled_peak_rss` via in-kernel perf CPU-clock sampling and kprobe-based
-process lifecycle tracking.  This provides much finer-grained resource
-attribution than the default cgroup-v2 polling fallback.
+process lifecycle tracking. This is the default collector. Cgroup/PID polling
+is a diagnostic fallback, not an accepted replacement for clause telemetry.
 
 **Prerequisites (host machine):**
 
@@ -194,9 +206,10 @@ attribution than the default cgroup-v2 polling fallback.
 sudo apt-get install -y bpfcc-tools python3-bpfcc        \
     linux-headers-$(uname -r) clang llc bpftool
 
-# Verify
-python3 -c "from bcc import BPF; print('BCC OK')"
-ls /sys/fs/cgroup/cgroup.controllers   # must exist (cgroup v2)
+# Then run the repository semantic check with the selected system-Python venv:
+sudo env "PATH=/usr/sbin:/usr/bin:/sbin:/bin" \
+  "BCC_KERNEL_SOURCE=$(readlink -f /lib/modules/$(uname -r)/build)" \
+  "$PWD/.venv-system/bin/python" tools/check_stage2.py
 ```
 
 **Configuration:**
@@ -415,8 +428,8 @@ Execution options:
 | Option | Purpose |
 | --- | --- |
 | `--prepare` | Rebuild the runtime bundle before running tasks. The runner also rebuilds automatically when the bundle looks stale. |
-| `--runtime-mode MODE` | Override `runtime.mode`; valid values are `container-openclaw` (default) and `host-openclaw-sandbox`. |
-| `--stage2-required` / `--no-stage2-required` | Require complete eBPF clause artifacts or explicitly allow a best-effort diagnostic run. CLI-selected host-sandbox mode defaults to required. |
+| `--runtime-mode MODE` | Override `runtime.mode`; valid values are `host-openclaw-sandbox` (default) and explicit legacy `container-openclaw`. |
+| `--stage2-required` / `--no-stage2-required` | Require complete eBPF clause artifacts (default) or explicitly allow an incomplete diagnostic run. |
 | `--dry-run` | Print the selected tasks and exit without pulling images or starting containers. |
 
 Output options:
@@ -429,14 +442,14 @@ Important config-only settings:
 
 | Config key | Purpose |
 | --- | --- |
-| `runtime.stage2_required` | Require healthy BCC/BPF clause artifacts. Defaults to `false` for the best-effort container mode; host-sandbox CLI selection defaults it to `true`. |
+| `runtime.stage2_required` | Require healthy BCC/BPF clause artifacts. Defaults to `true`; false is troubleshooting-only. |
 | `batch.task_timeout_seconds` | Per-task wall-clock timeout. `0` disables the timeout. |
 | `batch.retry_failed` | Number of retries after a failed task. |
 | `docker.pull_policy` | Image pull behavior: `missing`, `always`, or `never`. |
 | `docker.memory_limit` / `docker.cpus` | Per-container resource limits. |
 | `docker.network_mode` / `docker.dns_servers` | Container networking controls. |
-| `docker.privileged`, `docker.cgroupns_mode`, `docker.cgroup_mount_rw` | Optional cgroup access knobs for more complete cgroup sampling. |
-| `docker.cgroup_required` | If `true`, fail hard when per-tool cgroups cannot be created. Keep `false` for broad compatibility. |
+| `docker.privileged`, `docker.cgroupns_mode`, `docker.cgroup_mount_rw` | Strict default cgroup/kernel access settings. |
+| `docker.cgroup_required` | Defaults to `true`; reject runs that cannot create the required cgroup boundary. |
 | `output.trace_root` | Per-task artifact directory root. |
 | `output.report_path` | Batch report JSON path. |
 | `output.flat_export_dir` | Destination for `--export`; empty disables flat export. |

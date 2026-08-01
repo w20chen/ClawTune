@@ -42,12 +42,12 @@ def normalize_runtime_mode(value: str) -> str:
 
 @dataclass
 class RuntimeConfig:
-    mode: str = "container-openclaw"
-    stage2_required: bool = False
+    mode: str = "host-openclaw-sandbox"
+    stage2_required: bool = True
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "RuntimeConfig":
-        mode = normalize_runtime_mode(str(d.get("mode", "container-openclaw")))
+        mode = normalize_runtime_mode(str(d.get("mode", "host-openclaw-sandbox")))
         if mode not in {"container-openclaw", "host-openclaw-sandbox"}:
             raise ValueError(
                 "runtime.mode must be 'container-openclaw', "
@@ -56,7 +56,7 @@ class RuntimeConfig:
             )
         return cls(
             mode=mode,
-            stage2_required=_as_bool(d.get("stage2_required", False)),
+            stage2_required=_as_bool(d.get("stage2_required", True)),
         )
 
 

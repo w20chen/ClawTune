@@ -48,6 +48,7 @@ cat <<JSON5 | openclaw config patch --stdin
         enabled: true,
         config: {
           endpoint: "http://localhost:8765",
+          autoStartSidecar: false,
           mode: "observe",
           failOpen: true,
           recordRawTrace: true,
@@ -67,6 +68,12 @@ JSON5
 `recordRawTrace` is disabled by package default. Enable it when you want
 hook-visible tool args/results in traces. Use `managed-wrapper` when you want
 the sidecar to correlate `exec` with a trusted PID or cgroup scope.
+
+Automatic sidecar startup is disabled by default because strict Stage-2 eBPF
+uses a deliberately selected system-Python/BCC environment and root kernel
+access. Start that sidecar explicitly after running
+[`tools/check_stage2.py`](../../docs/troubleshooting.md#stage-2-ebpf-setup).
+Auto-start remains available as an opt-in for non-privileged diagnostic use.
 
 Sidecar authentication is optional. When the sidecar is started with
 `AGENT_SCHEDULER_TOKEN`, expose the same value to OpenClaw as

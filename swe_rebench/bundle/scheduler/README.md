@@ -1,12 +1,19 @@
 # Scheduler Sidecar
 
-Run:
+Strict Stage-2 eBPF is the supported default. For the complete host-package,
+system-Python, root preflight, and OpenClaw workflow, follow the repository
+eBPF-first quick start before generating this delivery bundle.
+
+From this directory, install Scheduler dependencies into the selected
+system-Python virtual environment:
 
 ```bash
 python -m pip install -e '.[dev]'
-export PYTHONPATH=src
-python -m agent_scheduler.main --host 127.0.0.1 --port 8765
 ```
+
+Before starting the sidecar, run the repository `tools/check_stage2.py` as
+root. A plain unprivileged `python -m agent_scheduler.main` is only suitable
+when Stage-2 has been explicitly disabled for troubleshooting.
 
 If editable install fails because the backend lacks `build_editable`, use:
 

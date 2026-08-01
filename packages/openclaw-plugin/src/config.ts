@@ -21,7 +21,10 @@ const defaults: PluginConfig = {
   enableNuma: true,
   profilingMode: "off",
   securityBoundaryAccepted: true,
-  autoStartSidecar: true,
+  // Strict Stage-2 requires an explicitly selected, privileged Python/BCC
+  // environment.  An OpenClaw child process cannot safely acquire that
+  // environment, so automatic startup is opt-in.
+  autoStartSidecar: false,
   sidecarCommand: "",
   trace: {
     schema_version: 6,
@@ -102,6 +105,12 @@ export function loadConfig(input: unknown): PluginConfig {
   }
   if (typeof config.enableNuma !== "boolean") {
     throw new Error("enableNuma must be a boolean");
+  }
+  if (typeof config.autoStartSidecar !== "boolean") {
+    throw new Error("autoStartSidecar must be a boolean");
+  }
+  if (typeof config.sidecarCommand !== "string") {
+    throw new Error("sidecarCommand must be a string");
   }
   if (config.executionBackend === "managed-wrapper" && config.securityBoundaryAccepted !== true) {
     throw new Error("managed-wrapper requires securityBoundaryAccepted=true");

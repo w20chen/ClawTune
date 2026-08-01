@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +29,25 @@ from tool_resource.telemetry import (
     validate_clause_telemetry_smoke,
 )
 from tool_resource.mvdan_client import MvdanClientError
+
+
+def test_telemetry_submodule_import_does_not_require_third_party_packages() -> None:
+    scheduler_src = Path(__file__).resolve().parents[1] / "src"
+    code = (
+        "import sys; "
+        f"sys.path.insert(0, {str(scheduler_src)!r}); "
+        "from tool_resource.telemetry import BPF_PROGRAM; "
+        "assert 'CLAW_RSS_COUNTER_ADDR' in BPF_PROGRAM"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-S", "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_container_init_pid_falls_back_to_docker_socket_after_cli_api_failure(monkeypatch) -> None:

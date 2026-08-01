@@ -562,12 +562,12 @@ def test_entrypoint_exports_container_runtime_identity_for_launcher() -> None:
 def test_runner_config_enables_complete_cgroup_sampling() -> None:
     config = RunnerConfig.from_yaml("swe_rebench/config.yaml")
 
-    assert config.runtime.mode == "container-openclaw"
-    assert config.runtime.stage2_required is False
+    assert config.runtime.mode == "host-openclaw-sandbox"
+    assert config.runtime.stage2_required is True
     assert config.docker.privileged is True
     assert config.docker.cgroupns_mode == "host"
     assert config.docker.cgroup_mount_rw is True
-    assert config.docker.cgroup_required is False
+    assert config.docker.cgroup_required is True
 
 
 def test_runner_config_parses_host_openclaw_sandbox_mode(tmp_path: Path) -> None:
@@ -1387,7 +1387,7 @@ def test_host_sandbox_sidecar_enables_docker_exec_observer(monkeypatch, tmp_path
     env = captured["env"]
     assert isinstance(env, dict)
     assert env["AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER"] == "true"
-    assert env["AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED"] == "false"
+    assert env["AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED"] == "true"
     assert env["AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX"] == _sandbox_container_prefix(workspace)
     assert str(tmp_path / "services" / "scheduler" / "src") in env["PYTHONPATH"]
     assert "LD_PRELOAD" not in env
@@ -1402,7 +1402,7 @@ def test_host_sandbox_writes_tool_resource_preflight(monkeypatch, tmp_path: Path
     captured: dict[str, object] = {}
 
     class FakeRunResult:
-        stdout = '{"mode": "host-openclaw-sandbox"}\n'
+        stdout = '{"mode": "host-openclaw-sandbox", "stage2_ready": true}\n'
         stderr = ""
         returncode = 0
 
@@ -1416,7 +1416,10 @@ def test_host_sandbox_writes_tool_resource_preflight(monkeypatch, tmp_path: Path
     _write_host_tool_resource_preflight(trace_dir, config)
 
     preflight = trace_dir / "tool_resource_preflight_host.json"
-    assert preflight.read_text(encoding="utf-8") == '{"mode": "host-openclaw-sandbox"}\n'
+    assert json.loads(preflight.read_text(encoding="utf-8")) == {
+        "mode": "host-openclaw-sandbox",
+        "stage2_ready": True,
+    }
     env = captured["env"]
     assert isinstance(env, dict)
     assert str(tmp_path / "services" / "scheduler" / "src") in env["PYTHONPATH"]
@@ -1426,6 +1429,7 @@ def test_host_sandbox_preserves_bpf_compiler_stderr(monkeypatch, tmp_path: Path)
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    config.runtime.stage2_required = False
     trace_dir = tmp_path / "trace"
     trace_dir.mkdir()
 

@@ -1,12 +1,40 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
 import {loadConfig} from "../dist/config.js";
+
+const manifest = JSON.parse(
+  readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8")
+);
 
 test("loadConfig uses managed-wrapper as the default exec path", () => {
   const config = loadConfig({});
 
   assert.equal(config.executionBackend, "managed-wrapper");
   assert.equal(config.securityBoundaryAccepted, true);
+  assert.equal(config.autoStartSidecar, false);
+});
+
+test("loadConfig validates explicit sidecar launcher settings", () => {
+  assert.equal(loadConfig({autoStartSidecar: true}).autoStartSidecar, true);
+  assert.equal(loadConfig({sidecarCommand: "python -m agent_scheduler.main"}).sidecarCommand,
+    "python -m agent_scheduler.main");
+  assert.throws(
+    () => loadConfig({autoStartSidecar: "yes"}),
+    /autoStartSidecar must be a boolean/
+  );
+  assert.throws(
+    () => loadConfig({sidecarCommand: false}),
+    /sidecarCommand must be a string/
+  );
+});
+
+test("runtime and manifest agree that privileged Stage-2 sidecar auto-start is opt-in", () => {
+  assert.equal(loadConfig({}).autoStartSidecar, false);
+  assert.equal(
+    manifest.configSchema.properties.autoStartSidecar.default,
+    false
+  );
 });
 
 test("loadConfig deep-merges partial trace config", () => {

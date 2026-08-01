@@ -28,7 +28,7 @@
       "profilingMode": {"enum": ["off", "proc", "perf", "ksys", "vtune"], "default": "off"},
       "consoleMode": {"enum": ["verbose", "quiet"], "default": "verbose"},
       "securityBoundaryAccepted": {"type": "boolean", "default": true},
-      "autoStartSidecar": {"type": "boolean", "default": true, "description": "Automatically start the scheduler sidecar if not already running."},
+      "autoStartSidecar": {"type": "boolean", "default": false, "description": "Automatically start a non-privileged scheduler sidecar if not already running. Keep false for strict Stage-2 eBPF."},
       "sidecarCommand": {"type": "string", "default": "", "description": "Shell command to start the sidecar. Auto-detected when empty."},
       "trace": {
         "type": "object",

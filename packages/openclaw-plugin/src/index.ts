@@ -170,6 +170,8 @@ export default definePluginEntry({
       enableNuma: {type: "boolean", default: true},
       profilingMode: {enum: ["off", "proc", "perf", "ksys", "vtune"], default: "off"},
       securityBoundaryAccepted: {type: "boolean", default: true},
+      autoStartSidecar: {type: "boolean", default: false},
+      sidecarCommand: {type: "string", default: ""},
       trace: {
         type: "object",
         additionalProperties: false,
@@ -1156,7 +1158,9 @@ export default definePluginEntry({
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => {
       performShutdown().finally(() => {
-        process.exit(0);
+        // Preserve conventional signal exit status instead of masking a
+        // terminated OpenClaw process as a successful exit.
+        process.exit(signal === "SIGINT" ? 130 : 143);
       });
     });
   }
