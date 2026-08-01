@@ -1500,6 +1500,10 @@ The public installation and execution path is now `scripts/clawtune.py`:
   Python, `PYTHONPATH`, `BCC_KERNEL_SOURCE`, and sudo;
 - `tools/check_ebpf.py` presents user-facing `ready`/BCC/kernel/runtime fields
   while the historical internal preflight remains compatible;
+- plugin setup recognizes a missing linked `openclaw-plugin` path left by a
+  moved/renamed checkout, creates a timestamped OpenClaw config backup, runs
+  `openclaw doctor --fix`, and retries the current link. It does not auto-repair
+  missing paths belonging to unrelated plugins;
 - the benchmark config accepts `runtime.ebpf_required`, and the Scheduler
   accepts `AGENT_SCHEDULER_TOOL_RESOURCE_EBPF_REQUIRED`; old internal names
   remain supported for existing installations;
@@ -1510,7 +1514,7 @@ The public installation and execution path is now `scripts/clawtune.py`:
 
 Validation completed in this workspace:
 
-- Root Python suite: 105 passed, 2 skipped.
+- Root Python suite: 107 passed, 2 skipped.
 - Scheduler suite: 140 passed, 1 skipped.
 - Focused CLI/config/preflight/SWE-Rebench suite: 88 passed, 2 skipped.
 - OpenClaw plugin: 64 passed; TypeScript typecheck passed.

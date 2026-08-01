@@ -136,3 +136,8 @@ python3 scripts/clawtune.py setup
 
 It rebuilds the plugin, refreshes the editable Scheduler installation, retains
 your existing `.env` and benchmark config, and verifies eBPF again.
+
+If the repository moved or only its path capitalization changed, setup detects
+an invalid old ClawTune link before plugin installation. It backs up
+`~/.openclaw/openclaw.json`, runs OpenClaw's repair command, and links the
+current checkout. Other valid plugin paths are retained by OpenClaw.

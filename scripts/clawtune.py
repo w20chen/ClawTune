@@ -10,6 +10,7 @@ import platform
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
@@ -216,15 +217,67 @@ def build_plugin() -> None:
     subprocess.run(["npm", "run", "build"], cwd=plugin, check=True)
 
 
+def openclaw_config_path() -> Path:
+    configured = os.getenv("OPENCLAW_CONFIG_PATH")
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".openclaw" / "openclaw.json"
+
+
+def stale_clawtune_plugin_link(output: str) -> bool:
+    normalized = output.lower()
+    return (
+        "plugins.load.paths" in normalized
+        and "plugin path not found" in normalized
+        and "openclaw-plugin" in normalized
+    )
+
+
+def backup_openclaw_config() -> Path | None:
+    config = openclaw_config_path()
+    if not config.is_file():
+        return None
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    backup = config.with_name(f"{config.name}.clawtune-backup-{timestamp}")
+    try:
+        shutil.copy2(config, backup)
+    except OSError as exc:
+        raise SetupError(f"无法备份 OpenClaw 配置 {config}：{exc}") from exc
+    log(f"已备份 OpenClaw 配置：{backup}")
+    return backup
+
+
+def install_openclaw_plugin(openclaw: str, plugin: Path) -> None:
+    command: list[str | Path] = [openclaw, "plugins", "install", "--link", plugin]
+    installed = run(command, check=False, capture=True)
+    combined = f"{installed.stdout}\n{installed.stderr}"
+
+    if installed.returncode != 0 and stale_clawtune_plugin_link(combined):
+        log("发现已失效的 ClawTune 插件旧路径，正在安全修复 OpenClaw 配置")
+        backup_openclaw_config()
+        repaired = run(
+            [openclaw, "doctor", "--fix"],
+            check=False,
+            capture=True,
+        )
+        if repaired.returncode != 0:
+            detail = (repaired.stderr or repaired.stdout).strip()
+            raise SetupError(f"OpenClaw 无法自动清理失效插件路径：\n{detail}")
+        installed = run(command, check=False, capture=True)
+        combined = f"{installed.stdout}\n{installed.stderr}"
+
+    if installed.returncode != 0:
+        normalized = combined.lower()
+        if "already" not in normalized and "exists" not in normalized:
+            detail = (installed.stderr or installed.stdout).strip()
+            raise SetupError(f"OpenClaw 插件安装失败：\n{detail}")
+
+
 def configure_openclaw() -> None:
     openclaw = shutil.which("openclaw")
     assert openclaw is not None
     plugin = ROOT / "packages" / "openclaw-plugin"
-    installed = run([openclaw, "plugins", "install", "--link", plugin], check=False, capture=True)
-    if installed.returncode != 0:
-        combined = f"{installed.stdout}\n{installed.stderr}".lower()
-        if "already" not in combined and "exists" not in combined:
-            raise SetupError(f"OpenClaw 插件安装失败：\n{installed.stderr.strip()}")
+    install_openclaw_plugin(openclaw, plugin)
     run([openclaw, "plugins", "enable", "agent-scheduler"])
     launcher = (VENV / "bin" / "claw-launch").resolve()
     patch = {

@@ -45,6 +45,7 @@ This one command:
 - installs missing eBPF compiler, BCC, and matching kernel packages;
 - creates one reusable `.venv` that can see the system BCC binding;
 - installs the Scheduler and builds/configures the OpenClaw plugin;
+- repairs a stale ClawTune plugin link after the repository has moved;
 - enables and tests amd64 Docker images automatically on Kunpeng;
 - compiles, attaches, and exercises the real eBPF collector.
 

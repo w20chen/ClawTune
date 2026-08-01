@@ -162,6 +162,22 @@ Check that:
 Rerunning setup refreshes the plugin link and absolute launcher path after a
 checkout has moved.
 
+## OpenClaw reports `plugins.load.paths: plugin path not found`
+
+The OpenClaw config contains a linked plugin path from an older checkout, for
+example `/home/user/claw/...` after the repository moved to
+`/home/user/ClawTune/...`. Current setup recognizes a missing ClawTune plugin
+link, backs up the config, runs `openclaw doctor --fix`, then installs the link
+from the current checkout:
+
+```bash
+python3 scripts/clawtune.py setup
+```
+
+The backup is written next to `~/.openclaw/openclaw.json` with a timestamp. If
+an older checkout does not yet contain this recovery, run `openclaw doctor
+--fix` once and then rerun setup.
+
 ## Kunpeng cannot run an amd64 image
 
 Rerun setup; it installs and tests the binfmt handler on arm64. For a focused
