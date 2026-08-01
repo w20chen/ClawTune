@@ -1,7 +1,7 @@
 # Using ClawTune with OpenClaw
 
-Setup installs/enables the plugin and writes its absolute launcher path. The
-recommended agent wrapper starts and stops the eBPF sidecar automatically.
+Setup installs/enables the plugin, writes its absolute launcher path, and
+configures automatic privileged eBPF sidecar startup.
 
 ## Route the model through ClawTune
 
@@ -38,16 +38,14 @@ use a different credential than OpenClaw. Do not commit keys.
 ## End-to-end smoke test
 
 ```bash
-python3 scripts/clawtune.py agent \
-  --local --agent main --model "vllm/<model>" \
+openclaw agent --local --agent main --model "vllm/<model>" \
   --message "Use the shell to run: python -c 'print(\"clawtune-ok\")'. Then summarize it." \
   --session-key "clawtune-smoke"
 ```
 
-The wrapper waits for sidecar readiness before OpenClaw can make its first
-model request. A separately running sidecar is reused. Use
-`python3 scripts/clawtune.py sidecar` only when it must stay available across
-multiple OpenClaw invocations.
+The plugin waits for sidecar readiness before OpenClaw can make its first model
+request. A separately running sidecar is reused. The explicit Python wrapper
+remains the fallback for non-interactive sudo environments.
 
 Inspect the correlated execution:
 

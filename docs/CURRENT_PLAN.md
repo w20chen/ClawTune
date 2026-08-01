@@ -1497,9 +1497,15 @@ The public installation and execution path is now `scripts/clawtune.py`:
   up amd64 binfmt on Kunpeng, and runs the real eBPF semantic check;
 - `doctor` emits one consolidated host/interpreter/kernel/tool report;
 - `doctor` also probes the fixed loopback readiness endpoint and explicitly
-  tells the operator to use the automatic agent wrapper when port 8765 is not
-  listening. Setup states that its semantic check exits and is not itself a
-  background sidecar;
+  reports when port 8765 is not listening. Setup states that its semantic check
+  exits while normal interactive OpenClaw will auto-start the sidecar;
+- setup enables plugin auto-start only with the exact verified sudo/Python/BCC
+  command. The plugin's awaited `before_agent_start` gate prevents the first
+  provider request until sidecar health succeeds, restoring direct
+  `openclaw agent ...` without the old startup race;
+- after readiness, the plugin unreferences the healthy child and capture pipes
+  so they do not keep one-shot OpenClaw CLI processes alive; it retains the
+  cleanup handle used by the existing shutdown path;
 - `agent` restores the original automatic-sidecar user experience without
   restoring the unsafe unprivileged plugin child: it starts the verified root
   sidecar in its own process group, waits for readiness, runs `openclaw agent`,
@@ -1524,7 +1530,7 @@ The public installation and execution path is now `scripts/clawtune.py`:
 
 Validation completed in this workspace:
 
-- Root Python suite: 112 passed, 2 skipped.
+- Root Python suite: 114 passed, 2 skipped.
 - Scheduler suite: 140 passed, 1 skipped.
 - Focused CLI/config/preflight/SWE-Rebench suite: 88 passed, 2 skipped.
 - OpenClaw plugin: 64 passed; TypeScript typecheck passed.
@@ -1538,6 +1544,10 @@ Validation commands unavailable or adjusted in this Windows workspace:
   interfaces, Docker, and (for Kunpeng) aarch64 binfmt/QEMU. Run `setup` once on
   the target Kunpeng/openEuler host; its final semantic check is the acceptance
   gate. Repeat on x86_64 for the secondary native host path.
+- Direct `openclaw agent ...` privileged auto-start and the awaited
+  `before_agent_start` readiness gate require the target Linux OpenClaw runtime
+  and controlling terminal. TypeScript build/tests validate the plugin, but the
+  Kunpeng host must rerun `setup --skip-qemu` and execute one real agent turn.
 - `python -m pytest services/scheduler/tests/test_config.py -q --basetemp
   C:\tmp\clawtune-docs-scheduler` could not create that sandbox path due to
   Windows permissions. The same test passed using repository-local

@@ -79,20 +79,19 @@ upstream URL is not DeepSeek-compatible, set
 
 ## Start and verify
 
-Run the agent through ClawTune's wrapper:
+Run OpenClaw normally:
 
 ```bash
-python3 scripts/clawtune.py agent \
-  --local --agent main --model "vllm/<model>" \
+openclaw agent --local --agent main --model "vllm/<model>" \
   --message "Use the shell to run uname -a, then summarize it."
 ```
 
-It asks for sudo when needed, starts the eBPF sidecar with the verified `.venv`
-and kernel environment, waits for port 8765, and then starts OpenClaw. It stops
-only the sidecar it created; a pre-existing sidecar is reused and retained.
+The plugin asks for sudo when needed, starts the eBPF sidecar with the verified
+`.venv` and kernel environment, and blocks the first agent turn until port 8765
+is ready. A pre-existing sidecar is reused.
 
-For a gateway or multiple agent commands, use the long-lived form in a separate
-terminal:
+For a non-interactive service without a controlling terminal, either provide
+site-managed privilege or use the explicit long-lived form:
 
 ```bash
 python3 scripts/clawtune.py sidecar

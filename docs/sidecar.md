@@ -5,10 +5,10 @@ the eBPF collector, records traces, and serves recent measurements/predictions.
 
 ## Start it
 
-For a single agent run, startup and cleanup are automatic:
+For an interactive agent run, plugin startup and cleanup are automatic:
 
 ```bash
-python3 scripts/clawtune.py agent --local --agent main --model "vllm/<model>" \
+openclaw agent --local --agent main --model "vllm/<model>" \
   --message "Run uname -a"
 ```
 
@@ -19,9 +19,8 @@ python3 scripts/clawtune.py sidecar
 ```
 
 Both paths use `.env`, listen on `127.0.0.1:8765`, and ask for the kernel
-privileges needed by eBPF. The old plugin-child auto-start remains disabled
-because it is unprivileged and races the first model request; the Python agent
-wrapper starts and verifies the sidecar before OpenClaw begins.
+privileges needed by eBPF. Setup gives the plugin an exact sudo command, and a
+pre-agent hook waits for readiness to eliminate the old first-request race.
 
 ## Endpoints
 

@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -290,7 +291,8 @@ def configure_openclaw() -> None:
                     "enabled": True,
                     "config": {
                         "endpoint": "http://127.0.0.1:8765",
-                        "autoStartSidecar": False,
+                        "autoStartSidecar": True,
+                        "sidecarCommand": auto_sidecar_shell_command(),
                         "recordRawTrace": True,
                         "executionBackend": "managed-wrapper",
                         "launcherPath": str(launcher),
@@ -401,8 +403,8 @@ def doctor() -> int:
         log("基础环境正常。运行 `python3 scripts/clawtune.py check` 做内核级 eBPF 验证。")
         if not report["sidecar"]["running"]:
             log(
-                "sidecar 当前未运行；使用 OpenClaw 前先在独立终端运行 "
-                "`python3 scripts/clawtune.py sidecar`。"
+                "sidecar 当前未运行；这是正常的，交互式 `openclaw agent` "
+                "会在首次请求前自动启动并等待它。"
             )
         return 0
     log("环境尚未就绪。运行 `python3 scripts/clawtune.py setup` 自动处理可安装项。")
@@ -439,8 +441,8 @@ def setup(args: argparse.Namespace) -> None:
     configure_openclaw()
     check_ebpf(ROOT / "data" / "ebpf-check.json")
     log("安装和 eBPF 验证完成；验证进程已退出，不会留下常驻 sidecar。")
-    log("运行 OpenClaw：python3 scripts/clawtune.py agent <OpenClaw agent 参数>")
-    log("仅长期驻留时才需独立运行：python3 scripts/clawtune.py sidecar")
+    log("OpenClaw 插件会在首次请求前自动启动并等待 eBPF sidecar。")
+    log("现在可直接运行：openclaw agent <参数>")
     log("运行 benchmark 则直接使用：python3 scripts/clawtune.py benchmark --sample 1")
 
 
@@ -464,6 +466,13 @@ def sidecar_command() -> list[str]:
             "8765",
         ]
     )
+
+
+def auto_sidecar_shell_command() -> str:
+    # sidecar-launcher uses `/bin/sh -c`. `exec` replaces that shell with sudo
+    # so OpenClaw's shutdown signal reaches sudo and is relayed to the root
+    # sidecar process instead of leaving an orphan.
+    return "exec " + shlex.join(sidecar_command())
 
 
 def wait_for_sidecar(child: subprocess.Popen[bytes], log_path: Path) -> None:

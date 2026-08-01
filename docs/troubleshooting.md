@@ -152,20 +152,25 @@ and provider proxy URL.
 ### OpenClaw reports `ECONNREFUSED 127.0.0.1:8765`
 
 Provider onboarding succeeded, but the local ClawTune proxy is not running.
-The eBPF validation performed by setup is temporary and does not start a
-background service. Rerun the agent through the automatic wrapper:
+The eBPF validation performed by setup is temporary. Current setup configures
+the plugin to auto-start the privileged sidecar and wait before the first model
+request. After updating the checkout, rerun setup once so it rebuilds the
+plugin and writes that command:
 
 ```bash
 cd ~/ClawTune
-python3 scripts/clawtune.py agent \
-  --local --agent main --model "vllm/<model>" \
+python3 scripts/clawtune.py setup --skip-qemu
+openclaw agent --local --agent main --model "vllm/<model>" \
   --message "Use the shell to run: python -c 'print(\"clawtune-ok\")'."
 ```
 
-It starts the privileged sidecar, waits for readiness, and only then starts
-OpenClaw. For a long-lived sidecar, keep this command open in one terminal:
+For a non-interactive environment where sudo cannot prompt, use the explicit
+Python `agent` wrapper or keep a long-lived sidecar open in one terminal:
 
 ```bash
+python3 scripts/clawtune.py agent --local --agent main --model "vllm/<model>" \
+  --message "Use the shell to run: python -c 'print(\"clawtune-ok\")'."
+# or
 python3 scripts/clawtune.py sidecar
 ```
 

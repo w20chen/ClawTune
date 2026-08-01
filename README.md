@@ -46,6 +46,7 @@ This one command:
 - creates one reusable `.venv` that can see the system BCC binding;
 - installs the Scheduler and builds/configures the OpenClaw plugin;
 - repairs a stale ClawTune plugin link after the repository has moved;
+- configures automatic privileged sidecar startup with a readiness gate;
 - enables and tests amd64 Docker images automatically on Kunpeng;
 - compiles, attaches, and exercises the real eBPF collector.
 
@@ -88,19 +89,18 @@ Secrets are ignored by Git. Do not commit `.env`, OpenClaw credentials, or
 
 ### 3. Run ClawTune with OpenClaw
 
-Use the unified command. It starts the privileged eBPF sidecar, waits until it
-is ready, runs the OpenClaw agent, and stops the sidecar afterward. Replace the
+Run OpenClaw normally. The configured plugin starts the privileged eBPF
+sidecar and waits for readiness before the first model request. Replace the
 model name with the one you configured:
 
 ```bash
-python3 scripts/clawtune.py agent \
-  --local --agent main --model "vllm/<model>" \
+openclaw agent --local --agent main --model "vllm/<model>" \
   --message "Use the shell to run: python -c 'print(\"clawtune-ok\")'."
 ```
 
-If a sidecar is already running, the wrapper reuses it and leaves it running.
-For a gateway or several agent commands, start the long-lived form once with
-`python3 scripts/clawtune.py sidecar` and keep that terminal open.
+If a sidecar is already running, the plugin reuses it. The explicit
+`python3 scripts/clawtune.py agent ...` wrapper remains available for
+non-interactive environments where plugin-spawned sudo cannot use a terminal.
 
 Traces are written under `data/traces/`. A healthy API alone is not used as
 proof of eBPF readiness; `setup` and `check` both execute a real instrumented

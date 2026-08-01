@@ -202,6 +202,7 @@ export default definePluginEntry({
   let sidecarLauncher: SidecarLauncherResult | null = null;
   /** Tracks the in-flight launch promise so beforeExit can await it. */
   let sidecarLaunchPromise: Promise<void> | null = null;
+  let sidecarLaunchError: unknown | null = null;
   if (config.autoStartSidecar) {
     const launchPromise = ensureSidecarRunning({
       endpoint: config.endpoint,
@@ -220,11 +221,27 @@ export default definePluginEntry({
     sidecarLaunchPromise = launchPromise.then((result) => {
       sidecarLauncher = result;
     }).catch((err) => {
-      logger.warn("sidecar auto-start failed, continuing without sidecar", {
+      sidecarLaunchError = err;
+      logger.warn("sidecar auto-start failed", {
         error: String(err),
       });
     });
   }
+
+  async function waitForAutoStartedSidecar(): Promise<void> {
+    if (sidecarLaunchPromise === null) return;
+    await sidecarLaunchPromise;
+    if (sidecarLaunchError !== null) {
+      throw new Error(`required sidecar auto-start failed: ${String(sidecarLaunchError)}`);
+    }
+  }
+
+  // This legacy compatibility gate is intentionally used instead of the
+  // observation-only model_call_started hook. OpenClaw awaits it before the
+  // first provider request, eliminating the startup race with the local proxy.
+  api.on("before_agent_start", async () => {
+    await waitForAutoStartedSidecar();
+  }, {priority: 1000, timeoutMs: 20_000});
 
   const client = new SidecarClient(config);
   const correlation = new CorrelationMap(300_000, 10_000);

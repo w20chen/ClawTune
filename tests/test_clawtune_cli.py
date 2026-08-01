@@ -276,3 +276,54 @@ def test_managed_root_sidecar_is_stopped_through_sudo(tmp_path, monkeypatch) -> 
     assert commands == [
         ("sudo", "-n", "/usr/bin/kill", "-TERM", "--", "-321")
     ]
+
+
+def test_auto_sidecar_command_replaces_shell_and_uses_verified_environment(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        clawtune,
+        "sidecar_command",
+        lambda: [
+            "sudo",
+            "env",
+            "BCC_KERNEL_SOURCE=/lib/modules/current/build",
+            "/repo/.venv/bin/python",
+            "-m",
+            "agent_scheduler.main",
+        ],
+    )
+
+    command = clawtune.auto_sidecar_shell_command()
+
+    assert command.startswith("exec sudo env ")
+    assert "BCC_KERNEL_SOURCE=/lib/modules/current/build" in command
+    assert "/repo/.venv/bin/python -m agent_scheduler.main" in command
+
+
+def test_openclaw_config_enables_gated_privileged_sidecar(monkeypatch) -> None:
+    monkeypatch.setattr(clawtune.shutil, "which", lambda _name: "/usr/bin/openclaw")
+    monkeypatch.setattr(clawtune, "install_openclaw_plugin", lambda *_args: None)
+    monkeypatch.setattr(
+        clawtune,
+        "auto_sidecar_shell_command",
+        lambda: "exec sudo env BCC_KERNEL_SOURCE=/kernel /repo/.venv/bin/python -m sidecar",
+    )
+    patches = []
+
+    def fake_run(command, **kwargs):
+        rendered = tuple(map(str, command))
+        if rendered[-3:] == ("config", "patch", "--stdin"):
+            patches.append(kwargs["input_text"])
+        return subprocess.CompletedProcess(rendered, 0, "", "")
+
+    monkeypatch.setattr(clawtune, "run", fake_run)
+
+    clawtune.configure_openclaw()
+
+    assert len(patches) == 1
+    import json
+
+    entry = json.loads(patches[0])["plugins"]["entries"]["agent-scheduler"]
+    assert entry["config"]["autoStartSidecar"] is True
+    assert entry["config"]["sidecarCommand"].startswith("exec sudo env ")

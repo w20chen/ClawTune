@@ -8,9 +8,9 @@ and configures it automatically:
 python3 scripts/clawtune.py setup
 ```
 
-That is the supported setup path. Run an agent with automatic privileged
-sidecar lifecycle through `python3 scripts/clawtune.py agent ...`. Use
-`python3 scripts/clawtune.py sidecar` only for a long-lived process.
+That is the supported setup path. It configures automatic privileged sidecar
+startup and waits before the first model request, so normal interactive use
+continues to run `openclaw agent ...` directly.
 
 ## Developer build
 

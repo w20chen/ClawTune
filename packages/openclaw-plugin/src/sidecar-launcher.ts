@@ -165,6 +165,7 @@ export async function ensureSidecarRunning(
     const healthy = await pingHealth(healthUrl, Math.min(healthPollMs, deadline - Date.now()));
     if (healthy) {
       logger.info("sidecar is healthy", {endpoint});
+      unrefHealthyChild(child);
       return {
         child,
         cleanup: () => {
@@ -227,6 +228,17 @@ async function pingHealth(url: string, timeoutMs: number): Promise<boolean> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function unrefHealthyChild(child: ChildProcess): void {
+  // The plugin retains the ChildProcess object for shutdown cleanup, but the
+  // healthy sidecar and its capture pipes must not keep one-shot OpenClaw CLI
+  // commands alive after the agent turn has completed.
+  child.unref();
+  for (const stream of [child.stdout, child.stderr]) {
+    const candidate = stream as unknown as {unref?: () => void} | null;
+    candidate?.unref?.();
+  }
 }
 
 function pythonCommand(): string {

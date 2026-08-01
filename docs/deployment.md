@@ -21,9 +21,10 @@ The wrapper supplies the exact `.venv`, kernel build tree, `.env`, and clean
 executable path that passed setup. It is the stable deployment command for both
 openEuler/Kunpeng and x86 Linux.
 
-The OpenClaw plugin deliberately does not auto-start this process. A normal
-Node child does not have the root/kernel environment needed for accepted eBPF
-measurements.
+Interactive OpenClaw use auto-starts this process with the exact privileged
+command installed by setup and waits for readiness. A managed service without a
+controlling terminal should start the long-lived sidecar explicitly because
+sudo cannot prompt there.
 
 ## Health and observability
 
