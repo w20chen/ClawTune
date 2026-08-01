@@ -1421,6 +1421,33 @@ def test_host_sandbox_writes_tool_resource_preflight(monkeypatch, tmp_path: Path
     assert str(tmp_path / "services" / "scheduler" / "src") in env["PYTHONPATH"]
 
 
+def test_host_sandbox_preserves_bpf_compiler_stderr(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("", encoding="utf-8")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    trace_dir = tmp_path / "trace"
+    trace_dir.mkdir()
+
+    class FakeRunResult:
+        stdout = '{"mode": "host-openclaw-sandbox", "stage2_ready": false}\n'
+        stderr = "/virtual/main.c:137: error: incompatible rss_stat layout\n"
+        returncode = 0
+
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox.subprocess.run",
+        lambda *args, **kwargs: FakeRunResult(),
+    )
+
+    _write_host_tool_resource_preflight(trace_dir, config)
+
+    recorded = json.loads(
+        (trace_dir / "tool_resource_preflight_host.json").read_text(encoding="utf-8")
+    )
+    assert recorded["preflight_stderr"] == (
+        "/virtual/main.c:137: error: incompatible rss_stat layout"
+    )
+
+
 def test_host_sandbox_required_stage2_fails_fast_on_preflight(
     monkeypatch,
     tmp_path: Path,

@@ -1286,3 +1286,50 @@ Validation commands unavailable or unsuitable in this Windows workspace:
   `stage2_ready=true`, equal `/started` and `/exited` counts, no
   `analysis_failure`, and at least one healthy artifact with a non-empty
   command tree and clauses.
+
+## 2026-08-01 openEuler BCC and Linux 6.2+ RSS Compatibility
+
+The host Stage-2 collector now accepts both upstream Python binding names:
+Debian-family `bcc` and openEuler `bpfcc`. The selected module and path are
+recorded in preflight diagnostics, so a Conda interpreter no longer needs a
+repository-local compatibility symlink. Host preflight also preserves BCC/
+clang stderr when its Python subprocess emits JSON on stdout.
+
+The embedded BPF source now supports both `mm_struct::rss_stat` layouts:
+
+- Linux before 6.2 uses `rss_stat.count[index].counter`;
+- Linux 6.2 and later uses `rss_stat[index].count` from
+  `struct percpu_counter`.
+
+For the per-CPU layout, each file/anonymous/shared-memory member is clamped
+before summation, matching Linux 6.6's fast `get_mm_rss()` approximation. This
+does not include unbatched per-CPU residuals and is therefore explicitly
+reported as `percpu_counter_global_approximation` with `counter_exact=false`
+in RSS provenance; that provenance is now carried into per-image clause
+diagnostics. No public JSON Schema field was changed.
+
+Validation in this Windows workspace:
+
+- Focused telemetry and runner suite: 104 passed, 2 skipped.
+- Main scheduler suite: 137 passed, 1 skipped.
+- Root runner suite: 95 passed, 2 skipped.
+- `python -m compileall -q swe_rebench services/scheduler/src
+  services/scheduler/tests tests`: passed.
+- Generated and tracked delivery copies match; the 126-file source
+  fingerprint is
+  `sha256:1c88599519f3fae7ff828f3d15ca8c7d37d3d7008350c4056b95767420f0d068`.
+- `git diff --check`: passed.
+
+Validation commands unavailable or requiring an adjusted temp path:
+
+- Pytest's configured default `C:\Users\29068\.pytest-tmp` and attempted
+  `C:\tmp\clawtune-pytest-*-rss` bases are not writable in this sandbox.
+  The maintained suites passed with explicit repository-local `--basetemp`
+  directories.
+- A `--basetemp .pytest_cache\rss-final` retry is unsuitable for the two
+  bundle-staleness tests because `.pytest_cache` is intentionally excluded
+  from source fingerprinting; those tests passed when rerun from an ordinary
+  repository-local temp directory.
+- A real `BPF(text=BPF_PROGRAM)` compile/load cannot run on this Windows host.
+  The next openEuler Linux run must repeat the full-source compile using the
+  running kernel build tree, then run the Stage-2 preflight/semantic smoke.

@@ -555,9 +555,12 @@ try:
         validate_clause_telemetry_smoke,
         validate_clause_telemetry_runtime,
     )
-    _ensure_bcc_importable()
-    import bcc
-    payload["bcc_import"] = {"ok": True, "path": getattr(bcc, "__file__", None)}
+    bcc = _ensure_bcc_importable()
+    payload["bcc_import"] = {
+        "ok": True,
+        "module": getattr(bcc, "__name__", None),
+        "path": getattr(bcc, "__file__", None),
+    }
     payload["bpf_runtime"] = _bpf_runtime_diagnostics()
     try:
         validate_clause_telemetry_runtime(
@@ -586,7 +589,18 @@ print(json.dumps(payload, indent=2))
         env=env,
         cwd=str(config.repo_root / "services" / "scheduler"),
     )
-    output = result.stdout if result.stdout.strip() else result.stderr
+    output = result.stdout
+    if result.stdout.strip() and result.stderr.strip():
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            output = result.stdout.rstrip() + "\n\n[stderr]\n" + result.stderr
+        else:
+            if isinstance(payload, dict):
+                payload["preflight_stderr"] = result.stderr.rstrip()
+                output = json.dumps(payload, indent=2)
+    elif not result.stdout.strip():
+        output = result.stderr
     if not output.strip():
         output = json.dumps(
             {

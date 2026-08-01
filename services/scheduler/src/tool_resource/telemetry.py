@@ -9,7 +9,9 @@ clause = (host_pid, exec_seq):
   resource_timeline label semantics), rate = Delta cpu_ns / window_ns, clipped
   ONLY to the observed cgroup quota; the max window rate. Never cpu_ns/wall_ns.
 - ``sampled_peak_rss``: the maximum, over aligned time bins, of the SUM of
-  current RSS across DISTINCT live ``mm`` address spaces in the clause lineage
+  fast kernel-reported current RSS across DISTINCT live ``mm`` address spaces
+  in the clause lineage (the kernel counter can be approximate and its backend
+  is recorded in provenance)
   (threads sharing an mm are deduplicated; distinct mm are summed at the same
   aligned timestamp). Never a per-TID sum, never per-mm maxima summed across
   different times, never a reused lifetime hiwater.
@@ -29,6 +31,7 @@ from __future__ import annotations
 
 import ctypes
 import http.client
+import importlib
 import json
 import os
 import re
@@ -51,37 +54,66 @@ if TYPE_CHECKING:
 # a bcc/BPF runtime.
 
 _BCC_SEARCH_ROOTS = (Path("/usr/lib"), Path("/usr/lib64"), Path("/usr/local/lib"))
+_BCC_BINDING_NAMES = ("bcc", "bpfcc")
+_BCC_REQUIRED_ATTRIBUTES = ("BPF", "PerfSWConfig", "PerfType")
 
 
-def _ensure_bcc_importable() -> None:
-    """Make distro BCC bindings visible to non-system Python interpreters."""
+def _ensure_bcc_importable() -> Any:
+    """Return usable BCC bindings, including openEuler's ``bpfcc`` name.
 
-    try:
-        import bcc  # noqa: F401
-        return
-    except ImportError as first_error:
-        for root in _BCC_SEARCH_ROOTS:
-            if not root.exists():
+    Debian-family packages expose the Python module as ``bcc`` while
+    openEuler packages the same API as ``bpfcc``.  The latter is aliased in
+    ``sys.modules`` so existing third-party BCC code importing ``bcc`` keeps
+    working.  Distro package roots are also searched for Conda/venv Python
+    interpreters that omit system site-packages.
+    """
+
+    failures: list[str] = []
+
+    def load_candidate() -> Any | None:
+        for module_name in _BCC_BINDING_NAMES:
+            try:
+                module = importlib.import_module(module_name)
+            except (ImportError, OSError) as exc:
+                failures.append(f"{module_name}: {type(exc).__name__}: {exc}")
                 continue
-            for package_dir in root.glob("**/site-packages/bcc"):
-                parent = str(package_dir.parent)
-                if parent not in sys.path:
-                    sys.path.append(parent)
-                try:
-                    import bcc  # noqa: F401
-                    return
-                except ImportError:
-                    continue
-            for package_dir in root.glob("**/dist-packages/bcc"):
-                parent = str(package_dir.parent)
-                if parent not in sys.path:
-                    sys.path.append(parent)
-                try:
-                    import bcc  # noqa: F401
-                    return
-                except ImportError:
-                    continue
-        raise first_error
+            missing = [
+                attribute
+                for attribute in _BCC_REQUIRED_ATTRIBUTES
+                if not hasattr(module, attribute)
+            ]
+            if missing:
+                failures.append(
+                    f"{module_name}: missing required attributes {', '.join(missing)}"
+                )
+                continue
+            sys.modules["bcc"] = module
+            return module
+        return None
+
+    module = load_candidate()
+    if module is not None:
+        return module
+
+    for root in _BCC_SEARCH_ROOTS:
+        if not root.exists():
+            continue
+        for site_kind in ("site-packages", "dist-packages"):
+            for module_name in _BCC_BINDING_NAMES:
+                for package_dir in root.glob(f"**/{site_kind}/{module_name}"):
+                    parent = str(package_dir.parent)
+                    if parent not in sys.path:
+                        sys.path.append(parent)
+                    importlib.invalidate_caches()
+                    module = load_candidate()
+                    if module is not None:
+                        return module
+
+    detail = "; ".join(dict.fromkeys(failures)) or "no candidates found"
+    raise ImportError(
+        "BCC Python bindings are unavailable; tried modules 'bcc' and "
+        f"'bpfcc' ({detail})"
+    )
 
 
 def _bpf_runtime_diagnostics() -> dict[str, Any]:
@@ -110,16 +142,17 @@ def _bpf_runtime_diagnostics() -> dict[str, Any]:
         )
         headers = [str(path) for path in candidates if path.exists()]
     bcc_file = None
+    bcc_module = None
     try:
-        _ensure_bcc_importable()
-        import bcc
-
+        bcc = _ensure_bcc_importable()
         bcc_file = getattr(bcc, "__file__", None)
+        bcc_module = getattr(bcc, "__name__", None)
     except ImportError:
         pass
     return {
         "euid": os.geteuid() if hasattr(os, "geteuid") else None,
         "python": sys.executable,
+        "bcc_module": bcc_module,
         "bcc_file": bcc_file,
         "clang": shutil.which("clang"),
         "llc": shutil.which("llc"),
@@ -242,6 +275,7 @@ BPF_PROGRAM = r"""
 #include <linux/pid_namespace.h>
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
+#include <linux/version.h>
 #include <uapi/linux/bpf_perf_event.h>
 
 #define TYPE_EXEC_ARG 1
@@ -260,19 +294,35 @@ BPF_PROGRAM = r"""
 #define ARG_FLAG_ARGV_CAPPED 2
 #define ARG_FLAG_CONTINUED 4
 
+/* Linux 6.2 changed mm_struct::rss_stat from a struct containing an
+ * atomic_long_t array to an array of percpu_counter.  For the latter, reading
+ * .count and clamping each member independently matches the kernel's fast
+ * get_mm_rss()/percpu_counter_read_positive() approximation.  It deliberately
+ * does not claim to include unbatched per-CPU residuals. */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 2, 0)
+typedef s64 claw_rss_counter_t;
+#define CLAW_RSS_COUNTER_ADDR(mm, index) (&(mm)->rss_stat[(index)].count)
+#define CLAW_RSS_COUNTER_BACKEND 2
+#else
+typedef long claw_rss_counter_t;
+#define CLAW_RSS_COUNTER_ADDR(mm, index) (&(mm)->rss_stat.count[(index)].counter)
+#define CLAW_RSS_COUNTER_BACKEND 1
+#endif
+
 struct event_t {
     u64 timestamp_ns;
     u64 cgroup_id;
     u64 pid_namespace_inode;
     u64 exec_seq;
     u64 cpu_ns;         /* per-task cumulative utime+stime at sample time */
-    u64 rss_pages;      /* CURRENT rss = file+anon+shmem (not hiwater) */
+    u64 rss_pages;      /* fast CURRENT rss = file+anon+shmem (not hiwater) */
     u64 mm_ptr;         /* address-space identity for dedup */
     u64 hiwater_pages;  /* raw lifetime hiwater (exit only), kept separate */
     u64 io_read_bytes;  /* task->ioac.read_bytes */
     u64 io_write_bytes; /* task->ioac.write_bytes */
     u64 io_cancelled_write_bytes; /* task->ioac.cancelled_write_bytes */
     u32 type;
+    u32 rss_counter_backend; /* 1=atomic layout, 2=percpu global approximation */
     u32 host_pid;
     u32 host_tid;
     u32 parent_host_pid;
@@ -370,12 +420,21 @@ static u64 current_rss_pages(struct task_struct *task, u64 *mm_out) {
     bpf_probe_read_kernel(&mm, sizeof(mm), &task->mm);
     *mm_out = (u64)mm;
     if (!mm) return 0;
-    long file = 0, anon = 0, shmem = 0;
-    bpf_probe_read_kernel(&file, sizeof(file), &mm->rss_stat.count[0].counter);
-    bpf_probe_read_kernel(&anon, sizeof(anon), &mm->rss_stat.count[1].counter);
-    bpf_probe_read_kernel(&shmem, sizeof(shmem), &mm->rss_stat.count[3].counter);
-    long total = file + anon + shmem;
-    return total < 0 ? 0 : (u64)total;
+    claw_rss_counter_t file = 0, anon = 0, shmem = 0;
+    bpf_probe_read_kernel(
+        &file, sizeof(file), CLAW_RSS_COUNTER_ADDR(mm, 0)
+    );
+    bpf_probe_read_kernel(
+        &anon, sizeof(anon), CLAW_RSS_COUNTER_ADDR(mm, 1)
+    );
+    bpf_probe_read_kernel(
+        &shmem, sizeof(shmem), CLAW_RSS_COUNTER_ADDR(mm, 3)
+    );
+    s64 total =
+        (file > 0 ? (s64)file : 0) +
+        (anon > 0 ? (s64)anon : 0) +
+        (shmem > 0 ? (s64)shmem : 0);
+    return (u64)total;
 }
 
 static u64 current_cpu_ns(struct task_struct *task) {
@@ -388,6 +447,7 @@ static u64 current_cpu_ns(struct task_struct *task) {
 static void fill_counters(struct event_t *e, struct task_struct *task) {
     u64 mm_ptr = 0;
     e->rss_pages = current_rss_pages(task, &mm_ptr);
+    e->rss_counter_backend = CLAW_RSS_COUNTER_BACKEND;
     e->mm_ptr = mm_ptr;
     e->cpu_ns = current_cpu_ns(task);
     bpf_probe_read_kernel(
@@ -861,9 +921,10 @@ def observed_quota_cores(cgroup: Path) -> float:
 class RssOracle(threading.Thread):
     """Independent live-RSS reference: sum of VmRSS over distinct cgroup PIDs.
 
-    A userspace poller (analysis-only oracle, never a prediction input): at each
-    tick it sums current VmRSS across distinct tgids in the cgroup and keeps the
-    max. This is the ground truth ``sampled_peak_rss`` is compared against.
+    A userspace poller (analysis-only reference, never a prediction input): at
+    each tick it sums current VmRSS across distinct tgids in the cgroup and
+    keeps the max. VmRSS is itself a fast kernel estimate, so this is a
+    cross-check rather than exact page-table ground truth.
     """
 
     def __init__(self, cgroup: Path, interval_s: float = 0.002) -> None:
@@ -1135,8 +1196,10 @@ def _rmdir_with_retry(cg: Path, attempts: int = 25, delay_s: float = 0.02) -> No
 def collect_case(command: str, tag: str, *, marker: str = "") -> RawRun:
     """Attach the sampler, run ``sh -c command`` in a fresh cgroup, analyze raw."""
 
-    _ensure_bcc_importable()
-    from bcc import BPF, PerfSWConfig, PerfType
+    bcc = _ensure_bcc_importable()
+    BPF = bcc.BPF
+    PerfSWConfig = bcc.PerfSWConfig
+    PerfType = bcc.PerfType
 
     cg = _new_cgroup(tag)
     cgroup_id = cg.stat().st_ino
@@ -2017,6 +2080,17 @@ def _sampled_peak_rss(
     samples: list[dict[str, Any]], clause: Clause
 ) -> tuple[float | None, str, dict[str, Any]]:
     rss_samples = [s for s in samples if s["rss_pages"] > 0]
+    backend_names = {
+        1: "atomic_long_fast_read",
+        2: "percpu_counter_global_approximation",
+    }
+    backend_ids = sorted(
+        {
+            int(sample.get("rss_counter_backend", 0) or 0)
+            for sample in samples
+            if int(sample.get("rss_counter_backend", 0) or 0) > 0
+        }
+    )
     # aligned bins -> per bin, one RSS per distinct mm (latest), sum distinct mm
     bins: dict[int, dict[int, int]] = {}
     mm_tids: dict[int, set[int]] = {}
@@ -2034,6 +2108,11 @@ def _sampled_peak_rss(
     for a, b in zip(edges, edges[1:]):
         max_gap = max(max_gap, b - a)
     prov = {
+        "counter_backends": [
+            backend_names.get(value, f"unknown:{value}") for value in backend_ids
+        ],
+        "counter_exact": False,
+        "read_semantics": "linux_get_mm_rss_fast_counter_approximation",
         "rss_sample_count": len(rss_samples),
         "perf_rss_samples": len(perf_rss),
         "boundary_rss_samples": len(boundary_rss),
@@ -3098,6 +3177,7 @@ def _event_row(table: Any, data: int) -> dict[str, Any]:
         "exec_seq": int(event.exec_seq),
         "cpu_ns": int(event.cpu_ns),
         "rss_pages": int(event.rss_pages),
+        "rss_counter_backend": int(event.rss_counter_backend),
         "mm_ptr": int(event.mm_ptr),
         "hiwater_pages": int(event.hiwater_pages),
         "io_read_bytes": int(event.io_read_bytes),
@@ -3241,8 +3321,10 @@ class ClauseTelemetryCollector:
         trusted_root_pid: int | None = None,
         source_actions: Sequence[Mapping[str, Any]] = (),
     ) -> None:
-        _ensure_bcc_importable()
-        from bcc import BPF, PerfSWConfig, PerfType
+        bcc = _ensure_bcc_importable()
+        BPF = bcc.BPF
+        PerfSWConfig = bcc.PerfSWConfig
+        PerfType = bcc.PerfType
 
         if cgroup_path is not None and not _is_root_cgroup_str(cgroup_path):
             cgroup = Path(cgroup_path)

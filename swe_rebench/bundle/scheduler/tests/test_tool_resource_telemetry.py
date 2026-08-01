@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -16,9 +17,11 @@ from tool_resource.telemetry import (
     _clauses_and_lineage,
     _command_tree_provenance,
     _container_init_pid,
+    _ensure_bcc_importable,
     _isolate_call_events,
     _observed_container_cgroup_ids,
     _runtime_response_exit_code,
+    _sampled_peak_rss,
     _syscall_symbol_candidates,
     shell_command_lookup_failure_evidence,
     validate_clause_telemetry_smoke,
@@ -60,6 +63,75 @@ def test_bpf_program_uses_wrapper_aware_syscall_kprobes() -> None:
     assert "u64 pid_namespace_inode;" in BPF_PROGRAM
     assert "current_pid_namespace_inode" in BPF_PROGRAM
     assert "pid_ns_for_children" in BPF_PROGRAM
+
+
+def test_bpf_program_supports_both_linux_rss_stat_layouts() -> None:
+    assert "#include <linux/version.h>" in BPF_PROGRAM
+    assert "LINUX_VERSION_CODE >= KERNEL_VERSION(6, 2, 0)" in BPF_PROGRAM
+    assert "&(mm)->rss_stat[(index)].count" in BPF_PROGRAM
+    assert "&(mm)->rss_stat.count[(index)].counter" in BPF_PROGRAM
+    assert "CLAW_RSS_COUNTER_BACKEND 2" in BPF_PROGRAM
+    assert "(file > 0 ? (s64)file : 0)" in BPF_PROGRAM
+    assert "(anon > 0 ? (s64)anon : 0)" in BPF_PROGRAM
+    assert "(shmem > 0 ? (s64)shmem : 0)" in BPF_PROGRAM
+
+
+def test_ensure_bcc_importable_aliases_openEuler_bpfcc(monkeypatch) -> None:
+    fake = SimpleNamespace(
+        __name__="bpfcc",
+        __file__="/usr/lib/python3.11/site-packages/bpfcc/__init__.py",
+        BPF=object(),
+        PerfSWConfig=object(),
+        PerfType=object(),
+    )
+
+    def import_module(name: str):
+        if name == "bcc":
+            raise ImportError("no module named bcc")
+        assert name == "bpfcc"
+        return fake
+
+    monkeypatch.delitem(sys.modules, "bcc", raising=False)
+    monkeypatch.setattr(
+        "tool_resource.telemetry.importlib.import_module",
+        import_module,
+    )
+
+    assert _ensure_bcc_importable() is fake
+    assert sys.modules["bcc"] is fake
+
+
+def test_sampled_rss_provenance_marks_percpu_global_counter_as_approximate() -> None:
+    samples = [
+        {
+            "type": "perf",
+            "ts_ns": 110,
+            "rss_pages": 10,
+            "rss_counter_backend": 2,
+            "mm_ptr": 7,
+            "host_tid": 42,
+        },
+        {
+            "type": "perf",
+            "ts_ns": 120,
+            "rss_pages": 11,
+            "rss_counter_backend": 2,
+            "mm_ptr": 7,
+            "host_tid": 42,
+        },
+    ]
+
+    value, reason, provenance = _sampled_peak_rss(
+        samples,
+        SimpleNamespace(t_exec_ns=100, t_end_ns=130),
+    )
+
+    assert value is not None
+    assert reason == "ok"
+    assert provenance["counter_backends"] == [
+        "percpu_counter_global_approximation"
+    ]
+    assert provenance["counter_exact"] is False
 
 
 def test_syscall_symbol_candidates_include_bcc_and_common_kernel_names() -> None:

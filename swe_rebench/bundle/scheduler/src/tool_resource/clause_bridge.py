@@ -1407,6 +1407,7 @@ def _aggregate(
                 "scalar_sampled_peak_rss_mb": i.sampled_peak_rss_mb,
                 "has_cpu_profile": i.cpu_windows is not None,
                 "has_rss_profile": i.rss_bins is not None,
+                "rss_provenance": i.provenance.get("rss"),
                 "disk_io_reason": i.disk_io_reason,
                 "disk_read_bytes_total": i.disk_read_bytes_total,
                 "disk_write_bytes_total": i.disk_write_bytes_total,
