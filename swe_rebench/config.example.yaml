@@ -6,14 +6,14 @@
 
 # ── LLM Provider ──────────────────────────────────────────────────
 runtime:
-  # Maintained default: OpenClaw and the privileged Stage-2 sidecar run on the
-  # host; tools execute in OpenClaw's Docker sandbox.
+  # OpenClaw and the privileged sidecar run on the host; tools execute in
+  # OpenClaw's Docker sandbox.
   mode: "host-openclaw-sandbox"
 
   # eBPF clause telemetry is the purpose of this project and fails closed by
   # default. Set false only for an explicit troubleshooting run whose output
   # is not accepted as complete telemetry.
-  stage2_required: true
+  ebpf_required: true
 
 llm:
   # API key for the upstream LLM provider (required)

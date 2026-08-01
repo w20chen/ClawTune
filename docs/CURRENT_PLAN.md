@@ -1,53 +1,25 @@
 # Current Plan
 
-Current objective: make strict Stage-2 eBPF telemetry the clear, fail-closed
-default for the OpenClaw plugin, sidecar, and SWE-Rebench batch runner.
+Current objective: provide one reliable, eBPF-required user journey from host
+setup to OpenClaw and SWE-Rebench execution, prioritizing Kunpeng/openEuler
+while retaining native x86_64 Linux support.
 
-## Quick Start (Strict Stage-2)
+## Supported user commands
 
-Use the repository [eBPF-first quick start](../README.md#ebpf-first-quick-start).
-The required sequence is:
-
-1. create a system-Python virtual environment that can see distro BCC;
-2. run `tools/check_stage2.py` as root and require `stage2_ready=true`;
-3. start the sidecar explicitly with that verified root/Python/kernel setup;
-4. run OpenClaw normally with managed-wrapper and cgroup collection enabled.
-
-Plugin auto-start is disabled by default because it cannot reproduce the
-required privileged BPF environment.
-
-## User Commands
-
-Stage-2 preflight:
+The user-facing path is intentionally limited to:
 
 ```bash
-export KERNEL_BUILD="$(readlink -f "/lib/modules/$(uname -r)/build")"
-STAGE2_PY="$PWD/.venv-system/bin/python"
-sudo env "PATH=/usr/sbin:/usr/bin:/sbin:/bin" \
-  "BCC_KERNEL_SOURCE=$KERNEL_BUILD" \
-  "$STAGE2_PY" tools/check_stage2.py
+python3 scripts/clawtune.py setup
+python3 scripts/clawtune.py doctor
+python3 scripts/clawtune.py sidecar
+python3 scripts/clawtune.py benchmark --sample 1
 ```
 
-SWE-Rebench:
-
-```bash
-cp swe_rebench/config.example.yaml swe_rebench/config.yaml
-python -m swe_rebench.runner prepare --config swe_rebench/config.yaml
-python -m swe_rebench.discover --sample 20 --out swe_rebench/tasks.json
-sudo -E env "PATH=$PATH" "BCC_KERNEL_SOURCE=$KERNEL_BUILD" \
-  "$(command -v python)" -m swe_rebench.runner run \
-  --config swe_rebench/config.yaml --prepare \
-  --dataset swe_rebench/tasks.json --sample 10 --export
-```
-
-Complete host-sandbox eBPF/cgroup telemetry:
-
-```bash
-sudo -E env "PATH=$PATH" "$(command -v python3)" \
-  -m swe_rebench.runner run --config swe_rebench/config.yaml \
-  --runtime-mode host-openclaw-sandbox \
-  --dataset swe_rebench/tasks.json --sample 1 --export
-```
+The wrapper selects a system Python with `bcc`/`bpfcc`, owns the single `.venv`
+path, supplies kernel/sudo environment, installs distro packages through `dnf`
+or `apt`, builds/configures the plugin, and handles amd64 QEMU on Kunpeng.
+Historical internal collector names below are retained as engineering records,
+not as user installation instructions.
 
 The public configuration defaults `docker.cgroup_required: true`. A false
 value is troubleshooting-only and its output is not accepted as complete
@@ -1513,3 +1485,53 @@ Linux-only validation unavailable in this Windows workspace:
   v2, tracefs, perf events, and Docker. The user's openEuler host has already
   shown `ClawTune BPF compile OK`; it must run the new semantic preflight and
   require `stage2_ready=true` before the next accepted execution.
+
+## 2026-08-01 Unified Setup and User Documentation
+
+The public installation and execution path is now `scripts/clawtune.py`:
+
+- `setup` detects `dnf` versus `apt`, chooses the system Python that owns
+  `bcc`/`bpfcc`, creates one `.venv`, installs Scheduler dependencies, repairs
+  narrowly scoped plugin output ownership, builds/configures the plugin, sets
+  up amd64 binfmt on Kunpeng, and runs the real eBPF semantic check;
+- `doctor` emits one consolidated host/interpreter/kernel/tool report;
+- `check`, `sidecar`, and `benchmark` consistently reconstruct the verified
+  privileged environment so users do not manually combine Conda, system
+  Python, `PYTHONPATH`, `BCC_KERNEL_SOURCE`, and sudo;
+- `tools/check_ebpf.py` presents user-facing `ready`/BCC/kernel/runtime fields
+  while the historical internal preflight remains compatible;
+- the benchmark config accepts `runtime.ebpf_required`, and the Scheduler
+  accepts `AGENT_SCHEDULER_TOOL_RESOURCE_EBPF_REQUIRED`; old internal names
+  remain supported for existing installations;
+- README and the getting-started, configuration, Kunpeng, deployment,
+  OpenClaw, sidecar, SWE-Rebench, plugin, and troubleshooting guides now form
+  one project introduction and end-to-end journey. Internal stage/schema names
+  appear only in developer/history references.
+
+Validation completed in this workspace:
+
+- Root Python suite: 105 passed, 2 skipped.
+- Scheduler suite: 140 passed, 1 skipped.
+- Focused CLI/config/preflight/SWE-Rebench suite: 88 passed, 2 skipped.
+- OpenClaw plugin: 64 passed; TypeScript typecheck passed.
+- Direct CLI help/compile checks, local Markdown links across 14 public and
+  developer documents, and `git diff --check` passed.
+
+Validation commands unavailable or adjusted in this Windows workspace:
+
+- `python3 scripts/clawtune.py setup`, `check`, `sidecar`, and `benchmark`
+  require Linux, sudo, the running kernel's BCC/header/tracefs/cgroup/perf
+  interfaces, Docker, and (for Kunpeng) aarch64 binfmt/QEMU. Run `setup` once on
+  the target Kunpeng/openEuler host; its final semantic check is the acceptance
+  gate. Repeat on x86_64 for the secondary native host path.
+- `python -m pytest services/scheduler/tests/test_config.py -q --basetemp
+  C:\tmp\clawtune-docs-scheduler` could not create that sandbox path due to
+  Windows permissions. The same test passed using repository-local
+  `.pytest-tmp-scheduler-docs`.
+- PowerShell blocked the `npm.ps1` shim for the literal `npm test` command due
+  to local execution policy. `npm.cmd test` and `npm.cmd run typecheck` are the
+  equivalent Windows entry points and both passed.
+- `python -m ruff check ...` could not run because Ruff is not installed in
+  this Windows interpreter or the repository `.venv`. Python compilation,
+  tests, `git diff --check`, and a 100-column scan of the new Python files
+  passed; run Ruff from the Linux `.venv` after `setup` installs the dev extras.

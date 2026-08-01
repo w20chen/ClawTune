@@ -1,112 +1,67 @@
-# ARM/Kunpeng QEMU Docker Setup
+# Kunpeng and arm64 hosts
 
-Use this when the host is ARM/aarch64 (e.g. Kunpeng 920) but the SWE-Rebench
-task images are the official x86_64/amd64 images.
+Kunpeng is a primary ClawTune target. The Scheduler, OpenClaw plugin, and eBPF
+collector run natively on arm64. Official SWE-Rebench task images are commonly
+amd64, so Docker needs a binfmt/QEMU handler only for those task containers.
 
-## Prerequisites
+## Normal setup
 
-The base environment is the same as x86: Python 3.10+, Node.js, OpenClaw CLI
-2026.7.1+, Docker. Follow [deployment.md](deployment.md) first, then return
-here for ARM-specific QEMU setup.
-
-## Why QEMU?
-
-SWE-Rebench publishes only x86_64 task images. On an aarch64 host, Docker
-cannot run these natively — the CPU instruction sets differ. QEMU emulates an
-amd64 CPU in userspace so the container's `/bin/bash`, `python`, `gcc`, etc.
-can execute. The kernel (cgroups, eBPF, perf) still runs natively on aarch64,
-so resource telemetry is collected from the host side without emulation
-overhead.
-
-## 1. Register amd64 binfmt
-
-`binfmt_misc` is a Linux kernel mechanism that tells the kernel: "when you see
-an x86_64 ELF binary, don't try to execute it directly — hand it to QEMU
-instead." This registration is per-host, survives reboots only if the binfmt
-service is enabled.
-
-Run this once on the ARM Linux host:
+On an arm64 host, use exactly the same command as x86:
 
 ```bash
-sudo bash scripts/setup/arm_qemu_setup.sh install
+python3 scripts/clawtune.py setup
 ```
 
-The script registers the `amd64` handler with `tonistiigi/binfmt`, falls back
-to `qemu-user-static`/`binfmt-support` on apt-based systems, and runs an
-amd64 BusyBox smoke test after setup.
+The command detects `aarch64`/`arm64`, installs the host's native BCC and kernel
+dependencies, then runs `scripts/setup/arm_qemu_setup.sh`. That helper registers
+an amd64 binfmt handler and starts a small amd64 container to prove it works.
 
-To inspect first:
+Benchmark commands automatically set Docker's platform to `linux/amd64` on
+arm64. Do not hard-code that value on x86, and do not run the eBPF sidecar in an
+amd64 emulation container—the collector must match the native host kernel.
+
+## Verify the two independent paths
+
+Native eBPF:
 
 ```bash
-sudo bash scripts/setup/arm_qemu_setup.sh install --dry-run
-bash scripts/setup/arm_qemu_setup.sh status
+python3 scripts/clawtune.py check
+```
+
+amd64 task images:
+
+```bash
 sudo bash scripts/setup/arm_qemu_setup.sh check
 ```
 
-## 2. Tell SWE-Rebench to request amd64 images
+Both checks must pass before a Kunpeng benchmark run. A successful QEMU smoke
+test does not prove kernel instrumentation, and a successful eBPF test does not
+prove that an amd64 image can start.
 
-Either set this in `swe_rebench/config.yaml`:
+## How QEMU is installed
 
-```yaml
-docker:
-  platform: "linux/amd64"
-```
+The helper first uses Docker's `tonistiigi/binfmt` image. This works across
+openEuler and Debian-family hosts without guessing distribution package names.
+If that route fails, Debian/Ubuntu hosts can fall back to
+`qemu-user-static`/`binfmt-support`. On openEuler, fix access to the binfmt image
+or install the site's supported qemu-user-static package before retrying.
 
-or override it for one run:
+The kernel must expose `binfmt_misc`. It may be built into the kernel; the
+helper checks `/proc/filesystems` before trying `modprobe`.
+
+## Performance expectations
+
+Only the amd64 userspace inside the benchmark container is emulated. The
+sidecar and eBPF collector remain native. CPU-heavy repository builds will be
+slower than on x86, so start with `--sample 1` and raise the configured task
+timeout only after observing a real timeout.
+
+## Manual status
 
 ```bash
-export SWE_REBENCH_DOCKER_PLATFORM=linux/amd64
+sudo bash scripts/setup/arm_qemu_setup.sh status
+docker info --format '{{.Architecture}}'
 ```
 
-This platform is passed through Docker SDK runs, Docker CLI fallback runs,
-pre-pulls, host-sandbox testbed export, launcher verification, and Docker-based
-cleanup of root-owned artifacts.
-
-## 3. Run host-openclaw-sandbox
-
-Example:
-
-```bash
-sudo -E env "PATH=$PATH" "$(command -v python3)" -m swe_rebench.runner run \
-  --config swe_rebench/config.yaml \
-  --prepare \
-  --dataset swe_rebench/tasks.json \
-  --sample 1 \
-  --export \
-  --runtime-mode host-openclaw-sandbox
-```
-
-The eBPF/cgroup collectors observe the host kernel and cgroups. QEMU only
-emulates the amd64 user-space inside the Docker containers, so clause timing
-and cgroup attribution should still be collected from the ARM host. Hardware
-counter availability may differ by Kunpeng kernel and perf policy.
-
-## Next: Run SWE-Rebench
-
-After completing QEMU setup, proceed to [../swe_rebench/README.md](../swe_rebench/README.md)
-for task discovery and batch running. Use `host-openclaw-sandbox` mode.
-
-## Kunpeng Troubleshooting
-
-**`docker pull` gets wrong architecture (aarch64 instead of amd64):**
-`docker: no matching manifest for linux/arm64` means Docker tried the host
-arch. Make sure `docker.platform: "linux/amd64"` is set in `swe_rebench/config.yaml`
-before `prepare`, or export `SWE_REBENCH_DOCKER_PLATFORM=linux/amd64`.
-
-**binfmt registration lost after reboot:**
-The `tonistiigi/binfmt` container only registers handlers for the current boot.
-Re-run `sudo bash scripts/setup/arm_qemu_setup.sh install` after reboot, or
-configure the systemd `binfmt-support` service for persistence.
-
-**QEMU emulation too slow / task timeout:**
-QEMU userspace emulation adds 2-10x CPU overhead. Increase
-`batch.task_timeout_seconds` in `swe_rebench/config.yaml` compared to x86
-runs. Heavy compilation tasks (e.g. C/C++ projects in SWE-bench) are the most
-affected.
-
-**Perf hardware counters missing on Kunpeng:**
-Kunpeng 920 uses ARM PMUv3. Some `perf` hardware events differ from x86.
-If `tool_resource_preflight_host.json` reports missing counters, Stage-2 eBPF
-CPU-clock sampling still works (it uses `PERF_COUNT_SW_CPU_CLOCK`, which is
-software-based). Use `--no-stage2-required` only if you intentionally accept
-incomplete telemetry.
+If the handler disappears after reboot, rerun setup or configure the host's
+systemd-binfmt service to restore it according to local operations policy.

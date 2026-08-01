@@ -32,6 +32,8 @@ def test_scheduler_config_loads_env_file_and_resolves_paths(tmp_path, monkeypatc
     monkeypatch.delenv("AGENT_SCHEDULER_SANDBOX_CGROUP_PATH", raising=False)
     monkeypatch.delenv("AGENT_SCHEDULER_SANDBOX_CONTAINER_ID", raising=False)
     monkeypatch.delenv("AGENT_SCHEDULER_SANDBOX_ROOT_PID", raising=False)
+    monkeypatch.delenv("AGENT_SCHEDULER_TOOL_RESOURCE_EBPF_TRACES", raising=False)
+    monkeypatch.delenv("AGENT_SCHEDULER_TOOL_RESOURCE_EBPF_REQUIRED", raising=False)
     monkeypatch.delenv("AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED", raising=False)
 
     config = SchedulerConfig.from_env()
@@ -49,3 +51,33 @@ def test_scheduler_config_loads_env_file_and_resolves_paths(tmp_path, monkeypatc
 
 def test_scheduler_config_requires_stage2_by_default() -> None:
     assert SchedulerConfig().tool_resource_stage2_required is True
+
+
+def test_scheduler_config_accepts_user_facing_ebpf_required(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_SCHEDULER_TOOL_RESOURCE_EBPF_REQUIRED", "false")
+    monkeypatch.setenv("AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED", "true")
+
+    config = SchedulerConfig.from_env()
+
+    assert config.tool_resource_stage2_required is False
+
+
+def test_scheduler_config_accepts_user_facing_ebpf_trace_paths(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(
+        "AGENT_SCHEDULER_TOOL_RESOURCE_EBPF_TRACES",
+        "data/ebpf-a,data/ebpf-b",
+    )
+    monkeypatch.setenv(
+        "AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_TRACES",
+        "data/legacy",
+    )
+
+    config = SchedulerConfig.from_env()
+
+    assert config.tool_resource_stage2_trace_paths == (
+        tmp_path / "data" / "ebpf-a",
+        tmp_path / "data" / "ebpf-b",
+    )

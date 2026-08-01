@@ -56,7 +56,9 @@ class RuntimeConfig:
             )
         return cls(
             mode=mode,
-            stage2_required=_as_bool(d.get("stage2_required", True)),
+            stage2_required=_as_bool(
+                d.get("ebpf_required", d.get("stage2_required", True))
+            ),
         )
 
 

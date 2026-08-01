@@ -54,7 +54,10 @@ class SchedulerConfig:
         env_base = load_env_file()
         trace = os.getenv("AGENT_SCHEDULER_TRACE_DIR")
         tool_resource_traces = os.getenv("AGENT_SCHEDULER_TOOL_RESOURCE_TRACES")
-        tool_resource_stage2_traces = os.getenv("AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_TRACES")
+        tool_resource_stage2_traces = os.getenv(
+            "AGENT_SCHEDULER_TOOL_RESOURCE_EBPF_TRACES",
+            os.getenv("AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_TRACES"),
+        )
         tool_resource_artifact_dir = os.getenv("AGENT_SCHEDULER_TOOL_RESOURCE_ARTIFACT_DIR")
         return cls(
             policy=os.getenv("AGENT_SCHEDULER_POLICY", "observe-only"),
@@ -86,8 +89,8 @@ class SchedulerConfig:
                 "docker",
             ),
             tool_resource_stage2_required=os.getenv(
-                "AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED",
-                "true",
+                "AGENT_SCHEDULER_TOOL_RESOURCE_EBPF_REQUIRED",
+                os.getenv("AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED", "true"),
             ).lower()
             in {"1", "true", "yes", "on"},
             auth_token=os.getenv("AGENT_SCHEDULER_TOKEN"),

@@ -1,28 +1,22 @@
-# Run OpenClaw with Strict eBPF Tracing
+# Using ClawTune with OpenClaw
 
-Complete the [README eBPF-first quick start](../README.md#ebpf-first-quick-start)
-before using this guide. In particular:
+Setup installs/enables the plugin and writes its absolute launcher path. Start
+the sidecar first:
 
-- `tools/check_stage2.py` must report `"stage2_ready": true`;
-- the privileged sidecar must already be running;
-- plugin `executionBackend` must be `managed-wrapper`;
-- plugin `enableCgroup` must be `true`.
+```bash
+python3 scripts/clawtune.py sidecar
+```
 
-## Configure the Model Proxy
+## Route the model through ClawTune
 
-Route OpenClaw model traffic through the sidecar at:
+OpenClaw must use the sidecar's OpenAI-compatible proxy so model and tool spans
+share one trace:
 
 ```text
 http://127.0.0.1:8765/v1
 ```
 
-The sidecar forwards the `Authorization` header received from OpenClaw unless
-an explicit upstream-key override is configured.
-
-### Direct OpenAI-Compatible Provider
-
-Onboard a vLLM-compatible OpenClaw provider profile, replacing the key and
-model:
+One non-interactive provider setup is:
 
 ```bash
 openclaw onboard --non-interactive --accept-risk --skip-health \
@@ -33,97 +27,48 @@ openclaw onboard --non-interactive --accept-risk --skip-health \
   --custom-model-id "<model>"
 ```
 
-### OpenRouter or a Different Upstream Model Name
-
-Put the routing values in the repository `.env`, then restart the sidecar:
+The sidecar forwards OpenClaw's authorization header. For a provider other than
+the `.env` default, set its upstream base URL there and restart the sidecar:
 
 ```bash
 AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL=https://openrouter.ai/api/v1
-AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL=deepseek-v4-flash
-AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=deepseek/deepseek-v4-flash
+AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL=your-visible-model
+AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=provider/real-model
 ```
 
-Set `AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY_OVERRIDE` only when the sidecar must
-intentionally use a different key from the one OpenClaw sends. Do not commit
-provider keys.
+Only use the explicit upstream-key override when the proxy must intentionally
+use a different credential than OpenClaw. Do not commit keys.
 
-## End-to-End Smoke Test
+## End-to-end smoke test
 
 ```bash
-openclaw agent --local --agent main --model "vllm/<your-model>" \
-  --message "Use the shell to run: python -c 'print(\"stage2-ok\")'. Then summarize the result." \
-  --session-key "clawtune-stage2-smoke"
+openclaw agent --local --agent main --model "vllm/<model>" \
+  --message "Use the shell to run: python -c 'print(\"clawtune-ok\")'. Then summarize it." \
+  --session-key "clawtune-smoke"
 ```
 
-Inspect the latest correlated execution:
+Inspect the correlated execution:
 
 ```bash
 curl -fsS "http://127.0.0.1:8765/v1/tools/recent?limit=5"
-ls data/traces/*.jsonl
 python tools/inspect_trace.py data/traces/*.jsonl --all --details
 ```
 
-## What Counts as Success
+A successful run has a model span, a managed tool execution, an attached
+cgroup/process scope, a finalized eBPF command artifact with executable/argv
+data, and no collector loss. API health alone proves only that the process is
+listening; setup/check prove kernel collection.
 
-| Check | Required evidence |
-| --- | --- |
-| Kernel preflight | `tools/check_stage2.py` exits 0 with `stage2_ready: true` |
-| Plugin path | The `exec` call is a managed-wrapper execution with an execution ID |
-| Attribution | A dedicated cgroup/process scope is connected to the tool call |
-| Stage-2 artifact | The execution references exactly one finalized clause telemetry artifact |
-| Collector health | At least one exec boundary and non-empty argv/path; no ring/perf/argv telemetry loss |
-| Trace | Model/tool spans are written using trace schema v6 |
+## Operational behavior
 
-`/health/live` and `/health/ready` alone are insufficient: they prove the API
-process is alive, not that BPF probes attached or observed a command.
+- ClawTune observes by default. Scheduling/placement recommendations do not
+  forcibly move work in the current release.
+- Managed shell calls use a dedicated launcher so instrumentation is armed
+  before short-lived commands begin.
+- Built-in file tools may share the sandbox container cgroup; the trace labels
+  that boundary instead of claiming exclusive attribution.
+- The sidecar persists learned command-resource evidence and can reuse it after
+  restart.
 
-## Cgroup Delegation
-
-`claw-launch` first attempts the configured cgroup root and can retry inside a
-transient delegated systemd user scope. If migration still fails with exit code
-125, follow the exact
-[cgroup troubleshooting procedure](troubleshooting.md#cgroup-problems).
-
-Do not accept process-tree fallback as a successful strict run. The fallback
-switches are provided only to isolate unrelated plugin/model problems.
-
-## SWE-Rebench Host Sandbox
-
-For complete benchmark telemetry, use the maintained host route:
-
-```bash
-source .venv-system/bin/activate
-
-sudo -E env \
-  "PATH=$PATH" \
-  "BCC_KERNEL_SOURCE=$KERNEL_BUILD" \
-  "$(command -v python)" \
-  -m swe_rebench.runner run \
-  --config swe_rebench/config.yaml \
-  --prepare \
-  --runtime-mode host-openclaw-sandbox \
-  --dataset swe_rebench/tasks.json \
-  --sample 1 \
-  --export
-```
-
-This route exports the task testbed to a host workspace, starts the verified
-host sidecar, uses OpenClaw's Docker sandbox for tools, and repeats the strict
-semantic preflight before the task starts.
-
-Internal file tools share the sandbox container cgroup and are labelled
-`shared_sandbox_container`; managed `exec` calls require their launcher-linked
-Stage-2 lifecycle and artifact.
-
-## Troubleshooting
-
-Use [docs/troubleshooting.md](troubleshooting.md) for:
-
-- Conda versus `/usr/bin/python3` package mismatches;
-- `bcc` versus openEuler `bpfcc` imports;
-- matching `BCC_KERNEL_SOURCE` and kernel headers;
-- Linux 6.2+ `rss_stat` compile failures;
-- cgroup delegation and launcher exit code 125;
-- root-owned `swe_rebench/.runtime` directories;
-- BPF compilation succeeding while probe attachment/runtime semantics fail;
-- ARM/Kunpeng QEMU setup.
+See [configuration](configuration.md) for settings and
+[troubleshooting](troubleshooting.md) for symptom-based recovery.
