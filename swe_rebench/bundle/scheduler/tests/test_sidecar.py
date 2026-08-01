@@ -1625,7 +1625,9 @@ def test_required_stage2_rejects_unavailable_collector_during_started(
     )
 
     assert started.status_code == 503
-    assert started.json()["detail"] == "tool_resource_stage2_start_failed"
+    detail = started.json()["detail"]
+    assert detail["code"] == "tool_resource_stage2_start_failed"
+    assert detail["reason"]
 
 
 def test_required_stage2_starts_during_claim_with_sandbox_container_id(tmp_path: Path) -> None:

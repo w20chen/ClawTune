@@ -1,5 +1,5 @@
 {
-  "digest": "sha256:1653cadf3f6dba8550a00d88f71f8f86a5f189393d795b0c558d8dcf7af7ab1d",
+  "digest": "sha256:c70e9106fda49d7b7f0d868dbea8d2bbebad7024f1680cdbf1f63f2b71917132",
   "file_count": 131,
   "files": [
     "contracts/clause-telemetry.schema.json",

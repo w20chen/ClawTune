@@ -464,6 +464,14 @@ def create_app(state: AppState | None = None) -> FastAPI:
         stage2_kwargs["cgroup_path"] = cgroup_path
         return s.predictor.begin_execution(**stage2_kwargs)
 
+    def stage2_failure_detail(s: AppState, execution_id: str) -> dict[str, object]:
+        telemetry = s.predictor.execution_telemetry(execution_id)
+        reason = getattr(telemetry, "unavailable_reason", None)
+        return {
+            "code": "tool_resource_stage2_start_failed",
+            "reason": reason or "collector_start_rejected",
+        }
+
     def cancel_stage2_fallback(s: AppState, execution_id: str) -> None:
         task = s._stage2_finalize_tasks.pop(execution_id, None)
         if task is not None and not task.done():
@@ -712,7 +720,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         if stage2_start_failed:
             raise HTTPException(
                 status_code=503,
-                detail="tool_resource_stage2_start_failed",
+                detail=stage2_failure_detail(s, execution_id),
             )
         return {"stored": True}
 
@@ -923,7 +931,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 ):
                     raise HTTPException(
                         status_code=503,
-                        detail="tool_resource_stage2_start_failed",
+                        detail=stage2_failure_detail(s, request.execution_id),
                     )
             # else: container_id not yet known — stage2 start is deferred to
             # execution_started / sandbox-scope discovery (see above).
@@ -1078,7 +1086,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             ):
                 raise HTTPException(
                     status_code=503,
-                    detail="tool_resource_stage2_start_failed",
+                    detail=stage2_failure_detail(s, execution_id),
                 )
         return response
 
