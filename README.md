@@ -67,6 +67,10 @@ npm run build
 cd ../..
 ```
 
+If TypeScript reports `TS5033 ... EACCES` under `dist/`, repair the generated
+directory using the focused
+[ownership procedure](docs/troubleshooting.md#npm-run-build-cannot-write-packagesopenclaw-plugindist).
+
 Check that NumPy and a BCC binding belong to this selected interpreter:
 
 ```bash

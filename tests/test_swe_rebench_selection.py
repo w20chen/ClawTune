@@ -43,6 +43,7 @@ from swe_rebench.prepare import (
     _ENTRYPOINT_TEMPLATE,
     _PLUGIN_CONFIG,
     _build_plugin_dist,
+    _restore_sudo_user_ownership,
     _write_entrypoint,
     _write_bundle_fingerprint,
     _write_plugin_config,
@@ -2236,6 +2237,31 @@ def test_prepare_rebuilds_plugin_dist_after_removing_stale_files(monkeypatch, tm
     assert not (dist_dir / "stale.js").exists()
     assert (dist_dir / "index.js").read_text(encoding="utf-8") == "fresh runtime\n"
     assert (bundle_dir / "plugin-build.log").exists()
+
+
+def test_prepare_restores_root_built_dist_to_sudo_caller(monkeypatch, tmp_path: Path) -> None:
+    dist_dir = tmp_path / "dist"
+    nested = dist_dir / "trace"
+    nested.mkdir(parents=True)
+    generated = nested / "index.js"
+    generated.write_text("generated\n", encoding="utf-8")
+    calls: list[tuple[Path, int, int, bool]] = []
+
+    monkeypatch.setenv("SUDO_UID", "1001")
+    monkeypatch.setenv("SUDO_GID", "1002")
+    monkeypatch.setattr("swe_rebench.prepare.os.geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(
+        "swe_rebench.prepare.os.chown",
+        lambda path, uid, gid, *, follow_symlinks: calls.append(
+            (Path(path), uid, gid, follow_symlinks)
+        ),
+        raising=False,
+    )
+
+    _restore_sudo_user_ownership(dist_dir)
+
+    assert {item[0] for item in calls} == {dist_dir, nested, generated}
+    assert all(item[1:] == (1001, 1002, False) for item in calls)
 
 
 def test_bundle_stale_check_ignores_dist_but_tracks_source(tmp_path: Path) -> None:

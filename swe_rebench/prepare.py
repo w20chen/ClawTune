@@ -231,20 +231,55 @@ def _build_plugin_dist(repo: Path, bundle_dir: Path, config: RunnerConfig) -> No
         raise FileNotFoundError("required executable not found: npm")
 
     log_path = bundle_dir / "plugin-build.log"
-    with log_path.open("w", encoding="utf-8") as log:
-        result = subprocess.run(
-            [npm, "run", "build"],
-            cwd=str(plugin_dir),
-            stdout=log,
-            stderr=log,
-            text=True,
-        )
+    result: subprocess.CompletedProcess[str] | None = None
+    try:
+        with log_path.open("w", encoding="utf-8") as log:
+            result = subprocess.run(
+                [npm, "run", "build"],
+                cwd=str(plugin_dir),
+                stdout=log,
+                stderr=log,
+                text=True,
+            )
+    finally:
+        # Strict host runs invoke prepare through sudo for eBPF access. npm/tsc
+        # then creates ignored source-tree dist files as root unless ownership
+        # is restored to the original caller. Do this even after a failed build
+        # so the next normal-user `npm run build` can repair partial output.
+        _restore_sudo_user_ownership(dist_dir)
+    if result is None:
+        raise RuntimeError("plugin_build_failed before npm returned a result")
     if result.returncode != 0:
         raise RuntimeError(
             f"plugin_build_failed exit={result.returncode}: "
             f"{_tail_text(log_path, 2000)}"
         )
     _log("  Rebuilt plugin dist")
+
+
+def _restore_sudo_user_ownership(path: Path) -> None:
+    """Return a generated tree to the non-root user who invoked sudo."""
+
+    if not path.exists() or not hasattr(os, "geteuid") or not hasattr(os, "chown"):
+        return
+    if os.geteuid() != 0:
+        return
+    try:
+        uid = int(os.environ["SUDO_UID"])
+        gid = int(os.environ["SUDO_GID"])
+    except (KeyError, TypeError, ValueError):
+        return
+    if uid <= 0 or gid < 0:
+        return
+
+    entries = [path, *path.rglob("*")]
+    # Children first avoids removing directory traversal permission before all
+    # generated files have been visited.
+    for entry in reversed(entries):
+        try:
+            os.chown(entry, uid, gid, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
 
 
 def _latest_source_mtime(path: Path) -> float:

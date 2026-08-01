@@ -399,6 +399,32 @@ cgroup.
 
 ## Filesystem Permissions
 
+### `npm run build` cannot write `packages/openclaw-plugin/dist`
+
+An older `sudo ... --prepare` may have rebuilt the ignored TypeScript output
+as root. Confirm the exact generated directory before changing ownership:
+
+```bash
+dist="$PWD/packages/openclaw-plugin/dist"
+printf 'dist=%s\n' "$dist"
+find "$dist" -maxdepth 2 ! -user "$USER" -ls 2>/dev/null | head -20
+```
+
+Repair only that generated directory, then rebuild as the normal user:
+
+```bash
+sudo chown -R "$(id -u):$(id -g)" \
+  "$PWD/packages/openclaw-plugin/dist"
+
+cd packages/openclaw-plugin
+npm run build
+cd ../..
+```
+
+Current ClawTune automatically restores `dist` ownership to `SUDO_UID` and
+`SUDO_GID` after a root `prepare`, including after a failed TypeScript build.
+Do not recursively change ownership of the repository.
+
 ### Cannot create `swe_rebench/.runtime`
 
 This usually means an earlier `sudo` run created the runtime directory as

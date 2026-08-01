@@ -1485,6 +1485,9 @@ quick start:
   reproduce the verified root/system-Python/BCC environment;
 - `tool_resource` public SDK exports are lazy, so importing the independent
   telemetry module no longer eagerly imports NumPy-backed predictor modules;
+- root `prepare` restores generated plugin `dist` ownership to the original
+  sudo caller, preventing later normal-user TypeScript builds from failing
+  with `TS5033 ... EACCES`;
 - README, deployment, sidecar, operator, SWE-Rebench, and troubleshooting
   documentation use the same eBPF-first sequence. Degraded operation is
   explicitly labelled troubleshooting-only and incomplete.
@@ -1495,7 +1498,7 @@ records.
 
 Validation completed in this workspace:
 
-- Root Python suite: 99 passed, 2 skipped.
+- Root Python suite: 100 passed, 2 skipped.
 - Main Scheduler suite: 138 passed, 1 skipped.
 - Focused tracked delivery telemetry suite: 26 passed.
 - OpenClaw plugin suite: 64 passed; TypeScript typecheck passed.
