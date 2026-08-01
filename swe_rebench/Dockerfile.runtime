@@ -3,6 +3,11 @@
 #
 # Built ONCE, mounted into swe-rebench containers at /claw/runtime.
 # This avoids per-container apt-get/npm/pip install (saves ~3 min/task).
+#
+# Multi-arch: debian:bookworm-slim supports linux/amd64 and linux/arm64.
+# NodeSource setup_22.x also supports arm64.
+# On Kunpeng/aarch64, build with:
+#   docker build --platform linux/arm64 -t claw-runtime -f swe_rebench/Dockerfile.runtime .
 # ────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
 

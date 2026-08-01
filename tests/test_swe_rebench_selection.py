@@ -1,3 +1,4 @@
+import builtins
 import json
 import io
 import os
@@ -7,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from swe_rebench.config import RunnerConfig
+from swe_rebench.config import RunnerConfig, _load_yaml_safe
 from swe_rebench.docker import (
     ContainerResult,
     _container_kernel_header_volumes,
@@ -1678,6 +1679,39 @@ docker:
     assert config.docker.cgroup_required is True
 
 
+def test_minimal_yaml_fallback_keeps_section_across_blank_lines(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+docker:
+  host: "unix:///var/run/docker.sock"
+
+  # Comments and blank lines should not end the docker section.
+  privileged: true
+  cgroupns_mode: "host"
+  cgroup_mount_rw: true
+""",
+        encoding="utf-8",
+    )
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "yaml":
+            raise ImportError("yaml intentionally unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    raw = _load_yaml_safe(config_path)
+
+    assert raw["docker"]["privileged"] == "true"
+    assert raw["docker"]["cgroupns_mode"] == "host"
+    assert raw["docker"]["cgroup_mount_rw"] == "true"
+
+
 def test_runner_config_reads_docker_platform_from_env(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("SWE_REBENCH_DOCKER_PLATFORM", "linux/amd64")
     config_path = tmp_path / "config.yaml"
@@ -1692,9 +1726,11 @@ def test_task_artifacts_summarizes_patch_and_result_summary(tmp_path: Path) -> N
     (tmp_path / "model.patch").write_text("diff --git a/a b/a\n", encoding="utf-8")
     (tmp_path / "agent-cwd.txt").write_text("/testbed\n", encoding="utf-8")
     (tmp_path / "agent-stdout.txt").write_text("done\n", encoding="utf-8")
-    (tmp_path / "sidecar.log").write_text("ready\n", encoding="utf-8")
+    sidecar_log = "ready\n"
+    (tmp_path / "sidecar.log").write_text(sidecar_log, encoding="utf-8")
     (tmp_path / "sidecar-stderr.txt").write_text("bcc diagnostics\n", encoding="utf-8")
-    (tmp_path / "container.log").write_text("container done\n", encoding="utf-8")
+    container_log = "container done\n"
+    (tmp_path / "container.log").write_text(container_log, encoding="utf-8")
     (tmp_path / "tool_resource_preflight.json").write_text('{"stage2_ready": true}\n', encoding="utf-8")
     (tmp_path / "tool_resource_preflight_host.json").write_text('{"bcc_import": {"ok": true}}\n', encoding="utf-8")
     (tmp_path / "result_summary.json").write_text(
@@ -1707,9 +1743,9 @@ def test_task_artifacts_summarizes_patch_and_result_summary(tmp_path: Path) -> N
     assert artifacts["model.patch"]["has_diff"] is True
     assert artifacts["agent-cwd.txt"]["preview"] == "/testbed\n"
     assert artifacts["agent-stdout.txt"]["preview"] == "done\n"
-    assert artifacts["sidecar.log"]["bytes"] == 7
+    assert artifacts["sidecar.log"]["bytes"] == (tmp_path / "sidecar.log").stat().st_size
     assert artifacts["sidecar-stderr.txt"]["preview"] == "bcc diagnostics\n"
-    assert artifacts["container.log"]["bytes"] == 16
+    assert artifacts["container.log"]["bytes"] == (tmp_path / "container.log").stat().st_size
     assert artifacts["tool_resource_preflight.json"]["bytes"] > 0
     assert artifacts["tool_resource_preflight_host.json"]["bytes"] > 0
     assert artifacts["result_summary.json"]["summary"]["has_patch"] is True

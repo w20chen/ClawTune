@@ -230,15 +230,14 @@ def _load_yaml_safe(path: Path) -> dict[str, Any]:
     for raw in path.read_text(encoding="utf-8").splitlines():
         stripped = raw.strip()
         if not stripped or stripped.startswith("#"):
-            # skip comments / blank lines
-            if current_section is not None and not raw.startswith((" ", "\t", "#")):
-                current_section = None
             continue
         if stripped.endswith(":"):
             current_key = stripped[:-1].strip()
             current_section = {}
             result[current_key] = current_section
             continue
+        if not raw.startswith((" ", "\t")):
+            current_section = None
         if current_section is not None and ":" in stripped:
             k, _, v = stripped.partition(":")
             k = k.strip()

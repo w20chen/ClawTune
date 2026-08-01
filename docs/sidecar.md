@@ -1,5 +1,47 @@
 # Sidecar Usage
 
+## Auto-Start (Recommended)
+
+By default the OpenClaw plugin automatically starts the scheduler sidecar on
+first use when it is not already running.  No manual terminal is needed.
+
+The plugin checks the configured endpoint (default `http://localhost:8765`)
+every 200 ms for up to 15 seconds.  If the sidecar is already running the
+plugin skips the launch step.
+
+Disable auto-start in your OpenClaw plugin config:
+
+```json5
+{
+  "autoStartSidecar": false
+}
+```
+
+Or set the env var:
+
+```bash
+export OPENCLAW_AGENT_SCHEDULER_AUTO_START_SIDECAR=0
+```
+
+Override the launch command:
+
+```json5
+{
+  "sidecarCommand": "cd /path/to/claw/services/scheduler && PYTHONPATH=src python -m agent_scheduler.main --host 127.0.0.1 --port 8765"
+}
+```
+
+Or via env:
+
+```bash
+export OPENCLAW_AGENT_SCHEDULER_SIDECAR_COMMAND="python -m agent_scheduler.main --host 127.0.0.1 --port 8765"
+```
+
+The plugin also respects `OPENCLAW_AGENT_SCHEDULER_PROJECT_ROOT` (or
+`SIDECAR_PROJECT_ROOT`) to auto-detect the project layout.
+
+## Manual Start (Legacy)
+
 Start:
 
 ```bash
@@ -14,12 +56,16 @@ curl http://127.0.0.1:8765/health/live
 curl http://127.0.0.1:8765/health/ready
 ```
 
+## Endpoints
+
 Useful endpoints:
 
 - `GET /v1/tools/recent`
 - `GET /metrics`
 - `GET /v1/models`
 - `POST /v1/chat/completions`
+
+## Configuration
 
 Important `.env` values:
 
@@ -33,12 +79,22 @@ AGENT_SCHEDULER_TOOL_RESOURCE_REPO=openclaw
 AGENT_SCHEDULER_TOOL_RESOURCE_ARTIFACT_DIR=data/tool-resource
 AGENT_SCHEDULER_TOOL_RESOURCE_CONTAINER_EXECUTABLE=docker
 AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED=true
-AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL=https://api.deepseek.com
+# LLM upstream — any OpenAI-compatible provider. Examples:
+#
+# DeepSeek:
+# AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL=https://api.deepseek.com
+# AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL=deepseek-v4-flash
+# AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=deepseek-v4-flash
+#
+# OpenRouter:
+AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL=https://openrouter.ai/api/v1
 AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL=deepseek-v4-flash
 AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=deepseek/deepseek-v4-flash
 ```
 
-The sidecar always uses the vendored `tool_resource` predictor. It can
+## Tool Resource Predictor
+
+The sidecar uses the built-in `tool_resource` predictor. It can
 cold-start from OpenClaw trace v6 JSONL files and native Stage-2 telemetry
 artifacts. Trace v6 is call-level, so the adapter maps each eligible tool span
 to one call-level pseudo-clause: `exec` spans use the primary command head and
@@ -70,6 +126,8 @@ still appears with `unavailable_reason: "no_clause_latency_evidence"` so
 operators can distinguish "predictor ran but had no evidence" from integration
 failure.
 
+## Stage-2 Collection
+
 Native `tool_resource` Stage-2 collection is the primary managed-wrapper
 execution path. It needs a sandbox container id from OpenClaw or
 `AGENT_SCHEDULER_SANDBOX_CONTAINER_ID`, an artifact directory, the configured
@@ -81,11 +139,15 @@ claims fail closed if the Stage-2 collector cannot start before the payload
 command is released. This prevents silently falling back to whole-tool
 process/cgroup sampling for shell commands that need clause-level telemetry.
 
+## Cgroup Profiling
+
 For managed-wrapper executions with cgroup profiling, `claw-launch` reports
 the prepared cgroup to the sidecar before releasing the payload command. This
 lets the realtime monitor start sampling before short-lived commands finish;
 the launcher then updates the same execution with the real child PID once the
 payload process exists.
+
+## Docker Observer
 
 For native sandbox file tools (`read`, `write`, `edit`, and `apply_patch`),
 the optional Docker observer subscribes to both `exec_create` and `exec_start`.
@@ -97,10 +159,14 @@ docker-exec-pid`. If the process exits before a PID baseline can be sampled,
 the sidecar retains the discovered shared sandbox cgroup with
 `coverage_reason: shared_sandbox_container`.
 
+## LLM Proxy
+
 The LLM proxy is always enabled for plugin use. By default it forwards the
 provider key already configured in OpenClaw via the request `Authorization`
 header. Set `AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY_OVERRIDE` only when you
 intentionally want the sidecar to use a different upstream key.
+
+## Inspect
 
 Inspect output:
 
@@ -109,3 +175,17 @@ curl "http://127.0.0.1:8765/v1/tools/recent?limit=5"
 ls data/traces
 python tools/inspect_trace.py data/traces/<trace-file>.jsonl --all --details
 ```
+
+## Security
+
+- The plugin runs as a normal OpenClaw plugin.
+- This project does not modify OpenClaw core.
+- Use `mode: "observe"` unless you intentionally want enforcement behavior.
+- `managed-wrapper` rewrites `exec` commands and therefore requires
+  `securityBoundaryAccepted: true`.
+- Do not store provider API keys in committed config files. Normal plugin runs
+  should use the key already configured in OpenClaw; the sidecar forwards
+  OpenClaw's `Authorization` header by default. Use `LLM_API_KEY` only for
+  SWE-Rebench automation, and use
+  `AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY_OVERRIDE` only for an intentional
+  sidecar override.

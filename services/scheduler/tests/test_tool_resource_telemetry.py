@@ -144,6 +144,7 @@ def test_syscall_symbol_candidates_include_bcc_and_common_kernel_names() -> None
 
     assert candidates[0] == "bcc_execve"
     assert "__x64_sys_execve" in candidates
+    assert "__arm64_sys_execve" in candidates
     assert "sys_execve" in candidates
 
 

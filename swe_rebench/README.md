@@ -3,7 +3,17 @@
 Use this when you want to run many SWE-Rebench tasks through OpenClaw with the
 agent-scheduler plugin and sidecar tracing enabled.
 
-## Setup
+## Platform Quick Reference
+
+| Platform | Runtime Mode | Prep |
+|---|---|---|
+| **x86_64** | `container-openclaw` (default) or `host-openclaw-sandbox` | None — native |
+| **ARM/Kunpeng** | `host-openclaw-sandbox` | [QEMU setup](../docs/arm-qemu.md) first, then `docker.platform: "linux/amd64"` in config |
+
+ARM hosts must register amd64 binfmt before running any task. See
+[../docs/arm-qemu.md](../docs/arm-qemu.md).
+
+## Setup (x86)
 
 ```bash
 cp swe_rebench/config.example.yaml swe_rebench/config.yaml
@@ -14,11 +24,11 @@ python -m swe_rebench.runner prepare --config swe_rebench/config.yaml
 ```
 
 Generated bundles, traces, exports, and reports default to
-`swe_rebench/.runtime/`, which is Git-ignored. Keep Git commands unprivileged;
-if a live eBPF run needs elevated privileges, its generated files will no
-longer dirty or change ownership of tracked repository files.
+`swe_rebench/.runtime/` (Git-ignored).
 
-Default provider config is DeepSeek:
+LLM provider config — any OpenAI-compatible API works. Examples:
+
+**DeepSeek:**
 
 ```yaml
 llm:
@@ -29,7 +39,7 @@ llm:
   openclaw_model_ref: "vllm/deepseek-v4-flash"
 ```
 
-OpenRouter example:
+**OpenRouter:**
 
 ```yaml
 llm:
@@ -96,7 +106,7 @@ python -m swe_rebench.runner run --config swe_rebench/config.yaml \
 
 ### Host OpenClaw Sandbox Mode
 
-The default mode is still `container-openclaw`: each SWE-Rebench task container
+The default mode is `container-openclaw`: each SWE-Rebench task container
 runs OpenClaw, the plugin, and the scheduler sidecar inside the image.
 In this mode `runtime.stage2_required: false` is propagated explicitly to the
 in-container sidecar, so unavailable BCC/eBPF, Docker-event, or cgroup features
@@ -107,22 +117,21 @@ completeness checks.
 For a local Linux Docker daemon, the container runner also attempts Stage-2
 telemetry when the host exposes the required kernel interfaces. It mounts the
 running kernel's exact module/header paths read-only and binds the first host
-tracefs root containing `sched_process_exit` at the identical path read-write.
-The latter is required because `--privileged` grants capabilities but does not
+tracefs root containing `sched_process_exit` at the identical path read-write. Binding tracefs read-write is required because
+`--privileged` grants capabilities but does not
 copy the host tracefs mount into the container's mount namespace. The generated
 `tool_resource_preflight.json` reports the selected tracefs path and does not
 set `stage2_ready: true` unless that tracepoint is visible and the dynamic
 kprobe control file is writable. Remote Docker daemons, non-Linux runners, and
-missing host interfaces keep the documented fail-open behavior.
+missing host interfaces keep the fail-open behavior: `exec` proceeds without
+Stage-2 telemetry.
 
 When Stage-2 is requested through the managed wrapper, the container launcher
-execs a small gate wrapper in the final per-call cgroup, reports `/started`,
+executes a small gate wrapper in the final per-call cgroup, reports `/started`,
 and waits for the sidecar to arm BPF before execing the requested shell. This
 prevents short commands from completing during BPF compilation and guarantees
 that the first payload exec boundary is observable. The gate uses a dedicated
-pipe and preserves the payload's original stdin. Container lifecycle/scope
-reports use a 10-second timeout because healthy BCC attach and final analysis
-can exceed the plugin's generic 800 ms default under concurrent calls.
+pipe and preserves the payload's original stdin.
 
 When the sidecar itself runs inside the task container, launcher lifecycle
 PIDs are relative to that container's PID namespace while eBPF reports
@@ -141,10 +150,6 @@ python -m swe_rebench.runner run --config swe_rebench/config.yaml \
   --export
 ```
 
-`host-openclaw-container` is accepted as a user-facing alias for
-`host-openclaw-sandbox`; reports and manifests use the canonical
-`host-openclaw-sandbox` value.
-
 This copies `/testbed` from the task image into a host workspace, starts a host
 sidecar, configures an isolated OpenClaw home for the task, and mounts the
 workspace into the OpenClaw sandbox at `/workspace`.
@@ -152,11 +157,11 @@ workspace into the OpenClaw sandbox at `/workspace`.
 The swe-rebench task image is tagged as the OpenClaw sandbox image
 (`openclaw-sandbox:bookworm-slim`) so that the sandbox inherits all of the
 compilers, libraries, and tools that the upstream SWE-Rebench task expects.
-If the task image differs from the current sandbox tag, the runner re-tags it
+If the task image differs from the current sandbox tag, the runner retags it
 and writes `sandbox-image-build.log` under the task trace directory.
 
-Python task sandboxes put `/opt/miniconda3/envs/testbed/bin` first (with the
-older `/opt/conda/envs/testbed/bin` layout as fallback). The launcher itself
+Python task sandboxes put `/opt/miniconda3/envs/testbed/bin` first, falling
+back to `/opt/conda/envs/testbed/bin`. The launcher itself
 stays on `/usr/bin/python3`, then removes its scheduler-only `PYTHONPATH` before
 fork/exec so the payload uses the task interpreter and dependencies. Mounted
 `pip` and `pip3` wrappers both dispatch through `python3 -m pip`. Before the
@@ -165,7 +170,7 @@ pip module, and both pip entry points are usable as the sandbox UID.
 
 Resource attribution is best-effort:
 
-- `exec` still uses the managed wrapper at `/workspace/.claw/bin/claw-launch`.
+- `exec` uses the managed wrapper at `/workspace/.claw/bin/claw-launch`.
 - Internal tools such as `read`, `edit`, and `apply_patch` are sampled from the
   shared sandbox container cgroup when it can be discovered.
 - Shared sandbox samples are marked
@@ -233,10 +238,10 @@ call semantics and Clause-KB eligibility. A non-OK call with an explicit
 reason (for example, a shell parse failure or an executable that was not
 found) remains strictly withheld from the Clause KB, but does not by itself
 turn a healthy eBPF collector into a task-level collector failure. Required
-mode still fails closed on missing lifecycle or artifact envelopes, unhealthy
+mode fails closed on missing lifecycle or artifact envelopes, unhealthy
 collectors, telemetry loss, missing non-OK reasons, or any non-OK call marked
-KB-eligible. `runtime-tool-resource-kb.json` is a separate historical
-call-level KB and is excluded from the Stage-2 artifact count.
+KB-eligible. `runtime-tool-resource-kb.json` is a separate call-level KB and
+is excluded from the Stage-2 artifact count.
 Host-sandbox required mode also requires at least one usable clause-bucket
 prediction (a command-level prediction for a single executable clause or an
 independent entry in `clause_predictions` for a compound command) and at least
@@ -319,6 +324,50 @@ Collect/export existing traces:
 python -m swe_rebench.runner collect --config swe_rebench/config.yaml
 ```
 
+## Troubleshooting
+
+**Docker pull fails (`pull access denied` or network timeout):**
+`docker.pull_policy: "missing"` skips pull if the image already exists locally.
+Set `docker.pull_policy: "never"` to force using only cached images. For
+authenticated registries, configure Docker credentials on the host — the runner
+uses the host's Docker daemon and inherits its auth.
+
+**Task times out:**
+The runner spawns OpenClaw as a subprocess with a wall-clock deadline controlled
+by `batch.task_timeout_seconds` (default is typically 30-60 min). A task that
+exceeds this is killed and marked failed. Increase this for complex repos or
+QEMU-emulated ARM runs. A value of `0` disables the timeout — use with caution
+in automated batches.
+
+**Container exits immediately / no traces produced:**
+Check the task's `sidecar-stderr.txt` and `openclaw-stderr.txt` in the trace
+directory. Common causes: missing `LLM_API_KEY` (sidecar can't reach upstream
+LLM), `claw-launch` not found in the container bundle (re-run `prepare`),
+or the sandbox image lacks the task's expected Python version.
+
+**Cgroup attribution is `unattributed` or `shared_sandbox_container`:**
+In `container-openclaw` mode, per-tool cgroups require `docker.privileged: true`
+and `docker.cgroupns_mode: "host"` in config. In `host-openclaw-sandbox` mode,
+`exec` tools use the managed wrapper (which creates its own cgroup), but
+internal tools (`read`, `edit`, `apply_patch`) share the sandbox container
+cgroup — `shared_sandbox_container` is expected for those.
+
+**Stage-2 eBPF fails (`stage2_ready: false` in preflight):**
+The preflight checks BCC import, kernel headers match, clang/llc/bpftool
+availability, cgroup v2, and tracefs writability. Most failures are:
+- Missing `linux-headers-$(uname -r)` — kernel modules were updated but headers
+  weren't, or you're on a custom kernel without matching headers.
+- `bpfcc-tools` not installed or wrong version.
+- Running without `sudo` — eBPF requires `CAP_BPF` + `CAP_PERFMON` (typically
+  root).
+- Tracefs not mounted read-write — `--privileged` grants capabilities but
+  doesn't auto-mount tracefs in containers; the runner mounts it if the host
+  path is accessible.
+
+**ARM/Kunpeng: `no matching manifest for linux/arm64`:**
+You ran `prepare` before setting `docker.platform: "linux/amd64"`. Delete
+`swe_rebench/.runtime/` and re-run `prepare` with the platform set.
+
 ## Common Options
 
 `--config` can be placed before or after the subcommand:
@@ -366,7 +415,7 @@ Execution options:
 | Option | Purpose |
 | --- | --- |
 | `--prepare` | Rebuild the runtime bundle before running tasks. The runner also rebuilds automatically when the bundle looks stale. |
-| `--runtime-mode MODE` | Override `runtime.mode`; valid values are `container-openclaw` (default), `host-openclaw-sandbox`, and alias `host-openclaw-container`. |
+| `--runtime-mode MODE` | Override `runtime.mode`; valid values are `container-openclaw` (default) and `host-openclaw-sandbox`. |
 | `--stage2-required` / `--no-stage2-required` | Require complete eBPF clause artifacts or explicitly allow a best-effort diagnostic run. CLI-selected host-sandbox mode defaults to required. |
 | `--dry-run` | Print the selected tasks and exit without pulling images or starting containers. |
 
@@ -405,4 +454,4 @@ containers.
 
 ### `cleanup`
 
-Currently a no-op because task containers are removed after each run.
+Task containers are removed after each run; no separate cleanup is needed.

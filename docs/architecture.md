@@ -29,4 +29,8 @@ swe_rebench.runner
 User guides:
 
 - OpenClaw: [operator-guide.md](operator-guide.md)
+- Sidecar: [sidecar.md](sidecar.md)
+- Deployment: [deployment.md](deployment.md)
+- ARM/QEMU: [arm-qemu.md](arm-qemu.md)
 - SWE-Rebench: [../swe_rebench/README.md](../swe_rebench/README.md)
+- Trace format: [trace-schema-v6.md](trace-schema-v6.md)

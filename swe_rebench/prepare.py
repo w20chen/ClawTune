@@ -54,6 +54,10 @@ _PLUGIN_CONFIG: dict[str, Any] = {
     "enableNuma": False,
     "profilingMode": "off",
     "securityBoundaryAccepted": True,
+    # Entrypoint starts the sidecar before OpenClaw.  Keep auto-start
+    # disabled so the plugin never tries to spawn a second sidecar in
+    # the container.
+    "autoStartSidecar": False,
     "trace": {
         "schema_version": 6,
         "include_raw_events": False,
@@ -877,8 +881,13 @@ _SETUP_TEMPLATE = r"""#!/bin/bash
 # Environment setup inside swe-rebench containers.
 # Installs Node.js, npm, OpenClaw CLI, and Python deps.
 # Idempotent -- safe to run multiple times.
+#
+# Architecture support: x86_64 (amd64), aarch64 (arm64 / Kunpeng).
+# BCC/eBPF deps are best-effort and fail-open on all architectures.
 # ────────────────────────────────────────────────────────────────
 set -euo pipefail
+
+echo "[claw] host arch: $(uname -m)"
 """ + _BASH_PYTHON_DETECT + r"""
 CLAW_ROOT="${CLAW_ROOT:-/claw}"
 SETUP_DONE="/tmp/.claw_setup_done"
