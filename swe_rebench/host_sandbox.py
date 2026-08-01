@@ -554,6 +554,7 @@ payload = {
     "lib_modules_exists": Path("/lib/modules").exists(),
 }
 try:
+    from tool_resource.mvdan_client import ensure_compatible_adapter
     from tool_resource.telemetry import (
         _bpf_runtime_diagnostics,
         _ensure_bcc_importable,
@@ -568,6 +569,12 @@ try:
     }
     payload["bpf_runtime"] = _bpf_runtime_diagnostics()
     try:
+        adapter_path = ensure_compatible_adapter()
+        payload["mvdan_adapter"] = {
+            "ok": True,
+            "path": str(adapter_path),
+            "architecture": platform.machine(),
+        }
         validate_clause_telemetry_runtime(
             container_executable="docker",
             concurrency=1,
@@ -575,6 +582,11 @@ try:
         )
         payload["semantic_smoke"] = validate_clause_telemetry_smoke()
     except Exception as exc:
+        if "mvdan_adapter" not in payload:
+            payload["mvdan_adapter"] = {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
         payload["stage2_ready"] = False
         payload["stage2_disabled_reason"] = f"{type(exc).__name__}: {exc}"
     else:

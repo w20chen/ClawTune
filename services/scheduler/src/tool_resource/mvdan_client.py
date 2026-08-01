@@ -272,7 +272,10 @@ def get_client() -> MvdanClient:
     global _default_client
     with _default_client_lock:
         if _default_client is None:
-            _default_client = MvdanClient()
+            # The privileged sidecar has a different architecture-specific
+            # cache from the user that ran setup. Validate/build in the
+            # identity that will actually execute the adapter.
+            _default_client = MvdanClient(ensure_compatible_adapter())
         return _default_client
 
 

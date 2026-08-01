@@ -1499,6 +1499,9 @@ def test_host_sandbox_writes_tool_resource_preflight(monkeypatch, tmp_path: Path
     env = captured["env"]
     assert isinstance(env, dict)
     assert str(tmp_path / "services" / "scheduler" / "src") in env["PYTHONPATH"]
+    command = captured["cmd"]
+    assert isinstance(command, list)
+    assert "ensure_compatible_adapter" in command[-1]
 
 
 def test_host_sandbox_preserves_bpf_compiler_stderr(monkeypatch, tmp_path: Path) -> None:

@@ -49,8 +49,9 @@ single directory rather than attempting to combine incompatible interpreters.
 At the end, setup runs a real validation: compile the complete BPF program,
 attach its probes, create a test cgroup, execute a process, and verify usable
 events. The report is saved at `data/ebpf-check.json`. Setup also runs
-`openclaw config validate`, so an unsupported OpenClaw key is rejected before
-the first agent run.
+`openclaw config validate` and builds the architecture-specific parser adapter
+as the same privileged identity used by the sidecar. An unsupported OpenClaw
+key or missing adapter is therefore rejected before the first agent run.
 
 A successful setup includes:
 

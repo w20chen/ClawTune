@@ -134,6 +134,13 @@ def test_bpf_program_uses_wrapper_aware_syscall_kprobes() -> None:
     assert "pid_ns_for_children" in BPF_PROGRAM
 
 
+def test_bpf_program_filters_container_noise_before_ring_buffer() -> None:
+    assert "BPF_HASH(allowed_cgroups" in BPF_PROGRAM
+    assert "BPF_HASH(allowed_pid_namespaces" in BPF_PROGRAM
+    assert "allowed_cgroups.lookup(&current)" in BPF_PROGRAM
+    assert "allowed_pid_namespaces.lookup(&pid_ns)" in BPF_PROGRAM
+
+
 def test_bpf_program_feature_probes_both_linux_rss_stat_layouts() -> None:
     assert "#if LINUX_VERSION_CODE" not in BPF_PROGRAM
     assert "#include <linux/percpu_counter.h>" in BPF_PROGRAM

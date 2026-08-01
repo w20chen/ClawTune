@@ -1670,3 +1670,26 @@ controller was not enabled. Quota discovery now treats a missing or malformed
 `cpu.max` as unconstrained host capacity; eBPF CPU-time collection remains
 active and no host controller reconfiguration is required. Telemetry and
 sidecar regression tests after this fix: 78 passed.
+
+## 2026-08-02 privileged adapter and noisy-host regression
+
+Kunpeng benchmark evidence confirmed two regressions introduced by recent
+portability work. Commit `5934562` correctly separated amd64 and arm64 adapter
+caches, but the host sidecar runs as root while setup had not populated root's
+cache. Container telemetry had also been left system-wide before userspace
+filtering, allowing unrelated host exec traffic to overflow the BPF ring.
+
+The unified setup now builds and handshakes the adapter under the privileged
+sidecar identity. Host-sandbox preflight repeats that check and fails before an
+agent run when provisioning is impossible; runtime use also self-provisions as
+a final recovery path. Container collection now filters in-kernel by known
+cgroups or an isolated PID namespace, while direct-host PID-lineage collection
+retains its required permissive cgroup fallback.
+
+Validation completed: focused CLI, mvdan, telemetry, and SWE-Rebench tests
+passed (`141 passed, 2 skipped`); Python compilation and `git diff --check`
+passed.
+Ruff could not run because it is not installed in this Windows interpreter.
+Live arm64 BCC compilation/attachment, root-cache adapter build, Docker cgroup
+filtering, and the interrupted benchmark's end-to-end completion require the
+target Kunpeng Linux host and remain to be validated there.

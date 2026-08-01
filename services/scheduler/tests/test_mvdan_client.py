@@ -101,6 +101,24 @@ def test_ensure_compatible_adapter_reports_builder_failure(
         mvdan_client.ensure_compatible_adapter()
 
 
+def test_default_client_provisions_for_the_runtime_identity(monkeypatch, tmp_path) -> None:
+    binary = tmp_path / "adapter"
+    created: list[Path] = []
+
+    class FakeClient:
+        def __init__(self, binary_path: Path) -> None:
+            created.append(binary_path)
+
+    monkeypatch.setattr(mvdan_client, "ensure_compatible_adapter", lambda: binary)
+    monkeypatch.setattr(mvdan_client, "MvdanClient", FakeClient)
+    monkeypatch.setattr(mvdan_client, "_default_client", None)
+
+    client = mvdan_client.get_client()
+
+    assert isinstance(client, FakeClient)
+    assert created == [binary]
+
+
 def test_mvdan_versions_are_consistent_across_client_builder_and_go_module() -> None:
     adapter_root = mvdan_client._BUILD_SCRIPT.parent
     build_script = mvdan_client._BUILD_SCRIPT.read_text(encoding="utf-8")

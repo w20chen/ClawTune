@@ -48,6 +48,7 @@ This one command:
 - installs the Scheduler and builds/configures the OpenClaw plugin;
 - repairs a stale ClawTune plugin link after the repository has moved;
 - configures automatic privileged sidecar startup with a readiness gate;
+- builds and validates the parser adapter for the privileged host runtime;
 - enables and tests amd64 Docker images automatically on Kunpeng;
 - compiles, attaches, and exercises the real eBPF collector.
 

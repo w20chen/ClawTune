@@ -372,6 +372,8 @@ struct event_t {
 
 BPF_RINGBUF_OUTPUT(events, 1024);
 BPF_ARRAY(target_cgroup, u64, 1);
+BPF_HASH(allowed_cgroups, u64, u8, 4096);
+BPF_HASH(allowed_pid_namespaces, u64, u8, 256);
 BPF_ARRAY(ringbuf_reserve_failures, u64, 1);
 BPF_ARRAY(argv_read_failures, u64, 1);
 BPF_ARRAY(argv_boundary_read_failures, u64, 1);
@@ -392,17 +394,22 @@ struct pending_exec_t {
 BPF_HASH(current_seq, struct task_key_t, u64);
 BPF_HASH(pending_seq, struct task_key_t, struct pending_exec_t);
 
+static u64 current_pid_namespace_inode(struct task_struct *task);
+
 static int wanted(void) {
     u32 zero = 0;
     u64 *counter = kprobe_total_hits.lookup(&zero);
     if (counter) __sync_fetch_and_add(counter, 1);
     u64 *t = target_cgroup.lookup(&zero);
-    /* When no cgroup is configured (t==NULL or *t==0), allow all events.
-     * This is intentionally permissive: if the container cgroup cannot be
-     * reliably identified (e.g. Docker creates child cgroups under the
-     * scope), we capture everything and let userspace filter by cgroup_id. */
+    /* A zero target is reserved for direct-host PID-lineage collection, where
+     * the trusted process may move through cgroups after this program loads. */
     if (!t || !*t) return 1;
-    return *t == bpf_get_current_cgroup_id();
+    u64 current = bpf_get_current_cgroup_id();
+    if (*t == current) return 1;
+    if (allowed_cgroups.lookup(&current) != 0) return 1;
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    u64 pid_ns = current_pid_namespace_inode(task);
+    return pid_ns && allowed_pid_namespaces.lookup(&pid_ns) != 0;
 }
 
 static void lost(u64 *counter) {
@@ -3556,8 +3563,23 @@ class ClauseTelemetryCollector:
             for sequence in range(8192):
                 queue.push(ctypes.c_ulonglong(sequence))
             self._bpf["sequence_ready"][ctypes.c_int(0)] = ctypes.c_uint(1)
-            # target_cgroup stays 0 → wanted() is permissive (allow all).
-            # Python-side filtering by self.cgroup_inodes discards noise.
+            if self.container_id:
+                # Filter container runs in-kernel. Capturing every exec on a
+                # busy host can overflow the ring before userspace filtering.
+                self._bpf["target_cgroup"][ctypes.c_int(0)] = (
+                    ctypes.c_ulonglong(self.cgroup_id)
+                )
+                allowed = self._bpf["allowed_cgroups"]
+                for cgroup_id in self.cgroup_inodes:
+                    if cgroup_id != self.cgroup_id:
+                        allowed[ctypes.c_ulonglong(cgroup_id)] = ctypes.c_ubyte(1)
+                allowed_pid_namespaces = self._bpf["allowed_pid_namespaces"]
+                for pid_namespace in self.pid_namespace_inodes:
+                    allowed_pid_namespaces[ctypes.c_ulonglong(pid_namespace)] = (
+                        ctypes.c_ubyte(1)
+                    )
+            # Direct-host PID-lineage collection leaves target_cgroup at zero;
+            # its authenticated process filter remains in userspace.
             self._table = self._bpf["events"]
 
             def receive(_ctx: int, data: int, _size: int) -> int:

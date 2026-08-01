@@ -423,6 +423,19 @@ def check_ebpf(output: Path | None = None) -> None:
     run(privileged_command(command))
 
 
+def check_mvdan_adapter() -> None:
+    code = (
+        "from tool_resource.mvdan_client import ensure_compatible_adapter; "
+        "print('Mvdan adapter:', ensure_compatible_adapter())"
+    )
+    run(
+        privileged_command(
+            [VENV / "bin" / "python", "-c", code],
+            preserve_env=PRIVILEGED_RUNTIME_PRESERVE_ENV,
+        )
+    )
+
+
 def sidecar_health() -> dict[str, object]:
     endpoint = "http://127.0.0.1:8765/health/ready"
     try:
@@ -547,6 +560,7 @@ def setup(args: argparse.Namespace) -> None:
     build_plugin()
     setup_qemu_if_needed(args.skip_qemu)
     configure_openclaw()
+    check_mvdan_adapter()
     check_ebpf(ROOT / "data" / "ebpf-check.json")
     log("Setup and eBPF validation passed; the validation process has exited.")
     log("The OpenClaw plugin starts and waits for the eBPF sidecar automatically.")

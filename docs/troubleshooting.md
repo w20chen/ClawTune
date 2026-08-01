@@ -331,3 +331,16 @@ Look in the task directory under `swe_rebench/.runtime/traces/<task-id>/`:
 
 Start with one task. On Kunpeng, increase `batch.task_timeout_seconds` only if
 QEMU execution genuinely reaches the current limit.
+
+### A trace reports `mvdan adapter is missing` or repeated `analysis_failure`
+
+This was a regression in older revisions: setup prepared a user/container
+cache while the privileged ARM64 host sidecar read root's architecture-specific
+cache. Current setup prepares the adapter as the actual sidecar identity, and
+benchmark preflight verifies it before starting an agent. Update the checkout
+and run the normal setup command once; do not copy binaries between users or
+architectures:
+
+```bash
+python3 scripts/clawtune.py setup
+```
