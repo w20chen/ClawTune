@@ -242,6 +242,12 @@ checkout and rerun setup so OpenClaw uses the rebuilt launcher:
 python3 scripts/clawtune.py setup --skip-qemu
 ```
 
+If an older build reports `collector attach failed` because
+`/sys/fs/cgroup/.../cpu.max` does not exist, update ClawTune and rerun setup.
+The CPU controller is optional for eBPF collection; current builds interpret a
+missing quota file as unconstrained host capacity instead of rejecting shell
+execution. You do not need to modify `cgroup.subtree_control` manually.
+
 ## OpenClaw runs but model or tool traces are empty
 
 Check that:

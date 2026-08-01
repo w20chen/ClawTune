@@ -22,6 +22,7 @@ from tool_resource.telemetry import (
     _ensure_bcc_importable,
     _isolate_call_events,
     _observed_container_cgroup_ids,
+    observed_quota_cores,
     _runtime_response_exit_code,
     _sampled_peak_rss,
     _scope_identity_inodes,
@@ -30,6 +31,16 @@ from tool_resource.telemetry import (
     validate_clause_telemetry_smoke,
 )
 from tool_resource.mvdan_client import MvdanClientError
+
+
+def test_cpu_quota_is_optional_when_controller_is_not_enabled(tmp_path) -> None:
+    assert observed_quota_cores(tmp_path) > 0
+
+
+def test_cpu_quota_reads_enabled_controller(tmp_path) -> None:
+    (tmp_path / "cpu.max").write_text("200000 100000\n", encoding="utf-8")
+
+    assert observed_quota_cores(tmp_path) == 2.0
 
 
 def test_host_scope_never_expands_through_pid_namespace(monkeypatch, tmp_path) -> None:

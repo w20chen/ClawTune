@@ -1663,3 +1663,10 @@ shell command with exit 125. The fallback now keeps eBPF enabled and uses the
 sidecar-authenticated root PID plus fork/exec lineage; it does not use the
 shared session cgroup as an identity filter. Sidecar/predictor/telemetry tests
 after this correction: 103 passed.
+
+The next debug run identified the remaining attach failure precisely: the
+openEuler cgroup subtree did not expose optional `cpu.max` because its CPU
+controller was not enabled. Quota discovery now treats a missing or malformed
+`cpu.max` as unconstrained host capacity; eBPF CPU-time collection remains
+active and no host controller reconfiguration is required. Telemetry and
+sidecar regression tests after this fix: 78 passed.

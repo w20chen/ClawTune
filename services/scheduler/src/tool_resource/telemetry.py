@@ -949,8 +949,24 @@ def _read_usage_usec(cgroup: Path) -> int:
 
 
 def observed_quota_cores(cgroup: Path) -> float:
-    raw = (cgroup / "cpu.max").read_text().split()
-    return float(_NPROC) if raw[0] == "max" else float(int(raw[0]) / int(raw[1]))
+    """Return the effective CPU quota, or host capacity when unavailable.
+
+    Cgroup v2 does not create ``cpu.max`` in a subtree whose parent has not
+    enabled the CPU controller. That is a valid host configuration and does
+    not prevent the eBPF probes from collecting per-process CPU time.
+    """
+
+    try:
+        raw = (cgroup / "cpu.max").read_text(encoding="utf-8").split()
+        if len(raw) != 2 or raw[0] == "max":
+            return float(_NPROC)
+        quota = int(raw[0])
+        period = int(raw[1])
+        if quota <= 0 or period <= 0:
+            return float(_NPROC)
+        return float(quota / period)
+    except (OSError, ValueError):
+        return float(_NPROC)
 
 
 class RssOracle(threading.Thread):
