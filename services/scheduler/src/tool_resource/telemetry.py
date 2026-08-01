@@ -2877,8 +2877,28 @@ def _pid_namespace_inode_for_pid(pid: int) -> int | None:
     return None
 
 
+def _discover_descendant_cgroup_inodes(cgroup: Path) -> set[int]:
+    """Return inode numbers for one cgroup and its descendants only."""
+
+    inodes: set[int] = set()
+    try:
+        inodes.add(cgroup.stat().st_ino)
+    except OSError:
+        pass
+    try:
+        for entry in cgroup.rglob("*"):
+            if entry.is_dir():
+                try:
+                    inodes.add(entry.stat().st_ino)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return inodes
+
+
 def _discover_leaf_cgroup_inodes(cgroup: Path) -> set[int]:
-    """Return inode numbers for *cgroup* and all related cgroups.
+    """Return inode numbers for a container cgroup and related cgroups.
 
     On Docker / cgroup v2 with systemd, ``docker exec`` often creates
     transient scopes that may live in a different part of the cgroup
@@ -2894,22 +2914,7 @@ def _discover_leaf_cgroup_inodes(cgroup: Path) -> set[int]:
     The container-id is typically a 64-char hex string embedded in the
     directory name after ``docker-`` or ``cri-containerd-``.
     """
-    inodes: set[int] = set()
-    try:
-        inodes.add(cgroup.stat().st_ino)
-    except OSError:
-        pass
-
-    # Child cgroups (legacy / nested container runtimes).
-    try:
-        for entry in cgroup.rglob("*"):
-            if entry.is_dir():
-                try:
-                    inodes.add(entry.stat().st_ino)
-                except OSError:
-                    pass
-    except OSError:
-        pass
+    inodes = _discover_descendant_cgroup_inodes(cgroup)
 
     # Broad scan: find ALL cgroup directories whose name contains the
     # container-id substring (at least 12 hex chars).  This catches
@@ -2919,6 +2924,43 @@ def _discover_leaf_cgroup_inodes(cgroup: Path) -> set[int]:
     _add_container_cgroup_inodes_broad(cgroup, inodes)
 
     return inodes
+
+
+def _isolated_pid_namespace_inode(init_pid: int) -> int | None:
+    """Return a workload PID namespace only when it differs from the sidecar.
+
+    A direct-host process (and a container using ``--pid=host``) shares the
+    sidecar's PID namespace. Treating that namespace as an attribution filter
+    would select every host process and expand cgroup discovery across the
+    machine.
+    """
+
+    if init_pid <= 0:
+        return None
+    workload_inode = _pid_namespace_inode_for_pid(init_pid)
+    sidecar_inode = _pid_namespace_inode_for_pid(os.getpid())
+    if workload_inode is None or workload_inode == sidecar_inode:
+        return None
+    return workload_inode
+
+
+def _scope_identity_inodes(
+    cgroup: Path,
+    init_pid: int,
+    container_id: str | None,
+) -> tuple[set[int], set[int]]:
+    """Build cgroup/PID-namespace filters without widening host scopes."""
+
+    if not container_id:
+        return _discover_descendant_cgroup_inodes(cgroup), set()
+    cgroup_inodes = _discover_leaf_cgroup_inodes(cgroup)
+    pid_namespace_inode = _isolated_pid_namespace_inode(init_pid)
+    if pid_namespace_inode is not None:
+        cgroup_inodes |= _discover_cgroup_inodes_from_proc(init_pid)
+    return (
+        cgroup_inodes,
+        {pid_namespace_inode} if pid_namespace_inode is not None else set(),
+    )
 
 
 def _discover_cgroup_inodes_from_proc(init_pid: int) -> set[int]:
@@ -3348,7 +3390,7 @@ class ClauseTelemetryCollector:
     def __init__(
         self,
         *,
-        container_id: str,
+        container_id: str | None,
         container_executable: str,
         repo: str,
         artifact_path: Path,
@@ -3365,13 +3407,23 @@ class ClauseTelemetryCollector:
             cgroup = Path(cgroup_path)
             if not cgroup.is_dir():
                 raise RuntimeError(f"explicit cgroup path does not exist: {cgroup}")
-            # Resolve init_pid from container for informational purposes only;
-            # entry_pid for analysis is derived from events, not from init_pid.
-            result = subprocess.run(
-                [container_executable, "inspect", container_id, "--format", "{{.State.Pid}}"],
-                capture_output=True, text=True, check=False,
-            )
-            init_pid = int(result.stdout.strip()) if result.stdout.strip().isdigit() else 0
+            if trusted_root_pid is not None:
+                # Direct host execution has no Docker id. The authenticated
+                # launcher supplies a PID identity that the sidecar resolves
+                # before constructing this collector.
+                init_pid = trusted_root_pid
+            elif container_id:
+                # Resolve init_pid from Docker for informational purposes only;
+                # entry_pid for analysis is derived from events, not init_pid.
+                result = subprocess.run(
+                    [container_executable, "inspect", container_id, "--format", "{{.State.Pid}}"],
+                    capture_output=True, text=True, check=False,
+                )
+                init_pid = int(result.stdout.strip()) if result.stdout.strip().isdigit() else 0
+            else:
+                raise RuntimeError(
+                    "trusted_root_pid is required for host cgroup telemetry"
+                )
         else:
             if cgroup_path is not None:
                 # The host root cgroup (/sys/fs/cgroup) is never the correct
@@ -3380,32 +3432,30 @@ class ClauseTelemetryCollector:
                 # would silently match zero events.  Fall through to
                 # container-based discovery instead.
                 pass
+            if not container_id:
+                raise RuntimeError(
+                    "container_id is required when no explicit host cgroup is available"
+                )
             cgroup, init_pid = _container_cgroup(container_id, container_executable)
         self.container_id = container_id
         self.cgroup = cgroup
         self.cgroup_id = cgroup.stat().st_ino
         self._trusted_root_pid_remap_allowed = (
-            cgroup_path is not None and not _is_root_cgroup_str(cgroup_path)
+            bool(container_id)
+            and cgroup_path is not None
+            and not _is_root_cgroup_str(cgroup_path)
         )
-        # Discover all cgroup inodes under the container scope so the
-        # Python event filter can match processes in child cgroups that
-        # Docker/containerd may create.  The BPF wanted() filter is left
-        # permissive (target_cgroup=0) to avoid silent event loss when the
-        # exact leaf cgroup is not known ahead of time.
-        self.cgroup_inodes = (
-            _discover_leaf_cgroup_inodes(cgroup) if cgroup else {self.cgroup_id}
+        # Docker may place exec processes in related transient scopes, while
+        # direct-host collection already has an exact sidecar-verified cgroup.
+        # Never run Docker's broad sibling/proc discovery for host work: in the
+        # host PID namespace it would effectively select the entire machine.
+        self.cgroup_inodes, self.pid_namespace_inodes = _scope_identity_inodes(
+            cgroup,
+            init_pid,
+            container_id,
         )
         if not self.cgroup_inodes and self.cgroup_id:
             self.cgroup_inodes = {self.cgroup_id}
-        # Supplement directory-based discovery with /proc scanning.
-        # Docker exec processes often run in cgroups that are not
-        # reachable via directory traversal (e.g., systemd transient
-        # scopes in a different slice).  Scanning /proc for processes
-        # in the same PID namespace finds their actual cgroups.
-        if init_pid > 0:
-            proc_cgroup_inodes = _discover_cgroup_inodes_from_proc(init_pid)
-            if proc_cgroup_inodes:
-                self.cgroup_inodes |= proc_cgroup_inodes
         # Seed from cross-instance cache: exec transient cgroups discovered
         # by a previous collector instance for the same container.
         if container_id:
@@ -3416,8 +3466,6 @@ class ClauseTelemetryCollector:
         self.trusted_root_pid: int | None = None
         if trusted_root_pid is not None:
             self.bind_trusted_root(trusted_root_pid)
-        init_pid_ns = _pid_namespace_inode_for_pid(init_pid) if init_pid > 0 else None
-        self.pid_namespace_inodes = {init_pid_ns} if init_pid_ns is not None else set()
         self.quota_cores = observed_quota_cores(cgroup)
         self.repo = repo
         self.artifact_path = artifact_path
@@ -3541,7 +3589,7 @@ class ClauseTelemetryCollector:
         repo: str,
         artifact_path: Path,
         reason: str,
-        container_id: str = "",
+        container_id: str | None = None,
         source_actions: Sequence[Mapping[str, Any]] = (),
     ) -> "ClauseTelemetryCollector":
         """Return a disabled collector when setup cannot arm BPF."""

@@ -1632,3 +1632,27 @@ Validation unavailable in this Windows workspace:
   On the Kunpeng host, rerun `python3 scripts/clawtune.py setup`, one direct
   `openclaw agent ...` turn, and `python3 scripts/clawtune.py benchmark
   --sample 1`. Repeat setup/check on x86_64 for the secondary architecture.
+
+## 2026-08-02 Direct-agent eBPF gate closure
+
+The latest Kunpeng agent log completed successfully, but exposed a real
+fallback defect behind the non-fatal `Failed to connect to bus` message. The
+launcher now quietly skips an unavailable systemd user manager, always gates
+POSIX managed-wrapper payloads, and releases them only after `/started`
+returns `stored:true`. EOF, timeout, HTTP 503, malformed acknowledgements, and
+systemd gate failures abort with no payload execution. The privileged sidecar
+creates or verifies an exclusive per-execution cgroup from authenticated PID
+identity; direct-host collection no longer trusts a client path or expands a
+host/shared PID namespace into machine-wide telemetry.
+
+Validation completed:
+
+- focused Scheduler launcher/sidecar/predictor/telemetry tests: 137 passed,
+  2 POSIX-only tests skipped on Windows;
+- OpenClaw plugin tests: 67 passed; TypeScript typecheck passed;
+- tracked and runtime SWE-Rebench bundles rebuilt from current sources.
+
+Validation unavailable here: the final BCC attach and cgroup move require the
+target Linux kernel. On Kunpeng, run setup again and one direct agent command;
+the command must now fail with exit 125 instead of running unobserved if eBPF
+cannot be armed.

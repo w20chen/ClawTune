@@ -20,6 +20,7 @@ from typing import Any
 _SUBPROCESS_EXIT_REPORT_TIMEOUTS_SECONDS = (0.75, 10.0)
 _FORK_EXEC_EXIT_REPORT_TIMEOUTS_SECONDS = (0.75, 0.75, 0.75)
 _EXIT_REPORT_RETRY_DELAY_SECONDS = 0.05
+_START_REPORT_TIMEOUT_SECONDS = 60.0
 
 
 def main() -> None:
@@ -237,10 +238,14 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
             cgroup_path=child_cgroup_path,
             host_cgroup_gate=host_cgroup_gate,
         )
+        if response.get("stored") is not True:
+            raise RuntimeError(
+                "sidecar did not acknowledge the execution start"
+            )
         started_reported = True
         return response
 
-    release_gate: Callable[[], None] | None = None
+    release_gate: Callable[[bool], None] | None = None
     use_host_cgroup_gate = cgroup_path is None and _host_cgroup_gate_enabled(profiling)
     # Stage-2 is armed by the /started request.  A normal Popen child can
     # exec (and for short commands even exit) while the sidecar is still
@@ -248,14 +253,10 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
     # lightweight wrapper has entered the final cgroup, then release it only
     # after /started returns.  The wrapper itself has already execed, so Popen
     # does not deadlock waiting for a blocking preexec_fn.
-    use_payload_gate = (
-        _supports_posix_controls()
-        and (
-            cgroup_path is not None
-            or use_host_cgroup_gate
-            or _enabled(profiling, "enable_cgroup", False)
-        )
-    )
+    # Every managed-wrapper invocation reaches this path. Gate all POSIX
+    # payloads, including profiling.mode=off decisions: eBPF is a required
+    # execution boundary, not an optional profiler selected by that field.
+    use_payload_gate = _supports_posix_controls()
     if use_payload_gate:
         child, release_gate = _spawn_shell_gated(
             command,
@@ -278,36 +279,59 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
                     ),
                 )
                 if fallback is None:
+                    # The child never entered the cgroup we created. Do not
+                    # report that stale path to the sidecar because it may
+                    # misattribute or lose telemetry. Remote sidecars resolve
+                    # the host scope through the gate. Never substitute a
+                    # shared login/session cgroup: that would mix unrelated
+                    # host processes into this execution's telemetry.
+                    _cleanup_cgroup(cgroup_path)
                     cgroup_owned = False
+                    use_host_cgroup_gate = _host_cgroup_gate_enabled(profiling)
+                    cgroup_path = None
                 else:
                     _cleanup_cgroup(cgroup_path)
+                    if release_gate is not None:
+                        release_gate(False)
+                        release_gate = None
                     child, cgroup_path = fallback
                     cgroup_owned = False
             else:
                 _verify_child_cgroup(child.pid, cgroup_path)
     except Exception:
-        _terminate_child_best_effort(child)
         if release_gate is not None:
-            release_gate()
+            release_gate(False)
+            release_gate = None
+        _terminate_child_best_effort(child)
         if cgroup_owned:
             _cleanup_cgroup(cgroup_path)
         raise
-    _install_signal_forwarders(child)
-    started_response = (
-        {}
-        if started_reported
-        else report_started(
-            child.pid,
-            cgroup_path,
-            host_cgroup_gate=use_host_cgroup_gate,
+    try:
+        _install_signal_forwarders(child)
+        started_response = (
+            {}
+            if started_reported
+            else report_started(
+                child.pid,
+                cgroup_path,
+                host_cgroup_gate=use_host_cgroup_gate,
+            )
         )
-    )
-    if cgroup_path is None and isinstance(started_response, dict):
-        response_cgroup = started_response.get("cgroup_path")
-        if isinstance(response_cgroup, str) and response_cgroup:
-            cgroup_path = response_cgroup
-    if release_gate is not None:
-        release_gate()
+        if cgroup_path is None and isinstance(started_response, dict):
+            response_cgroup = started_response.get("cgroup_path")
+            if isinstance(response_cgroup, str) and response_cgroup:
+                cgroup_path = response_cgroup
+        if release_gate is not None:
+            release_gate(True)
+            release_gate = None
+    except Exception:
+        if release_gate is not None:
+            release_gate(False)
+            release_gate = None
+        _terminate_child_best_effort(child)
+        if cgroup_owned:
+            _cleanup_cgroup(cgroup_path)
+        raise
     returncode = child.wait()
     exit_code = returncode if returncode >= 0 else None
     term_signal = -returncode if returncode < 0 else None
@@ -346,7 +370,10 @@ def _post_started(
     cgroup_path: str | None,
     host_cgroup_gate: bool,
 ) -> dict[str, Any]:
-    return _post_json_best_effort(
+    # The payload is still behind its gate. A rejected or unreachable
+    # /started request means the required collector was not armed, so this
+    # lifecycle boundary must fail closed rather than executing unobserved.
+    return _post_json(
         endpoint,
         f"/v2/executions/{execution_id}/started",
         {
@@ -368,7 +395,7 @@ def _spawn_shell_gated(
     *,
     cgroup_path: str | None = None,
     affinity_cpus: set[int] | None = None,
-) -> tuple[subprocess.Popen[bytes], Callable[[], None]]:
+) -> tuple[subprocess.Popen[bytes], Callable[[bool], None]]:
     if not _supports_posix_controls():
         return (
             _spawn_shell(
@@ -377,13 +404,14 @@ def _spawn_shell_gated(
                 cgroup_path=cgroup_path,
                 affinity_cpus=affinity_cpus,
             ),
-            lambda: None,
+            lambda _allow=True: None,
         )
     env = _payload_environment()
     env["CLAW_GATED_PAYLOAD"] = command
     read_fd, write_fd = os.pipe()
     wrapper = (
-        f"IFS= read -r _claw_release < /proc/self/fd/{read_fd}; "
+        f"IFS= read -r _claw_release < /proc/self/fd/{read_fd} || exit 125; "
+        '[ "$_claw_release" = "claw-release-v1" ] || exit 125; '
         '_claw_payload="$CLAW_GATED_PAYLOAD"; '
         "unset CLAW_GATED_PAYLOAD; "
         'exec /bin/sh -c "$_claw_payload"'
@@ -403,15 +431,16 @@ def _spawn_shell_gated(
     os.close(read_fd)
     released = False
 
-    def release() -> None:
+    def release(allow: bool = True) -> None:
         nonlocal released
         if released:
             return
         released = True
-        try:
-            os.write(write_fd, b"1\n")
-        except OSError:
-            pass
+        if allow:
+            try:
+                os.write(write_fd, b"claw-release-v1\n")
+            except OSError:
+                pass
         try:
             os.close(write_fd)
         except OSError:
@@ -434,6 +463,11 @@ def _restart_in_systemd_scope(
         return None
     if not _supports_posix_controls() or which("systemd-run") is None:
         return None
+    # `systemd-run --user` prints a D-Bus error into the tool result when an
+    # SSH/cron/container session has no user manager. Probe the same manager
+    # interface quietly before suspending the real child or spawning a scope.
+    if not _systemd_user_manager_available():
+        return None
     unit = f"claw-{_safe_execution_id(execution_id)}.scope"
     suspended = _suspend_child_best_effort(child)
     cgroup_probe = tempfile.NamedTemporaryFile(prefix="claw-cgroup-", delete=False)
@@ -447,8 +481,11 @@ def _restart_in_systemd_scope(
         'if [ -n "$cg" ] && [ "$cg" != "/" ]; then '
         'printf "%s" "/sys/fs/cgroup$cg" > "$CLAW_SYSTEMD_CGROUP_FILE"; '
         'else printf "%s" "/sys/fs/cgroup" > "$CLAW_SYSTEMD_CGROUP_FILE"; fi; '
-        'i=0; while [ ! -e "$CLAW_SYSTEMD_RELEASE_FILE" ] && [ "$i" -lt 500 ]; do '
-        'i=$((i+1)); sleep 0.01; done; rm -f "$CLAW_SYSTEMD_RELEASE_FILE"; '
+        'i=0; while [ ! -e "$CLAW_SYSTEMD_RELEASE_FILE" ] && [ "$i" -lt 650 ]; do '
+        'i=$((i+1)); sleep 0.1; done; '
+        'IFS= read -r _claw_release < "$CLAW_SYSTEMD_RELEASE_FILE" || exit 125; '
+        'rm -f "$CLAW_SYSTEMD_RELEASE_FILE"; '
+        '[ "$_claw_release" = "claw-release-v1" ] || exit 125; '
         'exec /bin/sh -c "$CLAW_SYSTEMD_PAYLOAD"'
     )
     env = _payload_environment()
@@ -490,8 +527,27 @@ def _restart_in_systemd_scope(
         _unlink_best_effort(release_path)
         return None
     if on_cgroup_ready is not None:
-        on_cgroup_ready(fallback_child.pid, cgroup_path)
-    Path(release_path).write_text("1", encoding="utf-8")
+        try:
+            on_cgroup_ready(fallback_child.pid, cgroup_path)
+        except Exception:
+            _write_systemd_gate_best_effort(release_path, "claw-abort-v1")
+            _terminate_child_best_effort(fallback_child)
+            _stop_systemd_unit_best_effort(unit)
+            if suspended:
+                _resume_child_best_effort(child)
+            _unlink_best_effort(release_path)
+            raise
+    try:
+        _write_systemd_gate(release_path, "claw-release-v1")
+    except Exception:
+        _terminate_child_best_effort(fallback_child)
+        _stop_systemd_unit_best_effort(unit)
+        if suspended:
+            _resume_child_best_effort(child)
+        _unlink_best_effort(release_path)
+        raise
+    if suspended:
+        _resume_child_best_effort(child)
     _terminate_child_best_effort(child)
     return fallback_child, cgroup_path
 
@@ -503,11 +559,29 @@ def _systemd_scope_fallback_enabled(profiling: object) -> bool:
     return _enabled(profiling, "enable_cgroup", False)
 
 
+def _systemd_user_manager_available() -> bool:
+    if which("systemctl") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "show-environment"],
+            check=False,
+            capture_output=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
 def _host_cgroup_gate_enabled(profiling: object) -> bool:
     raw = os.environ.get("CLAW_HOST_CGROUP_GATE")
     if raw is not None:
         return raw.lower() not in {"0", "false", "no", "off"}
-    return _sidecar_is_remote() and _enabled(profiling, "enable_cgroup", False)
+    # The privileged sidecar can create an exclusive execution cgroup even
+    # when an unprivileged local launcher cannot. This is required for direct
+    # host execution and is equally valid for local and remote endpoints.
+    return _supports_posix_controls()
 
 
 def _systemd_unit_cgroup_path(unit: str) -> str | None:
@@ -551,8 +625,52 @@ def _unlink_best_effort(path: str) -> None:
         pass
 
 
+def _write_systemd_gate(path: str, token: str) -> None:
+    """Atomically publish a systemd-wrapper gate decision."""
+
+    parent = Path(path).parent
+    temporary = tempfile.NamedTemporaryFile(
+        prefix="claw-release-decision-",
+        dir=parent,
+        delete=False,
+    )
+    temporary_path = temporary.name
+    try:
+        temporary.write(f"{token}\n".encode("utf-8"))
+        temporary.flush()
+        temporary.close()
+        os.replace(temporary_path, path)
+    except BaseException:
+        temporary.close()
+        _unlink_best_effort(temporary_path)
+        raise
+
+
+def _write_systemd_gate_best_effort(path: str, token: str) -> None:
+    try:
+        _write_systemd_gate(path, token)
+    except Exception:
+        pass
+
+
+def _stop_systemd_unit_best_effort(unit: str) -> None:
+    try:
+        subprocess.run(
+            ["systemctl", "--user", "stop", unit],
+            check=False,
+            capture_output=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def _child_preexec(cgroup_path: str | None, affinity_cpus: set[int] | None):
     def preexec() -> None:
+        # Signal forwarding targets the child's process group. Give each
+        # payload its own session so forwarding can never hit OpenClaw or the
+        # launcher itself when they inherited the same terminal group.
+        os.setsid()
         if cgroup_path:
             try:
                 _write_file(Path(cgroup_path) / "cgroup.procs", str(os.getpid()))
@@ -573,8 +691,12 @@ def _install_signal_forwarders(child: subprocess.Popen[bytes]) -> None:
 
     def forward(signum: int, _frame: object) -> None:
         try:
-            os.killpg(os.getpgid(child.pid), signum)
-        except ProcessLookupError:
+            child_pgid = _exclusive_child_pgid(child)
+            if child_pgid is not None:
+                os.killpg(child_pgid, signum)
+            else:
+                os.kill(child.pid, signum)
+        except OSError:
             pass
 
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
@@ -612,7 +734,30 @@ def _post_json_best_effort(endpoint: str, path: str, payload: dict[str, Any]) ->
 
 
 def _post_json(endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-    return _post_json_with_timeout(endpoint, path, payload, timeout_seconds=10.0)
+    timeout_seconds = (
+        _start_report_timeout_seconds()
+        if path.endswith("/started")
+        else 10.0
+    )
+    return _post_json_with_timeout(
+        endpoint,
+        path,
+        payload,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _start_report_timeout_seconds() -> float:
+    raw = os.environ.get("CLAW_EBPF_START_TIMEOUT_SECONDS")
+    if raw is None:
+        return _START_REPORT_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return _START_REPORT_TIMEOUT_SECONDS
+    if not 1.0 <= value <= 600.0:
+        return _START_REPORT_TIMEOUT_SECONDS
+    return value
 
 
 def _post_json_with_timeout(
@@ -966,13 +1111,35 @@ def _verify_child_cgroup(child_pid: int, cgroup_path: str | None) -> None:
 
 def _terminate_child_best_effort(child: subprocess.Popen[bytes]) -> None:
     try:
-        child.terminate()
+        child_pgid = _exclusive_child_pgid(child)
+        if child_pgid is not None:
+            os.killpg(child_pgid, signal.SIGTERM)
+        else:
+            child.terminate()
         child.wait(timeout=1)
     except Exception:
         try:
-            child.kill()
+            child_pgid = _exclusive_child_pgid(child)
+            if child_pgid is not None:
+                os.killpg(child_pgid, signal.SIGKILL)
+            else:
+                child.kill()
         except Exception:
             pass
+        try:
+            child.wait(timeout=1)
+        except Exception:
+            pass
+
+
+def _exclusive_child_pgid(child: subprocess.Popen[bytes]) -> int | None:
+    if not _supports_posix_controls() or not hasattr(os, "getpgid"):
+        return None
+    try:
+        child_pgid = os.getpgid(child.pid)
+    except OSError:
+        return None
+    return child_pgid if child_pgid == child.pid else None
 
 
 def _suspend_child_best_effort(child: subprocess.Popen[bytes]) -> bool:

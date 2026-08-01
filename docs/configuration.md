@@ -83,6 +83,12 @@ local model proxy. Interactive use can therefore run `openclaw agent ...`
 directly. Use the explicit `agent` wrapper or `sidecar` command where sudo
 cannot prompt on a controlling terminal.
 
+The default sidecar startup window is 60 seconds so a Kunpeng cold start and
+an interactive sudo prompt do not consume the old 15-second limit. Advanced
+deployments can set `plugins.entries.agent-scheduler.config.sidecarStartupTimeoutMs`
+between 1,000 and 600,000 milliseconds; the pre-agent hook always receives an
+additional five-second margin.
+
 OpenClaw provider traffic should use `http://127.0.0.1:8765/v1`. The plugin's
 full schema is in `packages/openclaw-plugin/openclaw.plugin.json`; values not
 covered here are advanced/developer options.

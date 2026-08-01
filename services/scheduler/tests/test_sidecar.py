@@ -118,6 +118,90 @@ def _write_cgroup_fixture(path: Path, usage_usec: int = 100_000) -> None:
     (path / "cgroup.procs").write_text("", encoding="utf-8")
 
 
+def test_host_cgroup_path_is_derived_from_verified_pid_membership(
+    tmp_path: Path,
+) -> None:
+    proc_root = tmp_path / "proc"
+    cgroup_root = tmp_path / "cgroup"
+    target = cgroup_root / "user.slice" / "tool.scope"
+    (proc_root / "4242").mkdir(parents=True)
+    target.mkdir(parents=True)
+    (cgroup_root / "cgroup.controllers").write_text("cpu memory\n", encoding="utf-8")
+    (proc_root / "4242" / "cgroup").write_text(
+        "0::/user.slice/tool.scope\n",
+        encoding="utf-8",
+    )
+    (target / "cgroup.procs").write_text("4242\n", encoding="utf-8")
+
+    assert app_module._host_cgroup_path_for_pid(
+        4242,
+        proc_root=proc_root,
+        cgroup_root=cgroup_root,
+    ) == str(target.resolve())
+
+
+@pytest.mark.parametrize(
+    ("relative", "members"),
+    [
+        ("/", "4242\n"),
+        ("/user.slice/tool.scope", "9999\n"),
+        ("/../outside", "4242\n"),
+    ],
+)
+def test_host_cgroup_path_rejects_root_nonmember_and_escape(
+    tmp_path: Path,
+    relative: str,
+    members: str,
+) -> None:
+    proc_root = tmp_path / "proc"
+    cgroup_root = tmp_path / "cgroup"
+    target = cgroup_root / "user.slice" / "tool.scope"
+    (proc_root / "4242").mkdir(parents=True)
+    target.mkdir(parents=True)
+    (cgroup_root / "cgroup.controllers").write_text("cpu\n", encoding="utf-8")
+    (proc_root / "4242" / "cgroup").write_text(
+        f"0::{relative}\n",
+        encoding="utf-8",
+    )
+    (target / "cgroup.procs").write_text(members, encoding="utf-8")
+
+    assert app_module._host_cgroup_path_for_pid(
+        4242,
+        proc_root=proc_root,
+        cgroup_root=cgroup_root,
+    ) is None
+
+
+def test_host_cgroup_gate_uses_standard_v2_root_when_unconfigured(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    cgroup_root = tmp_path / "cgroup"
+    cgroup_root.mkdir()
+    (cgroup_root / "cgroup.controllers").write_text("cpu memory\n", encoding="utf-8")
+    monkeypatch.setattr(app_module, "_CGROUP_V2_ROOT", cgroup_root)
+    monkeypatch.setattr(app_module, "_resolve_host_pid", lambda *_args, **_kwargs: 4242)
+    request = SimpleNamespace(
+        child_pid=7,
+        pid_namespace_inode=123,
+        process_starttime_ticks=456,
+        container_id=None,
+    )
+
+    scope = app_module._prepare_host_execution_cgroup(
+        "exec-1",
+        request,
+        None,
+        None,
+    )
+
+    assert scope is not None
+    assert scope.cgroup_path == str(cgroup_root / "claw" / "exec-1")
+    assert (cgroup_root / "claw" / "exec-1" / "cgroup.procs").read_text(
+        encoding="utf-8"
+    ) == "4242"
+
+
 def _trace_proxy_client_with_debug(tmp_path: Path) -> tuple[TestClient, Path]:
     trace_dir = tmp_path / "traces"
     state = build_state(
@@ -1332,6 +1416,18 @@ def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(app_module, "_resolve_host_pid", lambda *_args, **_kwargs: 4242)
+    call_cgroup = tmp_path / "call-cgroup"
+    call_cgroup.mkdir()
+    monkeypatch.setattr(
+        app_module,
+        "_host_cgroup_path_for_pid",
+        lambda _pid: str(call_cgroup.resolve()),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_canonical_cgroup_path",
+        lambda path, **_kwargs: Path(path).resolve(),
+    )
     state = build_state(
         SchedulerConfig(
             trace_dir=tmp_path / "traces",
@@ -1378,7 +1474,7 @@ def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(
             "launcher_pid": os.getpid(),
             "child_pid": os.getpid(),
             "process_starttime_ticks": 123,
-            "cgroup_path": str(tmp_path / "call-cgroup"),
+            "cgroup_path": str(call_cgroup),
             "pid_namespace_inode": 456,
             "container_id": None,
         },
@@ -1390,7 +1486,7 @@ def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(
             "command": "echo hi && true",
             "container_id": None,
             "repo": "openclaw",
-            "cgroup_path": str(tmp_path / "call-cgroup"),
+            "cgroup_path": str(call_cgroup),
             "trusted_root_pid": 4242,
         }
     ]

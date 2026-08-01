@@ -57,6 +57,7 @@
           "enableNuma": false,
           "profilingMode": "off",
           "securityBoundaryAccepted": true,
+          "autoStartSidecar": false,
           "trace": {
             "schema_version": 6,
             "include_raw_events": false,

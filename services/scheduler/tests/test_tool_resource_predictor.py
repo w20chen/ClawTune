@@ -67,7 +67,7 @@ def test_stage2_workload_result_preserves_masked_lookup_diagnostic() -> None:
 
 class _FakeToolResourceSDK:
     def __init__(self) -> None:
-        self.started: list[tuple[str, str, str]] = []
+        self.started: list[tuple[str | None, str, str]] = []
         self.contexts: list[object] = []
 
     def start_command(self, context, tool_call_id: str, command: str):
@@ -180,6 +180,37 @@ def test_predictor_retries_stage2_after_container_id_arrives(tmp_path: Path) -> 
     )
 
     assert fake_sdk.started == [("a" * 64, "call-1", "echo hi && true")]
+
+
+def test_predictor_starts_host_ebpf_from_trusted_pid_and_cgroup(
+    tmp_path: Path,
+) -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0)),
+        repo="repo-1",
+        artifact_dir=tmp_path / "tool-resource",
+    )
+    fake_sdk = _FakeToolResourceSDK()
+    predictor._sdk = fake_sdk  # type: ignore[assignment]
+    cgroup = tmp_path / "host-cgroup"
+    cgroup.mkdir()
+
+    assert predictor.begin_execution(
+        execution_id="exec-host",
+        tool_call_id="call-host",
+        command="python -c 'print(1)'",
+        container_id=None,
+        cgroup_path=str(cgroup),
+        trusted_root_pid=4242,
+        repo="repo-1",
+    )
+
+    assert fake_sdk.started == [(None, "call-host", "python -c 'print(1)'")]
+    context = fake_sdk.contexts[0]
+    assert context.cgroup_path == str(cgroup)
+    assert context.trusted_root_pid == 4242
 
 
 def test_predictor_passes_and_rebinds_trusted_execution_root(tmp_path: Path) -> None:

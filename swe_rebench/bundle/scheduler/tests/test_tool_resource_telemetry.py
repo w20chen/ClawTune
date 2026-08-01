@@ -24,11 +24,48 @@ from tool_resource.telemetry import (
     _observed_container_cgroup_ids,
     _runtime_response_exit_code,
     _sampled_peak_rss,
+    _scope_identity_inodes,
     _syscall_symbol_candidates,
     shell_command_lookup_failure_evidence,
     validate_clause_telemetry_smoke,
 )
 from tool_resource.mvdan_client import MvdanClientError
+
+
+def test_host_scope_never_expands_through_pid_namespace(monkeypatch, tmp_path) -> None:
+    cgroup = tmp_path / "exec"
+    child = cgroup / "child"
+    child.mkdir(parents=True)
+    monkeypatch.setattr(
+        "tool_resource.telemetry._discover_cgroup_inodes_from_proc",
+        lambda _pid: pytest.fail("host scope must not scan all host PIDs"),
+    )
+
+    cgroups, pid_namespaces = _scope_identity_inodes(cgroup, 4242, None)
+
+    assert cgroups == {cgroup.stat().st_ino, child.stat().st_ino}
+    assert pid_namespaces == set()
+
+
+def test_container_sharing_sidecar_pid_namespace_skips_proc_scan(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    cgroup = tmp_path / "container"
+    cgroup.mkdir()
+    monkeypatch.setattr(
+        "tool_resource.telemetry._pid_namespace_inode_for_pid",
+        lambda _pid: 123,
+    )
+    monkeypatch.setattr(
+        "tool_resource.telemetry._discover_cgroup_inodes_from_proc",
+        lambda _pid: pytest.fail("shared host namespace must not be scanned"),
+    )
+
+    cgroups, pid_namespaces = _scope_identity_inodes(cgroup, 4242, "abc123")
+
+    assert cgroup.stat().st_ino in cgroups
+    assert pid_namespaces == set()
 
 
 def test_telemetry_submodule_import_does_not_require_third_party_packages() -> None:

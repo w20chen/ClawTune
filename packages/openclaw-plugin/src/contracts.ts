@@ -50,6 +50,11 @@ export type PluginConfig = {
    */
   autoStartSidecar: boolean;
   /**
+   * Maximum time allowed for sudo, Python/BCC initialization, and sidecar
+   * readiness. Kunpeng cold starts can take several seconds. Default: 60000.
+   */
+  sidecarStartupTimeoutMs: number;
+  /**
    * Shell command to start the scheduler sidecar.  Used only when
    * autoStartSidecar is true.  The command is executed via the system
    * shell and should start the sidecar on the configured endpoint.

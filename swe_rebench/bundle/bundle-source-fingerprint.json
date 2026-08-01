@@ -1,8 +1,7 @@
 {
-  "digest": "sha256:eb6b58f6f71929e94b2c3e066848cdd881237d2b9bbdd4b2d41ca32c5aa4a73c",
+  "digest": "sha256:242c9ab7e5fb1effdffb49b1b8c33553f8de064a98bbcf5f2dca72b4ffc79465",
   "file_count": 131,
   "files": [
-    "C:/Users/29068/Desktop/ClawTune/swe_rebench/prepare.py",
     "contracts/clause-telemetry.schema.json",
     "contracts/common.schema.json",
     "contracts/examples/clause-telemetry.json",
@@ -132,6 +131,7 @@
     "services/scheduler/tests/test_tool_resource_telemetry.py",
     "services/scheduler/tests/test_tool_runtime_monitor.py",
     "swe_rebench/host_sandbox.py",
+    "swe_rebench/prepare.py",
     "swe_rebench/runner.py"
   ],
   "schema": "swe_rebench_bundle_source_fingerprint_v1"

@@ -13,6 +13,22 @@ test("loadConfig uses managed-wrapper as the default exec path", () => {
   assert.equal(config.executionBackend, "managed-wrapper");
   assert.equal(config.securityBoundaryAccepted, true);
   assert.equal(config.autoStartSidecar, false);
+  assert.equal(config.sidecarStartupTimeoutMs, 60_000);
+});
+
+test("loadConfig validates the configurable sidecar cold-start timeout", () => {
+  assert.equal(
+    loadConfig({sidecarStartupTimeoutMs: 90_000}).sidecarStartupTimeoutMs,
+    90_000,
+  );
+  assert.throws(
+    () => loadConfig({sidecarStartupTimeoutMs: 999}),
+    /sidecarStartupTimeoutMs must be an integer between 1000 and 600000/,
+  );
+  assert.equal(
+    manifest.configSchema.properties.sidecarStartupTimeoutMs.default,
+    60_000,
+  );
 });
 
 test("loadConfig validates explicit sidecar launcher settings", () => {

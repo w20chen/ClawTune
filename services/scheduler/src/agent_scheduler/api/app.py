@@ -36,6 +36,8 @@ _STAGE2_COMPLETION_GRACE_SECONDS = 10.0
 _STAGE2_ORPHAN_GRACE_SECONDS = 1.0
 _HEALTH_SERVICE = "clawtune-scheduler"
 _HEALTH_SCHEMA_VERSION = "scheduler.health.v1"
+_PROC_ROOT = Path("/proc")
+_CGROUP_V2_ROOT = Path("/sys/fs/cgroup")
 
 
 def _sample_summary(sample: ToolRuntimeSample) -> dict[str, object]:
@@ -221,6 +223,108 @@ def _pid_matches(
     return True
 
 
+def _canonical_cgroup_path(
+    path: str | Path,
+    *,
+    cgroup_root: Path = _CGROUP_V2_ROOT,
+) -> Path | None:
+    """Resolve one non-root path inside the local cgroup-v2 mount."""
+
+    try:
+        root = cgroup_root.resolve(strict=True)
+        if not (root / "cgroup.controllers").is_file():
+            return None
+        candidate = Path(path).resolve(strict=True)
+        candidate.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    if candidate == root or not candidate.is_dir():
+        return None
+    return candidate
+
+
+def _host_cgroup_path_for_pid(
+    host_pid: int,
+    *,
+    proc_root: Path = _PROC_ROOT,
+    cgroup_root: Path = _CGROUP_V2_ROOT,
+) -> str | None:
+    """Derive a host-visible cgroup-v2 path from a verified host PID.
+
+    The launcher-provided path may belong to another cgroup namespace.  The
+    privileged sidecar therefore treats ``/proc/<host_pid>/cgroup`` as the
+    authority and confirms that the process is still a member before using
+    the path for eBPF attribution.
+    """
+
+    if host_pid <= 0:
+        return None
+    try:
+        lines = (proc_root / str(host_pid) / "cgroup").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    except OSError:
+        return None
+    relative = next(
+        (
+            fields[2]
+            for line in lines
+            if len(fields := line.split(":", 2)) == 3
+            and fields[0] == "0"
+            and fields[1] == ""
+        ),
+        None,
+    )
+    if relative is None:
+        return None
+    candidate = _canonical_cgroup_path(
+        cgroup_root / relative.lstrip("/"),
+        cgroup_root=cgroup_root,
+    )
+    if candidate is None:
+        return None
+    pid_text = str(host_pid)
+    for membership_file in ("cgroup.procs", "cgroup.threads"):
+        try:
+            members = (candidate / membership_file).read_text(
+                encoding="utf-8"
+            ).split()
+        except OSError:
+            continue
+        if pid_text in members:
+            return str(candidate)
+    return None
+
+
+def _verified_host_execution_scope(
+    execution_id: str,
+    request: ExecutionStartedRequest,
+    host_pid: int,
+) -> ResourceScope | None:
+    """Build a direct-host scope without trusting a client filesystem path."""
+
+    derived = _host_cgroup_path_for_pid(host_pid)
+    if derived is None:
+        return None
+    if request.cgroup_path is not None:
+        claimed = _canonical_cgroup_path(request.cgroup_path)
+        if claimed is None or claimed != Path(derived):
+            return None
+    return ResourceScope(
+        kind="cgroup-v2",
+        execution_id=execution_id,
+        pid=host_pid,
+        root_pid=host_pid,
+        root_starttime_ticks=_pid_starttime_ticks(host_pid),
+        cgroup_path=derived,
+        pid_namespace_inode=_pid_namespace_inode(host_pid),
+        container_id=None,
+        include_children=True,
+        source="claw-sidecar-host-derived",
+        attribution_source="trusted-execution-cgroup",
+    )
+
+
 def _prepare_host_execution_cgroup(
     execution_id: str,
     request: ExecutionStartedRequest,
@@ -230,7 +334,11 @@ def _prepare_host_execution_cgroup(
     root = configured_root or (
         f"{fallback_scope.cgroup_path.rstrip('/')}/claw-executions"
         if fallback_scope is not None and fallback_scope.cgroup_path
-        else None
+        else (
+            str(_CGROUP_V2_ROOT / "claw")
+            if (_CGROUP_V2_ROOT / "cgroup.controllers").is_file()
+            else None
+        )
     )
     if root is None:
         return None
@@ -835,6 +943,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         response = s.executions.started(execution_id, request)
         record = s.executions.get(execution_id)
         fallback_scope = sandbox_fallback_scope(s)
+        container_id = request.container_id or sandbox_container_id(s)
         trusted_root_pid = (
             _resolve_host_pid(
                 request.child_pid,
@@ -847,6 +956,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         )
         if record is not None and trusted_root_pid is not None:
             s.executions.bind_trusted_root(execution_id, trusted_root_pid)
+        host_cgroup_gate_failed = False
         if record is not None and request.host_cgroup_gate:
             host_scope = _prepare_host_execution_cgroup(
                 execution_id,
@@ -865,6 +975,37 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     stored=True,
                     cgroup_path=host_scope.cgroup_path,
                 )
+            else:
+                host_cgroup_gate_failed = True
+                # Never expose or monitor the unverified namespace-local path
+                # stored by ``executions.started`` when the host gate failed.
+                record.scope = None
+        elif (
+            record is not None
+            and container_id is None
+            and record.request.backend == "managed-wrapper"
+        ):
+            host_scope = (
+                _verified_host_execution_scope(
+                    execution_id,
+                    request,
+                    trusted_root_pid,
+                )
+                if trusted_root_pid is not None
+                else None
+            )
+            if host_scope is not None:
+                s.executions.update_scope(execution_id, host_scope)
+                record = s.executions.get(execution_id)
+                response = ExecutionUpdateResponse(
+                    stored=True,
+                    cgroup_path=host_scope.cgroup_path,
+                )
+            else:
+                # A direct-host claim is usable only when the sidecar itself
+                # resolves both PID identity and cgroup membership. The
+                # launcher-supplied path is never an attribution authority.
+                record.scope = None
         if record is not None and record.scope is not None:
             monitor_scope = record.scope
             if (
@@ -881,19 +1022,33 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 record.request.tool_call_id,
                 monitor_scope,
             )
-        container_id = request.container_id or sandbox_container_id(s)
         if record is not None:
             # The launcher runs inside the sandbox container.  Its
             # cgroup_path comes from the container's cgroup namespace
             # and may be the host root (/sys/fs/cgroup) when cgroupfs
             # is read-only inside the container.  Only pass through
             # paths that are actual sub-cgroups, not the root fallback.
-            started = begin_stage2_for_record(
-                s, execution_id, container_id,
-                cgroup_path=_trusted_cgroup_path(
-                    record.scope.cgroup_path if record.scope is not None else request.cgroup_path
-                ),
-                trusted_root_pid=trusted_root_pid,
+            host_scope_ready = bool(
+                container_id is not None
+                or (
+                    trusted_root_pid is not None
+                    and _has_usable_cgroup_scope(record.scope)
+                )
+            )
+            started = (
+                begin_stage2_for_record(
+                    s,
+                    execution_id,
+                    container_id,
+                    cgroup_path=_trusted_cgroup_path(
+                        record.scope.cgroup_path
+                        if record.scope is not None
+                        else None
+                    ),
+                    trusted_root_pid=trusted_root_pid,
+                )
+                if host_scope_ready and not host_cgroup_gate_failed
+                else False
             )
             if (
                 s.config.tool_resource_stage2_required

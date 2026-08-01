@@ -365,11 +365,12 @@ class ToolResourcePredictor:
         previous = self._telemetry_by_execution_id.get(execution_id)
         if previous is not None and previous.started:
             return previous.status != "unavailable"
-        if self.artifact_dir is None or not container_id:
+        host_scope_available = bool(cgroup_path and trusted_root_pid is not None)
+        if self.artifact_dir is None or (not container_id and not host_scope_available):
             reason = (
                 "artifact_dir_unconfigured"
                 if self.artifact_dir is None
-                else "container_id_unavailable"
+                else "execution_scope_unavailable"
             )
             self._telemetry_by_execution_id[execution_id] = ExecutionTelemetrySummary(
                 execution_id=execution_id,

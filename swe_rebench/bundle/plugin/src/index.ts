@@ -171,6 +171,12 @@ export default definePluginEntry({
       profilingMode: {enum: ["off", "proc", "perf", "ksys", "vtune"], default: "off"},
       securityBoundaryAccepted: {type: "boolean", default: true},
       autoStartSidecar: {type: "boolean", default: false},
+      sidecarStartupTimeoutMs: {
+        type: "integer",
+        default: 60_000,
+        minimum: 1_000,
+        maximum: 600_000,
+      },
       sidecarCommand: {type: "string", default: ""},
       trace: {
         type: "object",
@@ -208,7 +214,7 @@ export default definePluginEntry({
       endpoint: config.endpoint,
       command: config.sidecarCommand,
       healthPollMs: 200,
-      healthTimeoutMs: 15000,
+      healthTimeoutMs: config.sidecarStartupTimeoutMs,
       logger: {
         info: (msg, data) => logger.info?.(msg, data),
         warn: (msg, data) => logger.warn?.(msg, data),
@@ -241,7 +247,7 @@ export default definePluginEntry({
   // first provider request, eliminating the startup race with the local proxy.
   api.on("before_agent_start", async () => {
     await waitForAutoStartedSidecar();
-  }, {priority: 1000, timeoutMs: 20_000});
+  }, {priority: 1000, timeoutMs: config.sidecarStartupTimeoutMs + 5_000});
 
   const client = new SidecarClient(config);
   const correlation = new CorrelationMap(300_000, 10_000);

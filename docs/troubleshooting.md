@@ -199,7 +199,48 @@ openclaw agent --local --agent main --model "vllm/<model>" \
 ```
 
 Repeated `feishu` state-migration warnings are independent of this connection
-failure. Resolve them separately only if that plugin is in scope.
+failure. They describe conflicting legacy OpenClaw plugin-install metadata,
+not ClawTune or eBPF. If the agent run succeeds, do not edit OpenClaw's SQLite
+state manually. Run `openclaw doctor --fix`; if Feishu is not used, inspect
+`openclaw plugins uninstall feishu --dry-run` before deciding whether to
+remove it.
+
+## OpenClaw warns that `plugins.allow` is empty
+
+This is a plugin trust warning, not a sidecar failure. Inspect every plugin
+before creating an allowlist:
+
+```bash
+openclaw plugins list --enabled --verbose
+openclaw plugins inspect agent-scheduler --json
+openclaw plugins inspect deepseek --json
+openclaw plugins inspect feishu --json
+```
+
+`plugins.allow` is exclusive. Include `agent-scheduler` and every other plugin
+that is both trusted and needed. For a host that uses only ClawTune with the
+built-in/custom `vllm` provider, for example:
+
+```bash
+openclaw config set plugins.allow '["agent-scheduler"]' --strict-json
+openclaw config validate
+```
+
+Add `deepseek`, `feishu`, or other inspected IDs only when those plugins are
+actually required. Omitting `agent-scheduler` would prevent ClawTune from
+loading.
+
+## Tool output contains `Failed to connect to bus: No medium found`
+
+This came from an older launcher trying `systemd-run --user` in an SSH session
+without a systemd user manager. The current launcher probes that interface
+quietly first. If it is unavailable, it keeps the gated payload, removes the
+unused cgroup, and reports no false cgroup path to the eBPF sidecar. Update the
+checkout and rerun setup so OpenClaw uses the rebuilt launcher:
+
+```bash
+python3 scripts/clawtune.py setup --skip-qemu
+```
 
 ## OpenClaw runs but model or tool traces are empty
 

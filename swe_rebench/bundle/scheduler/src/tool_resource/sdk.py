@@ -20,9 +20,14 @@ from tool_resource.runtime_kb import (
 
 @dataclass(frozen=True)
 class DockerExecutionContext:
-    """Docker lifecycle context supplied by the command executor."""
+    """Execution scope supplied by the command executor.
 
-    container_id: str
+    The historical name remains public for compatibility. A Docker container
+    id identifies sandbox work; direct host work instead supplies both a
+    trusted root PID and an explicit cgroup-v2 path.
+    """
+
+    container_id: str | None
     container_executable: str
     repo: str
     artifact_path: Path
@@ -31,8 +36,12 @@ class DockerExecutionContext:
     source_actions: Sequence[Mapping[str, Any]] = ()
 
     def __post_init__(self) -> None:
-        if not self.container_id:
-            raise ValueError("container_id is required")
+        if not self.container_id and not (
+            self.cgroup_path and self.trusted_root_pid is not None
+        ):
+            raise ValueError(
+                "container_id or host cgroup_path with trusted_root_pid is required"
+            )
         if not self.container_executable:
             raise ValueError("container_executable is required")
         if not self.repo:

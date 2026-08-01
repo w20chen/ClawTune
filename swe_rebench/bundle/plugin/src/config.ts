@@ -24,6 +24,7 @@ const defaults: PluginConfig = {
   // Automatic startup is opt-in at the package level. ClawTune setup enables
   // it after constructing and validating the privileged Python/BCC runtime.
   autoStartSidecar: false,
+  sidecarStartupTimeoutMs: 60_000,
   sidecarCommand: "",
   trace: {
     schema_version: 6,
@@ -107,6 +108,13 @@ export function loadConfig(input: unknown): PluginConfig {
   }
   if (typeof config.autoStartSidecar !== "boolean") {
     throw new Error("autoStartSidecar must be a boolean");
+  }
+  if (!Number.isInteger(config.sidecarStartupTimeoutMs)
+      || config.sidecarStartupTimeoutMs < 1_000
+      || config.sidecarStartupTimeoutMs > 600_000) {
+    throw new Error(
+      "sidecarStartupTimeoutMs must be an integer between 1000 and 600000"
+    );
   }
   if (typeof config.sidecarCommand !== "string") {
     throw new Error("sidecarCommand must be a string");
