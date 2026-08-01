@@ -36,26 +36,23 @@ else
     trap 'rm -rf "$download_dir"' EXIT HUP INT TERM
     archive=$download_dir/go.tar.gz
 
-    # Fetch the official SHA256 checksum so we can verify the tarball
-    # regardless of which mirror serves it.
-    _checksum_url="https://go.dev/dl/go${go_version}.linux-${go_arch}.tar.gz.sha256"
-    _checksum_file="$download_dir/go.tar.gz.sha256"
-    echo "Fetching checksum: $_checksum_url" >&2
-    if ! curl -fsSL --connect-timeout 15 --max-time 30 "$_checksum_url" -o "$_checksum_file"; then
-        echo "Failed to fetch checksum; cannot verify Go download integrity." >&2
-        exit 1
-    fi
-    _expected_hash=$(cut -d' ' -f1 "$_checksum_file")
-    if [ -z "$_expected_hash" ] || [ ${#_expected_hash} -ne 64 ]; then
-        echo "Invalid checksum file from $_checksum_url" >&2
-        exit 1
-    fi
+    # Pin the checksums published on the official Go download page. Fetching a
+    # checksum at runtime made installation depend on go.dev being reachable;
+    # restricted networks may return an HTML interception page with exit 0.
+    case "$go_arch" in
+        amd64) _expected_hash="031f088e5d955bab8657ede27ad4e3bc5b7c1ba281f05f245bcc304f327c987a" ;;
+        arm64) _expected_hash="a290581cfe4fe28ddd737dde3095f3dbeb7f2e4065cab4eae44dfc53b760c2f7" ;;
+        *)
+            echo "No pinned Go $go_version checksum for linux-$go_arch." >&2
+            exit 1
+            ;;
+    esac
 
     # Download the Go tarball from one of several mirrors.
     _go_mirrors="
-https://go.dev/dl/
-https://golang.google.cn/dl/
 https://mirrors.aliyun.com/golang/
+https://golang.google.cn/dl/
+https://go.dev/dl/
 "
     _downloaded=0
     for _mirror in $_go_mirrors; do

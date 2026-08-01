@@ -1693,3 +1693,13 @@ Ruff could not run because it is not installed in this Windows interpreter.
 Live arm64 BCC compilation/attachment, root-cache adapter build, Docker cgroup
 filtering, and the interrupted benchmark's end-to-end completion require the
 target Kunpeng Linux host and remain to be validated there.
+
+Kunpeng setup then exposed that `go.dev` could return non-checksum content for
+the runtime `.sha256` request. The adapter builder now embeds the SHA256 values
+published for the pinned Go 1.26.1 linux-amd64 and linux-arm64 archives, tries
+the Aliyun and Google China download mirrors before `go.dev`, and verifies every
+download against that pin. Focused tests passed (`89 passed, 2 skipped`) and
+the tracked runtime bundle was regenerated. Shell syntax validation could not
+run in this Windows workspace because WSL returned
+`Bash/Service/CreateInstance/E_ACCESSDENIED`; run the normal setup on Kunpeng
+to validate the download, checksum, extraction, and adapter handshake.

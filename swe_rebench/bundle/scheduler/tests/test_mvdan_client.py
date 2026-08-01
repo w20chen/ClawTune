@@ -101,6 +101,24 @@ def test_ensure_compatible_adapter_reports_builder_failure(
         mvdan_client.ensure_compatible_adapter()
 
 
+def test_default_client_provisions_for_the_runtime_identity(monkeypatch, tmp_path) -> None:
+    binary = tmp_path / "adapter"
+    created: list[Path] = []
+
+    class FakeClient:
+        def __init__(self, binary_path: Path) -> None:
+            created.append(binary_path)
+
+    monkeypatch.setattr(mvdan_client, "ensure_compatible_adapter", lambda: binary)
+    monkeypatch.setattr(mvdan_client, "MvdanClient", FakeClient)
+    monkeypatch.setattr(mvdan_client, "_default_client", None)
+
+    client = mvdan_client.get_client()
+
+    assert isinstance(client, FakeClient)
+    assert created == [binary]
+
+
 def test_mvdan_versions_are_consistent_across_client_builder_and_go_module() -> None:
     adapter_root = mvdan_client._BUILD_SCRIPT.parent
     build_script = mvdan_client._BUILD_SCRIPT.read_text(encoding="utf-8")
@@ -126,6 +144,15 @@ def test_mvdan_versions_are_consistent_across_client_builder_and_go_module() -> 
     assert f"require mvdan.cc/sh/v3 {mvdan_client.PARSER_VERSION}" in go_module
     assert f"toolchain go{go_toolchain_match.group(1)}" in go_module
     assert "-linux-$go_arch" in build_script
+    assert (
+        "031f088e5d955bab8657ede27ad4e3bc5b7c1ba281f05f245bcc304f327c987a"
+        in build_script
+    )
+    assert (
+        "a290581cfe4fe28ddd737dde3095f3dbeb7f2e4065cab4eae44dfc53b760c2f7"
+        in build_script
+    )
+    assert ".tar.gz.sha256" not in build_script
     assert (
         f"protocol-{mvdan_client.ADAPTER_PROTOCOL_VERSION}"
         in mvdan_client.default_binary_path().name

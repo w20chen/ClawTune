@@ -145,6 +145,15 @@ def test_mvdan_versions_are_consistent_across_client_builder_and_go_module() -> 
     assert f"toolchain go{go_toolchain_match.group(1)}" in go_module
     assert "-linux-$go_arch" in build_script
     assert (
+        "031f088e5d955bab8657ede27ad4e3bc5b7c1ba281f05f245bcc304f327c987a"
+        in build_script
+    )
+    assert (
+        "a290581cfe4fe28ddd737dde3095f3dbeb7f2e4065cab4eae44dfc53b760c2f7"
+        in build_script
+    )
+    assert ".tar.gz.sha256" not in build_script
+    assert (
         f"protocol-{mvdan_client.ADAPTER_PROTOCOL_VERSION}"
         in mvdan_client.default_binary_path().name
     )
