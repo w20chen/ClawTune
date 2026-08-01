@@ -149,6 +149,37 @@ curl -v http://127.0.0.1:8765/health/ready
 Stop the older sidecar or change the port consistently in `.env`, the plugin,
 and provider proxy URL.
 
+### OpenClaw reports `ECONNREFUSED 127.0.0.1:8765`
+
+Provider onboarding succeeded, but the local ClawTune proxy is not running.
+The eBPF validation performed by setup is temporary and does not start a
+background service. Rerun the agent through the automatic wrapper:
+
+```bash
+cd ~/ClawTune
+python3 scripts/clawtune.py agent \
+  --local --agent main --model "vllm/<model>" \
+  --message "Use the shell to run: python -c 'print(\"clawtune-ok\")'."
+```
+
+It starts the privileged sidecar, waits for readiness, and only then starts
+OpenClaw. For a long-lived sidecar, keep this command open in one terminal:
+
+```bash
+python3 scripts/clawtune.py sidecar
+```
+
+Then verify/run OpenClaw from a second terminal:
+
+```bash
+curl -fsS http://127.0.0.1:8765/health/ready
+openclaw agent --local --agent main --model "vllm/<model>" \
+  --message "Use the shell to run: python -c 'print(\"clawtune-ok\")'."
+```
+
+Repeated `feishu` state-migration warnings are independent of this connection
+failure. Resolve them separately only if that plugin is in scope.
+
 ## OpenClaw runs but model or tool traces are empty
 
 Check that:

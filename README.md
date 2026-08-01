@@ -88,19 +88,19 @@ Secrets are ignored by Git. Do not commit `.env`, OpenClaw credentials, or
 
 ### 3. Run ClawTune with OpenClaw
 
-Start the sidecar and keep this terminal open:
+Use the unified command. It starts the privileged eBPF sidecar, waits until it
+is ready, runs the OpenClaw agent, and stops the sidecar afterward. Replace the
+model name with the one you configured:
 
 ```bash
-python3 scripts/clawtune.py sidecar
-```
-
-In another terminal, run an agent. Replace the model name with the one you
-configured:
-
-```bash
-openclaw agent --local --agent main --model "vllm/<model>" \
+python3 scripts/clawtune.py agent \
+  --local --agent main --model "vllm/<model>" \
   --message "Use the shell to run: python -c 'print(\"clawtune-ok\")'."
 ```
+
+If a sidecar is already running, the wrapper reuses it and leaves it running.
+For a gateway or several agent commands, start the long-lived form once with
+`python3 scripts/clawtune.py sidecar` and keep that terminal open.
 
 Traces are written under `data/traces/`. A healthy API alone is not used as
 proof of eBPF readiness; `setup` and `check` both execute a real instrumented

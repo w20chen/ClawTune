@@ -11,6 +11,7 @@ The user-facing path is intentionally limited to:
 ```bash
 python3 scripts/clawtune.py setup
 python3 scripts/clawtune.py doctor
+python3 scripts/clawtune.py agent --local --agent main --model "vllm/<model>" --message "..."
 python3 scripts/clawtune.py sidecar
 python3 scripts/clawtune.py benchmark --sample 1
 ```
@@ -1495,7 +1496,16 @@ The public installation and execution path is now `scripts/clawtune.py`:
   narrowly scoped plugin output ownership, builds/configures the plugin, sets
   up amd64 binfmt on Kunpeng, and runs the real eBPF semantic check;
 - `doctor` emits one consolidated host/interpreter/kernel/tool report;
-- `check`, `sidecar`, and `benchmark` consistently reconstruct the verified
+- `doctor` also probes the fixed loopback readiness endpoint and explicitly
+  tells the operator to use the automatic agent wrapper when port 8765 is not
+  listening. Setup states that its semantic check exits and is not itself a
+  background sidecar;
+- `agent` restores the original automatic-sidecar user experience without
+  restoring the unsafe unprivileged plugin child: it starts the verified root
+  sidecar in its own process group, waits for readiness, runs `openclaw agent`,
+  and stops only the sidecar it created through sudo. A pre-existing sidecar is
+  reused and retained;
+- `check`, `sidecar`, `agent`, and `benchmark` consistently reconstruct the verified
   privileged environment so users do not manually combine Conda, system
   Python, `PYTHONPATH`, `BCC_KERNEL_SOURCE`, and sudo;
 - `tools/check_ebpf.py` presents user-facing `ready`/BCC/kernel/runtime fields
@@ -1514,7 +1524,7 @@ The public installation and execution path is now `scripts/clawtune.py`:
 
 Validation completed in this workspace:
 
-- Root Python suite: 107 passed, 2 skipped.
+- Root Python suite: 112 passed, 2 skipped.
 - Scheduler suite: 140 passed, 1 skipped.
 - Focused CLI/config/preflight/SWE-Rebench suite: 88 passed, 2 skipped.
 - OpenClaw plugin: 64 passed; TypeScript typecheck passed.
@@ -1523,7 +1533,7 @@ Validation completed in this workspace:
 
 Validation commands unavailable or adjusted in this Windows workspace:
 
-- `python3 scripts/clawtune.py setup`, `check`, `sidecar`, and `benchmark`
+- `python3 scripts/clawtune.py setup`, `check`, `sidecar`, `agent`, and `benchmark`
   require Linux, sudo, the running kernel's BCC/header/tracefs/cgroup/perf
   interfaces, Docker, and (for Kunpeng) aarch64 binfmt/QEMU. Run `setup` once on
   the target Kunpeng/openEuler host; its final semantic check is the acceptance

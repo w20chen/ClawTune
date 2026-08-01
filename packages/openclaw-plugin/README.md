@@ -8,8 +8,9 @@ and configures it automatically:
 python3 scripts/clawtune.py setup
 ```
 
-That is the supported user path. Start the privileged eBPF sidecar separately
-with `python3 scripts/clawtune.py sidecar`.
+That is the supported setup path. Run an agent with automatic privileged
+sidecar lifecycle through `python3 scripts/clawtune.py agent ...`. Use
+`python3 scripts/clawtune.py sidecar` only for a long-lived process.
 
 ## Developer build
 

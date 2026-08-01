@@ -135,3 +135,144 @@ def test_plugin_install_does_not_repair_an_unrelated_invalid_config(monkeypatch)
         assert "OpenClaw" in str(exc)
     else:
         raise AssertionError("unrelated invalid plugin paths must not be auto-repaired")
+
+
+def test_sidecar_health_reports_ready_loopback_service(monkeypatch) -> None:
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit):
+            return b'{"status":"ready"}'
+
+    monkeypatch.setattr(clawtune, "urlopen", lambda *_args, **_kwargs: Response())
+
+    health = clawtune.sidecar_health()
+
+    assert health["running"] is True
+    assert health["status"] == 200
+
+
+def test_sidecar_health_explains_connection_refusal(monkeypatch) -> None:
+    def refuse(*_args, **_kwargs):
+        raise ConnectionRefusedError("connection refused")
+
+    monkeypatch.setattr(clawtune, "urlopen", refuse)
+
+    health = clawtune.sidecar_health()
+
+    assert health["running"] is False
+    assert "connection refused" in health["error"]
+
+
+def test_agent_reuses_preexisting_sidecar(tmp_path, monkeypatch) -> None:
+    venv = tmp_path / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").touch()
+    monkeypatch.setattr(clawtune, "VENV", venv)
+    monkeypatch.setattr(clawtune, "require_linux", lambda: None)
+    monkeypatch.setattr(
+        clawtune.shutil,
+        "which",
+        lambda name: "/usr/bin/openclaw" if name == "openclaw" else None,
+    )
+    monkeypatch.setattr(
+        clawtune,
+        "sidecar_health",
+        lambda: {"running": True},
+    )
+    commands = []
+    monkeypatch.setattr(
+        clawtune,
+        "run",
+        lambda command, **_kwargs: commands.append(tuple(map(str, command))),
+    )
+
+    clawtune.agent(["--local", "--message", "hello"])
+
+    assert commands == [
+        ("/usr/bin/openclaw", "agent", "--local", "--message", "hello")
+    ]
+
+
+def test_agent_starts_waits_and_cleans_up_managed_sidecar(tmp_path, monkeypatch) -> None:
+    venv = tmp_path / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").touch()
+    monkeypatch.setattr(clawtune, "ROOT", tmp_path)
+    monkeypatch.setattr(clawtune, "VENV", venv)
+    monkeypatch.setattr(clawtune, "require_linux", lambda: None)
+    monkeypatch.setattr(
+        clawtune.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}",
+    )
+    health = iter(({"running": False}, {"running": True}))
+    monkeypatch.setattr(clawtune, "sidecar_health", lambda: next(health))
+
+    class Child:
+        pid = 123
+
+        def poll(self):
+            return None
+
+    child = Child()
+    popen_commands = []
+
+    def fake_popen(command, **_kwargs):
+        popen_commands.append(tuple(map(str, command)))
+        return child
+
+    monkeypatch.setattr(clawtune.subprocess, "Popen", fake_popen)
+    openclaw_commands = []
+    monkeypatch.setattr(
+        clawtune,
+        "run",
+        lambda command, **_kwargs: openclaw_commands.append(tuple(map(str, command))),
+    )
+    stopped = []
+    monkeypatch.setattr(clawtune, "stop_managed_sidecar", stopped.append)
+
+    clawtune.agent(["--local", "--message", "hello"])
+
+    assert popen_commands
+    assert "sudo" in popen_commands[0]
+    assert openclaw_commands == [
+        ("/usr/bin/openclaw", "agent", "--local", "--message", "hello")
+    ]
+    assert stopped == [child]
+
+
+def test_managed_root_sidecar_is_stopped_through_sudo(tmp_path, monkeypatch) -> None:
+    class Child:
+        pid = 321
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout):
+            assert timeout == 5
+            return 0
+
+    monkeypatch.setattr(clawtune, "ROOT", tmp_path)
+    monkeypatch.setattr(clawtune.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(clawtune.shutil, "which", lambda name: f"/usr/bin/{name}")
+    commands = []
+
+    def fake_run(command, **_kwargs):
+        rendered = tuple(map(str, command))
+        commands.append(rendered)
+        return subprocess.CompletedProcess(rendered, 0)
+
+    monkeypatch.setattr(clawtune.subprocess, "run", fake_run)
+
+    clawtune.stop_managed_sidecar(Child())
+
+    assert commands == [
+        ("sudo", "-n", "/usr/bin/kill", "-TERM", "--", "-321")
+    ]

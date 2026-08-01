@@ -79,19 +79,23 @@ upstream URL is not DeepSeek-compatible, set
 
 ## Start and verify
 
-Start the sidecar:
+Run the agent through ClawTune's wrapper:
+
+```bash
+python3 scripts/clawtune.py agent \
+  --local --agent main --model "vllm/<model>" \
+  --message "Use the shell to run uname -a, then summarize it."
+```
+
+It asks for sudo when needed, starts the eBPF sidecar with the verified `.venv`
+and kernel environment, waits for port 8765, and then starts OpenClaw. It stops
+only the sidecar it created; a pre-existing sidecar is reused and retained.
+
+For a gateway or multiple agent commands, use the long-lived form in a separate
+terminal:
 
 ```bash
 python3 scripts/clawtune.py sidecar
-```
-
-It needs elevated kernel access, so the wrapper asks for sudo and then uses the
-verified `.venv`, kernel tree, and executable search path. In another terminal:
-
-```bash
-curl -fsS http://127.0.0.1:8765/health/ready
-openclaw agent --local --agent main --model "vllm/<model>" \
-  --message "Use the shell to run uname -a, then summarize it."
 ```
 
 Use the consolidated environment report at any time:

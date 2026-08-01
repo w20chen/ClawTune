@@ -48,11 +48,13 @@ Setup installs and patches the plugin with:
 - local sidecar endpoint `http://127.0.0.1:8765`;
 - managed launcher from the repository `.venv`;
 - cgroup tracking enabled;
-- sidecar auto-start disabled.
+- unprivileged plugin-side auto-start disabled.
 
-Auto-start stays disabled because an ordinary Node child cannot acquire the
-kernel permissions required by eBPF. Start it with
-`python3 scripts/clawtune.py sidecar` instead.
+The old plugin auto-start stays disabled because an ordinary Node child cannot
+reliably acquire the kernel permissions required by eBPF. The supported
+automatic path is `python3 scripts/clawtune.py agent ...`: the wrapper obtains
+sudo first, waits for readiness, then starts OpenClaw without a launch race.
+Use `sidecar` separately only for a long-lived gateway/session.
 
 OpenClaw provider traffic should use `http://127.0.0.1:8765/v1`. The plugin's
 full schema is in `packages/openclaw-plugin/openclaw.plugin.json`; values not

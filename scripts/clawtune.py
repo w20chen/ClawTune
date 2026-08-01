@@ -10,9 +10,12 @@ import platform
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Sequence
+from urllib.error import URLError
+from urllib.request import urlopen
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -340,6 +343,22 @@ def check_ebpf(output: Path | None = None) -> None:
     run(privileged_command(command))
 
 
+def sidecar_health() -> dict[str, object]:
+    endpoint = "http://127.0.0.1:8765/health/ready"
+    try:
+        with urlopen(endpoint, timeout=1.0) as response:  # noqa: S310 - fixed loopback URL
+            status = response.status
+            body = response.read(4096).decode("utf-8", errors="replace")
+    except (OSError, URLError) as exc:
+        return {"running": False, "endpoint": endpoint, "error": str(exc)}
+    return {
+        "running": 200 <= status < 300,
+        "endpoint": endpoint,
+        "status": status,
+        "response": body,
+    }
+
+
 def doctor() -> int:
     require_linux()
     build = kernel_build()
@@ -368,6 +387,7 @@ def doctor() -> int:
             "ready": (VENV / "bin" / "python").exists()
             and python_has_bcc(VENV / "bin" / "python"),
         },
+        "sidecar": sidecar_health(),
         "kunpeng_amd64_emulation_required": host_arch() in ARM_ARCHES,
     }
     print(json.dumps(report, indent=2, ensure_ascii=False))
@@ -379,6 +399,11 @@ def doctor() -> int:
     )
     if healthy:
         log("基础环境正常。运行 `python3 scripts/clawtune.py check` 做内核级 eBPF 验证。")
+        if not report["sidecar"]["running"]:
+            log(
+                "sidecar 当前未运行；使用 OpenClaw 前先在独立终端运行 "
+                "`python3 scripts/clawtune.py sidecar`。"
+            )
         return 0
     log("环境尚未就绪。运行 `python3 scripts/clawtune.py setup` 自动处理可安装项。")
     return 1
@@ -413,14 +438,21 @@ def setup(args: argparse.Namespace) -> None:
     setup_qemu_if_needed(args.skip_qemu)
     configure_openclaw()
     check_ebpf(ROOT / "data" / "ebpf-check.json")
-    log("安装完成。下一步：编辑 .env/benchmark 配置，然后运行 sidecar 或 benchmark。")
+    log("安装和 eBPF 验证完成；验证进程已退出，不会留下常驻 sidecar。")
+    log("运行 OpenClaw：python3 scripts/clawtune.py agent <OpenClaw agent 参数>")
+    log("仅长期驻留时才需独立运行：python3 scripts/clawtune.py sidecar")
+    log("运行 benchmark 则直接使用：python3 scripts/clawtune.py benchmark --sample 1")
 
 
 def sidecar() -> None:
     require_linux()
     if not (VENV / "bin" / "python").exists():
         raise SetupError(".venv 不存在，请先运行 setup。")
-    command = privileged_command(
+    run(sidecar_command())
+
+
+def sidecar_command() -> list[str]:
+    return privileged_command(
         [
             f"AGENT_SCHEDULER_ENV_FILE={ROOT / '.env'}",
             VENV / "bin" / "python",
@@ -432,7 +464,100 @@ def sidecar() -> None:
             "8765",
         ]
     )
-    run(command)
+
+
+def wait_for_sidecar(child: subprocess.Popen[bytes], log_path: Path) -> None:
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        if sidecar_health()["running"]:
+            return
+        return_code = child.poll()
+        if return_code is not None:
+            detail = ""
+            try:
+                detail = log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
+            except OSError:
+                pass
+            raise SetupError(
+                f"自动启动 sidecar 失败（退出码 {return_code}）：\n{detail}"
+            )
+        time.sleep(0.2)
+    raise SetupError(f"sidecar 在 30 秒内未就绪；日志：{log_path}")
+
+
+def stop_managed_sidecar(child: subprocess.Popen[bytes]) -> None:
+    if child.poll() is not None:
+        return
+    if platform.system() != "Linux":
+        child.terminate()
+        return
+
+    kill_executable = shutil.which("kill") or "/bin/kill"
+
+    def signal_group(name: str, *, non_interactive: bool) -> int:
+        sudo_args = ["sudo"]
+        if non_interactive:
+            sudo_args.append("-n")
+        result = subprocess.run(
+            [*sudo_args, kill_executable, f"-{name}", "--", f"-{child.pid}"],
+            cwd=ROOT,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL if non_interactive else None,
+        )
+        return result.returncode
+
+    if signal_group("TERM", non_interactive=True) != 0:
+        log("停止特权 sidecar 需要再次确认 sudo")
+        signal_group("TERM", non_interactive=False)
+    try:
+        child.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        if signal_group("KILL", non_interactive=True) != 0:
+            signal_group("KILL", non_interactive=False)
+
+
+def agent(extra: Sequence[str]) -> None:
+    require_linux()
+    if not (VENV / "bin" / "python").exists():
+        raise SetupError(".venv 不存在，请先运行 setup。")
+    openclaw = shutil.which("openclaw")
+    if openclaw is None:
+        raise SetupError("找不到 openclaw，请先安装并运行 setup。")
+
+    managed_sidecar: subprocess.Popen[bytes] | None = None
+    log_handle = None
+    if sidecar_health()["running"]:
+        log("复用已经运行的 sidecar")
+    else:
+        log_path = ROOT / "data" / "sidecar-auto.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_handle = log_path.open("ab")
+        log("正在自动启动 eBPF sidecar；需要时 sudo 会请求密码")
+        managed_sidecar = subprocess.Popen(
+            sidecar_command(),
+            cwd=ROOT,
+            stdin=None,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        try:
+            wait_for_sidecar(managed_sidecar, log_path)
+        except BaseException:
+            stop_managed_sidecar(managed_sidecar)
+            log_handle.close()
+            raise
+        log("sidecar 已就绪，正在启动 OpenClaw")
+
+    try:
+        run([openclaw, "agent", *extra])
+    finally:
+        if managed_sidecar is not None:
+            log("OpenClaw 已结束，正在停止本次自动启动的 sidecar")
+            stop_managed_sidecar(managed_sidecar)
+        if log_handle is not None:
+            log_handle.close()
 
 
 def benchmark(extra: Sequence[str]) -> None:
@@ -484,13 +609,14 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="Show one consolidated environment report")
     sub.add_parser("check", help="Run the real eBPF compile/attach/exec smoke test")
     sub.add_parser("sidecar", help="Start the privileged Scheduler sidecar")
+    sub.add_parser("agent", help="Start eBPF sidecar, run OpenClaw agent, then clean up")
     sub.add_parser("benchmark", help="Run SWE-Rebench; remaining options go to the runner")
     return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args, extra = parser().parse_known_args(argv)
-    if extra and args.command != "benchmark":
+    if extra and args.command not in {"agent", "benchmark"}:
         raise SetupError("无法识别的参数：" + " ".join(extra))
     try:
         if args.command == "setup":
@@ -501,6 +627,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             check_ebpf(ROOT / "data" / "ebpf-check.json")
         elif args.command == "sidecar":
             sidecar()
+        elif args.command == "agent":
+            agent(extra)
         elif args.command == "benchmark":
             benchmark(extra)
     except (SetupError, subprocess.CalledProcessError) as exc:
