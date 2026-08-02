@@ -1,9 +1,9 @@
-# Scheduler sidecar reference
+# Scheduler Sidecar Reference
 
 The sidecar receives OpenClaw lifecycle events, proxies model requests, owns
 the eBPF collector, records traces, and serves recent measurements/predictions.
 
-## Start it
+## Start the Sidecar
 
 For an interactive agent run, plugin startup and cleanup are automatic:
 
@@ -44,7 +44,7 @@ public response contract is `contracts/health.schema.json`.
 The health endpoints do not compile or attach probes on every request. Use
 `python3 scripts/clawtune.py check` for kernel collector readiness.
 
-## Resource prediction
+## Resource Prediction
 
 The built-in `tool_resource` predictor learns from valid command artifacts and
 configured OpenClaw JSONL traces. It persists its knowledge under the artifact
@@ -77,7 +77,7 @@ with more than 512 matching nodes reports `lattice_candidate_limit_exceeded`;
 LOSO and max-cardinality remain available because they do not run the
 quadratic dominance pass.
 
-## Collection boundaries
+## Collection Boundaries
 
 Managed `exec` calls are released only after the sidecar has prepared the
 collector and cgroup scope. Native sandbox file tools can be correlated through
@@ -87,7 +87,7 @@ the shared attribution boundary.
 The collector is required by default. Disabling it is useful only to isolate an
 unrelated API/plugin problem; the resulting resource data is incomplete.
 
-## Configuration and security
+## Configuration and Security
 
 See [configuration](configuration.md) for normal settings. The complete
 environment surface remains in `services/scheduler/src/agent_scheduler/config.py`

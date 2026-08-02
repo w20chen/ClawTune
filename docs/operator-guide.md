@@ -5,7 +5,7 @@ Setup installs/enables the plugin, writes the trusted managed-execution
 sidecar command itself stays empty: the plugin derives the current checkout,
 `.venv`, matching kernel tree, and `sudo` arguments at runtime.
 
-## Route the model through ClawTune
+## Route the Model Through ClawTune
 
 OpenClaw must use the sidecar's OpenAI-compatible proxy so model and tool spans
 share one trace:
@@ -37,7 +37,7 @@ AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=provider/real-model
 Only use the explicit upstream-key override when the proxy must intentionally
 use a different credential than OpenClaw. Do not commit keys.
 
-## End-to-end smoke test
+## End-to-End Smoke Test
 
 ```bash
 openclaw agent --local --agent main --model "vllm/<model>" \
@@ -61,7 +61,7 @@ cgroup/process scope, a finalized eBPF command artifact with executable/argv
 data, and no collector loss. API health alone proves only that the process is
 listening; setup/check prove kernel collection.
 
-## Operational behavior
+## Operational Behavior
 
 - ClawTune observes by default. Scheduling/placement recommendations do not
   forcibly move work in the current release.

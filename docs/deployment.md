@@ -9,7 +9,7 @@ The supported deployment has two host processes:
 OpenClaw continues to execute tools in its Docker sandbox. ClawTune does not
 modify OpenClaw core, and placement advice remains advisory.
 
-## Recommended host deployment
+## Recommended Host Deployment
 
 Complete [installation and first run](getting-started.md), then start:
 
@@ -28,7 +28,7 @@ repository move cannot stale a persisted absolute shell command. A managed
 service without a controlling terminal should start the long-lived sidecar
 explicitly because sudo cannot prompt there.
 
-## Health and observability
+## Health and Observability
 
 ```bash
 curl -fsS http://127.0.0.1:8765/health/live
@@ -44,7 +44,7 @@ response only when it carries the expected `clawtune-scheduler` service and
 `scheduler.health.v1` schema identity; another process on port 8765 is treated
 as a conflict.
 
-## Service manager integration
+## Service Manager Integration
 
 For a persistent machine, wrap the same `sidecar` command in the site's service
 manager and use the repository owner as the working user. There is no generic
@@ -57,7 +57,7 @@ Keep the service bound to `127.0.0.1` unless authentication, firewalling, and
 TLS termination have been designed for remote access. Provider credentials and
 raw traces can contain sensitive data.
 
-## SWE-Rebench deployment
+## SWE-Rebench Deployment
 
 Run the batch wrapper instead of manually recreating sudo and environment
 variables:
@@ -71,14 +71,14 @@ exports results. Kunpeng automatically uses amd64 task images through QEMU;
 x86 uses native images. `SWE_REBENCH_DOCKER_PLATFORM` is the explicit override
 for either host. See [SWE-Rebench usage](../swe_rebench/README.md).
 
-## Container-only development
+## Container-Only Development
 
 `docker compose up --build scheduler` is useful for API development. It is not
 the supported measurement deployment by itself: a container does not inherit
 the host's matching headers, tracefs mount, perf access, and cgroup boundaries
 simply because it is privileged.
 
-## Security notes
+## Security Notes
 
 - The plugin's managed launcher rewrites shell execution and therefore requires
   explicit `securityBoundaryAccepted: true`; setup applies it.

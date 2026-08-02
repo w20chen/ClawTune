@@ -1,10 +1,10 @@
-# Kunpeng and arm64 hosts
+# Kunpeng and arm64 Hosts
 
 Kunpeng is a primary ClawTune target. The Scheduler, OpenClaw plugin, and eBPF
 collector run natively on arm64. Official SWE-Rebench task images are commonly
 amd64, so Docker needs a binfmt/QEMU handler only for those task containers.
 
-## Normal setup
+## Normal Setup
 
 On an arm64 host, use exactly the same command as x86:
 
@@ -25,7 +25,7 @@ the OpenClaw child environment, not written as the unsupported
 Do not run the eBPF sidecar in an amd64 emulation container—the collector must
 match the native host kernel.
 
-## Verify the two independent paths
+## Verify the Two Independent Paths
 
 Native eBPF:
 
@@ -43,7 +43,7 @@ Both checks must pass before a Kunpeng benchmark run. A successful QEMU smoke
 test does not prove kernel instrumentation, and a successful eBPF test does not
 prove that an amd64 image can start.
 
-## How QEMU is installed
+## How QEMU Is Installed
 
 The helper first uses Docker's `tonistiigi/binfmt` image. This works across
 openEuler and Debian-family hosts without guessing distribution package names.
@@ -57,14 +57,14 @@ image.
 The kernel must expose `binfmt_misc`. It may be built into the kernel; the
 helper checks `/proc/filesystems` before trying `modprobe`.
 
-## Performance expectations
+## Performance Expectations
 
 Only the amd64 userspace inside the benchmark container is emulated. The
 sidecar and eBPF collector remain native. CPU-heavy repository builds will be
 slower than on x86, so start with `--sample 1` and raise the configured task
 timeout only after observing a real timeout.
 
-## Manual status
+## Manual Status
 
 ```bash
 sudo bash scripts/setup/arm_qemu_setup.sh status

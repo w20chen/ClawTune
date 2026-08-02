@@ -1,9 +1,9 @@
-# Installation and first run
+# Installation and First Run
 
 This guide expands the short path in the root README. It is written for a
 fresh Linux checkout and covers both Kunpeng/openEuler and x86_64 Linux.
 
-## Before you begin
+## Before You Begin
 
 Use a normal login user with `sudo` access. Confirm that Docker, Node.js/npm,
 and OpenClaw are installed and usable by that user:
@@ -62,7 +62,7 @@ A successful setup includes:
 The process that exited is only the temporary validation. The plugin starts
 the long-running sidecar on demand.
 
-## Configure a provider
+## Configure a Provider
 
 ### Benchmark runs
 
@@ -85,7 +85,7 @@ output sections. On arm64, the wrapper defaults the Docker platform to
 `linux/amd64`. An explicitly exported `SWE_REBENCH_DOCKER_PLATFORM` takes
 priority; x86 stays native by default.
 
-### Normal OpenClaw runs
+### Normal OpenClaw Runs
 
 The plugin is installed and enabled by setup. It expects the sidecar at
 `http://127.0.0.1:8765`. Configure the OpenClaw model provider with proxy base
@@ -99,7 +99,7 @@ ClawTune forwards the authorization header to the upstream provider. If the
 upstream URL is not DeepSeek-compatible, set
 `AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL` in `.env` and restart the sidecar.
 
-## Start and verify
+## Start and Verify
 
 Run OpenClaw normally:
 
@@ -159,7 +159,7 @@ Start with one task. QEMU runs on Kunpeng are slower than native x86_64 runs,
 so increase `batch.task_timeout_seconds` in the benchmark config only when a
 real task reaches the default deadline.
 
-## Updating the checkout
+## Updating the Checkout
 
 After pulling commits, rerun the same idempotent setup command:
 

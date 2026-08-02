@@ -4,7 +4,7 @@ ClawTune creates sensible defaults during `python3 scripts/clawtune.py setup`.
 Most users only configure a provider key and model. Keep all paths relative to
 the repository unless you intentionally manage data elsewhere.
 
-## `.env`: sidecar and OpenClaw
+## Sidecar and OpenClaw
 
 The root `.env` controls the long-running sidecar. Useful settings are:
 
@@ -18,7 +18,7 @@ The root `.env` controls the long-running sidecar. Useful settings are:
 The eBPF collector is required by default. Do not disable it for a result that
 will be treated as a valid ClawTune measurement.
 
-## `swe_rebench/config.yaml`: benchmark runs
+## Benchmark Runs
 
 The setup command copies `swe_rebench/config.example.yaml` once. Exporting a
 key in the launch shell is the simplest secret configuration:
@@ -56,7 +56,7 @@ The runner always writes the full batch report to `output.report_path`. It
 prints only compact progress by default; pass `--json` to also emit the full
 report on stdout.
 
-### Benchmark knowledge bases
+### Benchmark Knowledge Bases
 
 Each benchmark task uses three JSON knowledge bases under `tool-resource/`:
 
@@ -101,7 +101,7 @@ and child environment instead. Setup validates the resulting OpenClaw config.
 The API key file, `.env`, generated runtime bundle, traces, and reports are
 Git-ignored.
 
-## OpenClaw plugin
+## OpenClaw Plugin
 
 Setup installs and patches the plugin with:
 

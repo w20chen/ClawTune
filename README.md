@@ -8,7 +8,7 @@ an OpenClaw plugin with a local scheduler sidecar and uses eBPF to measure the
 CPU, memory, process lifecycle, model calls, and tool calls of real agent work.
 It can also run SWE-Rebench tasks and export the resulting traces. eBPF collection is enabled and required by default.
 
-## Supported hosts
+## Supported Hosts
 
 | Host | Status | Notes |
 | --- | --- | --- |
@@ -152,7 +152,7 @@ configuration. Results are kept in `swe_rebench/.runtime/`.
 - [SWE-Rebench usage](swe_rebench/README.md)
 - [Architecture and developer references](docs/architecture.md)
 
-## Development checks
+## Development Checks
 
 ```bash
 python tools/validate_contracts.py

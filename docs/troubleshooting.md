@@ -17,7 +17,30 @@ python3 scripts/clawtune.py setup
 If it still fails, match the final error to a section below. Include the
 `doctor` output, `uname -a`, and `git rev-parse --short HEAD` in a bug report.
 
-## `apt-get: command not found`
+## Table of Contents
+
+- [1. `apt-get: command not found`](#1-apt-get-command-not-found)
+- [2. Container stops at `checking container system dependencies`](#2-container-stops-at-checking-container-system-dependencies)
+- [3. BCC is installed but Python cannot import it](#3-bcc-is-installed-but-python-cannot-import-it)
+- [4. `.venv/bin/python: No such file or directory`](#4-venvbinpython-no-such-file-or-directory)
+- [5. Matching kernel headers are missing](#5-matching-kernel-headers-are-missing)
+- [6. The basic BPF example compiles but ClawTune does not](#6-the-basic-bpf-example-compiles-but-clawtune-does-not)
+- [7. eBPF check reports permission, tracefs, perf, or cgroup errors](#7-ebpf-check-reports-permission-tracefs-perf-or-cgroup-errors)
+- [8. `npm run build` reports `TS5033 ... EACCES` under `dist`](#8-npm-run-build-reports-ts5033--eacces-under-dist)
+- [9. OpenClaw, Docker, Node.js, or npm is missing](#9-openclaw-docker-nodejs-or-npm-is-missing)
+- [10. Sidecar does not start or port 8765 is already in use](#10-sidecar-does-not-start-or-port-8765-is-already-in-use)
+- [11. OpenClaw reports `ECONNREFUSED 127.0.0.1:8765`](#11-openclaw-reports-econnrefused-1270018765)
+- [12. OpenClaw warns that `plugins.allow` is empty](#12-openclaw-warns-that-pluginsallow-is-empty)
+- [13. Tool output contains `Failed to connect to bus: No medium found`](#13-tool-output-contains-failed-to-connect-to-bus-no-medium-found)
+- [14. OpenClaw runs but model or tool traces are empty](#14-openclaw-runs-but-model-or-tool-traces-are-empty)
+- [15. Benchmark cannot find `LLM_API_KEY`](#15-benchmark-cannot-find-llm_api_key)
+- [16. OpenClaw rejects `agents.defaults.sandbox.docker.platform`](#16-openclaw-rejects-agentsdefaultssandboxdockerplatform)
+- [17. OpenClaw reports `plugins.load.paths: plugin path not found`](#17-openclaw-reports-pluginsloadpaths-plugin-path-not-found)
+- [18. Kunpeng cannot run an amd64 image](#18-kunpeng-cannot-run-an-amd64-image)
+- [19. Benchmark fails or produces no final report](#19-benchmark-fails-or-produces-no-final-report)
+- [20. A trace reports `mvdan adapter is missing` or repeated `analysis_failure`](#20-a-trace-reports-mvdan-adapter-is-missing-or-repeated-analysis_failure)
+
+## 1. `apt-get: command not found`
 
 This is normal on openEuler, EulerOS, RHEL, and related distributions. They use
 `dnf`. Do not paste the Debian/Ubuntu package command. The unified setup detects
@@ -31,7 +54,7 @@ If it says the dnf repositories do not contain BCC or `kernel-devel`, confirm
 that the OS and update repositories for the running openEuler release are
 enabled. A custom or vendor kernel must provide a matching development package.
 
-## Container stops at `checking container system dependencies`
+## 2. Container stops at `checking container system dependencies`
 
 This message belongs only to the `container-openclaw` runtime. Its first run
 may need to install packages inside the benchmark image; running an amd64 image
@@ -44,7 +67,7 @@ Seeing `container arch: x86_64` on an arm64 Kunpeng host is expected for an
 x86_64 SWE-Rebench image. Re-run the same benchmark after fixing the repository
 or network error shown in the log; no separate runtime configuration is needed.
 
-## BCC is installed but Python cannot import it
+## 3. BCC is installed but Python cannot import it
 
 The usual cause is two different Python installations:
 
@@ -69,7 +92,7 @@ If `.venv` was previously created from the wrong interpreter, rename it for
 inspection or delete it if you no longer need it, then rerun setup. Setup never
 deletes it automatically.
 
-## `.venv/bin/python: No such file or directory`
+## 4. `.venv/bin/python: No such file or directory`
 
 The environment has not been created in this checkout, or an older guide used
 a different directory name. The supported environment is now only `.venv`:
@@ -81,7 +104,7 @@ python3 scripts/clawtune.py setup
 Do not manually activate the environment for normal operation. The unified
 commands use its absolute interpreter path.
 
-## Matching kernel headers are missing
+## 5. Matching kernel headers are missing
 
 `doctor` prints the expected path, normally:
 
@@ -98,7 +121,7 @@ ClawTune's supported baseline is Linux 5.8 or newer with cgroup v2. A newer
 header package cannot make an older running kernel compatible; update and boot
 the kernel first, then install the development package for that exact release.
 
-## The basic BPF example compiles but ClawTune does not
+## 6. The basic BPF example compiles but ClawTune does not
 
 A one-line BPF program only proves that Clang and BCC can run. Use the complete
 project check:
@@ -122,7 +145,7 @@ candidate is being tested. If the final `check` reports success, those
 individual candidate messages are not a failure; if all candidates fail, keep
 the complete output in the bug report.
 
-## eBPF check reports permission, tracefs, perf, or cgroup errors
+## 7. eBPF check reports permission, tracefs, perf, or cgroup errors
 
 Use the wrapper rather than invoking `tools/check_ebpf.py` directly; it supplies
 the verified interpreter, matching kernel path, clean executable path, and
@@ -138,7 +161,7 @@ Hardened kernels may deny BPF or perf even to containers. The maintained path
 runs the sidecar on the host as root and lets OpenClaw execute tools in Docker.
 A remote Docker daemon cannot use the local kernel collector.
 
-## `npm run build` reports `TS5033 ... EACCES` under `dist`
+## 8. `npm run build` reports `TS5033 ... EACCES` under `dist`
 
 An older privileged prepare step may have created plugin output as root. Setup
 repairs this focused directory automatically. If a manual repair is needed:
@@ -150,14 +173,14 @@ python3 scripts/clawtune.py setup
 
 Do not recursively change ownership of the repository.
 
-## OpenClaw, Docker, Node.js, or npm is missing
+## 9. OpenClaw, Docker, Node.js, or npm is missing
 
 Setup lists all missing external applications in one message. Install them
 using your organization's supported repository and daemon configuration, make
 sure each command works as your normal account, and rerun setup. In particular,
 adding the user to Docker's group may require a new login session.
 
-## Sidecar does not start or port 8765 is already in use
+## 10. Sidecar does not start or port 8765 is already in use
 
 The foreground command keeps the real error visible:
 
@@ -178,7 +201,7 @@ as `scheduler.health.v1`. A `200` response from an unrelated program is not
 accepted. Stop the conflicting process before rerunning ClawTune; port 8765 is
 the supported setup default.
 
-### OpenClaw reports `ECONNREFUSED 127.0.0.1:8765`
+## 11. OpenClaw reports `ECONNREFUSED 127.0.0.1:8765`
 
 Provider onboarding succeeded, but the local ClawTune proxy is not running.
 The eBPF validation performed by setup is temporary. Current setup configures
@@ -218,7 +241,7 @@ state manually. Run `openclaw doctor --fix`; if Feishu is not used, inspect
 `openclaw plugins uninstall feishu --dry-run` before deciding whether to
 remove it.
 
-## OpenClaw warns that `plugins.allow` is empty
+## 12. OpenClaw warns that `plugins.allow` is empty
 
 This is a plugin trust warning, not a sidecar failure. Inspect every plugin
 before creating an allowlist:
@@ -243,7 +266,7 @@ Add `deepseek`, `feishu`, or other inspected IDs only when those plugins are
 actually required. Omitting `agent-scheduler` would prevent ClawTune from
 loading.
 
-## Tool output contains `Failed to connect to bus: No medium found`
+## 13. Tool output contains `Failed to connect to bus: No medium found`
 
 This came from an older launcher trying `systemd-run --user` in an SSH session
 without a systemd user manager. The current launcher probes that interface
@@ -261,7 +284,7 @@ The CPU controller is optional for eBPF collection; current builds interpret a
 missing quota file as unconstrained host capacity instead of rejecting shell
 execution. You do not need to modify `cgroup.subtree_control` manually.
 
-## OpenClaw runs but model or tool traces are empty
+## 14. OpenClaw runs but model or tool traces are empty
 
 Check that:
 
@@ -274,7 +297,7 @@ Check that:
 Rerunning setup refreshes the plugin link and absolute launcher path after a
 checkout has moved.
 
-## Benchmark cannot find `LLM_API_KEY`
+## 15. Benchmark cannot find `LLM_API_KEY`
 
 Export the key in the same shell that invokes the unified command:
 
@@ -289,7 +312,7 @@ variable, put the key on one line in the Git-ignored
 `swe_rebench/llm_api_key.txt`, or export `LLM_API_KEY_FILE` with the path to a
 site-managed secret file.
 
-## OpenClaw rejects `agents.defaults.sandbox.docker.platform`
+## 16. OpenClaw rejects `agents.defaults.sandbox.docker.platform`
 
 That key is not part of the OpenClaw 2026.7.x configuration schema. Remove it
 from hand-written OpenClaw JSON and rerun setup:
@@ -304,7 +327,7 @@ and child environment. On Kunpeng the benchmark wrapper defaults to
 `linux/amd64`; an explicit `SWE_REBENCH_DOCKER_PLATFORM` value takes priority.
 On x86 the default is native.
 
-## OpenClaw reports `plugins.load.paths: plugin path not found`
+## 17. OpenClaw reports `plugins.load.paths: plugin path not found`
 
 The OpenClaw config contains a linked plugin path from an older checkout, for
 example `/home/user/claw/...` after the repository moved to
@@ -320,7 +343,7 @@ The backup is written next to `~/.openclaw/openclaw.json` with a timestamp. If
 an older checkout does not yet contain this recovery, run `openclaw doctor
 --fix` once and then rerun setup.
 
-## Kunpeng cannot run an amd64 image
+## 18. Kunpeng cannot run an amd64 image
 
 Rerun setup; it installs and tests the binfmt handler on arm64. For a focused
 test:
@@ -337,7 +360,7 @@ and verifies its requested OS/architecture. A matching cached amd64 image is
 used directly on Kunpeng even when Docker Hub is temporarily unreachable.
 Only an absent or wrong-architecture image requires registry access.
 
-## Benchmark fails or produces no final report
+## 19. Benchmark fails or produces no final report
 
 Look in the task directory under `swe_rebench/.runtime/traces/<task-id>/`:
 
@@ -350,7 +373,7 @@ Look in the task directory under `swe_rebench/.runtime/traces/<task-id>/`:
 Start with one task. On Kunpeng, increase `batch.task_timeout_seconds` only if
 QEMU execution genuinely reaches the current limit.
 
-### A trace reports `mvdan adapter is missing` or repeated `analysis_failure`
+## 20. A trace reports `mvdan adapter is missing` or repeated `analysis_failure`
 
 This was a regression in older revisions: setup prepared a user/container
 cache while the privileged ARM64 host sidecar read root's architecture-specific
