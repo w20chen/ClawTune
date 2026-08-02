@@ -64,6 +64,7 @@ from swe_rebench.task_source import (
     tasks_from_records,
 )
 from swe_rebench.runner import (
+    _apply_batch_overrides,
     _apply_runtime_overrides,
     _container_image_ready,
     _default_agent_test_bench_tasks,
@@ -851,6 +852,23 @@ def test_cli_host_sandbox_override_requires_stage2_by_default(tmp_path: Path) ->
         stage2_required=False,
     )
     assert config.runtime.stage2_required is False
+
+
+def test_cli_task_timeout_override(tmp_path: Path) -> None:
+    config = RunnerConfig.from_yaml("swe_rebench/config.yaml", repo_root=tmp_path)
+
+    _apply_batch_overrides(config, task_timeout_seconds=600)
+    assert config.batch.task_timeout_seconds == 600
+
+    _apply_batch_overrides(config, task_timeout_seconds=0)
+    assert config.batch.task_timeout_seconds == 0
+
+
+def test_cli_task_timeout_override_rejects_negative_value(tmp_path: Path) -> None:
+    config = RunnerConfig.from_yaml("swe_rebench/config.yaml", repo_root=tmp_path)
+
+    with pytest.raises(ValueError, match="must be >= 0"):
+        _apply_batch_overrides(config, task_timeout_seconds=-1)
 
 
 def test_runner_config_rejects_unknown_runtime_mode(tmp_path: Path) -> None:

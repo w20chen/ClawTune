@@ -168,13 +168,11 @@ class BundleConfig:
 
 @dataclass
 class AgentConfig:
-    max_turns: int = 50
     extra_args: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "AgentConfig":
         return cls(
-            max_turns=int(d.get("max_turns", 50)),
             extra_args=list(d.get("extra_args", [])),
         )
 

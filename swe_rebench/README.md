@@ -76,6 +76,18 @@ Always start with one task:
 python3 scripts/clawtune.py benchmark --sample 1
 ```
 
+Limit every task to ten minutes (the shorter `--timeout-seconds` alias is also
+accepted):
+
+```bash
+python3 scripts/clawtune.py benchmark --sample 32 --task-timeout-seconds 600
+```
+
+This is a hard wall-clock limit for one task, including all OpenClaw turns and
+tool calls. A timed-out task is marked failed and its processes and sandbox are
+cleaned up. OpenClaw's supported `agent` CLI exposes a run timeout, but not a
+maximum-turn option, so this benchmark uses the reliable time limit.
+
 With an explicit task source:
 
 ```bash

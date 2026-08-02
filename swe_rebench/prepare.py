@@ -900,7 +900,6 @@ def _write_entrypoint(bundle_dir: Path, config: RunnerConfig) -> None:
               .replace("__LLM_KEY__", "")
               .replace("__MODEL_FULL__", model_full)
               .replace("__MODEL_SHORT__", model_short)
-              .replace("__MAX_TURNS__", str(config.agent.max_turns))
               .replace("__EXTRA__", " ".join(config.agent.extra_args)))
     dest = bundle_dir / "entrypoint.sh"
     dest.write_text(script, encoding="utf-8")
@@ -1371,7 +1370,6 @@ def _write_run_agent(bundle_dir: Path, config: RunnerConfig) -> None:
     model_full = config.llm.openclaw_model_ref
     script = (_RUN_AGENT_TEMPLATE
               .replace("__MODEL_FULL__", model_full)
-              .replace("__MAX_TURNS__", str(config.agent.max_turns))
               .replace("__EXTRA__", " ".join(config.agent.extra_args)))
     dest = bundle_dir / "run_agent.sh"
     dest.write_text(script, encoding="utf-8")

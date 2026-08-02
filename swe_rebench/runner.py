@@ -2111,6 +2111,20 @@ def _apply_runtime_overrides(
         config.runtime.stage2_required = True
 
 
+def _apply_batch_overrides(
+    config: RunnerConfig,
+    *,
+    task_timeout_seconds: int | None,
+) -> None:
+    """Apply command-line batch limits after loading the YAML configuration."""
+
+    if task_timeout_seconds is None:
+        return
+    if task_timeout_seconds < 0:
+        raise ValueError("--task-timeout-seconds must be >= 0")
+    config.batch.task_timeout_seconds = task_timeout_seconds
+
+
 def main() -> None:
     repo_root = _detect_repo_root()
     default_config = repo_root / "swe_rebench" / "config.example.yaml"
@@ -2154,6 +2168,16 @@ def main() -> None:
     run_p.add_argument("--problem", default=None, help="Problem statement for single-image mode")
     run_p.add_argument("--sample", type=int, default=None,
                        help="Run exactly the first N selected tasks (error if fewer exist)")
+    run_p.add_argument(
+        "--task-timeout-seconds",
+        "--timeout-seconds",
+        type=int,
+        default=None,
+        help=(
+            "Hard wall-clock limit for each task in seconds; overrides "
+            "batch.task_timeout_seconds (0 disables the limit)"
+        ),
+    )
     run_p.add_argument("--skip", type=int, default=0,
                        help="Skip the first N selected tasks before --sample")
     run_p.add_argument("--instance-ids", default=None,
@@ -2214,6 +2238,13 @@ def main() -> None:
             runtime_mode=args.runtime_mode,
             stage2_required=args.stage2_required,
         )
+        try:
+            _apply_batch_overrides(
+                config,
+                task_timeout_seconds=args.task_timeout_seconds,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
 
         # Build bundle if requested or stale.  The plugin runtime lives in
         # ignored dist/ files, so relying on git reset alone is not enough.
@@ -2249,6 +2280,12 @@ def main() -> None:
             sys.exit(1)
 
         _log(f"Loaded {len(tasks)} tasks")
+        timeout_label = (
+            f"{config.batch.task_timeout_seconds}s"
+            if config.batch.task_timeout_seconds > 0
+            else "disabled"
+        )
+        _log(f"Per-task timeout: {timeout_label}")
 
         if args.dry_run:
             for i, t in enumerate(tasks):

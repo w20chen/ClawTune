@@ -49,6 +49,13 @@ sibling `agent-test-bench` checkout, and uses the bundled four-task file only
 as a smoke-test fallback. A request larger than the selected source fails
 before execution with an actionable full-dataset message.
 
+The runner now exposes the existing per-task hard deadline as
+`--task-timeout-seconds N` (alias `--timeout-seconds N`), so a large serial
+batch can bound each agent run without editing YAML. The old `agent.max_turns`
+setting was inert: the supported OpenClaw `agent` CLI does not expose a
+maximum-turn option. That misleading setting has been removed; timeout is the
+enforced bound.
+
 Validation completed in the Windows development workspace:
 
 - `python -m pytest tests -q --basetemp .pytest-tmp-root-shared-kb-final-2`:
