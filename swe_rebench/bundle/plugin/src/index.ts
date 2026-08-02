@@ -312,35 +312,97 @@ export default definePluginEntry({
 
   function summarizePrediction(decision: ToolDecision): string {
     const prediction = decision.prediction;
-    const parts = [
+    const header = [
       `time p50=${formatMs(prediction.duration_p50_ms)} p90=${formatMs(prediction.duration_p90_ms)}`,
       `class=${prediction.resource_class}`,
     ];
     if (prediction.confidence !== null && prediction.confidence !== undefined) {
-      parts.push(`confidence=${formatNumber(prediction.confidence, 2)}`);
+      header.push(`confidence=${formatNumber(prediction.confidence, 2)}`);
     }
+    const lines: string[] = [`  ${header.join(" │ ")}`];
     const toolResource = prediction.tool_resource;
-    if (toolResource) {
-      if (toolResource.prediction) {
-        const probabilities = formatProbabilityList(toolResource.prediction.probability_by_bucket);
-        parts.push(
-          `bucket=${toolResource.prediction.bucket_id} (${formatPredictionSource(toolResource.prediction)}${probabilities ? ` probs=${probabilities}` : ""})`
-        );
-      } else {
-        parts.push(`bucket=unavailable (${toolResource.unavailable_reason ?? "unknown"})`);
-      }
-      const continuous = toolResource.continuous_predictions ?? {};
-      parts.push(continuousPredictionSummary(continuous.latency_ms, "runtime_latency", "ms"));
-      parts.push(continuousPredictionSummary(continuous.peak_cpu_cores, "cpu", "cores"));
-      parts.push(continuousPredictionSummary(continuous.peak_memory_mb, "mem", "MB"));
-      const enabled = toolResource.prediction_algorithms?.enabled
-        ?.map((item) => item.name)
-        .filter((name): name is string => typeof name === "string" && name.length > 0);
-      if (enabled && enabled.length > 0) {
-        parts.push(`algorithms=${enabled.join("+")}`);
-      }
+    if (!toolResource) return lines.join("\n");
+
+    // --- bucket (clause latency bucket top-level) ---
+    if (toolResource.prediction) {
+      const probs = formatProbabilityList(toolResource.prediction.probability_by_bucket);
+      lines.push(
+        `  bucket   bucket=${toolResource.prediction.bucket_id} (${formatPredictionSource(toolResource.prediction)}${probs ? ` probs=${probs}` : ""})`
+      );
+    } else {
+      lines.push(`  bucket   unavailable (${toolResource.unavailable_reason ?? "unknown"})`);
     }
-    return parts.join("; ");
+
+    // --- per-clause bucket predictions ---
+    const clausePreds = toolResource.clause_predictions;
+    if (Array.isArray(clausePreds) && clausePreds.length > 0) {
+      const clauseParts = clausePreds.map((cp, i) => {
+        if (!isRecord(cp)) return `[${i}] ?`;
+        const c = cp as Record<string, unknown>;
+        const idx = c.clause_index;
+        const bin = typeof c.bin === "string" ? c.bin : "?";
+        const pred = c.prediction;
+        if (isRecord(pred)) {
+          const p = pred as Record<string, unknown>;
+          const probs = formatProbabilityList(p.probability_by_bucket);
+          return `[${idx}] ${bin}=bucket(${p.bucket_id} ${formatPredictionSource(p)}${probs ? ` ${probs}` : ""})`;
+        }
+        const reason = typeof c.unavailable_reason === "string" ? c.unavailable_reason : "?";
+        return `[${idx}] ${bin}=unavailable(${reason})`;
+      });
+      lines.push(`  clauses  ${clauseParts.join(" │ ")}`);
+    }
+
+    // --- continuous (runtime p90) ---
+    const continuous = toolResource.continuous_predictions ?? {};
+    const contParts = [
+      continuousPredictionSummary(continuous.latency_ms, "latency", "ms"),
+      continuousPredictionSummary(continuous.peak_cpu_cores, "cpu", "cores"),
+      continuousPredictionSummary(continuous.peak_memory_mb, "mem", "MB"),
+    ].filter(s => s.length > 0);
+    if (contParts.length > 0) {
+      lines.push(`  runtime  ${contParts.join(" │ ")}`);
+    }
+
+    // --- lattice time predictions (per-clause point estimates) ---
+    const latticePreds = toolResource.lattice_time_predictions;
+    if (Array.isArray(latticePreds) && latticePreds.length > 0) {
+      const latticeLines = latticePreds.map((lp) => {
+        if (!isRecord(lp)) return "  lattice  ?";
+        const l = lp as Record<string, unknown>;
+        const idx = l.clause_index;
+        const bin = typeof l.bin === "string" ? l.bin : "?";
+        const preds = Array.isArray(l.predictions) ? l.predictions : [];
+        const algoParts = preds.map((ap) => {
+          if (!isRecord(ap)) return "?";
+          const a = ap as Record<string, unknown>;
+          const algo = typeof a.algorithm === "string" ? a.algorithm : "?";
+          const shortAlgo = algo.length > 6 ? algo.slice(0, 6) : algo; // shrinkage→shrink, loso stays, max_cardinality→max_ca
+          if (typeof a.prediction_ms === "number" && Number.isFinite(a.prediction_ms)) {
+            const feat = Array.isArray(a.selected_features) ? (a.selected_features as string[]).join(",") : "?";
+            const ev = typeof a.evidence_count === "number" ? a.evidence_count : 0;
+            const ex = a.exact_match === true ? "✓" : a.exact_match === false ? "~" : "?";
+            return `${shortAlgo}=${formatMs(a.prediction_ms)} feat=${feat} n=${ev} ${ex}`;
+          }
+          const reason = typeof a.unavailable_reason === "string" ? a.unavailable_reason : "?";
+          return `${shortAlgo}=unavailable(${reason})`;
+        });
+        return `  lattice  [${idx}] ${bin}: ${algoParts.join(" │ ")}`;
+      });
+      lines.push(...latticeLines);
+    } else {
+      lines.push("  lattice  (none)");
+    }
+
+    // --- algorithms ---
+    const enabled = toolResource.prediction_algorithms?.enabled
+      ?.map((item) => item.name)
+      .filter((name): name is string => typeof name === "string" && name.length > 0);
+    if (enabled && enabled.length > 0) {
+      lines.push(`  algo     ${enabled.join(" + ")}`);
+    }
+
+    return lines.join("\n");
   }
 
   function summarizeObservedTelemetry(telemetry: unknown): string | null {
