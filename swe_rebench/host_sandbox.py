@@ -11,6 +11,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import signal
 import shutil
 import socket
 import subprocess
@@ -24,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from swe_rebench.config import RunnerConfig
-from swe_rebench.docker import ContainerResult
+from swe_rebench.docker import ContainerCleanupError, ContainerResult
 from swe_rebench.sandbox import sandbox_container_prefix
 from swe_rebench.task_source import TaskDef, task_repo_key
 
@@ -64,9 +65,37 @@ _TOOL_RESOURCE_KB_SCHEMAS = {
     "clause-resource-kb.json": "runtime_clause_resource_kb_v4",
 }
 
+_TASK_CLEANUP_TIMEOUT_SECONDS = 15.0
+_DISCOVERY_COMMAND_TIMEOUT_SECONDS = 5.0
+_SUBPROCESS_POPEN_TYPE = subprocess.Popen
+
 
 class KnowledgeBaseSyncError(RuntimeError):
     """A shared KB generation could not be copied or published safely."""
+
+
+class TaskDeadlineExceeded(TimeoutError):
+    """The whole-task wall-clock budget expired."""
+
+
+def _task_deadline(config: RunnerConfig, started: float) -> float | None:
+    seconds = config.batch.task_timeout_seconds
+    return started + seconds if seconds > 0 else None
+
+
+def _remaining_task_seconds(
+    deadline: float | None,
+    *,
+    phase: str,
+) -> float | None:
+    if deadline is None:
+        return None
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TaskDeadlineExceeded(
+            f"task timed out during {phase}; whole-task wall-clock budget exhausted"
+        )
+    return remaining
 
 
 def _log(msg: str) -> None:
@@ -84,6 +113,7 @@ def run_host_sandbox_task(
 ) -> ContainerResult:
     """Run one task with host OpenClaw and OpenClaw Docker sandbox."""
     started = time.monotonic()
+    deadline = _task_deadline(config, started)
     trace_dir.mkdir(parents=True, exist_ok=True)
     workspace = _task_workspace(config, task)
     openclaw_home = trace_dir / "openclaw-home"
@@ -93,10 +123,23 @@ def run_host_sandbox_task(
     error: str | None = None
 
     try:
-        _write_host_tool_resource_preflight(trace_dir, config)
-        _reset_directory(workspace, docker_cleanup_image=task.image, docker_platform=config.docker.platform)
-        _reset_directory(openclaw_home)
-        _export_testbed_from_image(task.image, workspace, config.docker.pull_policy, config.docker.platform)
+        _write_host_tool_resource_preflight(trace_dir, config, deadline=deadline)
+        _remaining_task_seconds(deadline, phase="host telemetry preflight")
+        _reset_directory(
+            workspace,
+            docker_cleanup_image=task.image,
+            docker_platform=config.docker.platform,
+            deadline=deadline,
+        )
+        _reset_directory(openclaw_home, deadline=deadline)
+        _remaining_task_seconds(deadline, phase="workspace reset")
+        _export_testbed_from_image(
+            task.image,
+            workspace,
+            config.docker.pull_policy,
+            config.docker.platform,
+            deadline=deadline,
+        )
         _make_sandbox_workspace_writable(workspace)
         _install_sandbox_launcher(workspace, bundle_dir)
         _write_task_inputs(
@@ -107,9 +150,25 @@ def run_host_sandbox_task(
             bundle_dir,
             shared_kb_dir=shared_kb_dir,
         )
-        _ensure_openclaw_sandbox_image(task.image, trace_dir, config.docker.platform)
-        _verify_sandbox_launcher(trace_dir, workspace, config.docker.platform)
-        _verify_sandbox_task_environment(trace_dir, workspace, config.docker.platform)
+        _ensure_openclaw_sandbox_image(
+            task.image,
+            trace_dir,
+            config.docker.platform,
+            deadline=deadline,
+        )
+        _verify_sandbox_launcher(
+            trace_dir,
+            workspace,
+            config.docker.platform,
+            deadline=deadline,
+        )
+        _verify_sandbox_task_environment(
+            trace_dir,
+            workspace,
+            config.docker.platform,
+            deadline=deadline,
+        )
+        _remaining_task_seconds(deadline, phase="sandbox preflight")
 
         _seed_runtime_tool_resource_kb(
             trace_dir,
@@ -123,6 +182,7 @@ def run_host_sandbox_task(
             config=config,
             workspace=workspace,
             repo=task_repo_key(task),
+            deadline=deadline,
         )
         _configure_openclaw(
             trace_dir=trace_dir,
@@ -130,8 +190,22 @@ def run_host_sandbox_task(
             sidecar_port=sidecar_port,
             workspace=workspace,
             config=config,
+            deadline=deadline,
         )
-        _cleanup_openclaw_sandbox_containers(trace_dir, workspace)
+        cleanup_budget = _remaining_task_seconds(
+            deadline,
+            phase="pre-agent sandbox cleanup",
+        )
+        _cleanup_openclaw_sandbox_containers(
+            trace_dir,
+            workspace,
+            timeout_seconds=min(
+                _TASK_CLEANUP_TIMEOUT_SECONDS,
+                cleanup_budget or _TASK_CLEANUP_TIMEOUT_SECONDS,
+            ),
+            strict=True,
+        )
+        _remaining_task_seconds(deadline, phase="agent setup")
         exit_code = _run_openclaw_agent(
             trace_dir=trace_dir,
             openclaw_home=openclaw_home,
@@ -139,20 +213,67 @@ def run_host_sandbox_task(
             sidecar_port=sidecar_port,
             task=task,
             config=config,
+            task_deadline=deadline,
         )
-        _cleanup_runtime_artifacts(workspace)
-        _collect_patch(trace_dir, workspace, task)
+        timeout_record = _read_json_object(trace_dir / "task-timeout.json")
+        if exit_code == 124 and isinstance(timeout_record, dict):
+            error = str(timeout_record.get("message") or "task timed out")
+        _remaining_task_seconds(deadline, phase="result collection")
+        _cleanup_runtime_artifacts(workspace, deadline=deadline)
+        _collect_patch(trace_dir, workspace, task, deadline=deadline)
+    except TaskDeadlineExceeded as exc:
+        exit_code = 124
+        error = str(exc)
+        _write_timeout_record(
+            trace_dir,
+            scope="task",
+            message=error,
+            configured_seconds=config.batch.task_timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        exit_code = 124
+        error = (
+            "task timed out while waiting for a setup subprocess: "
+            f"{exc.cmd!r}"
+        )
+        _write_timeout_record(
+            trace_dir,
+            scope="task",
+            message=error,
+            configured_seconds=config.batch.task_timeout_seconds,
+        )
+    except ContainerCleanupError:
+        # The task-local sidecar/agent may still be able to mutate its KB.
+        # Propagate instead of returning a result that _run_one would publish.
+        raise
     except Exception as exc:
         error = str(exc)
         _write_text(trace_dir / "host_sandbox_error.txt", traceback.format_exc())
     except KeyboardInterrupt:
         error = "interrupted by user"
+        raise
     finally:
+        cleanup_error: BaseException | None = None
         try:
-            if sidecar is not None:
-                _stop_process(sidecar)
+            _cleanup_openclaw_sandbox_containers(
+                trace_dir,
+                workspace,
+                timeout_seconds=_TASK_CLEANUP_TIMEOUT_SECONDS,
+                strict=True,
+            )
+        except BaseException as exc:
+            cleanup_error = exc
         finally:
+            try:
+                if sidecar is not None:
+                    _stop_process(sidecar)
+            except BaseException as exc:
+                cleanup_error = cleanup_error or exc
+            if cleanup_error is not None and error is None:
+                error = f"task cleanup failed: {cleanup_error}"
             _write_result_summary(trace_dir, task, workspace, exit_code, error)
+        if cleanup_error is not None:
+            raise cleanup_error
 
     return ContainerResult(
         task_id=task.instance_id,
@@ -170,7 +291,14 @@ def _task_workspace(config: RunnerConfig, task: TaskDef) -> Path:
     return config.output.trace_root.parent / "workspaces" / safe_id
 
 
-def _export_testbed_from_image(image: str, workspace: Path, pull_policy: str, platform: str = "") -> None:
+def _export_testbed_from_image(
+    image: str,
+    workspace: Path,
+    pull_policy: str,
+    platform: str = "",
+    *,
+    deadline: float | None = None,
+) -> None:
     docker = _require_executable("docker")
     if pull_policy != "never":
         pull = [docker, "pull", *_docker_platform_args(platform), image]
@@ -179,23 +307,50 @@ def _export_testbed_from_image(image: str, workspace: Path, pull_policy: str, pl
                 [docker, "image", "inspect", image],
                 capture_output=True,
                 text=True,
+                timeout=_remaining_task_seconds(deadline, phase="task image inspection"),
             )
             if inspect.returncode == 0:
                 pull = []
         if pull:
-            _run_checked(pull, "docker_pull")
+            if deadline is None:
+                _run_checked(pull, "docker_pull")
+            else:
+                _run_checked(
+                    pull,
+                    "docker_pull",
+                    timeout=_remaining_task_seconds(deadline, phase="task image pull"),
+                )
 
     create = subprocess.run(
         [docker, "create", *_docker_platform_args(platform), image],
         capture_output=True,
         text=True,
         check=True,
+        timeout=_remaining_task_seconds(deadline, phase="task container creation"),
     )
     container_id = create.stdout.strip()
     try:
-        _run_checked([docker, "cp", f"{container_id}:/testbed/.", str(workspace)], "docker_cp_testbed")
+        copy_command = [docker, "cp", f"{container_id}:/testbed/.", str(workspace)]
+        if deadline is None:
+            _run_checked(copy_command, "docker_cp_testbed")
+        else:
+            _run_checked(
+                copy_command,
+                "docker_cp_testbed",
+                timeout=_remaining_task_seconds(deadline, phase="repository export"),
+            )
     finally:
-        subprocess.run([docker, "rm", "-f", container_id], capture_output=True, text=True)
+        try:
+            subprocess.run(
+                [docker, "rm", "-f", container_id],
+                capture_output=True,
+                text=True,
+                timeout=_TASK_CLEANUP_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ContainerCleanupError(
+                f"timed out removing export container {container_id}"
+            ) from exc
 
 
 def _make_sandbox_workspace_writable(workspace: Path) -> None:
@@ -218,7 +373,13 @@ def _make_sandbox_workspace_writable(workspace: Path) -> None:
             path.chmod(path.stat().st_mode | 0o666)
 
 
-def _ensure_openclaw_sandbox_image(task_image: str, trace_dir: Path, platform: str = "") -> None:
+def _ensure_openclaw_sandbox_image(
+    task_image: str,
+    trace_dir: Path,
+    platform: str = "",
+    *,
+    deadline: float | None = None,
+) -> None:
     """Tag the swe-rebench task image as the OpenClaw sandbox image.
 
     OpenClaw uses ``openclaw-sandbox:bookworm-slim`` as its default Docker
@@ -238,6 +399,7 @@ def _ensure_openclaw_sandbox_image(task_image: str, trace_dir: Path, platform: s
         [docker, "image", "inspect", sandbox_image],
         capture_output=True,
         text=True,
+        timeout=_remaining_task_seconds(deadline, phase="sandbox image inspection"),
     )
     if inspect_sandbox.returncode == 0:
         try:
@@ -250,6 +412,7 @@ def _ensure_openclaw_sandbox_image(task_image: str, trace_dir: Path, platform: s
             [docker, "image", "inspect", task_image],
             capture_output=True,
             text=True,
+            timeout=_remaining_task_seconds(deadline, phase="task image inspection"),
         )
         if inspect_task.returncode == 0:
             try:
@@ -271,6 +434,7 @@ def _ensure_openclaw_sandbox_image(task_image: str, trace_dir: Path, platform: s
             stdout=log,
             stderr=log,
             text=True,
+            timeout=_remaining_task_seconds(deadline, phase="sandbox image tagging"),
         )
     if result.returncode != 0:
         raise RuntimeError(
@@ -279,16 +443,28 @@ def _ensure_openclaw_sandbox_image(task_image: str, trace_dir: Path, platform: s
         )
 
 
-def _verify_sandbox_launcher(trace_dir: Path, workspace: Path, platform: str = "") -> None:
+def _verify_sandbox_launcher(
+    trace_dir: Path,
+    workspace: Path,
+    platform: str = "",
+    *,
+    deadline: float | None = None,
+) -> None:
     """Verify launcher mode and the environment its payload will inherit."""
 
     docker = _require_executable("docker")
     log_path = trace_dir / "launcher-preflight.log"
+    container_name = (
+        f"{_sandbox_container_prefix(workspace)}launcher-preflight-"
+        f"{os.getpid()}-{threading.get_ident()}"
+    )
     result = subprocess.run(
         [
             docker,
             "run",
             "--rm",
+            "--name",
+            container_name,
             *_docker_platform_args(platform),
             "--network",
             "none",
@@ -308,6 +484,7 @@ def _verify_sandbox_launcher(trace_dir: Path, workspace: Path, platform: str = "
         ],
         capture_output=True,
         text=True,
+        timeout=_remaining_task_seconds(deadline, phase="launcher preflight"),
     )
     _write_text(log_path, (result.stdout or "") + (result.stderr or ""))
     if result.returncode != 0:
@@ -346,6 +523,8 @@ def _verify_sandbox_task_environment(
     trace_dir: Path,
     workspace: Path,
     platform: str = "",
+    *,
+    deadline: float | None = None,
 ) -> None:
     """Fail early when a Python task would fall back outside its testbed env."""
 
@@ -359,6 +538,10 @@ def _verify_sandbox_task_environment(
         return
     docker = _require_executable("docker")
     log_path = trace_dir / "sandbox-runtime-preflight.log"
+    container_name = (
+        f"{_sandbox_container_prefix(workspace)}runtime-preflight-"
+        f"{os.getpid()}-{threading.get_ident()}"
+    )
     script = (
         "set -eu\n"
         "printf 'PATH=%s\\n' \"$PATH\"\n"
@@ -376,6 +559,8 @@ def _verify_sandbox_task_environment(
                 docker,
                 "run",
                 "--rm",
+                "--name",
+                container_name,
                 *_docker_platform_args(platform),
                 "--network",
                 "none",
@@ -396,6 +581,10 @@ def _verify_sandbox_task_environment(
             stdout=log,
             stderr=log,
             text=True,
+            timeout=_remaining_task_seconds(
+                deadline,
+                phase="sandbox runtime preflight",
+            ),
         )
     if result.returncode != 0:
         raise RuntimeError(
@@ -475,6 +664,7 @@ def _start_sidecar(
     config: RunnerConfig,
     workspace: Path,
     repo: str,
+    deadline: float | None = None,
 ) -> subprocess.Popen[str]:
     env = os.environ.copy()
     scheduler_src = str(config.repo_root / "services" / "scheduler" / "src")
@@ -528,7 +718,14 @@ def _start_sidecar(
         stdout.close()
         stderr.close()
     try:
-        _wait_ready(port)
+        if deadline is None:
+            _wait_ready(port)
+        else:
+            remaining = _remaining_task_seconds(deadline, phase="sidecar startup")
+            if remaining is not None and remaining < 60.0:
+                _wait_ready(port, timeout_seconds=remaining)
+            else:
+                _wait_ready(port)
     except BaseException:
         # Do not let an unreturned process keep mutating this task's KB while
         # the batch runner publishes it for the next task.
@@ -706,7 +903,12 @@ def _atomic_copy(source: Path, destination: Path) -> None:
             pass
 
 
-def _write_host_tool_resource_preflight(trace_dir: Path, config: RunnerConfig) -> None:
+def _write_host_tool_resource_preflight(
+    trace_dir: Path,
+    config: RunnerConfig,
+    *,
+    deadline: float | None = None,
+) -> None:
     scheduler_src = str(config.repo_root / "services" / "scheduler" / "src")
     env = os.environ.copy()
     existing_pythonpath = env.get("PYTHONPATH")
@@ -788,6 +990,7 @@ print(json.dumps(payload, indent=2))
         text=True,
         env=env,
         cwd=str(config.repo_root / "services" / "scheduler"),
+        timeout=_remaining_task_seconds(deadline, phase="host telemetry preflight"),
     )
     output = result.stdout
     if result.stdout.strip() and result.stderr.strip():
@@ -840,15 +1043,20 @@ def _configure_openclaw(
     sidecar_port: int,
     workspace: Path,
     config: RunnerConfig,
+    deadline: float | None = None,
 ) -> None:
     openclaw = _require_executable("openclaw")
     env = _openclaw_env(openclaw_home, sidecar_port, config, workspace)
     plugin_dir = config.repo_root / config.bundle.plugin_source
-    _ensure_plugin_built(trace_dir, plugin_dir)
+    if deadline is None:
+        _ensure_plugin_built(trace_dir, plugin_dir)
+    else:
+        _ensure_plugin_built(trace_dir, plugin_dir, deadline=deadline)
     plugin_install_dir = _stage_plugin_for_openclaw_if_needed(
         trace_dir=trace_dir,
         plugin_dir=plugin_dir,
     )
+    _remaining_task_seconds(deadline, phase="plugin staging")
     endpoint_host = f"http://127.0.0.1:{sidecar_port}"
     endpoint_sandbox = f"http://host.docker.internal:{sidecar_port}"
     sandbox_config = _openclaw_config(
@@ -860,7 +1068,7 @@ def _configure_openclaw(
 
     phase_log = trace_dir / "phase3.log"
     with phase_log.open("w", encoding="utf-8") as log:
-        _run_logged(
+        _run_logged_before_deadline(
             [
                 openclaw,
                 "onboard",
@@ -881,14 +1089,22 @@ def _configure_openclaw(
             env,
             log,
             "openclaw_onboard",
+            deadline,
         )
-        _run_logged(
+        _run_logged_before_deadline(
             [openclaw, "plugins", "install", "--link", str(plugin_install_dir)],
             env,
             log,
             "plugin_install",
+            deadline,
         )
-        _run_logged([openclaw, "plugins", "enable", "agent-scheduler"], env, log, "plugin_enable")
+        _run_logged_before_deadline(
+            [openclaw, "plugins", "enable", "agent-scheduler"],
+            env,
+            log,
+            "plugin_enable",
+            deadline,
+        )
         patch = subprocess.run(
             [openclaw, "config", "patch", "--stdin"],
             input=sandbox_config,
@@ -896,6 +1112,7 @@ def _configure_openclaw(
             stderr=log,
             text=True,
             env=env,
+            timeout=_remaining_task_seconds(deadline, phase="OpenClaw config patch"),
         )
         if patch.returncode != 0:
             raise RuntimeError(
@@ -912,7 +1129,9 @@ def _run_openclaw_agent(
     sidecar_port: int,
     task: TaskDef,
     config: RunnerConfig,
+    task_deadline: float | None = None,
 ) -> int:
+    _remaining_task_seconds(task_deadline, phase="agent startup")
     openclaw = _require_executable("openclaw")
     env = _openclaw_env(openclaw_home, sidecar_port, config, workspace)
     env.update(
@@ -947,26 +1166,32 @@ def _run_openclaw_agent(
         },
         daemon=True,
     )
+    try:
+        process = subprocess.Popen(
+            [
+                openclaw,
+                "agent",
+                "--local",
+                "--agent",
+                "main",
+                "--model",
+                config.llm.openclaw_model_ref,
+                "--message-file",
+                str(prompt_path),
+                *config.agent.extra_args,
+            ],
+            cwd=str(config.repo_root),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=(os.name == "posix"),
+        )
+    except BaseException:
+        stdout_file.close()
+        stderr_file.close()
+        raise
     discovery.start()
-    process = subprocess.Popen(
-        [
-            openclaw,
-            "agent",
-            "--local",
-            "--agent",
-            "main",
-            "--model",
-            config.llm.openclaw_model_ref,
-            "--message-file",
-            str(prompt_path),
-            *config.agent.extra_args,
-        ],
-        cwd=str(config.repo_root),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
 
     # ── Tee agent output to trace files + console ──────────────────
     _write_lock = threading.Lock()
@@ -1008,21 +1233,52 @@ def _run_openclaw_agent(
     tee_stderr.start()
 
     try:
-        return process.wait(
-            timeout=config.batch.task_timeout_seconds if config.batch.task_timeout_seconds > 0 else None
+        agent_deadline = (
+            time.monotonic() + config.batch.agent_timeout_seconds
+            if config.batch.agent_timeout_seconds > 0
+            else None
         )
+        effective_deadline = min(
+            value
+            for value in (task_deadline, agent_deadline)
+            if value is not None
+        ) if task_deadline is not None or agent_deadline is not None else None
+        timeout = (
+            max(0.001, effective_deadline - time.monotonic())
+            if effective_deadline is not None
+            else None
+        )
+        return process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
+        _kill_agent_process_and_confirm(process)
+        scope = (
+            "task"
+            if task_deadline is not None
+            and (agent_deadline is None or task_deadline <= agent_deadline)
+            else "agent"
+        )
+        configured_seconds = (
+            config.batch.task_timeout_seconds
+            if scope == "task"
+            else config.batch.agent_timeout_seconds
+        )
+        message = (
+            f"{scope} timed out after {configured_seconds}s"
+            if configured_seconds > 0
+            else f"{scope} timed out"
+        )
+        _write_timeout_record(
+            trace_dir,
+            scope=scope,
+            message=message,
+            configured_seconds=configured_seconds,
+        )
         return 124
     except KeyboardInterrupt:
-        # Kill the agent process immediately so tee threads can exit
-        try:
-            process.kill()
-            process.wait(timeout=5)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        return -1
+        # Ctrl-C is also fail-closed: do not publish a KB snapshot unless the
+        # agent process group has definitely stopped.
+        _kill_agent_process_and_confirm(process)
+        raise
     finally:
         # All cleanup steps are protected from secondary interrupts so
         # Ctrl-C never leaves the process in an unreachable zombie state.
@@ -1151,7 +1407,13 @@ def _docker_platform_args(platform: str) -> list[str]:
     return ["--platform", platform] if platform else []
 
 
-def _cleanup_openclaw_sandbox_containers(trace_dir: Path, workspace: Path) -> None:
+def _cleanup_openclaw_sandbox_containers(
+    trace_dir: Path,
+    workspace: Path,
+    *,
+    timeout_seconds: float = _TASK_CLEANUP_TIMEOUT_SECONDS,
+    strict: bool = False,
+) -> None:
     """Remove stale OpenClaw sandbox containers for this task workspace.
 
     OpenClaw scopes sandbox containers by prefix.  Reusing a stale container can
@@ -1162,16 +1424,30 @@ def _cleanup_openclaw_sandbox_containers(trace_dir: Path, workspace: Path) -> No
     docker = _require_executable("docker")
     prefix = _sandbox_container_prefix(workspace)
     log_path = trace_dir / "sandbox-container-cleanup.log"
-    listed = subprocess.run(
-        [docker, "ps", "-aq", "--filter", f"name={prefix}"],
-        capture_output=True,
-        text=True,
-    )
+    cleanup_deadline = time.monotonic() + max(0.001, timeout_seconds)
+    try:
+        listed = subprocess.run(
+            [docker, "ps", "-aq", "--filter", f"name={prefix}"],
+            capture_output=True,
+            text=True,
+            timeout=max(0.001, cleanup_deadline - time.monotonic()),
+        )
+    except subprocess.TimeoutExpired as exc:
+        _write_text(log_path, f"docker_ps_timed_out prefix={prefix}\n")
+        if strict:
+            raise ContainerCleanupError(
+                f"timed out listing sandbox containers for prefix {prefix}"
+            ) from exc
+        return
     if listed.returncode != 0:
         _write_text(
             log_path,
             f"docker_ps_failed exit={listed.returncode}\n{listed.stdout}{listed.stderr}",
         )
+        if strict:
+            raise ContainerCleanupError(
+                f"failed to list sandbox containers for prefix {prefix}"
+            )
         return
 
     container_ids = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
@@ -1179,19 +1455,42 @@ def _cleanup_openclaw_sandbox_containers(trace_dir: Path, workspace: Path) -> No
         _write_text(log_path, f"no stale containers for prefix {prefix}\n")
         return
 
-    removed = subprocess.run(
-        [docker, "rm", "-f", *container_ids],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        removed = subprocess.run(
+            [docker, "rm", "-f", *container_ids],
+            capture_output=True,
+            text=True,
+            timeout=max(0.001, cleanup_deadline - time.monotonic()),
+        )
+    except subprocess.TimeoutExpired as exc:
+        _write_text(
+            log_path,
+            f"docker_rm_timed_out prefix={prefix}\n"
+            f"containers={json.dumps(container_ids)}\n",
+        )
+        if strict:
+            raise ContainerCleanupError(
+                f"timed out removing sandbox containers for prefix {prefix}"
+            ) from exc
+        return
     _write_text(
         log_path,
         f"prefix={prefix}\ncontainers={json.dumps(container_ids)}\n"
         f"exit={removed.returncode}\n{removed.stdout}{removed.stderr}",
     )
+    if strict and removed.returncode != 0:
+        raise ContainerCleanupError(
+            f"failed to remove sandbox containers for prefix {prefix}: "
+            f"exit={removed.returncode}"
+        )
 
 
-def _ensure_plugin_built(trace_dir: Path, plugin_dir: Path) -> None:
+def _ensure_plugin_built(
+    trace_dir: Path,
+    plugin_dir: Path,
+    *,
+    deadline: float | None = None,
+) -> None:
     package_json = plugin_dir / "package.json"
     if not package_json.exists():
         raise FileNotFoundError(f"plugin package.json not found: {package_json}")
@@ -1206,6 +1505,7 @@ def _ensure_plugin_built(trace_dir: Path, plugin_dir: Path) -> None:
             stdout=log,
             stderr=log,
             text=True,
+            timeout=_remaining_task_seconds(deadline, phase="plugin build"),
         )
     if result.returncode != 0:
         raise RuntimeError(
@@ -1334,6 +1634,7 @@ def _openclaw_sandbox_container_ids(openclaw: str, env: dict[str, str]) -> list[
         capture_output=True,
         text=True,
         env=env,
+        timeout=_DISCOVERY_COMMAND_TIMEOUT_SECONDS,
     )
     if result.returncode != 0 or not result.stdout.strip():
         return []
@@ -1356,6 +1657,7 @@ def _docker_sandbox_container_ids(docker: str, prefix: str) -> list[str]:
         [docker, "ps", "-q", "--filter", f"name={prefix}"],
         capture_output=True,
         text=True,
+        timeout=_DISCOVERY_COMMAND_TIMEOUT_SECONDS,
     )
     if result.returncode != 0:
         return []
@@ -1371,6 +1673,7 @@ def _docker_container_scope(docker: str, container_id: str) -> dict[str, Any] | 
         [docker, "inspect", "-f", "{{.State.Pid}}", container_id],
         capture_output=True,
         text=True,
+        timeout=_DISCOVERY_COMMAND_TIMEOUT_SECONDS,
     )
     if result.returncode != 0:
         return None
@@ -1525,12 +1828,17 @@ _RUNTIME_ARTIFACTS = (
 )
 
 
-def _cleanup_runtime_artifacts(workspace: Path) -> None:
+def _cleanup_runtime_artifacts(
+    workspace: Path,
+    *,
+    deadline: float | None = None,
+) -> None:
     for name in _RUNTIME_ARTIFACTS:
+        _remaining_task_seconds(deadline, phase="runtime artifact cleanup")
         path = workspace / name
         if not path.exists():
             continue
-        if _git_tracks_path(workspace, name):
+        if _git_tracks_path(workspace, name, deadline=deadline):
             continue
         if path.is_dir():
             shutil.rmtree(path, onerror=_chmod_and_retry)
@@ -1538,25 +1846,39 @@ def _cleanup_runtime_artifacts(workspace: Path) -> None:
             path.unlink()
 
 
-def _git_tracks_path(workspace: Path, relative_path: str) -> bool:
+def _git_tracks_path(
+    workspace: Path,
+    relative_path: str,
+    *,
+    deadline: float | None = None,
+) -> bool:
     result = subprocess.run(
         ["git", "-C", str(workspace), "ls-files", "--error-unmatch", "--", relative_path],
         capture_output=True,
         text=True,
+        timeout=_remaining_task_seconds(deadline, phase="tracked artifact check"),
     )
     return result.returncode == 0
 
 
-def _collect_patch(trace_dir: Path, workspace: Path, task: TaskDef) -> None:
+def _collect_patch(
+    trace_dir: Path,
+    workspace: Path,
+    task: TaskDef,
+    *,
+    deadline: float | None = None,
+) -> None:
     status = subprocess.run(
         ["git", "-C", str(workspace), "status", "--short"],
         capture_output=True,
         text=True,
+        timeout=_remaining_task_seconds(deadline, phase="git status collection"),
     )
     diff_stat = subprocess.run(
         ["git", "-C", str(workspace), "diff", "--stat"],
         capture_output=True,
         text=True,
+        timeout=_remaining_task_seconds(deadline, phase="git diff stat collection"),
     )
     _write_text(
         trace_dir / "repo_status.txt",
@@ -1571,7 +1893,12 @@ def _collect_patch(trace_dir: Path, workspace: Path, task: TaskDef) -> None:
     if task.base_commit:
         diff_cmd.append(task.base_commit)
     diff_cmd.append("--")
-    patch = subprocess.run(diff_cmd, capture_output=True, text=True)
+    patch = subprocess.run(
+        diff_cmd,
+        capture_output=True,
+        text=True,
+        timeout=_remaining_task_seconds(deadline, phase="model patch collection"),
+    )
     _write_text(trace_dir / "model.patch", patch.stdout)
 
 
@@ -1597,12 +1924,40 @@ def _write_result_summary(
     _write_text(trace_dir / "result_summary.json", json.dumps(summary, indent=2) + "\n")
 
 
-def _wait_ready(port: int) -> None:
-    deadline = time.monotonic() + 60
+def _write_timeout_record(
+    trace_dir: Path,
+    *,
+    scope: str,
+    message: str,
+    configured_seconds: int,
+) -> None:
+    _write_text(
+        trace_dir / "task-timeout.json",
+        json.dumps(
+            {
+                "scope": scope,
+                "message": message,
+                "configured_seconds": configured_seconds,
+            },
+            indent=2,
+        )
+        + "\n",
+    )
+
+
+def _wait_ready(port: int, *, timeout_seconds: float | None = None) -> None:
+    task_budget_limited = timeout_seconds is not None
+    deadline = time.monotonic() + (
+        max(0.001, timeout_seconds) if timeout_seconds is not None else 60.0
+    )
     url = f"http://127.0.0.1:{port}/health/ready"
     while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
         try:
-            with urllib.request.urlopen(url, timeout=1) as response:
+            with urllib.request.urlopen(
+                url,
+                timeout=max(0.001, min(1.0, remaining)),
+            ) as response:
                 payload = json.loads(response.read().decode("utf-8"))
                 if (
                     response.status == 200
@@ -1613,7 +1968,14 @@ def _wait_ready(port: int) -> None:
                 ):
                     return
         except Exception:
-            time.sleep(0.5)
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(0.5, remaining))
+    if task_budget_limited:
+        raise TaskDeadlineExceeded(
+            "task timed out during sidecar startup; whole-task wall-clock "
+            "budget exhausted"
+        )
     raise RuntimeError(f"sidecar_not_ready port={port}")
 
 
@@ -1628,6 +1990,7 @@ def _reset_directory(
     *,
     docker_cleanup_image: str | None = None,
     docker_platform: str = "",
+    deadline: float | None = None,
 ) -> None:
     if path.exists():
         try:
@@ -1635,7 +1998,13 @@ def _reset_directory(
         except PermissionError:
             if docker_cleanup_image is None:
                 raise
-            _reset_directory_with_docker(path, docker_cleanup_image, docker_platform)
+            _reset_directory_with_docker(
+                path,
+                docker_cleanup_image,
+                docker_platform,
+                deadline=deadline,
+            )
+    _remaining_task_seconds(deadline, phase="workspace reset")
     path.mkdir(parents=True, exist_ok=True)
 
 
@@ -1658,7 +2027,13 @@ def _chmod_and_retry(function: Any, path: str, _exc_info: Any) -> None:
         raise
 
 
-def _reset_directory_with_docker(path: Path, image: str, platform: str = "") -> None:
+def _reset_directory_with_docker(
+    path: Path,
+    image: str,
+    platform: str = "",
+    *,
+    deadline: float | None = None,
+) -> None:
     docker = _require_executable("docker")
     target = path.resolve()
     parent = target.parent
@@ -1703,6 +2078,7 @@ def _reset_directory_with_docker(path: Path, image: str, platform: str = "") -> 
         ],
         capture_output=True,
         text=True,
+        timeout=_remaining_task_seconds(deadline, phase="Docker workspace reset"),
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -1731,17 +2107,60 @@ def _require_executable(name: str) -> str:
     return found
 
 
-def _run_checked(cmd: list[str], label: str) -> None:
-    result = subprocess.run(cmd, capture_output=True, text=True)
+def _run_checked(
+    cmd: list[str],
+    label: str,
+    *,
+    timeout: float | None = None,
+) -> None:
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
     if result.returncode != 0:
         raise RuntimeError(
             f"{label}_failed exit={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
         )
 
 
-def _run_logged(cmd: list[str], env: dict[str, str], log: Any, label: str) -> None:
+def _run_logged_before_deadline(
+    cmd: list[str],
+    env: dict[str, str],
+    log: Any,
+    label: str,
+    deadline: float | None,
+) -> None:
+    if deadline is None:
+        _run_logged(cmd, env, log, label)
+        return
+    _run_logged(
+        cmd,
+        env,
+        log,
+        label,
+        timeout=_remaining_task_seconds(deadline, phase=label),
+    )
+
+
+def _run_logged(
+    cmd: list[str],
+    env: dict[str, str],
+    log: Any,
+    label: str,
+    *,
+    timeout: float | None = None,
+) -> None:
     log.write(f"=== {label} ===\n")
-    result = subprocess.run(cmd, stdout=log, stderr=log, text=True, env=env)
+    result = subprocess.run(
+        cmd,
+        stdout=log,
+        stderr=log,
+        text=True,
+        env=env,
+        timeout=timeout,
+    )
     log.write(f"\nexit={result.returncode}\n\n")
     if result.returncode != 0:
         raise RuntimeError(f"{label}_failed exit={result.returncode}")
@@ -1753,6 +2172,27 @@ def _join_thread_safe(thread: threading.Thread, *, timeout: float | None = None)
         thread.join(timeout=timeout)
     except KeyboardInterrupt:
         pass
+
+
+def _kill_agent_process_and_confirm(process: subprocess.Popen[str]) -> None:
+    try:
+        if os.name == "posix" and isinstance(process, _SUBPROCESS_POPEN_TYPE):
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+    except ProcessLookupError:
+        pass
+    except OSError:
+        try:
+            process.kill()
+        except OSError:
+            pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired as exc:
+        raise ContainerCleanupError(
+            "OpenClaw agent process group did not exit within 5s after kill"
+        ) from exc
 
 
 def _stop_process(process: subprocess.Popen[str]) -> None:

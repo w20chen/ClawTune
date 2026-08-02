@@ -118,6 +118,7 @@ class DockerConfig:
 @dataclass
 class BatchConfig:
     task_timeout_seconds: int = 1800
+    agent_timeout_seconds: int = 0
     retry_failed: int = 0
     continue_on_error: bool = True
 
@@ -125,6 +126,7 @@ class BatchConfig:
     def from_dict(cls, d: dict[str, Any]) -> "BatchConfig":
         return cls(
             task_timeout_seconds=int(d.get("task_timeout_seconds", 1800)),
+            agent_timeout_seconds=int(d.get("agent_timeout_seconds", 0)),
             retry_failed=int(d.get("retry_failed", 0)),
             continue_on_error=bool(d.get("continue_on_error", True)),
         )

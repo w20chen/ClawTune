@@ -74,8 +74,13 @@ docker:
 
 # ── Batch Execution ───────────────────────────────────────────────
 batch:
-  # Per-task timeout in seconds.  0 = no timeout.
+  # Whole-task wall-clock budget in seconds, including repository export,
+  # preflight, agent execution, and normal result collection. 0 = no limit.
   task_timeout_seconds: 1800
+
+  # Optional additional limit for only the OpenClaw agent phase. The smaller
+  # of this and the remaining whole-task budget wins. 0 = no separate limit.
+  agent_timeout_seconds: 0
 
   # Retry failed tasks up to this many times.
   retry_failed: 0

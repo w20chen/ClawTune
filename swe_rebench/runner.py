@@ -1520,6 +1520,7 @@ def _task_artifacts(trace_dir: Path | None) -> dict[str, Any]:
         "repo_status.txt",
         "model.patch",
         "result_summary.json",
+        "task-timeout.json",
         "cgroup_probe.json",
         "tool_resource_preflight.json",
         "tool_resource_preflight_host.json",
@@ -1541,7 +1542,7 @@ def _task_artifacts(trace_dir: Path | None) -> dict[str, Any]:
         }
         if name == "model.patch":
             item["has_diff"] = path.stat().st_size > 0
-        if name == "result_summary.json":
+        if name in {"result_summary.json", "task-timeout.json"}:
             try:
                 item["summary"] = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
@@ -1637,16 +1638,20 @@ def run_batch(
     _log(f"Shared tool-resource KB: {shared_kb_dir}")
     start_wall = time.monotonic()
 
-    # Pre-pull images (best-effort)
-    _pre_pull_images(
-        client,
-        tasks,
-        config.docker.pull_policy,
-        config.docker.platform,
-        prefer_local_cache=(
-            normalize_runtime_mode(config.runtime.mode) == "container-openclaw"
-        ),
-    )
+    # Container mode owns one long-running task container and benefits from a
+    # batch pre-pull. Host-sandbox mode exports each repository from its task
+    # image; pull that image inside the per-task deadline instead of hiding a
+    # potentially long registry wait before task accounting starts.
+    if normalize_runtime_mode(config.runtime.mode) == "container-openclaw":
+        _pre_pull_images(
+            client,
+            tasks,
+            config.docker.pull_policy,
+            config.docker.platform,
+            prefer_local_cache=True,
+        )
+    else:
+        _log("Task images will be checked/pulled inside each task timeout")
 
     completed_count = 0
     failed_count = 0
@@ -2114,15 +2119,28 @@ def _apply_runtime_overrides(
 def _apply_batch_overrides(
     config: RunnerConfig,
     *,
-    task_timeout_seconds: int | None,
+    task_timeout_seconds: int | None = None,
+    agent_timeout_seconds: int | None = None,
 ) -> None:
     """Apply command-line batch limits after loading the YAML configuration."""
 
-    if task_timeout_seconds is None:
-        return
-    if task_timeout_seconds < 0:
-        raise ValueError("--task-timeout-seconds must be >= 0")
-    config.batch.task_timeout_seconds = task_timeout_seconds
+    for option, value in (
+        ("--task-timeout-seconds", task_timeout_seconds),
+        ("--agent-timeout-seconds", agent_timeout_seconds),
+    ):
+        if value is not None and value < 0:
+            raise ValueError(f"{option} must be >= 0")
+    if task_timeout_seconds is not None:
+        config.batch.task_timeout_seconds = task_timeout_seconds
+    if agent_timeout_seconds is not None:
+        config.batch.agent_timeout_seconds = agent_timeout_seconds
+
+
+def _print_report_json(report: BatchReport, *, enabled: bool) -> None:
+    """Write the full report to stdout only for an explicit machine-readable run."""
+
+    if enabled:
+        print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
 
 
 def main() -> None:
@@ -2178,6 +2196,16 @@ def main() -> None:
             "batch.task_timeout_seconds (0 disables the limit)"
         ),
     )
+    run_p.add_argument(
+        "--agent-timeout-seconds",
+        type=int,
+        default=None,
+        help=(
+            "Limit only the OpenClaw agent phase; the effective agent limit "
+            "is the smaller of this value and the remaining task budget "
+            "(0 disables the separate agent limit)"
+        ),
+    )
     run_p.add_argument("--skip", type=int, default=0,
                        help="Skip the first N selected tasks before --sample")
     run_p.add_argument("--instance-ids", default=None,
@@ -2205,11 +2233,23 @@ def main() -> None:
                        help="Export traces to flat directory after run")
     run_p.add_argument("--dry-run", action="store_true",
                        help="Print tasks without running containers")
+    run_p.add_argument(
+        "--json",
+        action="store_true",
+        dest="print_report_json",
+        help="Print the complete report JSON to stdout (it is always saved to report_path)",
+    )
 
     # ── collect ──
     col = sub.add_parser("collect", help="Collect and export traces from previous runs")
     add_config_arg(col)
     col.add_argument("--export-dir", default=None, help="Override flat export directory")
+    col.add_argument(
+        "--json",
+        action="store_true",
+        dest="print_report_json",
+        help="Print the complete report JSON to stdout (it is always saved to report_path)",
+    )
 
     # ── cleanup ──
     cln = sub.add_parser("cleanup", help="(No-op: containers are auto-removed)")
@@ -2242,6 +2282,7 @@ def main() -> None:
             _apply_batch_overrides(
                 config,
                 task_timeout_seconds=args.task_timeout_seconds,
+                agent_timeout_seconds=args.agent_timeout_seconds,
             )
         except ValueError as exc:
             parser.error(str(exc))
@@ -2286,6 +2327,12 @@ def main() -> None:
             else "disabled"
         )
         _log(f"Per-task timeout: {timeout_label}")
+        agent_timeout_label = (
+            f"{config.batch.agent_timeout_seconds}s"
+            if config.batch.agent_timeout_seconds > 0
+            else "disabled"
+        )
+        _log(f"Agent-only timeout: {agent_timeout_label}")
 
         if args.dry_run:
             for i, t in enumerate(tasks):
@@ -2301,8 +2348,7 @@ def main() -> None:
 
         report = run_batch(config, tasks, bundle_dir, export_after=args.export)
 
-        # Print summary
-        print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
+        _print_report_json(report, enabled=args.print_report_json)
         if report.failed > 0:
             sys.exit(1)
 
@@ -2310,7 +2356,7 @@ def main() -> None:
         if args.export_dir:
             config.output.flat_export_dir = _resolve_path(args.export_dir, repo_root)
         report = collect_traces(config)
-        print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
+        _print_report_json(report, enabled=args.print_report_json)
 
     elif args.command == "cleanup":
         _log("Containers are auto-removed (--rm). Nothing to clean up.")

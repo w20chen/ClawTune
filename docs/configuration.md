@@ -43,7 +43,38 @@ llm:
 
 batch:
   task_timeout_seconds: 1800
+  agent_timeout_seconds: 0
 ```
+
+`task_timeout_seconds` is the whole-task wall-clock budget, beginning before
+repository export and preflight. `agent_timeout_seconds` optionally adds a
+shorter agent-only limit; `0` disables that separate limit. After either limit
+fires, process and sandbox termination use a small independent cleanup grace
+instead of reusing an already exhausted task budget.
+
+The runner always writes the full batch report to `output.report_path`. It
+prints only compact progress by default; pass `--json` to also emit the full
+report on stdout.
+
+### Benchmark knowledge bases
+
+Each benchmark task uses two JSON knowledge bases under `tool-resource/`:
+
+- `runtime-tool-resource-kb.json` stores whole tool/command observations used
+  to predict latency, CPU, and memory.
+- `clause-resource-kb.json` stores shell-clause observations used for
+  clause-level resource prediction.
+
+`kb-batches/<batch-id>/` contains the serial batch's shared, evolving snapshot.
+Each `traces/<task-id>/tool-resource/` directory contains that task's working
+snapshot. After a task stops cleanly, its snapshot is published to the batch
+copy for the next task.
+
+Both files contain a shared `public` namespace and repo-specific knowledge
+under `repo`, such as `repo["12rambau/sepal_ui"]`. A repo KB is therefore a
+namespace inside these files, not a separate per-repo file. Files named
+`call_*.json` are per-call telemetry evidence used to update the KBs; they are
+not additional knowledge bases.
 
 Keep the host-sandbox runtime, eBPF requirement, privileged cgroup access, and
 bundle paths at their defaults. The unified benchmark command defaults to

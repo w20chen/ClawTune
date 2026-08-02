@@ -49,20 +49,31 @@ sibling `agent-test-bench` checkout, and uses the bundled four-task file only
 as a smoke-test fallback. A request larger than the selected source fails
 before execution with an actionable full-dataset message.
 
-The runner now exposes the existing per-task hard deadline as
-`--task-timeout-seconds N` (alias `--timeout-seconds N`), so a large serial
-batch can bound each agent run without editing YAML. The old `agent.max_turns`
-setting was inert: the supported OpenClaw `agent` CLI does not expose a
-maximum-turn option. That misleading setting has been removed; timeout is the
-enforced bound.
+The runner exposes a whole-task wall-clock budget as
+`--task-timeout-seconds N` (alias `--timeout-seconds N`). The budget starts at
+the host task entry, covers setup and normal result collection, and passes only
+its remaining time into the agent phase. `--agent-timeout-seconds N` optionally
+adds a shorter agent-only bound. Timeout exits use status 124 and agent,
+sidecar, and workspace-scoped sandbox cleanup use an independent bounded grace
+after the deadline. The old `agent.max_turns` setting was inert: the supported
+OpenClaw `agent` CLI does not expose a maximum-turn option.
+
+Full batch JSON remains written to `report.json`, but it is no longer dumped to
+the terminal by default. `--json` explicitly enables complete JSON on stdout;
+otherwise stderr contains only progress, failure details, and the report path.
 
 Validation completed in the Windows development workspace:
 
-- `python -m pytest tests -q --basetemp .pytest-tmp-root-shared-kb-final-2`:
-  144 passed, 2 skipped.
+- `python -m pytest tests -q --basetemp .pytest-tmp-full-root`:
+  152 passed, 2 skipped.
 - `python -m pytest services/scheduler/tests -q --basetemp
-  .pytest-tmp-root-shared-kb-scheduler-final`: 166 passed, 2 skipped.
-- Ruff and `py_compile` pass on every changed Python file.
+  .pytest-tmp-scheduler-root`: 170 passed, 2 skipped.
+- `python -m pytest tests/test_swe_rebench_selection.py -q --basetemp
+  .pytest-tmp-selection-root-2`: 114 passed, 2 skipped.
+- `py_compile` and `git diff --check` pass. Scheduler predictor changed-file
+  Ruff passed; the final combined Ruff invocation could not start the
+  Microsoft Store `python.exe` alias because Windows reported "the specified
+  logon session does not exist", so rerun it in a normal Python environment.
 - `python3 scripts/clawtune.py benchmark --sample 32` was not run in this
   Windows workspace because the maintained benchmark requires a Linux host,
   Docker, cgroup v2, and BCC/eBPF. Run it on the target Linux host with the

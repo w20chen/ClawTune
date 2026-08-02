@@ -4,6 +4,7 @@ import io
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,7 @@ from swe_rebench.host_sandbox import (
     _prepare_batch_tool_resource_kb,
     _publish_tool_resource_kb,
     _run_openclaw_agent,
+    run_host_sandbox_task,
     _reset_directory,
     _sandbox_container_prefix,
     _seed_runtime_tool_resource_kb,
@@ -64,11 +66,13 @@ from swe_rebench.task_source import (
     tasks_from_records,
 )
 from swe_rebench.runner import (
+    BatchReport,
     _apply_batch_overrides,
     _apply_runtime_overrides,
     _container_image_ready,
     _default_agent_test_bench_tasks,
     _inspect_trace,
+    _print_report_json,
     _resource_summary,
     _run_one,
     _require_llm_api_key,
@@ -863,12 +867,45 @@ def test_cli_task_timeout_override(tmp_path: Path) -> None:
     _apply_batch_overrides(config, task_timeout_seconds=0)
     assert config.batch.task_timeout_seconds == 0
 
+    _apply_batch_overrides(config, agent_timeout_seconds=90)
+    assert config.batch.agent_timeout_seconds == 90
+
+    _apply_batch_overrides(config, agent_timeout_seconds=0)
+    assert config.batch.agent_timeout_seconds == 0
+
 
 def test_cli_task_timeout_override_rejects_negative_value(tmp_path: Path) -> None:
     config = RunnerConfig.from_yaml("swe_rebench/config.yaml", repo_root=tmp_path)
 
     with pytest.raises(ValueError, match="must be >= 0"):
         _apply_batch_overrides(config, task_timeout_seconds=-1)
+
+    with pytest.raises(ValueError, match="agent-timeout-seconds must be >= 0"):
+        _apply_batch_overrides(config, agent_timeout_seconds=-1)
+
+
+def test_runner_config_reads_separate_task_and_agent_timeouts(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "batch:\n  task_timeout_seconds: 600\n  agent_timeout_seconds: 420\n",
+        encoding="utf-8",
+    )
+
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+
+    assert config.batch.task_timeout_seconds == 600
+    assert config.batch.agent_timeout_seconds == 420
+
+
+def test_full_report_json_is_opt_in(capsys) -> None:
+    report = BatchReport(config_path="config.yaml", total_tasks=1, completed=1)
+
+    _print_report_json(report, enabled=False)
+    assert capsys.readouterr().out == ""
+
+    _print_report_json(report, enabled=True)
+    output = capsys.readouterr().out
+    assert json.loads(output)["completed"] == 1
 
 
 def test_runner_config_rejects_unknown_runtime_mode(tmp_path: Path) -> None:
@@ -1052,6 +1089,64 @@ def test_run_one_does_not_publish_when_task_writer_exit_is_unconfirmed(
         "runtime-tool-resource-kb.json": "last-good",
         "clause-resource-kb.json": "last-good",
     }
+
+
+def test_host_sandbox_propagates_unconfirmed_agent_cleanup(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "runtime:\n  mode: host-openclaw-sandbox\n"
+        "batch:\n  task_timeout_seconds: 0\n"
+        "output:\n  trace_root: traces\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    task = TaskDef(instance_id="owner__repo-1", image="image:latest")
+    trace_dir = tmp_path / "traces" / task.instance_id
+
+    no_op_names = (
+        "_write_host_tool_resource_preflight",
+        "_export_testbed_from_image",
+        "_make_sandbox_workspace_writable",
+        "_install_sandbox_launcher",
+        "_write_task_inputs",
+        "_ensure_openclaw_sandbox_image",
+        "_verify_sandbox_launcher",
+        "_verify_sandbox_task_environment",
+        "_seed_runtime_tool_resource_kb",
+        "_configure_openclaw",
+        "_cleanup_openclaw_sandbox_containers",
+    )
+    for name in no_op_names:
+        monkeypatch.setattr(
+            f"swe_rebench.host_sandbox.{name}",
+            lambda *_args, **_kwargs: None,
+        )
+
+    class StoppedSidecar:
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._start_sidecar",
+        lambda **_kwargs: StoppedSidecar(),
+    )
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._run_openclaw_agent",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            ContainerCleanupError("agent exit unconfirmed")
+        ),
+    )
+
+    with pytest.raises(ContainerCleanupError, match="agent exit unconfirmed"):
+        run_host_sandbox_task(
+            task=task,
+            trace_dir=trace_dir,
+            config=config,
+            bundle_dir=tmp_path / "bundle",
+        )
 
 
 def test_run_one_propagates_container_stage2_fallback_mode(monkeypatch, tmp_path: Path) -> None:
@@ -1612,7 +1707,13 @@ def test_run_batch_aborts_before_next_task_on_kb_sync_failure(
     import swe_rebench.runner as runner
 
     monkeypatch.setattr(runner, "get_docker_client", lambda _config: None)
-    monkeypatch.setattr(runner, "_pre_pull_images", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_pre_pull_images",
+        lambda *_args, **_kwargs: pytest.fail(
+            "host-sandbox image pulls must remain inside each task deadline"
+        ),
+    )
     monkeypatch.setattr(
         runner,
         "_prepare_batch_tool_resource_kb",
@@ -1671,7 +1772,10 @@ def test_host_sandbox_verifies_mounted_launcher_before_agent(
     _verify_sandbox_launcher(tmp_path, workspace, "linux/amd64")
 
     command = calls[0][0]
-    assert command[:5] == ["/usr/bin/docker", "run", "--rm", "--platform", "linux/amd64"]
+    assert command[:3] == ["/usr/bin/docker", "run", "--rm"]
+    assert command[3] == "--name"
+    assert command[4].startswith(_sandbox_container_prefix(workspace))
+    assert command[5:7] == ["--platform", "linux/amd64"]
     assert command[command.index("--network") + 1] == "none"
     assert command[command.index("--env") + 1] == "CLAW_LAUNCH_MODE=fork-exec"
     assert not any(part.startswith("PATH=") for part in command)
@@ -1738,13 +1842,10 @@ def test_host_sandbox_verifies_python_task_environment(
     _verify_sandbox_task_environment(tmp_path, workspace, "linux/amd64")
 
     command = calls[0][0]
-    assert command[:5] == [
-        "/usr/bin/docker",
-        "run",
-        "--rm",
-        "--platform",
-        "linux/amd64",
-    ]
+    assert command[:3] == ["/usr/bin/docker", "run", "--rm"]
+    assert command[3] == "--name"
+    assert command[4].startswith(_sandbox_container_prefix(workspace))
+    assert command[5:7] == ["--platform", "linux/amd64"]
     assert any(
         part.startswith(
             "PATH=/workspace/.claw/bin:/opt/miniconda3/envs/testbed/bin:"
@@ -1939,6 +2040,114 @@ def test_host_sandbox_agent_forces_sandbox_exec_workdir(monkeypatch, tmp_path: P
     assert env["CLAW_EXEC_WORKDIR"] == "/workspace"
     assert env["CLAW_SANDBOX_HOST_WORKSPACE"] == str(workspace)
     assert env["CLAW_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
+
+
+@pytest.mark.parametrize(
+    ("task_budget_seconds", "agent_budget_seconds", "expected_scope"),
+    [
+        (None, 30, "agent"),
+        (0.25, 30, "task"),
+    ],
+)
+def test_host_sandbox_agent_uses_smallest_timeout_and_kills_process(
+    monkeypatch,
+    tmp_path: Path,
+    task_budget_seconds: float | None,
+    agent_budget_seconds: int,
+    expected_scope: str,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("", encoding="utf-8")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    config.batch.agent_timeout_seconds = agent_budget_seconds
+    trace_dir = tmp_path / "trace"
+    trace_dir.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task = TaskDef(instance_id="task-1", image="image:latest", problem_statement="fix")
+    waits: list[float | None] = []
+
+    class FakeProcess:
+        pid = 123
+        stdout = io.StringIO("")
+        stderr = io.StringIO("")
+        killed = False
+
+        def wait(self, timeout=None):
+            waits.append(timeout)
+            if len(waits) == 1:
+                raise subprocess.TimeoutExpired("openclaw", timeout)
+            return 0
+
+        def kill(self):
+            self.killed = True
+
+    process = FakeProcess()
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._require_executable",
+        lambda _name: "/usr/bin/openclaw",
+    )
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox.subprocess.Popen",
+        lambda *_args, **_kwargs: process,
+    )
+    task_deadline = (
+        time.monotonic() + task_budget_seconds
+        if task_budget_seconds is not None
+        else None
+    )
+
+    exit_code = _run_openclaw_agent(
+        trace_dir=trace_dir,
+        openclaw_home=tmp_path / "home",
+        workspace=workspace,
+        sidecar_port=8765,
+        task=task,
+        config=config,
+        task_deadline=task_deadline,
+    )
+
+    assert exit_code == 124
+    assert process.killed is True
+    assert waits[0] is not None
+    if task_budget_seconds is not None:
+        assert 0 < float(waits[0]) <= task_budget_seconds
+    else:
+        assert 0 < float(waits[0]) <= agent_budget_seconds
+    timeout_record = json.loads(
+        (trace_dir / "task-timeout.json").read_text(encoding="utf-8")
+    )
+    assert timeout_record["scope"] == expected_scope
+
+
+def test_host_sandbox_cleanup_timeout_is_bounded_and_strict(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    trace_dir = tmp_path / "trace"
+    trace_dir.mkdir()
+    workspace = tmp_path / "workspace"
+
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._require_executable",
+        lambda _name: "/usr/bin/docker",
+    )
+    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+
+    with pytest.raises(ContainerCleanupError, match="timed out listing"):
+        _cleanup_openclaw_sandbox_containers(
+            trace_dir,
+            workspace,
+            timeout_seconds=0.01,
+            strict=True,
+        )
+
+    assert "docker_ps_timed_out" in (
+        trace_dir / "sandbox-container-cleanup.log"
+    ).read_text(encoding="utf-8")
 
 
 def test_host_sandbox_tags_sandbox_image_from_task_image(monkeypatch, tmp_path: Path) -> None:

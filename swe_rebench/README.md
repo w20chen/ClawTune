@@ -84,9 +84,23 @@ python3 scripts/clawtune.py benchmark --sample 32 --task-timeout-seconds 600
 ```
 
 This is a hard wall-clock limit for one task, including all OpenClaw turns and
-tool calls. A timed-out task is marked failed and its processes and sandbox are
-cleaned up. OpenClaw's supported `agent` CLI exposes a run timeout, but not a
-maximum-turn option, so this benchmark uses the reliable time limit.
+tool calls, repository export, preflight, and normal result collection. The
+remaining budget, rather than the original value, is passed to the agent after
+setup. A timed-out task exits with status 124. Agent and sandbox termination
+then use a separate bounded cleanup grace, so safe cleanup is still attempted
+after the task deadline has expired.
+
+To impose an additional shorter limit on only the OpenClaw phase:
+
+```bash
+python3 scripts/clawtune.py benchmark --sample 32 \
+  --task-timeout-seconds 600 --agent-timeout-seconds 420
+```
+
+The effective agent limit is the smaller of the agent limit and the remaining
+whole-task budget. `0` disables the corresponding limit. OpenClaw's supported
+`agent` CLI does not expose a maximum-turn option, so the runner enforces time
+budgets at the process boundary.
 
 With an explicit task source:
 
@@ -182,6 +196,13 @@ python tools/inspect_trace.py \
 
 The report separates agent/provider failures from telemetry failures so an
 empty model response is not incorrectly reported as a kernel collector bug.
+The complete report is always saved to `report.json`; normal terminal output is
+only the compact progress summary. Pass `--json` when a caller explicitly
+wants the complete report JSON on stdout:
+
+```bash
+python3 scripts/clawtune.py benchmark --sample 1 --json
+```
 
 ## Kunpeng notes
 

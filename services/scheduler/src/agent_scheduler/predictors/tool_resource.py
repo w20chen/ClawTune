@@ -39,6 +39,14 @@ from tool_resource.sdk import (
 )
 
 
+_SHARED_RESOURCE_ATTRIBUTION_SOURCES = frozenset(
+    {"shared-runtime-process", "shared-sandbox-container"}
+)
+_SHARED_RESOURCE_SCOPE_SOURCES = frozenset(
+    {"openclaw-runtime", "openclaw-sandbox"}
+)
+
+
 @dataclass(frozen=True)
 class ToolResourceLoadReport:
     stage2_traces_seen: int
@@ -694,6 +702,7 @@ def observation_from_completion(
     ts_end = sample.ended_at
     if ts_end < ts_start:
         ts_end = ts_start
+    shared_resources = _completion_uses_shared_resources(event, start)
     return ClauseObservation(
         repo=repo,
         bin=str(clause["bin"]),
@@ -701,9 +710,15 @@ def observation_from_completion(
         ts_start=ts_start,
         ts_end=ts_end,
         latency_ms=max(0.0, float(event.duration_ms)),
-        peak_cpu_cores=sample.cpu_utilization_avg_cores,
-        sampled_peak_rss_mb=_rss_mb(sample.rss_bytes_peak),
-        cpu_ns_cumulative=_cpu_ns(sample.cpu_time_delta_s),
+        peak_cpu_cores=(
+            None if shared_resources else sample.cpu_utilization_avg_cores
+        ),
+        sampled_peak_rss_mb=(
+            None if shared_resources else _rss_mb(sample.rss_bytes_peak)
+        ),
+        cpu_ns_cumulative=(
+            None if shared_resources else _cpu_ns(sample.cpu_time_delta_s)
+        ),
         in_loop=False,
         in_pipe=False,
         in_subst=False,
@@ -728,6 +743,7 @@ def completed_call_from_completion(
         ts_end = ts_start
     peak_memory_mb = _rss_mb(sample.rss_bytes_peak)
     ambient_before_mb = _rss_mb(sample.rss_bytes_before)
+    shared_resources = _completion_uses_shared_resources(event, start)
     return CompletedCall(
         repo=repo,
         tool_name=event.tool_name,
@@ -736,9 +752,15 @@ def completed_call_from_completion(
         ts_end=ts_end,
         censored=False,
         peak_cpu_cores=sample.cpu_utilization_avg_cores,
-        peak_cpu_cores_eligible=sample.cpu_utilization_avg_cores is not None,
+        peak_cpu_cores_eligible=(
+            not shared_resources and sample.cpu_utilization_avg_cores is not None
+        ),
         peak_memory_mb=peak_memory_mb,
-        peak_memory_mb_eligible=peak_memory_mb is not None and ambient_before_mb is not None,
+        peak_memory_mb_eligible=(
+            not shared_resources
+            and peak_memory_mb is not None
+            and ambient_before_mb is not None
+        ),
         ambient_before_mb=ambient_before_mb,
     )
 
@@ -779,6 +801,10 @@ def _observation_from_tool_span(
         return None
     ts_start, ts_end = _span_times(end, duration_ms)
     resources = end.get("resources") if isinstance(end.get("resources"), dict) else {}
+    execution = end.get("execution") if isinstance(end.get("execution"), dict) else {}
+    shared_resources = _uses_shared_resources(resources) or _uses_shared_resources(
+        execution
+    )
     return ClauseObservation(
         repo=repo,
         bin=str(clause["bin"]),
@@ -786,9 +812,17 @@ def _observation_from_tool_span(
         ts_start=ts_start,
         ts_end=ts_end,
         latency_ms=duration_ms,
-        peak_cpu_cores=_optional_float(resources.get("cpu_utilization_avg_cores")),
-        sampled_peak_rss_mb=_rss_mb(resources.get("rss_peak_bytes")),
-        cpu_ns_cumulative=_cpu_ns(resources.get("cpu_time_s")),
+        peak_cpu_cores=(
+            None
+            if shared_resources
+            else _optional_float(resources.get("cpu_utilization_avg_cores"))
+        ),
+        sampled_peak_rss_mb=(
+            None if shared_resources else _rss_mb(resources.get("rss_peak_bytes"))
+        ),
+        cpu_ns_cumulative=(
+            None if shared_resources else _cpu_ns(resources.get("cpu_time_s"))
+        ),
         in_loop=False,
         in_pipe=False,
         in_subst=False,
@@ -818,6 +852,10 @@ def _completed_call_from_tool_span(
     peak_memory_mb = _rss_mb(resources.get("rss_peak_bytes"))
     ambient_before_mb = _rss_mb(resources.get("memory_rss_bytes_before"))
     peak_cpu_cores = _optional_float(resources.get("cpu_utilization_avg_cores"))
+    execution = end.get("execution") if isinstance(end.get("execution"), dict) else {}
+    shared_resources = _uses_shared_resources(resources) or _uses_shared_resources(
+        execution
+    )
     return CompletedCall(
         repo=repo,
         tool_name=tool_name,
@@ -826,10 +864,41 @@ def _completed_call_from_tool_span(
         ts_end=ts_end,
         censored=False,
         peak_cpu_cores=peak_cpu_cores,
-        peak_cpu_cores_eligible=peak_cpu_cores is not None,
+        peak_cpu_cores_eligible=not shared_resources and peak_cpu_cores is not None,
         peak_memory_mb=peak_memory_mb,
-        peak_memory_mb_eligible=peak_memory_mb is not None and ambient_before_mb is not None,
+        peak_memory_mb_eligible=(
+            not shared_resources
+            and peak_memory_mb is not None
+            and ambient_before_mb is not None
+        ),
         ambient_before_mb=ambient_before_mb,
+    )
+
+
+def _completion_uses_shared_resources(
+    event: ToolCompletedEvent,
+    start: ToolBeforeRequest | None,
+) -> bool:
+    # The completion scope is the final, server-resolved attribution scope.
+    # Fall back to the request only when completion did not resolve one.
+    scope = event.resource_scope
+    if scope is None and start is not None:
+        scope = start.resource_scope
+    return _uses_shared_resources(scope)
+
+
+def _uses_shared_resources(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, Mapping):
+        attribution_source = value.get("attribution_source")
+        source = value.get("source")
+    else:
+        attribution_source = getattr(value, "attribution_source", None)
+        source = getattr(value, "source", None)
+    return (
+        attribution_source in _SHARED_RESOURCE_ATTRIBUTION_SOURCES
+        or source in _SHARED_RESOURCE_SCOPE_SOURCES
     )
 
 

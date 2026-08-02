@@ -15,7 +15,12 @@ import agent_scheduler.predictors.tool_resource as tool_resource_predictor
 from agent_scheduler.api.app import create_app
 from agent_scheduler.api.dependencies import build_state
 from agent_scheduler.config import SchedulerConfig
-from agent_scheduler.contracts.models import ParamFeatures, ToolBeforeRequest, ToolCompletedEvent
+from agent_scheduler.contracts.models import (
+    ParamFeatures,
+    ResourceScope,
+    ToolBeforeRequest,
+    ToolCompletedEvent,
+)
 from agent_scheduler.monitoring.tool_runtime import ToolRuntimeSample
 from agent_scheduler.predictors.tool_resource import (
     ToolResourcePredictor,
@@ -93,6 +98,7 @@ def _write_trace(
     *,
     command: str = "python -m pytest tests -q",
     memory_rss_bytes_before: int | None = None,
+    attribution_source: str | None = None,
 ) -> None:
     resources = {
         "cpu_utilization_avg_cores": 1.5,
@@ -100,6 +106,8 @@ def _write_trace(
     }
     if memory_rss_bytes_before is not None:
         resources["memory_rss_bytes_before"] = memory_rss_bytes_before
+    if attribution_source is not None:
+        resources["attribution_source"] = attribution_source
     records = [
         {
             "schema_version": 6,
@@ -304,6 +312,64 @@ def test_openclaw_trace_v6_loads_as_tool_resource_observations(tmp_path: Path) -
     assert completed.command == "python -m pytest tests -q"
     assert completed.ts_end - completed.ts_start == pytest.approx(1.2)
     assert completed.peak_memory_mb == 100
+
+
+@pytest.mark.parametrize(
+    "attribution_source",
+    ["shared-sandbox-container", "shared-runtime-process"],
+)
+def test_openclaw_trace_shared_scope_keeps_only_runtime_latency(
+    tmp_path: Path,
+    attribution_source: str,
+) -> None:
+    trace = tmp_path / "trace.jsonl"
+    _write_trace(
+        trace,
+        memory_rss_bytes_before=50 * 1024 * 1024,
+        attribution_source=attribution_source,
+    )
+
+    loaded = load_openclaw_trace_observations(trace, repo="repo-1")
+
+    assert len(loaded.completed_calls) == 1
+    completed = loaded.completed_calls[0]
+    assert completed.peak_cpu_cores == pytest.approx(1.5)
+    assert completed.peak_cpu_cores_eligible is False
+    assert completed.peak_memory_mb == pytest.approx(100.0)
+    assert completed.peak_memory_mb_eligible is False
+
+    records = [
+        json.loads(line)
+        for line in trace.read_text(encoding="utf-8").splitlines()
+    ]
+    start = next(row for row in records if row["record_type"] == "span_start")
+    end = next(row for row in records if row["record_type"] == "span_end")
+    clause = tool_resource_predictor._observation_from_tool_span(
+        start,
+        end,
+        repo="repo-1",
+    )
+    assert clause is not None
+    assert clause.latency_ms == pytest.approx(1200.0)
+    assert clause.peak_cpu_cores is None
+    assert clause.sampled_peak_rss_mb is None
+    assert clause.cpu_ns_cumulative is None
+
+    predictor = ToolResourcePredictor.from_openclaw_traces(
+        [trace],
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+    )
+    prediction = asyncio.run(
+        predictor.predict(
+            _tool_request("evt-next", "call-next", "python -m pytest tests -q"),
+            ambient_before_mb=50.0,
+        )
+    )
+    continuous = prediction.tool_resource["continuous_predictions"]
+    assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
+    assert continuous["peak_cpu_cores"]["conditional_p90"] is None
+    assert continuous["peak_memory_mb"]["conditional_p90"] is None
 
 
 def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) -> None:
@@ -1085,6 +1151,97 @@ def test_tool_resource_predictor_learns_from_completion_without_cold_start() -> 
     assert result.tool_resource["continuous_predictions"]["peak_memory_mb"][
         "note"
     ] == "memory prediction requires ambient_before_mb anchor"
+
+
+@pytest.mark.parametrize(
+    "attribution_source",
+    ["shared-sandbox-container", "shared-runtime-process"],
+)
+def test_live_shared_scope_keeps_only_runtime_latency(
+    attribution_source: str,
+) -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+    )
+    scope = ResourceScope(
+        kind="cgroup-v2",
+        cgroup_path="/sys/fs/cgroup/shared-sandbox",
+        source="openclaw-sandbox",
+        attribution_source=attribution_source,
+    )
+    request = _tool_request(
+        "evt-shared",
+        "call-shared",
+        "python -m pytest tests -q",
+    ).model_copy(update={"resource_scope": scope})
+    completion = ToolCompletedEvent(
+        schema_version="scheduler.v1",
+        event_id="evt-shared",
+        occurred_at="2026-07-24T17:29:45Z",
+        plugin_version="0.1.0",
+        run_id="run-1",
+        session_id="session-1",
+        session_key=None,
+        agent_id="main",
+        tool_call_id="call-shared",
+        decision_id=None,
+        lease_id=None,
+        execution_id=None,
+        tool_name="exec",
+        duration_ms=1200,
+        succeeded=True,
+        error_type=None,
+        error_digest=None,
+        result_size_bytes=None,
+        raw_result=None,
+        raw_event=None,
+        resource_scope=scope,
+    )
+    sample = _runtime_sample("evt-shared", "call-shared")
+
+    completed = tool_resource_predictor.completed_call_from_completion(
+        completion,
+        sample,
+        repo="repo-1",
+        start=request,
+    )
+    assert completed is not None
+    assert completed.peak_cpu_cores == pytest.approx(0.8)
+    assert completed.peak_cpu_cores_eligible is False
+    assert completed.peak_memory_mb == pytest.approx(100.0)
+    assert completed.peak_memory_mb_eligible is False
+
+    clause = tool_resource_predictor.observation_from_completion(
+        completion,
+        sample,
+        repo="repo-1",
+        start=request,
+    )
+    assert clause is not None
+    assert clause.latency_ms == pytest.approx(1200.0)
+    assert clause.peak_cpu_cores is None
+    assert clause.sampled_peak_rss_mb is None
+    assert clause.cpu_ns_cumulative is None
+
+    predictor.record_tool_started(request)
+    assert predictor.observe_completion(completion, sample) == 1
+    prediction = asyncio.run(
+        predictor.predict(
+            _tool_request(
+                "evt-shared-next",
+                "call-shared-next",
+                "python -m pytest tests -q",
+            ),
+            ambient_before_mb=50.0,
+        )
+    )
+    continuous = prediction.tool_resource["continuous_predictions"]
+    assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
+    assert continuous["peak_cpu_cores"]["conditional_p90"] is None
+    assert continuous["peak_memory_mb"]["conditional_p90"] is None
 
 
 def test_tool_resource_predictor_explains_unknown_without_cold_start() -> None:
