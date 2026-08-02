@@ -158,6 +158,10 @@ class ContainerResult:
     container_id: str | None = None
 
 
+class ContainerCleanupError(RuntimeError):
+    """A task container's exit/removal could not be confirmed."""
+
+
 def get_docker_client(config: DockerConfig) -> Any:
     """Return a configured Docker SDK client.
 
@@ -376,11 +380,10 @@ def _run_container_sdk(
     started: float,
 ) -> ContainerResult:
     """Run via Docker Python SDK."""
-    import docker  # type: ignore[import-untyped]
-
     mem_limit: str | None = config.memory_limit if config.memory_limit else None
     nano_cpus: int | None = int(config.cpus * 1e9) if config.cpus else None
 
+    container_id: str | None = None
     try:
         container = client.containers.run(
             image=image,
@@ -397,37 +400,48 @@ def _run_container_sdk(
             cgroupns=config.cgroupns_mode or None,
             platform=config.platform or None,
         )
-        container_id = container.id
-        _log(f"[{task_id}] container {container_id[:12]} started")
-        log_thread = _stream_sdk_container_logs(container, task_id)
-
         try:
-            result = container.wait(timeout=timeout_seconds if timeout_seconds > 0 else None)
-            exit_code = result.get("StatusCode", -1)
-            error = None
-        except (docker.errors.APIError, Exception) as exc:
-            _log(f"[{task_id}] wait error: {exc}")
+            container_id = container.id
+            _log(f"[{task_id}] container {container_id[:12]} started")
+            log_thread: threading.Thread | None = None
             try:
-                container.kill()
-            except Exception:
-                pass
-            exit_code = 124
-            error = f"container_timeout_or_wait_failed: {exc}"
+                log_thread = _stream_sdk_container_logs(container, task_id)
+                try:
+                    result = container.wait(
+                        timeout=timeout_seconds if timeout_seconds > 0 else None
+                    )
+                    exit_code = result.get("StatusCode", -1)
+                    error = None
+                except Exception as exc:
+                    _log(f"[{task_id}] wait error: {exc}")
+                    try:
+                        container.kill()
+                    except Exception:
+                        pass
+                    exit_code = 124
+                    error = f"container_timeout_or_wait_failed: {exc}"
+            finally:
+                if log_thread is not None:
+                    _join_log_thread(log_thread)
+                _write_sdk_container_log(container, trace_dir)
         finally:
-            _join_log_thread(log_thread)
-            _write_sdk_container_log(container, trace_dir)
             try:
                 container.remove(force=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                raise ContainerCleanupError(
+                    f"failed to remove task container {container_id or '<unknown>'}: {exc}"
+                ) from exc
 
+    except ContainerCleanupError:
+        raise
     except Exception as exc:
         _log(f"[{task_id}] container failed: {exc}")
         duration = time.monotonic() - started
         return ContainerResult(
             task_id=task_id, image=image, exit_code=-1,
             error=str(exc), trace_dir=trace_dir,
-            duration_seconds=duration,
+            trace_files=_find_traces(trace_dir),
+            duration_seconds=duration, container_id=container_id,
         )
 
     duration = time.monotonic() - started
@@ -491,9 +505,17 @@ def _run_container_cli(
 
     cmd.append(image)
 
+    container_id: str | None = None
+    container_stopped = False
+    log_process: Any | None = None
+    log_thread: threading.Thread | None = None
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
         container_id = result.stdout.strip()
+        if not container_id:
+            raise ContainerCleanupError(
+                "docker run succeeded without returning a container id"
+            )
         _log(f"[{task_id}] container {container_id[:12]} started (CLI fallback)")
         log_process, log_thread = _stream_cli_container_logs(container_id, task_id)
 
@@ -511,43 +533,66 @@ def _run_container_cli(
                 )
             except subprocess.TimeoutExpired:
                 _log(f"[{task_id}] timeout, killing container")
-                subprocess.run(["docker", "kill", container_id], capture_output=True)
-                subprocess.run(["docker", "wait", container_id], capture_output=True, text=True)
-                _stop_cli_log_stream(log_process, log_thread)
-                _write_cli_container_log(container_id, trace_dir)
-                subprocess.run(["docker", "rm", "-f", container_id], capture_output=True, text=True)
-                duration = time.monotonic() - started
-                return ContainerResult(
-                    task_id=task_id, image=image, exit_code=124,
-                    error=f"container timed out after {timeout_seconds}s",
-                    trace_dir=trace_dir,
-                    trace_files=_find_traces(trace_dir),
-                    duration_seconds=duration,
-                    container_id=container_id,
-                )
+                exit_code = 124
+                error = f"container timed out after {timeout_seconds}s"
+            else:
+                container_stopped = True
+                exit_code = int(wait_result.stdout.strip())
+                error = None
         else:
             wait_result = subprocess.run(wait_cmd, capture_output=True, text=True, check=True)
-        exit_code = int(wait_result.stdout.strip())
-        _stop_cli_log_stream(log_process, log_thread)
-        _write_cli_container_log(container_id, trace_dir)
-        subprocess.run(["docker", "rm", "-f", container_id], capture_output=True, text=True)
+            container_stopped = True
+            exit_code = int(wait_result.stdout.strip())
+            error = None
 
     except subprocess.CalledProcessError as exc:
         _log(f"[{task_id}] CLI error: {exc}")
         if exc.stderr:
             _log(f"  stderr: {exc.stderr.strip()}")
-        duration = time.monotonic() - started
-        return ContainerResult(
-            task_id=task_id, image=image, exit_code=-1,
-            error=str(exc), trace_dir=trace_dir,
-            duration_seconds=duration,
-        )
+        exit_code = -1
+        error = str(exc)
+        if exc.stderr and exc.stderr.strip():
+            error = f"{error}: {exc.stderr.strip()}"
+    finally:
+        if container_id:
+            # A failed wait or an interrupt must not leave the in-container
+            # sidecar writing snapshots after the batch publishes this task's
+            # KB.  Confirm exit before collecting logs and removing it.
+            if not container_stopped:
+                subprocess.run(
+                    ["docker", "kill", container_id],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                subprocess.run(
+                    ["docker", "wait", container_id],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            _stop_cli_log_stream(log_process, log_thread)
+            try:
+                _write_cli_container_log(container_id, trace_dir)
+            finally:
+                remove_result = subprocess.run(
+                    ["docker", "rm", "-f", container_id],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if remove_result.returncode != 0:
+                    detail = (remove_result.stderr or remove_result.stdout or "").strip()
+                    raise ContainerCleanupError(
+                        f"failed to remove task container {container_id}"
+                        + (f": {detail}" if detail else "")
+                    )
 
     duration = time.monotonic() - started
     trace_files = _find_traces(trace_dir)
     return ContainerResult(
         task_id=task_id, image=image, exit_code=exit_code,
-        trace_dir=trace_dir, trace_files=trace_files,
+        error=error, trace_dir=trace_dir, trace_files=trace_files,
         duration_seconds=duration, container_id=container_id,
     )
 

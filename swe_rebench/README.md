@@ -42,12 +42,20 @@ OpenClaw's configuration.
 
 ## Select tasks
 
-The runner automatically checks either `AGENT_TEST_BENCH_ROOT` or the usual
-sibling checkout:
+An explicit `--dataset` or `--tasks` argument always selects that file. Without
+one, the runner uses the first task source that exists, in this order:
 
-```text
-../agent-test-bench/data/swe-rebench/tasks.json
-```
+1. `$AGENT_TEST_BENCH_ROOT/data/swe-rebench/tasks.json`;
+2. the usual sibling checkout,
+   `../agent-test-bench/data/swe-rebench/tasks.json`;
+3. the bundled `swe_rebench/tasks.json`, which contains only four smoke-test
+   tasks.
+
+The bundled file is intentionally only a fallback. For example, `--sample 32`
+can select 32 tasks only when the environment or sibling source contains at
+least that many tasks. The runner fails before execution when a positive
+`--sample N` requests more matching tasks than the selected source provides;
+it never silently runs a smaller batch.
 
 You can also pass a JSON/JSONL dataset directly. To create a smaller task list
 with the discovery helper:
@@ -95,6 +103,40 @@ python3 scripts/clawtune.py benchmark \
   --sample 3 --dry-run
 ```
 
+`--sample N` means the first `N` tasks in source order after any
+`--instance-ids`, `--repo`, and `--skip` filtering. It is not a random sample.
+Selected tasks run one at a time, in that same order.
+
+## Knowledge sharing within a batch
+
+Each benchmark invocation starts a new batch-local tool-resource KB from the
+tracked cold-start snapshots. All selected tasks in that invocation share the
+same aggregate KB generation serially: a task receives the generation produced
+by the preceding task, then its valid updated snapshots become the input to the
+next task.
+
+The aggregate snapshots contain two intentionally different layers:
+
+- `public` is the frozen, coarse cold-start prior shared by every repository.
+  Task execution does not add online observations to this layer.
+- `repo` contains causally accumulated online evidence under separate
+  repository keys. A later task for `12rambau/sepal_ui`, for example, can use
+  observations from earlier tasks for that repository. A task from another
+  repository cannot use those repo-specific observations and falls back to its
+  own namespace or the frozen public prior.
+
+Thus, "updating the shared KB" means publishing the complete aggregate
+snapshot; the task's new online evidence is written only to its own `repo`
+namespace. A new benchmark invocation starts a new batch generation rather than
+implicitly resuming an older one.
+
+The dataset's non-empty `repo` or `repository` metadata is authoritative for
+the namespace. If it is absent, a standard instance ID such as
+`12rambau__sepal_ui-411` is interpreted as `12rambau/sepal_ui`. If neither form
+can identify a repository, the runner uses the isolated
+`instance:<instance-id>` key instead of mixing unrelated tasks. The resolved
+key is recorded as `repo` in each task's `task_manifest.json`.
+
 The wrapper always refreshes a stale runtime bundle and exports results. It
 also supplies the verified Python, BCC, kernel, sudo, and architecture settings
 used by setup; no activation or manual environment exports are needed.
@@ -106,9 +148,18 @@ Generated data is Git-ignored under:
 ```text
 swe_rebench/.runtime/
   traces/<task-id>/
+  kb-batches/<batch-id>/
+    clause-resource-kb.json
+    runtime-tool-resource-kb.json
   export/
   report.json
 ```
+
+Each task trace also retains the KB snapshots used and updated by that task
+under `traces/<task-id>/tool-resource/`. The batch directory above is the
+auditable final aggregate generation, and its exact path is recorded as
+`shared_kb_dir` in `report.json`. The maintained host-sandbox mode also records
+it in each task manifest.
 
 Inspect a trace:
 

@@ -26,6 +26,41 @@ The public configuration defaults `docker.cgroup_required: true`. A false
 value is troubleshooting-only and its output is not accepted as complete
 per-tool telemetry.
 
+## Serial benchmark knowledge sharing (2026-08-02)
+
+`benchmark --sample N` now preserves task-source order and executes the
+selected tasks serially against one run-scoped aggregate KB generation. The
+runner copies the current runtime/clause snapshot pair into each task and,
+only after its sidecar or container exit is confirmed, transactionally
+publishes the valid pair for the next task. A partial two-file publish rolls
+back and aborts the remaining batch instead of exposing a mixed generation.
+
+The aggregate keeps the scheduler's existing evidence boundary: `public` is a
+frozen cross-repository cold-start prior, while online observations accumulate
+only under the resolved `repo` key. Dataset metadata is authoritative;
+standard `owner__repo-issue` IDs provide a fallback, and unparseable IDs use an
+isolated `instance:<id>` key. Thus the three `12rambau__sepal_ui-*` tasks share
+`12rambau/sepal_ui` evidence, while another repository sees only its own
+evidence and the frozen public layer. Each independent benchmark invocation
+starts from the tracked seed for reproducibility.
+
+Default task discovery now prefers `AGENT_TEST_BENCH_ROOT`, then the full
+sibling `agent-test-bench` checkout, and uses the bundled four-task file only
+as a smoke-test fallback. A request larger than the selected source fails
+before execution with an actionable full-dataset message.
+
+Validation completed in the Windows development workspace:
+
+- `python -m pytest tests -q --basetemp .pytest-tmp-root-shared-kb-final-2`:
+  144 passed, 2 skipped.
+- `python -m pytest services/scheduler/tests -q --basetemp
+  .pytest-tmp-root-shared-kb-scheduler-final`: 166 passed, 2 skipped.
+- Ruff and `py_compile` pass on every changed Python file.
+- `python3 scripts/clawtune.py benchmark --sample 32` was not run in this
+  Windows workspace because the maintained benchmark requires a Linux host,
+  Docker, cgroup v2, and BCC/eBPF. Run it on the target Linux host with the
+  full SWE-Rebench task source configured.
+
 ## Current Host Stage-2 Fix
 
 ### Trusted execution-root attribution (2026-07-29)

@@ -15,6 +15,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -25,7 +26,7 @@ from typing import Any
 from swe_rebench.config import RunnerConfig
 from swe_rebench.docker import ContainerResult
 from swe_rebench.sandbox import sandbox_container_prefix
-from swe_rebench.task_source import TaskDef
+from swe_rebench.task_source import TaskDef, task_repo_key
 
 # ── thread-safe console logging ──────────────────────────────────
 _print_lock = threading.Lock()
@@ -58,6 +59,15 @@ _SANDBOX_TASK_PATH = ":".join(
 # Keep the real upstream credential exclusively in the sidecar environment.
 _LOCAL_PROXY_API_KEY = "clawtune-local-proxy"
 
+_TOOL_RESOURCE_KB_SCHEMAS = {
+    "runtime-tool-resource-kb.json": "runtime_tool_resource_kb_v1",
+    "clause-resource-kb.json": "runtime_clause_resource_kb_v4",
+}
+
+
+class KnowledgeBaseSyncError(RuntimeError):
+    """A shared KB generation could not be copied or published safely."""
+
 
 def _log(msg: str) -> None:
     with _print_lock:
@@ -70,6 +80,7 @@ def run_host_sandbox_task(
     trace_dir: Path,
     config: RunnerConfig,
     bundle_dir: Path,
+    shared_kb_dir: Path | None = None,
 ) -> ContainerResult:
     """Run one task with host OpenClaw and OpenClaw Docker sandbox."""
     started = time.monotonic()
@@ -88,18 +99,30 @@ def run_host_sandbox_task(
         _export_testbed_from_image(task.image, workspace, config.docker.pull_policy, config.docker.platform)
         _make_sandbox_workspace_writable(workspace)
         _install_sandbox_launcher(workspace, bundle_dir)
-        _write_task_inputs(trace_dir, task, config, workspace, bundle_dir)
+        _write_task_inputs(
+            trace_dir,
+            task,
+            config,
+            workspace,
+            bundle_dir,
+            shared_kb_dir=shared_kb_dir,
+        )
         _ensure_openclaw_sandbox_image(task.image, trace_dir, config.docker.platform)
         _verify_sandbox_launcher(trace_dir, workspace, config.docker.platform)
         _verify_sandbox_task_environment(trace_dir, workspace, config.docker.platform)
 
-        _seed_runtime_tool_resource_kb(trace_dir, config)
+        _seed_runtime_tool_resource_kb(
+            trace_dir,
+            config,
+            source_dir=shared_kb_dir,
+        )
 
         sidecar = _start_sidecar(
             trace_dir=trace_dir,
             port=sidecar_port,
             config=config,
             workspace=workspace,
+            repo=task_repo_key(task),
         )
         _configure_openclaw(
             trace_dir=trace_dir,
@@ -128,9 +151,8 @@ def run_host_sandbox_task(
         try:
             if sidecar is not None:
                 _stop_process(sidecar)
-        except KeyboardInterrupt:
-            pass
-        _write_result_summary(trace_dir, task, workspace, exit_code, error)
+        finally:
+            _write_result_summary(trace_dir, task, workspace, exit_code, error)
 
     return ContainerResult(
         task_id=task.instance_id,
@@ -452,6 +474,7 @@ def _start_sidecar(
     port: int,
     config: RunnerConfig,
     workspace: Path,
+    repo: str,
 ) -> subprocess.Popen[str]:
     env = os.environ.copy()
     scheduler_src = str(config.repo_root / "services" / "scheduler" / "src")
@@ -476,32 +499,71 @@ def _start_sidecar(
             "AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED": (
                 "true" if config.runtime.stage2_required else "false"
             ),
+            "AGENT_SCHEDULER_TOOL_RESOURCE_REPO": repo,
             "AGENT_SCHEDULER_TOOL_RESOURCE_ARTIFACT_DIR": str(trace_dir / "tool-resource"),
         }
     )
     stdout = (trace_dir / "sidecar-stdout.txt").open("w", encoding="utf-8")
     stderr = (trace_dir / "sidecar-stderr.txt").open("w", encoding="utf-8")
-    process = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "agent_scheduler.main",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            str(port),
-        ],
-        cwd=str(config.repo_root / "services" / "scheduler"),
-        env=env,
-        stdout=stdout,
-        stderr=stderr,
-        text=True,
-    )
-    _wait_ready(port)
+    try:
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "agent_scheduler.main",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                str(port),
+            ],
+            cwd=str(config.repo_root / "services" / "scheduler"),
+            env=env,
+            stdout=stdout,
+            stderr=stderr,
+            text=True,
+        )
+    finally:
+        # Popen duplicates/inherits these handles.  The parent must not retain
+        # two descriptors per task across a long serial benchmark.
+        stdout.close()
+        stderr.close()
+    try:
+        _wait_ready(port)
+    except BaseException:
+        # Do not let an unreturned process keep mutating this task's KB while
+        # the batch runner publishes it for the next task.
+        _stop_process(process)
+        raise
     return process
 
 
-def _seed_runtime_tool_resource_kb(trace_dir: Path, config: RunnerConfig) -> None:
+def _prepare_batch_tool_resource_kb(
+    shared_kb_dir: Path,
+    config: RunnerConfig,
+) -> None:
+    """Initialize one run-scoped shared KB from the tracked cold-start seed."""
+
+    source_dir = config.repo_root / "traces" / "tool-resource"
+    try:
+        _validate_kb_snapshot_pair(source_dir)
+        shared_kb_dir.mkdir(parents=True, exist_ok=False)
+        for filename in _TOOL_RESOURCE_KB_SCHEMAS:
+            _atomic_copy(source_dir / filename, shared_kb_dir / filename)
+        _validate_kb_snapshot_pair(shared_kb_dir)
+    except KnowledgeBaseSyncError:
+        raise
+    except Exception as exc:
+        raise KnowledgeBaseSyncError(
+            f"failed to initialize shared KB {shared_kb_dir}: {exc}"
+        ) from exc
+
+
+def _seed_runtime_tool_resource_kb(
+    trace_dir: Path,
+    config: RunnerConfig,
+    *,
+    source_dir: Path | None = None,
+) -> None:
     """Copy the repo's pre-seeded predictor KBs to the task trace directory.
 
     The RuntimeToolResourceKB predictor needs cold-start training data for
@@ -512,15 +574,136 @@ def _seed_runtime_tool_resource_kb(trace_dir: Path, config: RunnerConfig) -> Non
     """
     dest_dir = trace_dir / "tool-resource"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    source_dir = config.repo_root / "traces" / "tool-resource"
-    for filename in (
-        "runtime-tool-resource-kb.json",
-        "clause-resource-kb.json",
-    ):
-        dest = dest_dir / filename
-        source = source_dir / filename
-        if not dest.exists() and source.is_file():
-            shutil.copy2(source, dest)
+    source_dir = source_dir or config.repo_root / "traces" / "tool-resource"
+    try:
+        _validate_kb_snapshot_pair(source_dir)
+        for filename in _TOOL_RESOURCE_KB_SCHEMAS:
+            dest = dest_dir / filename
+            source = source_dir / filename
+            if not dest.exists():
+                _atomic_copy(source, dest)
+        _validate_kb_snapshot_pair(dest_dir)
+    except KnowledgeBaseSyncError:
+        raise
+    except Exception as exc:
+        raise KnowledgeBaseSyncError(
+            f"failed to seed task KB {dest_dir} from {source_dir}: {exc}"
+        ) from exc
+
+
+def _publish_tool_resource_kb(trace_dir: Path, shared_kb_dir: Path) -> None:
+    """Publish a completed task's valid KB pair for the next serial task."""
+
+    source_dir = trace_dir / "tool-resource"
+    # Stage and validate both files before committing either one.  Preserve a
+    # complete rollback pair so an I/O failure on the second replace cannot
+    # expose a mixed generation to the next task.
+    try:
+        _validate_kb_snapshot_pair(source_dir)
+        _validate_kb_snapshot_pair(shared_kb_dir)
+        with tempfile.TemporaryDirectory(
+            prefix=".kb-publish-",
+            dir=shared_kb_dir.parent,
+        ) as temporary_root:
+            root = Path(temporary_root)
+            staged_dir = root / "staged"
+            backup_dir = root / "backup"
+            staged_dir.mkdir()
+            backup_dir.mkdir()
+            for filename in _TOOL_RESOURCE_KB_SCHEMAS:
+                _atomic_copy(source_dir / filename, staged_dir / filename)
+                _atomic_copy(shared_kb_dir / filename, backup_dir / filename)
+            _validate_kb_snapshot_pair(staged_dir)
+            _validate_kb_snapshot_pair(backup_dir)
+            try:
+                for filename in _TOOL_RESOURCE_KB_SCHEMAS:
+                    os.replace(staged_dir / filename, shared_kb_dir / filename)
+                _validate_kb_snapshot_pair(shared_kb_dir)
+            except Exception as commit_exc:
+                try:
+                    for filename in _TOOL_RESOURCE_KB_SCHEMAS:
+                        _atomic_copy(backup_dir / filename, shared_kb_dir / filename)
+                    _validate_kb_snapshot_pair(shared_kb_dir)
+                except Exception as rollback_exc:
+                    raise KnowledgeBaseSyncError(
+                        "shared KB publish and rollback both failed: "
+                        f"publish={commit_exc}; rollback={rollback_exc}"
+                    ) from rollback_exc
+                raise KnowledgeBaseSyncError(
+                    f"shared KB publish failed and was rolled back: {commit_exc}"
+                ) from commit_exc
+    except KnowledgeBaseSyncError:
+        raise
+    except Exception as exc:
+        raise KnowledgeBaseSyncError(
+            f"failed to publish task KB {source_dir} to {shared_kb_dir}: {exc}"
+        ) from exc
+
+
+def _validate_kb_snapshot_pair(directory: Path) -> None:
+    for filename, schema_prefix in _TOOL_RESOURCE_KB_SCHEMAS.items():
+        path = directory / filename
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise KnowledgeBaseSyncError(
+                f"required KB snapshot is missing: {path}"
+            ) from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            raise KnowledgeBaseSyncError(
+                f"invalid KB snapshot {path}: {exc}"
+            ) from exc
+        schema = payload.get("schema") if isinstance(payload, dict) else None
+        if schema != schema_prefix:
+            raise KnowledgeBaseSyncError(
+                f"invalid KB snapshot schema in {path}: {schema!r}; "
+                f"expected {schema_prefix!r}"
+            )
+        if payload.get("max_prefix_depth") != 4:
+            raise KnowledgeBaseSyncError(
+                f"invalid KB snapshot max_prefix_depth in {path}: "
+                f"{payload.get('max_prefix_depth')!r}"
+            )
+        for field in ("public", "repo"):
+            if not isinstance(payload.get(field), dict):
+                raise KnowledgeBaseSyncError(
+                    f"invalid KB snapshot {path}: {field!r} must be an object"
+                )
+        if not isinstance(payload.get("pending"), list):
+            raise KnowledgeBaseSyncError(
+                f"invalid KB snapshot {path}: 'pending' must be an array"
+            )
+        try:
+            # Use the scheduler's own deserializer as the final authority so a
+            # snapshot accepted here is guaranteed to be loadable by sidecar.
+            from tool_resource.runtime_kb import (
+                ClauseResourceKB,
+                RuntimeToolResourceKB,
+            )
+
+            if filename == "runtime-tool-resource-kb.json":
+                RuntimeToolResourceKB.from_json_obj(payload)
+            else:
+                ClauseResourceKB.from_json_obj(payload)
+        except Exception as exc:
+            raise KnowledgeBaseSyncError(
+                f"scheduler rejected KB snapshot {path}: {exc}"
+            ) from exc
+
+
+def _atomic_copy(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(
+        f".{destination.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+    try:
+        shutil.copy2(source, temporary)
+        os.replace(temporary, destination)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _write_host_tool_resource_preflight(trace_dir: Path, config: RunnerConfig) -> None:
@@ -1267,6 +1450,8 @@ def _write_task_inputs(
     config: RunnerConfig,
     workspace: Path,
     bundle_dir: Path | None = None,
+    *,
+    shared_kb_dir: Path | None = None,
 ) -> None:
     prompt = (
         "You are running a SWE-Rebench task in an OpenClaw Docker sandbox.\n\n"
@@ -1298,6 +1483,7 @@ def _write_task_inputs(
         json.dumps(
             {
                 "task_id": task.instance_id,
+                "repo": task_repo_key(task),
                 "image": task.image,
                 "base_commit": task.base_commit,
                 "model": config.llm.model,
@@ -1305,6 +1491,7 @@ def _write_task_inputs(
                 "runtime_mode": "host-openclaw-sandbox",
                 "workspace": str(workspace),
                 "runner_config": str(config.config_path or ""),
+                "shared_kb_dir": str(shared_kb_dir) if shared_kb_dir else None,
                 "bundle_source_fingerprint": bundle_fingerprint,
                 "problem_statement_bytes": len(task.problem_statement),
                 "hint_text_bytes": len(task.hint_text),
@@ -1576,3 +1763,9 @@ def _stop_process(process: subprocess.Popen[str]) -> None:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
         process.kill()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("sidecar did not exit after terminate and kill")
+    if process.poll() is None:
+        raise RuntimeError("sidecar exit could not be confirmed")

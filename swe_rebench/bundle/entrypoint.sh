@@ -412,6 +412,7 @@ TASK_HINT_TEXT_SAFE="${TASK_HINT_TEXT:-}"
 cat > "$TRACE_DIR/task_manifest.json" <<EOF
 {
   "task_id": "${TASK_INSTANCE_ID:-}",
+  "repo": "${AGENT_SCHEDULER_TOOL_RESOURCE_REPO:-}",
   "image": "${TASK_IMAGE:-}",
   "base_commit": "${TASK_BASE_COMMIT:-}",
   "model": "$LLM_MODEL",

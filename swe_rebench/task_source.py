@@ -41,6 +41,35 @@ class TaskDef:
     """Additional environment variables to pass to the container."""
 
 
+def infer_repo_from_instance_id(instance_id: str) -> str | None:
+    """Infer a SWE-bench repository slug from ``owner__repo-issue``.
+
+    Dataset-provided repository metadata remains authoritative.  This fallback
+    keeps older/simple task lists correctly namespaced without collapsing
+    unrelated repositories into one scheduler default.
+    """
+
+    owner, separator, repo_and_issue = instance_id.strip().partition("__")
+    if separator != "__" or not owner or not repo_and_issue:
+        return None
+    repo_name, issue_separator, issue = repo_and_issue.rpartition("-")
+    if issue_separator != "-" or not repo_name or not issue.isdigit():
+        return None
+    return f"{owner}/{repo_name}"
+
+
+def task_repo_key(task: TaskDef) -> str:
+    """Return the stable KB namespace for a task's target repository."""
+
+    explicit = task.repo.strip()
+    if explicit:
+        return explicit
+    inferred = infer_repo_from_instance_id(task.instance_id)
+    if inferred is not None:
+        return inferred
+    return f"instance:{task.instance_id}"
+
+
 def load_tasks_from_swebench_dataset(path: str | Path) -> list[TaskDef]:
     """Load tasks from a standard SWE-bench / SWE-rebench dataset file.
 
@@ -164,6 +193,10 @@ def create_single_task(
     **kwargs: Any,
 ) -> TaskDef:
     """Create a single task definition inline."""
+    if not str(kwargs.get("repo") or "").strip():
+        inferred = infer_repo_from_instance_id(instance_id)
+        if inferred is not None:
+            kwargs["repo"] = inferred
     return TaskDef(
         instance_id=instance_id,
         image=image,
@@ -233,7 +266,9 @@ def _record_to_task(record: dict[str, Any]) -> TaskDef:
         problem = record["issue"].get("body", "")
 
     # repo
-    repo = record.get("repo") or record.get("repository") or ""
+    repo = str(record.get("repo") or record.get("repository") or "").strip()
+    if not repo:
+        repo = infer_repo_from_instance_id(str(iid)) or ""
 
     # base commit
     base = (

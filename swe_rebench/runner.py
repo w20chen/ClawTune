@@ -52,8 +52,12 @@ from swe_rebench.docker import (
     run_container,
 )
 from swe_rebench.host_sandbox import (
+    KnowledgeBaseSyncError,
     _chmod_and_retry,
+    _prepare_batch_tool_resource_kb,
+    _publish_tool_resource_kb,
     _reset_directory_with_docker,
+    _seed_runtime_tool_resource_kb,
     run_host_sandbox_task,
 )
 from swe_rebench.prepare import build_bundle, bundle_needs_rebuild
@@ -63,6 +67,7 @@ from swe_rebench.task_source import (
     filter_tasks,
     load_tasks_from_swebench_dataset,
     parse_instance_ids,
+    task_repo_key,
 )
 
 
@@ -78,6 +83,9 @@ class BatchReport:
     started_at: str = ""
     finished_at: str = ""
     duration_seconds: float = 0.0
+    shared_kb_dir: str | None = None
+    aborted: bool = False
+    abort_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -88,8 +96,19 @@ class BatchReport:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "duration_seconds": round(self.duration_seconds, 1),
+            "shared_kb_dir": self.shared_kb_dir,
+            "aborted": self.aborted,
+            "abort_reason": self.abort_reason,
             "results": self.results,
         }
+
+
+class _TaskKnowledgeBaseSyncError(KnowledgeBaseSyncError):
+    """KB synchronization failed after a task already produced a result."""
+
+    def __init__(self, message: str, result: ContainerResult) -> None:
+        super().__init__(message)
+        self.result = result
 
 
 def _result_dict(r: ContainerResult) -> dict[str, Any]:
@@ -1612,6 +1631,10 @@ def run_batch(
         total_tasks=len(tasks),
         started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     )
+    shared_kb_dir = _new_batch_shared_kb_dir(config)
+    _prepare_batch_tool_resource_kb(shared_kb_dir, config)
+    report.shared_kb_dir = str(shared_kb_dir)
+    _log(f"Shared tool-resource KB: {shared_kb_dir}")
     start_wall = time.monotonic()
 
     # Pre-pull images (best-effort)
@@ -1629,17 +1652,43 @@ def run_batch(
     failed_count = 0
     for task in tasks:
         trace_dir = _task_trace_dir(config, task)
+        abort_after_result = False
         try:
-            result = _run_one(client, task, bundle_dir, trace_dir, config)
+            result = _run_one(
+                client,
+                task,
+                bundle_dir,
+                trace_dir,
+                config,
+                shared_kb_dir=shared_kb_dir,
+            )
+        except KnowledgeBaseSyncError as exc:
+            abort_after_result = True
+            report.aborted = True
+            report.abort_reason = str(exc)
+            carried_result = getattr(exc, "result", None)
+            result = (
+                carried_result
+                if isinstance(carried_result, ContainerResult)
+                else ContainerResult(
+                    task_id=task.instance_id,
+                    image=task.image,
+                    exit_code=-1,
+                    error=str(exc),
+                    trace_dir=trace_dir,
+                )
+            )
         except Exception as exc:
             result = ContainerResult(
                 task_id=task.instance_id,
                 image=task.image,
                 exit_code=-1,
                 error=str(exc),
+                trace_dir=trace_dir,
             )
 
         result_dict = _result_dict(result)
+        result_dict["repo"] = task_repo_key(task)
         telemetry_error = _required_telemetry_error(config, result_dict)
         agent_error = _nested_get(result_dict, ("agent_diagnostics", "failure"))
         telemetry_not_evaluable = bool(
@@ -1695,6 +1744,9 @@ def run_batch(
         )
         if result.error:
             _log(f"       error: {result.error}")
+        if abort_after_result:
+            _log("       aborting batch: shared KB generation was not published safely")
+            break
 
     report.completed = completed_count
     report.failed = failed_count
@@ -1724,6 +1776,8 @@ def _run_one(
     bundle_dir: Path,
     trace_dir: Path,
     config: RunnerConfig,
+    *,
+    shared_kb_dir: Path | None = None,
 ) -> ContainerResult:
     """Execute a single task container (called in worker thread)."""
     _reset_task_trace_dir(
@@ -1732,6 +1786,43 @@ def _run_one(
         docker_cleanup_image=task.image,
         docker_platform=config.docker.platform,
     )
+    if shared_kb_dir is not None:
+        _seed_runtime_tool_resource_kb(
+            trace_dir,
+            config,
+            source_dir=shared_kb_dir,
+        )
+
+    result = _execute_one(
+        client=client,
+        task=task,
+        bundle_dir=bundle_dir,
+        trace_dir=trace_dir,
+        config=config,
+        shared_kb_dir=shared_kb_dir,
+    )
+
+    if shared_kb_dir is not None:
+        try:
+            _publish_tool_resource_kb(trace_dir, shared_kb_dir)
+        except KnowledgeBaseSyncError as exc:
+            message = f"task completed but shared KB publish failed: {exc}"
+            result.exit_code = -1
+            result.error = f"{result.error}; {message}" if result.error else message
+            raise _TaskKnowledgeBaseSyncError(message, result) from exc
+    return result
+
+
+def _execute_one(
+    *,
+    client: Any,
+    task: TaskDef,
+    bundle_dir: Path,
+    trace_dir: Path,
+    config: RunnerConfig,
+    shared_kb_dir: Path | None,
+) -> ContainerResult:
+    """Execute a task after its isolated directory and shared KB are ready."""
 
     if normalize_runtime_mode(config.runtime.mode) == "host-openclaw-sandbox":
         return run_host_sandbox_task(
@@ -1739,6 +1830,7 @@ def _run_one(
             trace_dir=trace_dir,
             config=config,
             bundle_dir=bundle_dir,
+            shared_kb_dir=shared_kb_dir,
         )
 
     retries = config.batch.retry_failed + 1
@@ -1776,9 +1868,10 @@ def _run_one(
             timeout_seconds=config.batch.task_timeout_seconds,
             stage2_required=config.runtime.stage2_required,
             env_extra={
+                **task.extra_env,
                 "TASK_BASE_COMMIT": task.base_commit,
                 "TASK_HINT_TEXT": task.hint_text,
-                **task.extra_env,
+                "AGENT_SCHEDULER_TOOL_RESOURCE_REPO": task_repo_key(task),
             },
         )
         last_result = result
@@ -1791,6 +1884,18 @@ def _run_one(
         task_id=task.instance_id, image=task.image,
         exit_code=-1, error="All retries exhausted",
         trace_dir=trace_dir,
+    )
+
+
+def _new_batch_shared_kb_dir(config: RunnerConfig) -> Path:
+    """Allocate an isolated KB generation shared only by this batch run."""
+
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    nonce = time.time_ns() % 1_000_000_000
+    return (
+        config.output.trace_root.parent
+        / "kb-batches"
+        / f"{stamp}-{os.getpid()}-{nonce:09d}"
     )
 
 
@@ -2048,7 +2153,7 @@ def main() -> None:
     run_p.add_argument("--task-id", default=None, help="Task ID for single-image mode")
     run_p.add_argument("--problem", default=None, help="Problem statement for single-image mode")
     run_p.add_argument("--sample", type=int, default=None,
-                       help="Run only the first N selected tasks")
+                       help="Run exactly the first N selected tasks (error if fewer exist)")
     run_p.add_argument("--skip", type=int, default=0,
                        help="Skip the first N selected tasks before --sample")
     run_p.add_argument("--instance-ids", default=None,
@@ -2130,6 +2235,15 @@ def main() -> None:
             repo=args.repo,
         )
 
+        if args.sample is not None and args.sample > 0 and len(tasks) < args.sample:
+            _log(
+                f"ERROR: --sample {args.sample} requires {args.sample} matching "
+                f"tasks, but the selected source contains only {len(tasks)}. "
+                "Set AGENT_TEST_BENCH_ROOT or pass --dataset with the full "
+                "SWE-Rebench task source."
+            )
+            sys.exit(1)
+
         if not tasks:
             _log("ERROR: no tasks loaded.  Provide --dataset, --tasks, or --image.")
             sys.exit(1)
@@ -2138,7 +2252,10 @@ def main() -> None:
 
         if args.dry_run:
             for i, t in enumerate(tasks):
-                _log(f"  [{i+1}] {t.instance_id}  image={t.image}")
+                _log(
+                    f"  [{i+1}] {t.instance_id}  repo={task_repo_key(t)} "
+                    f"image={t.image}"
+                )
                 if t.problem_statement:
                     _log(f"       problem: {t.problem_statement[:120]}...")
             return
@@ -2211,8 +2328,10 @@ def _default_agent_test_bench_tasks(repo_root: Path) -> Path | None:
     if env_root:
         candidates.append(Path(env_root) / "data" / "swe-rebench" / "tasks.json")
     candidates.extend([
-        repo_root / "swe_rebench" / "tasks.json",
         repo_root.parent / "agent-test-bench" / "data" / "swe-rebench" / "tasks.json",
+        # The tracked file is intentionally a small smoke-test fallback.  A
+        # full sibling checkout must win so --sample 32 can select 32 tasks.
+        repo_root / "swe_rebench" / "tasks.json",
     ])
     for candidate in candidates:
         if candidate.exists():

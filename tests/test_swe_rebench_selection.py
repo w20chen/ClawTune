@@ -10,12 +10,14 @@ import pytest
 
 from swe_rebench.config import RunnerConfig, _load_yaml_safe
 from swe_rebench.docker import (
+    ContainerCleanupError,
     ContainerResult,
     _container_kernel_header_volumes,
     _container_tracefs_volumes,
     local_image_available,
 )
 from swe_rebench.host_sandbox import (
+    KnowledgeBaseSyncError,
     _SANDBOX_TASK_PATH,
     _cleanup_openclaw_sandbox_containers,
     _cleanup_runtime_artifacts,
@@ -28,6 +30,8 @@ from swe_rebench.host_sandbox import (
     _make_sandbox_workspace_writable,
     _openclaw_config,
     _openclaw_env,
+    _prepare_batch_tool_resource_kb,
+    _publish_tool_resource_kb,
     _run_openclaw_agent,
     _reset_directory,
     _sandbox_container_prefix,
@@ -52,10 +56,17 @@ from swe_rebench.prepare import (
     bundle_needs_rebuild,
 )
 from swe_rebench.sandbox import sandbox_container_prefix
-from swe_rebench.task_source import filter_tasks, parse_instance_ids, tasks_from_records
+from swe_rebench.task_source import (
+    filter_tasks,
+    infer_repo_from_instance_id,
+    parse_instance_ids,
+    task_repo_key,
+    tasks_from_records,
+)
 from swe_rebench.runner import (
     _apply_runtime_overrides,
     _container_image_ready,
+    _default_agent_test_bench_tasks,
     _inspect_trace,
     _resource_summary,
     _run_one,
@@ -63,6 +74,7 @@ from swe_rebench.runner import (
     _reset_task_trace_dir,
     _smoke_summary,
     _task_artifacts,
+    run_batch,
 )
 
 
@@ -152,6 +164,132 @@ def test_filter_tasks_preserves_instance_id_order() -> None:
     assert [task.instance_id for task in selected] == ["django__c", "django__a"]
 
 
+def test_filter_tasks_sample_32_preserves_dataset_order() -> None:
+    tasks = [
+        TaskDef(
+            instance_id=f"owner__repo-{index}",
+            image=f"image:{index}",
+            repo="owner/repo",
+        )
+        for index in range(40)
+    ]
+
+    selected = filter_tasks(tasks, sample=32)
+
+    assert [task.instance_id for task in selected] == [
+        f"owner__repo-{index}" for index in range(32)
+    ]
+
+
+@pytest.mark.parametrize(
+    "instance_id",
+    [
+        "12rambau__sepal_ui-411",
+        "12rambau__sepal_ui-501",
+        "12rambau__sepal_ui-516",
+    ],
+)
+def test_task_repo_fallback_groups_instances_from_the_same_repo(
+    instance_id: str,
+) -> None:
+    [task] = tasks_from_records(
+        [{"instance_id": instance_id, "docker_image": "image:latest"}]
+    )
+
+    assert infer_repo_from_instance_id(instance_id) == "12rambau/sepal_ui"
+    assert task.repo == "12rambau/sepal_ui"
+    assert task_repo_key(task) == "12rambau/sepal_ui"
+
+
+def test_task_repo_fallback_handles_hyphenated_repo_names() -> None:
+    instance_id = "scikit-learn__scikit-learn-123"
+
+    assert infer_repo_from_instance_id(instance_id) == (
+        "scikit-learn/scikit-learn"
+    )
+
+
+def test_task_repo_key_prefers_explicit_repo_and_isolates_unparseable_ids() -> None:
+    explicit = TaskDef(
+        instance_id="wrong__repo-1",
+        image="image:latest",
+        repo=" 12rambau/sepal_ui ",
+    )
+    first_unknown = TaskDef(instance_id="custom-task-a", image="image:latest")
+    second_unknown = TaskDef(instance_id="custom-task-b", image="image:latest")
+
+    assert task_repo_key(explicit) == "12rambau/sepal_ui"
+    assert task_repo_key(first_unknown) == "instance:custom-task-a"
+    assert task_repo_key(second_unknown) == "instance:custom-task-b"
+    assert task_repo_key(first_unknown) != task_repo_key(second_unknown)
+
+
+def test_filter_tasks_matches_repo_inferred_from_instance_id() -> None:
+    tasks = tasks_from_records(
+        [
+            {
+                "instance_id": "12rambau__sepal_ui-411",
+                "docker_image": "image:411",
+            },
+            {
+                "instance_id": "other__project-1",
+                "docker_image": "image:other",
+            },
+            {
+                "instance_id": "12rambau__sepal_ui-501",
+                "docker_image": "image:501",
+            },
+        ]
+    )
+
+    selected = filter_tasks(tasks, repo="12rambau/sepal_ui")
+
+    assert [task.instance_id for task in selected] == [
+        "12rambau__sepal_ui-411",
+        "12rambau__sepal_ui-501",
+    ]
+
+
+def test_default_task_source_prefers_full_sibling_dataset(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path / "ClawTune"
+    bundled = repo_root / "swe_rebench" / "tasks.json"
+    sibling = (
+        tmp_path
+        / "agent-test-bench"
+        / "data"
+        / "swe-rebench"
+        / "tasks.json"
+    )
+    bundled.parent.mkdir(parents=True)
+    sibling.parent.mkdir(parents=True)
+    bundled.write_text(
+        json.dumps(
+            [
+                {"instance_id": f"smoke__repo-{index}", "image": "smoke"}
+                for index in range(4)
+            ]
+        ),
+        encoding="utf-8",
+    )
+    sibling.write_text(
+        json.dumps(
+            [
+                {"instance_id": f"full__repo-{index}", "image": "full"}
+                for index in range(40)
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("AGENT_TEST_BENCH_ROOT", raising=False)
+
+    selected = _default_agent_test_bench_tasks(repo_root)
+
+    assert selected == sibling
+
+
 def test_runner_dry_run_accepts_batch_selection_args(tmp_path: Path) -> None:
     tasks_path = tmp_path / "tasks.json"
     tasks_path.write_text(json.dumps(_records()), encoding="utf-8")
@@ -181,6 +319,37 @@ def test_runner_dry_run_accepts_batch_selection_args(tmp_path: Path) -> None:
     assert "Loaded 1 tasks" in result.stderr
     assert "django__a" in result.stderr
     assert "django__c" not in result.stderr
+
+
+def test_runner_refuses_to_silently_undershoot_positive_sample(
+    tmp_path: Path,
+) -> None:
+    tasks_path = tmp_path / "tasks.json"
+    tasks_path.write_text(json.dumps(_records()), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "swe_rebench.runner",
+            "run",
+            "--config",
+            "swe_rebench/config.example.yaml",
+            "--tasks",
+            str(tasks_path),
+            "--sample",
+            "32",
+            "--dry-run",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "--sample 32 requires 32 matching tasks" in result.stderr
+    assert "AGENT_TEST_BENCH_ROOT" in result.stderr
+    assert "Loaded" not in result.stderr
 
 
 def test_runner_falls_back_to_example_config_when_config_yaml_is_missing(tmp_path: Path) -> None:
@@ -756,6 +925,117 @@ bundle:
     assert called["config"] == config
 
 
+def test_run_one_passes_shared_kb_through_host_runtime_and_publishes(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+runtime:
+  mode: "host-openclaw-sandbox"
+output:
+  trace_root: "traces"
+  report_path: "report.json"
+bundle:
+  output_dir: "bundle"
+""",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    task = TaskDef(
+        instance_id="12rambau__sepal_ui-411",
+        image="image:latest",
+    )
+    trace_dir = tmp_path / "traces" / task.instance_id
+    shared_kb_dir = tmp_path / "kb-batches" / "batch-1"
+    _write_test_kb_pair(shared_kb_dir, "shared-before-task")
+    called: dict[str, object] = {}
+
+    def fake_host_runner(**kwargs):
+        called.update(kwargs)
+        assert _kb_pair_markers(trace_dir / "tool-resource") == {
+            "runtime-tool-resource-kb.json": "shared-before-task",
+            "clause-resource-kb.json": "shared-before-task",
+        }
+        _write_test_kb_pair(trace_dir / "tool-resource", "task-update")
+        return ContainerResult(
+            task_id=task.instance_id,
+            image=task.image,
+            exit_code=0,
+            trace_dir=trace_dir,
+        )
+
+    import swe_rebench.runner as runner
+
+    monkeypatch.setattr(runner, "run_host_sandbox_task", fake_host_runner)
+    monkeypatch.setattr(
+        runner,
+        "run_container",
+        lambda **kwargs: pytest.fail("host runtime dispatched into container-openclaw"),
+    )
+
+    result = _run_one(
+        client=object(),
+        task=task,
+        bundle_dir=tmp_path / "bundle",
+        trace_dir=trace_dir,
+        config=config,
+        shared_kb_dir=shared_kb_dir,
+    )
+
+    assert result.exit_code == 0
+    assert called["shared_kb_dir"] == shared_kb_dir
+    assert _kb_pair_markers(shared_kb_dir) == {
+        "runtime-tool-resource-kb.json": "task-update",
+        "clause-resource-kb.json": "task-update",
+    }
+
+
+def test_run_one_does_not_publish_when_task_writer_exit_is_unconfirmed(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "runtime:\n  mode: host-openclaw-sandbox\n"
+        "output:\n  trace_root: traces\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    task = TaskDef(instance_id="owner__repo-1", image="image:latest")
+    trace_dir = tmp_path / "traces" / task.instance_id
+    shared_kb_dir = tmp_path / "kb-batches" / "batch-1"
+    _write_test_kb_pair(shared_kb_dir, "last-good")
+
+    def fail_without_confirming_cleanup(**_kwargs):
+        _write_test_kb_pair(trace_dir / "tool-resource", "unsafe-update")
+        raise ContainerCleanupError("writer exit unconfirmed")
+
+    import swe_rebench.runner as runner
+
+    monkeypatch.setattr(
+        runner,
+        "run_host_sandbox_task",
+        fail_without_confirming_cleanup,
+    )
+
+    with pytest.raises(ContainerCleanupError, match="writer exit unconfirmed"):
+        _run_one(
+            client=object(),
+            task=task,
+            bundle_dir=tmp_path / "bundle",
+            trace_dir=trace_dir,
+            config=config,
+            shared_kb_dir=shared_kb_dir,
+        )
+
+    assert _kb_pair_markers(shared_kb_dir) == {
+        "runtime-tool-resource-kb.json": "last-good",
+        "clause-resource-kb.json": "last-good",
+    }
+
+
 def test_run_one_propagates_container_stage2_fallback_mode(monkeypatch, tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -772,7 +1052,13 @@ bundle:
         encoding="utf-8",
     )
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
-    task = TaskDef(instance_id="task-1", image="image:latest", problem_statement="fix")
+    task = TaskDef(
+        instance_id="task-1",
+        image="image:latest",
+        problem_statement="fix",
+        repo="12rambau/sepal_ui",
+        extra_env={"AGENT_SCHEDULER_TOOL_RESOURCE_REPO": "wrong/repo"},
+    )
     trace_dir = tmp_path / "traces" / "task-1"
     called: dict[str, object] = {}
 
@@ -801,6 +1087,11 @@ bundle:
 
     assert result.exit_code == 0
     assert called["stage2_required"] is False
+    env_extra = called["env_extra"]
+    assert isinstance(env_extra, dict)
+    assert env_extra["AGENT_SCHEDULER_TOOL_RESOURCE_REPO"] == (
+        "12rambau/sepal_ui"
+    )
 
 
 def test_host_sandbox_openclaw_config_uses_only_public_top_level_keys(tmp_path: Path) -> None:
@@ -1070,18 +1361,62 @@ def test_host_sandbox_launcher_exports_testbed_path_but_uses_system_python(
     assert "command -v python3" not in launcher
 
 
+def _write_test_kb_pair(directory: Path, marker: str) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    payloads = {
+        "runtime-tool-resource-kb.json": {
+            "schema": "runtime_tool_resource_kb_v1",
+            "quantile": 0.9,
+            "max_prefix_depth": 4,
+            "public": {
+                "latency_ms": [],
+                "peak_cpu_cores": [],
+                "peak_memory_mb": [],
+            },
+            "repo": {},
+            "pending": [],
+            "last_query_ts": None,
+            "marker": marker,
+        },
+        "clause-resource-kb.json": {
+            "schema": "runtime_clause_resource_kb_v4",
+            "max_prefix_depth": 4,
+            "public": {
+                "latency_ms": [],
+                "peak_cpu_cores": [],
+                "sampled_peak_rss_mb": [],
+            },
+            "repo": {},
+            "pending": [],
+            "last_query_ts": None,
+            "marker": marker,
+        },
+    }
+    for filename, payload in payloads.items():
+        (directory / filename).write_text(
+            json.dumps(payload, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+
+def _kb_pair_markers(directory: Path) -> dict[str, str]:
+    return {
+        path.name: json.loads(path.read_text(encoding="utf-8"))["marker"]
+        for path in (
+            directory / "runtime-tool-resource-kb.json",
+            directory / "clause-resource-kb.json",
+        )
+    }
+
+
 def test_host_sandbox_seeds_runtime_and_clause_predictor_kbs(tmp_path: Path) -> None:
     source_dir = tmp_path / "traces" / "tool-resource"
-    source_dir.mkdir(parents=True)
-    runtime_payload = '{"schema":"runtime_tool_resource_kb_v2"}\n'
-    clause_payload = '{"schema":"runtime_clause_resource_kb_v4"}\n'
-    (source_dir / "runtime-tool-resource-kb.json").write_text(
-        runtime_payload,
-        encoding="utf-8",
+    _write_test_kb_pair(source_dir, "tracked-seed")
+    runtime_payload = (source_dir / "runtime-tool-resource-kb.json").read_text(
+        encoding="utf-8"
     )
-    (source_dir / "clause-resource-kb.json").write_text(
-        clause_payload,
-        encoding="utf-8",
+    clause_payload = (source_dir / "clause-resource-kb.json").read_text(
+        encoding="utf-8"
     )
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
@@ -1098,6 +1433,188 @@ def test_host_sandbox_seeds_runtime_and_clause_predictor_kbs(tmp_path: Path) -> 
     assert (seeded_dir / "clause-resource-kb.json").read_text(
         encoding="utf-8"
     ) == clause_payload
+
+
+def test_batch_shared_kb_prepare_copy_in_and_publish_reaches_next_task(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("", encoding="utf-8")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    tracked_seed = tmp_path / "traces" / "tool-resource"
+    shared_kb_dir = tmp_path / "kb-batches" / "batch-1"
+    _write_test_kb_pair(tracked_seed, "tracked-seed")
+
+    _prepare_batch_tool_resource_kb(shared_kb_dir, config)
+
+    expected_seed = {
+        "runtime-tool-resource-kb.json": "tracked-seed",
+        "clause-resource-kb.json": "tracked-seed",
+    }
+    assert _kb_pair_markers(shared_kb_dir) == expected_seed
+
+    task_a_trace = tmp_path / "task-a"
+    _seed_runtime_tool_resource_kb(
+        task_a_trace,
+        config,
+        source_dir=shared_kb_dir,
+    )
+    assert _kb_pair_markers(task_a_trace / "tool-resource") == expected_seed
+
+    _write_test_kb_pair(task_a_trace / "tool-resource", "task-a-update")
+    _publish_tool_resource_kb(task_a_trace, shared_kb_dir)
+
+    task_b_trace = tmp_path / "task-b"
+    _seed_runtime_tool_resource_kb(
+        task_b_trace,
+        config,
+        source_dir=shared_kb_dir,
+    )
+
+    expected_update = {
+        "runtime-tool-resource-kb.json": "task-a-update",
+        "clause-resource-kb.json": "task-a-update",
+    }
+    assert _kb_pair_markers(shared_kb_dir) == expected_update
+    assert _kb_pair_markers(task_b_trace / "tool-resource") == expected_update
+    assert _kb_pair_markers(tracked_seed) == expected_seed
+
+
+def test_batch_shared_kb_invalid_pair_does_not_overwrite_last_good_generation(
+    tmp_path: Path,
+) -> None:
+    shared_kb_dir = tmp_path / "shared-kb"
+    task_trace = tmp_path / "task"
+    task_kb_dir = task_trace / "tool-resource"
+    _write_test_kb_pair(shared_kb_dir, "last-good")
+    _write_test_kb_pair(task_kb_dir, "new-generation")
+    (task_kb_dir / "clause-resource-kb.json").write_text(
+        "{not-json\n",
+        encoding="utf-8",
+    )
+    before = {
+        path.name: path.read_bytes()
+        for path in (
+            shared_kb_dir / "runtime-tool-resource-kb.json",
+            shared_kb_dir / "clause-resource-kb.json",
+        )
+    }
+
+    with pytest.raises(RuntimeError, match="invalid KB snapshot"):
+        _publish_tool_resource_kb(task_trace, shared_kb_dir)
+
+    after = {
+        path.name: path.read_bytes()
+        for path in (
+            shared_kb_dir / "runtime-tool-resource-kb.json",
+            shared_kb_dir / "clause-resource-kb.json",
+        )
+    }
+    assert after == before
+
+
+def test_batch_shared_kb_rejects_schema_only_snapshot_as_unloadable(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("", encoding="utf-8")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    tracked_seed = tmp_path / "traces" / "tool-resource"
+    _write_test_kb_pair(tracked_seed, "tracked-seed")
+    (tracked_seed / "runtime-tool-resource-kb.json").write_text(
+        json.dumps(
+            {
+                "schema": "runtime_tool_resource_kb_v1",
+                "max_prefix_depth": 4,
+                "public": {},
+                "repo": {},
+                "pending": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(KnowledgeBaseSyncError, match="scheduler rejected"):
+        _prepare_batch_tool_resource_kb(tmp_path / "shared-kb", config)
+
+
+def test_batch_shared_kb_second_replace_failure_rolls_back_whole_pair(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    shared_kb_dir = tmp_path / "shared-kb"
+    task_trace = tmp_path / "task"
+    _write_test_kb_pair(shared_kb_dir, "last-good")
+    _write_test_kb_pair(task_trace / "tool-resource", "new-generation")
+    real_replace = os.replace
+    failed_once = False
+
+    def fail_second_commit(source, destination):
+        nonlocal failed_once
+        source_path = Path(source)
+        destination_path = Path(destination)
+        if (
+            not failed_once
+            and source_path.parent.name == "staged"
+            and destination_path
+            == shared_kb_dir / "clause-resource-kb.json"
+        ):
+            failed_once = True
+            raise OSError("simulated second snapshot replace failure")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr("swe_rebench.host_sandbox.os.replace", fail_second_commit)
+
+    with pytest.raises(RuntimeError, match="was rolled back"):
+        _publish_tool_resource_kb(task_trace, shared_kb_dir)
+
+    assert failed_once is True
+    assert _kb_pair_markers(shared_kb_dir) == {
+        "runtime-tool-resource-kb.json": "last-good",
+        "clause-resource-kb.json": "last-good",
+    }
+
+
+def test_run_batch_aborts_before_next_task_on_kb_sync_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "output:\n  trace_root: traces\n  report_path: report.json\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    tasks = [
+        TaskDef(instance_id="owner__repo-1", image="image:1", repo="owner/repo"),
+        TaskDef(instance_id="owner__repo-2", image="image:2", repo="owner/repo"),
+    ]
+    attempted: list[str] = []
+
+    import swe_rebench.runner as runner
+
+    monkeypatch.setattr(runner, "get_docker_client", lambda _config: None)
+    monkeypatch.setattr(runner, "_pre_pull_images", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_prepare_batch_tool_resource_kb",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fail_first_task(_client, task, *_args, **_kwargs):
+        attempted.append(task.instance_id)
+        raise KnowledgeBaseSyncError("simulated publish failure")
+
+    monkeypatch.setattr(runner, "_run_one", fail_first_task)
+
+    report = run_batch(config, tasks, tmp_path / "bundle")
+
+    assert attempted == ["owner__repo-1"]
+    assert report.aborted is True
+    assert report.abort_reason == "simulated publish failure"
+    assert report.completed == 0
+    assert report.failed == 1
+    assert len(report.results) == 1
 
 
 def test_host_sandbox_verifies_mounted_launcher_before_agent(
@@ -1313,10 +1830,15 @@ def test_host_sandbox_prompt_uses_relative_paths(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
-    task = TaskDef(instance_id="task-1", image="image:latest", problem_statement="fix")
+    task = TaskDef(
+        instance_id="12rambau__sepal_ui-411",
+        image="image:latest",
+        problem_statement="fix",
+    )
     trace_dir = tmp_path / "trace"
     workspace = tmp_path / "workspace"
     bundle_dir = tmp_path / "bundle"
+    shared_kb_dir = tmp_path / "kb-batches" / "batch-1"
     bundle_dir.mkdir()
     fingerprint = {
         "schema": "swe_rebench_bundle_source_fingerprint_v1",
@@ -1329,7 +1851,14 @@ def test_host_sandbox_prompt_uses_relative_paths(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    _write_task_inputs(trace_dir, task, config, workspace, bundle_dir)
+    _write_task_inputs(
+        trace_dir,
+        task,
+        config,
+        workspace,
+        bundle_dir,
+        shared_kb_dir=shared_kb_dir,
+    )
     prompt = (trace_dir / "agent_prompt.txt").read_text(encoding="utf-8")
     manifest = json.loads(
         (trace_dir / "task_manifest.json").read_text(encoding="utf-8")
@@ -1337,6 +1866,8 @@ def test_host_sandbox_prompt_uses_relative_paths(tmp_path: Path) -> None:
 
     assert "Use relative paths" in prompt
     assert "repository mounted at /workspace" not in prompt
+    assert manifest["repo"] == "12rambau/sepal_ui"
+    assert manifest["shared_kb_dir"] == str(shared_kb_dir)
     assert manifest["runner_config"] == str(config_path.resolve())
     assert manifest["bundle_source_fingerprint"] == fingerprint
 
@@ -1488,6 +2019,7 @@ def test_host_sandbox_stages_user_owned_plugin_when_running_as_root(monkeypatch,
 
 def test_host_sandbox_sidecar_enables_docker_exec_observer(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("LD_PRELOAD", raising=False)
+    monkeypatch.setenv("AGENT_SCHEDULER_TOOL_RESOURCE_REPO", "stale/openclaw")
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -1514,6 +2046,7 @@ def test_host_sandbox_sidecar_enables_docker_exec_observer(monkeypatch, tmp_path
         port=8765,
         config=config,
         workspace=workspace,
+        repo="12rambau/sepal_ui",
     )
 
     assert isinstance(process, FakeProcess)
@@ -1521,9 +2054,63 @@ def test_host_sandbox_sidecar_enables_docker_exec_observer(monkeypatch, tmp_path
     assert isinstance(env, dict)
     assert env["AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER"] == "true"
     assert env["AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED"] == "true"
+    assert env["AGENT_SCHEDULER_TOOL_RESOURCE_REPO"] == "12rambau/sepal_ui"
     assert env["AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX"] == _sandbox_container_prefix(workspace)
     assert str(tmp_path / "services" / "scheduler" / "src") in env["PYTHONPATH"]
     assert "LD_PRELOAD" not in env
+
+
+def test_host_sandbox_sidecar_readiness_failure_stops_unreturned_process(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("", encoding="utf-8")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    trace_dir = tmp_path / "trace"
+    trace_dir.mkdir()
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        terminated = False
+        waited = False
+
+        def poll(self):
+            return 0 if self.waited else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            self.waited = True
+            return 0
+
+    process = FakeProcess()
+
+    def fake_popen(_cmd, **kwargs):
+        captured["stdout"] = kwargs["stdout"]
+        captured["stderr"] = kwargs["stderr"]
+        return process
+
+    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._wait_ready",
+        lambda _port: (_ for _ in ()).throw(RuntimeError("not ready")),
+    )
+
+    with pytest.raises(RuntimeError, match="not ready"):
+        _start_sidecar(
+            trace_dir=trace_dir,
+            port=8765,
+            config=config,
+            workspace=tmp_path / "workspace",
+            repo="12rambau/sepal_ui",
+        )
+
+    assert process.terminated is True
+    assert process.waited is True
+    assert getattr(captured["stdout"], "closed") is True
+    assert getattr(captured["stderr"], "closed") is True
 
 
 def test_host_sandbox_writes_tool_resource_preflight(monkeypatch, tmp_path: Path) -> None:
@@ -2021,6 +2608,118 @@ def test_docker_cli_uses_wait_exit_code_with_rm_container(monkeypatch, tmp_path:
     assert "AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED=false" in docker_run
     assert "CLAW_CGROUP_REQUIRED=0" in docker_run
     assert (tmp_path / "trace" / "container.log").read_text(encoding="utf-8") == "container output\n"
+
+
+def test_docker_cli_wait_failure_stops_container_before_return(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    wait_calls = 0
+
+    class Result:
+        def __init__(self, stdout: str = "", stderr: str = "") -> None:
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fake_run(cmd, **kwargs):
+        nonlocal wait_calls
+        command = list(cmd)
+        calls.append(command)
+        if command[:3] == ["docker", "run", "--detach"]:
+            return Result(stdout="abc123\n")
+        if command == ["docker", "wait", "abc123"]:
+            wait_calls += 1
+            if kwargs.get("check") is True:
+                raise subprocess.CalledProcessError(
+                    1,
+                    command,
+                    stderr="wait failed",
+                )
+            return Result(stdout="137\n")
+        if command == ["docker", "kill", "abc123"]:
+            return Result(stdout="abc123\n")
+        if command == ["docker", "logs", "abc123"]:
+            return Result(stdout="final output\n")
+        if command == ["docker", "rm", "-f", "abc123"]:
+            return Result(stdout="abc123\n")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "swe_rebench.docker._stream_cli_container_logs",
+        lambda *_args: (None, None),
+    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("", encoding="utf-8")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+
+    result = run_container(
+        client=None,
+        image="image:latest",
+        task_id="task-wait-failure",
+        bundle_dir=tmp_path,
+        trace_dir=tmp_path / "trace",
+        problem_statement="fix",
+        config=config.docker,
+        llm_api_key="sk-test",
+        llm_upstream_url="https://example.invalid",
+        timeout_seconds=10,
+    )
+
+    assert result.exit_code == -1
+    assert "wait failed" in (result.error or "")
+    assert wait_calls == 2
+    assert calls.index(["docker", "kill", "abc123"]) < calls.index(
+        ["docker", "logs", "abc123"]
+    )
+    assert calls[-1] == ["docker", "rm", "-f", "abc123"]
+
+
+def test_docker_sdk_remove_failure_is_not_reported_as_quiesced(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class FakeContainer:
+        id = "abc123"
+
+        def wait(self, timeout=None):
+            return {"StatusCode": 0}
+
+        def remove(self, force=False):
+            raise RuntimeError("remove failed")
+
+    class FakeContainers:
+        def run(self, **_kwargs):
+            return FakeContainer()
+
+    client = type("FakeClient", (), {"containers": FakeContainers()})()
+    monkeypatch.setattr(
+        "swe_rebench.docker._stream_sdk_container_logs",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        "swe_rebench.docker._write_sdk_container_log",
+        lambda *_args: None,
+    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("", encoding="utf-8")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+
+    with pytest.raises(ContainerCleanupError, match="remove failed"):
+        run_container(
+            client=client,
+            image="image:latest",
+            task_id="task-sdk-cleanup",
+            bundle_dir=tmp_path,
+            trace_dir=tmp_path / "trace",
+            problem_statement="fix",
+            config=config.docker,
+            llm_api_key="sk-test",
+            llm_upstream_url="https://example.invalid",
+            timeout_seconds=10,
+        )
 
 
 def test_container_kernel_headers_mount_exact_host_paths_read_only(

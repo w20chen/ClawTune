@@ -532,6 +532,125 @@ def test_openclaw_trace_cold_start_persists_runtime_kb(tmp_path: Path) -> None:
     assert result.tool_resource["continuous_predictions"]["latency_ms"]["key_kind"] == "command_prefix_depth_3"
 
 
+def test_shipped_runtime_snapshot_produces_public_predictions_for_any_repo(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "tool-resource"
+    artifact_dir.mkdir()
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "traces"
+        / "tool-resource"
+        / "runtime-tool-resource-kb.json"
+    )
+    shutil.copyfile(source, artifact_dir / "runtime-tool-resource-kb.json")
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0, 10_000.0)),
+        repo="12rambau/sepal_ui",
+        artifact_dir=artifact_dir,
+    )
+
+    result = asyncio.run(
+        predictor.predict(_tool_request("evt-public-runtime", "call-public-runtime", "git status"))
+    )
+
+    continuous = result.tool_resource["continuous_predictions"]
+    assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
+    assert continuous["latency_ms"]["scope"] == "public"
+    assert continuous["latency_ms"]["key_kind"] == "global"
+    assert continuous["latency_ms"]["evidence_count"] == 38
+    assert continuous["peak_cpu_cores"]["conditional_p90"] == pytest.approx(1.5)
+    assert continuous["peak_cpu_cores"]["scope"] == "public"
+    assert continuous["peak_cpu_cores"]["evidence_count"] == 38
+
+
+def test_shared_snapshots_reuse_same_repo_evidence_but_isolate_other_repos() -> None:
+    snapshot_dir = (
+        Path(__file__).resolve().parents[3] / "traces" / "tool-resource"
+    )
+    runtime = RuntimeToolResourceKB.from_json_obj(
+        json.loads(
+            (snapshot_dir / "runtime-tool-resource-kb.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    )
+    runtime.observe_completed_call(
+        CompletedCall(
+            repo="12rambau/sepal_ui",
+            tool_name="exec",
+            command="git status",
+            ts_start=1.0,
+            ts_end=1.2,
+            peak_cpu_cores=0.25,
+            peak_cpu_cores_eligible=True,
+            peak_memory_mb=64.0,
+            peak_memory_mb_eligible=True,
+            ambient_before_mb=40.0,
+        )
+    )
+    same_repo = runtime.query(
+        ToolCallQuery(
+            repo="12rambau/sepal_ui",
+            tool_name="exec",
+            command="git status",
+            ts_start=3.0,
+            ambient_before_mb=50.0,
+        )
+    )
+    restored_runtime = RuntimeToolResourceKB.from_json_obj(runtime.to_json_obj())
+    other_repo = restored_runtime.query(
+        ToolCallQuery(
+            repo="other/project",
+            tool_name="exec",
+            command="git status",
+            ts_start=4.0,
+            ambient_before_mb=60.0,
+        )
+    )
+
+    assert same_repo["latency_ms"].scope == "repo"
+    assert same_repo["latency_ms"].conditional_p90 == pytest.approx(200.0)
+    assert same_repo["peak_memory_mb"].conditional_p90 == pytest.approx(74.0)
+    assert other_repo["latency_ms"].scope == "public"
+    assert other_repo["latency_ms"].conditional_p90 == pytest.approx(1200.0)
+    assert other_repo["peak_memory_mb"].scope == "public"
+    assert other_repo["peak_memory_mb"].conditional_p90 == pytest.approx(160.0)
+
+    clause = ClauseResourceKB.from_json_obj(
+        json.loads(
+            (snapshot_dir / "clause-resource-kb.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    )
+    clause.observe_completed_clause(
+        ClauseObservation(
+            repo="12rambau/sepal_ui",
+            bin="git",
+            argv=("git", "status"),
+            ts_start=1.0,
+            ts_end=1.2,
+            latency_ms=200.0,
+        )
+    )
+    buckets = LatencyBuckets((100.0, 500.0, 2_000.0, 10_000.0))
+    same_clause = clause.predict_command_latency_bucket(
+        "12rambau/sepal_ui", "git status", 3.0, buckets
+    )
+    restored_clause = ClauseResourceKB.from_json_obj(clause.to_json_obj())
+    other_clause = restored_clause.predict_command_latency_bucket(
+        "other/project", "git status", 4.0, buckets
+    )
+
+    assert same_clause.prediction is not None
+    assert same_clause.prediction.scope == "repo"
+    assert other_clause.prediction is not None
+    assert other_clause.prediction.scope == "public"
+
+
 def test_shipped_clause_snapshot_produces_public_global_single_clause_bucket(
     tmp_path: Path,
 ) -> None:
