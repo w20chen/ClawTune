@@ -4,22 +4,16 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ClawTune adds hardware-aware tracing and scheduling to OpenClaw. It combines
-an OpenClaw plugin with a local Scheduler sidecar and uses eBPF to measure the
+an OpenClaw plugin with a local scheduler sidecar and uses eBPF to measure the
 CPU, memory, process lifecycle, model calls, and tool calls of real agent work.
-It can also run SWE-Rebench tasks and export the resulting traces.
-
-eBPF collection is enabled and required by default. ClawTune stops early when
-the kernel collector is not healthy instead of silently producing incomplete
-results.
+It can also run SWE-Rebench tasks and export the resulting traces. eBPF collection is enabled and required by default.
 
 ## Supported hosts
 
 | Host | Status | Notes |
 | --- | --- | --- |
-| Kunpeng / arm64 + openEuler | Primary target | eBPF runs natively; the setup command enables QEMU for amd64 benchmark images |
+| Kunpeng / arm64 + openEuler | Supported | eBPF runs natively; the setup command enables QEMU for amd64 benchmark images |
 | x86_64 Linux | Supported | eBPF and benchmark images run natively |
-| Other Linux distributions | Expected to work | The setup command currently understands `dnf` and `apt` |
-| Windows and macOS | Development only | They cannot run the Linux eBPF collector |
 
 The Linux host needs Docker, Node.js/npm, OpenClaw 2026.7.1 or newer, Python
 3.10 or newer, Linux 5.8 or newer, cgroup v2, and development files matching
@@ -28,7 +22,7 @@ it can safely identify; it reports Docker, Node.js, or OpenClaw as one
 consolidated missing-software list instead of attempting to replace an
 existing installation.
 
-## From checkout to a running system
+## Quick Start
 
 Run these commands as a normal user from the repository root. An active Conda
 environment is harmless: the setup program deliberately selects the system
@@ -45,7 +39,7 @@ This one command:
 - detects openEuler/RHEL (`dnf`) or Debian/Ubuntu (`apt`);
 - installs missing eBPF compiler, BCC, and matching kernel packages;
 - creates one reusable `.venv` that can see the system BCC binding;
-- installs the Scheduler and builds/configures the OpenClaw plugin;
+- installs, builds, and configures the OpenClaw plugin;
 - repairs a stale ClawTune plugin link after the repository has moved;
 - configures automatic privileged sidecar startup with a readiness gate;
 - builds and validates the parser adapter for the privileged host runtime;
@@ -107,8 +101,11 @@ sidecar and waits for readiness before the first model request. Replace the
 model name with the one you configured:
 
 ```bash
-openclaw agent --local --agent main --model "vllm/<model>" \
-  --message "Use the shell to run: python -c 'print(\"clawtune-ok\")'."
+openclaw agent --local --agent main \
+  --model "vllm/<model>" \
+  --message "Use the shell to run: python -c 'print(\"clawtune-ok\")'." \
+  --session-key "<set a session key>"
+# output "clawtune-ok"
 ```
 
 If a sidecar is already running, the plugin reuses it. The explicit
@@ -130,6 +127,8 @@ If the SWE-Rebench task dataset is in the usual sibling
 ```bash
 python3 scripts/clawtune.py benchmark --sample 1
 ```
+
+Note that this command uses the `host-openclaw-sandbox` mode by default. For `container-openclaw`, set `--runtime-mode container-openclaw`.
 
 You may instead provide a dataset explicitly:
 

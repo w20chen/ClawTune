@@ -262,6 +262,7 @@ def test_launcher_claims_starts_and_returns_child_exit_code(monkeypatch) -> None
 
     monkeypatch.setattr(launcher, "_post_json", fake_post_json)
     monkeypatch.setattr(launcher, "_post_json_best_effort", fake_best_effort)
+    monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: False)
     monkeypatch.setattr(launcher, "_spawn_shell", fake_spawn)
     monkeypatch.setattr(launcher, "_install_signal_forwarders", lambda _child: None)
     monkeypatch.setattr(launcher, "_read_pid_starttime_ticks", lambda _pid: 99)
