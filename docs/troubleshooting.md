@@ -31,6 +31,19 @@ If it says the dnf repositories do not contain BCC or `kernel-devel`, confirm
 that the OS and update repositories for the running openEuler release are
 enabled. A custom or vendor kernel must provide a matching development package.
 
+## Container stops at `checking container system dependencies`
+
+This message belongs only to the `container-openclaw` runtime. Its first run
+may need to install packages inside the benchmark image; running an amd64 image
+through QEMU on Kunpeng is slower than native execution. Current builds print
+the detected package manager and package-download progress. If container DNS,
+proxy, or repository access is broken, setup exits with an explicit error
+after bounded retries instead of waiting silently.
+
+Seeing `container arch: x86_64` on an arm64 Kunpeng host is expected for an
+x86_64 SWE-Rebench image. Re-run the same benchmark after fixing the repository
+or network error shown in the log; no separate runtime configuration is needed.
+
 ## BCC is installed but Python cannot import it
 
 The usual cause is two different Python installations:

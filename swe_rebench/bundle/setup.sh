@@ -9,7 +9,7 @@
 # ────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-echo "[claw] host arch: $(uname -m)"
+echo "[claw] container arch: $(uname -m)"
 
 # Detect python: prefer conda python shipped by swe-rebench images.
 if [ -x /opt/conda/bin/python3 ]; then
@@ -46,7 +46,7 @@ if [ -f "$SETUP_DONE" ]; then
     echo "[claw] stale setup marker or mvdan adapter; rerunning setup."
 fi
 
-echo "[claw] installing system dependencies..."
+echo "[claw] checking container system dependencies..."
 
 # ── Detect package manager ──────────────────────────────────────
 if command -v apt-get &>/dev/null; then PKG_MGR="apt"
@@ -56,8 +56,33 @@ elif command -v apk &>/dev/null; then PKG_MGR="apk"
 else PKG_MGR="none"
 fi
 
+echo "[claw] package manager: $PKG_MGR"
+
+_claw_run_bounded() {
+    if command -v timeout &>/dev/null; then
+        timeout --signal=TERM "${CLAW_SETUP_COMMAND_TIMEOUT_SECONDS:-300}" "$@"
+    else
+        "$@"
+    fi
+}
+
+_claw_apt() {
+    DEBIAN_FRONTEND=noninteractive _claw_run_bounded apt-get \
+        -o Acquire::Retries=2 \
+        -o Acquire::http::Timeout=20 \
+        -o Acquire::https::Timeout=20 \
+        "$@"
+}
+
 case "$PKG_MGR" in
-    apt) apt-get update -qq ;;
+    apt)
+        echo "[claw] refreshing apt metadata (network timeout: 20s, retries: 2)..."
+        if ! _claw_apt update; then
+            echo "[claw] FATAL: apt metadata refresh failed; check container DNS/proxy/mirror access"
+            exit 1
+        fi
+        echo "[claw] apt metadata ready"
+        ;;
     apk) apk update ;;
 esac
 
@@ -65,7 +90,7 @@ esac
 if ! command -v curl &>/dev/null; then
     echo "[claw] installing curl..."
     case "$PKG_MGR" in
-        apt) apt-get install -y -qq curl ;;
+        apt) _claw_apt install -y -q curl ;;
         yum) yum install -y -q curl ;;
         dnf) dnf install -y -q curl ;;
         apk) apk add --no-cache curl ;;
@@ -76,7 +101,7 @@ fi
 if ! command -v docker &>/dev/null; then
     echo "[claw] installing docker CLI..."
     case "$PKG_MGR" in
-        apt) apt-get install -y -qq docker.io 2>/dev/null || apt-get install -y -qq docker-ce-cli 2>/dev/null || true ;;
+        apt) _claw_apt install -y -q docker.io || _claw_apt install -y -q docker-ce-cli || true ;;
         yum) yum install -y -q docker-cli 2>/dev/null || yum install -y -q docker 2>/dev/null || true ;;
         dnf) dnf install -y -q docker-cli 2>/dev/null || dnf install -y -q docker 2>/dev/null || true ;;
         apk) apk add --no-cache docker-cli 2>/dev/null || apk add --no-cache docker 2>/dev/null || true ;;
@@ -93,16 +118,16 @@ case "$PKG_MGR" in
     # libbpfcc's Python extension dynamically links libelf.so.1.  Keep this
     # container-only bootstrap fail-open, but install the runtime library
     # explicitly: minimal task images do not always pull it transitively.
-    apt) apt-get install -y -qq python3-bpfcc bpfcc-tools libbpfcc libelf1 2>/dev/null || true ;;
+    apt) _claw_apt install -y -q python3-bpfcc bpfcc-tools libbpfcc libelf1 || true ;;
     yum) yum install -y -q bcc-tools python3-bcc 2>/dev/null || true ;;
     dnf) dnf install -y -q bcc-tools python3-bcc 2>/dev/null || true ;;
     apk) apk add --no-cache bcc-tools bcc-python3 2>/dev/null || true ;;
 esac
 case "$PKG_MGR" in
     apt)
-        apt-get install -y -qq clang llvm kmod linux-headers-"$(uname -r)" 2>/dev/null \
-            || apt-get install -y -qq clang llvm kmod linux-headers-generic 2>/dev/null \
-            || apt-get install -y -qq clang llvm kmod 2>/dev/null \
+        _claw_apt install -y -q clang llvm kmod linux-headers-"$(uname -r)" \
+            || _claw_apt install -y -q clang llvm kmod linux-headers-generic \
+            || _claw_apt install -y -q clang llvm kmod \
             || true
         ;;
     yum) yum install -y -q clang llvm kmod kernel-headers kernel-devel 2>/dev/null || yum install -y -q clang llvm kmod 2>/dev/null || true ;;
@@ -183,7 +208,7 @@ if [ -s /tmp/.claw_bcc_pythonpath ]; then
             case "$_CLAW_BCC_IMPORT_ERROR" in
                 *"libelf.so.1"*)
                     echo "[claw] libelf.so.1 is missing; reinstalling libelf1..."
-                    if DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --reinstall libelf1; then
+                    if _claw_apt install -y -q --reinstall libelf1; then
                         if command -v ldconfig &>/dev/null; then
                             ldconfig 2>/dev/null || true
                         fi
@@ -221,7 +246,7 @@ fi
 if ! $_CLW_PYTHON --version &>/dev/null 2>&1; then
     echo "[claw] installing python3..."
     case "$PKG_MGR" in
-        apt) apt-get install -y -qq python3 python3-pip ;;
+        apt) _claw_apt install -y -q python3 python3-pip ;;
         yum) yum install -y -q python3 python3-pip ;;
         dnf) dnf install -y -q python3 python3-pip ;;
         apk) apk add --no-cache python3 py3-pip ;;
@@ -247,7 +272,7 @@ if [ "$NODE_OK" -eq 0 ]; then
     # that disappears from the latest-v24.x alias. Select the detected
     # architecture from the checksum manifest so ARM does not fall back to x64.
     NODE_BASE_URL="https://nodejs.org/dist/latest-v24.x"
-    if ! NODE_SHASUMS="$(curl -fsSL "$NODE_BASE_URL/SHASUMS256.txt")"; then
+    if ! NODE_SHASUMS="$(curl -fsSL --connect-timeout 15 --max-time 60 "$NODE_BASE_URL/SHASUMS256.txt")"; then
         echo "[claw] FATAL: cannot resolve the latest Node.js 24 release"
         exit 1
     fi
@@ -259,7 +284,11 @@ if [ "$NODE_OK" -eq 0 ]; then
         echo "[claw] FATAL: no Node.js 24 archive for architecture $NODE_ARCH"
         exit 1
     fi
-    curl -fsSL "$NODE_BASE_URL/$LATEST" -o "/tmp/node.tar.xz"
+    if ! curl -fsSL --connect-timeout 15 --max-time 180 \
+        "$NODE_BASE_URL/$LATEST" -o "/tmp/node.tar.xz"; then
+        echo "[claw] FATAL: Node.js download failed; check container DNS/proxy/network access"
+        exit 1
+    fi
     tar -xJf "/tmp/node.tar.xz" -C /usr/local --strip-components=1
     rm -f "/tmp/node.tar.xz"
 fi
@@ -276,7 +305,14 @@ fi
 # ── OpenClaw CLI ─────────────────────────────────────────────────
 if ! command -v openclaw &>/dev/null; then
     echo "[claw] installing openclaw CLI..."
-    npm install -g openclaw@2026.7.1 2>/dev/null || npm install -g openclaw 2>/dev/null || {
+    _claw_run_bounded env \
+        npm_config_fetch_retries=2 \
+        npm_config_fetch_timeout=120000 \
+        npm install -g openclaw@2026.7.1 || \
+    _claw_run_bounded env \
+        npm_config_fetch_retries=2 \
+        npm_config_fetch_timeout=120000 \
+        npm install -g openclaw || {
         echo "[claw] FATAL: openclaw install failed"
         exit 1
     }

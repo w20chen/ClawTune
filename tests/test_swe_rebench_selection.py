@@ -497,10 +497,21 @@ def test_setup_repairs_libelf_payload_removed_from_minimized_apt_image() -> None
 
     assert 'if [ "$PKG_MGR" = "apt" ]; then' in _SETUP_TEMPLATE
     assert '*"libelf.so.1"*)' in _SETUP_TEMPLATE
-    assert "apt-get install -y -qq --reinstall libelf1" in _SETUP_TEMPLATE
+    assert "_claw_apt install -y -q --reinstall libelf1" in _SETUP_TEMPLATE
     assert "libelf1 reinstall repaired the BCC runtime" in _SETUP_TEMPLATE
     assert "BCC remains unavailable after container repair probes" in _SETUP_TEMPLATE
     assert "libelf1 reinstall failed (Stage-2 will remain unavailable)" in _SETUP_TEMPLATE
+
+
+def test_container_setup_bounds_and_exposes_apt_network_work() -> None:
+    from swe_rebench.prepare import _SETUP_TEMPLATE
+
+    assert "CLAW_SETUP_COMMAND_TIMEOUT_SECONDS:-300" in _SETUP_TEMPLATE
+    assert "Acquire::http::Timeout=20" in _SETUP_TEMPLATE
+    assert "Acquire::https::Timeout=20" in _SETUP_TEMPLATE
+    assert "refreshing apt metadata" in _SETUP_TEMPLATE
+    assert "apt metadata ready" in _SETUP_TEMPLATE
+    assert "apt-get update -qq" not in _SETUP_TEMPLATE
 
 
 def test_container_bcc_repair_scopes_system_libstdcxx_to_sidecar() -> None:

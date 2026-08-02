@@ -1724,3 +1724,19 @@ Container selection/cache and host regression suites passed (`118 passed, 2
 skipped` total); `git diff --check` passed. A live cached-image
 `container-openclaw` run remains unavailable in this Windows workspace and
 must be repeated on Kunpeng.
+
+## 2026-08-02 container dependency setup appeared to hang
+
+The first `container-openclaw` run reached the task container but printed only
+`installing system dependencies` while a quiet `apt-get update` waited on the
+container network. The container-only setup now identifies the package
+manager, exposes apt/npm progress and errors, uses bounded network timeouts and
+limited retries, and reports an actionable fatal error when the container
+cannot reach its repositories. The architecture message now correctly says
+`container arch`; an amd64 task reports `x86_64` on an arm64 host by design.
+The `host-openclaw-sandbox` startup path is unchanged.
+
+A rebuilt tracked bundle and the focused SWE-Rebench/CLI regression suites
+passed (`106 passed, 2 skipped`); `git diff --check` passed.
+A live first-run apt/npm installation under amd64 QEMU cannot be validated in
+this Windows workspace and must be repeated on the Kunpeng host.
