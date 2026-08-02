@@ -98,7 +98,13 @@ def launcher_diagnostics() -> dict[str, Any]:
 
 
 def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
-    """Fork+exec path: the child becomes the command, parent reports exit."""
+    """Fork+exec path: the child becomes the command, parent reports exit.
+
+    Uses a pipe-based gate to guarantee the sidecar's trusted-root
+    registration (including eBPF collector attachment) completes before
+    the child execs the payload.  Without this ordering the collector
+    may miss the root exec event and produce an attribution_gap.
+    """
     launcher_pid = os.getpid()
     claim = _post_json(
         endpoint, "/v2/executions/claim",
@@ -109,26 +115,22 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
     cwd = str(workdir) if isinstance(workdir, str) and workdir else None
     update_token = str(claim["update_token"])
 
-    pid = os.fork()
+    read_fd, write_fd = os.pipe()
+    try:
+        pid = os.fork()
+    except BaseException:
+        os.close(read_fd)
+        os.close(write_fd)
+        raise
     if pid == 0:
-        # ── Child: become the payload command ──────────────────────
+        # ── Child: block until parent registers us, then exec ──────
+        os.close(write_fd)
         try:
             if cwd:
                 os.chdir(cwd)
-            child_pid = os.getpid()
-            started_response = _post_started(
-                endpoint,
-                execution_id=execution_id,
-                update_token=update_token,
-                launcher_pid=launcher_pid,
-                child_pid=child_pid,
-                cgroup_path=None,
-                host_cgroup_gate=False,
-            )
-            if started_response.get("stored") is not True:
-                raise RuntimeError(
-                    "sidecar did not acknowledge the forked execution start"
-                )
+            # Wait for the parent to complete /started registration.
+            if not _exec_gate_opened(read_fd):
+                os._exit(126)
             os.execve(
                 "/bin/sh",
                 ["/bin/sh", "-c", command],
@@ -142,6 +144,35 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
                     file=sys.stderr,
                 )
         os._exit(126)
+
+    # ── Parent: register trusted root, then release child ──────────
+    os.close(read_fd)
+    try:
+        started_response = _post_started(
+            endpoint,
+            execution_id=execution_id,
+            update_token=update_token,
+            launcher_pid=launcher_pid,
+            child_pid=pid,
+            cgroup_path=None,
+            host_cgroup_gate=False,
+        )
+        if started_response.get("stored") is not True:
+            raise RuntimeError(
+                "sidecar did not acknowledge the forked execution start"
+            )
+        # Release the child only after successful registration.
+        if os.write(write_fd, b"1") != 1:
+            raise RuntimeError("failed to release the forked execution gate")
+    except BaseException:
+        # EOF is a failure signal: the child must exit without executing.
+        try:
+            os.close(write_fd)
+        except OSError:
+            pass
+        _waitpid_nointr(pid)
+        raise
+    os.close(write_fd)
 
     # ── Parent: wait for child, report exit status ─────────────────
     restore_signal_handlers = _install_fork_signal_forwarders(pid)
@@ -170,6 +201,26 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
         {"update_token": update_token, "exit_code": exit_code, "signal": term_signal},
     )
     return exit_code if exit_code is not None else _shell_exit_code(-int(term_signal or 1))
+
+
+def _waitpid_nointr(pid: int) -> int | None:
+    """Reap a forked child, retrying interrupted waits."""
+    while True:
+        try:
+            _, status = os.waitpid(pid, 0)
+            return status
+        except InterruptedError:
+            continue
+        except OSError:
+            return None
+
+
+def _exec_gate_opened(read_fd: int) -> bool:
+    """Return true only for the parent's explicit post-registration release."""
+    try:
+        return os.read(read_fd, 1) == b"1"
+    finally:
+        os.close(read_fd)
 
 
 def _install_fork_signal_forwarders(child_pid: int) -> Callable[[], None]:

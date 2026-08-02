@@ -1740,3 +1740,21 @@ A rebuilt tracked bundle and the focused SWE-Rebench/CLI regression suites
 passed (`106 passed, 2 skipped`); `git diff --check` passed.
 A live first-run apt/npm installation under amd64 QEMU cannot be validated in
 this Windows workspace and must be repeated on the Kunpeng host.
+
+## 2026-08-02 fork-exec trusted-root gate hardening
+
+The fork-exec launcher now treats its pipe as an explicit success-only gate:
+the payload accepts exactly one release byte after `/started` completes, while
+EOF or any other byte exits without executing. Registration and gate-write
+failures close the pipe and reap the child, and all parent paths close their
+pipe descriptors. Regression tests cover successful release, failed
+registration, EOF, and invalid gate data.
+
+Scheduler tests passed (`164 passed, 2 skipped`), Python compilation and
+`git diff --check` passed. A real POSIX fork plus live eBPF attachment and the
+end-to-end Kunpeng Stage-2 benchmark cannot run in this Windows workspace and
+must be validated on the target Linux host.
+An additional launcher test invocation with
+`--basetemp=C:\tmp\clawtune-launcher-tests` could not run because this managed
+Windows environment denied creation of that directory; the same suite passed
+using the writable workspace temporary directory.
