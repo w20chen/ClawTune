@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import errno
 import json
+import math
 import os
 import signal
 import shutil
@@ -63,6 +64,7 @@ _LOCAL_PROXY_API_KEY = "clawtune-local-proxy"
 _TOOL_RESOURCE_KB_SCHEMAS = {
     "runtime-tool-resource-kb.json": "runtime_tool_resource_kb_v1",
     "clause-resource-kb.json": "runtime_clause_resource_kb_v4",
+    "clause-lattice-time-kb.json": "clause_lattice_time_kb_v1",
 }
 
 _TASK_CLEANUP_TIMEOUT_SECONDS = 15.0
@@ -789,11 +791,11 @@ def _seed_runtime_tool_resource_kb(
 
 
 def _publish_tool_resource_kb(trace_dir: Path, shared_kb_dir: Path) -> None:
-    """Publish a completed task's valid KB pair for the next serial task."""
+    """Publish a completed task's valid KB generation for the next serial task."""
 
     source_dir = trace_dir / "tool-resource"
-    # Stage and validate both files before committing either one.  Preserve a
-    # complete rollback pair so an I/O failure on the second replace cannot
+    # Stage and validate every file before committing any one. Preserve a
+    # complete rollback generation so an I/O failure during replace cannot
     # expose a mixed generation to the next task.
     try:
         _validate_kb_snapshot_pair(source_dir)
@@ -856,16 +858,19 @@ def _validate_kb_snapshot_pair(directory: Path) -> None:
                 f"invalid KB snapshot schema in {path}: {schema!r}; "
                 f"expected {schema_prefix!r}"
             )
-        if payload.get("max_prefix_depth") != 4:
-            raise KnowledgeBaseSyncError(
-                f"invalid KB snapshot max_prefix_depth in {path}: "
-                f"{payload.get('max_prefix_depth')!r}"
-            )
-        for field in ("public", "repo"):
-            if not isinstance(payload.get(field), dict):
+        if filename == "clause-lattice-time-kb.json":
+            _validate_lattice_time_kb_snapshot(path, payload)
+        else:
+            if payload.get("max_prefix_depth") != 4:
                 raise KnowledgeBaseSyncError(
-                    f"invalid KB snapshot {path}: {field!r} must be an object"
+                    f"invalid KB snapshot max_prefix_depth in {path}: "
+                    f"{payload.get('max_prefix_depth')!r}"
                 )
+            for field in ("public", "repo"):
+                if not isinstance(payload.get(field), dict):
+                    raise KnowledgeBaseSyncError(
+                        f"invalid KB snapshot {path}: {field!r} must be an object"
+                    )
         if not isinstance(payload.get("pending"), list):
             raise KnowledgeBaseSyncError(
                 f"invalid KB snapshot {path}: 'pending' must be an array"
@@ -877,15 +882,144 @@ def _validate_kb_snapshot_pair(directory: Path) -> None:
                 ClauseResourceKB,
                 RuntimeToolResourceKB,
             )
-
             if filename == "runtime-tool-resource-kb.json":
                 RuntimeToolResourceKB.from_json_obj(payload)
-            else:
+            elif filename == "clause-resource-kb.json":
                 ClauseResourceKB.from_json_obj(payload)
         except Exception as exc:
             raise KnowledgeBaseSyncError(
                 f"scheduler rejected KB snapshot {path}: {exc}"
             ) from exc
+
+
+def _validate_lattice_time_kb_snapshot(path: Path, payload: dict[str, Any]) -> None:
+    """Validate the portable flat-lattice snapshot without scheduler imports.
+
+    The benchmark runner is also imported from environments that expose the
+    installed ``tool_resource`` package but not this checkout's new
+    ``tool_time`` module.  Keep the atomic hand-off validator self-contained;
+    the sidecar still uses ``LatticeTimeKB.from_json_obj`` when it loads the
+    snapshot.
+    """
+
+    expected_generation = {
+        "mode": "bounded",
+        "max_optional_features": 6,
+        "min_partial_support": 1,
+        "max_nodes_per_signature": 4_096,
+        "node_occurrence_budget": 20_000,
+        "max_shrinkage_candidates": 512,
+    }
+    if payload.get("node_generation") != expected_generation:
+        raise KnowledgeBaseSyncError(
+            f"invalid lattice KB node_generation in {path}: "
+            f"{payload.get('node_generation')!r}"
+        )
+    observations = payload.get("observations")
+    if not isinstance(observations, list):
+        raise KnowledgeBaseSyncError(
+            f"invalid KB snapshot {path}: 'observations' must be an array"
+        )
+    pending = payload.get("pending")
+    if not isinstance(pending, list):
+        raise KnowledgeBaseSyncError(
+            f"invalid KB snapshot {path}: 'pending' must be an array"
+        )
+    for collection_name, rows in (("observations", observations), ("pending", pending)):
+        for index, row in enumerate(rows):
+            _validate_lattice_time_observation(
+                path,
+                row,
+                location=f"{collection_name}[{index}]",
+            )
+    last_query_ts = payload.get("last_query_ts")
+    if last_query_ts is not None and not _is_finite_number(last_query_ts):
+        raise KnowledgeBaseSyncError(
+            f"invalid lattice KB last_query_ts in {path}: {last_query_ts!r}"
+        )
+
+
+def _validate_lattice_time_observation(
+    path: Path,
+    row: Any,
+    *,
+    location: str,
+) -> None:
+    if not isinstance(row, dict):
+        raise KnowledgeBaseSyncError(
+            f"invalid lattice KB observation {location} in {path}: must be an object"
+        )
+    allowed = {
+        "repo",
+        "bin",
+        "argv",
+        "ts_start",
+        "ts_end",
+        "latency_ms",
+        "peak_cpu_cores",
+        "sampled_peak_rss_mb",
+        "cpu_ns_cumulative",
+        "in_loop",
+        "in_pipe",
+        "in_subst",
+        "pipeline_position",
+    }
+    unknown = sorted(row.keys() - allowed)
+    if unknown:
+        raise KnowledgeBaseSyncError(
+            f"invalid lattice KB observation {location} in {path}: "
+            f"unknown fields {unknown!r}"
+        )
+    required = {"repo", "bin", "argv", "ts_start", "ts_end", "latency_ms"}
+    missing = sorted(required - row.keys())
+    if missing:
+        raise KnowledgeBaseSyncError(
+            f"invalid lattice KB observation {location} in {path}: "
+            f"missing {missing!r}"
+        )
+    if (
+        not isinstance(row["repo"], str)
+        or not isinstance(row["bin"], str)
+        or not row["bin"]
+    ):
+        raise KnowledgeBaseSyncError(
+            f"invalid lattice KB observation {location} in {path}: "
+            "repo must be a string and bin must be a non-empty string"
+        )
+    argv = row["argv"]
+    if not isinstance(argv, list) or not argv or not all(
+        isinstance(value, str) for value in argv
+    ):
+        raise KnowledgeBaseSyncError(
+            f"invalid lattice KB observation {location} in {path}: "
+            "argv must be a non-empty string array"
+        )
+    ts_start = row["ts_start"]
+    ts_end = row["ts_end"]
+    if not (_is_finite_number(ts_start) and _is_finite_number(ts_end)):
+        raise KnowledgeBaseSyncError(
+            f"invalid lattice KB observation {location} in {path}: "
+            "timestamps must be finite numbers"
+        )
+    if float(ts_end) < float(ts_start):
+        raise KnowledgeBaseSyncError(
+            f"invalid lattice KB observation {location} in {path}: "
+            "ts_end precedes ts_start"
+        )
+    latency_ms = row.get("latency_ms")
+    if not _is_finite_number(latency_ms) or float(latency_ms) <= 0.0:
+        raise KnowledgeBaseSyncError(
+            f"invalid lattice KB observation {location} in {path}: "
+            "latency_ms must be a positive finite number"
+        )
+
+
+def _is_finite_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
 
 
 def _atomic_copy(source: Path, destination: Path) -> None:

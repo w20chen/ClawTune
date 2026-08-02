@@ -60,6 +60,15 @@ Useful fields:
   non-MLP `RuntimeToolResourceKB` conditional-p90 estimates for
   `latency_ms`, `peak_cpu_cores`, and `peak_memory_mb`; memory requires a
   pre-call ambient memory anchor and otherwise reports an unavailable note.
+  `prediction.tool_resource.lattice_time_predictions` contains one record for
+  each exec-producing static clause. Its `predictions` array reports the
+  `shrinkage`, `loso`, and `max_cardinality` point estimates in milliseconds,
+  together with selected-feature, evidence, risk, exact-match, fallback, or
+  explicit unavailability metadata. All three algorithms read the same
+  independent, flat lattice KB, which is trained only from eligible Stage-2
+  eBPF `ClauseObservation` latency measurements. For compound commands these
+  remain per-clause results; the sidecar does not synthesize a command-level
+  duration across sequential, conditional, or pipeline clauses.
   `prediction.tool_resource.prediction_algorithms` lists the enabled
   non-MLP predictors and records `tool_resource.mlp` as excluded.
 - `resources.attribution_status`: resource attribution status.

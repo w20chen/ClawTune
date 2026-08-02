@@ -147,6 +147,7 @@ export type ToolResourceCommandPrediction = {
   prediction: ToolResourceClausePrediction | null;
   unavailable_reason: string | null;
   continuous_predictions?: Record<string, ToolResourceContinuousPrediction> | null;
+  lattice_time_predictions?: ToolResourceClauseLatticeTimePredictions[];
   prediction_algorithms?: ToolResourcePredictionAlgorithms | null;
 };
 
@@ -183,6 +184,32 @@ export type ToolResourceContinuousPrediction = {
   fallback_path: string[];
   note: string | null;
 };
+
+export type ToolResourceClauseLatticeTimePredictions = {
+  clause_index: number;
+  bin: string;
+  argv: string[];
+  predictions: ToolResourceLatticeTimePrediction[];
+};
+
+export type ToolResourceLatticeTimePrediction = {
+  algorithm: "shrinkage" | "loso" | "max_cardinality";
+  selected_features: string[];
+  evidence_count: number;
+  selected_risk: number | null;
+  fallback: string | null;
+} & (
+  | {
+      prediction_ms: number;
+      exact_match: boolean;
+      unavailable_reason: null;
+    }
+  | {
+      prediction_ms: null;
+      exact_match: null;
+      unavailable_reason: string;
+    }
+);
 
 export type ToolResourcePredictionAlgorithms = {
   enabled?: Array<{

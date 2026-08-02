@@ -37,6 +37,12 @@ from tool_resource.sdk import (
     _load_valid_artifact,
     _observations_from_call,
 )
+from tool_time.lattice_kb import (
+    LATTICE_TIME_ALGORITHMS,
+    ClauseLatticeTimePredictions,
+    LatticeTimeKB,
+    LatticeTimePrediction,
+)
 
 
 _SHARED_RESOURCE_ATTRIBUTION_SOURCES = frozenset(
@@ -58,6 +64,8 @@ class ToolResourceLoadReport:
     continuous_observations_loaded: int
     kb_available: bool
     continuous_kb_available: bool
+    lattice_observations_loaded: int
+    lattice_kb_available: bool
     rejections: tuple[str, ...]
 
 
@@ -98,6 +106,8 @@ class ToolResourcePredictor:
         container_executable: str = "docker",
         clause_kb_snapshot_path: Path | None = None,
         runtime_kb_snapshot_path: Path | None = None,
+        lattice_kb: LatticeTimeKB | None = None,
+        lattice_kb_snapshot_path: Path | None = None,
     ) -> None:
         self.kb = kb
         self.continuous_kb = RuntimeToolResourceKB()
@@ -108,6 +118,8 @@ class ToolResourcePredictor:
         self.container_executable = container_executable
         self.clause_kb_snapshot_path = clause_kb_snapshot_path
         self.runtime_kb_snapshot_path = runtime_kb_snapshot_path
+        self.lattice_kb = lattice_kb or LatticeTimeKB()
+        self.lattice_kb_snapshot_path = lattice_kb_snapshot_path
         self._sdk = ToolResourceSDK(kb, buckets)
         self._runs_by_execution_id: dict[str, CommandRun] = {}
         self._telemetry_by_execution_id: dict[str, ExecutionTelemetrySummary] = {}
@@ -153,6 +165,7 @@ class ToolResourcePredictor:
 
         snapshot_path = _clause_kb_snapshot_path(artifact_dir)
         runtime_snapshot_path = _runtime_kb_snapshot_path(artifact_dir)
+        lattice_snapshot_path = _lattice_kb_snapshot_path(artifact_dir)
         kb: ClauseResourceKB
         kb_has_public_evidence = False
         loaded_snapshot = _load_clause_kb_snapshot(snapshot_path, rejections)
@@ -178,6 +191,22 @@ class ToolResourcePredictor:
         else:
             kb = ClauseResourceKB()
 
+        loaded_lattice_snapshot = _load_lattice_kb_snapshot(
+            lattice_snapshot_path,
+            rejections,
+        )
+        if loaded_lattice_snapshot is None:
+            lattice_kb = LatticeTimeKB.fit(observations)
+        else:
+            lattice_kb = loaded_lattice_snapshot
+            lattice_kb.merge_historical(observations)
+        lattice_kb_available = lattice_kb.observation_count > 0
+        try:
+            lattice_kb.prepare()
+        except Exception as exc:
+            lattice_kb_available = False
+            rejections.append(f"prepare lattice KB: {type(exc).__name__}: {exc}")
+
         predictor = cls(
             kb=kb,
             buckets=buckets,
@@ -191,6 +220,8 @@ class ToolResourcePredictor:
                 continuous_observations_loaded=len(continuous_observations),
                 kb_available=kb_has_public_evidence,
                 continuous_kb_available=bool(continuous_observations),
+                lattice_observations_loaded=lattice_kb.observation_count,
+                lattice_kb_available=lattice_kb_available,
                 rejections=tuple(rejections),
             ),
             repo=repo,
@@ -198,6 +229,8 @@ class ToolResourcePredictor:
             container_executable=container_executable,
             clause_kb_snapshot_path=snapshot_path,
             runtime_kb_snapshot_path=runtime_snapshot_path,
+            lattice_kb=lattice_kb,
+            lattice_kb_snapshot_path=lattice_snapshot_path,
         )
         loaded_runtime_snapshot = _load_runtime_kb_snapshot(
             runtime_snapshot_path,
@@ -211,6 +244,8 @@ class ToolResourcePredictor:
             predictor._persist_clause_kb()
         if continuous_observations or loaded_runtime_snapshot is not None:
             predictor._persist_runtime_kb()
+        if observations or loaded_lattice_snapshot is not None:
+            predictor._persist_lattice_kb()
         return predictor
 
     @classmethod
@@ -236,11 +271,19 @@ class ToolResourcePredictor:
     ) -> ToolPrediction:
         command = _command_for_request(request)
         query_ts = time.time()
+        lattice_time_predictions: tuple[ClauseLatticeTimePredictions, ...] = ()
         try:
             clauses, parse_failed = clauses_from_tool_request(
                 request.tool_name,
                 request.raw_params,
             )
+            if request.tool_name == "exec":
+                lattice_time_predictions = self._lattice_predictions_for_clauses(
+                    clauses,
+                    query_ts,
+                    parse_failed=parse_failed,
+                    shell_command=True,
+                )
             prediction = self.kb.predict_command_latency_bucket_from_clauses(
                 self.repo,
                 clauses,
@@ -274,6 +317,7 @@ class ToolResourcePredictor:
                         reason=_prediction_error_reason(exc),
                     ),
                     continuous_predictions=continuous_predictions,
+                    lattice_time_predictions=lattice_time_predictions,
                 ),
             )
         continuous_predictions = self._continuous_predictions_for_request(
@@ -295,6 +339,7 @@ class ToolResourcePredictor:
                 tool_resource=_tool_resource_prediction_payload(
                     prediction,
                     continuous_predictions=continuous_predictions,
+                    lattice_time_predictions=lattice_time_predictions,
                 ),
             )
 
@@ -326,6 +371,7 @@ class ToolResourcePredictor:
             tool_resource=_tool_resource_prediction_payload(
                 prediction,
                 continuous_predictions=continuous_predictions,
+                lattice_time_predictions=lattice_time_predictions,
             ),
         )
 
@@ -493,8 +539,29 @@ class ToolResourcePredictor:
             )
             self._telemetry_by_execution_id[execution_id] = summary
             return summary
+        kb_update_errors = (
+            [result.kb_update_error] if result.kb_update_error is not None else []
+        )
         if result.kb_observations_added:
-            self._persist_clause_kb()
+            try:
+                for observation in result.kb_observations:
+                    self.lattice_kb.observe_completed_clause(observation)
+                self.lattice_kb.prepare()
+            except Exception as exc:
+                kb_update_errors.append(
+                    f"lattice_prepare_failed:{type(exc).__name__}: {exc}"
+                )
+            if (
+                self.clause_kb_snapshot_path is not None
+                and not self._persist_clause_kb()
+            ):
+                kb_update_errors.append("clause_kb_persist_failed")
+            if (
+                self.lattice_kb_snapshot_path is not None
+                and not self._persist_lattice_kb()
+            ):
+                kb_update_errors.append("lattice_kb_persist_failed")
+        kb_update_error = "; ".join(kb_update_errors) or None
         call_telemetry = (
             dict(result.call_telemetry)
             if isinstance(result.call_telemetry, dict)
@@ -511,7 +578,7 @@ class ToolResourcePredictor:
                 else _stage2_status(
                     result.telemetry_artifact,
                     call_telemetry,
-                    result.kb_update_error,
+                    kb_update_error,
                 )
             ),
             unavailable_reason=(
@@ -520,11 +587,11 @@ class ToolResourcePredictor:
                 else _stage2_unavailable_reason(
                     result.telemetry_artifact,
                     call_telemetry,
-                    result.kb_update_error,
+                    kb_update_error,
                 )
             ),
             kb_observations_added=result.kb_observations_added,
-            kb_update_error=result.kb_update_error,
+            kb_update_error=kb_update_error,
             call_telemetry=_compact_call_telemetry(call_telemetry),
             artifact_summary=_compact_artifact_summary(result.telemetry_artifact),
         )
@@ -556,6 +623,41 @@ class ToolResourcePredictor:
             return True
         except Exception:
             return False
+
+    def _persist_lattice_kb(self) -> bool:
+        if self.lattice_kb_snapshot_path is None:
+            return False
+        try:
+            _write_json_atomic(
+                self.lattice_kb_snapshot_path,
+                self.lattice_kb.to_json_obj(),
+            )
+            return True
+        except Exception:
+            return False
+
+    def _lattice_predictions_for_clauses(
+        self,
+        clauses: Sequence[Mapping[str, Any]],
+        query_ts: float,
+        *,
+        parse_failed: bool,
+        shell_command: bool,
+    ) -> tuple[ClauseLatticeTimePredictions, ...]:
+        try:
+            return self.lattice_kb.predict_clauses(
+                self.repo,
+                clauses,
+                query_ts,
+                parse_failed=parse_failed,
+                shell_command=shell_command,
+            )
+        except Exception as exc:
+            return _unavailable_lattice_time_predictions(
+                clauses,
+                reason=f"lattice_prediction_error:{type(exc).__name__}",
+                shell_command=shell_command,
+            )
 
     def _continuous_predictions_for_request(
         self,
@@ -1338,6 +1440,7 @@ def _tool_resource_prediction_payload(
     prediction: CommandLatencyBucketPrediction,
     *,
     continuous_predictions: dict[str, Any] | None = None,
+    lattice_time_predictions: Sequence[ClauseLatticeTimePredictions] = (),
 ) -> dict[str, Any]:
     clause_prediction = prediction.prediction
     return {
@@ -1358,6 +1461,10 @@ def _tool_resource_prediction_payload(
         "prediction": _clause_bucket_prediction_payload(clause_prediction),
         "unavailable_reason": prediction.unavailable_reason,
         "continuous_predictions": continuous_predictions or {},
+        "lattice_time_predictions": [
+            _clause_lattice_time_predictions_payload(item)
+            for item in lattice_time_predictions
+        ],
         "prediction_algorithms": _prediction_algorithms_payload(),
     }
 
@@ -1375,6 +1482,66 @@ def _clause_bucket_prediction_payload(
         "evidence_count": prediction.evidence_count,
         "fallback_path": list(prediction.fallback_path),
     }
+
+
+def _clause_lattice_time_predictions_payload(
+    outcome: ClauseLatticeTimePredictions,
+) -> dict[str, Any]:
+    return {
+        "clause_index": outcome.clause_index,
+        "bin": outcome.bin,
+        "argv": list(outcome.argv),
+        "predictions": [
+            {
+                "algorithm": prediction.algorithm,
+                "prediction_ms": prediction.prediction_ms,
+                "selected_features": list(prediction.selected_features),
+                "evidence_count": prediction.evidence_count,
+                "selected_risk": prediction.selected_risk,
+                "exact_match": prediction.exact_match,
+                "fallback": prediction.fallback,
+                "unavailable_reason": prediction.unavailable_reason,
+            }
+            for prediction in outcome.predictions
+        ],
+    }
+
+
+def _unavailable_lattice_time_predictions(
+    clauses: Sequence[Mapping[str, Any]],
+    *,
+    reason: str,
+    shell_command: bool,
+) -> tuple[ClauseLatticeTimePredictions, ...]:
+    outcomes: list[ClauseLatticeTimePredictions] = []
+    for clause_index, clause in enumerate(clauses):
+        bin_ = str(clause["bin"])
+        if shell_command and not shell_bin_requires_exec_evidence(bin_):
+            continue
+        argv = tuple(str(value) for value in clause["argv"])
+        if not bin_ or not argv:
+            continue
+        outcomes.append(
+            ClauseLatticeTimePredictions(
+                clause_index=clause_index,
+                bin=bin_,
+                argv=argv,
+                predictions=tuple(
+                    LatticeTimePrediction(
+                        algorithm=algorithm,
+                        prediction_ms=None,
+                        selected_features=(),
+                        evidence_count=0,
+                        selected_risk=None,
+                        exact_match=None,
+                        fallback=None,
+                        unavailable_reason=reason,
+                    )
+                    for algorithm in LATTICE_TIME_ALGORITHMS
+                ),
+            )
+        )
+    return tuple(outcomes)
 
 
 def _unavailable_prediction_for_request(
@@ -1429,6 +1596,12 @@ def _runtime_kb_snapshot_path(artifact_dir: Path | None) -> Path | None:
     return artifact_dir / "runtime-tool-resource-kb.json"
 
 
+def _lattice_kb_snapshot_path(artifact_dir: Path | None) -> Path | None:
+    if artifact_dir is None:
+        return None
+    return artifact_dir / "clause-lattice-time-kb.json"
+
+
 def _load_clause_kb_snapshot(
     path: Path | None,
     rejections: list[str],
@@ -1452,6 +1625,19 @@ def _load_runtime_kb_snapshot(
         return RuntimeToolResourceKB.from_json_obj(json.loads(path.read_text(encoding="utf-8")))
     except Exception as exc:
         rejections.append(f"{path}: runtime KB snapshot rejected: {exc}")
+        return None
+
+
+def _load_lattice_kb_snapshot(
+    path: Path | None,
+    rejections: list[str],
+) -> LatticeTimeKB | None:
+    if path is None or not path.is_file():
+        return None
+    try:
+        return LatticeTimeKB.from_json_obj(json.loads(path.read_text(encoding="utf-8")))
+    except Exception as exc:
+        rejections.append(f"{path}: lattice KB snapshot rejected: {exc}")
         return None
 
 
@@ -1505,6 +1691,27 @@ def _prediction_algorithms_payload() -> dict[str, Any]:
                     "duration_p90_ms",
                     "resource_class",
                 ],
+            },
+            {
+                "name": "lattice_shrinkage",
+                "family": "context_lattice",
+                "source": "LatticeTimeKB",
+                "targets": ["latency_ms"],
+                "outputs": ["clause_point_prediction_ms"],
+            },
+            {
+                "name": "lattice_loso",
+                "family": "context_lattice",
+                "source": "LatticeTimeKB",
+                "targets": ["latency_ms"],
+                "outputs": ["clause_point_prediction_ms"],
+            },
+            {
+                "name": "lattice_max_cardinality",
+                "family": "context_lattice",
+                "source": "LatticeTimeKB",
+                "targets": ["latency_ms"],
+                "outputs": ["clause_point_prediction_ms"],
             },
             {
                 "name": "runtime_tool_resource_conditional_p90",

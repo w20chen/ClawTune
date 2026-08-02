@@ -1012,6 +1012,7 @@ bundle:
         assert _kb_pair_markers(trace_dir / "tool-resource") == {
             "runtime-tool-resource-kb.json": "shared-before-task",
             "clause-resource-kb.json": "shared-before-task",
+            "clause-lattice-time-kb.json": "shared-before-task",
         }
         _write_test_kb_pair(trace_dir / "tool-resource", "task-update")
         return ContainerResult(
@@ -1044,6 +1045,7 @@ bundle:
     assert _kb_pair_markers(shared_kb_dir) == {
         "runtime-tool-resource-kb.json": "task-update",
         "clause-resource-kb.json": "task-update",
+        "clause-lattice-time-kb.json": "task-update",
     }
 
 
@@ -1088,6 +1090,7 @@ def test_run_one_does_not_publish_when_task_writer_exit_is_unconfirmed(
     assert _kb_pair_markers(shared_kb_dir) == {
         "runtime-tool-resource-kb.json": "last-good",
         "clause-resource-kb.json": "last-good",
+        "clause-lattice-time-kb.json": "last-good",
     }
 
 
@@ -1504,6 +1507,21 @@ def _write_test_kb_pair(directory: Path, marker: str) -> None:
             "last_query_ts": None,
             "marker": marker,
         },
+        "clause-lattice-time-kb.json": {
+            "schema": "clause_lattice_time_kb_v1",
+            "node_generation": {
+                "mode": "bounded",
+                "max_optional_features": 6,
+                "min_partial_support": 1,
+                "max_nodes_per_signature": 4_096,
+                "node_occurrence_budget": 20_000,
+                "max_shrinkage_candidates": 512,
+            },
+            "observations": [],
+            "pending": [],
+            "last_query_ts": None,
+            "marker": marker,
+        },
     }
     for filename, payload in payloads.items():
         (directory / filename).write_text(
@@ -1518,6 +1536,7 @@ def _kb_pair_markers(directory: Path) -> dict[str, str]:
         for path in (
             directory / "runtime-tool-resource-kb.json",
             directory / "clause-resource-kb.json",
+            directory / "clause-lattice-time-kb.json",
         )
     }
 
@@ -1529,6 +1548,9 @@ def test_host_sandbox_seeds_runtime_and_clause_predictor_kbs(tmp_path: Path) -> 
         encoding="utf-8"
     )
     clause_payload = (source_dir / "clause-resource-kb.json").read_text(
+        encoding="utf-8"
+    )
+    lattice_payload = (source_dir / "clause-lattice-time-kb.json").read_text(
         encoding="utf-8"
     )
     config_path = tmp_path / "config.yaml"
@@ -1546,6 +1568,9 @@ def test_host_sandbox_seeds_runtime_and_clause_predictor_kbs(tmp_path: Path) -> 
     assert (seeded_dir / "clause-resource-kb.json").read_text(
         encoding="utf-8"
     ) == clause_payload
+    assert (seeded_dir / "clause-lattice-time-kb.json").read_text(
+        encoding="utf-8"
+    ) == lattice_payload
 
 
 def test_batch_shared_kb_prepare_copy_in_and_publish_reaches_next_task(
@@ -1563,6 +1588,7 @@ def test_batch_shared_kb_prepare_copy_in_and_publish_reaches_next_task(
     expected_seed = {
         "runtime-tool-resource-kb.json": "tracked-seed",
         "clause-resource-kb.json": "tracked-seed",
+        "clause-lattice-time-kb.json": "tracked-seed",
     }
     assert _kb_pair_markers(shared_kb_dir) == expected_seed
 
@@ -1587,6 +1613,7 @@ def test_batch_shared_kb_prepare_copy_in_and_publish_reaches_next_task(
     expected_update = {
         "runtime-tool-resource-kb.json": "task-a-update",
         "clause-resource-kb.json": "task-a-update",
+        "clause-lattice-time-kb.json": "task-a-update",
     }
     assert _kb_pair_markers(shared_kb_dir) == expected_update
     assert _kb_pair_markers(task_b_trace / "tool-resource") == expected_update
@@ -1610,6 +1637,7 @@ def test_batch_shared_kb_invalid_pair_does_not_overwrite_last_good_generation(
         for path in (
             shared_kb_dir / "runtime-tool-resource-kb.json",
             shared_kb_dir / "clause-resource-kb.json",
+            shared_kb_dir / "clause-lattice-time-kb.json",
         )
     }
 
@@ -1621,6 +1649,7 @@ def test_batch_shared_kb_invalid_pair_does_not_overwrite_last_good_generation(
         for path in (
             shared_kb_dir / "runtime-tool-resource-kb.json",
             shared_kb_dir / "clause-resource-kb.json",
+            shared_kb_dir / "clause-lattice-time-kb.json",
         )
     }
     assert after == before
@@ -1648,6 +1677,33 @@ def test_batch_shared_kb_rejects_schema_only_snapshot_as_unloadable(
     )
 
     with pytest.raises(KnowledgeBaseSyncError, match="scheduler rejected"):
+        _prepare_batch_tool_resource_kb(tmp_path / "shared-kb", config)
+
+
+def test_batch_shared_kb_rejects_invalid_lattice_observation(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("", encoding="utf-8")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    tracked_seed = tmp_path / "traces" / "tool-resource"
+    _write_test_kb_pair(tracked_seed, "tracked-seed")
+    lattice_path = tracked_seed / "clause-lattice-time-kb.json"
+    payload = json.loads(lattice_path.read_text(encoding="utf-8"))
+    payload["observations"] = [
+        {
+            "repo": "org/repo",
+            "bin": "python",
+            "argv": ["python", "task.py"],
+            "ts_start": 1.0,
+            "ts_end": 2.0,
+            "latency_ms": 1000.0,
+            "unexpected": True,
+        }
+    ]
+    lattice_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(KnowledgeBaseSyncError, match="unknown fields"):
         _prepare_batch_tool_resource_kb(tmp_path / "shared-kb", config)
 
 
@@ -1685,6 +1741,7 @@ def test_batch_shared_kb_second_replace_failure_rolls_back_whole_pair(
     assert _kb_pair_markers(shared_kb_dir) == {
         "runtime-tool-resource-kb.json": "last-good",
         "clause-resource-kb.json": "last-good",
+        "clause-lattice-time-kb.json": "last-good",
     }
 
 

@@ -239,6 +239,7 @@ class CommandResult:
     workload_result: Mapping[str, Any] | None
     call_telemetry: Mapping[str, Any]
     telemetry_artifact: Mapping[str, Any] | None
+    kb_observations: tuple[ClauseObservation, ...]
     kb_observations_added: int
     kb_update_error: str | None
 
@@ -447,6 +448,7 @@ class ToolResourceSDK:
             workload_result=workload_result,
             call_telemetry=call_telemetry,
             telemetry_artifact=artifact,
+            kb_observations=tuple(observations),
             kb_observations_added=len(observations),
             kb_update_error=update_error,
         )

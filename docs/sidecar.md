@@ -53,9 +53,29 @@ can survive restarts. When evidence is missing, the prediction remains unknown
 rather than inventing a value.
 
 Predictions cover command latency buckets plus empirical conditional estimates
-for latency, CPU, and memory. Compound shell commands retain independent clause
-predictions because pipelines and conditional operators do not have one honest
-composition rule.
+for latency, CPU, and memory. They also include three clause-level point-time
+predictors: `shrinkage`, `loso`, and `max_cardinality`. These algorithms share
+one independent, flat lattice KB; common nodes and nodes carrying a repository
+feature live in the same node map rather than separate public/repo layers.
+
+The lattice learns only from eligible Stage-2 eBPF `ClauseObservation` values,
+reusing the same validated static-clause identity and measured `latency_ms` as
+the existing clause predictor. Results are exposed at
+`prediction.tool_resource.lattice_time_predictions`, with one entry per
+exec-producing static clause and all three algorithm outcomes under that entry.
+Compound shell commands retain independent clause predictions: pipeline,
+conditional, and sequential clause times are never combined into a synthetic
+command duration.
+
+The sidecar prebuilds lattice nodes during cold start and prepares the next
+causally visible node state when a clause completes. Node generation retains
+the latt default bound of six optional features when the corpus is small, then
+reduces that bound deterministically to keep at most 4,096 generated nodes per
+signature and target a 20,000-node-occurrence rebuild budget while always
+retaining exact nodes. A non-exact shrinkage query
+with more than 512 matching nodes reports `lattice_candidate_limit_exceeded`;
+LOSO and max-cardinality remain available because they do not run the
+quadratic dominance pass.
 
 ## Collection boundaries
 

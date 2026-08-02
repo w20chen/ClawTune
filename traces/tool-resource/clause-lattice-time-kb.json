@@ -1,0 +1,1 @@
+{"last_query_ts":null,"node_generation":{"max_nodes_per_signature":4096,"max_optional_features":6,"max_shrinkage_candidates":512,"min_partial_support":1,"mode":"bounded","node_occurrence_budget":20000},"observations":[],"pending":[],"schema":"clause_lattice_time_kb_v1"}

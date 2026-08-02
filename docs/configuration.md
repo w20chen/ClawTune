@@ -58,23 +58,34 @@ report on stdout.
 
 ### Benchmark knowledge bases
 
-Each benchmark task uses two JSON knowledge bases under `tool-resource/`:
+Each benchmark task uses three JSON knowledge bases under `tool-resource/`:
 
 - `runtime-tool-resource-kb.json` stores whole tool/command observations used
   to predict latency, CPU, and memory.
 - `clause-resource-kb.json` stores shell-clause observations used for
   clause-level resource prediction.
+- `clause-lattice-time-kb.json` stores the eligible eBPF clause observations
+  and pending causal updates shared by the `shrinkage`, `loso`, and
+  `max_cardinality` clause-time predictors.
 
 `kb-batches/<batch-id>/` contains the serial batch's shared, evolving snapshot.
 Each `traces/<task-id>/tool-resource/` directory contains that task's working
-snapshot. After a task stops cleanly, its snapshot is published to the batch
-copy for the next task.
+snapshot. After a task stops cleanly, all three files are published together to
+the batch copy for the next task.
 
-Both files contain a shared `public` namespace and repo-specific knowledge
-under `repo`, such as `repo["12rambau/sepal_ui"]`. A repo KB is therefore a
-namespace inside these files, not a separate per-repo file. Files named
-`call_*.json` are per-call telemetry evidence used to update the KBs; they are
-not additional knowledge bases.
+The runtime and clause-resource files contain a shared `public` namespace and
+repo-specific knowledge under `repo`, such as
+`repo["12rambau/sepal_ui"]`. The lattice-time file deliberately does not use
+that hierarchy. It stores one flat observation corpus, from which one node
+mapping is rebuilt; common context and context containing the optional
+repository feature coexist and are available to all three algorithms. Files
+named `call_*.json` are per-call eBPF telemetry evidence used to update the
+KBs; they are not additional knowledge bases.
+
+The lattice snapshot retains observation multiplicity. When Stage-2 history is
+replayed at startup, multiset merging removes only occurrences already present
+in the snapshot; genuinely repeated executions remain separate samples even
+for legacy artifacts whose fallback timestamps are identical.
 
 Keep the host-sandbox runtime, eBPF requirement, privileged cgroup access, and
 bundle paths at their defaults. The unified benchmark command defaults to

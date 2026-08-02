@@ -67,6 +67,88 @@
         }
       ],
       "additionalProperties": false
+    },
+    "latticeTimePrediction": {
+      "type": "object",
+      "description": "One clause-level point prediction produced from the shared, unlayered lattice KB.",
+      "properties": {
+        "algorithm": {"enum": ["shrinkage", "loso", "max_cardinality"]},
+        "prediction_ms": {"type": ["number", "null"], "minimum": 0},
+        "selected_features": {"type": "array", "items": {"type": "string"}},
+        "evidence_count": {"type": "integer", "minimum": 0},
+        "selected_risk": {"type": ["number", "null"], "minimum": 0},
+        "exact_match": {"type": ["boolean", "null"]},
+        "fallback": {"type": ["string", "null"]},
+        "unavailable_reason": {"type": ["string", "null"]}
+      },
+      "required": [
+        "algorithm",
+        "prediction_ms",
+        "selected_features",
+        "evidence_count",
+        "selected_risk",
+        "exact_match",
+        "fallback",
+        "unavailable_reason"
+      ],
+      "oneOf": [
+        {
+          "properties": {
+            "prediction_ms": {"type": "number", "minimum": 0},
+            "exact_match": {"type": "boolean"},
+            "unavailable_reason": {"type": "null"}
+          }
+        },
+        {
+          "properties": {
+            "prediction_ms": {"type": "null"},
+            "exact_match": {"type": "null"},
+            "unavailable_reason": {"type": "string", "minLength": 1}
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "clauseLatticeTimePredictions": {
+      "type": "object",
+      "description": "The three point estimates for one exec-producing static clause. Compound command estimates are intentionally not composed.",
+      "properties": {
+        "clause_index": {"type": "integer", "minimum": 0},
+        "bin": {"type": "string", "minLength": 1},
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string"}
+        },
+        "predictions": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "allOf": [
+                {"$ref": "#/$defs/latticeTimePrediction"},
+                {"properties": {"algorithm": {"const": "shrinkage"}}}
+              ]
+            },
+            {
+              "allOf": [
+                {"$ref": "#/$defs/latticeTimePrediction"},
+                {"properties": {"algorithm": {"const": "loso"}}}
+              ]
+            },
+            {
+              "allOf": [
+                {"$ref": "#/$defs/latticeTimePrediction"},
+                {"properties": {"algorithm": {"const": "max_cardinality"}}}
+              ]
+            }
+          ],
+          "items": false
+        }
+      },
+      "required": ["clause_index", "bin", "argv", "predictions"],
+      "additionalProperties": false
     }
   },
   "required": ["decision_id", "action", "reason_code", "reason", "policy_name", "policy_version", "lease_id", "prediction", "placement_advice"],
@@ -130,6 +212,11 @@
                 ],
                 "additionalProperties": false
               }
+            },
+            "lattice_time_predictions": {
+              "type": "array",
+              "description": "Clause-level shrinkage, LOSO, and max-cardinality point predictions sharing one independent lattice KB.",
+              "items": {"$ref": "#/$defs/clauseLatticeTimePredictions"}
             },
             "prediction_algorithms": {
               "type": "object",

@@ -4,6 +4,7 @@ import asyncio
 import json
 import shutil
 import shlex
+import time
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -430,6 +431,9 @@ def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) ->
         "prediction": None,
         "unavailable_reason": "no_clause_latency_evidence",
         "continuous_predictions": {},
+        "lattice_time_predictions": _unavailable_lattice_time_predictions(
+            [("python", ["python", "-m", "pytest", "tests", "-q"])]
+        ),
         "prediction_algorithms": _prediction_algorithms(),
     }
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
@@ -536,6 +540,19 @@ def test_stage2_clause_identity_matches_online_prediction(tmp_path: Path, monkey
             "unavailable_reason": None,
         }
     ]
+    lattice = result.tool_resource["lattice_time_predictions"]
+    assert predictor.report.lattice_observations_loaded == 2
+    assert predictor.report.lattice_kb_available is True
+    assert len(lattice) == 1
+    assert lattice[0]["clause_index"] == 0
+    assert [item["algorithm"] for item in lattice[0]["predictions"]] == [
+        "shrinkage",
+        "loso",
+        "max_cardinality",
+    ]
+    assert [item["prediction_ms"] for item in lattice[0]["predictions"]] == pytest.approx(
+        [1200.0, 1200.0, 1200.0]
+    )
     assert result.tool_resource["continuous_predictions"]["peak_cpu_cores"][
         "conditional_p90"
     ] is None
@@ -894,6 +911,12 @@ def test_tool_resource_predictor_exposes_native_unavailable_reason(
         "prediction": None,
         "unavailable_reason": "compound_clause_evidence_incomplete",
         "continuous_predictions": {},
+        "lattice_time_predictions": _unavailable_lattice_time_predictions(
+            [
+                ("python", ["python", "-m", "pytest"]),
+                ("git", ["git", "status"]),
+            ]
+        ),
         "prediction_algorithms": _prediction_algorithms(),
     }
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
@@ -1268,8 +1291,108 @@ def test_tool_resource_predictor_explains_unknown_without_cold_start() -> None:
     assert continuous["peak_memory_mb"]["note"] == "memory prediction requires ambient_before_mb anchor"
     assert [item["name"] for item in result.tool_resource["prediction_algorithms"]["enabled"]] == [
         "clause_latency_bucket",
+        "lattice_shrinkage",
+        "lattice_loso",
+        "lattice_max_cardinality",
         "runtime_tool_resource_conditional_p90",
     ]
+
+
+def test_lattice_time_predictions_are_limited_to_ebpf_exec_clauses() -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+    )
+    predictor.lattice_kb.merge_historical(
+        [
+            ClauseObservation(
+                repo="repo-1",
+                bin="python",
+                argv=("python", "task.py"),
+                ts_start=1.0,
+                ts_end=2.0,
+                latency_ms=250.0,
+            )
+        ]
+    )
+    request = _tool_request("evt-read", "call-read", "ignored").model_copy(
+        update={
+            "tool_name": "read",
+            "tool_kind": "file",
+            "raw_params": {"path": "/workspace/task.py"},
+        }
+    )
+
+    result = asyncio.run(predictor.predict(request))
+
+    assert result.tool_resource["lattice_time_predictions"] == []
+
+
+def test_finish_execution_feeds_and_persists_the_shared_lattice_kb(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+        artifact_dir=tmp_path,
+    )
+    now = time.time()
+    observation = ClauseObservation(
+        repo="repo-1",
+        bin="python",
+        argv=("python", "task.py"),
+        ts_start=now - 2.0,
+        ts_end=now - 1.0,
+        latency_ms=250.0,
+    )
+    run = SimpleNamespace(
+        tool_call_id="call-online",
+        _observer=SimpleNamespace(
+            context=SimpleNamespace(artifact_path=tmp_path / "call-online.json")
+        ),
+    )
+    predictor._runs_by_execution_id["exec-online"] = run
+    monkeypatch.setattr(
+        predictor._sdk,
+        "finish_command",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            kb_observations=(observation,),
+            kb_observations_added=1,
+            kb_update_error=None,
+            call_telemetry={},
+            telemetry_artifact=None,
+        ),
+    )
+
+    summary = predictor.finish_execution(
+        execution_id="exec-online",
+        exit_code=0,
+        signal=None,
+        succeeded=True,
+    )
+
+    assert summary.kb_update_error is None
+    snapshot = json.loads(
+        (tmp_path / "clause-lattice-time-kb.json").read_text(encoding="utf-8")
+    )
+    assert len(snapshot["pending"]) == 1
+    monkeypatch.setattr(
+        "tool_time.lattice_kb._build_node_state",
+        lambda _observations: pytest.fail("prediction rebuilt the prepared lattice"),
+    )
+
+    prediction = asyncio.run(
+        predictor.predict(_tool_request("evt-online", "call-next", "python task.py"))
+    )
+    outcomes = prediction.tool_resource["lattice_time_predictions"][0]["predictions"]
+    assert [item["prediction_ms"] for item in outcomes] == pytest.approx(
+        [250.0, 250.0, 250.0]
+    )
 
 
 def test_tool_resource_predictor_explains_empty_continuous_memory_with_anchor() -> None:
@@ -1622,6 +1745,9 @@ def test_trace_writes_tool_prediction_payload(tmp_path: Path) -> None:
     algorithms = tool_start["prediction"]["tool_resource"]["prediction_algorithms"]
     assert [item["name"] for item in algorithms["enabled"]] == [
         "clause_latency_bucket",
+        "lattice_shrinkage",
+        "lattice_loso",
+        "lattice_max_cardinality",
         "runtime_tool_resource_conditional_p90",
     ]
     assert algorithms["excluded"] == [
@@ -1720,6 +1846,27 @@ def _prediction_algorithms() -> dict:
                 ],
             },
             {
+                "name": "lattice_shrinkage",
+                "family": "context_lattice",
+                "source": "LatticeTimeKB",
+                "targets": ["latency_ms"],
+                "outputs": ["clause_point_prediction_ms"],
+            },
+            {
+                "name": "lattice_loso",
+                "family": "context_lattice",
+                "source": "LatticeTimeKB",
+                "targets": ["latency_ms"],
+                "outputs": ["clause_point_prediction_ms"],
+            },
+            {
+                "name": "lattice_max_cardinality",
+                "family": "context_lattice",
+                "source": "LatticeTimeKB",
+                "targets": ["latency_ms"],
+                "outputs": ["clause_point_prediction_ms"],
+            },
+            {
                 "name": "runtime_tool_resource_conditional_p90",
                 "family": "empirical_ecdf",
                 "source": "RuntimeToolResourceKB",
@@ -1735,3 +1882,29 @@ def _prediction_algorithms() -> dict:
             }
         ],
     }
+
+
+def _unavailable_lattice_time_predictions(
+    clauses: list[tuple[str, list[str]]],
+) -> list[dict]:
+    return [
+        {
+            "clause_index": clause_index,
+            "bin": bin_,
+            "argv": argv,
+            "predictions": [
+                {
+                    "algorithm": algorithm,
+                    "prediction_ms": None,
+                    "selected_features": [],
+                    "evidence_count": 0,
+                    "selected_risk": None,
+                    "exact_match": None,
+                    "fallback": None,
+                    "unavailable_reason": "no_lattice_time_evidence",
+                }
+                for algorithm in ("shrinkage", "loso", "max_cardinality")
+            ],
+        }
+        for clause_index, (bin_, argv) in enumerate(clauses)
+    ]
