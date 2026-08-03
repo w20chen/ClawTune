@@ -10,7 +10,7 @@
 import {spawn, type ChildProcess} from "node:child_process";
 import {existsSync, realpathSync, statSync} from "node:fs";
 import {release as kernelRelease} from "node:os";
-import {isAbsolute, join} from "node:path";
+import {delimiter, isAbsolute, join} from "node:path";
 import {fileURLToPath} from "node:url";
 
 const PRIVILEGED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -208,7 +208,7 @@ export function buildPrivilegedSidecarLaunch(
       ...sudoPreserveEnvironmentArgs(runtime.env),
       "env",
       `PATH=${privilegedPath(runtime.env, runtime.platform)}`,
-      `PYTHONPATH=${projectRoot}`,
+      `PYTHONPATH=${projectRoot}${delimiter}${join(projectRoot, "services", "scheduler", "src")}`,
       `BCC_KERNEL_SOURCE=${kernelSource}`,
       `AGENT_SCHEDULER_ENV_FILE=${join(projectRoot, ".env")}`,
       venvPython,
