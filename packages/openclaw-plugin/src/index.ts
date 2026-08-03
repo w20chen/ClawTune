@@ -710,6 +710,16 @@ export default definePluginEntry({
         };
       }
       const instrumentation = await instrumentExecParams(event, context, payload, decision, client, config);
+      // Diagnostic: always log whether instrumentation modified the params
+      if (toolName === "exec") {
+        console.error(
+          `[clawtune] exec instrumentation: paramsModified=${instrumentation.params !== null} ` +
+          `executionId=${instrumentation.executionId} ` +
+          `effectiveCommand=${instrumentation.effectiveCommand?.slice(0, 80)} ` +
+          `payloadCommand=${instrumentation.payloadCommand?.slice(0, 80)} ` +
+          `backend=${config.executionBackend} failOpen=${config.failOpen}`
+        );
+      }
       correlation.set(
         correlationId,
         decision.decision_id,
@@ -753,6 +763,14 @@ export default definePluginEntry({
           const instrumentation = await instrumentExecParams(
             event, context, payload, /* decision */ null, client, config,
           );
+          if (toolName === "exec") {
+            console.error(
+              `[clawtune] exec instrumentation (failOpen): paramsModified=${instrumentation.params !== null} ` +
+              `executionId=${instrumentation.executionId} ` +
+              `effectiveCommand=${instrumentation.effectiveCommand?.slice(0, 80)} ` +
+              `backend=${config.executionBackend}`
+            );
+          }
           if (instrumentation.executionId !== null) {
             correlation.set(
               correlationId,
