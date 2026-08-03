@@ -631,7 +631,13 @@ static int capture_enter(const char *filename, const char *const *argv) {
     if (!wanted()) return 0;
     u64 *next = next_exec_sequence.lookup(&zero);
     if (!next) return 0;
-    u64 seq = __sync_fetch_and_add(next, 1);
+    // Read-then-atomic-increment avoids __sync_fetch_and_add with return
+    // value, which triggers "Invalid usage of the XADD return value" on
+    // some clang/LLVM versions.  The exec sequence only needs to be
+    // approximately monotonic per task (disambiguated by task_key), so a
+    // narrow window between the read and the atomic add is harmless.
+    u64 seq = *next;
+    __sync_fetch_and_add(next, 1);
     u64 pid_tgid = bpf_get_current_pid_tgid();
     u32 tid = pid_tgid;
     struct task_key_t task_key = {

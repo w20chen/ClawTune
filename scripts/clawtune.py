@@ -724,8 +724,19 @@ def setup(args: argparse.Namespace) -> None:
     setup_qemu_if_needed(args.skip_qemu)
     configure_openclaw()
     check_mvdan_adapter()
-    check_ebpf(ROOT / "data" / "ebpf-check.json")
-    log("Setup and eBPF validation passed; the validation process has exited.")
+    if args.skip_ebpf_check:
+        log("Skipping eBPF check (--skip-ebpf-check).")
+        log("Resource attribution (per-clause metrics) will be unavailable.")
+        log("Runtime-level tool-span predictions will still work.")
+    else:
+        try:
+            check_ebpf(ROOT / "data" / "ebpf-check.json")
+            log("Setup and eBPF validation passed; the validation process has exited.")
+        except (subprocess.CalledProcessError, SetupError) as exc:
+            log(f"eBPF check failed (non-fatal): {exc}")
+            log("Resource attribution (per-clause metrics) will be unavailable.")
+            log("Runtime-level tool-span predictions will still work.")
+            log("To suppress this check: python3 scripts/clawtune.py setup --skip-ebpf-check")
     log("The OpenClaw plugin starts and waits for the eBPF sidecar automatically.")
     log("Run an agent directly: openclaw agent <options>")
     log("Run a benchmark: python3 scripts/clawtune.py benchmark --sample 1")
@@ -907,6 +918,11 @@ def parser() -> argparse.ArgumentParser:
         "--skip-qemu",
         action="store_true",
         help="Skip amd64 container setup on ARM",
+    )
+    setup_parser.add_argument(
+        "--skip-ebpf-check",
+        action="store_true",
+        help="Skip the eBPF compile/attach/smoke test (use when clang/LLVM/kernel headers are incompatible)",
     )
     sub.add_parser("doctor", help="Show one consolidated environment report")
     sub.add_parser("check", help="Run the real eBPF compile/attach/exec smoke test")
