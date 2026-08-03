@@ -330,14 +330,22 @@ export default definePluginEntry({
 
   function summarizePrediction(decision: ToolDecision): string {
     const prediction = decision.prediction;
-    const header = [
-      `time p50=${formatMs(prediction.duration_p50_ms)} p90=${formatMs(prediction.duration_p90_ms)}`,
+    const LABEL_WIDTH = 7;
+    function fmtLine(label: string, content: string): string {
+      return `  ${label.padEnd(LABEL_WIDTH)} ${content}`;
+    }
+
+    const headerParts: string[] = [
+      `p50=${formatMs(prediction.duration_p50_ms)} p90=${formatMs(prediction.duration_p90_ms)}`,
       `class=${prediction.resource_class}`,
     ];
     if (prediction.confidence !== null && prediction.confidence !== undefined) {
-      header.push(`confidence=${formatNumber(prediction.confidence, 2)}`);
+      headerParts.push(`confidence=${formatNumber(prediction.confidence, 2)}`);
     }
-    const lines: string[] = [`  ${header.join(" │ ")}`];
+    const lines: string[] = [
+      "prediction",
+      fmtLine("time", headerParts.join(" │ ")),
+    ];
     const toolResource = prediction.tool_resource;
     if (!toolResource) return lines.join("\n");
 
@@ -345,10 +353,10 @@ export default definePluginEntry({
     if (toolResource.prediction) {
       const probs = formatProbabilityList(toolResource.prediction.probability_by_bucket);
       lines.push(
-        `  bucket   bucket=${toolResource.prediction.bucket_id} (${formatPredictionSource(toolResource.prediction)}${probs ? ` probs=${probs}` : ""})`
+        fmtLine("bucket", `bucket=${toolResource.prediction.bucket_id} (${formatPredictionSource(toolResource.prediction)}${probs ? ` probs=${probs}` : ""})`)
       );
     } else {
-      lines.push(`  bucket   unavailable (${toolResource.unavailable_reason ?? "unknown"})`);
+      lines.push(fmtLine("bucket", `unavailable (${toolResource.unavailable_reason ?? "unknown"})`));
     }
 
     // --- per-clause bucket predictions ---
@@ -368,7 +376,7 @@ export default definePluginEntry({
         const reason = typeof c.unavailable_reason === "string" ? c.unavailable_reason : "?";
         return `[${idx}] ${bin}=unavailable(${reason})`;
       });
-      lines.push(`  clauses  ${clauseParts.join(" │ ")}`);
+      lines.push(fmtLine("clauses", clauseParts.join(" │ ")));
     }
 
     // --- continuous (runtime p90) ---
@@ -379,14 +387,14 @@ export default definePluginEntry({
       continuousPredictionSummary(continuous.peak_memory_mb, "mem", "MB"),
     ].filter(s => s.length > 0);
     if (contParts.length > 0) {
-      lines.push(`  runtime  ${contParts.join(" │ ")}`);
+      lines.push(fmtLine("runtime", contParts.join(" │ ")));
     }
 
     // --- lattice time predictions (per-clause point estimates) ---
     const latticePreds = toolResource.lattice_time_predictions;
     if (Array.isArray(latticePreds) && latticePreds.length > 0) {
       const latticeLines = latticePreds.map((lp) => {
-        if (!isRecord(lp)) return "  lattice  ?";
+        if (!isRecord(lp)) return fmtLine("lattice", "?");
         const l = lp as Record<string, unknown>;
         const idx = l.clause_index;
         const bin = typeof l.bin === "string" ? l.bin : "?";
@@ -405,11 +413,11 @@ export default definePluginEntry({
           const reason = typeof a.unavailable_reason === "string" ? a.unavailable_reason : "?";
           return `${shortAlgo}=unavailable(${reason})`;
         });
-        return `  lattice  [${idx}] ${bin}: ${algoParts.join(" │ ")}`;
+        return fmtLine("lattice", `[${idx}] ${bin}: ${algoParts.join(" │ ")}`);
       });
       lines.push(...latticeLines);
     } else {
-      lines.push("  lattice  (none)");
+      lines.push(fmtLine("lattice", "(none)"));
     }
 
     // --- algorithms ---
@@ -417,7 +425,7 @@ export default definePluginEntry({
       ?.map((item) => item.name)
       .filter((name): name is string => typeof name === "string" && name.length > 0);
     if (enabled && enabled.length > 0) {
-      lines.push(`  algo     ${enabled.join(" + ")}`);
+      lines.push(fmtLine("algo", enabled.join(" + ")));
     }
 
     return lines.join("\n");
