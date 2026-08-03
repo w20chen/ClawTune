@@ -1881,3 +1881,15 @@ Python compilation commands could not start in this Windows environment due
 the intermittent Microsoft Store `python.exe` logon-session failure; metadata
 is exercised directly by the passing regression test. Repeat setup and the
 one-task benchmark on the reported Python 3.10 x86 host.
+
+The next x86 rerun installed the correct distribution but pip considered
+dependencies under `/home/weitian/.local` satisfied. The unprivileged setup
+probe could import that user site, while the sudo benchmark sidecar could not,
+so it still failed on `typing_extensions`; pydantic, psutil, and Prometheus
+were exposed to the same latent failure. Venv installation and its post-install
+probe now run with `PYTHONNOUSERSITE=1`, forcing missing scheduler dependencies
+into `.venv` while retaining distribution BCC through system-site-packages.
+All privileged Python launch paths also disable user sites to prevent root or
+caller-local packages from changing runtime resolution. Focused tests passed
+(`146 passed, 2 skipped`), the plugin suite passed (`68 passed`), and
+`git diff --check` passed. Repeat setup and the one-task benchmark on x86.

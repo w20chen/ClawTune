@@ -50,6 +50,7 @@ test("privileged sidecar launch resolves the checkout and preserves a narrow env
       `PYTHONPATH=${projectRoot}:${join(projectRoot, "services", "scheduler", "src")}`,
     ));
     assert(spec.args.includes("HOME=/home/clawtune-user"));
+    assert(spec.args.includes("PYTHONNOUSERSITE=1"));
     assert(spec.args.includes(`BCC_KERNEL_SOURCE=${kernelSource}`));
     assert(spec.args.includes("--host"));
     assert(spec.args.includes("127.0.0.1"));

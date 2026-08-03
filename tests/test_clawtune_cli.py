@@ -41,11 +41,11 @@ def test_create_venv_probes_runtime_dependencies(tmp_path, monkeypatch) -> None:
     (venv / "bin").mkdir(parents=True)
     venv_python = venv / "bin" / "python"
     venv_python.touch()
-    calls: list[tuple[str, ...]] = []
+    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
 
-    def fake_run(command, **_kwargs):
+    def fake_run(command, **kwargs):
         rendered = tuple(str(item) for item in command)
-        calls.append(rendered)
+        calls.append((rendered, kwargs))
         return subprocess.CompletedProcess(rendered, 0, "", "")
 
     monkeypatch.setattr(clawtune, "VENV", venv)
@@ -54,9 +54,11 @@ def test_create_venv_probes_runtime_dependencies(tmp_path, monkeypatch) -> None:
 
     clawtune.create_venv(Path("/usr/bin/python3"))
 
-    assert calls[0][-2:] == ("-e", "services/scheduler[dev]")
-    assert "typing_extensions" in calls[1][-1]
-    assert "version('agent-scheduler') == '0.1.0'" in calls[1][-1]
+    assert calls[0][0][-2:] == ("-e", "services/scheduler[dev]")
+    assert calls[0][1]["env"]["PYTHONNOUSERSITE"] == "1"
+    assert "typing_extensions" in calls[1][0][-1]
+    assert "version('agent-scheduler') == '0.1.0'" in calls[1][0][-1]
+    assert calls[1][1]["env"]["PYTHONNOUSERSITE"] == "1"
 
 
 def test_create_venv_rejects_incomplete_runtime(tmp_path, monkeypatch) -> None:
@@ -82,6 +84,17 @@ def test_create_venv_rejects_incomplete_runtime(tmp_path, monkeypatch) -> None:
 
     with pytest.raises(clawtune.SetupError, match="runtime dependencies"):
         clawtune.create_venv(Path("/usr/bin/python3"))
+
+
+def test_privileged_command_disables_root_user_site(monkeypatch, tmp_path) -> None:
+    kernel = tmp_path / "kernel-build"
+    kernel.mkdir()
+    monkeypatch.setattr(clawtune, "kernel_build", lambda: kernel)
+    monkeypatch.setattr(clawtune.shutil, "which", lambda _name: None)
+
+    command = clawtune.privileged_command(["python", "-m", "example"])
+
+    assert "PYTHONNOUSERSITE=1" in command
 
 
 def test_package_manager_prefers_dnf(monkeypatch) -> None:

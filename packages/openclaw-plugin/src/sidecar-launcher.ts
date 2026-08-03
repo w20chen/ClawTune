@@ -209,6 +209,7 @@ export function buildPrivilegedSidecarLaunch(
       "env",
       `PATH=${privilegedPath(runtime.env, runtime.platform)}`,
       `HOME=${runtime.env.HOME ?? "/root"}`,
+      "PYTHONNOUSERSITE=1",
       // This branch is Linux-only. Do not use the host Node process's path
       // delimiter: cross-platform tests can construct a Linux runtime.
       `PYTHONPATH=${projectRoot}:${join(projectRoot, "services", "scheduler", "src")}`,

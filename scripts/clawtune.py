@@ -246,7 +246,15 @@ def create_venv(system_python: Path) -> None:
                 "Could not create .venv. Install this distribution's "
                 "python3-venv or python3 package."
             )
-    run([venv_python, "-m", "pip", "install", "-e", "services/scheduler[dev]"])
+    # The venv deliberately sees distribution system packages so it can use
+    # BCC, but it must not satisfy scheduler dependencies from the invoking
+    # user's ~/.local site. The benchmark sidecar runs under sudo and cannot
+    # see that user site, which otherwise makes setup pass and runtime fail.
+    isolated_env = {**os.environ, "PYTHONNOUSERSITE": "1"}
+    run(
+        [venv_python, "-m", "pip", "install", "-e", "services/scheduler[dev]"],
+        env=isolated_env,
+    )
     runtime_probe = run(
         [
             venv_python,
@@ -260,6 +268,7 @@ def create_venv(system_python: Path) -> None:
         ],
         check=False,
         capture=True,
+        env=isolated_env,
     )
     if runtime_probe.returncode != 0:
         detail = (runtime_probe.stderr or runtime_probe.stdout).strip()
@@ -563,6 +572,7 @@ def privileged_command(
         *sudo_command,
         "env",
         f"PATH={runtime_path}",
+        "PYTHONNOUSERSITE=1",
         f"PYTHONPATH={ROOT}{os.pathsep}{ROOT / 'services' / 'scheduler' / 'src'}",
         f"BCC_KERNEL_SOURCE={build}",
         *[str(item) for item in module_args],
