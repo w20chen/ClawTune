@@ -528,7 +528,7 @@ def privileged_command(
         *sudo_command,
         "env",
         f"PATH={runtime_path}",
-        f"PYTHONPATH={ROOT}",
+        f"PYTHONPATH={ROOT}{os.pathsep}{ROOT / 'services' / 'scheduler' / 'src'}",
         f"BCC_KERNEL_SOURCE={build}",
         *[str(item) for item in module_args],
     ]
