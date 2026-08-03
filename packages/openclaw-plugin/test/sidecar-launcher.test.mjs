@@ -34,6 +34,7 @@ test("privileged sidecar launch resolves the checkout and preserves a narrow env
         kernelRelease: "test-kernel",
         env: {
           PATH: `relative-bin:${customBin}`,
+          HOME: "/home/clawtune-user",
           BCC_KERNEL_SOURCE: kernelSource,
           HTTPS_PROXY: proxyValue,
           AGENT_SCHEDULER_POLICY: "observe-only",
@@ -45,7 +46,10 @@ test("privileged sidecar launch resolves the checkout and preserves a narrow env
     assert(spec);
     assert.equal(spec.command, "sudo");
     assert(spec.args.includes(venvPython));
-    assert(spec.args.includes(`PYTHONPATH=${projectRoot}`));
+    assert(spec.args.includes(
+      `PYTHONPATH=${projectRoot}:${join(projectRoot, "services", "scheduler", "src")}`,
+    ));
+    assert(spec.args.includes("HOME=/home/clawtune-user"));
     assert(spec.args.includes(`BCC_KERNEL_SOURCE=${kernelSource}`));
     assert(spec.args.includes("--host"));
     assert(spec.args.includes("127.0.0.1"));
@@ -53,6 +57,7 @@ test("privileged sidecar launch resolves the checkout and preserves a narrow env
     const preserve = spec.args.find((value) => value.startsWith("--preserve-env="));
     assert(preserve?.includes("HTTPS_PROXY"));
     assert(preserve?.includes("AGENT_SCHEDULER_POLICY"));
+    assert(!preserve?.includes("HOME"));
     assert(!preserve?.includes("UNRELATED_VALUE"));
     assert(!spec.args.some((value) => value.includes(proxyValue)));
     const pathArg = spec.args.find((value) => value.startsWith("PATH="));

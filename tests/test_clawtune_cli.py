@@ -5,6 +5,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from tools.check_ebpf import run_check
 
 
@@ -364,6 +366,85 @@ def test_plugin_install_does_not_repair_an_unrelated_invalid_config(monkeypatch)
         assert "OpenClaw" in str(exc)
     else:
         raise AssertionError("unrelated invalid plugin paths must not be auto-repaired")
+
+
+def test_plugin_install_removes_windows_path_on_posix_host(
+    tmp_path, monkeypatch,
+) -> None:
+    config = tmp_path / "openclaw.json"
+    config.write_text(
+        json.dumps(
+            {
+                "plugins": {
+                    "load": {
+                        "paths": [
+                            "C:\\old-claw\\packages\\openclaw-plugin\\",
+                            "/opt/another-plugin",
+                        ]
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(config))
+    install_attempts = 0
+
+    def fake_run(command, **_kwargs):
+        nonlocal install_attempts
+        rendered = tuple(str(item) for item in command)
+        if "plugins" in rendered and "install" in rendered:
+            install_attempts += 1
+            if install_attempts == 1:
+                return subprocess.CompletedProcess(
+                    rendered,
+                    1,
+                    "",
+                    "plugins.load.paths: plugin path not found: "
+                    "C:\\old-claw\\packages\\openclaw-plugin",
+                )
+        return subprocess.CompletedProcess(rendered, 0, "ok", "")
+
+    monkeypatch.setattr(clawtune, "run", fake_run)
+    clawtune.install_openclaw_plugin("openclaw", Path("/repo/openclaw-plugin"))
+
+    repaired = json.loads(config.read_text(encoding="utf-8"))
+    assert repaired["plugins"]["load"]["paths"] == ["/opt/another-plugin"]
+
+
+def test_plugin_install_stops_when_repaired_config_is_invalid(
+    tmp_path, monkeypatch,
+) -> None:
+    config = tmp_path / "openclaw.json"
+    config.write_text(
+        json.dumps(
+            {"plugins": {"load": {"paths": ["/old/openclaw-plugin"]}}}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(config))
+    install_attempts = 0
+
+    def fake_run(command, **_kwargs):
+        nonlocal install_attempts
+        rendered = tuple(str(item) for item in command)
+        if "plugins" in rendered and "install" in rendered:
+            install_attempts += 1
+            return subprocess.CompletedProcess(
+                rendered,
+                1,
+                "",
+                "plugins.load.paths: plugin path not found: /old/openclaw-plugin",
+            )
+        if "config" in rendered and "validate" in rendered:
+            return subprocess.CompletedProcess(rendered, 1, "", "invalid schema")
+        return subprocess.CompletedProcess(rendered, 0, "", "")
+
+    monkeypatch.setattr(clawtune, "run", fake_run)
+
+    with pytest.raises(clawtune.SetupError, match="rejected the repaired config"):
+        clawtune.install_openclaw_plugin("openclaw", Path("/repo/openclaw-plugin"))
+    assert install_attempts == 1
 
 
 def test_plugin_install_falls_back_to_doctor_when_load_paths_are_empty(

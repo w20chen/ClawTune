@@ -1828,3 +1828,24 @@ using the writable workspace temporary directory.
   `python.exe` failed with `A specified logon session does not exist`.
 - `git diff --check` could not run because the provided Windows workspace does
   not expose the checkout as a Git worktree.
+
+## 2026-08-03 x86 path-fix audit
+
+The repeated path fixes were reviewed as one change series. The audit fixed a
+host/runtime path-separator mix-up in the privileged Node launcher, removed a
+redundant `sudo --preserve-env=HOME` request, made stale plugin path matching
+work for configs copied between Windows and POSIX, and made setup stop when
+OpenClaw rejects the repaired config. Scheduler packaging metadata is again
+owned only by `pyproject.toml`; the duplicated `setup.py` metadata omitted the
+vendored `tool_time` package data.
+
+Focused CLI and SWE-Rebench tests passed (`141 passed, 2 skipped`), the plugin
+suite passed (`68 passed`), and `git diff --check` passed. The repository-wide
+pytest invocation could not collect because this Windows environment resolves
+some scheduler imports from an older user-site installation and contains two
+test trees with duplicate module names. A scheduler-only invocation and two
+wheel-build attempts could not start the Microsoft Store `python.exe` alias
+(`A specified logon session does not exist`); the `py` launcher is not
+installed. The focused Ruff invocation hit the same launcher failure. Build
+the scheduler wheel and run its tests and Ruff in the project venv on the
+target Linux/x86 host before release.

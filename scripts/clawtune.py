@@ -349,12 +349,17 @@ def remove_stale_clawtune_plugin_paths() -> bool:
         # OpenClaw may store path entries as plain strings *or* as
         # objects with a ``path`` key — handle both.
         def _is_clawtune_plugin_entry(value: object) -> bool:
+            def leaf(path: str) -> str:
+                # Configs can outlive an OS migration. pathlib only recognizes
+                # separators for the current host, so normalize both forms.
+                return path.rstrip("/\\").replace("\\", "/").rsplit("/", 1)[-1]
+
             if isinstance(value, str):
-                return Path(value).name == "openclaw-plugin"
+                return leaf(value) == "openclaw-plugin"
             if isinstance(value, dict):
                 p = value.get("path")
                 if isinstance(p, str):
-                    return Path(p).name == "openclaw-plugin"
+                    return leaf(p) == "openclaw-plugin"
             return False
 
         retained = [v for v in paths if not _is_clawtune_plugin_entry(v)]
@@ -440,7 +445,17 @@ def install_openclaw_plugin(openclaw: str, plugin: Path) -> None:
         # subsequent OpenClaw command auto-restores the stale config
         # from the old last-known-good backup, undoing our repair.
         log("Validating repaired config to update last-known-good backup")
-        run([openclaw, "config", "validate"], check=False)
+        validated = run(
+            [openclaw, "config", "validate"],
+            check=False,
+            capture=True,
+        )
+        if validated.returncode != 0:
+            detail = (validated.stderr or validated.stdout).strip()
+            raise SetupError(
+                "OpenClaw rejected the repaired config; the plugin was not "
+                f"reinstalled. Restore the generated backup if needed:\n{detail}"
+            )
 
         # Retry the install against the clean config and updated
         # last-known-good backup.
