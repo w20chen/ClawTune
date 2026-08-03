@@ -288,6 +288,61 @@ def test_plugin_install_removes_stale_path_even_when_it_exists_on_disk(
     assert repaired["plugins"]["load"]["paths"] == ["/opt/another-plugin"]
 
 
+def test_plugin_install_removes_stale_dict_format_path_entries(
+    tmp_path, monkeypatch,
+) -> None:
+    """OpenClaw may store plugins.load.paths entries as objects
+    with a `path` key, not as plain strings.  The repair must
+    also recognise and remove those."""
+    config = tmp_path / "openclaw.json"
+    document = {
+        "plugins": {
+            "load": {
+                "paths": [
+                    {"path": "/home/user/claw/packages/openclaw-plugin"},
+                    "/opt/another-plugin",
+                ],
+            },
+        },
+    }
+    original = json.dumps(document)
+    config.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(config))
+
+    calls: list[tuple[str, ...]] = []
+    install_attempts = 0
+
+    def fake_run(command, **_kwargs):
+        nonlocal install_attempts
+        rendered = tuple(str(item) for item in command)
+        calls.append(rendered)
+        if "plugins" in rendered and "install" in rendered:
+            install_attempts += 1
+            if install_attempts == 1:
+                return subprocess.CompletedProcess(
+                    rendered,
+                    1,
+                    "",
+                    "plugins.load.paths: plugin: plugin path not found: "
+                    "/home/user/claw/packages/openclaw-plugin",
+                )
+            # On retry, only the string entry should remain.
+            current = json.loads(config.read_text(encoding="utf-8"))
+            assert current["plugins"]["load"]["paths"] == [
+                "/opt/another-plugin"
+            ]
+        return subprocess.CompletedProcess(rendered, 0, "ok", "")
+
+    monkeypatch.setattr(clawtune, "run", fake_run)
+
+    clawtune.install_openclaw_plugin(
+        "/usr/bin/openclaw",
+        Path("/home/user/ClawTune/packages/openclaw-plugin"),
+    )
+
+    assert install_attempts == 2
+
+
 def test_plugin_install_does_not_repair_an_unrelated_invalid_config(monkeypatch) -> None:
     def fake_run(command, **_kwargs):
         rendered = tuple(str(item) for item in command)

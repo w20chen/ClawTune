@@ -332,12 +332,26 @@ def remove_stale_clawtune_plugin_paths() -> None:
     # unusable (e.g. a broken symlink or an incompatible plugin version),
     # and `openclaw plugins install --link` will add the correct path
     # from the current checkout immediately after this repair.
-    retained = [
-        value
-        for value in paths
-        if not (isinstance(value, str) and Path(value).name == "openclaw-plugin")
-    ]
-    if len(retained) == len(paths):
+    #
+    # OpenClaw may store path entries as plain strings *or* as objects
+    # with a `path` key — handle both.
+    def _is_clawtune_plugin_entry(value: object) -> bool:
+        if isinstance(value, str):
+            return Path(value).name == "openclaw-plugin"
+        if isinstance(value, dict):
+            p = value.get("path")
+            if isinstance(p, str):
+                return Path(p).name == "openclaw-plugin"
+        return False
+
+    retained = [v for v in paths if not _is_clawtune_plugin_entry(v)]
+    removed = len(paths) - len(retained)
+    log(
+        f"plugins.load.paths: {len(paths)} total, "
+        f"{removed} openclaw-plugin entries removed, "
+        f"{len(retained)} retained"
+    )
+    if removed == 0:
         raise SetupError(
             "OpenClaw reported a stale ClawTune plugin path, but no "
             f"openclaw-plugin entry was found in plugins.load.paths in {config}"
