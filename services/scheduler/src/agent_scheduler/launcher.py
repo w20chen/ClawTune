@@ -1062,11 +1062,26 @@ def _prepare_cgroup(
     last_error: str | None = None
     for root in candidates:
         try:
-            return _create_cgroup_at(root, execution_id, cpu_set, mems)
+            cgroup_path = _create_cgroup_at(root, execution_id, cpu_set, mems)
         except OSError as exc:
             last_error = str(exc)
             if _env_enabled("CLAW_CGROUP_DEBUG"):
                 print(f"execution environment: cgroup unavailable at {root}: {exc}", file=sys.stderr)
+            continue
+        # Verify the created cgroup can actually accept processes before
+        # committing to it.  On systems where /sys/fs/cgroup/claw exists
+        # but lacks controller delegation, the directory is created but
+        # cgroup.procs writes fail with EACCES.
+        if _cgroup_procs_writable(cgroup_path):
+            return cgroup_path
+        # Clean up the unusable directory and try the next candidate.
+        try:
+            Path(cgroup_path).rmdir()
+        except OSError:
+            pass
+        last_error = f"cgroup.procs not writable at {cgroup_path}"
+        if _env_enabled("CLAW_CGROUP_DEBUG"):
+            print(f"execution environment: skipping unusable cgroup {cgroup_path} (delegation missing)", file=sys.stderr)
 
     # Last resort: borrow the container's own cgroup for read-only monitoring.
     # In Docker containers cgroupfs is mounted read-only so we cannot create
@@ -1095,10 +1110,18 @@ def _cgroup_root_candidates() -> list[str]:
     """Return candidate cgroup root paths in priority order.
 
     Priority:
-      1. /sys/fs/cgroup/claw                               — root or pre-delegated
-      2. /sys/fs/cgroup/user.slice/.../user@<UID>.service/claw
+      1. /sys/fs/cgroup/user.slice/.../user@<UID>.service/claw
                                                             — systemd user manager
-                                                              (writable by non-root)
+                                                              (properly delegated, writable
+                                                               by non-root)
+      2. /sys/fs/cgroup/claw                               — root or pre-delegated
+                                                              (requires manual delegation
+                                                               of controllers)
+
+    On many systems the root-level /sys/fs/cgroup/claw directory can be
+    created but does not have controllers delegated to it, so processes
+    cannot be joined.  systemd user slices are reliably pre-delegated
+    via PAM / logind and are the preferred target.
 
     Only candidates whose parent directory already exists and is writable are
     returned.  If the user manager directory is missing (e.g. SSH without PAM),
@@ -1106,15 +1129,7 @@ def _cgroup_root_candidates() -> list[str]:
     """
     candidates: list[str] = []
 
-    # Priority 1: traditional delegated root.  In privileged Docker
-    # containers this directory may not exist yet, but /sys/fs/cgroup is
-    # writable; include it so _create_cgroup_at can create the claw root.
-    if _try_candidate_parent("/sys/fs/cgroup"):
-        candidates.append("/sys/fs/cgroup/claw")
-    elif _try_candidate_parent("/sys/fs/cgroup/claw"):
-        candidates.append("/sys/fs/cgroup/claw")
-
-    # Priority 2: systemd user manager slice.
+    # Priority 1: systemd user manager slice — reliably delegated.
     try:
         uid = os.getuid()
     except (AttributeError, OSError):
@@ -1124,12 +1139,15 @@ def _cgroup_root_candidates() -> list[str]:
         if _try_candidate_parent(user_svc):
             candidates.append(f"{user_svc}/claw")
         else:
-            # User manager might not be running (SSH without PAM, cron, CI).
-            # Try D-Bus activation — `systemctl --user` is idempotent and
-            # safe to call even when the manager is already active.
             _start_user_manager()
             if _try_candidate_parent(user_svc):
                 candidates.append(f"{user_svc}/claw")
+
+    # Priority 2: traditional delegated root.
+    if _try_candidate_parent("/sys/fs/cgroup"):
+        candidates.append("/sys/fs/cgroup/claw")
+    elif _try_candidate_parent("/sys/fs/cgroup/claw"):
+        candidates.append("/sys/fs/cgroup/claw")
 
     return candidates
 
@@ -1209,6 +1227,22 @@ def _cleanup_cgroup(cgroup_path: str | None) -> None:
         Path(cgroup_path).rmdir()
     except OSError:
         pass
+
+
+def _cgroup_procs_writable(cgroup_path: str) -> bool:
+    """Return True if we can write to cgroup.procs in *cgroup_path*.
+
+    Creating a cgroup directory does not guarantee it can accept processes;
+    the parent must have delegated controllers via cgroup.subtree_control.
+    """
+    procs = Path(cgroup_path) / "cgroup.procs"
+    try:
+        if not procs.exists():
+            return False
+        # Test writability without actually moving a process.
+        return os.access(procs, os.W_OK)
+    except OSError:
+        return False
 
 
 def _join_child_cgroup(child_pid: int, cgroup_path: str | None) -> bool:
