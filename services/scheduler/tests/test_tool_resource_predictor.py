@@ -4,6 +4,7 @@ import asyncio
 import json
 import shutil
 import shlex
+import concurrent.futures
 import time
 from types import SimpleNamespace
 from pathlib import Path
@@ -1501,6 +1502,75 @@ def test_tool_resource_predictor_persists_clause_kb_prefixes(tmp_path: Path) -> 
     assert result.tool_resource["prediction"] is None
     assert result.tool_resource["unavailable_reason"] == "no_clause_latency_evidence"
     assert result.tool_resource["continuous_predictions"]["latency_ms"]["key_kind"] == "command_prefix_depth_3"
+
+
+def test_tool_resource_predictor_concurrent_completions_persist_without_lost_update(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "tool-resource"
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+        artifact_dir=artifact_dir,
+    )
+    predictor.record_tool_started(_tool_request("evt-1", "call-1", "python task_a.py"))
+    predictor.record_tool_started(_tool_request("evt-2", "call-2", "python task_b.py"))
+
+    def complete(event_id: str, tool_call_id: str) -> int:
+        return predictor.observe_completion(
+            ToolCompletedEvent(
+                schema_version="scheduler.v1",
+                event_id=event_id,
+                occurred_at="2026-07-24T17:29:45Z",
+                plugin_version="0.1.0",
+                run_id="run-1",
+                session_id="session-1",
+                session_key=None,
+                agent_id="main",
+                tool_call_id=tool_call_id,
+                decision_id=None,
+                lease_id=None,
+                execution_id=None,
+                tool_name="exec",
+                duration_ms=1200,
+                succeeded=True,
+                error_type=None,
+                error_digest=None,
+                result_size_bytes=None,
+                raw_result=None,
+                raw_event=None,
+                resource_scope=None,
+            ),
+            _runtime_sample(event_id, tool_call_id),
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda args: complete(*args),
+                [("evt-1", "call-1"), ("evt-2", "call-2")],
+            )
+        )
+
+    assert results == [1, 1]
+    reloaded = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+        artifact_dir=artifact_dir,
+    )
+    first = asyncio.run(
+        reloaded.predict(_tool_request("evt-next-1", "call-next-1", "python task_a.py"))
+    )
+    second = asyncio.run(
+        reloaded.predict(_tool_request("evt-next-2", "call-next-2", "python task_b.py"))
+    )
+
+    assert first.tool_resource["continuous_predictions"]["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
+    assert second.tool_resource["continuous_predictions"]["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
 
 
 def test_tool_resource_predictor_continuous_memory_uses_ambient_anchor() -> None:

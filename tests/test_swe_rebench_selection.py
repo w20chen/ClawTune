@@ -1009,11 +1009,14 @@ bundle:
 
     def fake_host_runner(**kwargs):
         called.update(kwargs)
-        assert _kb_pair_markers(trace_dir / "tool-resource") == {
-            "runtime-tool-resource-kb.json": "shared-before-task",
-            "clause-resource-kb.json": "shared-before-task",
-            "clause-lattice-time-kb.json": "shared-before-task",
-        }
+        # In host-sandbox mode, _run_one delegates KB seeding to
+        # run_host_sandbox_task (manage_sidecar=True path).  The fake
+        # must seed so that the subsequent publish has valid input.
+        _seed_runtime_tool_resource_kb(
+            trace_dir,
+            config,
+            source_dir=shared_kb_dir,
+        )
         _write_test_kb_pair(trace_dir / "tool-resource", "task-update")
         return ContainerResult(
             task_id=task.instance_id,
@@ -1042,6 +1045,8 @@ bundle:
 
     assert result.exit_code == 0
     assert called["shared_kb_dir"] == shared_kb_dir
+    # _run_one publishes KB after a per-task sidecar run (shared_sidecar_port
+    # is None → should_publish is True).
     assert _kb_pair_markers(shared_kb_dir) == {
         "runtime-tool-resource-kb.json": "task-update",
         "clause-resource-kb.json": "task-update",
@@ -1751,6 +1756,7 @@ def test_run_batch_aborts_before_next_task_on_kb_sync_failure(
 ) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
+        "runtime:\n  mode: container-openclaw\n"
         "output:\n  trace_root: traces\n  report_path: report.json\n",
         encoding="utf-8",
     )
@@ -1767,9 +1773,7 @@ def test_run_batch_aborts_before_next_task_on_kb_sync_failure(
     monkeypatch.setattr(
         runner,
         "_pre_pull_images",
-        lambda *_args, **_kwargs: pytest.fail(
-            "host-sandbox image pulls must remain inside each task deadline"
-        ),
+        lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
         runner,

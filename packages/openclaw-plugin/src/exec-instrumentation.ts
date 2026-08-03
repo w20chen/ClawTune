@@ -56,7 +56,7 @@ export async function instrumentExecParams(
   }
   const requestedCommand = params.command;
   const commandDigest = stableDigest(requestedCommand);
-  const executionId = extractString(event, ["tool_call_id", "toolCallId", "id"]) ?? `exec-${randomUUID()}`;
+  const executionId = `exec-${randomUUID()}`;
   const runId = payload.run_id ?? extractString(context, ["runId", "run_id"]);
   const sessionKeyHash = payload.session_key === null ? null : stableDigest(payload.session_key);
   const workdirOverride = launcherWorkdirOverride();

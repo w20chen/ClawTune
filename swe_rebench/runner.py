@@ -31,6 +31,7 @@ Or all-in-one::
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import errno
 import json
 import math
@@ -58,6 +59,7 @@ from swe_rebench.host_sandbox import (
     _publish_tool_resource_kb,
     _reset_directory_with_docker,
     _seed_runtime_tool_resource_kb,
+    _stop_process,
     run_host_sandbox_task,
 )
 from swe_rebench.prepare import build_bundle, bundle_needs_rebuild
@@ -853,6 +855,19 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
         report["warnings"].append("task trace directory is unavailable")
         return report
     artifact_dir = trace_dir / "tool-resource"
+    # Fall back to trace_dir when tool-resource/ is absent or empty but
+    # KB snapshot files exist directly in trace_dir (e.g. when called
+    # with shared_kb_dir instead of a per-task trace directory).
+    if not artifact_dir.exists() or not any(artifact_dir.glob("*.json")):
+        if any(
+            (trace_dir / filename).exists()
+            for filename in (
+                "clause-resource-kb.json",
+                "runtime-tool-resource-kb.json",
+                "clause-lattice-time-kb.json",
+            )
+        ):
+            artifact_dir = trace_dir
     for path in sorted(artifact_dir.glob("*.json")):
         if path.name in {
             "clause-resource-kb.json",
@@ -1621,8 +1636,10 @@ def run_batch(
     export_after: bool = False,
 ) -> BatchReport:
     """Run a batch of tasks and return a summary report."""
+    parallelism = max(1, config.batch.parallelism)
     _log(f"\n{'='*60}")
-    _log(f"Batch run: {len(tasks)} tasks, serial execution")
+    mode_label = "serial execution" if parallelism == 1 else f"parallelism={parallelism}"
+    _log(f"Batch run: {len(tasks)} tasks, {mode_label}")
     _log(f"Trace root: {config.output.trace_root}")
     _log(f"{'='*60}\n")
 
@@ -1637,6 +1654,8 @@ def run_batch(
     report.shared_kb_dir = str(shared_kb_dir)
     _log(f"Shared tool-resource KB: {shared_kb_dir}")
     start_wall = time.monotonic()
+    shared_sidecar_port: int | None = None
+    shared_sidecar = None
 
     # Container mode owns one long-running task container and benefits from a
     # batch pre-pull. Host-sandbox mode exports each repository from its task
@@ -1653,47 +1672,36 @@ def run_batch(
     else:
         _log("Task images will be checked/pulled inside each task timeout")
 
+    if normalize_runtime_mode(config.runtime.mode) == "host-openclaw-sandbox":
+        from swe_rebench.host_sandbox import _free_port, _start_sidecar
+
+        shared_sidecar_port = _free_port()
+        sidecar_dir = shared_kb_dir.parent / "sidecar"
+        sidecar_dir.mkdir(parents=True, exist_ok=True)
+        # The shared sidecar's DockerExecObserver cannot use a single
+        # container-name prefix to match all tasks because each task uses
+        # a per-workspace prefix (claw-srb-<hash>-) for correct cleanup
+        # isolation during parallel execution.  Scope discovery still works
+        # through _discover_sandbox_scope_loop (post_sandbox_scope=True).
+        shared_sidecar = _start_sidecar(
+            trace_dir=sidecar_dir,
+            port=shared_sidecar_port,
+            config=config,
+            workspace=config.output.trace_root,
+            repo="swe-rebench-batch",
+            artifact_dir=shared_kb_dir,
+        )
+        _log(f"Batch sidecar endpoint: http://127.0.0.1:{shared_sidecar_port}")
+
     completed_count = 0
     failed_count = 0
-    for task in tasks:
-        trace_dir = _task_trace_dir(config, task)
-        abort_after_result = False
-        try:
-            result = _run_one(
-                client,
-                task,
-                bundle_dir,
-                trace_dir,
-                config,
-                shared_kb_dir=shared_kb_dir,
-            )
-        except KnowledgeBaseSyncError as exc:
-            abort_after_result = True
-            report.aborted = True
-            report.abort_reason = str(exc)
-            carried_result = getattr(exc, "result", None)
-            result = (
-                carried_result
-                if isinstance(carried_result, ContainerResult)
-                else ContainerResult(
-                    task_id=task.instance_id,
-                    image=task.image,
-                    exit_code=-1,
-                    error=str(exc),
-                    trace_dir=trace_dir,
-                )
-            )
-        except Exception as exc:
-            result = ContainerResult(
-                task_id=task.instance_id,
-                image=task.image,
-                exit_code=-1,
-                error=str(exc),
-                trace_dir=trace_dir,
-            )
 
+    def handle_result(result: ContainerResult, task: TaskDef) -> None:
+        nonlocal completed_count, failed_count
         result_dict = _result_dict(result)
         result_dict["repo"] = task_repo_key(task)
+        if shared_sidecar_port is not None:
+            result_dict["sidecar_endpoint"] = f"http://127.0.0.1:{shared_sidecar_port}"
         telemetry_error = _required_telemetry_error(config, result_dict)
         agent_error = _nested_get(result_dict, ("agent_diagnostics", "failure"))
         telemetry_not_evaluable = bool(
@@ -1749,9 +1757,105 @@ def run_batch(
         )
         if result.error:
             _log(f"       error: {result.error}")
-        if abort_after_result:
-            _log("       aborting batch: shared KB generation was not published safely")
-            break
+
+    def run_task(task: TaskDef) -> ContainerResult:
+        trace_dir = _task_trace_dir(config, task)
+        try:
+            return _run_one(
+                client,
+                task,
+                bundle_dir,
+                trace_dir,
+                config,
+                shared_kb_dir=shared_kb_dir,
+                shared_sidecar_port=shared_sidecar_port,
+            )
+        except KnowledgeBaseSyncError:
+            # KB sync failures must abort the batch to avoid propagating
+            # corrupted or stale KB state to subsequent tasks.
+            raise
+        except Exception as exc:
+            return ContainerResult(
+                task_id=task.instance_id,
+                image=task.image,
+                exit_code=-1,
+                error=str(exc),
+                trace_dir=trace_dir,
+            )
+
+    try:
+        if parallelism == 1:
+            for task in tasks:
+                try:
+                    handle_result(run_task(task), task)
+                except KnowledgeBaseSyncError as exc:
+                    carried_result = getattr(exc, "result", None)
+                    result = (
+                        carried_result
+                        if isinstance(carried_result, ContainerResult)
+                        else ContainerResult(
+                            task_id=task.instance_id,
+                            image=task.image,
+                            exit_code=-1,
+                            error=str(exc),
+                            trace_dir=_task_trace_dir(config, task),
+                        )
+                    )
+                    handle_result(result, task)
+                    report.aborted = True
+                    report.abort_reason = str(exc)
+                    _log(f"       aborting batch: {exc}")
+                    break
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=parallelism) as executor:
+                futures = {executor.submit(run_task, task): task for task in tasks}
+                for future in concurrent.futures.as_completed(futures):
+                    task = futures[future]
+                    try:
+                        handle_result(future.result(), task)
+                    except KnowledgeBaseSyncError as exc:
+                        carried_result = getattr(exc, "result", None)
+                        result = (
+                            carried_result
+                            if isinstance(carried_result, ContainerResult)
+                            else ContainerResult(
+                                task_id=task.instance_id,
+                                image=task.image,
+                                exit_code=-1,
+                                error=str(exc),
+                                trace_dir=_task_trace_dir(config, task),
+                            )
+                        )
+                        handle_result(result, task)
+                        report.aborted = True
+                        report.abort_reason = str(exc)
+                        _log(f"       aborting batch: {exc}")
+                        # Cancel remaining futures so workers stop early.
+                        for f in futures:
+                            f.cancel()
+                        break
+    finally:
+        if shared_sidecar is not None:
+            sidecar_poll = getattr(shared_sidecar, "poll", None)
+            if sidecar_poll is not None:
+                sidecar_exit = sidecar_poll()
+                if sidecar_exit is not None and sidecar_exit != 0:
+                    if not report.aborted:
+                        report.aborted = True
+                        report.abort_reason = (
+                            f"shared sidecar exited with code {sidecar_exit} "
+                            f"before batch completion"
+                        )
+                        _log(
+                            f"[sidecar] exited prematurely (code {sidecar_exit}), "
+                            f"aborting batch"
+                        )
+                    else:
+                        _log(
+                            f"[sidecar] exited prematurely (code {sidecar_exit}); "
+                            f"batch already aborted: {report.abort_reason}"
+                        )
+            _stop_process(shared_sidecar)
 
     report.completed = completed_count
     report.failed = failed_count
@@ -1783,6 +1887,7 @@ def _run_one(
     config: RunnerConfig,
     *,
     shared_kb_dir: Path | None = None,
+    shared_sidecar_port: int | None = None,
 ) -> ContainerResult:
     """Execute a single task container (called in worker thread)."""
     _reset_task_trace_dir(
@@ -1791,7 +1896,15 @@ def _run_one(
         docker_cleanup_image=task.image,
         docker_platform=config.docker.platform,
     )
-    if shared_kb_dir is not None:
+
+    # ── Seed KB from shared directory before execution ──
+    # - Container mode: the in-container sidecar needs the KB seeded into
+    #   the trace directory (mounted at /traces inside the container).
+    # - Host-sandbox mode: when using a shared sidecar the sidecar reads
+    #   and writes the shared KB directly; when using a per-task sidecar,
+    #   run_host_sandbox_task seeds internally (manage_sidecar=True).
+    mode = normalize_runtime_mode(config.runtime.mode)
+    if shared_kb_dir is not None and mode == "container-openclaw":
         _seed_runtime_tool_resource_kb(
             trace_dir,
             config,
@@ -1805,16 +1918,25 @@ def _run_one(
         trace_dir=trace_dir,
         config=config,
         shared_kb_dir=shared_kb_dir,
+        shared_sidecar_port=shared_sidecar_port,
     )
 
-    if shared_kb_dir is not None:
+    # ── Publish task KB back to shared directory ──
+    # Publish whenever a per-task sidecar wrote KB into the trace directory
+    # (container mode always; host-sandbox mode only without shared sidecar).
+    # When a shared sidecar is active it writes KB directly to shared_kb_dir
+    # so no per-task publish is needed and it would conflict with the sidecar.
+    if shared_kb_dir is not None and shared_sidecar_port is None:
         try:
             _publish_tool_resource_kb(trace_dir, shared_kb_dir)
         except KnowledgeBaseSyncError as exc:
             message = f"task completed but shared KB publish failed: {exc}"
             result.exit_code = -1
-            result.error = f"{result.error}; {message}" if result.error else message
+            result.error = (
+                f"{result.error}; {message}" if result.error else message
+            )
             raise _TaskKnowledgeBaseSyncError(message, result) from exc
+
     return result
 
 
@@ -1826,6 +1948,7 @@ def _execute_one(
     trace_dir: Path,
     config: RunnerConfig,
     shared_kb_dir: Path | None,
+    shared_sidecar_port: int | None,
 ) -> ContainerResult:
     """Execute a task after its isolated directory and shared KB are ready."""
 
@@ -1836,6 +1959,9 @@ def _execute_one(
             config=config,
             bundle_dir=bundle_dir,
             shared_kb_dir=shared_kb_dir,
+            sidecar_port=shared_sidecar_port,
+            manage_sidecar=shared_sidecar_port is None,
+            post_sandbox_scope=True,
         )
 
     retries = config.batch.retry_failed + 1
@@ -2121,6 +2247,7 @@ def _apply_batch_overrides(
     *,
     task_timeout_seconds: int | None = None,
     agent_timeout_seconds: int | None = None,
+    parallelism: int | None = None,
 ) -> None:
     """Apply command-line batch limits after loading the YAML configuration."""
 
@@ -2134,6 +2261,10 @@ def _apply_batch_overrides(
         config.batch.task_timeout_seconds = task_timeout_seconds
     if agent_timeout_seconds is not None:
         config.batch.agent_timeout_seconds = agent_timeout_seconds
+    if parallelism is not None:
+        if parallelism < 1:
+            raise ValueError("--parallelism must be >= 1")
+        config.batch.parallelism = parallelism
 
 
 def _print_report_json(report: BatchReport, *, enabled: bool) -> None:
@@ -2205,6 +2336,12 @@ def main() -> None:
             "is the smaller of this value and the remaining task budget "
             "(0 disables the separate agent limit)"
         ),
+    )
+    run_p.add_argument(
+        "--parallelism",
+        type=int,
+        default=None,
+        help="Number of SWE-ReBench tasks to run concurrently; overrides batch.parallelism",
     )
     run_p.add_argument("--skip", type=int, default=0,
                        help="Skip the first N selected tasks before --sample")
@@ -2283,6 +2420,7 @@ def main() -> None:
                 config,
                 task_timeout_seconds=args.task_timeout_seconds,
                 agent_timeout_seconds=args.agent_timeout_seconds,
+                parallelism=args.parallelism,
             )
         except ValueError as exc:
             parser.error(str(exc))

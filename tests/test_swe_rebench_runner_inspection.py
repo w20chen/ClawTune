@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import json
+import time
+from pathlib import Path
 
+from swe_rebench.docker import ContainerResult
 from swe_rebench.config import RunnerConfig
+from swe_rebench.task_source import TaskDef
+import swe_rebench.host_sandbox as host_sandbox
+import swe_rebench.runner as runner
 from swe_rebench.runner import (
     _agent_diagnostics,
     _inspect_tool_resource_artifacts,
@@ -703,6 +709,7 @@ def test_required_stage2_accepts_explicit_semantic_rejections_but_not_for_kb(
     assert analysis_failure_report["analysis_failure_reason_counts"] == {
         "analysis_failure": 1,
     }
+
     assert analysis_failure_report["explicit_semantic_rejection_call_count"] == 1
     assert analysis_failure_report["semantic_rejection_reason_counts"] == {
         "unmatched_static_clause": 1,
@@ -951,3 +958,128 @@ def test_container_mode_honors_explicit_stage2_requirement(tmp_path):
             },
         },
     ) is None
+
+
+def _runner_config(tmp_path: Path, parallelism: int) -> RunnerConfig:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "runtime:",
+                "  mode: host-openclaw-sandbox",
+                "  stage2_required: false",
+                "batch:",
+                f"  parallelism: {parallelism}",
+                "output:",
+                "  trace_root: traces",
+                "  report_path: report.json",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+
+
+def _fake_task_result(task: TaskDef, trace_dir: Path, started: float) -> ContainerResult:
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    return ContainerResult(
+        task_id=task.instance_id,
+        image=task.image,
+        exit_code=0,
+        error=None,
+        trace_dir=trace_dir,
+        trace_files=[],
+        duration_seconds=time.monotonic() - started,
+    )
+
+
+def test_run_batch_parallel_tasks_share_one_sidecar_endpoint(tmp_path, monkeypatch):
+    config = _runner_config(tmp_path, parallelism=2)
+    tasks = [
+        TaskDef("owner__repo-1", "image:1"),
+        TaskDef("owner__repo-2", "image:2"),
+    ]
+    events: list[tuple[str, str | None]] = []
+
+    monkeypatch.setattr(runner, "get_docker_client", lambda _config: object())
+    monkeypatch.setattr(
+        runner,
+        "_prepare_batch_tool_resource_kb",
+        lambda shared_kb_dir, _config: shared_kb_dir.mkdir(parents=True),
+    )
+    monkeypatch.setattr(host_sandbox, "_free_port", lambda: 19090)
+
+    class Sidecar:
+        poll = None  # noqa: A003 (return None → process still running)
+
+    monkeypatch.setattr(
+        host_sandbox,
+        "_start_sidecar",
+        lambda **_kwargs: events.append(("sidecar-start", None)) or Sidecar(),
+    )
+    monkeypatch.setattr(
+        host_sandbox,
+        "_stop_process",
+        lambda _process: events.append(("sidecar-stop", None)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_stop_process",
+        lambda _process: events.append(("sidecar-stop", None)),
+    )
+
+    def fake_execute_one(**kwargs):
+        events.append((kwargs["task"].instance_id, str(kwargs["shared_sidecar_port"])))
+        time.sleep(0.02)
+        return _fake_task_result(
+            kwargs["task"],
+            kwargs["trace_dir"],
+            time.monotonic() - 0.01,
+        )
+
+    monkeypatch.setattr(runner, "_execute_one", fake_execute_one)
+
+    report = runner.run_batch(config, tasks, tmp_path / "bundle")
+
+    endpoints = {entry["sidecar_endpoint"] for entry in report.results}
+    assert endpoints == {"http://127.0.0.1:19090"}
+    assert {event for event in events if event[0].startswith("owner__")} == {
+        ("owner__repo-1", "19090"),
+        ("owner__repo-2", "19090"),
+    }
+    assert events[-1] == ("sidecar-stop", None)
+
+
+def test_run_batch_parallelism_one_keeps_single_worker_path(tmp_path, monkeypatch):
+    config = _runner_config(tmp_path, parallelism=1)
+    task = TaskDef("owner__repo-1", "image:1")
+    calls: list[str] = []
+
+    monkeypatch.setattr(runner, "get_docker_client", lambda _config: object())
+    monkeypatch.setattr(
+        runner,
+        "_prepare_batch_tool_resource_kb",
+        lambda shared_kb_dir, _config: shared_kb_dir.mkdir(parents=True),
+    )
+    monkeypatch.setattr(host_sandbox, "_free_port", lambda: 19091)
+    monkeypatch.setattr(host_sandbox, "_start_sidecar", lambda **_kwargs: object())
+    monkeypatch.setattr(host_sandbox, "_stop_process", lambda _process: None)
+    monkeypatch.setattr(runner, "_stop_process", lambda _process: None)
+
+    def fake_execute_one(**kwargs):
+        calls.append(kwargs["task"].instance_id)
+        return _fake_task_result(
+            kwargs["task"],
+            kwargs["trace_dir"],
+            time.monotonic() - 0.01,
+        )
+
+    monkeypatch.setattr(runner, "_execute_one", fake_execute_one)
+
+    report = runner.run_batch(config, [task], tmp_path / "bundle")
+
+    assert calls == ["owner__repo-1"]
+    assert report.completed == 1
+    assert report.failed == 0
+    assert report.results[0]["sidecar_endpoint"] == "http://127.0.0.1:19091"

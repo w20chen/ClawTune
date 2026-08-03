@@ -32,6 +32,8 @@ from swe_rebench.task_source import TaskDef, task_repo_key
 
 # ── thread-safe console logging ──────────────────────────────────
 _print_lock = threading.Lock()
+_plugin_build_lock = threading.Lock()
+_built_plugin_dirs: set[Path] = set()
 
 
 # SWE-bench evaluation images keep the task environment under
@@ -112,6 +114,9 @@ def run_host_sandbox_task(
     config: RunnerConfig,
     bundle_dir: Path,
     shared_kb_dir: Path | None = None,
+    sidecar_port: int | None = None,
+    manage_sidecar: bool = True,
+    post_sandbox_scope: bool = True,
 ) -> ContainerResult:
     """Run one task with host OpenClaw and OpenClaw Docker sandbox."""
     started = time.monotonic()
@@ -119,7 +124,7 @@ def run_host_sandbox_task(
     trace_dir.mkdir(parents=True, exist_ok=True)
     workspace = _task_workspace(config, task)
     openclaw_home = trace_dir / "openclaw-home"
-    sidecar_port = _free_port()
+    sidecar_port = sidecar_port or _free_port()
     sidecar = None
     exit_code = -1
     error: str | None = None
@@ -172,20 +177,22 @@ def run_host_sandbox_task(
         )
         _remaining_task_seconds(deadline, phase="sandbox preflight")
 
-        _seed_runtime_tool_resource_kb(
-            trace_dir,
-            config,
-            source_dir=shared_kb_dir,
-        )
+        if manage_sidecar:
+            _seed_runtime_tool_resource_kb(
+                trace_dir,
+                config,
+                source_dir=shared_kb_dir,
+            )
 
-        sidecar = _start_sidecar(
-            trace_dir=trace_dir,
-            port=sidecar_port,
-            config=config,
-            workspace=workspace,
-            repo=task_repo_key(task),
-            deadline=deadline,
-        )
+        if manage_sidecar:
+            sidecar = _start_sidecar(
+                trace_dir=trace_dir,
+                port=sidecar_port,
+                config=config,
+                workspace=workspace,
+                repo=task_repo_key(task),
+                deadline=deadline,
+            )
         _configure_openclaw(
             trace_dir=trace_dir,
             openclaw_home=openclaw_home,
@@ -216,6 +223,7 @@ def run_host_sandbox_task(
             task=task,
             config=config,
             task_deadline=deadline,
+            post_sandbox_scope=post_sandbox_scope,
         )
         timeout_record = _read_json_object(trace_dir / "task-timeout.json")
         if exit_code == 124 and isinstance(timeout_record, dict):
@@ -666,6 +674,8 @@ def _start_sidecar(
     config: RunnerConfig,
     workspace: Path,
     repo: str,
+    artifact_dir: Path | None = None,
+    sandbox_container_prefix: str | None = None,
     deadline: float | None = None,
 ) -> subprocess.Popen[str]:
     env = os.environ.copy()
@@ -687,12 +697,16 @@ def _start_sidecar(
             "AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL": config.llm.model,
             "AGENT_SCHEDULER_POLICY": "observe-only",
             "AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER": "true",
-            "AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX": _sandbox_container_prefix(workspace),
+            "AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX": (
+                sandbox_container_prefix or _sandbox_container_prefix(workspace)
+            ),
             "AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED": (
                 "true" if config.runtime.stage2_required else "false"
             ),
             "AGENT_SCHEDULER_TOOL_RESOURCE_REPO": repo,
-            "AGENT_SCHEDULER_TOOL_RESOURCE_ARTIFACT_DIR": str(trace_dir / "tool-resource"),
+            "AGENT_SCHEDULER_TOOL_RESOURCE_ARTIFACT_DIR": str(
+                artifact_dir or trace_dir / "tool-resource"
+            ),
         }
     )
     stdout = (trace_dir / "sidecar-stdout.txt").open("w", encoding="utf-8")
@@ -1264,6 +1278,7 @@ def _run_openclaw_agent(
     task: TaskDef,
     config: RunnerConfig,
     task_deadline: float | None = None,
+    post_sandbox_scope: bool = True,
 ) -> int:
     _remaining_task_seconds(task_deadline, phase="agent startup")
     openclaw = _require_executable("openclaw")
@@ -1288,17 +1303,21 @@ def _run_openclaw_agent(
     _log(f"[agent] starting (trace: {trace_dir})")
 
     stop_discovery = threading.Event()
-    discovery = threading.Thread(
-        target=_discover_sandbox_scope_loop,
-        kwargs={
-            "trace_dir": trace_dir,
-            "openclaw_home": openclaw_home,
-            "sidecar_port": sidecar_port,
-            "config": config,
-            "workspace": workspace,
-            "stop_event": stop_discovery,
-        },
-        daemon=True,
+    discovery = (
+        threading.Thread(
+            target=_discover_sandbox_scope_loop,
+            kwargs={
+                "trace_dir": trace_dir,
+                "openclaw_home": openclaw_home,
+                "sidecar_port": sidecar_port,
+                "config": config,
+                "workspace": workspace,
+                "stop_event": stop_discovery,
+            },
+            daemon=True,
+        )
+        if post_sandbox_scope
+        else None
     )
     try:
         process = subprocess.Popen(
@@ -1325,7 +1344,8 @@ def _run_openclaw_agent(
         stdout_file.close()
         stderr_file.close()
         raise
-    discovery.start()
+    if discovery is not None:
+        discovery.start()
 
     # ── Tee agent output to trace files + console ──────────────────
     _write_lock = threading.Lock()
@@ -1417,7 +1437,8 @@ def _run_openclaw_agent(
         # All cleanup steps are protected from secondary interrupts so
         # Ctrl-C never leaves the process in an unreachable zombie state.
         stop_discovery.set()
-        _join_thread_safe(discovery, timeout=2)
+        if discovery is not None:
+            _join_thread_safe(discovery, timeout=2)
 
         # Close process pipes so tee threads exit their read loops
         for pipe_attr in ("stdout", "stderr"):
@@ -1625,27 +1646,32 @@ def _ensure_plugin_built(
     *,
     deadline: float | None = None,
 ) -> None:
-    package_json = plugin_dir / "package.json"
-    if not package_json.exists():
-        raise FileNotFoundError(f"plugin package.json not found: {package_json}")
+    with _plugin_build_lock:
+        plugin_key = plugin_dir.resolve()
+        if plugin_key in _built_plugin_dirs:
+            return
+        package_json = plugin_dir / "package.json"
+        if not package_json.exists():
+            raise FileNotFoundError(f"plugin package.json not found: {package_json}")
 
-    npm = _require_executable("npm")
-    log_path = trace_dir / "plugin-build.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("w", encoding="utf-8") as log:
-        result = subprocess.run(
-            [npm, "run", "build"],
-            cwd=str(plugin_dir),
-            stdout=log,
-            stderr=log,
-            text=True,
-            timeout=_remaining_task_seconds(deadline, phase="plugin build"),
-        )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"plugin_build_failed exit={result.returncode}: "
-            f"{_tail_text(log_path, 2000)}"
-        )
+        npm = _require_executable("npm")
+        log_path = trace_dir / "plugin-build.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("w", encoding="utf-8") as log:
+            result = subprocess.run(
+                [npm, "run", "build"],
+                cwd=str(plugin_dir),
+                stdout=log,
+                stderr=log,
+                text=True,
+                timeout=_remaining_task_seconds(deadline, phase="plugin build"),
+            )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"plugin_build_failed exit={result.returncode}: "
+                f"{_tail_text(log_path, 2000)}"
+            )
+        _built_plugin_dirs.add(plugin_key)
 
 
 def _stage_plugin_for_openclaw_if_needed(*, trace_dir: Path, plugin_dir: Path) -> Path:

@@ -4,6 +4,7 @@ import json
 import math
 import os
 import shlex
+import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -124,6 +125,7 @@ class ToolResourcePredictor:
         self._runs_by_execution_id: dict[str, CommandRun] = {}
         self._telemetry_by_execution_id: dict[str, ExecutionTelemetrySummary] = {}
         self._starts: dict[str, ToolBeforeRequest] = {}
+        self._kb_lock = threading.RLock()
 
     @classmethod
     def from_traces(
@@ -393,8 +395,9 @@ class ToolResourcePredictor:
             start=start,
         )
         if completed_call is not None:
-            self.continuous_kb.observe_completed_call(completed_call)
-            self._persist_runtime_kb()
+            with self._kb_lock:
+                self.continuous_kb.observe_completed_call(completed_call)
+                self._persist_runtime_kb()
         return 1 if completed_call is not None else 0
 
     def begin_execution(
@@ -543,24 +546,25 @@ class ToolResourcePredictor:
             [result.kb_update_error] if result.kb_update_error is not None else []
         )
         if result.kb_observations_added:
-            try:
-                for observation in result.kb_observations:
-                    self.lattice_kb.observe_completed_clause(observation)
-                self.lattice_kb.prepare()
-            except Exception as exc:
-                kb_update_errors.append(
-                    f"lattice_prepare_failed:{type(exc).__name__}: {exc}"
-                )
-            if (
-                self.clause_kb_snapshot_path is not None
-                and not self._persist_clause_kb()
-            ):
-                kb_update_errors.append("clause_kb_persist_failed")
-            if (
-                self.lattice_kb_snapshot_path is not None
-                and not self._persist_lattice_kb()
-            ):
-                kb_update_errors.append("lattice_kb_persist_failed")
+            with self._kb_lock:
+                try:
+                    for observation in result.kb_observations:
+                        self.lattice_kb.observe_completed_clause(observation)
+                    self.lattice_kb.prepare()
+                except Exception as exc:
+                    kb_update_errors.append(
+                        f"lattice_prepare_failed:{type(exc).__name__}: {exc}"
+                    )
+                if (
+                    self.clause_kb_snapshot_path is not None
+                    and not self._persist_clause_kb()
+                ):
+                    kb_update_errors.append("clause_kb_persist_failed")
+                if (
+                    self.lattice_kb_snapshot_path is not None
+                    and not self._persist_lattice_kb()
+                ):
+                    kb_update_errors.append("lattice_kb_persist_failed")
         kb_update_error = "; ".join(kb_update_errors) or None
         call_telemetry = (
             dict(result.call_telemetry)

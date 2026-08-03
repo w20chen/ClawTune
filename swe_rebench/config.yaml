@@ -69,6 +69,9 @@ batch:
   # of this and the remaining whole-task budget wins. 0 = no separate limit.
   agent_timeout_seconds: 0
 
+  # Number of SWE-ReBench tasks to run concurrently.
+  parallelism: 1
+
   # Retry failed tasks up to this many times.
   retry_failed: 0
 

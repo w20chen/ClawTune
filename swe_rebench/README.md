@@ -6,7 +6,7 @@ a task stops before agent work if the collector cannot produce valid data.
 
 Complete the root [installation guide](../docs/getting-started.md) first.
 
-## Configure once
+## Configure Once
 
 `python3 scripts/clawtune.py setup` creates
 `swe_rebench/config.yaml`. Export the provider key in the shell that starts the
@@ -40,7 +40,7 @@ defaults to `linux/amd64` on Kunpeng and leaves x86 native. An exported
 Docker without adding the unsupported `sandbox.docker.platform` key to
 OpenClaw's configuration.
 
-## Select tasks
+## Select Tasks
 
 An explicit `--dataset` or `--tasks` argument always selects that file. Without
 one, the runner uses the first task source that exists, in this order:
@@ -133,7 +133,7 @@ python3 scripts/clawtune.py benchmark \
 `--instance-ids`, `--repo`, and `--skip` filtering. It is not a random sample.
 Selected tasks run one at a time, in that same order.
 
-## Knowledge sharing within a batch
+## Knowledge Sharing within a Batch
 
 Each benchmark invocation starts a new batch-local tool-resource KB from the
 tracked cold-start snapshots. All selected tasks in that invocation share the
@@ -204,7 +204,7 @@ wants the complete report JSON on stdout:
 python3 scripts/clawtune.py benchmark --sample 1 --json
 ```
 
-## Kunpeng notes
+## Kunpeng Notes
 
 Setup registers and smoke-tests amd64 binfmt on arm64. The eBPF sidecar remains
 native; only the official amd64 task userspace is emulated. Builds can be much
@@ -219,7 +219,7 @@ sudo bash scripts/setup/arm_qemu_setup.sh check
 
 See [Kunpeng and arm64](../docs/arm-qemu.md).
 
-## When a task fails
+## When a Task Fails
 
 Look inside its trace directory for:
 
