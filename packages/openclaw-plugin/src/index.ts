@@ -299,136 +299,158 @@ export default definePluginEntry({
     return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "?";
   }
 
+  function oneLine(value: string): string {
+    return value.replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim();
+  }
+
   function formatProbabilityList(values: unknown): string | null {
     if (!Array.isArray(values) || values.length === 0) return null;
     return values
       .map((value, index) => `b${index}=${formatNumber(value, 2)}`)
-      .join(",");
+      .join(", ");
+  }
+
+  function formatBucketRange(bucketId: unknown): string {
+    if (typeof bucketId !== "number" || !Number.isInteger(bucketId) || bucketId < 0) {
+      return "unknown range";
+    }
+    const boundaries = [100, 500, 2_000, 10_000];
+    if (bucketId === 0) return "under 100ms";
+    if (bucketId < boundaries.length) {
+      return `${formatMs(boundaries[bucketId - 1])}–${formatMs(boundaries[bucketId])}`;
+    }
+    return "10s or more";
+  }
+
+  function formatEvidence(value: unknown): string {
+    if (!isRecord(value)) return "no evidence";
+    const scope = typeof value.scope === "string" ? value.scope : "unknown scope";
+    const keyKind = typeof value.key_kind === "string" ? value.key_kind : "unknown match";
+    const evidence = typeof value.evidence_count === "number" ? value.evidence_count : 0;
+    return `${scope}, ${keyKind}, ${evidence} sample${evidence === 1 ? "" : "s"}`;
   }
 
   function formatPredictionSource(value: unknown): string {
     if (!isRecord(value)) return "no evidence";
-    const rec = value as Record<string, unknown>;
-    const scope = typeof rec.scope === "string" ? rec.scope : "?";
-    const keyKind = typeof rec.key_kind === "string" ? rec.key_kind : "?";
-    const evidence = typeof rec.evidence_count === "number" ? rec.evidence_count : 0;
-    return `${scope}/${keyKind} n=${evidence}`;
+    const scope = typeof value.scope === "string" ? value.scope : "unknown scope";
+    const keyKind = typeof value.key_kind === "string" ? value.key_kind : "unknown match";
+    const evidence = typeof value.evidence_count === "number" ? value.evidence_count : 0;
+    return `${scope}, ${keyKind}, ${evidence} sample${evidence === 1 ? "" : "s"}`;
   }
 
   function continuousPredictionSummary(prediction: unknown, label: string, unit: string): string {
     if (!isRecord(prediction)) return `${label}=?`;
-    const rec = prediction as Record<string, unknown>;
-    const p90 = rec.conditional_p90;
-    const note = typeof rec.note === "string" && rec.note ? ` note=${rec.note}` : "";
-    const source = formatPredictionSource(rec);
+    const p90 = prediction.conditional_p90;
+    const note = typeof prediction.note === "string" && prediction.note
+      ? `; ${oneLine(prediction.note)}`
+      : "";
+    const source = formatPredictionSource(prediction);
     if (typeof p90 !== "number" || !Number.isFinite(p90)) {
-      return `${label}=unavailable (${source}${note})`;
+      return `${label}: unavailable (${source}${note})`;
     }
-    const value = unit === "ms" ? formatMs(p90) : `${formatNumber(p90, unit === "cores" ? 2 : 1)}${unit}`;
-    return `${label}_p90=${value} (${source}${note})`;
+    const value = unit === "ms"
+      ? formatMs(p90)
+      : `${formatNumber(p90, unit === "cores" ? 2 : 1)}${unit}`;
+    return `${label}: ${value} (${source}${note})`;
   }
 
   function summarizePrediction(decision: ToolDecision): string {
     const prediction = decision.prediction;
-    const LABEL_WIDTH = 7;
-    function fmtLine(label: string, content: string): string {
-      return `  ${label.padEnd(LABEL_WIDTH)} ${content}`;
-    }
-
-    const headerParts: string[] = [
-      `p50=${formatMs(prediction.duration_p50_ms)} p90=${formatMs(prediction.duration_p90_ms)}`,
-      `class=${prediction.resource_class}`,
-    ];
-    if (prediction.confidence !== null && prediction.confidence !== undefined) {
-      headerParts.push(`confidence=${formatNumber(prediction.confidence, 2)}`);
-    }
     const lines: string[] = [
       "prediction",
-      fmtLine("time", headerParts.join(" │ ")),
+      `  duration: typical ${formatMs(prediction.duration_p50_ms)}; p90 ${formatMs(prediction.duration_p90_ms)}`,
+      `  resources: class=${prediction.resource_class}`,
     ];
+    if (prediction.confidence !== null && prediction.confidence !== undefined) {
+      lines[2] += `; confidence=${formatNumber(prediction.confidence * 100, 0)}%`;
+    }
     const toolResource = prediction.tool_resource;
     if (!toolResource) return lines.join("\n");
 
-    // --- bucket (clause latency bucket top-level) ---
     if (toolResource.prediction) {
       const probs = formatProbabilityList(toolResource.prediction.probability_by_bucket);
       lines.push(
-        fmtLine("bucket", `bucket=${toolResource.prediction.bucket_id} (${formatPredictionSource(toolResource.prediction)}${probs ? ` probs=${probs}` : ""})`)
+        `  latency bucket: #${toolResource.prediction.bucket_id} (${formatBucketRange(toolResource.prediction.bucket_id)}; ${formatEvidence(toolResource.prediction)})` +
+        (probs ? `\n    probabilities: ${probs}` : ""),
       );
     } else {
-      lines.push(fmtLine("bucket", `unavailable (${toolResource.unavailable_reason ?? "unknown"})`));
+      lines.push(`  latency bucket: unavailable (${toolResource.unavailable_reason ?? "unknown reason"})`);
     }
 
-    // --- per-clause bucket predictions ---
     const clausePreds = toolResource.clause_predictions;
     if (Array.isArray(clausePreds) && clausePreds.length > 0) {
-      const clauseParts = clausePreds.map((cp, i) => {
-        if (!isRecord(cp)) return `[${i}] ?`;
-        const c = cp as Record<string, unknown>;
-        const idx = c.clause_index;
-        const bin = typeof c.bin === "string" ? c.bin : "?";
-        const pred = c.prediction;
-        if (isRecord(pred)) {
-          const p = pred as Record<string, unknown>;
-          const probs = formatProbabilityList(p.probability_by_bucket);
-          return `[${idx}] ${bin}=bucket(${p.bucket_id} ${formatPredictionSource(p)}${probs ? ` ${probs}` : ""})`;
+      lines.push("  clauses:");
+      for (const cp of clausePreds) {
+        if (!isRecord(cp)) {
+          lines.push("    unknown clause");
+          continue;
         }
-        const reason = typeof c.unavailable_reason === "string" ? c.unavailable_reason : "?";
-        return `[${idx}] ${bin}=unavailable(${reason})`;
-      });
-      lines.push(fmtLine("clauses", clauseParts.join(" │ ")));
+        const bin = typeof cp.bin === "string" ? oneLine(cp.bin) : "?";
+        if (isRecord(cp.prediction)) {
+          const p = cp.prediction;
+          const probs = formatProbabilityList(p.probability_by_bucket);
+          lines.push(
+            `    ${bin} → #${p.bucket_id} (${formatBucketRange(p.bucket_id)}; ${formatEvidence(p)})` +
+            (probs ? ` [${probs}]` : ""),
+          );
+        } else {
+          lines.push(`    ${bin} → unavailable (${cp.unavailable_reason ?? "unknown reason"})`);
+        }
+      }
     }
 
-    // --- continuous (runtime p90) ---
     const continuous = toolResource.continuous_predictions ?? {};
-    const contParts = [
-      continuousPredictionSummary(continuous.latency_ms, "latency", "ms"),
-      continuousPredictionSummary(continuous.peak_cpu_cores, "cpu", "cores"),
-      continuousPredictionSummary(continuous.peak_memory_mb, "mem", "MB"),
-    ].filter(s => s.length > 0);
-    if (contParts.length > 0) {
-      lines.push(fmtLine("runtime", contParts.join(" │ ")));
-    }
+    lines.push("  runtime p90:");
+    lines.push(`    ${continuousPredictionSummary(continuous.latency_ms, "latency", "ms")}`);
+    lines.push(`    ${continuousPredictionSummary(continuous.peak_cpu_cores, "cpu", "cores")}`);
+    lines.push(`    ${continuousPredictionSummary(continuous.peak_memory_mb, "memory", "MB")}`);
 
-    // --- lattice time predictions (per-clause point estimates) ---
     const latticePreds = toolResource.lattice_time_predictions;
     if (Array.isArray(latticePreds) && latticePreds.length > 0) {
-      const latticeLines = latticePreds.map((lp) => {
-        if (!isRecord(lp)) return fmtLine("lattice", "?");
-        const l = lp as Record<string, unknown>;
-        const idx = l.clause_index;
-        const bin = typeof l.bin === "string" ? l.bin : "?";
-        const preds = Array.isArray(l.predictions) ? l.predictions : [];
-        const algoParts = preds.map((ap) => {
-          if (!isRecord(ap)) return "?";
-          const a = ap as Record<string, unknown>;
-          const algo = typeof a.algorithm === "string" ? a.algorithm : "?";
-          const shortAlgo = algo.length > 6 ? algo.slice(0, 6) : algo; // shrinkage→shrink, loso stays, max_cardinality→max_ca
-          if (typeof a.prediction_ms === "number" && Number.isFinite(a.prediction_ms)) {
-            const feat = Array.isArray(a.selected_features) ? (a.selected_features as string[]).join(",") : "?";
-            const ev = typeof a.evidence_count === "number" ? a.evidence_count : 0;
-            const ex = a.exact_match === true ? "✓" : a.exact_match === false ? "~" : "?";
-            return `${shortAlgo}=${formatMs(a.prediction_ms)} feat=${feat} n=${ev} ${ex}`;
+      lines.push("  lattice estimates:");
+      for (const lp of latticePreds) {
+        if (!isRecord(lp)) {
+          lines.push("    unknown clause");
+          continue;
+        }
+        const bin = typeof lp.bin === "string" ? oneLine(lp.bin) : "?";
+        const predictions = Array.isArray(lp.predictions) ? lp.predictions : [];
+        const estimates = predictions.map((item) => {
+          if (!isRecord(item)) return "unknown";
+          const algorithm = typeof item.algorithm === "string" ? item.algorithm : "unknown";
+          if (typeof item.prediction_ms === "number" && Number.isFinite(item.prediction_ms)) {
+            const evidence = typeof item.evidence_count === "number" ? item.evidence_count : 0;
+            const match = item.exact_match === true ? "exact" : item.exact_match === false ? "generalized" : "unknown match";
+            return `${algorithm}=${formatMs(item.prediction_ms)} (${match}, ${evidence} sample${evidence === 1 ? "" : "s"})`;
           }
-          const reason = typeof a.unavailable_reason === "string" ? a.unavailable_reason : "?";
-          return `${shortAlgo}=unavailable(${reason})`;
+          return `${algorithm}=unavailable (${item.unavailable_reason ?? "unknown reason"})`;
         });
-        return fmtLine("lattice", `[${idx}] ${bin}: ${algoParts.join(" │ ")}`);
-      });
-      lines.push(...latticeLines);
-    } else {
-      lines.push(fmtLine("lattice", "(none)"));
+        lines.push(`    ${bin}: ${estimates.join("; ")}`);
+      }
     }
 
-    // --- algorithms ---
     const enabled = toolResource.prediction_algorithms?.enabled
       ?.map((item) => item.name)
       .filter((name): name is string => typeof name === "string" && name.length > 0);
     if (enabled && enabled.length > 0) {
-      lines.push(fmtLine("algo", enabled.join(" + ")));
+      lines.push(`  algorithms: ${enabled.join(", ")}`);
     }
-
     return lines.join("\n");
+  }
+
+  function extractTextContent(output: unknown): string | null {
+    if (!isRecord(output)) return null;
+    const choices = output.choices;
+    if (Array.isArray(choices) && choices.length > 0 && isRecord(choices[0])) {
+      const choice = choices[0];
+      const message = choice.message ?? choice.delta;
+      if (isRecord(message) && typeof message.content === "string" && message.content.length > 0) {
+        return message.content;
+      }
+    }
+    if (typeof output.content === "string" && output.content.length > 0) return output.content;
+    if (typeof output.text === "string" && output.text.length > 0) return output.text;
+    return null;
   }
 
   function summarizeObservedTelemetry(telemetry: unknown): string | null {
@@ -470,39 +492,6 @@ export default definePluginEntry({
     if (peakMem !== null) parts.push(`mem_peak=${formatNumber(peakMem, 1)}MB`);
     if (reason) parts.push(reason.trim());
     return parts.join("; ");
-  }
-
-  function summarizeMessages(messages: unknown): string {
-    if (!Array.isArray(messages)) return "? messages";
-    const roles = new Map<string, number>();
-    for (const m of messages) {
-      if (!isRecord(m)) continue;
-      const role = String((m as Record<string, unknown>).role ?? "unknown");
-      roles.set(role, (roles.get(role) ?? 0) + 1);
-    }
-    const parts = Array.from(roles.entries()).map(([r, c]) => `${r}×${c}`);
-    return parts.length > 0 ? parts.join(", ") : `${messages.length} messages`;
-  }
-
-  function extractTextContent(output: unknown): string | null {
-    if (!isRecord(output)) return null;
-    const o = output as Record<string, unknown>;
-    // OpenAI style: choices[0].message.content
-    const choices = o.choices;
-    if (Array.isArray(choices) && choices.length > 0 && isRecord(choices[0])) {
-      const msg = (choices[0] as Record<string, unknown>).message ?? (choices[0] as Record<string, unknown>).delta;
-      if (isRecord(msg)) {
-        const content = (msg as Record<string, unknown>).content;
-        if (typeof content === "string" && content.length > 0) return content;
-      }
-    }
-    // Direct content field
-    const content = o.content;
-    if (typeof content === "string" && content.length > 0) return content;
-    // text field
-    const text = o.text;
-    if (typeof text === "string" && text.length > 0) return text;
-    return null;
   }
 
   function extractToolCallsForDisplay(output: unknown): Array<{name: string; id: string}> {
@@ -548,43 +537,43 @@ export default definePluginEntry({
     if (!isRecord(event)) return "";
     const params = (event as Record<string, unknown>).params ?? (event as Record<string, unknown>).arguments ?? (event as Record<string, unknown>).input;
     if (params === null || params === undefined) return "";
-    if (typeof params === "string") return truncateStr(params, 200);
+    if (typeof params === "string") return `args="${truncateStr(oneLine(params), 200)}"`;
     if (isRecord(params)) {
       const keys = Object.keys(params as Record<string, unknown>);
       if (keys.length === 0) return "{}";
       // For known tools, print key fields
       const p = params as Record<string, unknown>;
       const cmd = p.command ?? p.cmd;
-      if (typeof cmd === "string") return `command="${truncateStr(cmd, 150)}"`;
+      if (typeof cmd === "string") return `command="${truncateStr(oneLine(cmd), 200)}"`;
       const filePath = p.file_path ?? p.path ?? p.filePath ?? p.file;
       if (typeof filePath === "string") {
         const content = p.content ?? p.text;
         const contentLen = typeof content === "string" ? ` (${content.length} chars)` : "";
-        return `path="${filePath}"${contentLen}`;
+        return `path="${truncateStr(oneLine(filePath), 120)}"${contentLen}`;
       }
       // Generic: list key=value pairs
       const entries = keys.slice(0, 3).map(k => {
         const v = p[k];
-        const vs = typeof v === "string" ? truncateStr(v, 60) : (typeof v === "object" ? "{...}" : String(v));
+        const vs = typeof v === "string"
+          ? truncateStr(oneLine(v), 80)
+          : (typeof v === "object" ? "{...}" : String(v));
         return `${k}=${vs}`;
       });
       return entries.join(", ") + (keys.length > 3 ? ` +${keys.length - 3} more` : "");
     }
-    return truncateStr(String(params), 200);
+    return `args="${truncateStr(oneLine(String(params)), 200)}"`;
   }
 
   function summarizeToolResult(event: unknown): string {
     if (!isRecord(event)) return "";
-    const result = (event as Record<string, unknown>).result ?? (event as Record<string, unknown>).output ?? (event as Record<string, unknown>).response;
-    if (result === null || result === undefined) return "(no output)";
-    if (typeof result === "string") return truncateStr(result, 300);
+    const result = event.result ?? event.output ?? event.response;
+    if (result === null || result === undefined) return "";
+    if (typeof result === "string") return truncateStr(oneLine(result), 120);
     if (isRecord(result)) {
-      const r = result as Record<string, unknown>;
-      const text = r.text ?? r.content ?? r.message ?? r.stdout;
-      if (typeof text === "string") return truncateStr(text, 300);
-      return truncateStr(JSON.stringify(result), 300);
+      const text = result.text ?? result.content ?? result.message ?? result.stdout;
+      if (typeof text === "string") return truncateStr(oneLine(text), 120);
     }
-    return truncateStr(String(result), 300);
+    return "";
   }
 
   // ── Debug: dump OpenClaw hook payload keys (once per hook type) ──
@@ -710,7 +699,7 @@ export default definePluginEntry({
     payload.resource_scope = buildTrustedResourceScope(event, context) ?? buildRuntimeResourceScope(toolName);
     try {
       const decision = await client.decide(payload);
-      consoleVerbose(`prediction ${summarizePrediction(decision)}`);
+      consoleVerbose(summarizePrediction(decision));
       if (config.mode === "enforce" && decision.action === "block") {
         return {
           block: true,
@@ -718,16 +707,6 @@ export default definePluginEntry({
         };
       }
       const instrumentation = await instrumentExecParams(event, context, payload, decision, client, config);
-      // Diagnostic: always log whether instrumentation modified the params
-      if (toolName === "exec") {
-        console.error(
-          `[clawtune] exec instrumentation: paramsModified=${instrumentation.params !== null} ` +
-          `executionId=${instrumentation.executionId} ` +
-          `effectiveCommand=${instrumentation.effectiveCommand?.slice(0, 80)} ` +
-          `payloadCommand=${instrumentation.payloadCommand?.slice(0, 80)} ` +
-          `backend=${config.executionBackend} failOpen=${config.failOpen}`
-        );
-      }
       correlation.set(
         correlationId,
         decision.decision_id,
@@ -771,14 +750,6 @@ export default definePluginEntry({
           const instrumentation = await instrumentExecParams(
             event, context, payload, /* decision */ null, client, config,
           );
-          if (toolName === "exec") {
-            console.error(
-              `[clawtune] exec instrumentation (failOpen): paramsModified=${instrumentation.params !== null} ` +
-              `executionId=${instrumentation.executionId} ` +
-              `effectiveCommand=${instrumentation.effectiveCommand?.slice(0, 80)} ` +
-              `backend=${config.executionBackend}`
-            );
-          }
           if (instrumentation.executionId !== null) {
             correlation.set(
               correlationId,
@@ -892,15 +863,16 @@ export default definePluginEntry({
     const toolExitCode = extractToolExitCode(completion.raw_result, completion.tool_name);
     const toolSucceeded = completion.succeeded && (toolExitCode === null || toolExitCode === 0);
 
-    // ── verbose console: tool result ──
+    // ── verbose console: concise tool result ──
     const durMs = completion.duration_ms ?? Math.round(Number(durNs) / 1e6);
-    const exitStr = toolExitCode !== null ? ` exit=${toolExitCode}` : "";
     const statusStr = completion.succeeded ? "ok" : (completion.error_type ?? "failed");
     const resultStr = summarizeToolResult(event);
-    consoleVerbose(`■ ${toolName} done (${durMs}ms) ${statusStr}${exitStr}${resultStr ? ` | ${resultStr}` : ""}`);
+    consoleVerbose(
+      `tool ${toolName}: ${statusStr} in ${durMs}ms${resultStr ? ` · result="${resultStr}"` : ""}`,
+    );
     const observedSummary = summarizeObservedTelemetry(toolResourceTelemetry);
     if (observedSummary !== null) {
-      consoleVerbose(`observed ${observedSummary}`);
+      consoleVerbose(`observed: ${observedSummary}`);
     }
 
     let statusCode: StatusCode = "unknown";
@@ -1061,8 +1033,7 @@ export default definePluginEntry({
 
     // ── verbose console: turn start ──
     turnCounter++;
-    const inputMessages = extractModelInput(event);
-    consoleVerbose(`── Turn ${turnCounter} ── model: ${model} | input: ${summarizeMessages(inputMessages)}`);
+    consoleVerbose(`turn ${turnCounter}: model ${model}`);
 
     llmSeqCounter++;
     const spanId = callId ?? `${traceId}:model:${llmSeqCounter}`;
@@ -1173,15 +1144,14 @@ export default definePluginEntry({
     const outcome = extractString(event, ["outcome", "status"]);
     const durationMs = extractNumber(event, ["duration_ms", "durationMs"]);
 
-    // ── verbose console: model response ──
     const modelOutput = extractModelOutput(event);
     const textContent = extractTextContent(modelOutput);
-    const displayToolCalls = extractToolCallsForDisplay(modelOutput);
     if (textContent) {
-      consoleVerbose(`→ ${truncateStr(textContent, 500)}`);
+      consoleVerbose(`LLM: "${truncateStr(oneLine(textContent), 30)}"`);
     }
+    const displayToolCalls = extractToolCallsForDisplay(modelOutput);
     for (const tc of displayToolCalls) {
-      consoleVerbose(`→ tool: ${tc.name}`);
+      consoleVerbose(`next tool: ${tc.name}`);
     }
 
     // Extract tool calls from the response to set up parent mapping
