@@ -4,10 +4,12 @@ import importlib.util
 import json
 import runpy
 import subprocess
+import sys
+import types
 from pathlib import Path
+from typing import Any
 
 import pytest
-import setuptools
 
 from tools.check_ebpf import run_check
 
@@ -25,8 +27,11 @@ def test_scheduler_declares_python_310_typing_extensions_dependency() -> None:
 
 
 def test_legacy_scheduler_setup_declares_runtime_metadata(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: captured.update(kwargs))
+    captured: dict[str, Any] = {}
+    fake_setuptools = types.ModuleType("setuptools")
+    setattr(fake_setuptools, "setup", lambda **kwargs: captured.update(kwargs))
+    setattr(fake_setuptools, "find_packages", lambda **kwargs: [])
+    monkeypatch.setitem(sys.modules, "setuptools", fake_setuptools)
 
     runpy.run_path(str(SCRIPT.parents[1] / "services" / "scheduler" / "setup.py"))
 
@@ -41,7 +46,7 @@ def test_create_venv_probes_runtime_dependencies(tmp_path, monkeypatch) -> None:
     (venv / "bin").mkdir(parents=True)
     venv_python = venv / "bin" / "python"
     venv_python.touch()
-    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+    calls: list[tuple[tuple[str, ...], dict[str, Any]]] = []
 
     def fake_run(command, **kwargs):
         rendered = tuple(str(item) for item in command)
