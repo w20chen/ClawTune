@@ -310,6 +310,53 @@ def backup_openclaw_config() -> Path | None:
     return backup
 
 
+def remove_stale_clawtune_plugin_paths() -> None:
+    config = openclaw_config_path()
+    try:
+        document = json.loads(config.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SetupError(f"Could not read OpenClaw config {config}: {exc}") from exc
+
+    plugins = document.get("plugins")
+    load = plugins.get("load") if isinstance(plugins, dict) else None
+    paths = load.get("paths") if isinstance(load, dict) else None
+    if not isinstance(paths, list):
+        raise SetupError(
+            "OpenClaw reported a stale ClawTune plugin path, but "
+            f"plugins.load.paths is not a list in {config}"
+        )
+
+    retained = [
+        value
+        for value in paths
+        if not (
+            isinstance(value, str)
+            and Path(value).name == "openclaw-plugin"
+            and not Path(value).exists()
+        )
+    ]
+    if len(retained) == len(paths):
+        raise SetupError(
+            "OpenClaw reported a stale ClawTune plugin path, but no missing "
+            f"openclaw-plugin entry was found in {config}"
+        )
+
+    load["paths"] = retained
+    temporary = config.with_name(f".{config.name}.clawtune.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(document, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, config)
+    except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise SetupError(f"Could not repair OpenClaw config {config}: {exc}") from exc
+
+
 def install_openclaw_plugin(openclaw: str, plugin: Path) -> None:
     command: list[str | Path] = [openclaw, "plugins", "install", "--link", plugin]
     installed = run(command, check=False, capture=True)
@@ -318,6 +365,7 @@ def install_openclaw_plugin(openclaw: str, plugin: Path) -> None:
     if installed.returncode != 0 and stale_clawtune_plugin_link(combined):
         log("Repairing a stale ClawTune plugin path in the OpenClaw config")
         backup_openclaw_config()
+        remove_stale_clawtune_plugin_paths()
         repaired = run(
             [openclaw, "doctor", "--fix"],
             check=False,

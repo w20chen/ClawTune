@@ -332,16 +332,17 @@ On x86 the default is native.
 The OpenClaw config contains a linked plugin path from an older checkout, for
 example `/home/user/claw/...` after the repository moved to
 `/home/user/ClawTune/...`. Current setup recognizes a missing ClawTune plugin
-link, backs up the config, runs `openclaw doctor --fix`, then installs the link
-from the current checkout:
+link, backs up the config, removes only the missing `openclaw-plugin` entry,
+runs `openclaw doctor --fix`, then installs the link from the current checkout:
 
 ```bash
 python3 scripts/clawtune.py setup
 ```
 
-The backup is written next to `~/.openclaw/openclaw.json` with a timestamp. If
-an older checkout does not yet contain this recovery, run `openclaw doctor
---fix` once and then rerun setup.
+The backup is written next to `~/.openclaw/openclaw.json` with a timestamp.
+Other plugin paths are preserved. If an older checkout does not yet contain
+this recovery, remove the missing path from `plugins.load.paths` manually,
+run `openclaw doctor --fix`, and then rerun setup.
 
 ## 18. Kunpeng cannot run an amd64 image
 

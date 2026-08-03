@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 
@@ -126,7 +127,12 @@ def test_ebpf_check_presents_stable_user_facing_readiness(monkeypatch) -> None:
 
 def test_plugin_install_repairs_stale_clawtune_link(tmp_path, monkeypatch) -> None:
     config = tmp_path / "openclaw.json"
-    config.write_text('{"plugins": {}}', encoding="utf-8")
+    original = (
+        '{"plugins": {"load": {"paths": ['
+        '"/home/user/claw/packages/openclaw-plugin", "/opt/another-plugin"'
+        ']}}}'
+    )
+    config.write_text(original, encoding="utf-8")
     monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(config))
 
     calls: list[tuple[str, ...]] = []
@@ -146,6 +152,11 @@ def test_plugin_install_repairs_stale_clawtune_link(tmp_path, monkeypatch) -> No
                     "plugins.load.paths: plugin: plugin path not found: "
                     "/home/user/claw/packages/openclaw-plugin",
                 )
+        if "doctor" in rendered:
+            current = json.loads(config.read_text(encoding="utf-8"))
+            assert current["plugins"]["load"]["paths"] == [
+                "/opt/another-plugin"
+            ]
         return subprocess.CompletedProcess(rendered, 0, "ok", "")
 
     monkeypatch.setattr(clawtune, "run", fake_run)
@@ -159,7 +170,9 @@ def test_plugin_install_repairs_stale_clawtune_link(tmp_path, monkeypatch) -> No
     assert ("/usr/bin/openclaw", "doctor", "--fix") in calls
     backups = list(tmp_path.glob("openclaw.json.clawtune-backup-*"))
     assert len(backups) == 1
-    assert backups[0].read_text(encoding="utf-8") == '{"plugins": {}}'
+    assert backups[0].read_text(encoding="utf-8") == original
+    repaired = json.loads(config.read_text(encoding="utf-8"))
+    assert repaired["plugins"]["load"]["paths"] == ["/opt/another-plugin"]
 
 
 def test_plugin_install_does_not_repair_an_unrelated_invalid_config(monkeypatch) -> None:

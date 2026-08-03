@@ -1811,3 +1811,15 @@ An additional launcher test invocation with
 `--basetemp=C:\tmp\clawtune-launcher-tests` could not run because this managed
 Windows environment denied creation of that directory; the same suite passed
 using the writable workspace temporary directory.
+## 2026-08-03 Stale OpenClaw Plugin Path Repair
+
+- Setup now removes a missing `openclaw-plugin` entry from
+  `plugins.load.paths` after backing up the config and before invoking
+  `openclaw doctor --fix`. This avoids OpenClaw restoring the invalid config
+  before its doctor can repair it, while preserving unrelated plugin paths.
+- `python -m pytest tests/test_clawtune_cli.py --basetemp ../../.pytest-tmp`
+  could not run in the current Windows validation environment because the only
+  discovered Python executables are Microsoft Store aliases and launching
+  `python.exe` failed with `A specified logon session does not exist`.
+- `git diff --check` could not run because the provided Windows workspace does
+  not expose the checkout as a Git worktree.
