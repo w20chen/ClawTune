@@ -168,8 +168,9 @@ export async function instrumentExecParams(
             `despite null token (registration failed). executionId=${executionId}`
           );
         }
-        params.env.CLAW_PAYLOAD_COMMAND = requestedCommand;
-        params.env.CLAW_DEGRADED = "1";
+        const env = params.env as Record<string, unknown>;
+        env.CLAW_PAYLOAD_COMMAND = requestedCommand;
+        env.CLAW_DEGRADED = "1";
         effectiveCommand = buildLauncherCommand(config, executionId);
         params.command = effectiveCommand;
       } else {
