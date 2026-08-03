@@ -26,6 +26,48 @@ The public configuration defaults `docker.cgroup_required: true`. A false
 value is troubleshooting-only and its output is not accepted as complete
 per-tool telemetry.
 
+## Shared-sidecar Stage-2 artifact collection (2026-08-04)
+
+A `host-openclaw-sandbox` batch run can fail every task with
+`required Stage-2 telemetry produced no exec artifacts` even though the agent
+succeeded and the trace records a complete Stage-2 lifecycle/envelope for every
+launcher command. Root cause: with the shared batch sidecar, the sidecar writes
+one per-execution clause telemetry artifact (`<execution_id>.json`) into the
+shared KB directory, and neither `_collect_runtime_traces` (which snapshots only
+`{runtime_id}__*.jsonl`) nor `_publish_tool_resource_kb` (which is intentionally
+skipped while the shared sidecar owns the KB) moves those artifacts into the
+per-task trace directory. The per-task `trace_dir/tool-resource/` therefore
+stays empty and the required-telemetry gate sees `artifact_count == 0`.
+
+Fix (in `swe_rebench`, no `tool_resource` change): `run_host_sandbox_task` now
+calls `_collect_runtime_stage2_artifacts(shared_kb_dir, trace_dir)` in the same
+shared-sidecar teardown that snapshots runtime traces. It scans the collected
+per-runtime trace JSONL, resolves every `execution.tool_resource.artifact_path`
+against the shared KB directory, validates each payload is a complete clause
+artifact (`mode == "clause"`), and copies it into
+`trace_dir/tool-resource/` — the same layout a per-task sidecar produces. Each
+task trace stays self-contained and independently auditable, the
+required-telemetry gate counts the on-disk artifacts, and the existing
+`_inspect_tool_resource_artifacts` fallback (shared-KB snapshot names are
+skipped) needs no change.
+
+Validation completed in the Windows development workspace:
+
+- `python -m pytest tests -q --basetemp .pytest-tmp-root-full3` (with
+  `PYTHONPATH=services/scheduler/src`): `178 passed, 2 skipped`.
+- Focused shared-sidecar artifact suite:
+  `python -m pytest tests/test_swe_rebench_selection.py -q -k "stage2_artifact or shared_sidecar or collect_runtime"`:
+  `4 passed`.
+- `git diff --check`: passed.
+
+Validation commands that cannot run in this Windows workspace:
+
+- The live reproduction
+  `python3 scripts/clawtune.py benchmark --sample 1` (and a parallel
+  `--sample N --parallelism N` run) requires the Linux host, Docker, cgroup v2,
+  and BCC/eBPF. It is the acceptance test for this fix: a task whose agent
+  produces a patch must no longer be rejected by the Stage-2 gate.
+
 ## Serial benchmark knowledge sharing (2026-08-02)
 
 `benchmark --sample N` now preserves task-source order and executes the

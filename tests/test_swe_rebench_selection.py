@@ -23,6 +23,7 @@ from swe_rebench.host_sandbox import (
     _SANDBOX_TASK_PATH,
     _cleanup_openclaw_sandbox_containers,
     _cleanup_runtime_artifacts,
+    _collect_runtime_stage2_artifacts,
     _configure_openclaw,
     _openclaw_agent_argv,
     _openclaw_uses_agent_flag,
@@ -1248,6 +1249,207 @@ def test_shared_sidecar_trace_snapshot_survives_drain_failure(
         b'{"schema_version":6,"record_type":"trace_metadata"}\n'
     )
     assert deleted == [(19090, runtime_id)]
+
+
+def test_collect_runtime_stage2_artifacts_copies_only_referenced_clause_files(
+    tmp_path: Path,
+) -> None:
+    shared_kb_dir = tmp_path / "shared-kb"
+    shared_kb_dir.mkdir()
+    trace_dir = tmp_path / "task-trace"
+    trace_dir.mkdir()
+
+    clause = {
+        "mode": "clause",
+        "schema": "clause_telemetry_v2",
+        "calls": [],
+    }
+    (shared_kb_dir / "exec-good.json").write_text(
+        json.dumps(clause),
+        encoding="utf-8",
+    )
+    (shared_kb_dir / "exec-corrupt.json").write_text(
+        "{not-json\n",
+        encoding="utf-8",
+    )
+    # exec-missing.json is referenced by the trace but deliberately absent
+    # from the shared KB directory; collection must skip it.
+    (shared_kb_dir / "exec-nonclause.json").write_text(
+        json.dumps({"mode": "other"}),
+        encoding="utf-8",
+    )
+    (shared_kb_dir / "clause-resource-kb.json").write_text(
+        '{"snapshot": true}',
+        encoding="utf-8",
+    )
+
+    trace = trace_dir / "runtime.jsonl"
+    lines = []
+    for name in (
+        "exec-good.json",
+        "exec-corrupt.json",
+        "exec-missing.json",
+        "exec-nonclause.json",
+        "clause-resource-kb.json",
+    ):
+        lines.append(
+            json.dumps(
+                {
+                    "record_type": "span_end",
+                    "execution": {
+                        "execution_id": name.removesuffix(".json"),
+                        "tool_resource": {
+                            "artifact_path": str(shared_kb_dir / name),
+                        },
+                    },
+                }
+            )
+        )
+    trace.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    copied = _collect_runtime_stage2_artifacts(shared_kb_dir, trace_dir)
+
+    artifact_dir = trace_dir / "tool-resource"
+    assert [path.name for path in copied] == ["exec-good.json"]
+    assert (
+        json.loads((artifact_dir / "exec-good.json").read_text(encoding="utf-8"))
+        == clause
+    )
+    # Corrupt payloads, non-clause payloads, and missing sources are skipped.
+    for name in ("exec-corrupt.json", "exec-missing.json", "exec-nonclause.json"):
+        assert not (artifact_dir / name).exists()
+    # An unreferenced shared-KB snapshot is never copied into a task trace.
+    assert not (artifact_dir / "clause-resource-kb.json").exists()
+
+
+def test_collect_runtime_stage2_artifacts_noop_without_shared_kb(
+    tmp_path: Path,
+) -> None:
+    trace_dir = tmp_path / "task-trace"
+    trace_dir.mkdir()
+    (trace_dir / "runtime.jsonl").write_text('{"x": 1}\n', encoding="utf-8")
+
+    copied = _collect_runtime_stage2_artifacts(None, trace_dir)
+
+    assert copied == []
+    assert not (trace_dir / "tool-resource").exists()
+
+
+def test_shared_sidecar_stage2_artifacts_collected_into_task_trace(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "runtime:\n  mode: host-openclaw-sandbox\n"
+        "batch:\n  task_timeout_seconds: 0\n"
+        "output:\n  trace_root: traces\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    task = TaskDef(instance_id="owner__repo-1", image="image:latest")
+    trace_dir = tmp_path / "traces" / task.instance_id
+    shared_trace_dir = tmp_path / "shared-sidecar"
+    shared_trace_dir.mkdir()
+    shared_kb_dir = tmp_path / "shared-kb"
+    shared_kb_dir.mkdir()
+
+    import swe_rebench.host_sandbox as host_sandbox
+
+    workspace = host_sandbox._task_workspace(config, task)
+    runtime_id = host_sandbox._runtime_id(workspace)
+    artifact = {
+        "mode": "clause",
+        "schema": "clause_telemetry_v2",
+        "execution_id": "exec-abc123",
+        "calls": [
+            {
+                "tool_call_id": "call-1",
+                "tool_trace_ref": "call-1",
+            }
+        ],
+    }
+    (shared_kb_dir / "exec-abc123.json").write_text(
+        json.dumps(artifact),
+        encoding="utf-8",
+    )
+    (shared_kb_dir / "clause-resource-kb.json").write_text(
+        '{"snapshot": "unreferenced"}',
+        encoding="utf-8",
+    )
+    source = shared_trace_dir / f"{runtime_id}__session_run.jsonl"
+    source.write_text(
+        json.dumps({"schema_version": 6, "record_type": "trace_metadata"})
+        + "\n"
+        + json.dumps(
+            {
+                "record_type": "span_end",
+                "execution": {
+                    "execution_id": "exec-abc123",
+                    "tool_resource": {
+                        "artifact_path": str(
+                            shared_kb_dir / "exec-abc123.json"
+                        ),
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    for name in (
+        "_write_host_tool_resource_preflight",
+        "_reset_directory",
+        "_export_testbed_from_image",
+        "_make_sandbox_workspace_writable",
+        "_install_sandbox_launcher",
+        "_write_task_inputs",
+        "_verify_sandbox_launcher",
+        "_verify_sandbox_task_environment",
+        "_configure_openclaw",
+        "_cleanup_openclaw_sandbox_containers",
+        "_cleanup_runtime_artifacts",
+        "_collect_patch",
+        "_write_result_summary",
+    ):
+        monkeypatch.setattr(
+            f"swe_rebench.host_sandbox.{name}",
+            lambda *_args, **_kwargs: None,
+        )
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._ensure_openclaw_sandbox_image",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._run_openclaw_agent",
+        lambda **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._drain_runtime",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._delete_runtime_scope",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = run_host_sandbox_task(
+        task=task,
+        trace_dir=trace_dir,
+        config=config,
+        bundle_dir=tmp_path / "bundle",
+        sidecar_port=19090,
+        shared_kb_dir=shared_kb_dir,
+        shared_sidecar_trace_dir=shared_trace_dir,
+        manage_sidecar=False,
+    )
+
+    assert result.exit_code == 0
+    collected = trace_dir / "tool-resource" / "exec-abc123.json"
+    assert json.loads(collected.read_text(encoding="utf-8")) == artifact
+    assert not (trace_dir / "tool-resource" / "clause-resource-kb.json").exists()
+    assert (trace_dir / source.name).exists()
 
 
 def test_run_one_propagates_container_stage2_fallback_mode(monkeypatch, tmp_path: Path) -> None:

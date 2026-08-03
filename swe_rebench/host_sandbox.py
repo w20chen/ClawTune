@@ -301,6 +301,10 @@ def run_host_sandbox_task(
                     trace_dir,
                     runtime_id,
                 )
+                _collect_runtime_stage2_artifacts(
+                    shared_kb_dir,
+                    trace_dir,
+                )
             except BaseException as exc:
                 cleanup_error = cleanup_error or exc
             finally:
@@ -2098,6 +2102,68 @@ def _collect_runtime_traces(
         data = source.read_bytes()
         complete_length = data.rfind(b"\n") + 1
         temporary.write_bytes(data[:complete_length])
+        os.replace(temporary, destination)
+        copied.append(destination)
+    return copied
+
+
+def _collect_runtime_stage2_artifacts(
+    shared_kb_dir: Path | None,
+    task_trace_dir: Path,
+) -> list[Path]:
+    """Copy a shared-sidecar runtime's Stage-2 clause artifacts into its trace dir.
+
+    With a shared sidecar, the sidecar writes one per-execution clause
+    telemetry artifact (``<execution_id>.json``) into the shared KB directory.
+    Every per-runtime trace record carries the exact artifact path under
+    ``execution.tool_resource.artifact_path``.  Copying those files into
+    ``task_trace_dir/tool-resource/`` mirrors the layout a per-task sidecar
+    produces, keeps each task trace self-contained, and lets the
+    required-telemetry gate audit the per-task artifacts on disk.
+    """
+    if shared_kb_dir is None:
+        return []
+    artifact_dir = task_trace_dir / "tool-resource"
+    copied: list[Path] = []
+    referenced: dict[str, Path] = {}
+    for trace_file in sorted(task_trace_dir.glob("*.jsonl")):
+        for line in trace_file.read_text(encoding="utf-8").splitlines():
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            execution = record.get("execution")
+            if not isinstance(execution, dict):
+                continue
+            tool_resource = execution.get("tool_resource")
+            if not isinstance(tool_resource, dict):
+                continue
+            artifact_path = tool_resource.get("artifact_path")
+            if not isinstance(artifact_path, str) or not artifact_path:
+                continue
+            referenced[Path(artifact_path).name] = Path(artifact_path)
+    for name, path in sorted(referenced.items()):
+        source = path
+        if not source.is_file():
+            candidate = shared_kb_dir / name
+            if not candidate.is_file():
+                continue
+            source = candidate
+        # Snapshot only complete clause artifacts; a partial final write must
+        # not masquerade as a valid artifact during inspection.
+        try:
+            data = source.read_bytes()
+            payload = json.loads(data)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or payload.get("mode") != "clause":
+            continue
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        destination = artifact_dir / name
+        temporary = artifact_dir / f".{name}.tmp-{os.getpid()}"
+        temporary.write_bytes(data)
         os.replace(temporary, destination)
         copied.append(destination)
     return copied
