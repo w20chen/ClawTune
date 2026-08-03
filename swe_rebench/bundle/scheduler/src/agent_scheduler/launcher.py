@@ -45,6 +45,22 @@ def main() -> None:
     if args.command_name == "run":
         token = os.environ.pop("CLAW_EXECUTION_TOKEN", None) or args.token
         if not token:
+            # Degraded mode: the plugin could not register the execution with
+            # the sidecar (network/auth error) but still wrapped the command
+            # with the launcher.  Run the payload directly with cgroup
+            # isolation, skipping sidecar claim/started/exited reporting.
+            payload_command = os.environ.pop("CLAW_PAYLOAD_COMMAND", None)
+            if payload_command:
+                try:
+                    raise SystemExit(_run_degraded(args.endpoint, args.execution_id, payload_command))
+                except Exception as exc:
+                    print("Command could not be started by the execution environment.", file=sys.stderr)
+                    if _env_enabled("CLAW_LAUNCH_DEBUG") or _env_enabled("CLAW_CGROUP_REQUIRED"):
+                        print(
+                            f"claw-launch debug: {type(exc).__name__}: {_redact_debug_message(str(exc))}",
+                            file=sys.stderr,
+                        )
+                    raise SystemExit(125) from None
             run.error("CLAW_EXECUTION_TOKEN is required")
         try:
             raise SystemExit(run_execution(args.endpoint, args.execution_id, token))
@@ -390,6 +406,69 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
         endpoint, f"/v2/executions/{execution_id}/exited",
         {"update_token": update_token, "exit_code": exit_code, "signal": term_signal},
     )
+    _cleanup_cgroup(cgroup_path) if cgroup_owned else None
+    return _shell_exit_code(returncode)
+
+
+def _run_degraded(endpoint: str, execution_id: str, command: str) -> int:
+    """Run a payload command with cgroup isolation but without sidecar auth.
+
+    Used when the plugin's execution registration failed (network/auth error)
+    but failOpen is active.  The launcher still creates a cgroup for resource
+    isolation and monitoring; it skips claim/started/exited reporting since
+    there is no valid sidecar token.
+
+    Returns the shell exit code of the payload command.
+    """
+    cwd = os.environ.pop("CLAW_EXEC_WORKDIR", None) or None
+    # In degraded mode we always attempt cgroup isolation since that is the
+    # primary reason for wrapping the command with the launcher.  Placement
+    # (cpu_set / mems) is unavailable without a sidecar claim.
+    profiling: dict[str, Any] = {"enable_cgroup": True}
+    cgroup_path = _prepare_cgroup(execution_id, None, None, profiling)
+    cgroup_owned = cgroup_path is not None
+
+    affinity_cpus: set[int] | None = None
+    if _supports_posix_controls():
+        child, release_gate = _spawn_shell_gated(
+            command, cwd, cgroup_path=cgroup_path, affinity_cpus=affinity_cpus,
+        )
+    else:
+        child = _spawn_shell(command, cwd, cgroup_path=cgroup_path, affinity_cpus=affinity_cpus)
+        release_gate = None
+
+    try:
+        if cgroup_owned:
+            if not _join_child_cgroup(child.pid, cgroup_path):
+                fallback = _restart_in_systemd_scope(
+                    child, command, cwd,
+                    execution_id=execution_id,
+                    affinity_cpus=affinity_cpus, profiling=profiling,
+                    on_cgroup_ready=None,
+                )
+                if fallback is None:
+                    _cleanup_cgroup(cgroup_path)
+                    cgroup_owned = False
+                    cgroup_path = None
+                else:
+                    _cleanup_cgroup(cgroup_path)
+                    if release_gate is not None:
+                        release_gate(False)
+                        release_gate = None
+                    child, cgroup_path = fallback
+                    cgroup_owned = False
+        if release_gate is not None:
+            release_gate(True)
+            release_gate = None
+    except Exception:
+        if release_gate is not None:
+            release_gate(False)
+            release_gate = None
+        _terminate_child_best_effort(child)
+        if cgroup_owned:
+            _cleanup_cgroup(cgroup_path)
+        raise
+    returncode = child.wait()
     _cleanup_cgroup(cgroup_path) if cgroup_owned else None
     return _shell_exit_code(returncode)
 

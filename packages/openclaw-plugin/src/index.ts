@@ -177,7 +177,7 @@ export default definePluginEntry({
       launcherPath: {type: "string", default: "/opt/claw/bin/claw-launch"},
       launcherInterpreter: {type: ["string", "null"], default: null},
       collectorSocket: {type: "string", default: "/run/claw/collector.sock"},
-      instrumentHosts: {type: "array", items: {type: "string"}, default: ["gateway"]},
+      instrumentHosts: {type: "array", items: {type: "string"}, default: ["gateway", "*"]},
       instrumentTools: {type: "array", items: {type: "string"}, default: ["exec"]},
       enableCgroup: {type: "boolean", default: true},
       enableAffinity: {type: "boolean", default: true},

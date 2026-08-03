@@ -55,7 +55,19 @@ export async function instrumentExecParams(
   };
 
   if (config.executionBackend === "hook-only") return empty;
-  if (!shouldInstrument(event, config)) return empty;
+  const shouldInstrumentResult = shouldInstrument(event, config);
+  if (!shouldInstrumentResult) {
+    if (config.logLevel === "debug") {
+      const toolName = extractString(event, ["tool_name", "toolName", "name"]) ?? "unknown";
+      const params = isRecord(event) ? event.params ?? event.arguments ?? event.input ?? null : null;
+      const host = isRecord(params) && typeof params.host === "string" ? params.host : "gateway";
+      console.error(
+        `[clawtune] instrumentExecParams: shouldInstrument=false tool=${toolName} host=${host} ` +
+        `instrumentTools=${JSON.stringify(config.instrumentTools)} instrumentHosts=${JSON.stringify(config.instrumentHosts)}`
+      );
+    }
+    return empty;
+  }
   const params = cloneRecord(isRecord(event) ? event.params ?? event.arguments ?? event.input ?? null : null);
   if (params === null || typeof params.command !== "string" || params.command.length === 0) {
     return empty;
@@ -107,6 +119,13 @@ export async function instrumentExecParams(
     });
     token = registration.one_time_token;
   } catch (error) {
+    if (config.logLevel === "debug") {
+      console.error(
+        `[clawtune] instrumentExecParams: registerExecution failed executionId=${executionId} ` +
+        `error=${error instanceof Error ? error.message : String(error)} ` +
+        `failOpen=${config.failOpen} mode=${config.mode}`
+      );
+    }
     if (config.mode !== "observe" && !config.failOpen) throw error;
   }
 
@@ -137,11 +156,29 @@ export async function instrumentExecParams(
 
   if (config.executionBackend === "managed-wrapper") {
     if (token === null) {
-      if (config.mode === "observe" || config.failOpen) return empty;
-      throw new Error("execution_registration_failed");
+      // When execution registration fails but failOpen is active, still wrap
+      // the command with the launcher so that cgroup isolation and resource
+      // monitoring remain active.  The launcher receives the payload command
+      // via CLAW_PAYLOAD_COMMAND and operates in degraded mode without
+      // sidecar claim/started/exited reporting.
+      if (config.mode === "observe" || config.failOpen) {
+        if (config.logLevel === "debug") {
+          console.error(
+            `[clawtune] instrumentExecParams: degraded mode — wrapping with launcher ` +
+            `despite null token (registration failed). executionId=${executionId}`
+          );
+        }
+        params.env.CLAW_PAYLOAD_COMMAND = requestedCommand;
+        params.env.CLAW_DEGRADED = "1";
+        effectiveCommand = buildLauncherCommand(config, executionId);
+        params.command = effectiveCommand;
+      } else {
+        throw new Error("execution_registration_failed");
+      }
+    } else {
+      effectiveCommand = buildLauncherCommand(config, executionId);
+      params.command = effectiveCommand;
     }
-    effectiveCommand = buildLauncherCommand(config, executionId);
-    params.command = effectiveCommand;
     // payloadCommand stays as the original requestedCommand
   } else if (config.executionBackend === "marker") {
     // For marker backend, effective == payload == requested (command unchanged)
