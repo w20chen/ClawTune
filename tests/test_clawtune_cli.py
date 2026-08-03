@@ -167,9 +167,9 @@ def test_plugin_install_repairs_stale_clawtune_link(tmp_path, monkeypatch) -> No
     )
 
     assert install_attempts == 2
-    # Neither config validate nor doctor --fix should be invoked;
-    # we retry the install directly after removing the stale path.
-    assert ("/usr/bin/openclaw", "config", "validate") not in calls
+    # After removing the stale path we run config validate so
+    # OpenClaw updates its last-known-good backup.
+    assert ("/usr/bin/openclaw", "config", "validate") in calls
     assert ("/usr/bin/openclaw", "doctor", "--fix") not in calls
     backups = list(tmp_path.glob("openclaw.json.clawtune-backup-*"))
     assert len(backups) == 1
@@ -181,10 +181,10 @@ def test_plugin_install_repairs_stale_clawtune_link(tmp_path, monkeypatch) -> No
 def test_plugin_install_only_retries_once_after_repair(
     tmp_path, monkeypatch,
 ) -> None:
-    """After remove_stale_clawtune_plugin_paths we retry the install
-    directly — no `config validate` or `doctor --fix` in between —
-    because both can trigger OpenClaw's internal last-known-good
-    backup restore, which would reintroduce the stale path."""
+    """After remove_stale_clawtune_plugin_paths we validate the
+    now-clean config so OpenClaw updates its last-known-good backup,
+    then retry the install.  doctor --fix is not needed when the
+    stale path was found in plugins.load.paths."""
     config = tmp_path / "openclaw.json"
     original = (
         '{"plugins": {"load": {"paths": ['
@@ -221,7 +221,7 @@ def test_plugin_install_only_retries_once_after_repair(
     )
 
     assert install_attempts == 2
-    assert ("/usr/bin/openclaw", "config", "validate") not in calls
+    assert ("/usr/bin/openclaw", "config", "validate") in calls
     assert ("/usr/bin/openclaw", "doctor", "--fix") not in calls
     repaired = json.loads(config.read_text(encoding="utf-8"))
     assert repaired["plugins"]["load"]["paths"] == ["/opt/another-plugin"]
@@ -282,7 +282,7 @@ def test_plugin_install_removes_stale_path_even_when_it_exists_on_disk(
     )
 
     assert install_attempts == 2
-    assert ("/usr/bin/openclaw", "config", "validate") not in calls
+    assert ("/usr/bin/openclaw", "config", "validate") in calls
     assert ("/usr/bin/openclaw", "doctor", "--fix") not in calls
     repaired = json.loads(config.read_text(encoding="utf-8"))
     assert repaired["plugins"]["load"]["paths"] == ["/opt/another-plugin"]
@@ -429,9 +429,81 @@ def test_plugin_install_falls_back_to_doctor_when_load_paths_are_empty(
 
     assert install_attempts == 2
     assert doctor_called is True
+    # After repair, config validate is called to update last-known-good.
+    assert ("/usr/bin/openclaw", "config", "validate") in calls
     # After doctor and second removal, only the unrelated path remains.
     repaired = json.loads(config.read_text(encoding="utf-8"))
     assert repaired["plugins"]["load"]["paths"] == ["/opt/another-plugin"]
+    backups = list(tmp_path.glob("openclaw.json.clawtune-backup-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == original
+
+
+def test_plugin_install_also_removes_stale_agent_scheduler_entry(
+    tmp_path, monkeypatch,
+) -> None:
+    """A stale plugins.entries.agent-scheduler entry (plugin not found
+    in registry) makes OpenClaw treat the config as invalid and
+    auto-restore from last-known-good.  The repair must remove it so
+    that config validate can succeed and update the last-known-good
+    backup."""
+    config = tmp_path / "openclaw.json"
+    document = {
+        "plugins": {
+            "load": {
+                "paths": [
+                    "/home/user/claw/packages/openclaw-plugin",
+                    "/opt/another-plugin",
+                ],
+            },
+            "entries": {
+                "agent-scheduler": {
+                    "enabled": True,
+                    "config": {"endpoint": "http://127.0.0.1:8765"},
+                },
+            },
+        },
+    }
+    original = json.dumps(document)
+    config.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(config))
+
+    install_attempts = 0
+
+    def fake_run(command, **_kwargs):
+        nonlocal install_attempts
+        rendered = tuple(str(item) for item in command)
+        if "plugins" in rendered and "install" in rendered:
+            install_attempts += 1
+            if install_attempts == 1:
+                return subprocess.CompletedProcess(
+                    rendered,
+                    1,
+                    "",
+                    "plugins.load.paths: plugin: plugin path not found: "
+                    "/home/user/claw/packages/openclaw-plugin",
+                )
+            # Retry: verify both path and entry were cleaned.
+            current = json.loads(config.read_text(encoding="utf-8"))
+            assert current["plugins"]["load"]["paths"] == [
+                "/opt/another-plugin"
+            ]
+            assert "agent-scheduler" not in current["plugins"].get(
+                "entries", {}
+            )
+        return subprocess.CompletedProcess(rendered, 0, "ok", "")
+
+    monkeypatch.setattr(clawtune, "run", fake_run)
+
+    clawtune.install_openclaw_plugin(
+        "/usr/bin/openclaw",
+        Path("/home/user/ClawTune/packages/openclaw-plugin"),
+    )
+
+    assert install_attempts == 2
+    repaired = json.loads(config.read_text(encoding="utf-8"))
+    assert repaired["plugins"]["load"]["paths"] == ["/opt/another-plugin"]
+    assert "agent-scheduler" not in repaired["plugins"].get("entries", {})
     backups = list(tmp_path.glob("openclaw.json.clawtune-backup-*"))
     assert len(backups) == 1
     assert backups[0].read_text(encoding="utf-8") == original

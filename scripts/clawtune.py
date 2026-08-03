@@ -311,10 +311,21 @@ def backup_openclaw_config() -> Path | None:
 
 
 def remove_stale_clawtune_plugin_paths() -> bool:
-    """Remove every plugins.load.paths entry whose leaf name is
-    ``openclaw-plugin``.  Returns ``True`` when at least one entry was
-    removed so that the caller can decide whether a follow-up repair
-    (e.g. ``openclaw doctor --fix``) is needed.
+    """Remove stale openclaw-plugin references from the OpenClaw config.
+
+    Cleans up two things that can cause OpenClaw to treat the config as
+    invalid and auto-restore from its last-known-good backup:
+
+    * ``plugins.load.paths`` entries whose leaf name is
+      ``openclaw-plugin`` (stale checkout paths).
+    * ``plugins.entries.agent-scheduler`` (orphaned entry that
+      references a plugin no longer in the registry).
+      ``configure_openclaw()`` re-adds this entry with the correct
+      configuration immediately after ``plugins install`` succeeds.
+
+    Returns ``True`` when at least one reference was removed so the
+    caller can decide whether a follow-up repair (e.g. ``openclaw
+    doctor --fix``) is needed.
     """
     config = openclaw_config_path()
     try:
@@ -322,51 +333,68 @@ def remove_stale_clawtune_plugin_paths() -> bool:
     except (OSError, json.JSONDecodeError) as exc:
         raise SetupError(f"Could not read OpenClaw config {config}: {exc}") from exc
 
+    changed = False
+
+    # ── Clean plugins.load.paths ──────────────────────────────────────
     plugins = document.get("plugins")
     load = plugins.get("load") if isinstance(plugins, dict) else None
     paths = load.get("paths") if isinstance(load, dict) else None
-    if not isinstance(paths, list):
+    if isinstance(paths, list):
+        # Remove *every* plugins.load.paths entry whose leaf name is
+        # "openclaw-plugin", regardless of whether it still exists on
+        # disk.  A path may exist (old checkout directory is still
+        # present) yet be unusable (e.g. a broken symlink or an
+        # incompatible plugin version).
+        #
+        # OpenClaw may store path entries as plain strings *or* as
+        # objects with a ``path`` key — handle both.
+        def _is_clawtune_plugin_entry(value: object) -> bool:
+            if isinstance(value, str):
+                return Path(value).name == "openclaw-plugin"
+            if isinstance(value, dict):
+                p = value.get("path")
+                if isinstance(p, str):
+                    return Path(p).name == "openclaw-plugin"
+            return False
+
+        retained = [v for v in paths if not _is_clawtune_plugin_entry(v)]
+        removed = len(paths) - len(retained)
+        log(
+            f"plugins.load.paths: {len(paths)} total, "
+            f"{removed} openclaw-plugin entries removed, "
+            f"{len(retained)} retained"
+        )
+        if removed > 0:
+            load["paths"] = retained
+            changed = True
+    else:
         log(
             "plugins.load.paths is not a list in the OpenClaw config; "
             "the stale plugin reference is stored in OpenClaw's internal "
             "state rather than in plugins.load.paths."
         )
-        return False
 
-    # Remove *every* plugins.load.paths entry whose leaf name is
-    # "openclaw-plugin", regardless of whether it still exists on disk.
-    # A path may exist (old checkout directory is still present) yet be
-    # unusable (e.g. a broken symlink or an incompatible plugin version),
-    # and `openclaw plugins install --link` will add the correct path
-    # from the current checkout immediately after this repair.
-    #
-    # OpenClaw may store path entries as plain strings *or* as objects
-    # with a `path` key — handle both.
-    def _is_clawtune_plugin_entry(value: object) -> bool:
-        if isinstance(value, str):
-            return Path(value).name == "openclaw-plugin"
-        if isinstance(value, dict):
-            p = value.get("path")
-            if isinstance(p, str):
-                return Path(p).name == "openclaw-plugin"
-        return False
+    # ── Clean plugins.entries.agent-scheduler ─────────────────────────
+    # A stale agent-scheduler entry (plugin not found in registry) makes
+    # OpenClaw treat the config as invalid and auto-restore from its
+    # last-known-good backup — even after plugins.load.paths is clean.
+    # configure_openclaw() re-adds this entry with the correct
+    # configuration after install succeeds, so removing it here is safe.
+    if isinstance(plugins, dict):
+        entries = plugins.get("entries")
+        if isinstance(entries, dict) and "agent-scheduler" in entries:
+            log("Removing stale plugins.entries.agent-scheduler from config")
+            del entries["agent-scheduler"]
+            changed = True
 
-    retained = [v for v in paths if not _is_clawtune_plugin_entry(v)]
-    removed = len(paths) - len(retained)
-    log(
-        f"plugins.load.paths: {len(paths)} total, "
-        f"{removed} openclaw-plugin entries removed, "
-        f"{len(retained)} retained"
-    )
-    if removed == 0:
+    if not changed:
         log(
-            "No openclaw-plugin entry was found in plugins.load.paths. "
-            "The stale reference lives in OpenClaw's internal plugin state "
-            "rather than in plugins.load.paths."
+            "No stale openclaw-plugin references found in the OpenClaw "
+            "config.  The stale reference lives in OpenClaw's internal "
+            "plugin state rather than in the JSON config."
         )
         return False
 
-    load["paths"] = retained
     temporary = config.with_name(f".{config.name}.clawtune.tmp")
     try:
         temporary.write_text(
@@ -394,11 +422,12 @@ def install_openclaw_plugin(openclaw: str, plugin: Path) -> None:
         removed = remove_stale_clawtune_plugin_paths()
 
         if not removed:
-            # plugins.load.paths did not contain the stale entry.
-            # The stale reference is in OpenClaw's internal plugin state.
-            # Run doctor --fix so OpenClaw can reconcile its internal
-            # registry.  This may restore stale paths into
-            # plugins.load.paths, so run the removal again afterwards.
+            # Neither plugins.load.paths nor plugins.entries contained
+            # the stale reference.  The reference is in OpenClaw's
+            # internal plugin registry.  Run doctor --fix so OpenClaw
+            # can reconcile its internal state.  Doctor may restore
+            # stale paths into the JSON config from a last-known-good
+            # backup, so run the removal again afterwards.
             log(
                 "Running openclaw doctor --fix to repair OpenClaw's "
                 "internal plugin state"
@@ -406,25 +435,17 @@ def install_openclaw_plugin(openclaw: str, plugin: Path) -> None:
             run([openclaw, "doctor", "--fix"], check=False)
             remove_stale_clawtune_plugin_paths()
 
-        # Retry the install.  Do NOT invoke `config validate` — it may
-        # trigger OpenClaw's internal last-known-good backup restore,
-        # which still references the stale path and would undo our
-        # removal.
+        # Run config validate so OpenClaw accepts the now-clean config
+        # as its new last-known-good backup.  Without this step every
+        # subsequent OpenClaw command auto-restores the stale config
+        # from the old last-known-good backup, undoing our repair.
+        log("Validating repaired config to update last-known-good backup")
+        run([openclaw, "config", "validate"], check=False)
+
+        # Retry the install against the clean config and updated
+        # last-known-good backup.
         installed = run(command, check=False, capture=True)
         combined = f"{installed.stdout}\n{installed.stderr}"
-
-        # If the retry *still* fails with the same stale-path error,
-        # try one more round of doctor --fix (in case the first doctor
-        # restored a backup that was also stale).
-        if installed.returncode != 0 and stale_clawtune_plugin_link(combined):
-            log(
-                "Stale ClawTune plugin path persists; running "
-                "openclaw doctor --fix one more time"
-            )
-            run([openclaw, "doctor", "--fix"], check=False)
-            remove_stale_clawtune_plugin_paths()
-            installed = run(command, check=False, capture=True)
-            combined = f"{installed.stdout}\n{installed.stderr}"
 
     if installed.returncode != 0:
         normalized = combined.lower()
