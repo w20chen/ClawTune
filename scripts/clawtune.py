@@ -247,6 +247,26 @@ def create_venv(system_python: Path) -> None:
                 "python3-venv or python3 package."
             )
     run([venv_python, "-m", "pip", "install", "-e", "services/scheduler[dev]"])
+    runtime_probe = run(
+        [
+            venv_python,
+            "-c",
+            (
+                "from importlib.metadata import version; "
+                "import agent_scheduler, fastapi, httpx, numpy, pydantic, "
+                "prometheus_client, psutil, typing_extensions, uvicorn; "
+                "assert version('agent-scheduler') == '0.1.0'"
+            ),
+        ],
+        check=False,
+        capture=True,
+    )
+    if runtime_probe.returncode != 0:
+        detail = (runtime_probe.stderr or runtime_probe.stdout).strip()
+        raise SetupError(
+            "Scheduler installation completed but its runtime dependencies "
+            f"cannot be imported with {venv_python}:\n{detail}"
+        )
 
 
 def copy_defaults() -> None:

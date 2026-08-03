@@ -1867,3 +1867,17 @@ bundle plugin suite could not run because that generated copy has no local
 passed after the same launcher changes. A live Python 3.10 sidecar start still
 must be repeated on the reported x86 Linux host by rerunning setup and the
 benchmark command.
+
+The x86 rerun showed that the host's older pip/setuptools completed editable
+installation through `setup.py develop`, producing `UNKNOWN 0.0.0` and
+silently skipping both runtime dependencies and the `dev` extra. `setup.py`
+now contains a complete Python 3.10 compatibility mirror of the
+`pyproject.toml` metadata, including `typing-extensions` and both package-data
+groups. Setup also runs a post-install import probe for every scheduler runtime
+dependency, so an incomplete environment fails during setup rather than at
+benchmark sidecar startup. Focused regression tests passed (`145 passed, 2
+skipped`) and `git diff --check` passed. The standalone setup metadata and
+Python compilation commands could not start in this Windows environment due
+the intermittent Microsoft Store `python.exe` logon-session failure; metadata
+is exercised directly by the passing regression test. Repeat setup and the
+one-task benchmark on the reported Python 3.10 x86 host.

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import runpy
 import subprocess
 from pathlib import Path
 
 import pytest
+import setuptools
 
 from tools.check_ebpf import run_check
 
@@ -20,6 +22,66 @@ SPEC.loader.exec_module(clawtune)
 def test_scheduler_declares_python_310_typing_extensions_dependency() -> None:
     pyproject = SCRIPT.parents[1] / "services" / "scheduler" / "pyproject.toml"
     assert '"typing-extensions>=4.12"' in pyproject.read_text(encoding="utf-8")
+
+
+def test_legacy_scheduler_setup_declares_runtime_metadata(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: captured.update(kwargs))
+
+    runpy.run_path(str(SCRIPT.parents[1] / "services" / "scheduler" / "setup.py"))
+
+    assert captured["name"] == "agent-scheduler"
+    assert "typing-extensions>=4.12" in captured["install_requires"]
+    assert "dev" in captured["extras_require"]
+    assert "tool_time" in captured["package_data"]
+
+
+def test_create_venv_probes_runtime_dependencies(tmp_path, monkeypatch) -> None:
+    venv = tmp_path / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    venv_python = venv / "bin" / "python"
+    venv_python.touch()
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(command, **_kwargs):
+        rendered = tuple(str(item) for item in command)
+        calls.append(rendered)
+        return subprocess.CompletedProcess(rendered, 0, "", "")
+
+    monkeypatch.setattr(clawtune, "VENV", venv)
+    monkeypatch.setattr(clawtune, "python_has_bcc", lambda _python: True)
+    monkeypatch.setattr(clawtune, "run", fake_run)
+
+    clawtune.create_venv(Path("/usr/bin/python3"))
+
+    assert calls[0][-2:] == ("-e", "services/scheduler[dev]")
+    assert "typing_extensions" in calls[1][-1]
+    assert "version('agent-scheduler') == '0.1.0'" in calls[1][-1]
+
+
+def test_create_venv_rejects_incomplete_runtime(tmp_path, monkeypatch) -> None:
+    venv = tmp_path / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    venv_python = venv / "bin" / "python"
+    venv_python.touch()
+    calls = 0
+
+    def fake_run(command, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(
+            command,
+            0 if calls == 1 else 1,
+            "",
+            "No module named 'typing_extensions'",
+        )
+
+    monkeypatch.setattr(clawtune, "VENV", venv)
+    monkeypatch.setattr(clawtune, "python_has_bcc", lambda _python: True)
+    monkeypatch.setattr(clawtune, "run", fake_run)
+
+    with pytest.raises(clawtune.SetupError, match="runtime dependencies"):
+        clawtune.create_venv(Path("/usr/bin/python3"))
 
 
 def test_package_manager_prefers_dnf(monkeypatch) -> None:
