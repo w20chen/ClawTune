@@ -2327,7 +2327,7 @@ def test_host_sandbox_sidecar_enables_docker_exec_observer(monkeypatch, tmp_path
         return FakeProcess()
 
     monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("swe_rebench.host_sandbox._wait_ready", lambda port: None)
+    monkeypatch.setattr("swe_rebench.host_sandbox._wait_ready", lambda port, **kw: None)
 
     process = _start_sidecar(
         trace_dir=trace_dir,
@@ -2383,7 +2383,7 @@ def test_host_sandbox_sidecar_readiness_failure_stops_unreturned_process(
     monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.Popen", fake_popen)
     monkeypatch.setattr(
         "swe_rebench.host_sandbox._wait_ready",
-        lambda _port: (_ for _ in ()).throw(RuntimeError("not ready")),
+        lambda _port, **kw: (_ for _ in ()).throw(RuntimeError("not ready")),
     )
 
     with pytest.raises(RuntimeError, match="not ready"):

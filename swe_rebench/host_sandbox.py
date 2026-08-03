@@ -733,15 +733,21 @@ def _start_sidecar(
         # two descriptors per task across a long serial benchmark.
         stdout.close()
         stderr.close()
+    stderr_path = trace_dir / "sidecar-stderr.txt"
     try:
         if deadline is None:
-            _wait_ready(port)
+            _wait_ready(port, process=process, stderr_path=stderr_path)
         else:
             remaining = _remaining_task_seconds(deadline, phase="sidecar startup")
             if remaining is not None and remaining < 60.0:
-                _wait_ready(port, timeout_seconds=remaining)
+                _wait_ready(
+                    port,
+                    timeout_seconds=remaining,
+                    process=process,
+                    stderr_path=stderr_path,
+                )
             else:
-                _wait_ready(port)
+                _wait_ready(port, process=process, stderr_path=stderr_path)
     except BaseException:
         # Do not let an unreturned process keep mutating this task's KB while
         # the batch runner publishes it for the next task.
@@ -2105,14 +2111,38 @@ def _write_timeout_record(
     )
 
 
-def _wait_ready(port: int, *, timeout_seconds: float | None = None) -> None:
+def _wait_ready(
+    port: int,
+    *,
+    timeout_seconds: float | None = None,
+    process: subprocess.Popen[str] | None = None,
+    stderr_path: Path | None = None,
+) -> None:
     task_budget_limited = timeout_seconds is not None
     deadline = time.monotonic() + (
         max(0.001, timeout_seconds) if timeout_seconds is not None else 60.0
     )
     url = f"http://127.0.0.1:{port}/health/ready"
+    last_exception: str | None = None
     while time.monotonic() < deadline:
         remaining = deadline - time.monotonic()
+        # If the sidecar process exited prematurely, surface its crash details
+        # immediately instead of waiting for the full timeout.
+        if process is not None:
+            return_code = process.poll()
+            if return_code is not None:
+                detail = ""
+                if stderr_path is not None:
+                    try:
+                        detail = stderr_path.read_text(
+                            encoding="utf-8", errors="replace"
+                        )[-4000:]
+                    except OSError:
+                        pass
+                raise RuntimeError(
+                    f"sidecar crashed (exit {return_code}) before becoming "
+                    f"ready on port {port}; stderr tail:\n{detail}"
+                )
         try:
             with urllib.request.urlopen(
                 url,
@@ -2127,7 +2157,8 @@ def _wait_ready(port: int, *, timeout_seconds: float | None = None) -> None:
                     and payload.get("ready") is True
                 ):
                     return
-        except Exception:
+        except Exception as exc:
+            last_exception = str(exc)
             remaining = deadline - time.monotonic()
             if remaining > 0:
                 time.sleep(min(0.5, remaining))
@@ -2136,7 +2167,25 @@ def _wait_ready(port: int, *, timeout_seconds: float | None = None) -> None:
             "task timed out during sidecar startup; whole-task wall-clock "
             "budget exhausted"
         )
-    raise RuntimeError(f"sidecar_not_ready port={port}")
+    # Collect diagnostic context for the timeout.
+    diagnostic_parts = [f"sidecar_not_ready port={port}"]
+    if process is not None:
+        return_code = process.poll()
+        diagnostic_parts.append(
+            f"process_status={'exited_' + str(return_code) if return_code is not None else 'still_running'}"
+        )
+    if last_exception is not None:
+        diagnostic_parts.append(f"last_health_error={last_exception}")
+    if stderr_path is not None:
+        try:
+            stderr_tail = stderr_path.read_text(
+                encoding="utf-8", errors="replace"
+            )[-2000:]
+            if stderr_tail.strip():
+                diagnostic_parts.append(f"stderr_tail=\n{stderr_tail}")
+        except OSError:
+            pass
+    raise RuntimeError(" ".join(diagnostic_parts))
 
 
 def _free_port() -> int:
