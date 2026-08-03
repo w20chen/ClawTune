@@ -413,6 +413,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
         app_state.tool_monitor.stop()
         if app_state.docker_exec_observer is not None:
             app_state.docker_exec_observer.stop()
+        if app_state.trace_writer is not None:
+            await asyncio.to_thread(app_state.trace_writer.close)
         close_predictor = getattr(app_state.predictor, "close", None)
         if callable(close_predictor):
             await asyncio.to_thread(close_predictor)
@@ -1070,7 +1072,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 request,
                 ambient_snapshot.rss_bytes,
             )
-            prediction = await s.predictor.predict(
+            prediction = await asyncio.to_thread(
+                s.predictor.predict,
                 request,
                 ambient_before_mb=ambient_before_mb,
             )

@@ -14,7 +14,11 @@ export class SidecarClient {
   constructor(private readonly config: PluginConfig) {}
 
   async decide(payload: ToolBeforeRequest): Promise<ToolDecision> {
-    return this.post<ToolDecision>("/v1/decisions/tool", payload, this.config.decisionTimeoutMs, 3);
+    // Single retry (2 total attempts).  The sidecar deduplicates concurrent
+    // requests for the same (event_id, params_digest) pair into one in-flight
+    // task, so additional retries would only re-await that same task.  The
+    // extra attempt here covers transient localhost connection refusals.
+    return this.post<ToolDecision>("/v1/decisions/tool", payload, this.config.decisionTimeoutMs, 2);
   }
 
   async reportCompletion(payload: ToolCompletedEvent): Promise<void> {

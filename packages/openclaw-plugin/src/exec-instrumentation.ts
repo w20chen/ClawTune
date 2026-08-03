@@ -42,7 +42,7 @@ export async function instrumentExecParams(
   event: unknown,
   context: unknown,
   payload: ToolBeforeRequest,
-  decision: ToolDecision,
+  decision: ToolDecision | null,
   client: ExecutionRegistrar,
   config: PluginConfig
 ): Promise<InstrumentResult> {
@@ -87,7 +87,7 @@ export async function instrumentExecParams(
       agent_id: payload.agent_id,
       session_id: payload.session_id,
       tool_call_id: payload.tool_call_id,
-      lease_id: decision.lease_id,
+      lease_id: decision?.lease_id ?? null,
       run_id: runId,
       session_key_hash: sessionKeyHash,
       command_digest: commandDigest,
@@ -96,8 +96,8 @@ export async function instrumentExecParams(
       host: typeof params.host === "string" ? params.host : "gateway",
       // placement_advice is deliberately observational in this MVP.  Only a
       // separately authorized placement object may reach the launcher.
-      placement: decision.placement ?? null,
-      profiling: decision.profiling ?? {
+      placement: decision?.placement ?? null,
+      profiling: decision?.profiling ?? {
         mode: config.profilingMode,
         enable_cgroup: config.enableCgroup,
         enable_affinity: config.enableAffinity,

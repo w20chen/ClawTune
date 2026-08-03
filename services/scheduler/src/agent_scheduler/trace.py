@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import queue
 import re
 import time
 import threading
@@ -63,6 +64,13 @@ class AgentTestBenchTraceWriter:
         # Maps tool_call_id → parent LLM span_id for resolving parent_span_id
         # on tool spans. Populated when an LLM span produces tool calls.
         self._tool_parent_map: dict[tuple[str | None, ...], str] = {}
+        self._write_queue: queue.Queue[tuple[Path, str] | None] = queue.Queue()
+        self._writer_thread = threading.Thread(
+            target=self._writer_loop,
+            name="clawtune-trace-writer",
+            daemon=True,
+        )
+        self._writer_thread.start()
         self.trace_dir.mkdir(parents=True, exist_ok=True)
 
     def _file_for_run(
@@ -542,11 +550,39 @@ class AgentTestBenchTraceWriter:
         self._metadata_written.add(key)
 
     def _append(self, filepath: Path, record: dict[str, Any]) -> None:
+        """Enqueue a serialised record for asynchronous disk write.
+
+        JSON serialisation runs on the calling thread; the blocking disk
+        write is performed by the dedicated trace-writer thread so that
+        the FastAPI event loop is never blocked on filesystem I/O.
+        """
         line = json.dumps(record, sort_keys=True, separators=(",", ":"))
-        with self._lock:
-            filepath.parent.mkdir(parents=True, exist_ok=True)
-            with filepath.open("a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
+        self._write_queue.put((filepath, line))
+
+    def _writer_loop(self) -> None:
+        """Dedicated thread that drains the write queue to disk."""
+        while True:
+            item = self._write_queue.get()
+            if item is None:  # graceful shutdown sentinel
+                break
+            filepath, line = item
+            try:
+                filepath.parent.mkdir(parents=True, exist_ok=True)
+                with filepath.open("a", encoding="utf-8") as fh:
+                    fh.write(line + "\n")
+            except Exception:
+                # Trace persistence is best-effort; a lost span_end is
+                # preferable to a crashed sidecar.
+                pass
+
+    def close(self) -> None:
+        """Drain pending writes and stop the writer thread."""
+        self._write_queue.put(None)
+        self._writer_thread.join(timeout=10.0)
+        if self._writer_thread.is_alive():
+            # Thread may be stuck on a slow / hung filesystem; it is a
+            # daemon thread so the process can still exit.
+            pass
 
     def _metadata_record(self) -> dict[str, Any]:
         return {

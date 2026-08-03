@@ -452,7 +452,7 @@ class ToolResourcePredictor:
             repo=repo,
         )
 
-    async def predict(
+    def predict(
         self,
         request: ToolBeforeRequest,
         *,

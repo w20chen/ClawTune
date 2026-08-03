@@ -166,8 +166,8 @@ export default definePluginEntry({
     properties: {
       endpoint: {type: "string", default: "http://localhost:8765"},
       mode: {enum: ["observe", "enforce"], default: "observe"},
-      decisionTimeoutMs: {type: "integer", default: 800, minimum: 1},
-      reportTimeoutMs: {type: "integer", default: 800, minimum: 1},
+      decisionTimeoutMs: {type: "integer", default: 3000, minimum: 200, maximum: 30000},
+      reportTimeoutMs: {type: "integer", default: 3000, minimum: 200, maximum: 30000},
       failOpen: {type: "boolean", default: true},
       sendRawParams: {type: "boolean", default: false},
       recordRawTrace: {type: "boolean", default: false},
@@ -741,6 +741,51 @@ export default definePluginEntry({
       return sandboxParams.changed && sandboxParams.params !== null ? {params: sandboxParams.params} : undefined;
     } catch (error) {
       logger.warn("Agent Scheduler decision failed", classifyError(error));
+
+      // ── failOpen with execution instrumentation ──────────────────────
+      // When the sidecar's decision endpoint is unreachable or times out
+      // the tool still runs (failOpen).  Execution registration and
+      // launcher wrapping should also proceed so that PID / cgroup /
+      // resource monitoring does not silently degrade to "unattributed"
+      // on every decision failure.
+      if (config.executionBackend !== "hook-only") {
+        try {
+          const instrumentation = await instrumentExecParams(
+            event, context, payload, /* decision */ null, client, config,
+          );
+          if (instrumentation.executionId !== null) {
+            correlation.set(
+              correlationId,
+              /* decisionId */ null,
+              /* leaseId */ null,
+              instrumentation.executionId,
+              toolCallId,
+            );
+          }
+          if (registry) {
+            const span = registry.getSpan(registryKey, spanId);
+            if (span) {
+              span.metadata = {
+                requestedCommand: instrumentation.requestedCommand,
+                effectiveCommand: instrumentation.effectiveCommand,
+                payloadCommand: instrumentation.payloadCommand,
+                executionId: instrumentation.executionId,
+              };
+            }
+          }
+          if (instrumentation.params !== null) {
+            const sandboxParams = normalizeSandboxToolParams(
+              instrumentation.params,
+              toolName,
+            );
+            return {params: sandboxParams.params ?? instrumentation.params};
+          }
+        } catch {
+          // Execution registration itself failed — fall through to the
+          // bare failOpen path below.
+        }
+      }
+
       const sandboxParams = normalizeSandboxToolParams(cloneEventParams(event), toolName);
       if ((config.mode === "observe" || config.failOpen) && sandboxParams.changed && sandboxParams.params !== null) {
         return {params: sandboxParams.params};
