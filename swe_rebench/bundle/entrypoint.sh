@@ -507,13 +507,22 @@ EOF_PROMPT
         printf '%s\n%s\n\n' "Hint:" "$TASK_HINT_TEXT" >> /tmp/problem_statement.txt
     fi
     cp /tmp/problem_statement.txt "$TRACE_DIR/agent_prompt.txt"
-    echo "[claw] running in $AGENT_CWD: openclaw agent --local --agent main --model $OPENCLAW_MODEL_REF ..."
+    echo "[claw] running in $AGENT_CWD: openclaw agent (--local, --model $OPENCLAW_MODEL_REF) ..."
     (
         cd "$AGENT_CWD"
-        openclaw agent --local \
-            --agent main \
-            --model "$OPENCLAW_MODEL_REF" \
-            --message-file /tmp/problem_statement.txt
+        # OpenClaw 2026.7.x uses `--agent main`; newer builds moved the agent
+        # id to a positional subcommand (`openclaw agent main ...`).  Match the
+        # installed binary so the CLI does not reject the invocation.
+        if openclaw agent --help 2>&1 | grep -q -- '--agent'; then
+            openclaw agent --local \
+                --agent main \
+                --model "$OPENCLAW_MODEL_REF" \
+                --message-file /tmp/problem_statement.txt
+        else
+            openclaw agent main --local \
+                --model "$OPENCLAW_MODEL_REF" \
+                --message-file /tmp/problem_statement.txt
+        fi
     ) > >(tee "$TRACE_DIR/agent-stdout.txt") 2> >(tee "$TRACE_DIR/agent-stderr.txt" >&2) || AGENT_EXIT=$?
 else
     echo "[claw] WARNING: PROBLEM_STATEMENT not set"

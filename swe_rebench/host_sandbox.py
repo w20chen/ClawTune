@@ -25,7 +25,7 @@ import traceback
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from swe_rebench.config import RunnerConfig
 from swe_rebench.docker import ContainerCleanupError, ContainerResult
@@ -1317,6 +1317,65 @@ def _configure_openclaw(
             )
 
 
+def _openclaw_uses_agent_flag(openclaw: str) -> bool:
+    """True when ``openclaw agent`` accepts the ``--agent <id>`` flag.
+
+    OpenClaw 2026.7.x selects the agent with ``--agent main``.  Newer builds
+    moved the agent id to a positional subcommand (``openclaw agent main ...``)
+    and reject ``--agent``, which surfaces as a "Too many arguments" CLI error
+    like the one seen on this branch's benchmark runs.  Probe the installed
+    binary once so the emitted command matches the syntax it understands.
+    """
+    try:
+        probe = subprocess.run(
+            [openclaw, "agent", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception:
+        # Best-effort probe: any failure (missing binary, timeout, or a
+        # Popen stand-in without a context manager in tests) falls back to
+        # the long-documented flag form.
+        return True
+    help_text = f"{probe.stdout or ''}\n{probe.stderr or ''}"
+    return "--agent" in help_text
+
+
+def _openclaw_agent_argv(
+    openclaw: str,
+    *,
+    model_ref: str,
+    prompt_path: Path,
+    extra_args: Sequence[str],
+) -> list[str]:
+    """Build the ``openclaw agent`` argv for the installed CLI syntax."""
+    if _openclaw_uses_agent_flag(openclaw):
+        return [
+            openclaw,
+            "agent",
+            "--local",
+            "--agent",
+            "main",
+            "--model",
+            model_ref,
+            "--message-file",
+            str(prompt_path),
+            *extra_args,
+        ]
+    return [
+        openclaw,
+        "agent",
+        "main",
+        "--local",
+        "--model",
+        model_ref,
+        "--message-file",
+        str(prompt_path),
+        *extra_args,
+    ]
+
+
 def _run_openclaw_agent(
     *,
     trace_dir: Path,
@@ -1370,18 +1429,12 @@ def _run_openclaw_agent(
     )
     try:
         process = subprocess.Popen(
-            [
+            _openclaw_agent_argv(
                 openclaw,
-                "agent",
-                "--local",
-                "--agent",
-                "main",
-                "--model",
-                config.llm.openclaw_model_ref,
-                "--message-file",
-                str(prompt_path),
-                *config.agent.extra_args,
-            ],
+                model_ref=config.llm.openclaw_model_ref,
+                prompt_path=prompt_path,
+                extra_args=config.agent.extra_args,
+            ),
             cwd=str(config.repo_root),
             env=env,
             stdout=subprocess.PIPE,

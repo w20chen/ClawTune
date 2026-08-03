@@ -411,6 +411,11 @@ or very short-lived commands where BPF events arrive after the time window.
   workspace because WSL instance creation is denied with
   `Wsl/Service/CreateInstance/E_ACCESSDENIED`; validate the generated scripts
   on the Linux Docker host.
+- `bash -n swe_rebench/bundle/entrypoint.sh` and
+  `bash -n swe_rebench/bundle/run_agent.sh` (CI does this for the tracked
+  bundle) cannot run in this Windows workspace because `bash` resolves to WSL
+  and no WSL distribution is installed; validate on the Linux host after the
+  `openclaw agent` CLI-syntax fix regenerates the bundle.
 - `bash -n scripts/setup/arm_qemu_setup.sh` cannot run in this Windows
   workspace because WSL instance creation is denied with
   `Wsl/Service/CreateInstance/E_ACCESSDENIED`; validate the ARM/QEMU setup

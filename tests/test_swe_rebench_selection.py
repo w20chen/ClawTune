@@ -24,6 +24,8 @@ from swe_rebench.host_sandbox import (
     _cleanup_openclaw_sandbox_containers,
     _cleanup_runtime_artifacts,
     _configure_openclaw,
+    _openclaw_agent_argv,
+    _openclaw_uses_agent_flag,
     _docker_sandbox_container_ids,
     _ensure_openclaw_sandbox_image,
     _export_testbed_from_image,
@@ -2207,6 +2209,100 @@ def test_host_sandbox_agent_forces_sandbox_exec_workdir(monkeypatch, tmp_path: P
     assert env["CLAW_EXEC_WORKDIR"] == "/workspace"
     assert env["CLAW_SANDBOX_HOST_WORKSPACE"] == str(workspace)
     assert env["CLAW_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
+
+
+def test_openclaw_uses_agent_flag_detects_flag_syntax(monkeypatch) -> None:
+    class FakeResult:
+        stdout = "Usage: openclaw agent [options]\n  --agent <id>  Agent id\n"
+        stderr = ""
+        returncode = 0
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+
+    assert _openclaw_uses_agent_flag("/usr/bin/openclaw") is True
+    assert calls == [["/usr/bin/openclaw", "agent", "--help"]]
+
+
+def test_openclaw_uses_agent_flag_detects_positional_syntax(monkeypatch) -> None:
+    class FakeResult:
+        stdout = (
+            "Usage: openclaw agent [options]\n"
+            "  --local       Run the embedded agent locally\n"
+            "  --model <id>  Model override\n"
+        )
+        stderr = ""
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        return FakeResult()
+
+    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+
+    assert _openclaw_uses_agent_flag("/usr/bin/openclaw") is False
+
+
+def test_openclaw_uses_agent_flag_falls_back_when_probe_fails(monkeypatch) -> None:
+    def fake_run(cmd, **kwargs):
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+
+    assert _openclaw_uses_agent_flag("/usr/bin/openclaw") is True
+
+
+def test_openclaw_agent_argv_flag_syntax(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._openclaw_uses_agent_flag",
+        lambda _openclaw: True,
+    )
+    argv = _openclaw_agent_argv(
+        "/usr/bin/openclaw",
+        model_ref="vllm/deepseek-v4-flash",
+        prompt_path=Path("/tmp/agent_prompt.txt"),
+        extra_args=[],
+    )
+    assert argv == [
+        "/usr/bin/openclaw",
+        "agent",
+        "--local",
+        "--agent",
+        "main",
+        "--model",
+        "vllm/deepseek-v4-flash",
+        "--message-file",
+        str(Path("/tmp/agent_prompt.txt")),
+    ]
+
+
+def test_openclaw_agent_argv_positional_syntax(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._openclaw_uses_agent_flag",
+        lambda _openclaw: False,
+    )
+    argv = _openclaw_agent_argv(
+        "/usr/bin/openclaw",
+        model_ref="vllm/deepseek-v4-flash",
+        prompt_path=Path("/tmp/agent_prompt.txt"),
+        extra_args=["--verbose", "on"],
+    )
+    assert argv == [
+        "/usr/bin/openclaw",
+        "agent",
+        "main",
+        "--local",
+        "--model",
+        "vllm/deepseek-v4-flash",
+        "--message-file",
+        str(Path("/tmp/agent_prompt.txt")),
+        "--verbose",
+        "on",
+    ]
 
 
 @pytest.mark.parametrize(
