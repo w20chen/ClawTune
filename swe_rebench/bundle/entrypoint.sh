@@ -513,13 +513,13 @@ EOF_PROMPT
         # OpenClaw 2026.7.x uses `--agent main`; newer builds moved the agent
         # id to a positional subcommand (`openclaw agent main ...`).  Match the
         # installed binary so the CLI does not reject the invocation.
-        if openclaw agent --help 2>&1 | grep -q -- '--agent'; then
-            openclaw agent --local \
-                --agent main \
+        if openclaw agent main --help 2>&1 | grep -q 'agent main'; then
+            openclaw agent main --local \
                 --model "$OPENCLAW_MODEL_REF" \
                 --message-file /tmp/problem_statement.txt
         else
-            openclaw agent main --local \
+            openclaw agent --local \
+                --agent main \
                 --model "$OPENCLAW_MODEL_REF" \
                 --message-file /tmp/problem_statement.txt
         fi

@@ -1318,17 +1318,19 @@ def _configure_openclaw(
 
 
 def _openclaw_uses_agent_flag(openclaw: str) -> bool:
-    """True when ``openclaw agent`` accepts the ``--agent <id>`` flag.
+    """True when ``openclaw agent`` selects the agent via ``--agent <id>``.
 
-    OpenClaw 2026.7.x selects the agent with ``--agent main``.  Newer builds
-    moved the agent id to a positional subcommand (``openclaw agent main ...``)
-    and reject ``--agent``, which surfaces as a "Too many arguments" CLI error
-    like the one seen on this branch's benchmark runs.  Probe the installed
-    binary once so the emitted command matches the syntax it understands.
+    OpenClaw 2026.7.x uses ``--agent main``.  Newer builds moved the agent id
+    to a positional subcommand (``openclaw agent main ...``) and reject the
+    flag, surfacing as a "Too many arguments" CLI error like the one seen on
+    this branch's benchmark runs.  Probe ``agent main --help``: a positional
+    build answers with a ``Usage: openclaw agent main ...`` line, while a
+    flag build answers with the parent ``agent`` usage (or an
+    unknown-command error), which does not mention ``agent main``.
     """
     try:
         probe = subprocess.run(
-            [openclaw, "agent", "--help"],
+            [openclaw, "agent", "main", "--help"],
             capture_output=True,
             text=True,
             timeout=30,
@@ -1339,7 +1341,7 @@ def _openclaw_uses_agent_flag(openclaw: str) -> bool:
         # the long-documented flag form.
         return True
     help_text = f"{probe.stdout or ''}\n{probe.stderr or ''}"
-    return "--agent" in help_text
+    return "agent main" not in help_text
 
 
 def _openclaw_agent_argv(

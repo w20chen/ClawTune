@@ -2213,6 +2213,8 @@ def test_host_sandbox_agent_forces_sandbox_exec_workdir(monkeypatch, tmp_path: P
 
 def test_openclaw_uses_agent_flag_detects_flag_syntax(monkeypatch) -> None:
     class FakeResult:
+        # Flag-style build: `agent main --help` answers with the parent
+        # `agent` usage, which does not mention `agent main`.
         stdout = "Usage: openclaw agent [options]\n  --agent <id>  Agent id\n"
         stderr = ""
         returncode = 0
@@ -2226,13 +2228,15 @@ def test_openclaw_uses_agent_flag_detects_flag_syntax(monkeypatch) -> None:
     monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
 
     assert _openclaw_uses_agent_flag("/usr/bin/openclaw") is True
-    assert calls == [["/usr/bin/openclaw", "agent", "--help"]]
+    assert calls == [["/usr/bin/openclaw", "agent", "main", "--help"]]
 
 
 def test_openclaw_uses_agent_flag_detects_positional_syntax(monkeypatch) -> None:
     class FakeResult:
+        # Positional build: `agent main --help` answers with the subcommand's
+        # own usage line, which contains `agent main`.
         stdout = (
-            "Usage: openclaw agent [options]\n"
+            "Usage: openclaw agent main [options]\n"
             "  --local       Run the embedded agent locally\n"
             "  --model <id>  Model override\n"
         )
