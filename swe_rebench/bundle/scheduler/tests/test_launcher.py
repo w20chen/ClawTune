@@ -197,6 +197,115 @@ def test_fork_exec_exit_report_keeps_original_short_retry_budget(
     assert sleeps == [launcher._EXIT_REPORT_RETRY_DELAY_SECONDS] * 2
 
 
+def test_fork_exec_registers_before_releasing_child_and_closes_gate(
+    monkeypatch,
+) -> None:
+    posts: list[tuple[str, dict[str, Any]]] = []
+    gate_fds: list[int] = []
+    releases: list[bytes] = []
+    real_pipe = os.pipe
+
+    def tracked_pipe() -> tuple[int, int]:
+        read_fd, write_fd = real_pipe()
+        gate_fds.extend((read_fd, write_fd))
+        return read_fd, write_fd
+
+    def fake_post(_endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        posts.append((path, payload))
+        if path.endswith("/started"):
+            return {"stored": True}
+        return {
+            "command": "echo hello",
+            "workdir": None,
+            "update_token": "update-1",
+        }
+
+    monkeypatch.setattr(launcher.os, "pipe", tracked_pipe)
+    monkeypatch.setattr(launcher.os, "fork", lambda: 4242, raising=False)
+    monkeypatch.setattr(
+        launcher.os,
+        "write",
+        lambda _fd, data: releases.append(data) or len(data),
+    )
+    monkeypatch.setattr(launcher.os, "waitpid", lambda _pid, _flags: (4242, 0))
+    monkeypatch.setattr(
+        launcher.os, "WIFEXITED", lambda _status: True, raising=False
+    )
+    monkeypatch.setattr(
+        launcher.os, "WEXITSTATUS", lambda _status: 0, raising=False
+    )
+    monkeypatch.setattr(
+        launcher.os, "WIFSIGNALED", lambda _status: False, raising=False
+    )
+    monkeypatch.setattr(launcher, "_post_json", fake_post)
+    monkeypatch.setattr(launcher, "_post_json_best_effort", lambda *_args: {})
+    monkeypatch.setattr(launcher, "_read_pid_starttime_ticks", lambda _pid: 99)
+    monkeypatch.setattr(launcher, "_pid_namespace_inode", lambda _pid: 123)
+    monkeypatch.setattr(
+        launcher,
+        "_install_fork_signal_forwarders",
+        lambda _pid: lambda: None,
+    )
+
+    assert launcher._run_forkexec("http://sidecar", "exec-1", "token-1") == 0
+    assert [path for path, _payload in posts] == [
+        "/v2/executions/claim",
+        "/v2/executions/exec-1/started",
+    ]
+    assert releases == [b"1"]
+    for fd in gate_fds:
+        with pytest.raises(OSError):
+            os.fstat(fd)
+
+
+def test_fork_exec_reaps_child_without_release_when_started_fails(
+    monkeypatch,
+) -> None:
+    writes: list[bytes] = []
+    waits: list[int] = []
+
+    def fake_post(_endpoint: str, path: str, _payload: dict[str, Any]) -> dict[str, Any]:
+        if path.endswith("/started"):
+            raise RuntimeError("collector unavailable")
+        return {
+            "command": "echo must-not-run",
+            "workdir": None,
+            "update_token": "update-1",
+        }
+
+    monkeypatch.setattr(launcher.os, "fork", lambda: 4242, raising=False)
+    monkeypatch.setattr(
+        launcher.os,
+        "write",
+        lambda _fd, data: writes.append(data) or len(data),
+    )
+    monkeypatch.setattr(
+        launcher.os,
+        "waitpid",
+        lambda pid, _flags: waits.append(pid) or (pid, 126 << 8),
+    )
+    monkeypatch.setattr(launcher, "_post_json", fake_post)
+    monkeypatch.setattr(launcher, "_read_pid_starttime_ticks", lambda _pid: 99)
+    monkeypatch.setattr(launcher, "_pid_namespace_inode", lambda _pid: 123)
+
+    with pytest.raises(RuntimeError, match="collector unavailable"):
+        launcher._run_forkexec("http://sidecar", "exec-1", "token-1")
+
+    assert writes == []
+    assert waits == [4242]
+
+
+def test_exec_gate_requires_explicit_success_byte() -> None:
+    for payload, expected in ((b"1", True), (b"", False), (b"0", False)):
+        read_fd, write_fd = os.pipe()
+        if payload:
+            os.write(write_fd, payload)
+        os.close(write_fd)
+        assert launcher._exec_gate_opened(read_fd) is expected
+        with pytest.raises(OSError):
+            os.fstat(read_fd)
+
+
 def test_started_report_allows_bounded_ebpf_cold_start(monkeypatch) -> None:
     attempts: list[tuple[str, float]] = []
 
@@ -262,6 +371,7 @@ def test_launcher_claims_starts_and_returns_child_exit_code(monkeypatch) -> None
 
     monkeypatch.setattr(launcher, "_post_json", fake_post_json)
     monkeypatch.setattr(launcher, "_post_json_best_effort", fake_best_effort)
+    monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: False)
     monkeypatch.setattr(launcher, "_spawn_shell", fake_spawn)
     monkeypatch.setattr(launcher, "_install_signal_forwarders", lambda _child: None)
     monkeypatch.setattr(launcher, "_read_pid_starttime_ticks", lambda _pid: 99)

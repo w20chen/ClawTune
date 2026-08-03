@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -16,6 +17,12 @@ from agent_scheduler.contracts.models import (
     ToolPrediction,
 )
 from agent_scheduler.monitoring.tool_runtime import ToolRuntimeSample
+from agent_scheduler.identity import (
+    correlation_key,
+    owner_key,
+    owner_prefix_matches,
+    owners_compatible,
+)
 
 
 def _safe_filename(segment: str | None) -> str:
@@ -36,26 +43,36 @@ class AgentTestBenchTraceWriter:
         *,
         scaffold: str = "openclaw",
         max_messages_bytes: int = 131_072,
+        default_repo: str = "openclaw",
     ) -> None:
         self.trace_dir = trace_dir.resolve()
         self.scaffold = scaffold
         self._max_messages_bytes = max_messages_bytes
+        self._default_repo = default_repo
         self._instance_id = str(uuid4())
         self._lock = threading.Lock()
-        self._model_starts: dict[str, ModelEvent] = {}
-        self._tool_starts: dict[str, ToolBeforeRequest] = {}
-        self._tool_predictions: dict[str, dict[str, Any]] = {}
+        self._model_starts: dict[tuple[str | None, ...], ModelEvent] = {}
+        self._tool_starts: dict[tuple[str | None, ...], ToolBeforeRequest] = {}
+        self._tool_predictions: dict[tuple[str | None, ...], dict[str, Any]] = {}
         self._tool_resource_telemetry: dict[str, dict[str, Any]] = {}
         self._recent_proxy_calls: list[dict[str, Any]] = []
-        self._seq_counters: dict[str, int] = {}
-        self._files: dict[str, Path] = {}
+        self._proxy_activity: dict[str, int] = {}
+        self._seq_counters: dict[tuple[str | None, ...], int] = {}
+        self._files: dict[tuple[str | None, ...], Path] = {}
         self._metadata_written: set[str] = set()  # track files that already have metadata
         # Maps tool_call_id → parent LLM span_id for resolving parent_span_id
         # on tool spans. Populated when an LLM span produces tool calls.
-        self._tool_parent_map: dict[str, str] = {}
+        self._tool_parent_map: dict[tuple[str | None, ...], str] = {}
         self.trace_dir.mkdir(parents=True, exist_ok=True)
 
-    def _file_for_run(self, run_id: str | None, session_id: str | None, agent_id: str | None) -> Path | None:
+    def _file_for_run(
+        self,
+        gateway_id: str | None,
+        runtime_id: str | None,
+        run_id: str | None,
+        session_id: str | None,
+        agent_id: str | None,
+    ) -> Path | None:
         """Return the trace file for a run.
 
         Keys writers by run_id (primary) or session_id (fallback).
@@ -64,8 +81,8 @@ class AgentTestBenchTraceWriter:
 
         Returns None when no identifiable key is available at all.
         """
-        key = run_id or session_id
-        if not key:
+        run_key = run_id or session_id
+        if not run_key:
             # Last resort: instance_id. Log a warning so operators
             # can detect when the plugin isn't sending run_id/session_id.
             import logging
@@ -75,7 +92,9 @@ class AgentTestBenchTraceWriter:
                 "(may cause cross-run accumulation). run_id=%s session_id=%s agent_id=%s",
                 run_id, session_id, agent_id,
             )
-            key = self._instance_id
+            run_key = self._instance_id
+        runtime_key = runtime_id or "legacy"
+        key = (gateway_id, runtime_id, agent_id, session_id, run_key)
         if key in self._files:
             return self._files[key]
         session = _safe_filename(session_id)
@@ -83,27 +102,31 @@ class AgentTestBenchTraceWriter:
         # Note: agent_id is included per-record in the JSONL content.
         # It is omitted from the filename because model hooks do not
         # expose agent_id — an OpenClaw limitation.
-        filename = f"{session}_{run}.jsonl"
+        identity_digest = _identity_digest(key)
+        filename = (
+            f"{_safe_filename(runtime_key)}__{session}_{run}"
+            f"__{identity_digest}.jsonl"
+        )
         filepath = self.trace_dir / filename
         self._files[key] = filepath
         return filepath
 
-    def _next_seq(self, run_id: str | None) -> int:
-        key = run_id or self._instance_id
+    def _next_seq(self, event: ToolBeforeRequest | ToolCompletedEvent | ModelEvent) -> int:
+        key = (*owner_key(event), event.run_id or self._instance_id)
         current = self._seq_counters.get(key, 0)
         current += 1
         self._seq_counters[key] = current
         return current
 
     def record_tool_started(self, event: ToolBeforeRequest) -> None:
-        self._tool_starts[_tool_key(event.tool_call_id, event.event_id)] = event
+        self._tool_starts[correlation_key(event)] = event
 
     def record_tool_prediction(
         self,
         event: ToolBeforeRequest,
         prediction: ToolPrediction,
     ) -> None:
-        self._tool_predictions[_tool_key(event.tool_call_id, event.event_id)] = (
+        self._tool_predictions[correlation_key(event)] = (
             prediction.model_dump(mode="json")
         )
 
@@ -159,13 +182,13 @@ class AgentTestBenchTraceWriter:
         span_id = event.tool_call_id or event.event_id
         # Resolve parent LLM span: look up by tool_call_id, then by event_id.
         parent_span_id = self._tool_parent_map.get(
-            event.tool_call_id or ""
-        ) or self._tool_parent_map.get(event.event_id)
+            correlation_key(event)
+        )
         run_id = event.run_id
         session_id = event.session_id
         agent_id = event.agent_id or _agent_id_from_session_key(event.session_key)
 
-        seq_no = self._next_seq(run_id)
+        seq_no = self._next_seq(event)
 
         wall_start_ns = str(int(ts_start * 1_000_000_000))
         wall_end_ns = str(int(ts_end * 1_000_000_000))
@@ -193,13 +216,22 @@ class AgentTestBenchTraceWriter:
         shared_runtime = _is_shared_runtime_scope(scope)
         shared_sandbox = _is_shared_sandbox_scope(scope)
 
-        filepath = self._file_for_run(run_id, session_id, agent_id)
+        filepath = self._file_for_run(
+            event.gateway_id,
+            event.runtime_id,
+            run_id,
+            session_id,
+            agent_id,
+        )
         self._ensure_metadata(filepath)
 
         # span_start
         self._append(filepath, {
             "schema_version": 6,
             "record_type": "span_start",
+            "gateway_id": event.gateway_id,
+            "runtime_id": event.runtime_id,
+            "repo": event.repo or self._default_repo,
             "trace_id": trace_id,
             "span_id": span_id,
             "parent_span_id": parent_span_id,
@@ -240,6 +272,9 @@ class AgentTestBenchTraceWriter:
         self._append(filepath, {
             "schema_version": 6,
             "record_type": "span_end",
+            "gateway_id": event.gateway_id,
+            "runtime_id": event.runtime_id,
+            "repo": event.repo or self._default_repo,
             "trace_id": trace_id,
             "span_id": span_id,
             "parent_span_id": parent_span_id,
@@ -308,7 +343,7 @@ class AgentTestBenchTraceWriter:
         })
 
     def record_model(self, event: ModelEvent) -> None:
-        key = event.call_id or event.event_id
+        key = correlation_key(event, event.call_id)
         if event.event_type == "model_call_started":
             self._model_starts[key] = event
             return
@@ -334,7 +369,7 @@ class AgentTestBenchTraceWriter:
         session_id = event.session_id
         agent_id = event.agent_id or _agent_id_from_session_key(event.session_key)
 
-        seq_no = self._next_seq(run_id)
+        seq_no = self._next_seq(event)
 
         wall_start_ns = str(int(ts_start * 1_000_000_000))
         wall_end_ns = str(int(ts_end * 1_000_000_000))
@@ -351,12 +386,21 @@ class AgentTestBenchTraceWriter:
         )
         messages = _truncate_messages(raw_messages, self._max_messages_bytes)
 
-        filepath = self._file_for_run(run_id, session_id, agent_id)
+        filepath = self._file_for_run(
+            event.gateway_id,
+            event.runtime_id,
+            run_id,
+            session_id,
+            agent_id,
+        )
         self._ensure_metadata(filepath)
 
         self._append(filepath, {
             "schema_version": 6,
             "record_type": "span_start",
+            "gateway_id": event.gateway_id,
+            "runtime_id": event.runtime_id,
+            "repo": event.repo or self._default_repo,
             "trace_id": trace_id,
             "span_id": span_id,
             "parent_span_id": None,
@@ -377,6 +421,9 @@ class AgentTestBenchTraceWriter:
         self._append(filepath, {
             "schema_version": 6,
             "record_type": "span_end",
+            "gateway_id": event.gateway_id,
+            "runtime_id": event.runtime_id,
+            "repo": event.repo or self._default_repo,
             "trace_id": trace_id,
             "span_id": span_id,
             "parent_span_id": None,
@@ -412,11 +459,14 @@ class AgentTestBenchTraceWriter:
         # tool_calls and content-wrapped proxy formats.
         for candidate in (output_content, event.raw_output, proxy_data.get("content"), proxy_data.get("raw_response")):
             for tc_id in _extract_tool_call_ids(candidate):
-                self._tool_parent_map[tc_id] = span_id
+                self._tool_parent_map[
+                    correlation_key(event, tc_id)
+                ] = span_id
 
     def record_llm_proxy_call(
         self,
         *,
+        runtime_id: str | None,
         action_id: str | None,
         provider: str | None,
         model: str | None,
@@ -439,6 +489,7 @@ class AgentTestBenchTraceWriter:
             "session_id": None,
             "session_key": None,
             "agent_id": None,
+            "runtime_id": runtime_id,
             "ts_start": ts_start,
             "ts_end": ts_end,
             "data": {
@@ -458,6 +509,28 @@ class AgentTestBenchTraceWriter:
             },
         }
         self._remember_proxy_call(record)
+
+    def begin_proxy_activity(self, runtime_id: str | None) -> None:
+        if runtime_id is None:
+            return
+        with self._lock:
+            self._proxy_activity[runtime_id] = (
+                self._proxy_activity.get(runtime_id, 0) + 1
+            )
+
+    def end_proxy_activity(self, runtime_id: str | None) -> None:
+        if runtime_id is None:
+            return
+        with self._lock:
+            remaining = self._proxy_activity.get(runtime_id, 0) - 1
+            if remaining > 0:
+                self._proxy_activity[runtime_id] = remaining
+            else:
+                self._proxy_activity.pop(runtime_id, None)
+
+    def active_runtime_operations(self, runtime_id: str) -> int:
+        with self._lock:
+            return self._proxy_activity.get(runtime_id, 0)
 
     def _ensure_metadata(self, filepath: Path) -> None:
         """Write metadata once per file. Never truncates existing data."""
@@ -485,8 +558,11 @@ class AgentTestBenchTraceWriter:
             "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
 
-    def _pop_tool_start(self, event: ToolCompletedEvent) -> tuple[str | None, ToolBeforeRequest | None]:
-        event_key = _tool_key(event.tool_call_id, event.event_id)
+    def _pop_tool_start(
+        self,
+        event: ToolCompletedEvent,
+    ) -> tuple[tuple[str | None, ...] | None, ToolBeforeRequest | None]:
+        event_key = correlation_key(event)
         start = self._tool_starts.pop(event_key, None)
         if start is not None or event.tool_call_id is not None:
             return event_key, start
@@ -494,6 +570,8 @@ class AgentTestBenchTraceWriter:
             (key, value)
             for key, value in self._tool_starts.items()
             if value.tool_name == event.tool_name
+            and value.runtime_id == event.runtime_id
+            and owners_compatible(value, event)
         ]
         if len(matches) != 1:
             return None, None
@@ -504,9 +582,9 @@ class AgentTestBenchTraceWriter:
     def _pop_tool_prediction(
         self,
         event: ToolCompletedEvent,
-        start_key: str | None,
+        start_key: tuple[str | None, ...] | None,
     ) -> dict[str, Any] | None:
-        event_key = _tool_key(event.tool_call_id, event.event_id)
+        event_key = correlation_key(event)
         prediction = self._tool_predictions.pop(event_key, None)
         if prediction is not None:
             return prediction
@@ -524,13 +602,56 @@ class AgentTestBenchTraceWriter:
 
     def _remember_proxy_call(self, record: dict[str, Any]) -> None:
         self._recent_proxy_calls.append(record)
-        if len(self._recent_proxy_calls) > 32:
-            del self._recent_proxy_calls[:-32]
+        if len(self._recent_proxy_calls) > 2_048:
+            del self._recent_proxy_calls[:-2_048]
+
+    def release_runtime(
+        self,
+        runtime_id: str,
+        gateway_id: str | None = None,
+    ) -> None:
+        """Release in-memory routing state after a runtime has drained."""
+
+        runtime_files = {
+            str(path)
+            for key, path in self._files.items()
+            if owner_prefix_matches(key, runtime_id)
+            and (gateway_id is None or key[0] == gateway_id)
+        }
+        for mapping in (
+            self._model_starts,
+            self._tool_starts,
+            self._tool_predictions,
+            self._seq_counters,
+            self._files,
+            self._tool_parent_map,
+        ):
+            for key in [
+                key
+                for key in mapping
+                if owner_prefix_matches(key, runtime_id)
+                and (gateway_id is None or key[0] == gateway_id)
+            ]:
+                mapping.pop(key, None)
+        self._metadata_written.difference_update(runtime_files)
+        self._recent_proxy_calls = [
+            record
+            for record in self._recent_proxy_calls
+            if record.get("runtime_id") != runtime_id
+        ]
+        self._proxy_activity.pop(runtime_id, None)
 
     def _pop_recent_proxy_call(self, event: ModelEvent) -> dict[str, Any] | None:
         event_ts = _parse_timestamp(event.occurred_at)
         candidates: list[tuple[int, dict[str, Any]]] = []
         for index, record in enumerate(self._recent_proxy_calls):
+            if record.get("runtime_id") != event.runtime_id:
+                continue
+            if (
+                event.gateway_id is not None
+                and record.get("gateway_id") != event.gateway_id
+            ):
+                continue
             data = record.get("data") if isinstance(record.get("data"), dict) else {}
             if event.model is not None and data.get("model") != event.model:
                 continue
@@ -543,7 +664,28 @@ class AgentTestBenchTraceWriter:
                 candidates.append((index, record))
         if not candidates:
             return None
-        index, record = candidates[-1]
+        if len(candidates) > 1:
+            event_tool_calls = set(_extract_tool_call_ids(event.raw_output))
+            if event_tool_calls:
+                correlated = [
+                    (index, record)
+                    for index, record in candidates
+                    if event_tool_calls.intersection(
+                        _extract_tool_call_ids(
+                            record.get("data", {}).get("raw_response")
+                            if isinstance(record.get("data"), dict)
+                            else None
+                        )
+                    )
+                ]
+                if len(correlated) == 1:
+                    candidates = correlated
+        # Time-nearest is not a safe identity boundary for concurrent
+        # sessions.  If exact response correlation cannot disambiguate, keep
+        # the hook data as-is instead of attaching another session's payload.
+        if len(candidates) != 1:
+            return None
+        index, record = candidates[0]
         self._recent_proxy_calls.pop(index)
         return record
 
@@ -646,8 +788,9 @@ def _tool_timestamps(sample: ToolRuntimeSample, duration_ms: int) -> tuple[float
     return ts_start, ts_end
 
 
-def _tool_key(tool_call_id: str | None, event_id: str) -> str:
-    return tool_call_id or event_id
+def _identity_digest(parts: tuple[str | None, ...]) -> str:
+    encoded = json.dumps(parts, ensure_ascii=False, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()[:12]
 
 
 def _agent_id_from_session_key(value: str | None) -> str | None:

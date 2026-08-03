@@ -1,4 +1,5 @@
 type Entry = {
+  toolCallId: string | null;
   decisionId: string | null;
   leaseId: string | null;
   executionId: string | null;
@@ -10,21 +11,31 @@ export class CorrelationMap {
 
   constructor(private readonly ttlMs: number, private readonly maxEntries: number) {}
 
-  set(toolCallId: string | null, decisionId: string | null, leaseId: string | null, executionId: string | null = null): void {
-    if (!toolCallId) return;
+  set(key: string | null, decisionId: string | null, leaseId: string | null, executionId: string | null = null, toolCallId: string | null = null): void {
+    if (!key) return;
     this.sweep();
     if (this.entries.size >= this.maxEntries) {
       const first = this.entries.keys().next().value;
       if (first) this.entries.delete(first);
     }
-    this.entries.set(toolCallId, {decisionId, leaseId, executionId, expiresAt: Date.now() + this.ttlMs});
+    this.entries.set(key, {toolCallId, decisionId, leaseId, executionId, expiresAt: Date.now() + this.ttlMs});
   }
 
-  take(toolCallId: string | null): Entry | null {
-    if (!toolCallId) return null;
+  take(key: string | null, toolCallId: string | null = null): Entry | null {
+    if (!key) return null;
     this.sweep();
-    const entry = this.entries.get(toolCallId) ?? null;
-    this.entries.delete(toolCallId);
+    const exact = this.entries.get(key) ?? null;
+    if (exact !== null) {
+      this.entries.delete(key);
+      return exact;
+    }
+    if (toolCallId === null) return null;
+    const matches = Array.from(this.entries.entries()).filter(
+      ([, entry]) => entry.toolCallId === toolCallId,
+    );
+    if (matches.length !== 1) return null;
+    const [matchedKey, entry] = matches[0];
+    this.entries.delete(matchedKey);
     return entry;
   }
 

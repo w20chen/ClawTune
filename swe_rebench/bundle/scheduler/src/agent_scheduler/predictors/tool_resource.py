@@ -1,16 +1,29 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
+import queue
 import shlex
+import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from agent_scheduler.contracts.models import ToolBeforeRequest, ToolCompletedEvent, ToolPrediction
+from agent_scheduler.contracts.models import (
+    ToolBeforeRequest,
+    ToolCompletedEvent,
+    ToolPrediction,
+)
+from agent_scheduler.identity import (
+    CorrelationKey,
+    correlation_key,
+    owners_compatible,
+)
 from agent_scheduler.monitoring.tool_runtime import ToolRuntimeSample
 from agent_scheduler.tool_resource_commands import extract_command
 from tool_resource.features import (
@@ -37,6 +50,12 @@ from tool_resource.sdk import (
     _load_valid_artifact,
     _observations_from_call,
 )
+from tool_time.lattice_kb import (
+    LATTICE_TIME_ALGORITHMS,
+    ClauseLatticeTimePredictions,
+    LatticeTimeKB,
+    LatticeTimePrediction,
+)
 
 
 _SHARED_RESOURCE_ATTRIBUTION_SOURCES = frozenset(
@@ -58,6 +77,8 @@ class ToolResourceLoadReport:
     continuous_observations_loaded: int
     kb_available: bool
     continuous_kb_available: bool
+    lattice_observations_loaded: int
+    lattice_kb_available: bool
     rejections: tuple[str, ...]
 
 
@@ -84,6 +105,164 @@ class ExecutionTelemetrySummary:
     artifact_summary: dict[str, Any] | None = None
 
 
+class KnowledgeBaseFlushError(RuntimeError):
+    """Raised when queued shared-KB state cannot be made durable."""
+
+
+@dataclass(frozen=True)
+class _KnowledgeBaseUpdate:
+    lattice_observations: tuple[ClauseObservation, ...] = ()
+
+
+@dataclass(frozen=True)
+class _KnowledgeBaseBarrier:
+    future: Future[None]
+
+
+class _KnowledgeBaseWriteCoordinator:
+    """Single-writer, batched persistence coordinator for one shared KB.
+
+    Caller threads update the cheap in-memory runtime/clause indexes under the
+    predictor lock, then enqueue a durability notification.  The worker owns
+    lattice preparation and all snapshot writes, coalescing bursts from many
+    sessions into one generation.  A barrier always retries dirty snapshots
+    before it resolves, so a sidecar drain can make all preceding observations
+    durable without racing another completion writer.
+    """
+
+    def __init__(
+        self,
+        apply_batch: Callable[[tuple[ClauseObservation, ...]], None],
+        *,
+        batch_window_s: float = 0.01,
+        max_batch_size: int = 512,
+        idle_timeout_s: float = 0.25,
+    ) -> None:
+        self._apply_batch = apply_batch
+        self._batch_window_s = batch_window_s
+        self._max_batch_size = max_batch_size
+        self._idle_timeout_s = idle_timeout_s
+        self._queue: queue.Queue[_KnowledgeBaseUpdate | _KnowledgeBaseBarrier] = (
+            queue.Queue()
+        )
+        self._state_lock = threading.Lock()
+        self._worker: threading.Thread | None = None
+        self._inflight = False
+
+    def enqueue(
+        self,
+        lattice_observations: Sequence[ClauseObservation] = (),
+    ) -> None:
+        self._queue.put(
+            _KnowledgeBaseUpdate(tuple(lattice_observations))
+        )
+        self._ensure_worker()
+
+    def flush(self, timeout_seconds: float | None = None) -> None:
+        barrier: Future[None] = Future()
+        self._queue.put(_KnowledgeBaseBarrier(barrier))
+        self._ensure_worker()
+        try:
+            barrier.result(timeout=timeout_seconds)
+        except FutureTimeoutError as exc:
+            raise TimeoutError(
+                "timed out waiting for shared tool-resource KB flush"
+            ) from exc
+
+    def pending(self) -> bool:
+        with self._state_lock:
+            return self._inflight or not self._queue.empty()
+
+    def _ensure_worker(self) -> None:
+        with self._state_lock:
+            if self._worker is not None and self._worker.is_alive():
+                return
+            self._worker = threading.Thread(
+                target=self._run,
+                name="clawtune-kb-writer",
+                daemon=True,
+            )
+            self._worker.start()
+
+    def _run(self) -> None:
+        while True:
+            try:
+                first = self._queue.get(timeout=self._idle_timeout_s)
+            except queue.Empty:
+                with self._state_lock:
+                    if self._queue.empty():
+                        self._worker = None
+                        return
+                continue
+
+            with self._state_lock:
+                self._inflight = True
+            items: list[_KnowledgeBaseUpdate | _KnowledgeBaseBarrier] = [first]
+            if not isinstance(first, _KnowledgeBaseBarrier):
+                deadline = time.monotonic() + self._batch_window_s
+                while len(items) < self._max_batch_size:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    try:
+                        item = self._queue.get(timeout=remaining)
+                    except queue.Empty:
+                        break
+                    items.append(item)
+                    if isinstance(item, _KnowledgeBaseBarrier):
+                        break
+
+            try:
+                self._process(items)
+            finally:
+                with self._state_lock:
+                    self._inflight = False
+
+    def _process(
+        self,
+        items: Sequence[_KnowledgeBaseUpdate | _KnowledgeBaseBarrier],
+    ) -> None:
+        observations: list[ClauseObservation] = []
+        barriers: list[Future[None]] = []
+        for item in items:
+            if isinstance(item, _KnowledgeBaseBarrier):
+                barriers.append(item.future)
+            else:
+                observations.extend(item.lattice_observations)
+
+        try:
+            # Even an empty barrier batch retries snapshots left dirty by a
+            # prior transient persistence error.
+            self._apply_batch(tuple(observations))
+        except BaseException as exc:
+            for barrier in barriers:
+                if not barrier.done():
+                    barrier.set_exception(exc)
+            return
+        for barrier in barriers:
+            if not barrier.done():
+                barrier.set_result(None)
+
+
+class _DeferredSdkClauseKb:
+    """SDK view that predicts from the live KB but defers all mutations."""
+
+    def __init__(self, predictor: "ToolResourcePredictor") -> None:
+        self._predictor = predictor
+
+    def predict_command_latency_bucket(self, *args: Any, **kwargs: Any) -> Any:
+        with self._predictor._kb_lock:
+            return self._predictor.kb.predict_command_latency_bucket(
+                *args,
+                **kwargs,
+            )
+
+    def observe_completed_clause(self, _observation: ClauseObservation) -> None:
+        # ToolResourceSDK returns the validated observations to the adapter.
+        # The predictor applies them once under its shared-KB lock.
+        return None
+
+
 class ToolResourcePredictor:
     """OpenClaw adapter for the vendored tool_resource SDK and KB."""
 
@@ -98,6 +277,8 @@ class ToolResourcePredictor:
         container_executable: str = "docker",
         clause_kb_snapshot_path: Path | None = None,
         runtime_kb_snapshot_path: Path | None = None,
+        lattice_kb: LatticeTimeKB | None = None,
+        lattice_kb_snapshot_path: Path | None = None,
     ) -> None:
         self.kb = kb
         self.continuous_kb = RuntimeToolResourceKB()
@@ -108,10 +289,30 @@ class ToolResourcePredictor:
         self.container_executable = container_executable
         self.clause_kb_snapshot_path = clause_kb_snapshot_path
         self.runtime_kb_snapshot_path = runtime_kb_snapshot_path
-        self._sdk = ToolResourceSDK(kb, buckets)
+        self.lattice_kb = lattice_kb or LatticeTimeKB()
+        self.lattice_kb_snapshot_path = lattice_kb_snapshot_path
+        self._kb_lock = threading.RLock()
+        self._execution_lock = threading.RLock()
+        self._execution_start_lock = threading.Lock()
+        self._starts_lock = threading.RLock()
+        self._runtime_kb_version = 0
+        self._runtime_kb_persisted_version = 0
+        self._clause_kb_version = 0
+        self._clause_kb_persisted_version = 0
+        self._lattice_kb_version = 0
+        self._lattice_kb_persisted_version = 0
+        self._lattice_needs_prepare = False
+        self._sdk = ToolResourceSDK(  # type: ignore[arg-type]
+            _DeferredSdkClauseKb(self),
+            buckets,
+        )
         self._runs_by_execution_id: dict[str, CommandRun] = {}
+        self._execution_owners: dict[str, tuple[str | None, str | None]] = {}
         self._telemetry_by_execution_id: dict[str, ExecutionTelemetrySummary] = {}
-        self._starts: dict[str, ToolBeforeRequest] = {}
+        self._starts: dict[CorrelationKey, ToolBeforeRequest] = {}
+        self._kb_writes = _KnowledgeBaseWriteCoordinator(
+            self._flush_kb_batch,
+        )
 
     @classmethod
     def from_traces(
@@ -153,6 +354,7 @@ class ToolResourcePredictor:
 
         snapshot_path = _clause_kb_snapshot_path(artifact_dir)
         runtime_snapshot_path = _runtime_kb_snapshot_path(artifact_dir)
+        lattice_snapshot_path = _lattice_kb_snapshot_path(artifact_dir)
         kb: ClauseResourceKB
         kb_has_public_evidence = False
         loaded_snapshot = _load_clause_kb_snapshot(snapshot_path, rejections)
@@ -178,6 +380,22 @@ class ToolResourcePredictor:
         else:
             kb = ClauseResourceKB()
 
+        loaded_lattice_snapshot = _load_lattice_kb_snapshot(
+            lattice_snapshot_path,
+            rejections,
+        )
+        if loaded_lattice_snapshot is None:
+            lattice_kb = LatticeTimeKB.fit(observations)
+        else:
+            lattice_kb = loaded_lattice_snapshot
+            lattice_kb.merge_historical(observations)
+        lattice_kb_available = lattice_kb.observation_count > 0
+        try:
+            lattice_kb.prepare()
+        except Exception as exc:
+            lattice_kb_available = False
+            rejections.append(f"prepare lattice KB: {type(exc).__name__}: {exc}")
+
         predictor = cls(
             kb=kb,
             buckets=buckets,
@@ -191,6 +409,8 @@ class ToolResourcePredictor:
                 continuous_observations_loaded=len(continuous_observations),
                 kb_available=kb_has_public_evidence,
                 continuous_kb_available=bool(continuous_observations),
+                lattice_observations_loaded=lattice_kb.observation_count,
+                lattice_kb_available=lattice_kb_available,
                 rejections=tuple(rejections),
             ),
             repo=repo,
@@ -198,6 +418,8 @@ class ToolResourcePredictor:
             container_executable=container_executable,
             clause_kb_snapshot_path=snapshot_path,
             runtime_kb_snapshot_path=runtime_snapshot_path,
+            lattice_kb=lattice_kb,
+            lattice_kb_snapshot_path=lattice_snapshot_path,
         )
         loaded_runtime_snapshot = _load_runtime_kb_snapshot(
             runtime_snapshot_path,
@@ -211,6 +433,8 @@ class ToolResourcePredictor:
             predictor._persist_clause_kb()
         if continuous_observations or loaded_runtime_snapshot is not None:
             predictor._persist_runtime_kb()
+        if observations or loaded_lattice_snapshot is not None:
+            predictor._persist_lattice_kb()
         return predictor
 
     @classmethod
@@ -235,21 +459,32 @@ class ToolResourcePredictor:
         ambient_before_mb: float | None = None,
     ) -> ToolPrediction:
         command = _command_for_request(request)
+        repo = request.repo or self.repo
         query_ts = time.time()
+        lattice_time_predictions: tuple[ClauseLatticeTimePredictions, ...] = ()
         try:
             clauses, parse_failed = clauses_from_tool_request(
                 request.tool_name,
                 request.raw_params,
             )
-            prediction = self.kb.predict_command_latency_bucket_from_clauses(
-                self.repo,
-                clauses,
-                query_ts,
-                self.buckets,
-                command=command or request.tool_name,
-                parse_failed=parse_failed,
-                shell_command=request.tool_name == "exec",
-            )
+            if request.tool_name == "exec":
+                lattice_time_predictions = self._lattice_predictions_for_clauses(
+                    clauses,
+                    query_ts,
+                    repo=repo,
+                    parse_failed=parse_failed,
+                    shell_command=True,
+                )
+            with self._kb_lock:
+                prediction = self.kb.predict_command_latency_bucket_from_clauses(
+                    repo,
+                    clauses,
+                    query_ts,
+                    self.buckets,
+                    command=command or request.tool_name,
+                    parse_failed=parse_failed,
+                    shell_command=request.tool_name == "exec",
+                )
         except Exception as exc:
             continuous_predictions = self._continuous_predictions_for_request(
                 request,
@@ -269,11 +504,12 @@ class ToolResourcePredictor:
                 tool_resource=_tool_resource_prediction_payload(
                     _unavailable_prediction_for_request(
                         request,
-                        repo=self.repo,
+                        repo=repo,
                         command=command,
                         reason=_prediction_error_reason(exc),
                     ),
                     continuous_predictions=continuous_predictions,
+                    lattice_time_predictions=lattice_time_predictions,
                 ),
             )
         continuous_predictions = self._continuous_predictions_for_request(
@@ -295,6 +531,7 @@ class ToolResourcePredictor:
                 tool_resource=_tool_resource_prediction_payload(
                     prediction,
                     continuous_predictions=continuous_predictions,
+                    lattice_time_predictions=lattice_time_predictions,
                 ),
             )
 
@@ -326,29 +563,38 @@ class ToolResourcePredictor:
             tool_resource=_tool_resource_prediction_payload(
                 prediction,
                 continuous_predictions=continuous_predictions,
+                lattice_time_predictions=lattice_time_predictions,
             ),
         )
 
     def record_tool_started(self, request: ToolBeforeRequest) -> None:
-        self._starts[_tool_key(request.tool_call_id, request.event_id)] = request
+        with self._starts_lock:
+            self._starts[correlation_key(request)] = request
 
     def observe_completion(
         self,
         event: ToolCompletedEvent,
         sample: ToolRuntimeSample,
     ) -> int:
-        start = self._starts.pop(_tool_key(event.tool_call_id, event.event_id), None)
-        if start is None and event.tool_call_id is not None:
-            start = self._pop_start_by_tool_call_id(event.tool_call_id)
+        with self._starts_lock:
+            start = self._starts.pop(correlation_key(event), None)
+            if start is None and event.tool_call_id is not None:
+                start = self._pop_start_by_tool_call_id(
+                    event.tool_call_id,
+                    event,
+                )
         completed_call = completed_call_from_completion(
             event,
             sample,
-            repo=self.repo,
+            repo=event.repo or (start.repo if start is not None else None) or self.repo,
             start=start,
         )
         if completed_call is not None:
-            self.continuous_kb.observe_completed_call(completed_call)
-            self._persist_runtime_kb()
+            with self._kb_lock:
+                self.continuous_kb.observe_completed_call(completed_call)
+                self._runtime_kb_version += 1
+            if self.runtime_kb_snapshot_path is not None:
+                self._kb_writes.enqueue()
         return 1 if completed_call is not None else 0
 
     def begin_execution(
@@ -359,17 +605,19 @@ class ToolResourcePredictor:
         command: str,
         container_id: str | None,
         repo: str | None = None,
+        gateway_id: str | None = None,
+        runtime_id: str | None = None,
         cgroup_path: str | None = None,
         trusted_root_pid: int | None = None,
     ) -> bool:
-        if execution_id in self._runs_by_execution_id:
-            existing = self._runs_by_execution_id[execution_id]
-            observer = getattr(existing, "_observer", None)
-            if trusted_root_pid is not None:
-                bind_root = getattr(observer, "bind_trusted_root", None)
-                if callable(bind_root):
-                    bind_root(trusted_root_pid)
-            return bool(getattr(observer, "telemetry_available", True))
+        reused = self._reuse_active_execution(
+            execution_id,
+            gateway_id=gateway_id,
+            runtime_id=runtime_id,
+            trusted_root_pid=trusted_root_pid,
+        )
+        if reused is not None:
+            return reused
         previous = self._telemetry_by_execution_id.get(execution_id)
         if previous is not None and previous.started:
             return previous.status != "unavailable"
@@ -388,6 +636,7 @@ class ToolResourcePredictor:
                 status="unavailable",
                 unavailable_reason=reason,
             )
+            self._trim_execution_telemetry()
             return False
         artifact_path = self.artifact_dir / f"{_safe_artifact_name(execution_id)}.json"
         context = DockerExecutionContext(
@@ -398,28 +647,46 @@ class ToolResourcePredictor:
             cgroup_path=cgroup_path,
             trusted_root_pid=trusted_root_pid,
         )
-        try:
-            run = self._sdk.start_command(context, tool_call_id or execution_id, command)
-        except Exception as exc:
-            self._telemetry_by_execution_id[execution_id] = ExecutionTelemetrySummary(
-                execution_id=execution_id,
-                tool_call_id=tool_call_id,
-                artifact_path=str(artifact_path),
-                started=False,
-                status="unavailable",
-                unavailable_reason=f"start_failed:{type(exc).__name__}: {exc}",
+        with self._execution_start_lock:
+            reused = self._reuse_active_execution(
+                execution_id,
+                gateway_id=gateway_id,
+                runtime_id=runtime_id,
+                trusted_root_pid=trusted_root_pid,
             )
-            return False
-        observer = getattr(run, "_observer", None)
-        telemetry_available = bool(
-            getattr(observer, "telemetry_available", True)
-        )
-        unavailable_reason = (
-            getattr(observer, "unavailable_reason", None)
-            if not telemetry_available
-            else None
-        )
-        self._runs_by_execution_id[execution_id] = run
+            if reused is not None:
+                return reused
+            try:
+                run = self._sdk.start_command(
+                    context,
+                    tool_call_id or execution_id,
+                    command,
+                )
+            except Exception as exc:
+                self._telemetry_by_execution_id[
+                    execution_id
+                ] = ExecutionTelemetrySummary(
+                    execution_id=execution_id,
+                    tool_call_id=tool_call_id,
+                    artifact_path=str(artifact_path),
+                    started=False,
+                    status="unavailable",
+                    unavailable_reason=f"start_failed:{type(exc).__name__}: {exc}",
+                )
+                self._trim_execution_telemetry()
+                return False
+            observer = getattr(run, "_observer", None)
+            telemetry_available = bool(
+                getattr(observer, "telemetry_available", True)
+            )
+            unavailable_reason = (
+                getattr(observer, "unavailable_reason", None)
+                if not telemetry_available
+                else None
+            )
+            with self._execution_lock:
+                self._runs_by_execution_id[execution_id] = run
+                self._execution_owners[execution_id] = (gateway_id, runtime_id)
         self._telemetry_by_execution_id[execution_id] = ExecutionTelemetrySummary(
             execution_id=execution_id,
             tool_call_id=tool_call_id,
@@ -428,7 +695,38 @@ class ToolResourcePredictor:
             status="started" if telemetry_available else "unavailable",
             unavailable_reason=unavailable_reason,
         )
+        self._trim_execution_telemetry()
         return telemetry_available
+
+    def _reuse_active_execution(
+        self,
+        execution_id: str,
+        *,
+        gateway_id: str | None,
+        runtime_id: str | None,
+        trusted_root_pid: int | None,
+    ) -> bool | None:
+        with self._execution_lock:
+            existing = self._runs_by_execution_id.get(execution_id)
+            existing_owner = self._execution_owners.get(execution_id)
+            if existing is None:
+                return None
+            if existing_owner is not None and not _execution_owners_compatible(
+                existing_owner,
+                (gateway_id, runtime_id),
+            ):
+                raise ValueError("active execution owner changed")
+            observer = getattr(existing, "_observer", None)
+            if trusted_root_pid is not None:
+                bind_root = getattr(observer, "bind_trusted_root", None)
+                if callable(bind_root):
+                    bind_root(trusted_root_pid)
+            if existing_owner is not None:
+                self._execution_owners[execution_id] = (
+                    existing_owner[0] or gateway_id,
+                    existing_owner[1] or runtime_id,
+                )
+            return bool(getattr(observer, "telemetry_available", True))
 
     def finish_execution(
         self,
@@ -446,7 +744,9 @@ class ToolResourcePredictor:
             raise ValueError(
                 "incomplete Stage-2 finalization cannot carry launcher exit status"
             )
-        run = self._runs_by_execution_id.pop(execution_id, None)
+        with self._execution_lock:
+            run = self._runs_by_execution_id.pop(execution_id, None)
+            self._execution_owners.pop(execution_id, None)
         if run is None:
             return self._telemetry_by_execution_id.get(
                 execution_id,
@@ -492,9 +792,28 @@ class ToolResourcePredictor:
                 ),
             )
             self._telemetry_by_execution_id[execution_id] = summary
+            self._trim_execution_telemetry()
             return summary
+        kb_update_errors = (
+            [result.kb_update_error] if result.kb_update_error is not None else []
+        )
+        accepted_observations: list[ClauseObservation] = []
         if result.kb_observations_added:
-            self._persist_clause_kb()
+            with self._kb_lock:
+                for observation in result.kb_observations:
+                    try:
+                        self.kb.observe_completed_clause(observation)
+                    except Exception as exc:
+                        kb_update_errors.append(
+                            "clause_kb_update_failed:"
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                        continue
+                    accepted_observations.append(observation)
+                    self._clause_kb_version += 1
+            if accepted_observations:
+                self._kb_writes.enqueue(accepted_observations)
+        kb_update_error = "; ".join(kb_update_errors) or None
         call_telemetry = (
             dict(result.call_telemetry)
             if isinstance(result.call_telemetry, dict)
@@ -511,7 +830,7 @@ class ToolResourcePredictor:
                 else _stage2_status(
                     result.telemetry_artifact,
                     call_telemetry,
-                    result.kb_update_error,
+                    kb_update_error,
                 )
             ),
             unavailable_reason=(
@@ -520,15 +839,16 @@ class ToolResourcePredictor:
                 else _stage2_unavailable_reason(
                     result.telemetry_artifact,
                     call_telemetry,
-                    result.kb_update_error,
+                    kb_update_error,
                 )
             ),
-            kb_observations_added=result.kb_observations_added,
-            kb_update_error=result.kb_update_error,
+            kb_observations_added=len(accepted_observations),
+            kb_update_error=kb_update_error,
             call_telemetry=_compact_call_telemetry(call_telemetry),
             artifact_summary=_compact_artifact_summary(result.telemetry_artifact),
         )
         self._telemetry_by_execution_id[execution_id] = summary
+        self._trim_execution_telemetry()
         return summary
 
     def execution_telemetry(self, execution_id: str) -> ExecutionTelemetrySummary | None:
@@ -537,7 +857,163 @@ class ToolResourcePredictor:
     def execution_active(self, execution_id: str) -> bool:
         """Return whether this execution still owns an unfinished SDK run."""
 
-        return execution_id in self._runs_by_execution_id
+        with self._execution_lock:
+            return execution_id in self._runs_by_execution_id
+
+    def active_execution_ids(
+        self,
+        runtime_id: str,
+        gateway_id: str | None = None,
+    ) -> tuple[str, ...]:
+        """Return active collectors owned by one runtime, including orphans."""
+
+        with self._execution_lock:
+            return tuple(
+                sorted(
+                    execution_id
+                    for execution_id in self._runs_by_execution_id
+                    if _execution_owner_matches_runtime(
+                        self._execution_owners.get(execution_id),
+                        runtime_id=runtime_id,
+                        gateway_id=gateway_id,
+                    )
+                )
+            )
+
+    def _trim_execution_telemetry(self) -> None:
+        while len(self._telemetry_by_execution_id) > 10_000:
+            oldest = next(iter(self._telemetry_by_execution_id))
+            self._telemetry_by_execution_id.pop(oldest, None)
+
+    def flush_kb_updates(self, timeout_seconds: float | None = None) -> None:
+        """Wait until every previously queued shared-KB update is durable.
+
+        The sidecar drain endpoint should run this blocking barrier in a worker
+        thread.  A raised error means at least one in-memory generation is
+        still newer than its snapshot and the runtime must not be declared
+        drained yet.
+        """
+
+        self._kb_writes.flush(timeout_seconds)
+
+    def close(self) -> None:
+        """Make queued KB generations durable before sidecar shutdown."""
+
+        self.flush_kb_updates(timeout_seconds=30.0)
+
+    def kb_updates_pending(self) -> bool:
+        """Return whether the single writer has queued or in-flight work."""
+
+        return self._kb_writes.pending()
+
+    def _flush_kb_batch(
+        self,
+        lattice_observations: tuple[ClauseObservation, ...],
+    ) -> None:
+        errors: list[str] = []
+        snapshots: list[tuple[str, Path, dict[str, Any], int]] = []
+
+        with self._kb_lock:
+            for observation in lattice_observations:
+                try:
+                    self.lattice_kb.observe_completed_clause(observation)
+                except Exception as exc:
+                    errors.append(
+                        "lattice_kb_update_failed:"
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    continue
+                self._lattice_kb_version += 1
+                self._lattice_needs_prepare = True
+
+            if self._lattice_needs_prepare:
+                try:
+                    self.lattice_kb.prepare()
+                except Exception as exc:
+                    errors.append(
+                        f"lattice_prepare_failed:{type(exc).__name__}: {exc}"
+                    )
+                else:
+                    self._lattice_needs_prepare = False
+
+            self._capture_kb_snapshot_locked(
+                snapshots,
+                errors,
+                name="runtime",
+                path=self.runtime_kb_snapshot_path,
+                version=self._runtime_kb_version,
+                persisted_version=self._runtime_kb_persisted_version,
+                serializer=self.continuous_kb.to_json_obj,
+            )
+            self._capture_kb_snapshot_locked(
+                snapshots,
+                errors,
+                name="clause",
+                path=self.clause_kb_snapshot_path,
+                version=self._clause_kb_version,
+                persisted_version=self._clause_kb_persisted_version,
+                serializer=self.kb.to_json_obj,
+            )
+            if not self._lattice_needs_prepare:
+                self._capture_kb_snapshot_locked(
+                    snapshots,
+                    errors,
+                    name="lattice",
+                    path=self.lattice_kb_snapshot_path,
+                    version=self._lattice_kb_version,
+                    persisted_version=self._lattice_kb_persisted_version,
+                    serializer=self.lattice_kb.to_json_obj,
+                )
+
+        for name, path, payload, version in snapshots:
+            try:
+                _write_json_atomic(path, payload)
+            except Exception as exc:
+                errors.append(
+                    f"{name}_kb_persist_failed:{type(exc).__name__}: {exc}"
+                )
+                continue
+            with self._kb_lock:
+                if name == "runtime":
+                    self._runtime_kb_persisted_version = max(
+                        self._runtime_kb_persisted_version,
+                        version,
+                    )
+                elif name == "clause":
+                    self._clause_kb_persisted_version = max(
+                        self._clause_kb_persisted_version,
+                        version,
+                    )
+                else:
+                    self._lattice_kb_persisted_version = max(
+                        self._lattice_kb_persisted_version,
+                        version,
+                    )
+
+        if errors:
+            raise KnowledgeBaseFlushError("; ".join(errors))
+
+    def _capture_kb_snapshot_locked(
+        self,
+        snapshots: list[tuple[str, Path, dict[str, Any], int]],
+        errors: list[str],
+        *,
+        name: str,
+        path: Path | None,
+        version: int,
+        persisted_version: int,
+        serializer: Callable[[], dict[str, Any]],
+    ) -> None:
+        if path is None or version <= persisted_version:
+            return
+        try:
+            payload = serializer()
+        except Exception as exc:
+            errors.append(
+                f"{name}_kb_snapshot_failed:{type(exc).__name__}: {exc}"
+            )
+            return
+        snapshots.append((name, path, payload, version))
 
     def _persist_clause_kb(self) -> bool:
         if self.clause_kb_snapshot_path is None:
@@ -557,6 +1033,43 @@ class ToolResourcePredictor:
         except Exception:
             return False
 
+    def _persist_lattice_kb(self) -> bool:
+        if self.lattice_kb_snapshot_path is None:
+            return False
+        try:
+            _write_json_atomic(
+                self.lattice_kb_snapshot_path,
+                self.lattice_kb.to_json_obj(),
+            )
+            return True
+        except Exception:
+            return False
+
+    def _lattice_predictions_for_clauses(
+        self,
+        clauses: Sequence[Mapping[str, Any]],
+        query_ts: float,
+        *,
+        repo: str,
+        parse_failed: bool,
+        shell_command: bool,
+    ) -> tuple[ClauseLatticeTimePredictions, ...]:
+        try:
+            with self._kb_lock:
+                return self.lattice_kb.predict_clauses(
+                    repo,
+                    clauses,
+                    query_ts,
+                    parse_failed=parse_failed,
+                    shell_command=shell_command,
+                )
+        except Exception as exc:
+            return _unavailable_lattice_time_predictions(
+                clauses,
+                reason=f"lattice_prediction_error:{type(exc).__name__}",
+                shell_command=shell_command,
+            )
+
     def _continuous_predictions_for_request(
         self,
         request: ToolBeforeRequest,
@@ -564,13 +1077,21 @@ class ToolResourcePredictor:
         ts_start: float,
         ambient_before_mb: float | None = None,
     ) -> dict[str, Any]:
+        repo = request.repo or self.repo
         query = ToolCallQuery(
-            repo=self.repo,
+            repo=repo,
             tool_name=request.tool_name,
             command=command,
             ts_start=ts_start,
             ambient_before_mb=ambient_before_mb,
         )
+        with self._kb_lock:
+            return self._continuous_predictions_for_query(query)
+
+    def _continuous_predictions_for_query(
+        self,
+        query: ToolCallQuery,
+    ) -> dict[str, Any]:
         predictions: dict[str, Any] = {}
         try:
             self.continuous_kb._advance(query.ts_start)  # type: ignore[attr-defined]
@@ -605,14 +1126,22 @@ class ToolResourcePredictor:
         command: str | None,
         ts_start: float,
     ) -> tuple[int | None, int | None]:
+        repo = request.repo or self.repo
         query = ToolCallQuery(
-            repo=self.repo,
+            repo=repo,
             tool_name=request.tool_name,
             command=command,
             ts_start=ts_start,
         )
+        with self._kb_lock:
+            return self._continuous_latency_for_query(query)
+
+    def _continuous_latency_for_query(
+        self,
+        query: ToolCallQuery,
+    ) -> tuple[int | None, int | None]:
         try:
-            self.continuous_kb._advance(ts_start)  # type: ignore[attr-defined]
+            self.continuous_kb._advance(query.ts_start)  # type: ignore[attr-defined]
         except AttributeError:
             try:
                 self.continuous_kb.query(query)
@@ -622,10 +1151,10 @@ class ToolResourcePredictor:
             pass
         try:
             values, _scope, _kind, _path = self.continuous_kb._select(  # type: ignore[attr-defined]
-                self.repo,
+                query.repo,
                 "latency_ms",
-                request.tool_name,
-                command,
+                query.tool_name,
+                query.command,
             )
         except Exception:
             return None, None
@@ -636,12 +1165,22 @@ class ToolResourcePredictor:
             max(0, int(round(ecdf_quantile(values, 0.9)))),
         )
 
-    def _pop_start_by_tool_call_id(self, tool_call_id: str) -> ToolBeforeRequest | None:
-        for key, request in list(self._starts.items()):
-            if request.tool_call_id == tool_call_id:
-                self._starts.pop(key, None)
-                return request
-        return None
+    def _pop_start_by_tool_call_id(
+        self,
+        tool_call_id: str,
+        completion: ToolCompletedEvent,
+    ) -> ToolBeforeRequest | None:
+        matches = [
+            (key, request)
+            for key, request in self._starts.items()
+            if request.tool_call_id == tool_call_id
+            and owners_compatible(request, completion)
+        ]
+        if len(matches) != 1:
+            return None
+        key, request = matches[0]
+        self._starts.pop(key, None)
+        return request
 
 
 @dataclass(frozen=True)
@@ -678,10 +1217,51 @@ def load_openclaw_trace_observations(path: Path, *, repo: str) -> _LoadedTrace:
                 continue
             tool_spans_seen += 1
             start = starts.get(span_id)
-            completed_call = _completed_call_from_tool_span(start, record, repo=repo)
+            span_repo = _repo_from_tool_span(
+                start,
+                record,
+                fallback_repo=repo,
+                span_id=span_id,
+                line_no=line_no,
+            )
+            completed_call = _completed_call_from_tool_span(
+                start,
+                record,
+                repo=span_repo,
+            )
             if completed_call is not None:
                 completed_calls.append(completed_call)
     return _LoadedTrace(tool_spans_seen, tuple(observations), tuple(completed_calls))
+
+
+def _repo_from_tool_span(
+    start: dict[str, Any] | None,
+    end: dict[str, Any],
+    *,
+    fallback_repo: str,
+    span_id: str,
+    line_no: int,
+) -> str:
+    """Resolve one span's repo without silently merging tenant histories."""
+
+    explicit: list[tuple[str, str]] = []
+    for record_type, record in (("span_start", start), ("span_end", end)):
+        if record is None or "repo" not in record or record["repo"] is None:
+            continue
+        value = record["repo"]
+        if not isinstance(value, str) or not value:
+            raise ValueError(
+                f"line {line_no}: tool span {span_id!r} has invalid "
+                f"{record_type} repo"
+            )
+        explicit.append((record_type, value))
+
+    if len(explicit) == 2 and explicit[0][1] != explicit[1][1]:
+        raise ValueError(
+            f"line {line_no}: tool span {span_id!r} repo mismatch: "
+            f"span_start={explicit[0][1]!r}, span_end={explicit[1][1]!r}"
+        )
+    return explicit[0][1] if explicit else fallback_repo
 
 
 def observation_from_completion(
@@ -1338,6 +1918,7 @@ def _tool_resource_prediction_payload(
     prediction: CommandLatencyBucketPrediction,
     *,
     continuous_predictions: dict[str, Any] | None = None,
+    lattice_time_predictions: Sequence[ClauseLatticeTimePredictions] = (),
 ) -> dict[str, Any]:
     clause_prediction = prediction.prediction
     return {
@@ -1358,6 +1939,10 @@ def _tool_resource_prediction_payload(
         "prediction": _clause_bucket_prediction_payload(clause_prediction),
         "unavailable_reason": prediction.unavailable_reason,
         "continuous_predictions": continuous_predictions or {},
+        "lattice_time_predictions": [
+            _clause_lattice_time_predictions_payload(item)
+            for item in lattice_time_predictions
+        ],
         "prediction_algorithms": _prediction_algorithms_payload(),
     }
 
@@ -1375,6 +1960,66 @@ def _clause_bucket_prediction_payload(
         "evidence_count": prediction.evidence_count,
         "fallback_path": list(prediction.fallback_path),
     }
+
+
+def _clause_lattice_time_predictions_payload(
+    outcome: ClauseLatticeTimePredictions,
+) -> dict[str, Any]:
+    return {
+        "clause_index": outcome.clause_index,
+        "bin": outcome.bin,
+        "argv": list(outcome.argv),
+        "predictions": [
+            {
+                "algorithm": prediction.algorithm,
+                "prediction_ms": prediction.prediction_ms,
+                "selected_features": list(prediction.selected_features),
+                "evidence_count": prediction.evidence_count,
+                "selected_risk": prediction.selected_risk,
+                "exact_match": prediction.exact_match,
+                "fallback": prediction.fallback,
+                "unavailable_reason": prediction.unavailable_reason,
+            }
+            for prediction in outcome.predictions
+        ],
+    }
+
+
+def _unavailable_lattice_time_predictions(
+    clauses: Sequence[Mapping[str, Any]],
+    *,
+    reason: str,
+    shell_command: bool,
+) -> tuple[ClauseLatticeTimePredictions, ...]:
+    outcomes: list[ClauseLatticeTimePredictions] = []
+    for clause_index, clause in enumerate(clauses):
+        bin_ = str(clause["bin"])
+        if shell_command and not shell_bin_requires_exec_evidence(bin_):
+            continue
+        argv = tuple(str(value) for value in clause["argv"])
+        if not bin_ or not argv:
+            continue
+        outcomes.append(
+            ClauseLatticeTimePredictions(
+                clause_index=clause_index,
+                bin=bin_,
+                argv=argv,
+                predictions=tuple(
+                    LatticeTimePrediction(
+                        algorithm=algorithm,
+                        prediction_ms=None,
+                        selected_features=(),
+                        evidence_count=0,
+                        selected_risk=None,
+                        exact_match=None,
+                        fallback=None,
+                        unavailable_reason=reason,
+                    )
+                    for algorithm in LATTICE_TIME_ALGORITHMS
+                ),
+            )
+        )
+    return tuple(outcomes)
 
 
 def _unavailable_prediction_for_request(
@@ -1429,6 +2074,12 @@ def _runtime_kb_snapshot_path(artifact_dir: Path | None) -> Path | None:
     return artifact_dir / "runtime-tool-resource-kb.json"
 
 
+def _lattice_kb_snapshot_path(artifact_dir: Path | None) -> Path | None:
+    if artifact_dir is None:
+        return None
+    return artifact_dir / "clause-lattice-time-kb.json"
+
+
 def _load_clause_kb_snapshot(
     path: Path | None,
     rejections: list[str],
@@ -1452,6 +2103,19 @@ def _load_runtime_kb_snapshot(
         return RuntimeToolResourceKB.from_json_obj(json.loads(path.read_text(encoding="utf-8")))
     except Exception as exc:
         rejections.append(f"{path}: runtime KB snapshot rejected: {exc}")
+        return None
+
+
+def _load_lattice_kb_snapshot(
+    path: Path | None,
+    rejections: list[str],
+) -> LatticeTimeKB | None:
+    if path is None or not path.is_file():
+        return None
+    try:
+        return LatticeTimeKB.from_json_obj(json.loads(path.read_text(encoding="utf-8")))
+    except Exception as exc:
+        rejections.append(f"{path}: lattice KB snapshot rejected: {exc}")
         return None
 
 
@@ -1507,6 +2171,27 @@ def _prediction_algorithms_payload() -> dict[str, Any]:
                 ],
             },
             {
+                "name": "lattice_shrinkage",
+                "family": "context_lattice",
+                "source": "LatticeTimeKB",
+                "targets": ["latency_ms"],
+                "outputs": ["clause_point_prediction_ms"],
+            },
+            {
+                "name": "lattice_loso",
+                "family": "context_lattice",
+                "source": "LatticeTimeKB",
+                "targets": ["latency_ms"],
+                "outputs": ["clause_point_prediction_ms"],
+            },
+            {
+                "name": "lattice_max_cardinality",
+                "family": "context_lattice",
+                "source": "LatticeTimeKB",
+                "targets": ["latency_ms"],
+                "outputs": ["clause_point_prediction_ms"],
+            },
+            {
                 "name": "runtime_tool_resource_conditional_p90",
                 "family": "empirical_ecdf",
                 "source": "RuntimeToolResourceKB",
@@ -1534,8 +2219,28 @@ def _expand_trace_paths(paths: Iterable[Path]) -> Iterable[Path]:
 
 def _safe_artifact_name(value: str) -> str:
     safe = "".join(char if char.isalnum() or char in "._-" else "_" for char in value)
-    return safe[:128] or "execution"
+    if safe == value and len(safe) <= 128:
+        return safe or "execution"
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    return f"{safe[:96] or 'execution'}__{digest}"
 
 
-def _tool_key(tool_call_id: str | None, event_id: str) -> str:
-    return tool_call_id or event_id
+def _execution_owners_compatible(
+    expected: tuple[str | None, str | None],
+    actual: tuple[str | None, str | None],
+) -> bool:
+    return all(
+        left is None or right is None or left == right
+        for left, right in zip(expected, actual, strict=True)
+    )
+
+
+def _execution_owner_matches_runtime(
+    owner: tuple[str | None, str | None] | None,
+    *,
+    runtime_id: str,
+    gateway_id: str | None,
+) -> bool:
+    if owner is None or owner[1] != runtime_id:
+        return False
+    return gateway_id is None or owner[0] is None or owner[0] == gateway_id

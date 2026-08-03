@@ -44,6 +44,7 @@ llm:
 batch:
   task_timeout_seconds: 1800
   agent_timeout_seconds: 0
+  parallelism: 1
 ```
 
 `task_timeout_seconds` is the whole-task wall-clock budget, beginning before
@@ -51,6 +52,12 @@ repository export and preflight. `agent_timeout_seconds` optionally adds a
 shorter agent-only limit; `0` disables that separate limit. After either limit
 fires, process and sandbox termination use a small independent cleanup grace
 instead of reusing an already exhausted task budget.
+
+`parallelism` is the maximum number of benchmark cases executing at once.
+`--parallelism N` overrides it for one invocation. Keep `1` for the first
+acceptance run, then increase gradually. It is independent of `--sample`, which
+controls how many tasks are selected. Concurrent runtimes share one Sidecar and
+one batch KB.
 
 The runner always writes the full batch report to `output.report_path`. It
 prints only compact progress by default; pass `--json` to also emit the full
@@ -68,10 +75,12 @@ Each benchmark task uses three JSON knowledge bases under `tool-resource/`:
   and pending causal updates shared by the `shrinkage`, `loso`, and
   `max_cardinality` clause-time predictors.
 
-`kb-batches/<batch-id>/` contains the serial batch's shared, evolving snapshot.
+`kb-batches/<batch-id>/` contains the batch's shared, evolving snapshot.
 Each `traces/<task-id>/tool-resource/` directory contains that task's working
-snapshot. After a task stops cleanly, all three files are published together to
-the batch copy for the next task.
+snapshot. KB updates use a single writer. In serial mode, a completed task's
+generation becomes the next task's input. In concurrent mode, overlapping
+tasks may begin from the same generation and their valid updates are merged at
+the synchronization barrier instead of replacing each other.
 
 The runtime and clause-resource files contain a shared `public` namespace and
 repo-specific knowledge under `repo`, such as

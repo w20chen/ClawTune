@@ -29,6 +29,7 @@ teardown semantics remain a Stage-1b concern). Root required.
 
 from __future__ import annotations
 
+import atexit
 import ctypes
 import http.client
 import importlib
@@ -42,6 +43,7 @@ import subprocess
 import sys
 import threading
 import time
+from functools import wraps
 from urllib.parse import quote
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -379,8 +381,7 @@ BPF_ARRAY(argv_read_failures, u64, 1);
 BPF_ARRAY(argv_boundary_read_failures, u64, 1);
 BPF_ARRAY(perf_sample_count, u64, 1);
 BPF_ARRAY(kprobe_total_hits, u64, 1);
-BPF_QUEUE(exec_sequences, u64, 65536);
-BPF_ARRAY(sequence_ready, u32, 1);
+BPF_ARRAY(next_exec_sequence, u64, 1);
 struct task_key_t {
     u32 tid;
     u32 pad;
@@ -398,18 +399,20 @@ static u64 current_pid_namespace_inode(struct task_struct *task);
 
 static int wanted(void) {
     u32 zero = 0;
-    u64 *counter = kprobe_total_hits.lookup(&zero);
-    if (counter) __sync_fetch_and_add(counter, 1);
     u64 *t = target_cgroup.lookup(&zero);
-    /* A zero target is reserved for direct-host PID-lineage collection, where
-     * the trusted process may move through cgroups after this program loads. */
-    if (!t || !*t) return 1;
     u64 current_cgroup_id = bpf_get_current_cgroup_id();
-    if (*t == current_cgroup_id) return 1;
-    if (allowed_cgroups.lookup(&current_cgroup_id) != 0) return 1;
-    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    u64 pid_ns = current_pid_namespace_inode(task);
-    return pid_ns && allowed_pid_namespaces.lookup(&pid_ns) != 0;
+    int matched = t && *t && *t == current_cgroup_id;
+    if (!matched && allowed_cgroups.lookup(&current_cgroup_id) != 0) matched = 1;
+    if (!matched) {
+        struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+        u64 pid_ns = current_pid_namespace_inode(task);
+        matched = pid_ns && allowed_pid_namespaces.lookup(&pid_ns) != 0;
+    }
+    if (matched) {
+        u64 *counter = kprobe_total_hits.lookup(&zero);
+        if (counter) __sync_fetch_and_add(counter, 1);
+    }
+    return matched;
 }
 
 static void lost(u64 *counter) {
@@ -625,11 +628,10 @@ static void emit_kernel_exec_meta(
  * valid cold pages; failed exec argv remains available on return. */
 static int capture_enter(const char *filename, const char *const *argv) {
     u32 zero = 0;
-    u32 *ready = sequence_ready.lookup(&zero);
-    if (!ready || !*ready) return 0;
     if (!wanted()) return 0;
-    u64 seq = 0;
-    if (exec_sequences.pop(&seq)) return 0;
+    u64 *next = next_exec_sequence.lookup(&zero);
+    if (!next) return 0;
+    u64 seq = __sync_fetch_and_add(next, 1);
     u64 pid_tgid = bpf_get_current_pid_tgid();
     u32 tid = pid_tgid;
     struct task_key_t task_key = {
@@ -1292,10 +1294,6 @@ def collect_case(command: str, tag: str, *, marker: str = "") -> RawRun:
     bpf.attach_kprobe(
         event="bprm_change_interp", fn_name="capture_interp_change"
     )
-    q = bpf["exec_sequences"]
-    for seq in range(8192):
-        q.push(ctypes.c_ulonglong(seq))
-    bpf["sequence_ready"][ctypes.c_int(0)] = ctypes.c_uint(1)
     bpf["target_cgroup"][ctypes.c_int(0)] = ctypes.c_ulonglong(cgroup_id)
 
     events: list[dict[str, Any]] = []
@@ -3409,6 +3407,361 @@ def _event_type_counts(events: list[dict[str, Any]]) -> dict[str, int]:
 # transient cgroups discovered by one instance must be visible to the
 # next so that _container_pid_set can match exec events immediately.
 _cgroup_inodes_cache: dict[str, set[int]] = {}
+_cgroup_inodes_cache_lock = threading.Lock()
+_CGROUP_INODES_CACHE_MAX_CONTAINERS = 1_024
+
+
+def _cached_cgroup_inodes(container_id: str) -> set[int]:
+    with _cgroup_inodes_cache_lock:
+        return set(_cgroup_inodes_cache.get(container_id, ()))
+
+
+def _cache_cgroup_inodes(container_id: str, cgroup_ids: set[int]) -> None:
+    with _cgroup_inodes_cache_lock:
+        _cgroup_inodes_cache.setdefault(container_id, set()).update(cgroup_ids)
+        while len(_cgroup_inodes_cache) > _CGROUP_INODES_CACHE_MAX_CONTAINERS:
+            oldest = next(iter(_cgroup_inodes_cache))
+            if oldest == container_id and len(_cgroup_inodes_cache) > 1:
+                oldest = next(
+                    key for key in _cgroup_inodes_cache if key != container_id
+                )
+            _cgroup_inodes_cache.pop(oldest, None)
+
+
+class _SharedEventBuffer:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.events: list[dict[str, Any]] = []
+        self.active = True
+
+    def append(self, event: dict[str, Any]) -> None:
+        with self.lock:
+            if self.active:
+                self.events.append(event)
+
+    def close(self) -> None:
+        with self.lock:
+            self.active = False
+            self.events.clear()
+
+
+class _SharedBpfSource:
+    """One process-wide BPF attachment with dynamically leased scopes.
+
+    Collectors keep independent delimiters and artifacts.  Only the expensive
+    kernel probes, perf event, ring buffer, event list, and poller are shared,
+    so their count is O(1) as Gateway/Runtime concurrency grows.
+    """
+
+    def __init__(self, BPF: Any, PerfType: Any, PerfSWConfig: Any) -> None:
+        self._scope_lock = threading.RLock()
+        # Retained as a compatibility/diagnostic aggregate; routed events live
+        # only in per-lease buffers so one long task cannot pin every other
+        # runtime's history.
+        self.events_lock = threading.Lock()
+        self.events: list[dict[str, Any]] = []
+        self._leases: dict[
+            int,
+            tuple[set[int], set[int], _SharedEventBuffer],
+        ] = {}
+        self._routes: dict[tuple[str, int], tuple[_SharedEventBuffer, ...]] = {}
+        self._cgroup_refs: dict[int, int] = {}
+        self._pid_namespace_refs: dict[int, int] = {}
+        self._next_lease = 1
+        self._stop_poll = threading.Event()
+        self.poll_error: BaseException | None = None
+        self.closed = False
+        self.generation = time.monotonic_ns()
+        self._perf_type = PerfType
+        self._perf_config = PerfSWConfig
+        self.bpf = BPF(text=BPF_PROGRAM)
+        try:
+            _attach_first_kprobe(
+                self.bpf,
+                BPF,
+                syscall="execve",
+                fn_name="capture_sys_execve",
+            )
+            _attach_first_kprobe(
+                self.bpf,
+                BPF,
+                syscall="execveat",
+                fn_name="capture_sys_execveat",
+            )
+            _attach_first_kprobe(
+                self.bpf,
+                BPF,
+                syscall="execve",
+                fn_name="capture_sys_execve_return",
+                retprobe=True,
+            )
+            _attach_first_kprobe(
+                self.bpf,
+                BPF,
+                syscall="execveat",
+                fn_name="capture_sys_execveat_return",
+                retprobe=True,
+            )
+            self.bpf.attach_kprobe(
+                event="bprm_execve",
+                fn_name="capture_bprm_argv",
+            )
+            self.bpf.attach_kprobe(
+                event="bprm_change_interp",
+                fn_name="capture_interp_change",
+            )
+            self._table = self.bpf["events"]
+
+            def receive(_ctx: int, data: int, _size: int) -> int:
+                row = _event_row(self._table, data)
+                self.route_event(row)
+                return 0
+
+            self._table.open_ring_buffer(receive)
+
+            def poll() -> None:
+                try:
+                    while not self._stop_poll.is_set():
+                        self.bpf.ring_buffer_poll(timeout=10)
+                except BaseException as exc:
+                    if not self._stop_poll.is_set():
+                        self.poll_error = exc
+
+            self._poller = threading.Thread(
+                target=poll,
+                name="clause-telemetry-shared-ring-poller",
+                daemon=True,
+            )
+            self._poller.start()
+            self.bpf.attach_perf_event(
+                ev_type=PerfType.SOFTWARE,
+                ev_config=PerfSWConfig.CPU_CLOCK,
+                fn_name="on_cpu_clock",
+                sample_period=SAMPLE_PERIOD_NS,
+            )
+        except BaseException:
+            self._stop_poll.set()
+            poller = getattr(self, "_poller", None)
+            if poller is not None:
+                poller.join(timeout=2)
+            self.bpf.cleanup()
+            self.closed = True
+            raise
+
+    def acquire(
+        self,
+        cgroup_ids: set[int],
+        pid_namespace_ids: set[int],
+    ) -> tuple[int, _SharedEventBuffer]:
+        cgroups = {int(value) for value in cgroup_ids if int(value) > 0}
+        namespaces = {
+            int(value) for value in pid_namespace_ids if int(value) > 0
+        }
+        if not cgroups and not namespaces:
+            raise RuntimeError("telemetry scope has no kernel identity")
+        with self._scope_lock:
+            if self.closed:
+                raise RuntimeError("shared BPF source is closed")
+            lease_id = self._next_lease
+            self._next_lease += 1
+            added_cgroups: list[int] = []
+            added_namespaces: list[int] = []
+            try:
+                for cgroup_id in cgroups:
+                    if self._cgroup_refs.get(cgroup_id, 0) == 0:
+                        self.bpf["allowed_cgroups"][
+                            ctypes.c_ulonglong(cgroup_id)
+                        ] = ctypes.c_ubyte(1)
+                        added_cgroups.append(cgroup_id)
+                    self._cgroup_refs[cgroup_id] = (
+                        self._cgroup_refs.get(cgroup_id, 0) + 1
+                    )
+                for namespace_id in namespaces:
+                    if self._pid_namespace_refs.get(namespace_id, 0) == 0:
+                        self.bpf["allowed_pid_namespaces"][
+                            ctypes.c_ulonglong(namespace_id)
+                        ] = ctypes.c_ubyte(1)
+                        added_namespaces.append(namespace_id)
+                    self._pid_namespace_refs[namespace_id] = (
+                        self._pid_namespace_refs.get(namespace_id, 0) + 1
+                    )
+            except BaseException:
+                for cgroup_id in cgroups:
+                    count = self._cgroup_refs.get(cgroup_id, 0)
+                    if count <= 1:
+                        self._cgroup_refs.pop(cgroup_id, None)
+                    else:
+                        self._cgroup_refs[cgroup_id] = count - 1
+                for namespace_id in namespaces:
+                    count = self._pid_namespace_refs.get(namespace_id, 0)
+                    if count <= 1:
+                        self._pid_namespace_refs.pop(namespace_id, None)
+                    else:
+                        self._pid_namespace_refs[namespace_id] = count - 1
+                for cgroup_id in added_cgroups:
+                    self._delete_map_key("allowed_cgroups", cgroup_id)
+                for namespace_id in added_namespaces:
+                    self._delete_map_key("allowed_pid_namespaces", namespace_id)
+                raise
+            buffer = _SharedEventBuffer()
+            self._leases[lease_id] = (cgroups, namespaces, buffer)
+            self._rebuild_routes_locked()
+            return lease_id, buffer
+
+    def extend_cgroups(self, lease_id: int, cgroup_ids: set[int]) -> None:
+        with self._scope_lock:
+            scope = self._leases.get(lease_id)
+            if scope is None:
+                raise RuntimeError("shared BPF scope lease is not active")
+            cgroups, namespaces, buffer = scope
+            for cgroup_id in {int(value) for value in cgroup_ids if int(value) > 0}:
+                if cgroup_id in cgroups:
+                    continue
+                if self._cgroup_refs.get(cgroup_id, 0) == 0:
+                    self.bpf["allowed_cgroups"][
+                        ctypes.c_ulonglong(cgroup_id)
+                    ] = ctypes.c_ubyte(1)
+                self._cgroup_refs[cgroup_id] = (
+                    self._cgroup_refs.get(cgroup_id, 0) + 1
+                )
+                cgroups.add(cgroup_id)
+            self._leases[lease_id] = (cgroups, namespaces, buffer)
+            self._rebuild_routes_locked()
+
+    def release(self, lease_id: int) -> None:
+        with self._scope_lock:
+            scope = self._leases.pop(lease_id, None)
+            if scope is None:
+                return
+            cgroups, namespaces, buffer = scope
+            for cgroup_id in cgroups:
+                count = self._cgroup_refs.get(cgroup_id, 0)
+                if count <= 1:
+                    self._cgroup_refs.pop(cgroup_id, None)
+                    self._delete_map_key("allowed_cgroups", cgroup_id)
+                else:
+                    self._cgroup_refs[cgroup_id] = count - 1
+            for namespace_id in namespaces:
+                count = self._pid_namespace_refs.get(namespace_id, 0)
+                if count <= 1:
+                    self._pid_namespace_refs.pop(namespace_id, None)
+                    self._delete_map_key("allowed_pid_namespaces", namespace_id)
+                else:
+                    self._pid_namespace_refs[namespace_id] = count - 1
+            self._rebuild_routes_locked()
+            buffer.close()
+
+    def route_event(self, event: dict[str, Any]) -> None:
+        """Fan one kernel event only to leases whose scope can own it."""
+
+        routes = self._routes
+        targets = (
+            routes.get(("cgroup", int(event.get("cgroup_id", 0))), ())
+            + routes.get(
+                (
+                    "pidns",
+                    int(event.get("pid_namespace_inode", 0)),
+                ),
+                (),
+            )
+        )
+        seen: set[int] = set()
+        for buffer in targets:
+            identity = id(buffer)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            buffer.append(event)
+
+    def _rebuild_routes_locked(self) -> None:
+        routes: dict[tuple[str, int], list[_SharedEventBuffer]] = {}
+        for cgroups, namespaces, buffer in self._leases.values():
+            for cgroup_id in cgroups:
+                routes.setdefault(("cgroup", cgroup_id), []).append(buffer)
+            for namespace_id in namespaces:
+                routes.setdefault(("pidns", namespace_id), []).append(buffer)
+        # Replacing the entire mapping makes callback reads lock-free under
+        # CPython's object assignment semantics. Old buffers reject appends
+        # after release, closing the release-vs-callback race safely.
+        self._routes = {
+            key: tuple(buffers)
+            for key, buffers in routes.items()
+        }
+
+    def close(self) -> None:
+        with self._scope_lock:
+            if self.closed:
+                return
+            self.closed = True
+            self._stop_poll.set()
+        self._poller.join(timeout=2)
+        if self._poller.is_alive():
+            raise RuntimeError("shared ring poller did not stop")
+        self.bpf.detach_perf_event(
+            ev_type=self._perf_type.SOFTWARE,
+            ev_config=self._perf_config.CPU_CLOCK,
+        )
+        self.bpf.cleanup()
+
+    def _delete_map_key(self, table_name: str, value: int) -> None:
+        table = self.bpf[table_name]
+        key = ctypes.c_ulonglong(value)
+        try:
+            del table[key]
+        except KeyError:
+            pass
+
+
+_shared_bpf_source: _SharedBpfSource | None = None
+_shared_bpf_source_lock = threading.Lock()
+
+
+def _acquire_shared_bpf_source(
+    BPF: Any,
+    PerfType: Any,
+    PerfSWConfig: Any,
+    *,
+    cgroup_ids: set[int],
+    pid_namespace_ids: set[int],
+) -> tuple[_SharedBpfSource, int, _SharedEventBuffer]:
+    global _shared_bpf_source
+    with _shared_bpf_source_lock:
+        if _shared_bpf_source is None or _shared_bpf_source.closed:
+            try:
+                _shared_bpf_source = _SharedBpfSource(
+                    BPF,
+                    PerfType,
+                    PerfSWConfig,
+                )
+            except BaseException as exc:
+                raise RuntimeError(
+                    _bpf_setup_error_message("BPF collector attach failed", exc)
+                ) from exc
+        source = _shared_bpf_source
+    lease_id, event_cursor = source.acquire(cgroup_ids, pid_namespace_ids)
+    return source, lease_id, event_cursor
+
+
+def _shutdown_shared_bpf_source() -> None:
+    source = _shared_bpf_source
+    if source is None:
+        return
+    try:
+        source.close()
+    except BaseException:
+        pass
+
+
+atexit.register(_shutdown_shared_bpf_source)
+
+
+def _lifecycle_synchronized(method: Any) -> Any:
+    @wraps(method)
+    def synchronized(self: Any, *args: Any, **kwargs: Any) -> Any:
+        with self._lifecycle_lock:
+            return method(self, *args, **kwargs)
+
+    return synchronized
 
 
 class ClauseTelemetryCollector:
@@ -3429,6 +3782,7 @@ class ClauseTelemetryCollector:
         BPF = bcc.BPF
         PerfSWConfig = bcc.PerfSWConfig
         PerfType = bcc.PerfType
+        self._lifecycle_lock = threading.RLock()
 
         if cgroup_path is not None and not _is_root_cgroup_str(cgroup_path):
             cgroup = Path(cgroup_path)
@@ -3483,10 +3837,12 @@ class ClauseTelemetryCollector:
         )
         if container_id and not self.cgroup_inodes and self.cgroup_id:
             self.cgroup_inodes = {self.cgroup_id}
+        if self.cgroup_id:
+            self.cgroup_inodes.add(self.cgroup_id)
         # Seed from cross-instance cache: exec transient cgroups discovered
         # by a previous collector instance for the same container.
         if container_id:
-            cached = _cgroup_inodes_cache.get(container_id)
+            cached = _cached_cgroup_inodes(container_id)
             if cached:
                 self.cgroup_inodes |= cached
         self.init_pid = init_pid
@@ -3497,10 +3853,6 @@ class ClauseTelemetryCollector:
         self.repo = repo
         self.artifact_path = artifact_path
         self._epoch_offset_s = time.time() - time.monotonic()
-        self._events: list[dict[str, Any]] = []
-        self._events_lock = threading.Lock()
-        self._stop_poll = threading.Event()
-        self._poll_error: BaseException | None = None
         self._active: ToolCallToken | None = None
         self._closed = False
         self.state = "active"
@@ -3519,107 +3871,33 @@ class ClauseTelemetryCollector:
         self._source_exec_index = 0
 
         try:
-            self._bpf = BPF(text=BPF_PROGRAM)
+            (
+                self._source,
+                self._source_lease_id,
+                self._event_buffer,
+            ) = _acquire_shared_bpf_source(
+                BPF,
+                PerfType,
+                PerfSWConfig,
+                cgroup_ids=set(self.cgroup_inodes),
+                pid_namespace_ids=set(self.pid_namespace_inodes),
+            )
+            self._bpf = self._source.bpf
+            self._events = self._event_buffer.events
+            self._events_lock = self._event_buffer.lock
+            self._event_cursor = 0
+            self._loss_baseline = _loss_counts(self._bpf)
+            self._kprobe_hits_baseline = _counter(
+                self._bpf,
+                "kprobe_total_hits",
+            )
         except BaseException as exc:
+            source = getattr(self, "_source", None)
+            lease_id = getattr(self, "_source_lease_id", None)
+            if source is not None and lease_id is not None:
+                source.release(lease_id)
             self._closed = True
             self._cleanup_status = "not_started"
-            raise RuntimeError(
-                _bpf_setup_error_message("BPF module load failed", exc)
-            ) from exc
-        try:
-            _attach_first_kprobe(
-                self._bpf,
-                BPF,
-                syscall="execve",
-                fn_name="capture_sys_execve",
-            )
-            _attach_first_kprobe(
-                self._bpf,
-                BPF,
-                syscall="execveat",
-                fn_name="capture_sys_execveat",
-            )
-            _attach_first_kprobe(
-                self._bpf,
-                BPF,
-                syscall="execve",
-                fn_name="capture_sys_execve_return",
-                retprobe=True,
-            )
-            _attach_first_kprobe(
-                self._bpf,
-                BPF,
-                syscall="execveat",
-                fn_name="capture_sys_execveat_return",
-                retprobe=True,
-            )
-            self._bpf.attach_kprobe(
-                event="bprm_execve", fn_name="capture_bprm_argv"
-            )
-            self._bpf.attach_kprobe(
-                event="bprm_change_interp", fn_name="capture_interp_change"
-            )
-            queue = self._bpf["exec_sequences"]
-            for sequence in range(8192):
-                queue.push(ctypes.c_ulonglong(sequence))
-            self._bpf["sequence_ready"][ctypes.c_int(0)] = ctypes.c_uint(1)
-            if self.container_id:
-                # Filter container runs in-kernel. Capturing every exec on a
-                # busy host can overflow the ring before userspace filtering.
-                self._bpf["target_cgroup"][ctypes.c_int(0)] = (
-                    ctypes.c_ulonglong(self.cgroup_id)
-                )
-                allowed = self._bpf["allowed_cgroups"]
-                for cgroup_id in self.cgroup_inodes:
-                    if cgroup_id != self.cgroup_id:
-                        allowed[ctypes.c_ulonglong(cgroup_id)] = ctypes.c_ubyte(1)
-                allowed_pid_namespaces = self._bpf["allowed_pid_namespaces"]
-                for pid_namespace in self.pid_namespace_inodes:
-                    allowed_pid_namespaces[ctypes.c_ulonglong(pid_namespace)] = (
-                        ctypes.c_ubyte(1)
-                    )
-            # Direct-host PID-lineage collection leaves target_cgroup at zero;
-            # its authenticated process filter remains in userspace.
-            self._table = self._bpf["events"]
-
-            def receive(_ctx: int, data: int, _size: int) -> int:
-                row = _event_row(self._table, data)
-                with self._events_lock:
-                    self._events.append(row)
-                return 0
-
-            self._table.open_ring_buffer(receive)
-
-            def poll() -> None:
-                try:
-                    while not self._stop_poll.is_set():
-                        self._bpf.ring_buffer_poll(timeout=10)
-                except BaseException as exc:
-                    if not self._stop_poll.is_set():
-                        self._poll_error = exc
-
-            self._poller = threading.Thread(
-                target=poll,
-                name="clause-telemetry-ring-poller",
-                daemon=True,
-            )
-            self._poller.start()
-            self._bpf.attach_perf_event(
-                ev_type=PerfType.SOFTWARE,
-                ev_config=PerfSWConfig.CPU_CLOCK,
-                fn_name="on_cpu_clock",
-                sample_period=SAMPLE_PERIOD_NS,
-            )
-            self._perf_type = PerfType
-            self._perf_config = PerfSWConfig
-        except BaseException as exc:
-            self._stop_poll.set()
-            poller = getattr(self, "_poller", None)
-            if poller is not None:
-                poller.join(timeout=2)
-            self._bpf.cleanup()
-            self._closed = True
-            self._cleanup_status = "ok"
             raise RuntimeError(
                 _bpf_setup_error_message("BPF collector attach failed", exc)
             ) from exc
@@ -3649,10 +3927,14 @@ class ClauseTelemetryCollector:
         collector.repo = repo
         collector.artifact_path = artifact_path
         collector._epoch_offset_s = time.time() - time.monotonic()
+        collector._lifecycle_lock = threading.RLock()
         collector._events = []
         collector._events_lock = threading.Lock()
-        collector._stop_poll = threading.Event()
-        collector._poll_error = None
+        collector._source = None
+        collector._source_lease_id = None
+        collector._event_cursor = 0
+        collector._loss_baseline = dict.fromkeys(LOSS_COUNTER_NAMES, 0)
+        collector._kprobe_hits_baseline = 0
         collector._active = None
         collector._closed = False
         collector.state = "disabled"
@@ -3671,6 +3953,7 @@ class ClauseTelemetryCollector:
         collector._source_exec_index = 0
         return collector
 
+    @_lifecycle_synchronized
     def bind_trusted_root(self, host_pid: int) -> None:
         if host_pid <= 0:
             raise ValueError("trusted root host PID must be positive")
@@ -3690,6 +3973,10 @@ class ClauseTelemetryCollector:
             self._first_disabled_call = tool_call_id
         if reason not in self._integrity_errors:
             self._integrity_errors.append(reason)
+
+    def _shared_poll_error(self) -> BaseException | None:
+        source = getattr(self, "_source", None)
+        return None if source is None else source.poll_error
 
     def _source_fields(self) -> tuple[str, str, str]:
         source_action = (
@@ -3737,12 +4024,14 @@ class ClauseTelemetryCollector:
         self.calls.append(summary)
         return summary
 
+    @_lifecycle_synchronized
     def begin_tool_call(self, tool_call_id: str, command: str) -> ToolCallToken:
         source_tool_call_id, source_command, source_tool_result = self._source_fields()
-        if self.state == "active" and self._poll_error is not None:
+        poll_error = self._shared_poll_error()
+        if self.state == "active" and poll_error is not None:
             self._disable(
                 "ring poller failed: "
-                f"{type(self._poll_error).__name__}: {self._poll_error}",
+                f"{type(poll_error).__name__}: {poll_error}",
                 tool_call_id=tool_call_id,
             )
         if self._active is not None:
@@ -3798,6 +4087,7 @@ class ClauseTelemetryCollector:
         self._active = token
         return token
 
+    @_lifecycle_synchronized
     def finish_tool_call(
         self,
         token: ToolCallToken,
@@ -3814,10 +4104,11 @@ class ClauseTelemetryCollector:
         self._active = None
         if self.state != "active":
             return self._unavailable_call(token)
-        if self._poll_error is not None:
+        poll_error = self._shared_poll_error()
+        if poll_error is not None:
             self._disable(
                 "ring poller failed: "
-                f"{type(self._poll_error).__name__}: {self._poll_error}",
+                f"{type(poll_error).__name__}: {poll_error}",
                 tool_call_id=token.tool_call_id,
             )
             return self._unavailable_call(token)
@@ -3830,100 +4121,56 @@ class ClauseTelemetryCollector:
                 _counter(self._bpf, "perf_sample_count") - token.perf_sample_count
             )
             with self._events_lock:
-                # Build the container PID set from *all* captured events
-                # (not just the time window) because fork events that
-                # created long-lived container processes may predate the
-                # current command's start time.
-                container_pids = _container_pid_set(
-                    list(self._events),
-                    self.init_pid,
-                    cgroup_inodes=self.cgroup_inodes,
-                    pid_namespace_inodes=self.pid_namespace_inodes,
+                # The process-wide source never prunes while any lease is
+                # active.  A collector slices from its own acquire cursor, so
+                # simultaneous identical commands cannot consume each
+                # other's historical events.
+                scope_events = list(self._events[self._event_cursor :])
+            container_pids = _container_pid_set(
+                scope_events,
+                self.init_pid,
+                cgroup_inodes=self.cgroup_inodes,
+                pid_namespace_inodes=self.pid_namespace_inodes,
+            )
+            if self.trusted_root_pid is not None:
+                container_pids.add(self.trusted_root_pid)
+            dynamic_cgroups = (
+                _observed_container_cgroup_ids(
+                    scope_events,
+                    container_pids,
+                    self.pid_namespace_inodes,
                 )
-                if self.trusted_root_pid is not None:
-                    container_pids.add(self.trusted_root_pid)
-                # --- dynamic cgroup discovery ---
-                # Docker exec often creates transient cgroups (e.g., systemd
-                # scopes) that are not reachable from the container's root
-                # cgroup via directory traversal.  Collect every cgroup_id
-                # seen on events that belong to the container so subsequent
-                # calls can match these cgroups without relying solely on
-                # the static _discover_leaf_cgroup_inodes scan.
-                #
-                # Identity must come from an authenticated/root-descendant PID
-                # or the container PID namespace. Window overlap alone is not
-                # sufficient because these probes are attached system-wide.
-                _dynamic_cgroups = (
-                    _observed_container_cgroup_ids(
-                        self._events,
-                        container_pids,
-                        self.pid_namespace_inodes,
+                if self.container_id
+                else set()
+            )
+            new_cgroups = dynamic_cgroups - self.cgroup_inodes
+            if new_cgroups:
+                self._source.extend_cgroups(
+                    self._source_lease_id,
+                    new_cgroups,
+                )
+                self.cgroup_inodes |= new_cgroups
+                if self.container_id:
+                    _cache_cgroup_inodes(self.container_id, new_cgroups)
+            runtime_identity_available = bool(
+                self.cgroup_inodes or self.pid_namespace_inodes
+            )
+            events = sorted(
+                (
+                    event
+                    for event in scope_events
+                    if token.started_ns <= event["ts_ns"] <= ended_ns
+                    and (
+                        not runtime_identity_available
+                        or event.get("cgroup_id", 0) in self.cgroup_inodes
+                        or event.get("pid_namespace_inode", 0)
+                        in self.pid_namespace_inodes
+                        or event.get("host_pid", 0) in container_pids
+                        or event.get("child_host_pid", 0) in container_pids
                     )
-                    if self.container_id
-                    else set()
-                )
-                if _dynamic_cgroups - self.cgroup_inodes:
-                    self.cgroup_inodes |= _dynamic_cgroups
-                    # Persist newly discovered cgroups for the next
-                    # collector instance (each execution gets a fresh
-                    # collector, but cgroups are container-scoped).
-                    if self.container_id:
-                        _cgroup_inodes_cache.setdefault(
-                            self.container_id, set()
-                        ).update(_dynamic_cgroups)
-                # --- end dynamic cgroup discovery ---
-                # --- diagnostic logging ---
-                import sys as _sys
-                _exec_cgroups: dict[int, int] = {}
-                for _e in self._events:
-                    if _e.get("type") == "exec_boundary":
-                        _cg = _e.get("cgroup_id", 0)
-                        _exec_cgroups[_cg] = _exec_cgroups.get(_cg, 0) + 1
-                _pid_matched = sum(
-                    1
-                    for _p in (
-                        event.get("host_pid", 0)
-                        for event in self._events
-                        if event.get("type") == "exec_boundary"
-                    )
-                    if _p in container_pids
-                )
-                _cgroup_matched = sum(
-                    1
-                    for _e in self._events
-                    if _e.get("type") == "exec_boundary"
-                    and _e.get("cgroup_id", 0) in self.cgroup_inodes
-                )
-                print(
-                    f"[telemetry:diag] call={token.tool_call_id} "
-                    f"container_pids={len(container_pids)} "
-                    f"pid_matched={_pid_matched} "
-                    f"cgroup_matched={_cgroup_matched} "
-                    f"exec_cgroup_dist={sorted(_exec_cgroups.items())} "
-                    f"cgroup_inodes={sorted(self.cgroup_inodes)} "
-                    f"pid_namespace_inodes={sorted(self.pid_namespace_inodes)}",
-                    file=_sys.stderr,
-                )
-                # --- end diagnostic ---
-                _runtime_identity_available = bool(
-                    self.cgroup_inodes or self.pid_namespace_inodes
-                )
-                events = sorted(
-                    (
-                        event
-                        for event in self._events
-                        if token.started_ns <= event["ts_ns"] <= ended_ns
-                        and (
-                            not _runtime_identity_available
-                            or event.get("cgroup_id", 0) in self.cgroup_inodes
-                            or event.get("pid_namespace_inode", 0)
-                            in self.pid_namespace_inodes
-                            or event.get("host_pid", 0) in container_pids
-                            or event.get("child_host_pid", 0) in container_pids
-                        )
-                    ),
-                    key=lambda event: event["ts_ns"],
-                )
+                ),
+                key=lambda event: event["ts_ns"],
+            )
         except BaseException as exc:
             self._disable(
                 f"collector finish failed: {type(exc).__name__}: {exc}",
@@ -4029,6 +4276,7 @@ class ClauseTelemetryCollector:
                 self._integrity_errors.append(violation)
         return summary
 
+    @_lifecycle_synchronized
     def record_safety_guard_blocked(
         self,
         tool_call_id: str,
@@ -4596,20 +4844,30 @@ class ClauseTelemetryCollector:
         }
         return summary, violations
 
+    @_lifecycle_synchronized
     def add_integrity_error(self, message: str) -> None:
         self._disable(message)
 
+    @_lifecycle_synchronized
     def finalize(self, *, replay_execution: str = "completed") -> None:
         if self.state == "closed":
             return
         if replay_execution not in {"completed", "failed", "incomplete"}:
             raise ValueError(f"invalid replay execution state {replay_execution!r}")
         try:
-            total_loss_counts = (
+            current_loss_counts = (
                 _loss_counts(self._bpf)
                 if self.state == "active"
                 else dict.fromkeys(LOSS_COUNTER_NAMES, 0)
             )
+            total_loss_counts = {
+                name: max(
+                    0,
+                    int(current_loss_counts.get(name, 0))
+                    - int(self._loss_baseline.get(name, 0)),
+                )
+                for name in LOSS_COUNTER_NAMES
+            }
         except BaseException as exc:
             total_loss_counts = dict.fromkeys(LOSS_COUNTER_NAMES, 0)
             self._disable(f"collector counter read failed: {type(exc).__name__}: {exc}")
@@ -4617,7 +4875,13 @@ class ClauseTelemetryCollector:
         # Read diagnostic kprobe counter to determine if kprobes fired at all.
         try:
             kprobe_hits = (
-                int(self._bpf["kprobe_total_hits"][ctypes.c_int(0)].value)
+                max(
+                    0,
+                    int(
+                        self._bpf["kprobe_total_hits"][ctypes.c_int(0)].value
+                    )
+                    - self._kprobe_hits_baseline,
+                )
                 if self.state == "active" and hasattr(self, "_bpf")
                 else 0
             )
@@ -4645,10 +4909,11 @@ class ClauseTelemetryCollector:
             self._integrity_errors.append(
                 f"collector total telemetry loss={total_loss} ({causes})"
             )
-        if self._poll_error is not None:
+        poll_error = self._shared_poll_error()
+        if poll_error is not None:
             self._disable(
                 "ring poller failed: "
-                f"{type(self._poll_error).__name__}: {self._poll_error}"
+                f"{type(poll_error).__name__}: {poll_error}"
             )
         prior_state = self.state
         valid_count = sum(
@@ -4780,15 +5045,11 @@ class ClauseTelemetryCollector:
     def _close_bpf(self) -> None:
         if self._closed:
             return
-        self._stop_poll.set()
-        self._poller.join(timeout=2)
-        if self._poller.is_alive():
-            raise RuntimeError("ring poller did not stop")
-        self._bpf.detach_perf_event(
-            ev_type=self._perf_type.SOFTWARE,
-            ev_config=self._perf_config.CPU_CLOCK,
-        )
-        self._bpf.cleanup()
+        source = getattr(self, "_source", None)
+        lease_id = getattr(self, "_source_lease_id", None)
+        if source is not None and lease_id is not None:
+            source.release(lease_id)
+            self._source_lease_id = None
         self._closed = True
         self._cleanup_status = "ok"
 

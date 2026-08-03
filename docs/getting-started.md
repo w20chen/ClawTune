@@ -159,6 +159,19 @@ Start with one task. QEMU runs on Kunpeng are slower than native x86_64 runs,
 so increase `batch.task_timeout_seconds` in the benchmark config only when a
 real task reaches the default deadline.
 
+After that succeeds, increase concurrency explicitly:
+
+```bash
+python3 scripts/clawtune.py benchmark --sample 8 --parallelism 4
+```
+
+One batch uses one host Sidecar and one shared batch KB while keeping every
+task's runtime identity, worktree, trace output, and cgroup separate. `--sample`
+controls selected cases; `--parallelism` controls simultaneous cases. The
+default parallelism is `1`. Choose a higher value based on CPU, memory,
+Docker/QEMU throughput, and provider quota. Running 128 selected cases with
+parallelism 128 is for a host validated at that load, not a universal default.
+
 ## Updating the Checkout
 
 After pulling commits, rerun the same idempotent setup command:

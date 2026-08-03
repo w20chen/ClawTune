@@ -1,6 +1,11 @@
 {
   "execution_id": "exec-1",
+  "gateway_id": "gateway-1",
+  "runtime_id": "runtime-1",
+  "agent_id": "agent-1",
+  "session_id": "session-1",
   "tool_call_id": "call-1",
+  "lease_id": "lease-1",
   "run_id": "run-1",
   "session_key_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "command_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",

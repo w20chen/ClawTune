@@ -1,7 +1,9 @@
 from setuptools import find_packages, setup
 
 
-# Compatibility mirror of pyproject.toml for legacy editable installs.
+# Compatibility metadata for installers that fall back from PEP 660 editable
+# installs to setup.py develop. Keep this mirror aligned with pyproject.toml;
+# otherwise they silently create UNKNOWN 0.0.0 and skip all dependencies.
 setup(
     name="agent-scheduler",
     version="0.1.0",

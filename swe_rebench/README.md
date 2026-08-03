@@ -131,15 +131,53 @@ python3 scripts/clawtune.py benchmark \
 
 `--sample N` means the first `N` tasks in source order after any
 `--instance-ids`, `--repo`, and `--skip` filtering. It is not a random sample.
-Selected tasks run one at a time, in that same order.
+The report preserves that selection order. Execution is serial by default and
+becomes concurrent only when `--parallelism` or `batch.parallelism` is greater
+than one.
+
+## Run Cases Concurrently
+
+First prove the complete path with one serial case, then increase concurrency
+gradually:
+
+```bash
+python3 scripts/clawtune.py benchmark --sample 1 --parallelism 1
+python3 scripts/clawtune.py benchmark --sample 8 --parallelism 4
+python3 scripts/clawtune.py benchmark --sample 32 --parallelism 16
+```
+
+For a sufficiently provisioned large host, a 128-case run is:
+
+```bash
+python3 scripts/clawtune.py benchmark --sample 128 --parallelism 128
+```
+
+`--sample` is the batch size; `--parallelism` is the maximum number of cases
+executing simultaneously. The command-line value overrides
+`batch.parallelism` in `swe_rebench/config.yaml`. The default is `1`, requiring
+an explicit choice before a large workload.
+
+The batch starts exactly one host Sidecar and gives every case a distinct
+Gateway/runtime/session/run identity, worktree, and cgroup. Independent
+OpenClaw processes share the Sidecar without sharing execution state. The
+Sidecar derives usable CPU capacity from affinity and cgroup limits, reserves
+host capacity, and applies weighted admission using predicted CPU demand.
+Consequently, `128` is neither a universal safe value nor a hardcoded limit;
+also account for memory, Docker I/O, provider quota, and QEMU overhead.
+
+On a 320-core machine, `8 Gateways x 16 sessions` is a reasonable future
+long-lived topology. Benchmark mode does not need eight Gateways: independent
+runtimes already use the same Plugin/Sidecar protocol.
 
 ## Knowledge Sharing within a Batch
 
 Each benchmark invocation starts a new batch-local tool-resource KB from the
-tracked cold-start snapshots. All selected tasks in that invocation share the
-same aggregate KB generation serially: a task receives the generation produced
-by the preceding task, then its valid updated snapshots become the input to the
-next task.
+tracked cold-start snapshots. All selected tasks contribute to the same
+aggregate KB. In a serial run, the next task sees the preceding task's
+published generation. In a concurrent run, tasks may start from the same
+generation; their valid updates are serialized by the Sidecar KB writer and
+merged at the batch barrier instead of overwriting one another. Runtime drain
+waits for pending KB work before result collection.
 
 The aggregate snapshots contain two intentionally different layers:
 
@@ -153,8 +191,10 @@ The aggregate snapshots contain two intentionally different layers:
 
 Thus, "updating the shared KB" means publishing the complete aggregate
 snapshot; the task's new online evidence is written only to its own `repo`
-namespace. A new benchmark invocation starts a new batch generation rather than
-implicitly resuming an older one.
+namespace. There is currently no per-session privacy boundary: sessions in the
+batch may use the shared aggregate under these public/repository lookup rules.
+A new benchmark invocation starts a new batch generation rather than implicitly
+resuming an older one.
 
 The dataset's non-empty `repo` or `repository` metadata is authoritative for
 the namespace. If it is absent, a standard instance ID such as

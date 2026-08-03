@@ -4,8 +4,6 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-UTC = timezone.utc
-
 from fastapi import HTTPException
 
 from agent_scheduler.contracts.models import (
@@ -18,6 +16,10 @@ from agent_scheduler.contracts.models import (
     ExecutionUpdateResponse,
     ResourceScope,
 )
+from agent_scheduler.identity import owners_compatible
+
+
+UTC = timezone.utc
 
 
 @dataclass
@@ -34,22 +36,55 @@ class ExecutionRecord:
     exited: bool = False
     owned_cgroup_path: str | None = None
     trusted_root_pid: int | None = None
+    completed_at: datetime | None = None
+    created_at: datetime | None = None
 
 
 class ExecutionRegistry:
-    def __init__(self, token_ttl_s: int = 60) -> None:
+    def __init__(
+        self,
+        token_ttl_s: int = 60,
+        completed_retention_s: int = 300,
+        marker_retention_s: int = 3_600,
+    ) -> None:
         self.token_ttl_s = token_ttl_s
+        self.completed_retention_s = completed_retention_s
+        self.marker_retention_s = marker_retention_s
         self._by_execution_id: dict[str, ExecutionRecord] = {}
         self._by_token: dict[str, str] = {}
 
     def register(self, request: ExecutionRegistrationRequest) -> ExecutionRegistrationResponse:
         self._sweep()
-        token = secrets.token_urlsafe(32)
-        expires_at = datetime.now(UTC) + timedelta(seconds=self.token_ttl_s)
-        record = ExecutionRecord(request=request, token=token, expires_at=expires_at)
         previous = self._by_execution_id.get(request.execution_id)
+        if previous is not None and previous.request != request:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "execution_id_owned_by_another_runtime"
+                    if not owners_compatible(previous.request, request)
+                    else "execution_id_payload_mismatch"
+                ),
+            )
         if previous is not None:
-            self._by_token.pop(previous.token, None)
+            if previous.claimed:
+                raise HTTPException(
+                    status_code=409,
+                    detail="execution_already_claimed",
+                )
+            return ExecutionRegistrationResponse(
+                execution_id=request.execution_id,
+                one_time_token=previous.token,
+                expires_at=previous.expires_at.isoformat().replace("+00:00", "Z"),
+            )
+        token = secrets.token_urlsafe(32)
+        now = datetime.now(UTC)
+        expires_at = now + timedelta(seconds=self.token_ttl_s)
+        record = ExecutionRecord(
+            request=request,
+            token=token,
+            expires_at=expires_at,
+            created_at=now,
+        )
         self._by_execution_id[request.execution_id] = record
         self._by_token[token] = request.execution_id
         return ExecutionRegistrationResponse(
@@ -90,6 +125,30 @@ class ExecutionRegistry:
             and getattr(record.request, "backend", None) == "marker"
             and record.expires_at > datetime.now(UTC)
         ]
+
+    def for_runtime(
+        self,
+        runtime_id: str | None,
+        gateway_id: str | None = None,
+    ) -> list[ExecutionRecord]:
+        self._sweep()
+        return [
+            record
+            for record in self._by_execution_id.values()
+            if record.request.runtime_id == runtime_id
+            and (
+                gateway_id is None
+                or record.request.gateway_id is None
+                or record.request.gateway_id == gateway_id
+            )
+        ]
+
+    def mark_completed(self, execution_id: str) -> None:
+        record = self._by_execution_id.get(execution_id)
+        if record is None:
+            return
+        record.exited = True
+        record.completed_at = datetime.now(UTC)
 
     def claim(self, request: ExecutionClaimRequest) -> ExecutionClaimResponse:
         self._sweep()
@@ -169,6 +228,7 @@ class ExecutionRegistry:
         record.exit_code = request.exit_code
         record.signal = request.signal
         record.exited = True
+        record.completed_at = datetime.now(UTC)
         return ExecutionUpdateResponse(stored=True)
 
     def _require_update(self, execution_id: str, update_token: str) -> ExecutionRecord:
@@ -184,10 +244,29 @@ class ExecutionRegistry:
 
     def _sweep(self) -> None:
         now = datetime.now(UTC)
+        completed_cutoff = now - timedelta(seconds=self.completed_retention_s)
         expired = [
             execution_id
             for execution_id, record in self._by_execution_id.items()
-            if record.expires_at <= now and record.scope is None
+            if (
+                (
+                    not record.claimed
+                    and record.request.backend != "marker"
+                    and record.expires_at <= now
+                )
+                or (
+                    not record.claimed
+                    and record.request.backend == "marker"
+                    and record.created_at is not None
+                    and record.created_at
+                    <= now - timedelta(seconds=self.marker_retention_s)
+                )
+                or (
+                    record.exited
+                    and record.completed_at is not None
+                    and record.completed_at <= completed_cutoff
+                )
+            )
         ]
         for execution_id in expired:
             record = self._by_execution_id.pop(execution_id)

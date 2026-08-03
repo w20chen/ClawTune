@@ -16,9 +16,15 @@
     "backend"
   ],
   "properties": {
-    "execution_id": {"type": "string", "minLength": 1},
-    "tool_call_id": {"type": ["string", "null"]},
-    "run_id": {"type": ["string", "null"]},
+    "execution_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "gateway_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 128},
+    "runtime_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 128},
+    "repo": {"type": ["string", "null"], "minLength": 1, "maxLength": 512},
+    "agent_id": {"type": ["string", "null"], "maxLength": 128},
+    "session_id": {"type": ["string", "null"], "maxLength": 128},
+    "tool_call_id": {"type": ["string", "null"], "maxLength": 256},
+    "lease_id": {"type": ["string", "null"], "maxLength": 128},
+    "run_id": {"type": ["string", "null"], "maxLength": 128},
     "session_key_hash": {"type": ["string", "null"], "pattern": "^(sha256:[a-f0-9]{64})?$"},
     "command_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
     "command": {"type": "string", "minLength": 1},

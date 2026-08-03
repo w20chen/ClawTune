@@ -4,6 +4,7 @@ import io
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -1163,6 +1164,90 @@ def test_host_sandbox_propagates_unconfirmed_agent_cleanup(
         )
 
 
+def test_shared_sidecar_trace_snapshot_survives_drain_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "runtime:\n  mode: host-openclaw-sandbox\n"
+        "batch:\n  task_timeout_seconds: 0\n"
+        "output:\n  trace_root: traces\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    task = TaskDef(instance_id="owner__repo-1", image="image:latest")
+    trace_dir = tmp_path / "traces" / task.instance_id
+    shared_trace_dir = tmp_path / "shared-sidecar"
+    shared_trace_dir.mkdir()
+
+    import swe_rebench.host_sandbox as host_sandbox
+
+    workspace = host_sandbox._task_workspace(config, task)
+    runtime_id = host_sandbox._runtime_id(workspace)
+    source = shared_trace_dir / f"{runtime_id}__session_run.jsonl"
+    source.write_bytes(
+        b'{"schema_version":6,"record_type":"trace_metadata"}\n'
+        b'{"schema_version":6,"record_type":"span_start"}'
+    )
+
+    for name in (
+        "_write_host_tool_resource_preflight",
+        "_reset_directory",
+        "_export_testbed_from_image",
+        "_make_sandbox_workspace_writable",
+        "_install_sandbox_launcher",
+        "_write_task_inputs",
+        "_verify_sandbox_launcher",
+        "_verify_sandbox_task_environment",
+        "_configure_openclaw",
+        "_cleanup_openclaw_sandbox_containers",
+        "_cleanup_runtime_artifacts",
+        "_collect_patch",
+        "_write_result_summary",
+    ):
+        monkeypatch.setattr(
+            f"swe_rebench.host_sandbox.{name}",
+            lambda *_args, **_kwargs: None,
+        )
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._ensure_openclaw_sandbox_image",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._run_openclaw_agent",
+        lambda **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._drain_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("runtime drain failed")
+        ),
+    )
+    deleted: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        "swe_rebench.host_sandbox._delete_runtime_scope",
+        lambda port, identity, **_kwargs: deleted.append((port, identity)),
+    )
+
+    with pytest.raises(RuntimeError, match="runtime drain failed"):
+        run_host_sandbox_task(
+            task=task,
+            trace_dir=trace_dir,
+            config=config,
+            bundle_dir=tmp_path / "bundle",
+            sidecar_port=19090,
+            shared_sidecar_trace_dir=shared_trace_dir,
+            manage_sidecar=False,
+        )
+
+    destination = trace_dir / source.name
+    assert destination.read_bytes() == (
+        b'{"schema_version":6,"record_type":"trace_metadata"}\n'
+    )
+    assert deleted == [(19090, runtime_id)]
+
+
 def test_run_one_propagates_container_stage2_fallback_mode(monkeypatch, tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -1245,6 +1330,8 @@ def test_host_sandbox_openclaw_config_uses_only_public_top_level_keys(tmp_path: 
     plugin_cfg = parsed["plugins"]["entries"]["agent-scheduler"]["config"]
     assert plugin_cfg["logLevel"] == "warn"
     assert plugin_cfg["reportTimeoutMs"] == 10000
+    assert plugin_cfg["autoStartSidecar"] is False
+    assert plugin_cfg["sidecarCommand"] == ""
     assert parsed["env"]["CLAW_EXEC_WORKDIR"] == "/workspace"
     assert parsed["env"]["CLAW_SANDBOX_HOST_WORKSPACE"] == str(tmp_path / "workspace")
     assert parsed["env"]["CLAW_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
@@ -1334,6 +1421,10 @@ def test_host_sandbox_openclaw_env_points_workspace_dir_at_task_workspace(
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
     workspace = tmp_path / "workspace"
     monkeypatch.setenv("OPENCLAW_AGENT_SCHEDULER_TRACE_DIR", "/tmp/plugin-should-not-write")
+    monkeypatch.setenv("OPENCLAW_AGENT_SCHEDULER_PLUGIN_TRACE_DIR", "/tmp/plugin-fallback")
+    monkeypatch.setenv("OPENCLAW_AGENT_SCHEDULER_AUTO_START_SIDECAR", "true")
+    monkeypatch.setenv("OPENCLAW_AGENT_SCHEDULER_SIDECAR_COMMAND", "start-stale-sidecar")
+    monkeypatch.setenv("OPENCLAW_AGENT_SCHEDULER_ENDPOINT", "http://127.0.0.1:9999")
     monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "stale-token")
     monkeypatch.setenv("OPENCLAW_GATEWAY_PASSWORD", "stale-password")
     monkeypatch.setenv("OPENCLAW_GATEWAY_URL", "ws://127.0.0.1:18789")
@@ -1347,7 +1438,13 @@ def test_host_sandbox_openclaw_env_points_workspace_dir_at_task_workspace(
     assert env["CLAW_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
     assert env["CLAW_ENABLE_CGROUP"] == "1"
     assert env["CLAW_LAUNCH_MODE"] == "fork-exec"
+    assert env["CLAW_GATEWAY_ID"] == "swe-rebench"
+    assert env["CLAW_RUNTIME_ID"].startswith("claw-srb-")
     assert "OPENCLAW_AGENT_SCHEDULER_TRACE_DIR" not in env
+    assert "OPENCLAW_AGENT_SCHEDULER_PLUGIN_TRACE_DIR" not in env
+    assert "OPENCLAW_AGENT_SCHEDULER_AUTO_START_SIDECAR" not in env
+    assert "OPENCLAW_AGENT_SCHEDULER_SIDECAR_COMMAND" not in env
+    assert "OPENCLAW_AGENT_SCHEDULER_ENDPOINT" not in env
     assert "OPENCLAW_GATEWAY_TOKEN" not in env
     assert "OPENCLAW_GATEWAY_PASSWORD" not in env
     assert "OPENCLAW_GATEWAY_URL" not in env
@@ -1375,8 +1472,8 @@ def test_host_sandbox_openclaw_env_uses_platform_and_local_proxy_key(
     )
 
     assert env["DOCKER_DEFAULT_PLATFORM"] == "linux/amd64"
-    assert env["VLLM_API_KEY"] == "clawtune-local-proxy"
-    assert env["LLM_API_KEY"] == "clawtune-local-proxy"
+    assert env["VLLM_API_KEY"].startswith("clawtune-runtime.claw-srb-")
+    assert env["LLM_API_KEY"] == env["VLLM_API_KEY"]
     assert "sk-upstream-secret" not in env.values()
     assert "stale-secret" not in env.values()
 
@@ -1425,7 +1522,9 @@ def test_host_sandbox_onboard_does_not_put_upstream_key_in_argv(
 
     argv = [item for command in commands for item in command]
     assert "sk-upstream-secret" not in argv
-    assert "clawtune-local-proxy" in argv
+    assert any(
+        item.startswith("clawtune-runtime.claw-srb-") for item in argv
+    )
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not represented on Windows")
@@ -1484,8 +1583,9 @@ def test_host_sandbox_launcher_exports_testbed_path_but_uses_system_python(
         encoding="utf-8"
     )
     assert f'export PATH="{_SANDBOX_TASK_PATH}"\n' in launcher
-    assert "_CLAW_LAUNCHER_PYTHON=/usr/bin/python3" in launcher
-    assert "command -v python3" not in launcher
+    assert "/usr/bin/python3 /usr/local/bin/python3" in launcher
+    assert "command -v python3" in launcher
+    assert "sys.version_info >= (3, 10)" in launcher
 
 
 def _write_test_kb_pair(directory: Path, marker: str) -> None:
@@ -2241,12 +2341,12 @@ def test_host_sandbox_tags_sandbox_image_from_task_image(monkeypatch, tmp_path: 
     monkeypatch.setattr("swe_rebench.host_sandbox.shutil.which", fake_which)
     monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
 
-    _ensure_openclaw_sandbox_image(task_image, tmp_path)
+    sandbox_image = _ensure_openclaw_sandbox_image(task_image, tmp_path)
 
     assert calls == [
-        ["/usr/bin/docker", "image", "inspect", "openclaw-sandbox:bookworm-slim"],
-        ["/usr/bin/docker", "tag", task_image, "openclaw-sandbox:bookworm-slim"],
+        ["/usr/bin/docker", "tag", task_image, sandbox_image],
     ]
+    assert sandbox_image.startswith("clawtune-sandbox:image-")
     assert (tmp_path / "sandbox-image-build.log").exists()
 
 
@@ -2782,6 +2882,28 @@ def test_reset_task_trace_dir_removes_stale_artifacts(tmp_path: Path) -> None:
 
     assert trace_dir.is_dir()
     assert not (trace_dir / "model.patch").exists()
+
+
+def test_reset_task_trace_dir_is_safe_during_parallel_root_creation(tmp_path: Path) -> None:
+    trace_root = tmp_path / "traces"
+    barrier = threading.Barrier(16)
+    failures: list[BaseException] = []
+
+    def reset(index: int) -> None:
+        try:
+            barrier.wait()
+            _reset_task_trace_dir(trace_root, trace_root / f"task-{index}")
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    workers = [threading.Thread(target=reset, args=(index,)) for index in range(16)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    assert failures == []
+    assert all((trace_root / f"task-{index}").is_dir() for index in range(16))
 
 
 def test_reset_task_trace_dir_refuses_outside_trace_root(tmp_path: Path) -> None:

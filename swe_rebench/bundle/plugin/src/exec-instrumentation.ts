@@ -9,7 +9,13 @@ export type ExecutionRegistrar = {
 
 type ToolRegistrationFunction = (payload: {
   execution_id: string;
+  gateway_id?: string | null;
+  runtime_id?: string | null;
+  repo?: string | null;
+  agent_id?: string | null;
+  session_id?: string | null;
   tool_call_id: string | null;
+  lease_id?: string | null;
   run_id: string | null;
   session_key_hash: string | null;
   command_digest: string;
@@ -56,7 +62,7 @@ export async function instrumentExecParams(
   }
   const requestedCommand = params.command;
   const commandDigest = stableDigest(requestedCommand);
-  const executionId = extractString(event, ["tool_call_id", "toolCallId", "id"]) ?? `exec-${randomUUID()}`;
+  const executionId = `exec-${randomUUID()}`;
   const runId = payload.run_id ?? extractString(context, ["runId", "run_id"]);
   const sessionKeyHash = payload.session_key === null ? null : stableDigest(payload.session_key);
   const workdirOverride = launcherWorkdirOverride();
@@ -75,14 +81,22 @@ export async function instrumentExecParams(
   try {
     const registration = await client.registerExecution({
       execution_id: executionId,
+      gateway_id: payload.gateway_id,
+      runtime_id: payload.runtime_id,
+      repo: payload.repo,
+      agent_id: payload.agent_id,
+      session_id: payload.session_id,
       tool_call_id: payload.tool_call_id,
+      lease_id: decision.lease_id,
       run_id: runId,
       session_key_hash: sessionKeyHash,
       command_digest: commandDigest,
       command: requestedCommand,
       workdir: typeof params.workdir === "string" ? params.workdir : null,
       host: typeof params.host === "string" ? params.host : "gateway",
-      placement: decision.placement ?? decision.placement_advice ?? null,
+      // placement_advice is deliberately observational in this MVP.  Only a
+      // separately authorized placement object may reach the launcher.
+      placement: decision.placement ?? null,
       profiling: decision.profiling ?? {
         mode: config.profilingMode,
         enable_cgroup: config.enableCgroup,
@@ -108,6 +122,10 @@ export async function instrumentExecParams(
       ? {CLAW_EXECUTION_TOKEN: token}
       : {}),
     CLAW_SCHEDULER_ENDPOINT: launcherEndpoint,
+    CLAW_GATEWAY_ID: payload.gateway_id ?? "",
+    CLAW_RUNTIME_ID: payload.runtime_id ?? "",
+    CLAW_AGENT_ID: payload.agent_id ?? "",
+    CLAW_SESSION_ID: payload.session_id ?? "",
     CLAW_TOOL_CALL_ID: payload.tool_call_id ?? "",
     CLAW_RUN_ID: runId ?? "",
     CLAW_SESSION_HASH: sessionKeyHash ?? "",

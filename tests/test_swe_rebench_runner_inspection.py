@@ -1083,3 +1083,49 @@ def test_run_batch_parallelism_one_keeps_single_worker_path(tmp_path, monkeypatc
     assert report.completed == 1
     assert report.failed == 0
     assert report.results[0]["sidecar_endpoint"] == "http://127.0.0.1:19091"
+
+
+def test_run_batch_keeps_snapshotted_trace_when_task_cleanup_raises(
+    tmp_path,
+    monkeypatch,
+):
+    config = _runner_config(tmp_path, parallelism=1)
+    task = TaskDef("owner__repo-1", "image:1")
+
+    monkeypatch.setattr(runner, "get_docker_client", lambda _config: object())
+    monkeypatch.setattr(
+        runner,
+        "_prepare_batch_tool_resource_kb",
+        lambda shared_kb_dir, _config: shared_kb_dir.mkdir(parents=True),
+    )
+    monkeypatch.setattr(host_sandbox, "_free_port", lambda: 19092)
+    monkeypatch.setattr(host_sandbox, "_start_sidecar", lambda **_kwargs: object())
+    monkeypatch.setattr(host_sandbox, "_stop_process", lambda _process: None)
+    monkeypatch.setattr(runner, "_stop_process", lambda _process: None)
+
+    def fail_after_trace_snapshot(**kwargs):
+        trace_path = kwargs["trace_dir"] / "runtime__session_run.jsonl"
+        trace_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 6,
+                    "record_type": "trace_metadata",
+                    "trace_format_version": 6,
+                    "scaffold": "openclaw",
+                    "mode": "collect",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        raise RuntimeError("runtime drain failed")
+
+    monkeypatch.setattr(runner, "_execute_one", fail_after_trace_snapshot)
+
+    report = runner.run_batch(config, [task], tmp_path / "bundle")
+
+    assert report.completed == 0
+    assert report.failed == 1
+    assert report.results[0]["error"] == "runtime drain failed"
+    assert report.results[0]["trace_lines"] == 1
+    assert len(report.results[0]["trace_files"]) == 1

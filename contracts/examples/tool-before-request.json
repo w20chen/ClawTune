@@ -7,6 +7,8 @@
   "session_id": null,
   "session_key": null,
   "agent_id": null,
+  "gateway_id": "gateway-1",
+  "runtime_id": "runtime-1",
   "tool_call_id": "call-1",
   "tool_name": "exec",
   "tool_kind": "shell",

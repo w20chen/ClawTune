@@ -4,6 +4,7 @@ import asyncio
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -25,8 +26,10 @@ from agent_scheduler.contracts.models import (
     StatusResponse,
     ToolBeforeRequest,
     ToolCompletedEvent,
+    ToolDecision,
 )
 from agent_scheduler.llm_proxy import proxy_chat_completions, proxy_models
+from agent_scheduler.identity import correlation_key, owner_key, owners_compatible
 from agent_scheduler.monitoring.tool_runtime import ToolRuntimeSample
 from agent_scheduler.policies.base import SchedulingContext
 from agent_scheduler.security.auth import verify_bearer
@@ -405,14 +408,34 @@ def create_app(state: AppState | None = None) -> FastAPI:
     app = FastAPI(title="OpenClaw Agent Scheduler Sidecar", version="0.1.0")
     app.state.scheduler = app_state
 
+    @app.on_event("shutdown")
+    async def shutdown_state() -> None:
+        app_state.tool_monitor.stop()
+        if app_state.docker_exec_observer is not None:
+            app_state.docker_exec_observer.stop()
+        close_predictor = getattr(app_state.predictor, "close", None)
+        if callable(close_predictor):
+            await asyncio.to_thread(close_predictor)
+
     def get_state() -> AppState:
         return app.state.scheduler
 
     def auth(s: AppState = Depends(get_state)) -> None:
         verify_bearer(s.config.auth_token)
 
-    def sandbox_fallback_scope(s: AppState) -> ResourceScope | None:
-        if s._sandbox_scope_override is not None:
+    def sandbox_fallback_scope(
+        s: AppState,
+        runtime_id: str | None = None,
+        gateway_id: str | None = None,
+    ) -> ResourceScope | None:
+        if runtime_id is not None:
+            scope = s._sandbox_scopes_by_owner.get((gateway_id, runtime_id))
+            if scope is not None:
+                return scope
+            # A scoped protocol event must never borrow a static/global or
+            # another runtime's container while discovery is pending.
+            return None
+        elif s._sandbox_scope_override is not None:
             return s._sandbox_scope_override
         if not s.config.sandbox_cgroup_path:
             return None
@@ -428,11 +451,16 @@ def create_app(state: AppState | None = None) -> FastAPI:
             attribution_source="shared-sandbox-container",
         )
 
-    def sandbox_container_id(s: AppState) -> str | None:
-        if s.config.sandbox_container_id:
+    def sandbox_container_id(
+        s: AppState,
+        runtime_id: str | None = None,
+        gateway_id: str | None = None,
+    ) -> str | None:
+        scope = sandbox_fallback_scope(s, runtime_id, gateway_id)
+        if scope is not None and scope.container_id:
+            return scope.container_id
+        if s.config.sandbox_container_id and not s._sandbox_scopes_by_owner:
             return s.config.sandbox_container_id
-        if s._sandbox_scope_override is not None:
-            return s._sandbox_scope_override.container_id
         return None
 
     def begin_stage2_for_record(
@@ -455,8 +483,12 @@ def create_app(state: AppState | None = None) -> FastAPI:
             "tool_call_id": record.request.tool_call_id,
             "command": record.request.command,
             "container_id": container_id,
-            "repo": s.config.tool_resource_repo,
+            "repo": record.request.repo or s.config.tool_resource_repo,
         }
+        if record.request.gateway_id is not None:
+            stage2_kwargs["gateway_id"] = record.request.gateway_id
+        if record.request.runtime_id is not None:
+            stage2_kwargs["runtime_id"] = record.request.runtime_id
         if root_pid is not None:
             stage2_kwargs["trusted_root_pid"] = root_pid
         if cgroup_path is None:
@@ -592,7 +624,11 @@ def create_app(state: AppState | None = None) -> FastAPI:
             and not _is_shared_runtime_scope(request.resource_scope)
         ):
             return request
-        scope = sandbox_fallback_scope(s)
+        scope = sandbox_fallback_scope(
+            s,
+            request.runtime_id,
+            request.gateway_id,
+        )
         if scope is None:
             return request
         return request.model_copy(update={"resource_scope": scope})
@@ -601,7 +637,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         event: ToolCompletedEvent,
         s: AppState,
     ) -> ToolCompletedEvent:
-        scope = sandbox_fallback_scope(s)
+        scope = sandbox_fallback_scope(s, event.runtime_id, event.gateway_id)
         if scope is None:
             return event
         existing = event.resource_scope
@@ -628,7 +664,11 @@ def create_app(state: AppState | None = None) -> FastAPI:
             if (
                 _has_usable_cgroup_scope(scope)
                 or (
-                    sandbox_fallback_scope(s) is None
+                    sandbox_fallback_scope(
+                        s,
+                        event.runtime_id,
+                        event.gateway_id,
+                    ) is None
                     and scope is not None
                 )
             ):
@@ -662,6 +702,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         return s.metrics.render(
             await s.leases.active_count(),
             active_tool_monitors=s.tool_monitor.active_count(),
+            active_lease_mcpu=await s.leases.active_mcpu(),
         )
 
     @app.get("/v1/tools/recent")
@@ -672,19 +713,43 @@ def create_app(state: AppState | None = None) -> FastAPI:
     ) -> dict[str, object]:
         return {"samples": s._recent_samples[:limit]}
 
-    @app.post("/v1/runtime/sandbox-scope")
-    async def update_sandbox_scope(
+    def store_sandbox_scope(
+        s: AppState,
         scope: ResourceScope,
-        s: AppState = Depends(get_state),
-        _: None = Depends(auth),
-    ) -> dict[str, bool]:
-        s._sandbox_scope_override = scope
-        if s.docker_exec_observer is not None:
-            s.docker_exec_observer.update_container(
-                container_id=scope.container_id,
-            )
+        runtime_id: str | None,
+        gateway_id: str | None = None,
+    ) -> None:
+        if runtime_id is None:
+            s._sandbox_scope_override = scope
+            if s.docker_exec_observer is not None:
+                s.docker_exec_observer.update_container(
+                    container_id=scope.container_id,
+                )
+        else:
+            s._sandbox_scopes_by_owner[(gateway_id, runtime_id)] = scope
+            if s.docker_exec_observer is not None:
+                s.docker_exec_observer.update_runtime_scope(
+                    SimpleNamespace(
+                        gateway_id=gateway_id,
+                        runtime_id=runtime_id,
+                        agent_id=None,
+                        session_id=None,
+                        run_id=None,
+                    ),
+                    scope,
+                )
+
         stage2_start_failed = False
+        failed_execution_id: str | None = None
         for record in s.executions.active():
+            if record.request.runtime_id != runtime_id:
+                continue
+            if (
+                gateway_id is not None
+                and record.request.gateway_id is not None
+                and record.request.gateway_id != gateway_id
+            ):
+                continue
             started = begin_stage2_for_record(
                 s,
                 record.request.execution_id,
@@ -696,6 +761,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 and not started
             ):
                 stage2_start_failed = True
+                failed_execution_id = record.request.execution_id
             # Repair tool-monitor scopes that were bound from inside the
             # container (launcher's /proc/self/cgroup view) before the
             # host-side sandbox scope was discovered.  The new scope has
@@ -706,12 +772,23 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 and record.scope.cgroup_path != scope.cgroup_path
             ):
                 s.tool_monitor.bind_scope(
-                    record.request.tool_call_id, scope
+                    record.request.tool_call_id,
+                    scope,
+                    runtime_id=record.request.runtime_id,
+                    owner=record.request,
                 )
         # Marker-backend executions are registered but never claimed by a
         # launcher.  Start Stage-2 for them once the sandbox container is
         # discovered so eBPF clause telemetry can capture exec events.
         for record in s.executions.pending_marker():
+            if record.request.runtime_id != runtime_id:
+                continue
+            if (
+                gateway_id is not None
+                and record.request.gateway_id is not None
+                and record.request.gateway_id != gateway_id
+            ):
+                continue
             begin_stage2_for_record(
                 s,
                 record.request.execution_id,
@@ -720,9 +797,228 @@ def create_app(state: AppState | None = None) -> FastAPI:
         if stage2_start_failed:
             raise HTTPException(
                 status_code=503,
-                detail=stage2_failure_detail(s, execution_id),
+                detail=stage2_failure_detail(s, failed_execution_id or "unknown"),
             )
+
+    @app.post("/v1/runtime/sandbox-scope")
+    async def update_sandbox_scope(
+        scope: ResourceScope,
+        s: AppState = Depends(get_state),
+        _: None = Depends(auth),
+    ) -> dict[str, bool]:
+        store_sandbox_scope(s, scope, None)
         return {"stored": True}
+
+    @app.post("/v1/runtime/{runtime_id}/sandbox-scope")
+    async def update_runtime_sandbox_scope(
+        runtime_id: str,
+        scope: ResourceScope,
+        s: AppState = Depends(get_state),
+        _: None = Depends(auth),
+    ) -> dict[str, bool]:
+        if not runtime_id.strip() or len(runtime_id) > 128:
+            raise HTTPException(status_code=422, detail="invalid_runtime_id")
+        store_sandbox_scope(s, scope, runtime_id)
+        return {"stored": True}
+
+    @app.post(
+        "/v1/gateways/{gateway_id}/runtimes/{runtime_id}/sandbox-scope"
+    )
+    async def update_gateway_runtime_sandbox_scope(
+        gateway_id: str,
+        runtime_id: str,
+        scope: ResourceScope,
+        s: AppState = Depends(get_state),
+        _: None = Depends(auth),
+    ) -> dict[str, bool]:
+        if not gateway_id.strip() or len(gateway_id) > 128:
+            raise HTTPException(status_code=422, detail="invalid_gateway_id")
+        if not runtime_id.strip() or len(runtime_id) > 128:
+            raise HTTPException(status_code=422, detail="invalid_runtime_id")
+        store_sandbox_scope(s, scope, runtime_id, gateway_id)
+        return {"stored": True}
+
+    @app.delete("/v1/runtime/{runtime_id}/sandbox-scope")
+    async def delete_runtime_sandbox_scope(
+        runtime_id: str,
+        s: AppState = Depends(get_state),
+        _: None = Depends(auth),
+    ) -> dict[str, bool]:
+        stored = s._sandbox_scopes_by_owner.pop((None, runtime_id), None) is not None
+        await s.leases.release_runtime(runtime_id, None)
+        if s.trace_writer is not None:
+            s.trace_writer.release_runtime(runtime_id)
+        s._completed_tool_event_ids.difference_update(
+            {
+                key
+                for key in s._completed_tool_event_ids
+                if len(key) >= 2 and key[0] is None and key[1] == runtime_id
+            }
+        )
+        for key in [
+            key
+            for key in s._tool_decisions_by_event_id
+            if len(key) >= 2 and key[0] is None and key[1] == runtime_id
+        ]:
+            s._tool_decisions_by_event_id.pop(key, None)
+        s._model_event_ids.difference_update(
+            {
+                key
+                for key in s._model_event_ids
+                if len(key) >= 2 and key[0] is None and key[1] == runtime_id
+            }
+        )
+        return {"stored": stored}
+
+    @app.delete(
+        "/v1/gateways/{gateway_id}/runtimes/{runtime_id}/sandbox-scope"
+    )
+    async def delete_gateway_runtime_sandbox_scope(
+        gateway_id: str,
+        runtime_id: str,
+        s: AppState = Depends(get_state),
+        _: None = Depends(auth),
+    ) -> dict[str, bool]:
+        stored = (
+            s._sandbox_scopes_by_owner.pop((gateway_id, runtime_id), None)
+            is not None
+        )
+        await s.leases.release_runtime(runtime_id, gateway_id)
+        if s.trace_writer is not None:
+            s.trace_writer.release_runtime(runtime_id, gateway_id)
+        s._completed_tool_event_ids.difference_update(
+            {
+                key
+                for key in s._completed_tool_event_ids
+                if len(key) >= 2
+                and key[1] == runtime_id
+                and key[0] == gateway_id
+            }
+        )
+        for key in [
+            key
+            for key in s._tool_decisions_by_event_id
+            if len(key) >= 2
+            and key[1] == runtime_id
+            and key[0] == gateway_id
+        ]:
+            s._tool_decisions_by_event_id.pop(key, None)
+        s._model_event_ids.difference_update(
+            {
+                key
+                for key in s._model_event_ids
+                if len(key) >= 2
+                and key[1] == runtime_id
+                and key[0] == gateway_id
+            }
+        )
+        return {"stored": stored}
+
+    async def drain_runtime_state(
+        s: AppState,
+        runtime_id: str,
+        gateway_id: str | None,
+        timeout_seconds: float,
+    ) -> dict[str, object]:
+        timeout_seconds = min(max(timeout_seconds, 0.0), 60.0)
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            records = s.executions.for_runtime(runtime_id, gateway_id)
+            record_ids = {record.request.execution_id for record in records}
+            active_execution_ids = [
+                record.request.execution_id
+                for record in records
+                if (record.claimed and not record.exited)
+                or s.predictor.execution_active(record.request.execution_id)
+            ]
+            active_by_owner = getattr(s.predictor, "active_execution_ids", None)
+            if callable(active_by_owner):
+                active_execution_ids = sorted(
+                    set(active_execution_ids).union(
+                        active_by_owner(runtime_id, gateway_id)
+                    )
+                )
+            pending_finalizers = [
+                execution_id
+                for execution_id in record_ids
+                if execution_id in s._stage2_finalize_tasks
+                and not s._stage2_finalize_tasks[execution_id].done()
+            ]
+            active_requests = sum(
+                count
+                for (owner_gateway, owner_runtime), count
+                in s._runtime_activity.items()
+                if owner_runtime == runtime_id
+                and (
+                    gateway_id is None
+                    or owner_gateway is None
+                    or owner_gateway == gateway_id
+                )
+            )
+            if s.trace_writer is not None:
+                active_requests += s.trace_writer.active_runtime_operations(
+                    runtime_id
+                )
+            if (
+                not active_execution_ids
+                and not pending_finalizers
+                and active_requests == 0
+            ):
+                flush_shared_kb = getattr(s.predictor, "flush_kb_updates", None)
+                if callable(flush_shared_kb):
+                    remaining = max(0.0, deadline - time.monotonic())
+                    try:
+                        await asyncio.to_thread(flush_shared_kb, remaining)
+                    except Exception:
+                        return {
+                            "drained": False,
+                            "gateway_id": gateway_id,
+                            "runtime_id": runtime_id,
+                            "active_executions": 0,
+                            "pending_finalizers": 0,
+                            "kb_flushed": False,
+                        }
+                return {
+                    "drained": True,
+                    "gateway_id": gateway_id,
+                    "runtime_id": runtime_id,
+                    "active_executions": 0,
+                }
+            if time.monotonic() >= deadline:
+                return {
+                    "drained": False,
+                    "gateway_id": gateway_id,
+                    "runtime_id": runtime_id,
+                    "active_executions": len(active_execution_ids),
+                    "pending_finalizers": len(pending_finalizers),
+                    "active_requests": active_requests,
+                    "kb_flushed": False,
+                }
+            await asyncio.sleep(0.025)
+
+    @app.post("/v1/runtime/{runtime_id}/drain")
+    async def drain_runtime(
+        runtime_id: str,
+        timeout_seconds: float = 15.0,
+        s: AppState = Depends(get_state),
+        _: None = Depends(auth),
+    ) -> dict[str, object]:
+        return await drain_runtime_state(s, runtime_id, None, timeout_seconds)
+
+    @app.post("/v1/gateways/{gateway_id}/runtimes/{runtime_id}/drain")
+    async def drain_gateway_runtime(
+        gateway_id: str,
+        runtime_id: str,
+        timeout_seconds: float = 15.0,
+        s: AppState = Depends(get_state),
+        _: None = Depends(auth),
+    ) -> dict[str, object]:
+        return await drain_runtime_state(
+            s,
+            runtime_id,
+            gateway_id,
+            timeout_seconds,
+        )
 
     @app.get("/v1/models")
     @app.get("/models")
@@ -740,38 +1036,102 @@ def create_app(state: AppState | None = None) -> FastAPI:
     ):
         return await proxy_chat_completions(request, s.config, s.trace_writer)
 
+    def begin_runtime_activity(value: object) -> tuple[str | None, str | None]:
+        key = (
+            getattr(value, "gateway_id", None),
+            getattr(value, "runtime_id", None),
+        )
+        app_state._runtime_activity[key] = app_state._runtime_activity.get(key, 0) + 1
+        return key
+
+    def end_runtime_activity(key: tuple[str | None, str | None]) -> None:
+        remaining = app_state._runtime_activity.get(key, 0) - 1
+        if remaining > 0:
+            app_state._runtime_activity[key] = remaining
+        else:
+            app_state._runtime_activity.pop(key, None)
+
+    async def calculate_tool_decision(
+        request: ToolBeforeRequest,
+        s: AppState,
+        decision_key: tuple[str | None, ...],
+    ) -> ToolDecision:
+        activity_key = begin_runtime_activity(request)
+        try:
+            start = time.monotonic()
+            s.metrics.inc("scheduler_tool_requests_total")
+            if s.trace_writer is not None:
+                s.trace_writer.record_tool_started(request)
+            s.predictor.record_tool_started(request)
+            ambient_snapshot = s.tool_monitor.sampler.snapshot(
+                request.resource_scope
+            )
+            ambient_before_mb = _ambient_before_mb(
+                request,
+                ambient_snapshot.rss_bytes,
+            )
+            prediction = await s.predictor.predict(
+                request,
+                ambient_before_mb=ambient_before_mb,
+            )
+            if s.trace_writer is not None:
+                s.trace_writer.record_tool_prediction(request, prediction)
+            decision = await s.policy.decide(
+                request,
+                SchedulingContext(
+                    prediction=prediction,
+                    placement=PlacementAdvice(),
+                ),
+            )
+            s._tool_decisions_by_event_id[decision_key] = (
+                request.params_digest,
+                request.tool_name,
+                decision,
+            )
+            while len(s._tool_decisions_by_event_id) > 10_000:
+                oldest = next(iter(s._tool_decisions_by_event_id))
+                s._tool_decisions_by_event_id.pop(oldest, None)
+            if decision.action == "allow":
+                s.tool_monitor.begin(request, prediction.resource_class)
+                if s.docker_exec_observer is not None:
+                    s.docker_exec_observer.begin_tool(request)
+            s.metrics.inc("scheduler_tool_decisions_total")
+            s.metrics.decision_latencies.append(time.monotonic() - start)
+            return decision
+        finally:
+            end_runtime_activity(activity_key)
+
     @app.post("/v1/decisions/tool")
     async def decide_tool(
         request: ToolBeforeRequest,
         s: AppState = Depends(get_state),
         _: None = Depends(auth),
     ):
-        original_request = request
         request = with_sandbox_fallback(request, s)
-        start = time.monotonic()
-        s.metrics.inc("scheduler_tool_requests_total")
-        if s.trace_writer is not None:
-            s.trace_writer.record_tool_started(request)
-        s.predictor.record_tool_started(request)
-        ambient_snapshot = s.tool_monitor.sampler.snapshot(request.resource_scope)
-        ambient_before_mb = _ambient_before_mb(request, ambient_snapshot.rss_bytes)
-        prediction = await s.predictor.predict(
-            request,
-            ambient_before_mb=ambient_before_mb,
-        )
-        if s.trace_writer is not None:
-            s.trace_writer.record_tool_prediction(request, prediction)
-        decision = await s.policy.decide(
-            request,
-            SchedulingContext(prediction=prediction, placement=PlacementAdvice()),
-        )
-        if decision.action == "allow":
-            s.tool_monitor.begin(request, prediction.resource_class)
-            if s.docker_exec_observer is not None:
-                s.docker_exec_observer.begin_tool(original_request)
-        s.metrics.inc("scheduler_tool_decisions_total")
-        s.metrics.decision_latencies.append(time.monotonic() - start)
-        return decision
+        decision_key = correlation_key(request, request.event_id)
+        cached_decision = s._tool_decisions_by_event_id.get(decision_key)
+        if cached_decision is not None:
+            cached_digest, cached_tool, decision = cached_decision
+            if (
+                cached_digest != request.params_digest
+                or cached_tool != request.tool_name
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="tool_event_id_payload_mismatch",
+                )
+            return decision
+        task = s._decision_tasks.get(decision_key)
+        if task is None:
+            task = asyncio.create_task(
+                calculate_tool_decision(request, s, decision_key)
+            )
+            s._decision_tasks[decision_key] = task
+        try:
+            return await asyncio.shield(task)
+        finally:
+            if task.done() and s._decision_tasks.get(decision_key) is task:
+                s._decision_tasks.pop(decision_key, None)
 
     @app.post("/v1/events/tool-completed")
     async def complete_tool(
@@ -779,11 +1139,35 @@ def create_app(state: AppState | None = None) -> FastAPI:
         s: AppState = Depends(get_state),
         _: None = Depends(auth),
     ) -> dict[str, bool]:
+        if event.execution_id is not None:
+            execution_record = s.executions.get(event.execution_id)
+            if (
+                execution_record is not None
+                and not owners_compatible(execution_record.request, event)
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "execution_runtime_mismatch"
+                        if execution_record.request.runtime_id
+                        != event.runtime_id
+                        else "execution_owner_mismatch"
+                    ),
+                )
         # Dedup before touching the deferred Stage-2 finalizer. A duplicate
         # completion must not cancel the only remaining fallback task.
-        if event.event_id in s._completed_tool_event_ids:
+        completion_key = correlation_key(event, event.event_id)
+        if completion_key in s._completed_tool_event_ids:
             return {"stored": False}
-        s._completed_tool_event_ids.add(event.event_id)
+        s._completed_tool_event_ids.add(completion_key)
+        if len(s._completed_tool_event_ids) > 10_000:
+            oldest_unknown = next(
+                key
+                for key in s._completed_tool_event_ids
+                if key != completion_key
+            )
+            s._completed_tool_event_ids.discard(oldest_unknown)
+        activity_key = begin_runtime_activity(event)
         try:
             # Finalize before the scope lookup's async wait.  The plugin may
             # time out its completion POST and issue a telemetry GET; keeping
@@ -803,11 +1187,19 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 else None
             )
             if inferred_scope is not None:
-                s.tool_monitor.bind_scope(event.tool_call_id, inferred_scope)
+                s.tool_monitor.bind_scope(
+                    event.tool_call_id,
+                    inferred_scope,
+                    runtime_id=event.runtime_id,
+                    owner=event,
+                )
                 event = event.model_copy(update={"resource_scope": inferred_scope})
             else:
                 event = completed_with_sandbox_fallback(event, s)
-            await s.leases.release(event.lease_id)
+            await s.leases.release(
+                event.lease_id,
+                owner=owner_key(event),
+            )
             sample = s.tool_monitor.complete(event)
             if sample is not None:
                 s.predictor.observe_completion(event, sample)
@@ -817,6 +1209,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     s._recent_samples.pop()
                 if s.trace_writer is not None:
                     s.trace_writer.record_tool(event, sample)
+            if event.execution_id is not None:
+                s.executions.mark_completed(event.execution_id)
             s.metrics.inc("scheduler_tool_completions_total")
             s.metrics.tool_durations.append(event.duration_ms / 1000)
             return {"stored": True}
@@ -824,7 +1218,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             # Permit a genuine retry when a fallible downstream step failed.
             # If finalization itself did not acquire the run, restore its
             # launcher-exit fallback as well.
-            s._completed_tool_event_ids.discard(event.event_id)
+            s._completed_tool_event_ids.discard(completion_key)
             if event.execution_id is not None:
                 record = s.executions.get(event.execution_id)
                 if (
@@ -839,6 +1233,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
                         record.signal,
                     )
             raise
+        finally:
+            end_runtime_activity(activity_key)
 
     @app.post("/v1/events/model")
     async def model_event(
@@ -846,9 +1242,23 @@ def create_app(state: AppState | None = None) -> FastAPI:
         s: AppState = Depends(get_state),
         _: None = Depends(auth),
     ) -> dict[str, bool]:
-        if s.trace_writer is not None:
-            s.trace_writer.record_model(event)
-        return {"stored": True}
+        model_key = correlation_key(event, event.event_id)
+        if model_key in s._model_event_ids:
+            return {"stored": False}
+        s._model_event_ids.add(model_key)
+        activity_key = begin_runtime_activity(event)
+        while len(s._model_event_ids) > 20_000:
+            oldest = next(iter(s._model_event_ids))
+            s._model_event_ids.discard(oldest)
+        try:
+            if s.trace_writer is not None:
+                s.trace_writer.record_model(event)
+            return {"stored": True}
+        except BaseException:
+            s._model_event_ids.discard(model_key)
+            raise
+        finally:
+            end_runtime_activity(activity_key)
 
     @app.post("/v2/executions", response_model=ExecutionRegistrationResponse)
     async def register_execution(
@@ -856,14 +1266,48 @@ def create_app(state: AppState | None = None) -> FastAPI:
         s: AppState = Depends(get_state),
         _: None = Depends(auth),
     ) -> ExecutionRegistrationResponse:
-        response = s.executions.register(request)
+        previous = s.executions.get(request.execution_id)
+        if previous is not None:
+            # Validate an idempotent retry before touching its existing lease.
+            response = s.executions.register(request)
+            if request.lease_id is not None and not await s.leases.bind_execution(
+                request.lease_id,
+                request.execution_id,
+                owner=owner_key(request),
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="invalid_or_expired_execution_lease",
+                )
+        else:
+            if request.lease_id is not None and not await s.leases.bind_execution(
+                request.lease_id,
+                request.execution_id,
+                owner=owner_key(request),
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="invalid_or_expired_execution_lease",
+                )
+            try:
+                response = s.executions.register(request)
+            except BaseException:
+                await s.leases.release(
+                    request.lease_id,
+                    owner=owner_key(request),
+                )
+                raise
         # For marker-backend executions, start Stage-2 eBPF telemetry
         # immediately if the sandbox container is already known.  (For
         # managed-wrapper, telemetry starts at claim/started time.)
         if (
             getattr(request, "backend", None) == "marker"
         ):
-            container_id = sandbox_container_id(s)
+            container_id = sandbox_container_id(
+                s,
+                request.runtime_id,
+                request.gateway_id,
+            )
             if container_id:
                 begin_stage2_for_record(s, request.execution_id, container_id)
         return response
@@ -899,8 +1343,12 @@ def create_app(state: AppState | None = None) -> FastAPI:
     ) -> ExecutionClaimResponse:
         response = s.executions.claim(request)
         record = s.executions.get(request.execution_id)
-        container_id = sandbox_container_id(s)
         if record is not None:
+            container_id = sandbox_container_id(
+                s,
+                record.request.runtime_id,
+                record.request.gateway_id,
+            )
             # In host-openclaw-sandbox mode the sandbox container is often
             # discovered just after the launcher claims the execution.  Do not
             # consume the Stage-2 observer opportunity with a permanent
@@ -912,7 +1360,11 @@ def create_app(state: AppState | None = None) -> FastAPI:
             # /v1/runtime/sandbox-scope will retry begin_stage2_for_record
             # for all active executions once the sandbox container is
             # discovered.
-            fallback_scope = sandbox_fallback_scope(s)
+            fallback_scope = sandbox_fallback_scope(
+                s,
+                record.request.runtime_id,
+                record.request.gateway_id,
+            )
             if (
                 container_id
                 and (
@@ -950,8 +1402,14 @@ def create_app(state: AppState | None = None) -> FastAPI:
     ) -> ExecutionUpdateResponse:
         response = s.executions.started(execution_id, request)
         record = s.executions.get(execution_id)
-        fallback_scope = sandbox_fallback_scope(s)
-        container_id = request.container_id or sandbox_container_id(s)
+        runtime_id = record.request.runtime_id if record is not None else None
+        gateway_id = record.request.gateway_id if record is not None else None
+        fallback_scope = sandbox_fallback_scope(s, runtime_id, gateway_id)
+        container_id = request.container_id or sandbox_container_id(
+            s,
+            runtime_id,
+            gateway_id,
+        )
         trusted_root_pid = (
             _resolve_host_pid(
                 request.child_pid,
@@ -1050,6 +1508,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
             s.tool_monitor.bind_scope(
                 record.request.tool_call_id,
                 monitor_scope,
+                runtime_id=record.request.runtime_id,
+                owner=record.request,
             )
         if record is not None:
             # The launcher runs inside the sandbox container.  Its
@@ -1102,6 +1562,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         _: None = Depends(auth),
     ) -> ExecutionUpdateResponse:
         response = s.executions.exited(execution_id, request)
+        await s.leases.release_execution(execution_id)
         # The launcher knows process status first, but only OpenClaw's
         # subsequent completion event carries bounded stdout/stderr. Keep the
         # collector open briefly so a masked lookup failure such as

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 
 from agent_scheduler.admission.leases import LeaseManager
 from agent_scheduler.config import SchedulerConfig
-from agent_scheduler.contracts.models import ResourceScope
+from agent_scheduler.contracts.models import ResourceScope, ToolDecision
 from agent_scheduler.executions import ExecutionRegistry
 from agent_scheduler.monitoring.docker_exec import DockerExecObserver
 from agent_scheduler.monitoring.tool_runtime import RealtimeToolMonitor
@@ -32,15 +33,59 @@ class AppState:
     topology: dict
     trace_writer: AgentTestBenchTraceWriter
     _sandbox_scope_override: ResourceScope | None
-    _completed_tool_event_ids: set[str]  # dedup: track completed tool event_ids
+    _completed_tool_event_ids: set[tuple[str | None, ...]]
+    _model_event_ids: set[tuple[str | None, ...]]
+    _tool_decisions_by_event_id: dict[
+        tuple[str | None, ...],
+        tuple[str, str, ToolDecision],
+    ]
+    _decision_tasks: dict[
+        tuple[str | None, ...],
+        asyncio.Task[ToolDecision],
+    ]
+    _runtime_activity: dict[tuple[str | None, str | None], int]
     _stage2_finalize_tasks: dict[str, asyncio.Task[None]]
     _recent_samples: list[dict[str, object]]  # recent tool runtime samples for /v1/tools/recent
+    _sandbox_scopes_by_owner: dict[tuple[str | None, str], ResourceScope] = field(
+        default_factory=dict
+    )
     _max_recent_samples: int = 200  # max samples to keep in memory
 
 
 def build_state(config: SchedulerConfig | None = None) -> AppState:
     cfg = config or SchedulerConfig.from_env()
-    leases = LeaseManager(cfg.max_global_concurrency, cfg.lease_ttl_ms)
+    topology = read_topology(
+        reserve_ratio=cfg.cpu_reserve_ratio,
+        reserve_cores=cfg.cpu_reserve_cores,
+        cpu_budget_cores=cfg.cpu_budget_cores,
+    )
+    detected_tool_budget = topology.get("tool_cpu_budget_cores")
+    auto_active_tools = max(
+        1,
+        math.floor(
+            float(detected_tool_budget)
+            if isinstance(detected_tool_budget, (int, float))
+            else 1.0
+        ),
+    )
+    max_active_tools = cfg.max_global_concurrency or auto_active_tools
+    topology["max_active_tools"] = max_active_tools
+    topology["max_active_tools_source"] = (
+        "configured" if cfg.max_global_concurrency else "effective_cpu_budget"
+    )
+    cpu_budget_mcpu = (
+        max(1, round(float(detected_tool_budget) * 1_000))
+        if topology.get("available") is True
+        and isinstance(detected_tool_budget, (int, float))
+        and float(detected_tool_budget) > 0.0
+        else None
+    )
+    topology["tool_cpu_budget_mcpu"] = cpu_budget_mcpu
+    leases = LeaseManager(
+        max_active_tools,
+        cfg.lease_ttl_ms,
+        cpu_budget_mcpu=cpu_budget_mcpu,
+    )
     predictor = ToolResourcePredictor.from_traces(
         openclaw_trace_paths=cfg.tool_resource_trace_paths,
         stage2_trace_paths=cfg.tool_resource_stage2_trace_paths,
@@ -84,13 +129,19 @@ def build_state(config: SchedulerConfig | None = None) -> AppState:
         docker_exec_observer=docker_exec_observer,
         executions=ExecutionRegistry(),
         metrics=Metrics(),
-        topology=read_topology(),
+        topology=topology,
         trace_writer=AgentTestBenchTraceWriter(
             cfg.trace_dir,
             max_messages_bytes=cfg.trace_max_messages_bytes,
+            default_repo=cfg.tool_resource_repo,
         ),
         _sandbox_scope_override=None,
         _completed_tool_event_ids=set(),
+        _model_event_ids=set(),
+        _tool_decisions_by_event_id={},
+        _decision_tasks={},
+        _runtime_activity={},
         _stage2_finalize_tasks={},
         _recent_samples=[],
+        _sandbox_scopes_by_owner={},
     )

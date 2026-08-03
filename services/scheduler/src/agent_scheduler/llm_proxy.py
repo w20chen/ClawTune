@@ -27,6 +27,7 @@ HOP_BY_HOP_HEADERS = {
     "host",
     "content-length",
 }
+_RUNTIME_API_KEY_PREFIX = "clawtune-runtime."
 
 
 async def proxy_models(request: Request, config: SchedulerConfig) -> Response:
@@ -81,11 +82,14 @@ async def proxy_chat_completions(
     body = json.dumps(payload).encode("utf-8") if payload else body
 
     stream = bool(payload.get("stream"))
+    runtime_id = _runtime_id_from_request(request)
     started_at = time.time()
     action_id = f"llm-proxy-{uuid4()}"
     headers = _forward_headers(request, config)
 
     if stream:
+        if trace_writer is not None:
+            trace_writer.begin_proxy_activity(runtime_id)
         return StreamingResponse(
             _stream_chat(
                 upstream,
@@ -93,6 +97,7 @@ async def proxy_chat_completions(
                 body=body,
                 payload=payload,
                 trace_writer=trace_writer,
+                runtime_id=runtime_id,
                 action_id=action_id,
                 started_at=started_at,
                 config=config,
@@ -106,6 +111,7 @@ async def proxy_chat_completions(
         except Exception as exc:
             _record_proxy_trace(
                 trace_writer,
+                runtime_id=runtime_id,
                 action_id=action_id,
                 payload=payload,
                 response_payload=None,
@@ -139,6 +145,7 @@ async def proxy_chat_completions(
         )
         _record_proxy_trace(
             trace_writer,
+            runtime_id=runtime_id,
             action_id=action_id,
             payload=payload,
             response_payload=response_payload,
@@ -159,6 +166,7 @@ async def proxy_chat_completions(
     response_content = json.dumps(response_payload).encode("utf-8") if isinstance(response_payload, dict) else response.content
     _record_proxy_trace(
         trace_writer,
+        runtime_id=runtime_id,
         action_id=action_id,
         payload=payload,
         response_payload=response_payload,
@@ -182,6 +190,7 @@ async def _stream_chat(
     body: bytes,
     payload: dict[str, Any],
     trace_writer: AgentTestBenchTraceWriter | None,
+    runtime_id: str | None,
     action_id: str,
     started_at: float,
     config: SchedulerConfig,
@@ -296,6 +305,7 @@ async def _stream_chat(
         )
         _record_proxy_trace(
             trace_writer,
+            runtime_id=runtime_id,
             action_id=action_id,
             payload=payload,
             response_payload={"message": message},
@@ -304,11 +314,14 @@ async def _stream_chat(
             stream=True,
             error=effective_error,
         )
+        if trace_writer is not None:
+            trace_writer.end_proxy_activity(runtime_id)
 
 
 def _record_proxy_trace(
     trace_writer: AgentTestBenchTraceWriter | None,
     *,
+    runtime_id: str | None,
     action_id: str,
     payload: dict[str, Any],
     response_payload: Any | None,
@@ -320,6 +333,7 @@ def _record_proxy_trace(
     if trace_writer is None:
         return
     trace_writer.record_llm_proxy_call(
+        runtime_id=runtime_id,
         action_id=action_id,
         provider="llm-proxy",
         model=payload.get("model") if isinstance(payload.get("model"), str) else None,
@@ -333,6 +347,20 @@ def _record_proxy_trace(
         stream=stream,
         error=error,
     )
+
+
+def _runtime_id_from_request(request: Request) -> str | None:
+    explicit = request.headers.get("x-claw-runtime-id", "").strip()
+    if explicit:
+        return explicit[:128]
+    authorization = request.headers.get("authorization", "")
+    if not authorization.lower().startswith("bearer "):
+        return None
+    token = authorization[7:].strip()
+    if not token.startswith(_RUNTIME_API_KEY_PREFIX):
+        return None
+    runtime_id = token[len(_RUNTIME_API_KEY_PREFIX) :].strip()
+    return runtime_id[:128] or None
 
 
 def _upstream_url(config: SchedulerConfig, path: str) -> str | None:

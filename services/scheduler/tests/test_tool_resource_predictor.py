@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import shutil
-import shlex
 import concurrent.futures
+import json
+import shlex
+import shutil
+import threading
 import time
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -253,6 +254,8 @@ def test_predictor_passes_and_rebinds_trusted_execution_root(tmp_path: Path) -> 
         command="echo hi",
         container_id="a" * 64,
         trusted_root_pid=4242,
+        gateway_id="gateway-a",
+        runtime_id="runtime-a",
     )
     assert predictor.begin_execution(
         execution_id="exec-1",
@@ -260,8 +263,90 @@ def test_predictor_passes_and_rebinds_trusted_execution_root(tmp_path: Path) -> 
         command="echo hi",
         container_id="a" * 64,
         trusted_root_pid=4242,
+        gateway_id="gateway-a",
+        runtime_id="runtime-a",
     )
     assert bound_roots == [4242]
+    assert predictor.active_execution_ids("runtime-a") == ("exec-1",)
+    assert predictor.active_execution_ids("runtime-a", "gateway-a") == ("exec-1",)
+    assert predictor.active_execution_ids("runtime-a", "gateway-b") == ()
+    assert predictor.active_execution_ids("runtime-b") == ()
+
+    with pytest.raises(ValueError, match="active execution owner changed"):
+        predictor.begin_execution(
+            execution_id="exec-1",
+            tool_call_id="call-1",
+            command="echo hi",
+            container_id="a" * 64,
+            trusted_root_pid=4242,
+            gateway_id="gateway-b",
+            runtime_id="runtime-a",
+        )
+
+
+def test_concurrent_duplicate_execution_start_attaches_only_once(tmp_path: Path) -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0)),
+        repo="repo-1",
+        artifact_dir=tmp_path / "tool-resource",
+    )
+    starts = 0
+    starts_lock = threading.Lock()
+
+    class SDK:
+        def start_command(self, _context, tool_call_id: str, _command: str):
+            nonlocal starts
+            with starts_lock:
+                starts += 1
+            time.sleep(0.03)
+            return SimpleNamespace(
+                tool_call_id=tool_call_id,
+                _observer=SimpleNamespace(
+                    telemetry_available=True,
+                    unavailable_reason=None,
+                ),
+            )
+
+    predictor._sdk = SDK()  # type: ignore[assignment]
+
+    def begin() -> bool:
+        return predictor.begin_execution(
+            execution_id="same-execution",
+            tool_call_id="same-call",
+            command="printf ok",
+            container_id="a" * 64,
+            gateway_id="gateway",
+            runtime_id="runtime",
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+        assert all(executor.map(lambda _index: begin(), range(64)))
+    assert starts == 1
+
+
+def test_sanitized_execution_ids_cannot_collide_artifact_paths(tmp_path: Path) -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0)),
+        repo="repo-1",
+        artifact_dir=tmp_path / "tool-resource",
+    )
+    fake_sdk = _FakeToolResourceSDK()
+    predictor._sdk = fake_sdk  # type: ignore[assignment]
+
+    for execution_id in ("exec/a", "exec_a"):
+        assert predictor.begin_execution(
+            execution_id=execution_id,
+            tool_call_id=execution_id,
+            command="printf ok",
+            container_id="a" * 64,
+        )
+
+    paths = {context.artifact_path.name for context in fake_sdk.contexts}
+    assert len(paths) == 2
 
 
 def test_predictor_does_not_report_fail_isolated_collector_as_started(
@@ -314,6 +399,85 @@ def test_openclaw_trace_v6_loads_as_tool_resource_observations(tmp_path: Path) -
     assert completed.command == "python -m pytest tests -q"
     assert completed.ts_end - completed.ts_start == pytest.approx(1.2)
     assert completed.peak_memory_mb == 100
+
+
+def test_openclaw_trace_span_repo_overrides_batch_fallback(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.jsonl"
+    _write_trace(trace)
+    records = [
+        json.loads(line)
+        for line in trace.read_text(encoding="utf-8").splitlines()
+    ]
+    for record in records:
+        if record.get("kind") == "tool":
+            record["repo"] = "owner/project"
+    trace.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_openclaw_trace_observations(
+        trace,
+        repo="swe-rebench-batch",
+    )
+    assert len(loaded.completed_calls) == 1
+    assert loaded.completed_calls[0].repo == "owner/project"
+
+    predictor = ToolResourcePredictor.from_openclaw_traces(
+        [trace],
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="swe-rebench-batch",
+    )
+    owner_request = _tool_request(
+        "evt-owner",
+        "call-owner",
+        "python -m pytest tests -q",
+    ).model_copy(update={"repo": "owner/project"})
+    batch_request = _tool_request(
+        "evt-batch",
+        "call-batch",
+        "python -m pytest tests -q",
+    ).model_copy(update={"repo": "swe-rebench-batch"})
+
+    owner = asyncio.run(predictor.predict(owner_request))
+    batch = asyncio.run(predictor.predict(batch_request))
+
+    assert owner.tool_resource["continuous_predictions"]["latency_ms"][
+        "scope"
+    ] == "repo"
+    assert batch.tool_resource["continuous_predictions"]["latency_ms"][
+        "scope"
+    ] is None
+
+
+def test_openclaw_trace_rejects_mismatched_span_repos(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.jsonl"
+    _write_trace(trace)
+    records = [
+        json.loads(line)
+        for line in trace.read_text(encoding="utf-8").splitlines()
+    ]
+    for record in records:
+        if record.get("record_type") == "span_start":
+            record["repo"] = "owner/project-a"
+        elif record.get("record_type") == "span_end":
+            record["repo"] = "owner/project-b"
+    trace.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"tool span 'call-1' repo mismatch"):
+        load_openclaw_trace_observations(trace, repo="swe-rebench-batch")
+
+    predictor = ToolResourcePredictor.from_openclaw_traces(
+        [trace],
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="swe-rebench-batch",
+    )
+    assert predictor.report.openclaw_traces_accepted == 0
+    assert predictor.report.continuous_observations_loaded == 0
+    assert any("repo mismatch" in rejection for rejection in predictor.report.rejections)
 
 
 @pytest.mark.parametrize(
@@ -661,13 +825,14 @@ def test_shared_snapshots_reuse_same_repo_evidence_but_isolate_other_repos() -> 
             )
         )
     )
+    runtime_base_ts = (runtime._last_query_ts or 0.0) + 1.0
     runtime.observe_completed_call(
         CompletedCall(
             repo="12rambau/sepal_ui",
             tool_name="exec",
             command="git status",
-            ts_start=1.0,
-            ts_end=1.2,
+            ts_start=runtime_base_ts,
+            ts_end=runtime_base_ts + 0.2,
             peak_cpu_cores=0.25,
             peak_cpu_cores_eligible=True,
             peak_memory_mb=64.0,
@@ -680,7 +845,7 @@ def test_shared_snapshots_reuse_same_repo_evidence_but_isolate_other_repos() -> 
             repo="12rambau/sepal_ui",
             tool_name="exec",
             command="git status",
-            ts_start=3.0,
+            ts_start=runtime_base_ts + 2.0,
             ambient_before_mb=50.0,
         )
     )
@@ -690,7 +855,7 @@ def test_shared_snapshots_reuse_same_repo_evidence_but_isolate_other_repos() -> 
             repo="other/project",
             tool_name="exec",
             command="git status",
-            ts_start=4.0,
+            ts_start=runtime_base_ts + 3.0,
             ambient_before_mb=60.0,
         )
     )
@@ -710,23 +875,24 @@ def test_shared_snapshots_reuse_same_repo_evidence_but_isolate_other_repos() -> 
             )
         )
     )
+    clause_base_ts = (clause._last_query_ts or 0.0) + 1.0
     clause.observe_completed_clause(
         ClauseObservation(
             repo="12rambau/sepal_ui",
             bin="git",
             argv=("git", "status"),
-            ts_start=1.0,
-            ts_end=1.2,
+            ts_start=clause_base_ts,
+            ts_end=clause_base_ts + 0.2,
             latency_ms=200.0,
         )
     )
     buckets = LatencyBuckets((100.0, 500.0, 2_000.0, 10_000.0))
     same_clause = clause.predict_command_latency_bucket(
-        "12rambau/sepal_ui", "git status", 3.0, buckets
+        "12rambau/sepal_ui", "git status", clause_base_ts + 2.0, buckets
     )
     restored_clause = ClauseResourceKB.from_json_obj(clause.to_json_obj())
     other_clause = restored_clause.predict_command_latency_bucket(
-        "other/project", "git status", 4.0, buckets
+        "other/project", "git status", clause_base_ts + 3.0, buckets
     )
 
     assert same_clause.prediction is not None
@@ -1177,6 +1343,71 @@ def test_tool_resource_predictor_learns_from_completion_without_cold_start() -> 
     ] == "memory prediction requires ambient_before_mb anchor"
 
 
+def test_completion_correlation_isolated_by_runtime_owner() -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+    )
+    first = _tool_request("evt-start-a", "shared-call", "python task_a.py").model_copy(
+        update={"gateway_id": "gateway-a", "runtime_id": "runtime-a"}
+    )
+    second = _tool_request("evt-start-b", "shared-call", "python task_b.py").model_copy(
+        update={"gateway_id": "gateway-b", "runtime_id": "runtime-b"}
+    )
+    predictor.record_tool_started(first)
+    predictor.record_tool_started(second)
+
+    # Omitting the optional agent identity forces the legacy-compatible lookup
+    # while the supplied runtime owner still makes the match unambiguous.
+    completion = _tool_completion("evt-end-b", "shared-call").model_copy(
+        update={
+            "gateway_id": "gateway-b",
+            "runtime_id": "runtime-b",
+            "agent_id": None,
+        }
+    )
+    assert predictor.observe_completion(
+        completion,
+        _runtime_sample("evt-end-b", "shared-call"),
+    ) == 1
+
+    remaining = list(predictor._starts.values())
+    assert remaining == [first]
+
+
+def test_legacy_completion_does_not_guess_between_ambiguous_runtime_owners() -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+    )
+    predictor.record_tool_started(
+        _tool_request("evt-start-a", "shared-call", "python task_a.py").model_copy(
+            update={"gateway_id": "gateway-a", "runtime_id": "runtime-a"}
+        )
+    )
+    predictor.record_tool_started(
+        _tool_request("evt-start-b", "shared-call", "python task_b.py").model_copy(
+            update={"gateway_id": "gateway-b", "runtime_id": "runtime-b"}
+        )
+    )
+
+    completion = _tool_completion("evt-end-legacy", "shared-call").model_copy(
+        update={"agent_id": None}
+    )
+    assert predictor.observe_completion(
+        completion,
+        _runtime_sample("evt-end-legacy", "shared-call"),
+    ) == 1
+
+    # A legacy peer without gateway/runtime identity is compatible with both
+    # starts, so neither owner is consumed or misattributed.
+    assert len(predictor._starts) == 2
+
+
 @pytest.mark.parametrize(
     "attribution_source",
     ["shared-sandbox-container", "shared-runtime-process"],
@@ -1358,6 +1589,14 @@ def test_finish_execution_feeds_and_persists_the_shared_lattice_kb(
         ),
     )
     predictor._runs_by_execution_id["exec-online"] = run
+    prepare_threads: list[str] = []
+    original_prepare = predictor.lattice_kb.prepare
+
+    def track_prepare() -> None:
+        prepare_threads.append(threading.current_thread().name)
+        original_prepare()
+
+    monkeypatch.setattr(predictor.lattice_kb, "prepare", track_prepare)
     monkeypatch.setattr(
         predictor._sdk,
         "finish_command",
@@ -1376,8 +1615,10 @@ def test_finish_execution_feeds_and_persists_the_shared_lattice_kb(
         signal=None,
         succeeded=True,
     )
+    predictor.flush_kb_updates(timeout_seconds=2.0)
 
     assert summary.kb_update_error is None
+    assert prepare_threads == ["clawtune-kb-writer"]
     snapshot = json.loads(
         (tmp_path / "clause-lattice-time-kb.json").read_text(encoding="utf-8")
     )
@@ -1484,6 +1725,7 @@ def test_tool_resource_predictor_persists_clause_kb_prefixes(tmp_path: Path) -> 
         ),
         _runtime_sample("evt-1", "call-1"),
     ) == 1
+    predictor.flush_kb_updates(timeout_seconds=2.0)
     assert not (artifact_dir / "clause-resource-kb.json").is_file()
     assert (artifact_dir / "runtime-tool-resource-kb.json").is_file()
 
@@ -1506,6 +1748,7 @@ def test_tool_resource_predictor_persists_clause_kb_prefixes(tmp_path: Path) -> 
 
 def test_tool_resource_predictor_concurrent_completions_persist_without_lost_update(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     artifact_dir = tmp_path / "tool-resource"
     predictor = ToolResourcePredictor.from_traces(
@@ -1515,6 +1758,18 @@ def test_tool_resource_predictor_concurrent_completions_persist_without_lost_upd
         repo="repo-1",
         artifact_dir=artifact_dir,
     )
+    predictor._kb_writes = tool_resource_predictor._KnowledgeBaseWriteCoordinator(
+        predictor._flush_kb_batch,
+        batch_window_s=0.2,
+    )
+    writes: list[tuple[Path, str]] = []
+    original_write = tool_resource_predictor._write_json_atomic
+
+    def track_write(path: Path, obj) -> None:
+        writes.append((path, threading.current_thread().name))
+        original_write(path, obj)
+
+    monkeypatch.setattr(tool_resource_predictor, "_write_json_atomic", track_write)
     predictor.record_tool_started(_tool_request("evt-1", "call-1", "python task_a.py"))
     predictor.record_tool_started(_tool_request("evt-2", "call-2", "python task_b.py"))
 
@@ -1555,6 +1810,15 @@ def test_tool_resource_predictor_concurrent_completions_persist_without_lost_upd
         )
 
     assert results == [1, 1]
+    predictor.flush_kb_updates(timeout_seconds=2.0)
+    runtime_writes = [
+        (path, thread_name)
+        for path, thread_name in writes
+        if path.name == "runtime-tool-resource-kb.json"
+    ]
+    assert runtime_writes == [
+        (artifact_dir / "runtime-tool-resource-kb.json", "clawtune-kb-writer")
+    ]
     reloaded = ToolResourcePredictor.from_traces(
         openclaw_trace_paths=(),
         stage2_trace_paths=(),
@@ -1853,6 +2117,32 @@ def _tool_request(event_id: str, tool_call_id: str, command: str) -> ToolBeforeR
             has_command_like_field=True,
         ),
         raw_params={"command": command},
+    )
+
+
+def _tool_completion(event_id: str, tool_call_id: str) -> ToolCompletedEvent:
+    return ToolCompletedEvent(
+        schema_version="scheduler.v1",
+        event_id=event_id,
+        occurred_at="2026-07-24T17:29:45Z",
+        plugin_version="0.1.0",
+        run_id="run-1",
+        session_id="session-1",
+        session_key=None,
+        agent_id="main",
+        tool_call_id=tool_call_id,
+        decision_id=None,
+        lease_id=None,
+        execution_id=None,
+        tool_name="exec",
+        duration_ms=1200,
+        succeeded=True,
+        error_type=None,
+        error_digest=None,
+        result_size_bytes=None,
+        raw_result=None,
+        raw_event=None,
+        resource_scope=None,
     )
 
 

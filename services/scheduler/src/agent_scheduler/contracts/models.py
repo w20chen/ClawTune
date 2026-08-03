@@ -11,13 +11,16 @@ class CommonEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal["scheduler.v1"]
-    event_id: str
+    event_id: str = Field(min_length=1, max_length=128)
     occurred_at: str
     plugin_version: str
-    run_id: str | None
-    session_id: str | None
-    session_key: str | None
-    agent_id: str | None
+    run_id: str | None = Field(max_length=128)
+    session_id: str | None = Field(max_length=128)
+    session_key: str | None = Field(max_length=512)
+    agent_id: str | None = Field(max_length=128)
+    gateway_id: str | None = Field(default=None, min_length=1, max_length=128)
+    runtime_id: str | None = Field(default=None, min_length=1, max_length=128)
+    repo: str | None = Field(default=None, min_length=1, max_length=512)
 
 
 class ParamFeatures(BaseModel):
@@ -134,9 +137,15 @@ class StatusResponse(BaseModel):
 class ExecutionRegistrationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    execution_id: str
-    tool_call_id: str | None
-    run_id: str | None
+    execution_id: str = Field(min_length=1, max_length=128)
+    gateway_id: str | None = Field(default=None, min_length=1, max_length=128)
+    runtime_id: str | None = Field(default=None, min_length=1, max_length=128)
+    repo: str | None = Field(default=None, min_length=1, max_length=512)
+    agent_id: str | None = Field(default=None, max_length=128)
+    session_id: str | None = Field(default=None, max_length=128)
+    tool_call_id: str | None = Field(max_length=256)
+    lease_id: str | None = Field(default=None, max_length=128)
+    run_id: str | None = Field(max_length=128)
     session_key_hash: str | None
     command_digest: str
     command: str

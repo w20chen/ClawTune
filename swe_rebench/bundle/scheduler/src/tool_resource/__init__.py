@@ -11,13 +11,13 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from tool_resource.runtime_kb import (
+    from tool_resource.runtime_kb import (  # noqa: F401
         ClauseObservation,
         ClauseResourceKB,
         CommandLatencyBucketPrediction,
         LatencyBuckets,
     )
-    from tool_resource.sdk import (
+    from tool_resource.sdk import (  # noqa: F401
         ColdStartReport,
         CommandObservationToken,
         CommandResult,

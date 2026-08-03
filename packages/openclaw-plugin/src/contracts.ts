@@ -76,6 +76,9 @@ export type CommonEvent = {
   session_id: string | null;
   session_key: string | null;
   agent_id: string | null;
+  gateway_id?: string | null;
+  runtime_id?: string | null;
+  repo?: string | null;
 };
 
 export type ResourceScope = {
@@ -261,7 +264,13 @@ export type ModelEvent = CommonEvent & {
 
 export type ExecutionRegistrationRequest = {
   execution_id: string;
+  gateway_id?: string | null;
+  runtime_id?: string | null;
+  repo?: string | null;
+  agent_id?: string | null;
+  session_id?: string | null;
   tool_call_id: string | null;
+  lease_id?: string | null;
   run_id: string | null;
   session_key_hash: string | null;
   command_digest: string;

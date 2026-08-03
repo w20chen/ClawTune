@@ -85,16 +85,35 @@ test("marker backend injects env without changing command", async () => {
 
   const result = await instrumentExecParams(event, {}, payload, decision, client, baseConfig);
 
-  assert.equal(result.executionId, "call-1");
+  assert.match(result.executionId, /^exec-[0-9a-f-]{36}$/);
   assert.equal(result.params.command, "pytest tests -q");
   assert.equal(result.params.env.KEEP, "1");
-  assert.equal(result.params.env.CLAW_EXECUTION_ID, "call-1");
+  assert.equal(result.params.env.CLAW_EXECUTION_ID, result.executionId);
   assert.equal(result.params.env.CLAW_TOOL_CALL_ID, "call-1");
   assert.equal(result.params.env.CLAW_RUN_ID, "run-1");
   assert.match(result.params.env.CLAW_COMMAND_DIGEST, /^sha256:[a-f0-9]{64}$/);
   assert.match(result.params.env.CLAW_SESSION_HASH, /^sha256:[a-f0-9]{64}$/);
   assert.equal(result.params.env.CLAW_EXECUTION_TOKEN, undefined);
   assert.equal(seen[0].command, "pytest tests -q");
+});
+
+test("exec instrumentation generates unique execution ids for repeated tool_call_id", async () => {
+  const seen = [];
+  const client = {
+    async registerExecution(request) {
+      seen.push(request);
+      return {one_time_token: "token-1"};
+    }
+  };
+  const event = {toolName: "exec", toolCallId: "call-1", params: {command: "pytest tests -q"}};
+
+  const first = await instrumentExecParams(event, {}, payload, decision, client, baseConfig);
+  const second = await instrumentExecParams(event, {}, payload, decision, client, baseConfig);
+
+  assert.notEqual(first.executionId, second.executionId);
+  assert.notEqual(seen[0].execution_id, seen[1].execution_id);
+  assert.equal(seen[0].tool_call_id, "call-1");
+  assert.equal(seen[1].tool_call_id, "call-1");
 });
 
 test("exec instrumentation forwards configured profiling toggles", async () => {
@@ -247,10 +266,11 @@ test("managed-wrapper passes the claim token outside the process argv", async ()
     {...baseConfig, executionBackend: "managed-wrapper", securityBoundaryAccepted: true}
   );
 
-  assert.equal(result.params.command, "'/opt/claw/bin/claw-launch' run --execution-id='call-1'");
+  assert.match(result.executionId, /^exec-[0-9a-f-]{36}$/);
+  assert.equal(result.params.command, `'/opt/claw/bin/claw-launch' run --execution-id='${result.executionId}'`);
   assert.equal(result.params.command.includes("raw-command"), false);
   assert.equal(result.params.command.includes("token-1"), false);
-  assert.equal(result.params.env.CLAW_EXECUTION_ID, "call-1");
+  assert.equal(result.params.env.CLAW_EXECUTION_ID, result.executionId);
   assert.equal(result.params.env.CLAW_EXECUTION_TOKEN, "-token-1");
   assert.equal(result.params.env.CLAW_SCHEDULER_ENDPOINT, "http://localhost:8765");
 });
@@ -280,6 +300,6 @@ test("managed-wrapper can invoke a launcher on a noexec workspace through an int
 
   assert.equal(
     result.params.command,
-    "'/bin/sh' -c 'exec '\\''/bin/sh'\\'' '\\''/workspace/.claw/bin/claw-launch'\\'' run --execution-id='\\''call-1'\\'''"
+    `'/bin/sh' -c 'exec '\\''/bin/sh'\\'' '\\''/workspace/.claw/bin/claw-launch'\\'' run --execution-id='\\''${result.executionId}'\\'''`
   );
 });

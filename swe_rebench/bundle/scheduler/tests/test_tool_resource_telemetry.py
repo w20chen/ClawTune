@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +15,7 @@ from tool_resource.telemetry import (
     ClauseTelemetryCollector,
     RawRun,
     SENTINEL,
+    _SharedBpfSource,
     _attribute,
     _bpf_setup_error_message,
     _clauses_and_lineage,
@@ -31,6 +33,132 @@ from tool_resource.telemetry import (
     validate_clause_telemetry_smoke,
 )
 from tool_resource.mvdan_client import MvdanClientError
+
+
+class _FakeBpfMap:
+    def __init__(self) -> None:
+        self.values: dict[int, object] = {}
+        self.callback = None
+
+    @staticmethod
+    def _key(key: object) -> int:
+        return int(getattr(key, "value", key))
+
+    def __setitem__(self, key: object, value: object) -> None:
+        self.values[self._key(key)] = value
+
+    def __delitem__(self, key: object) -> None:
+        normalized = self._key(key)
+        if normalized not in self.values:
+            raise KeyError(normalized)
+        del self.values[normalized]
+
+    def open_ring_buffer(self, callback) -> None:
+        self.callback = callback
+
+
+class _FakeSharedBpf:
+    constructions = 0
+
+    @staticmethod
+    def get_syscall_fnname(name: str) -> bytes:
+        return f"sys_{name}".encode()
+
+    def __init__(self, *, text: str) -> None:
+        assert "next_exec_sequence" in text
+        type(self).constructions += 1
+        self.maps = {
+            "events": _FakeBpfMap(),
+            "allowed_cgroups": _FakeBpfMap(),
+            "allowed_pid_namespaces": _FakeBpfMap(),
+        }
+        self.kprobes = 0
+        self.kretprobes = 0
+        self.perf_attaches = 0
+        self.perf_detaches = 0
+        self.cleanups = 0
+
+    def __getitem__(self, name: str) -> _FakeBpfMap:
+        return self.maps[name]
+
+    def attach_kprobe(self, **_kwargs: object) -> None:
+        self.kprobes += 1
+
+    def attach_kretprobe(self, **_kwargs: object) -> None:
+        self.kretprobes += 1
+
+    def attach_perf_event(self, **_kwargs: object) -> None:
+        self.perf_attaches += 1
+
+    def detach_perf_event(self, **_kwargs: object) -> None:
+        self.perf_detaches += 1
+
+    def ring_buffer_poll(self, *, timeout: int) -> None:
+        assert timeout == 10
+        time.sleep(0.001)
+
+    def cleanup(self) -> None:
+        self.cleanups += 1
+
+
+def test_shared_bpf_source_keeps_probe_and_poller_count_constant() -> None:
+    _FakeSharedBpf.constructions = 0
+    perf_type = SimpleNamespace(SOFTWARE=1)
+    perf_config = SimpleNamespace(CPU_CLOCK=2)
+    source = _SharedBpfSource(_FakeSharedBpf, perf_type, perf_config)
+    leases = [
+        source.acquire({10_000 + index}, {20_000 + index})[0]
+        for index in range(128)
+    ]
+
+    assert _FakeSharedBpf.constructions == 1
+    assert source.bpf.kprobes == 4
+    assert source.bpf.kretprobes == 2
+    assert source.bpf.perf_attaches == 1
+    assert len(source.bpf["allowed_cgroups"].values) == 128
+    assert len(source.bpf["allowed_pid_namespaces"].values) == 128
+
+    for lease_id in leases[:-1]:
+        source.release(lease_id)
+    assert source.bpf.cleanups == 0
+    assert len(source.bpf["allowed_cgroups"].values) == 1
+    source.release(leases[-1])
+    assert source.events == []
+    source.close()
+    assert source.bpf.perf_detaches == 1
+    assert source.bpf.cleanups == 1
+
+
+def test_bpf_exec_sequence_is_unbounded_by_a_prefilled_userspace_queue() -> None:
+    assert "BPF_ARRAY(next_exec_sequence, u64, 1)" in BPF_PROGRAM
+    assert "exec_sequences" not in BPF_PROGRAM
+    assert "sequence_ready" not in BPF_PROGRAM
+
+
+def test_shared_bpf_source_fans_events_out_without_cross_scope_history() -> None:
+    perf_type = SimpleNamespace(SOFTWARE=1)
+    perf_config = SimpleNamespace(CPU_CLOCK=2)
+    source = _SharedBpfSource(_FakeSharedBpf, perf_type, perf_config)
+    lease_a, buffer_a = source.acquire({101}, {201})
+    lease_b, buffer_b = source.acquire({102}, {202})
+
+    source.route_event(
+        {"type": "exec_boundary", "cgroup_id": 101, "pid_namespace_inode": 201}
+    )
+    source.route_event(
+        {"type": "exec_boundary", "cgroup_id": 102, "pid_namespace_inode": 0}
+    )
+
+    assert [event["cgroup_id"] for event in buffer_a.events] == [101]
+    assert [event["cgroup_id"] for event in buffer_b.events] == [102]
+    source.release(lease_a)
+    assert buffer_a.events == []
+    source.route_event(
+        {"type": "exec_boundary", "cgroup_id": 101, "pid_namespace_inode": 201}
+    )
+    assert buffer_a.events == []
+    source.release(lease_b)
+    source.close()
 
 
 def test_cpu_quota_is_optional_when_controller_is_not_enabled(tmp_path) -> None:

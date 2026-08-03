@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -274,8 +275,11 @@ class ToolResourceSDK:
         self.latency_buckets = latency_buckets
         self.cold_start_report = cold_start_report
         self._owner = object()
+        self._run_lock = threading.RLock()
+        self._kb_lock = threading.RLock()
         self._next_run_id = 0
         self._pending_run_ids: set[int] = set()
+        self._pending_artifact_paths: set[Path] = set()
 
     @classmethod
     def from_traces(
@@ -353,29 +357,37 @@ class ToolResourceSDK:
     ) -> CommandRun:
         """Parse, query, predict, and start telemetry before Docker execution."""
 
-        if context.artifact_path.exists():
-            raise ValueError(
-                f"command telemetry artifact already exists: {context.artifact_path}"
-            )
         query_ts = time.time() if ts_start is None else float(ts_start)
         if not math.isfinite(query_ts):
             raise ValueError("ts_start must be finite")
+        artifact_path = context.artifact_path.resolve()
+        with self._run_lock:
+            if (
+                context.artifact_path.exists()
+                or artifact_path in self._pending_artifact_paths
+            ):
+                raise ValueError(
+                    "command telemetry artifact already exists or is active: "
+                    f"{context.artifact_path}"
+                )
+            run_id = self._next_run_id
+            self._next_run_id += 1
+            self._pending_run_ids.add(run_id)
+            self._pending_artifact_paths.add(artifact_path)
         try:
-            prediction = self._kb.predict_command_latency_bucket(
-                context.repo,
-                command,
-                query_ts,
-                self.latency_buckets,
-            )
+            with self._kb_lock:
+                prediction = self._kb.predict_command_latency_bucket(
+                    context.repo,
+                    command,
+                    query_ts,
+                    self.latency_buckets,
+                )
             prediction_error = None
         except Exception as exc:
             prediction = None
             prediction_error = f"{type(exc).__name__}: {exc}"
         observer = DockerCommandObserver.attach(context)
         token = observer.start(tool_call_id, command)
-        run_id = self._next_run_id
-        self._next_run_id += 1
-        self._pending_run_ids.add(run_id)
         return CommandRun(
             tool_call_id=tool_call_id,
             command=command,
@@ -397,11 +409,12 @@ class ToolResourceSDK:
     ) -> CommandResult:
         """Finalize telemetry, then update the KB only from a valid artifact."""
 
-        if run._owner is not self._owner:
-            raise ValueError("command run belongs to a different SDK")
-        if run._run_id not in self._pending_run_ids:
-            raise ValueError("command run has already been finished")
-        self._pending_run_ids.remove(run._run_id)
+        with self._run_lock:
+            if run._owner is not self._owner:
+                raise ValueError("command run belongs to a different SDK")
+            if run._run_id not in self._pending_run_ids:
+                raise ValueError("command run has already been finished")
+            self._pending_run_ids.remove(run._run_id)
         call_telemetry = run._observer.finish(
             run._observation_token,
             replay_response=workload_result,
@@ -437,13 +450,14 @@ class ToolResourceSDK:
                 call,
                 require_timestamps=True,
             )
-            for observation in observations:
-                self._kb.observe_completed_clause(observation)
+            with self._kb_lock:
+                for observation in observations:
+                    self._kb.observe_completed_clause(observation)
             update_error = None
         except Exception as exc:
             observations = []
             update_error = f"{type(exc).__name__}: {exc}"
-        return CommandResult(
+        result = CommandResult(
             run=run,
             workload_result=workload_result,
             call_telemetry=call_telemetry,
@@ -452,6 +466,11 @@ class ToolResourceSDK:
             kb_observations_added=len(observations),
             kb_update_error=update_error,
         )
+        with self._run_lock:
+            self._pending_artifact_paths.discard(
+                run._observer.context.artifact_path.resolve()
+            )
+        return result
 
 
 def _load_valid_artifact(path: Path) -> dict[str, Any]:

@@ -143,6 +143,32 @@ x86_64 it uses the native platform. An explicit
 the selected platform to Docker without adding unsupported keys to OpenClaw's
 configuration. Results are kept in `swe_rebench/.runtime/`.
 
+Start serially to verify credentials, Docker, OpenClaw, and eBPF together:
+
+```bash
+python3 scripts/clawtune.py benchmark --sample 1 --parallelism 1
+```
+
+Then increase task concurrency explicitly. One benchmark invocation owns one
+machine-wide Sidecar; all concurrent OpenClaw runtimes reuse it and contribute
+to the same batch knowledge base:
+
+```bash
+# Small acceptance run
+python3 scripts/clawtune.py benchmark --sample 8 --parallelism 4
+
+# Large-host example; size this to the actual machine
+python3 scripts/clawtune.py benchmark --sample 128 --parallelism 128
+```
+
+`--sample` selects how many cases run; `--parallelism` limits simultaneous
+cases. Parallelism defaults to `1`, so an upgrade never starts a large batch
+implicitly. CPU capacity is derived from online CPUs, affinity, and cgroup
+limits; `128` is an example, not a hardcoded limit. On a 320-core host, a
+useful future Gateway layout is 8 Gateways with up to 16 sessions each. The
+current benchmark may use independent OpenClaw runtimes with the same
+Plugin-to-Sidecar protocol.
+
 ## Documentation
 
 - [Complete installation and first run](docs/getting-started.md)

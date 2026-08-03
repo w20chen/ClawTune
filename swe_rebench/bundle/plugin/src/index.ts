@@ -47,7 +47,6 @@ import { TRACE_SCHEMA_VERSION } from "./trace/schema.js";
 const pluginVersion = "0.1.1";
 
 // ── Plugin-wide state ──────────────────────────────────────────────────
-let registry: SpanRegistry | null = null;
 
 /** Unique instance ID generated once per plugin load (�?per CLI launch). */
 const instanceId = randomUUID();
@@ -75,14 +74,16 @@ function safeFilename(segment: string | null): string {
  */
 async function getRunWriter(
   traceDir: string,
+  runtimeId: string,
   runId: string | null,
   sessionId: string | null,
   agentId: string | null,
   logger: { warn(message: string, data?: unknown): void },
   flushSpanStart: boolean,
+  ownedWriters: Set<TraceWriter>,
 ): Promise<TraceWriter | null> {
-  const key = runId ?? sessionId;
-  if (!key) {
+  const runKey = runId ?? sessionId;
+  if (!runKey) {
     logger.warn("trace: skipping write, no run_id or session_id available", {
       runId,
       sessionId,
@@ -91,14 +92,22 @@ async function getRunWriter(
     });
     return null;
   }
+  const key = JSON.stringify([traceDir, runtimeId, agentId, sessionId, runKey]);
 
   const existing = runWriters.get(key);
-  if (existing) return existing;
+  if (existing) {
+    ownedWriters.add(existing);
+    return existing;
+  }
 
   // Prevent concurrent creation: if another caller is already creating
   // a writer for this key, wait for it and return the same writer.
   const pending = pendingWriters.get(key);
-  if (pending) return pending;
+  if (pending) {
+    const writer = await pending;
+    if (writer) ownedWriters.add(writer);
+    return writer;
+  }
 
   const promise = (async (): Promise<TraceWriter | null> => {
     // Double-check after acquiring the creation slot
@@ -110,7 +119,10 @@ async function getRunWriter(
     // Note: agent_id is included per-record in the JSONL content.
     // It is omitted from the filename because model hooks (model_call_started,
     // model_call_ended) do not expose agent_id �?an OpenClaw limitation.
-    const filename = `${session}_${run}.jsonl`;
+    const identityDigest = stableDigest([runtimeId, agentId, sessionId, runId])
+      .replace(/^sha256:/, "")
+      .slice(0, 12);
+    const filename = `${safeFilename(runtimeId)}__${session}_${run}__${identityDigest}.jsonl`;
     const { join } = await import("node:path");
     const filePath = join(traceDir, filename);
 
@@ -136,7 +148,9 @@ async function getRunWriter(
 
   pendingWriters.set(key, promise);
   try {
-    return await promise;
+    const writer = await promise;
+    if (writer) ownedWriters.add(writer);
+    return writer;
   } finally {
     pendingWriters.delete(key);
   }
@@ -203,6 +217,10 @@ export default definePluginEntry({
   register(api: HookApi): void {
   const config = loadConfig(api.pluginConfig ?? {});
   const logger = api.logger ?? consoleLogger;
+  const runtimeId = process.env.CLAW_RUNTIME_ID?.trim() || randomUUID();
+  const gatewayId = process.env.CLAW_GATEWAY_ID?.trim() || runtimeId;
+  const runtimeRepo = process.env.CLAW_REPO_KEY?.trim() || null;
+  const ownedWriters = new Set<TraceWriter>();
 
   // ── Auto-start sidecar ───────────────────────────────────────────
   let sidecarLauncher: SidecarLauncherResult | null = null;
@@ -253,7 +271,7 @@ export default definePluginEntry({
   const correlation = new CorrelationMap(300_000, 10_000);
 
   // Initialize trace v6 if trace_dir is configured
-  registry = new SpanRegistry();
+  const registry = new SpanRegistry();
   const traceCfg = config.trace;
 
   // ── Console turn-by-turn logging (verbose mode) ──────────────────
@@ -588,24 +606,25 @@ export default definePluginEntry({
     dumpHookShape(event, context, "before_tool_call");
     const toolName = extractString(event, ["tool_name", "toolName", "name"]) ?? "unknown";
     const toolCallId = extractString(event, ["tool_call_id", "toolCallId", "id"]);
+    const identity = hookIdentity(event, context, runtimeId, gatewayId);
+    const correlationId = correlationKey(identity, toolCallId);
 
     // ── verbose console: tool call ──
-    if (toolCallId) pendingToolNames.set(toolCallId, toolName);
+    if (toolCallId) pendingToolNames.set(correlationId, toolName);
     const paramStr = summarizeToolParams(event);
     consoleVerbose(`■ ${toolName}${paramStr ? ` ${paramStr}` : ""}`);
 
     // Use OpenClaw-provided IDs only. No self-generated fallback.
-    const runId = extractString(event, ["run_id", "runId"]) ?? extractString(context, ["runId", "run_id"]);
-    const sessionId = extractString(event, ["session_id", "sessionId"]) ?? extractString(context, ["sessionId", "session_id"]);
-    const agentId = extractString(event, ["agent_id", "agentId"]) ?? extractString(context, ["agentId", "agent_id"]);
+    const {runId, sessionId, agentId} = identity;
     const traceId = runId ?? sessionId ?? "unknown-run";
+    const registryKey = correlationScopeKey(identity);
 
     // Resolve parent span
     let parentSpanId: string | null = null;
     let correlationStatus: "resolved" | "unresolved" = "unresolved";
     let correlationReason: string | null = null;
     if (toolCallId && registry) {
-      parentSpanId = registry.getToolCallParent(toolCallId);
+      parentSpanId = registry.getToolCallParent(correlationId);
       if (parentSpanId) {
         correlationStatus = "resolved";
       } else {
@@ -624,6 +643,7 @@ export default definePluginEntry({
 
     if (registry) {
       registry.beginSpan({
+        identityKey: registryKey,
         traceId,
         spanId,
         parentSpanId,
@@ -651,7 +671,7 @@ export default definePluginEntry({
         session_id: sessionId,
         run_id: runId,
         agent_id: agentId,
-        sequence_no: registry?.getSpan(traceId, spanId)?.sequenceNo ?? 0,
+        sequence_no: registry?.getSpan(registryKey, spanId)?.sequenceNo ?? 0,
         kind: "tool",
         name: toolName,
         wall_time_ns: startWall.toString(),
@@ -670,16 +690,15 @@ export default definePluginEntry({
           reason: correlationReason,
         } : undefined,
       };
-      const w = await getRunWriter(traceCfg.trace_dir, runId, sessionId, agentId, logger, traceCfg.flush_span_start);
+      const w = await getRunWriter(traceCfg.trace_dir, identity.runtimeId, runId, sessionId, agentId, logger, traceCfg.flush_span_start, ownedWriters);
       if (w) {
         w.writeRecord(spanStart);
-        if (registry) registry.markStartWritten(traceId, spanId);
+        if (registry) registry.markStartWritten(registryKey, spanId);
       }
     }
 
     // Original sidecar logic
-    const payload = buildToolBefore(event, config);
-    mergeContext(payload, context);
+    const payload = buildToolBefore(event, context, config, runtimeId, gatewayId, runtimeRepo);
     payload.resource_scope = buildTrustedResourceScope(event, context) ?? buildRuntimeResourceScope(toolName);
     try {
       const decision = await client.decide(payload);
@@ -691,11 +710,17 @@ export default definePluginEntry({
         };
       }
       const instrumentation = await instrumentExecParams(event, context, payload, decision, client, config);
-      correlation.set(payload.tool_call_id, decision.decision_id, decision.lease_id, instrumentation.executionId);
+      correlation.set(
+        correlationId,
+        decision.decision_id,
+        decision.lease_id,
+        instrumentation.executionId,
+        toolCallId,
+      );
 
       // Store command variants for span_end
       if (registry) {
-        const span = registry.getSpan(traceId, spanId);
+        const span = registry.getSpan(registryKey, spanId);
         if (span) {
           span.metadata = {
             requestedCommand: instrumentation.requestedCommand,
@@ -734,23 +759,26 @@ export default definePluginEntry({
     dumpHookShape(event, context, "after_tool_call");
     const toolName = extractString(event, ["tool_name", "toolName", "name"]) ?? "unknown";
     const toolCallId = extractString(event, ["tool_call_id", "toolCallId", "id"]);
+    const identity = hookIdentity(event, context, runtimeId, gatewayId);
+    const correlationId = correlationKey(identity, toolCallId);
     // Use OpenClaw-provided IDs only. No self-generated fallback.
-    const runId = extractString(event, ["run_id", "runId"]) ?? extractString(context, ["runId", "run_id"]);
-    const traceId = runId ?? extractString(event, ["session_id", "sessionId"]) ?? extractString(context, ["sessionId", "session_id"]) ?? "unknown-run";
+    const {runId} = identity;
+    const traceId = runId ?? identity.sessionId ?? "unknown-run";
+    const registryKey = correlationScopeKey(identity);
     const spanId = toolCallId ?? traceId;
 
     const endWall = wallClockNowNs();
     const endMono = monotonicNowNs();
 
     // Look up the active span for start times
-    const activeSpan = registry?.endSpan(traceId, spanId) ?? null;
+    const activeSpan = registry?.endSpan(registryKey, spanId) ?? null;
 
     // Clean up parent mapping
     if (toolCallId && registry) {
-      registry.clearToolCallParent(toolCallId);
+      registry.clearToolCallParent(correlationId);
     }
     // Clean up pending tool name mapping
-    if (toolCallId) pendingToolNames.delete(toolCallId);
+    if (toolCallId) pendingToolNames.delete(correlationId);
 
     const startMono = activeSpan?.startMonotonicTimeNs ?? endMono;
     const startWall = activeSpan?.startWallTimeNs ?? endWall;
@@ -760,10 +788,13 @@ export default definePluginEntry({
     // Original sidecar logic
     const completion = buildCompletion(
       event,
-      correlation.take(extractString(event, ["tool_call_id", "toolCallId", "id"])),
-      config
+      context,
+      correlation.take(correlationId, toolCallId),
+      config,
+      runtimeId,
+      gatewayId,
+      runtimeRepo,
     );
-    mergeContext(completion, context);
     completion.resource_scope = buildTrustedResourceScope(event, context) ?? buildRuntimeResourceScope(toolName);
     if (completion.resource_scope === null && completion.execution_id !== null) {
       try {
@@ -933,7 +964,7 @@ export default definePluginEntry({
           reason: "span_start_not_found",
         } : undefined,
       };
-      const w = await getRunWriter(traceCfg.trace_dir, runId, finalSessionId, finalAgentId, logger, traceCfg.flush_span_start);
+      const w = await getRunWriter(traceCfg.trace_dir, identity.runtimeId, runId, finalSessionId, finalAgentId, logger, traceCfg.flush_span_start, ownedWriters);
       if (w) w.writeRecord(spanEnd);
     }
   });
@@ -945,13 +976,17 @@ export default definePluginEntry({
   api.on("model_call_started", async (event: unknown, context: unknown) => {
     dumpHookShape(event, context, "model_call_started");
     const callId = extractString(event, ["call_id", "callId", "id"]);
+    const identity = hookIdentity(event, context, runtimeId, gatewayId);
+    const callCorrelationId = correlationKey(
+      identity,
+      callId === null ? null : `__llm_call__${callId}`,
+    );
     // Use OpenClaw-provided IDs only. No self-generated fallback.
-    const runId = extractString(event, ["run_id", "runId"]) ?? extractString(context, ["runId", "run_id"]);
-    const sessionId = extractString(event, ["session_id", "sessionId"]) ?? extractString(context, ["sessionId", "session_id"]);
-    const agentId = extractString(event, ["agent_id", "agentId"]) ?? extractString(context, ["agentId", "agent_id"]);
+    const {runId, sessionId, agentId} = identity;
     const model = extractString(event, ["model"]) ?? "unknown-model";
     const provider = extractString(event, ["provider"]);
     const traceId = runId ?? sessionId ?? "unknown-run";
+    const registryKey = correlationScopeKey(identity);
 
     // ── verbose console: turn start ──
     turnCounter++;
@@ -966,6 +1001,7 @@ export default definePluginEntry({
 
     if (registry) {
       registry.beginSpan({
+        identityKey: registryKey,
         traceId,
         spanId,
         parentSpanId: null, // Top-level LLM calls have no parent
@@ -991,7 +1027,7 @@ export default definePluginEntry({
         session_id: sessionId,
         run_id: runId,
         agent_id: agentId,
-        sequence_no: registry?.getSpan(traceId, spanId)?.sequenceNo ?? 0,
+        sequence_no: registry?.getSpan(registryKey, spanId)?.sequenceNo ?? 0,
         kind: "llm",
         name: model,
         wall_time_ns: startWall.toString(),
@@ -1009,20 +1045,20 @@ export default definePluginEntry({
           execution_id: null,
         },
       };
-      const w = await getRunWriter(traceCfg.trace_dir, runId, sessionId, agentId, logger, traceCfg.flush_span_start);
+      const w = await getRunWriter(traceCfg.trace_dir, identity.runtimeId, runId, sessionId, agentId, logger, traceCfg.flush_span_start, ownedWriters);
       if (w) {
         w.writeRecord(spanStart);
-        if (registry) registry.markStartWritten(traceId, spanId);
+        if (registry) registry.markStartWritten(registryKey, spanId);
       }
     }
 
     // Original sidecar logic
-    await reportModel(client, logger, event, "model_call_started", config);
+    await reportModel(client, logger, event, context, "model_call_started", config, runtimeId, gatewayId, runtimeRepo);
 
     // Store call_id -> span_id mapping for model_call_ended
     if (callId && registry) {
       // Store in a side map (we can use tool_call_parent with a special prefix)
-      registry.setToolCallParent(`__llm_call__${callId}`, spanId);
+      registry.setToolCallParent(callCorrelationId, spanId);
     }
   });
 
@@ -1031,17 +1067,23 @@ export default definePluginEntry({
   api.on("model_call_ended", async (event: unknown, context: unknown) => {
     dumpHookShape(event, context, "model_call_ended");
     const callId = extractString(event, ["call_id", "callId", "id"]);
+    const identity = hookIdentity(event, context, runtimeId, gatewayId);
+    const callCorrelationId = correlationKey(
+      identity,
+      callId === null ? null : `__llm_call__${callId}`,
+    );
     // Use OpenClaw-provided IDs only. No self-generated fallback.
-    const runId = extractString(event, ["run_id", "runId"]) ?? extractString(context, ["runId", "run_id"]);
-    const traceId = runId ?? extractString(event, ["session_id", "sessionId"]) ?? extractString(context, ["sessionId", "session_id"]) ?? "unknown-run";
+    const {runId} = identity;
+    const traceId = runId ?? identity.sessionId ?? "unknown-run";
+    const registryKey = correlationScopeKey(identity);
 
     // Look up the span_id from the started event
     let spanId = callId ?? "";
     if (callId && registry) {
-      const mappedSpanId = registry.getToolCallParent(`__llm_call__${callId}`);
+      const mappedSpanId = registry.getToolCallParent(callCorrelationId);
       if (mappedSpanId) {
         spanId = mappedSpanId;
-        registry.clearToolCallParent(`__llm_call__${callId}`);
+        registry.clearToolCallParent(callCorrelationId);
       }
     }
     if (!spanId) {
@@ -1052,7 +1094,7 @@ export default definePluginEntry({
     const endWall = wallClockNowNs();
     const endMono = monotonicNowNs();
 
-    const activeSpan = registry?.endSpan(traceId, spanId) ?? null;
+    const activeSpan = registry?.endSpan(registryKey, spanId) ?? null;
     const startMono = activeSpan?.startMonotonicTimeNs ?? endMono;
     const durNs = durationNs(startMono, endMono);
 
@@ -1075,7 +1117,7 @@ export default definePluginEntry({
     if (registry) {
       const toolCalls = extractToolCallsFromResponse(event);
       for (const tcId of toolCalls) {
-        registry.setToolCallParent(tcId, spanId);
+        registry.setToolCallParent(correlationKey(identity, tcId), spanId);
       }
     }
 
@@ -1147,12 +1189,12 @@ export default definePluginEntry({
           reason: "span_start_not_found",
         } : undefined,
       };
-      const w = await getRunWriter(traceCfg.trace_dir, runId, finalSessionId, finalAgentId, logger, traceCfg.flush_span_start);
+      const w = await getRunWriter(traceCfg.trace_dir, identity.runtimeId, runId, finalSessionId, finalAgentId, logger, traceCfg.flush_span_start, ownedWriters);
       if (w) w.writeRecord(spanEnd);
     }
 
     // Original sidecar logic
-    await reportModel(client, logger, event, "model_call_ended", config);
+    await reportModel(client, logger, event, context, "model_call_ended", config, runtimeId, gatewayId, runtimeRepo);
   });
 
   // ── Shutdown handling ────────────────────────────────────────────────
@@ -1179,7 +1221,7 @@ export default definePluginEntry({
       sidecarLauncher.cleanup();
     }
 
-    if (registry && runWriters.size > 0) {
+    if (traceCfg.trace_dir && (ownedWriters.size > 0 || registry.listActiveSpans().length > 0)) {
       const activeSpans = registry.listActiveSpans();
       const endWall = wallClockNowNs();
       const endMono = monotonicNowNs();
@@ -1225,14 +1267,26 @@ export default definePluginEntry({
             coverage_reason: "not_applicable",
           },
         };
-        // Write to the span's run writer
-        const w = runWriters.get(span.runId ?? span.traceId);
+        // Write only to this plugin registration's runtime-scoped writer.
+        const w = await getRunWriter(
+          traceCfg.trace_dir,
+          runtimeId,
+          span.runId,
+          span.sessionId,
+          span.agentId,
+          logger,
+          traceCfg.flush_span_start,
+          ownedWriters,
+        );
         if (w) w.writeRecord(spanEnd);
       }
-      // Close all writers on shutdown
-      for (const w of runWriters.values()) {
+      for (const w of ownedWriters) {
         await w.close();
       }
+      for (const [key, writer] of runWriters.entries()) {
+        if (ownedWriters.has(writer)) runWriters.delete(key);
+      }
+      ownedWriters.clear();
     }
   }
 
@@ -1254,22 +1308,101 @@ export default definePluginEntry({
 
 // ── Helper functions ───────────────────────────────────────────────────
 
-function common(event: unknown): CommonEvent {
+type HookIdentity = {
+  gatewayId: string;
+  runtimeId: string;
+  agentId: string | null;
+  sessionId: string | null;
+  sessionKey: string | null;
+  runId: string | null;
+};
+
+/** Resolve one hook's Gateway -> runtime -> session -> run owner chain. */
+function hookIdentity(
+  event: unknown,
+  context: unknown,
+  fallbackRuntimeId: string,
+  gatewayId: string,
+): HookIdentity {
   const runtimeSessionKey = getRuntimeSessionKey();
-  const sessionKey = extractString(event, ["session_key", "sessionKey"]) ?? runtimeSessionKey;
+  const sessionKey = extractString(event, ["session_key", "sessionKey"])
+    ?? extractString(context, ["sessionKey", "session_key"])
+    ?? runtimeSessionKey;
+  const sessionId = extractString(event, ["session_id", "sessionId"])
+    ?? extractString(context, ["sessionId", "session_id"])
+    ?? sessionKey;
+  const explicitRuntimeId = extractString(event, ["runtime_id", "runtimeId"])
+    ?? extractString(context, ["runtimeId", "runtime_id"]);
+  const configuredRuntimeId = process.env.CLAW_RUNTIME_ID?.trim() || null;
+  const derivedRuntimeId = sessionId === null
+    ? fallbackRuntimeId
+    : `session-${stableDigest([gatewayId, sessionId]).replace(/^sha256:/, "").slice(0, 48)}`;
+  return {
+    gatewayId: gatewayId.slice(0, 128),
+    runtimeId: (explicitRuntimeId ?? configuredRuntimeId ?? derivedRuntimeId).slice(0, 128),
+    agentId: extractString(event, ["agent_id", "agentId"])
+      ?? extractString(context, ["agentId", "agent_id"])
+      ?? getRuntimeAgentId(),
+    sessionId,
+    sessionKey,
+    runId: extractString(event, ["run_id", "runId"])
+      ?? extractString(context, ["runId", "run_id"])
+      ?? getRuntimeRunId(),
+  };
+}
+
+function correlationScopeKey(identity: HookIdentity): string {
+  return JSON.stringify([
+    identity.gatewayId,
+    identity.runtimeId,
+    identity.agentId,
+    identity.sessionId,
+    identity.runId,
+  ]);
+}
+
+function correlationKey(identity: HookIdentity, callId: string | null): string {
+  return JSON.stringify([
+    identity.gatewayId,
+    identity.runtimeId,
+    identity.agentId,
+    identity.sessionId,
+    identity.runId,
+    callId,
+  ]);
+}
+
+function common(
+  event: unknown,
+  context: unknown,
+  runtimeId: string,
+  gatewayId: string,
+  repo: string | null,
+): CommonEvent {
+  const identity = hookIdentity(event, context, runtimeId, gatewayId);
   return {
     schema_version: "scheduler.v1",
     event_id: randomUUID(),
     occurred_at: new Date().toISOString(),
     plugin_version: pluginVersion,
-    run_id: extractString(event, ["run_id", "runId"]) ?? getRuntimeRunId(),
-    session_id: extractString(event, ["session_id", "sessionId"]) ?? sessionKey,
-    session_key: sessionKey,
-    agent_id: extractString(event, ["agent_id", "agentId"]) ?? getRuntimeAgentId()
+    run_id: identity.runId,
+    session_id: identity.sessionId,
+    session_key: identity.sessionKey,
+    agent_id: identity.agentId,
+    gateway_id: identity.gatewayId,
+    runtime_id: identity.runtimeId,
+    repo,
   };
 }
 
-function buildToolBefore(event: unknown, config: PluginConfig): ToolBeforeRequest {
+function buildToolBefore(
+  event: unknown,
+  context: unknown,
+  config: PluginConfig,
+  runtimeId: string,
+  gatewayId: string,
+  repo: string | null,
+): ToolBeforeRequest {
   const params = isRecord(event) ? (event as Record<string, unknown>).params ?? (event as Record<string, unknown>).arguments ?? (event as Record<string, unknown>).input ?? null : null;
   const safeParams = redact(params);
   const toolName = extractString(event, ["tool_name", "toolName", "name"]) ?? "unknown";
@@ -1278,7 +1411,7 @@ function buildToolBefore(event: unknown, config: PluginConfig): ToolBeforeReques
     ? (config.trace.redact_sensitive_data ? redact(event) : jsonSafe(event))
     : null;
   return {
-    ...common(event),
+    ...common(event, context, runtimeId, gatewayId, repo),
     tool_call_id: extractString(event, ["tool_call_id", "toolCallId", "id"]),
     tool_name: toolName,
     tool_kind: extractString(event, ["tool_kind", "toolKind", "kind"]),
@@ -1293,18 +1426,14 @@ function buildToolBefore(event: unknown, config: PluginConfig): ToolBeforeReques
   };
 }
 
-function mergeContext(payload: CommonEvent, context: unknown): void {
-  const runtimeSessionKey = getRuntimeSessionKey();
-  payload.run_id = payload.run_id ?? extractString(context, ["runId", "run_id"]) ?? getRuntimeRunId();
-  payload.session_key = payload.session_key ?? extractString(context, ["sessionKey", "session_key"]) ?? runtimeSessionKey;
-  payload.session_id = payload.session_id ?? extractString(context, ["sessionId", "session_id"]) ?? payload.session_key;
-  payload.agent_id = payload.agent_id ?? extractString(context, ["agentId", "agent_id"]) ?? getRuntimeAgentId();
-}
-
 function buildCompletion(
   event: unknown,
+  context: unknown,
   prior: {decisionId: string | null; leaseId: string | null; executionId: string | null} | null,
-  config: PluginConfig
+  config: PluginConfig,
+  runtimeId: string,
+  gatewayId: string,
+  repo: string | null,
 ): ToolCompletedEvent {
   const errorType = extractString(event, ["error_type", "errorType"]);
   const includeOutput = config.trace?.include_tool_outputs !== false; // default true
@@ -1319,7 +1448,7 @@ function buildCompletion(
     ? (config.trace.redact_sensitive_data ? redact(event) : jsonSafe(event))
     : null;
   return {
-    ...common(event),
+    ...common(event, context, runtimeId, gatewayId, repo),
     tool_call_id: extractString(event, ["tool_call_id", "toolCallId", "id"]),
     decision_id: prior?.decisionId ?? null,
     lease_id: prior?.leaseId ?? null,
@@ -1391,8 +1520,12 @@ async function reportModel(
   client: SidecarClient,
   logger: {warn(message: string, data?: unknown): void},
   event: unknown,
+  context: unknown,
   eventType: "model_call_started" | "model_call_ended",
-  config: PluginConfig
+  config: PluginConfig,
+  runtimeId: string,
+  gatewayId: string,
+  repo: string | null,
 ): Promise<void> {
   try {
     const includeRaw = config.trace?.include_raw_events === true;
@@ -1400,7 +1533,7 @@ async function reportModel(
       ? (config.trace.redact_sensitive_data ? redact(event) : jsonSafe(event))
       : null;
     const payload: ModelEvent = {
-      ...common(event),
+      ...common(event, context, runtimeId, gatewayId, repo),
       event_type: eventType,
       call_id: extractString(event, ["call_id", "callId", "id"]),
       provider: extractString(event, ["provider"]),

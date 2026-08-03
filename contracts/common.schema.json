@@ -5,13 +5,16 @@
   "required": ["schema_version", "event_id", "occurred_at", "plugin_version", "run_id", "session_id", "session_key", "agent_id"],
   "properties": {
     "schema_version": {"const": "scheduler.v1"},
-    "event_id": {"type": "string", "minLength": 1},
+    "event_id": {"type": "string", "minLength": 1, "maxLength": 128},
     "occurred_at": {"type": "string", "format": "date-time"},
     "plugin_version": {"type": "string", "minLength": 1},
-    "run_id": {"type": ["string", "null"]},
-    "session_id": {"type": ["string", "null"]},
-    "session_key": {"type": ["string", "null"]},
-    "agent_id": {"type": ["string", "null"]}
+    "run_id": {"type": ["string", "null"], "maxLength": 128},
+    "session_id": {"type": ["string", "null"], "maxLength": 128},
+    "session_key": {"type": ["string", "null"], "maxLength": 512},
+    "agent_id": {"type": ["string", "null"], "maxLength": 128},
+    "gateway_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 128},
+    "runtime_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 128},
+    "repo": {"type": ["string", "null"], "minLength": 1, "maxLength": 512}
   },
   "additionalProperties": true
 }

@@ -62,7 +62,12 @@ class Metrics:
         if sample.net_tx_bytes_per_s is not None:
             self.latest_tool_net_tx_bytes_per_second = sample.net_tx_bytes_per_s
 
-    def render(self, active_leases: int, active_tool_monitors: int = 0) -> str:
+    def render(
+        self,
+        active_leases: int,
+        active_tool_monitors: int = 0,
+        active_lease_mcpu: int = 0,
+    ) -> str:
         lines = []
         names = [
             "scheduler_tool_requests_total",
@@ -80,6 +85,8 @@ class Metrics:
             lines.append(f"{name} {self.counters[name]}")
         lines.append("# TYPE scheduler_active_leases gauge")
         lines.append(f"scheduler_active_leases {active_leases}")
+        lines.append("# TYPE scheduler_active_lease_millicores gauge")
+        lines.append(f"scheduler_active_lease_millicores {active_lease_mcpu}")
         lines.append("# TYPE scheduler_active_tool_monitors gauge")
         lines.append(f"scheduler_active_tool_monitors {active_tool_monitors}")
         lines.append("# TYPE scheduler_tool_cpu_seconds_total counter")

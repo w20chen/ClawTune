@@ -28,6 +28,7 @@ export class SpanRegistry {
   // ── Span Lifecycle ─────────────────────────────────────────────────
 
   beginSpan(args: {
+    identityKey?: string;
     traceId: string;
     spanId: string;
     parentSpanId: string | null;
@@ -40,8 +41,9 @@ export class SpanRegistry {
     startMonotonicTimeNs: bigint;
   }): ActiveSpan {
     const runId = args.runId ?? args.traceId;
-    const key = spanKey(runId, args.spanId);
-    const sequenceNo = this.nextSequence(runId);
+    const identityKey = args.identityKey ?? runId;
+    const key = spanKey(identityKey, args.spanId);
+    const sequenceNo = this.nextSequence(identityKey);
 
     const span: ActiveSpan = {
       traceId: args.traceId,

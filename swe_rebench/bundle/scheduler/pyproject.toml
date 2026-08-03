@@ -39,7 +39,12 @@ addopts = "--basetemp ../../.pytest-tmp"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+exclude = ["src/tool_time/_lattice_vendor"]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+[[tool.mypy.overrides]]
+module = "tool_time._lattice_vendor.*"
+ignore_errors = true

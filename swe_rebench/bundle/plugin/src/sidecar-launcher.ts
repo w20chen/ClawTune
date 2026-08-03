@@ -84,7 +84,12 @@ const sharedLaunchesSymbol = Symbol.for(
   "clawtune.openclaw-plugin.sidecar-launches.v1",
 );
 
-type SharedLaunchRegistry = Map<string, Promise<SidecarLauncherResult>>;
+type SharedLaunchEntry = {
+  launch: Promise<SidecarLauncherResult>;
+  references: number;
+};
+
+type SharedLaunchRegistry = Map<string, SharedLaunchEntry>;
 
 function sharedLaunches(): SharedLaunchRegistry {
   const sharedGlobal = globalThis as unknown as {[key: symbol]: unknown};
@@ -153,28 +158,44 @@ export function ensureSidecarRunning(
   const registry = sharedLaunches();
   const existing = registry.get(healthUrl);
   if (existing) {
-    opts.logger.info("joining in-flight sidecar auto-start", {
+    opts.logger.info("joining shared sidecar auto-start", {
       endpoint: opts.endpoint,
     });
-    return existing;
+    return acquireSharedSidecar(registry, healthUrl, existing);
   }
 
   const launch = ensureSidecarRunningOnce(opts).then(makeCleanupIdempotent);
-  registry.set(healthUrl, launch);
+  const entry: SharedLaunchEntry = {launch, references: 0};
+  registry.set(healthUrl, entry);
+  void launch.catch(() => {
+    if (registry.get(healthUrl) === entry) registry.delete(healthUrl);
+  });
+  return acquireSharedSidecar(registry, healthUrl, entry);
+}
 
-  // This is a single-flight coordinator, not a permanent result cache. A
-  // later registration performs a fresh health check. Concurrent callers get
-  // the exact same result and therefore the same idempotent cleanup handle.
-  void launch.then(
-    () => {
-      if (registry.get(healthUrl) === launch) registry.delete(healthUrl);
-    },
-    () => {
-      if (registry.get(healthUrl) === launch) registry.delete(healthUrl);
-    },
-  );
-
-  return launch;
+function acquireSharedSidecar(
+  registry: SharedLaunchRegistry,
+  healthUrl: string,
+  entry: SharedLaunchEntry,
+): Promise<SidecarLauncherResult> {
+  entry.references += 1;
+  return entry.launch.then((result) => {
+    let released = false;
+    return {
+      child: result.child,
+      cleanup: () => {
+        if (released) return;
+        released = true;
+        entry.references = Math.max(0, entry.references - 1);
+        if (entry.references !== 0) return;
+        result.cleanup();
+        if (registry.get(healthUrl) === entry) registry.delete(healthUrl);
+      },
+    };
+  }, (error: unknown) => {
+    entry.references = Math.max(0, entry.references - 1);
+    throw error;
+  });
 }
 
 export function buildPrivilegedSidecarLaunch(

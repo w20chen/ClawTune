@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from agent_scheduler.config import SchedulerConfig
 
 
@@ -51,6 +53,37 @@ def test_scheduler_config_loads_env_file_and_resolves_paths(tmp_path, monkeypatc
 
 def test_scheduler_config_requires_stage2_by_default() -> None:
     assert SchedulerConfig().tool_resource_stage2_required is True
+
+
+def test_scheduler_config_loads_dynamic_cpu_capacity_overrides(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_SCHEDULER_CPU_RESERVE_RATIO", "0.125")
+    monkeypatch.setenv("AGENT_SCHEDULER_CPU_RESERVE_CORES", "7")
+    monkeypatch.setenv("AGENT_SCHEDULER_CPU_BUDGET_CORES", "42.5")
+
+    config = SchedulerConfig.from_env()
+
+    assert config.cpu_reserve_ratio == 0.125
+    assert config.cpu_reserve_cores == 7
+    assert config.cpu_budget_cores == 42.5
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("AGENT_SCHEDULER_CPU_RESERVE_RATIO", "1.01"),
+        ("AGENT_SCHEDULER_CPU_RESERVE_CORES", "-1"),
+        ("AGENT_SCHEDULER_CPU_BUDGET_CORES", "nan"),
+    ],
+)
+def test_scheduler_config_rejects_unsafe_cpu_capacity_values(
+    monkeypatch,
+    name: str,
+    value: str,
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match=name):
+        SchedulerConfig.from_env()
 
 
 def test_scheduler_config_accepts_user_facing_ebpf_required(monkeypatch) -> None:

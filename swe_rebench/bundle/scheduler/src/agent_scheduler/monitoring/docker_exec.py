@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import inspect
 import os
 import shutil
 import socket
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent_scheduler.contracts.models import ResourceScope, ToolBeforeRequest, ToolCompletedEvent
+from agent_scheduler.identity import correlation_key, owners_compatible
 
 
 @dataclass(frozen=True)
@@ -53,7 +55,7 @@ class DockerExecObserver:
         container_prefix: str | None = None,
         match_window_s: float = 1.0,
         max_records: int = 2_000,
-        on_scope: Callable[[str | None, ResourceScope], bool | None] | None = None,
+        on_scope: Callable[..., bool | None] | None = None,
         autostart: bool = True,
     ) -> None:
         self.enabled = enabled
@@ -64,8 +66,10 @@ class DockerExecObserver:
         self.match_window_s = match_window_s
         self.max_records = max_records
         self.on_scope = on_scope
-        self._active: dict[str, _ActiveTool] = {}
-        self._matched: dict[str, DockerExecRecord] = {}
+        self._on_scope_accepts_runtime = _callback_accepts_runtime_id(on_scope)
+        self._on_scope_accepts_owner = _callback_accepts_keyword(on_scope, "owner")
+        self._active: dict[tuple[str | None, ...], _ActiveTool] = {}
+        self._matched: dict[tuple[str | None, ...], DockerExecRecord] = {}
         self._records: list[DockerExecRecord] = []
         self._consumed_exec_ids: set[str] = set()
         self._lock = threading.RLock()
@@ -91,13 +95,31 @@ class DockerExecObserver:
             if container_name and self.container_prefix is None:
                 self.container_prefix = container_name
 
+    def update_runtime_scope(
+        self,
+        owner: ToolBeforeRequest | ToolCompletedEvent | Any,
+        scope: ResourceScope,
+    ) -> None:
+        """Bind a late-discovered container only to matching active tools."""
+
+        with self._lock:
+            for key, active in list(self._active.items()):
+                if not owners_compatible(active.request, owner):
+                    continue
+                request = active.request.model_copy(update={"resource_scope": scope})
+                self._active[key] = _ActiveTool(
+                    request=request,
+                    started_monotonic_s=active.started_monotonic_s,
+                    started_wall_s=active.started_wall_s,
+                )
+
     def begin_tool(self, request: ToolBeforeRequest) -> None:
         if not self.enabled:
             return
         if request.resource_scope is not None and not _is_shared_runtime_scope(request.resource_scope):
             return
         with self._lock:
-            key = _tool_key(request.tool_call_id, request.event_id)
+            key = correlation_key(request)
             active = _ActiveTool(
                 request=request,
                 started_monotonic_s=time.monotonic(),
@@ -115,16 +137,24 @@ class DockerExecObserver:
             return None
         if event.resource_scope is not None and not _is_shared_runtime_scope(event.resource_scope):
             return None
-        key = _tool_key(event.tool_call_id, event.event_id)
+        key = correlation_key(event)
         with self._lock:
             active = self._active.pop(key, None)
             if active is None and event.tool_call_id is not None:
-                active = self._pop_by_tool_call_id(event.tool_call_id)
+                active = self._pop_by_tool_call_id(
+                    event.tool_call_id,
+                    event.runtime_id,
+                    owner=event,
+                )
             if active is None:
-                active = self._pop_unique_by_tool_name(event.tool_name)
+                active = self._pop_unique_by_tool_name(
+                    event.tool_name,
+                    event.runtime_id,
+                    owner=event,
+                )
             if active is None:
                 return None
-            matched_key = _tool_key(active.request.tool_call_id, active.request.event_id)
+            matched_key = correlation_key(active.request)
             record = self._matched.pop(matched_key, None)
             if record is None:
                 record = self._match_record(active, event)
@@ -160,7 +190,7 @@ class DockerExecObserver:
             started_monotonic_s=started_monotonic_s if started_monotonic_s is not None else time.monotonic(),
             started_wall_s=started_wall_s if started_wall_s is not None else time.time(),
         )
-        notification: tuple[str, _ActiveTool, DockerExecRecord] | None = None
+        notification: tuple[tuple[str | None, ...], _ActiveTool, DockerExecRecord] | None = None
         with self._lock:
             if any(
                 existing.exec_id == exec_id and existing.pid is not None
@@ -187,7 +217,7 @@ class DockerExecObserver:
             if record.exec_id not in self._consumed_exec_ids
             and record.pid is not None
             and active.started_monotonic_s - 0.25 <= record.started_monotonic_s <= ended + self.match_window_s
-            and self._container_matches(record.container_id, record.container_name)
+            and self._record_matches_active(record, active)
         ]
         if not candidates:
             return None
@@ -205,13 +235,14 @@ class DockerExecObserver:
     def _match_active_for_record(
         self,
         record: DockerExecRecord,
-    ) -> tuple[str, _ActiveTool, DockerExecRecord] | None:
+    ) -> tuple[tuple[str | None, ...], _ActiveTool, DockerExecRecord] | None:
         if record.exec_id in self._consumed_exec_ids:
             return None
         candidates = [
             (key, active)
             for key, active in self._active.items()
             if key not in self._matched
+            and self._record_matches_active(record, active)
             and active.started_monotonic_s - 0.25
             <= record.started_monotonic_s
             <= time.monotonic() + self.match_window_s
@@ -231,7 +262,7 @@ class DockerExecObserver:
 
     def _notify_scope(
         self,
-        key: str,
+        key: tuple[str | None, ...],
         active: _ActiveTool,
         record: DockerExecRecord | None,
     ) -> None:
@@ -239,7 +270,12 @@ class DockerExecObserver:
             return
         scope = _scope_for_record(record)
         if scope is not None:
-            bound = self.on_scope(active.request.tool_call_id, scope)
+            kwargs: dict[str, Any] = {}
+            if self._on_scope_accepts_runtime:
+                kwargs["runtime_id"] = active.request.runtime_id
+            if self._on_scope_accepts_owner:
+                kwargs["owner"] = active.request
+            bound = self.on_scope(active.request.tool_call_id, scope, **kwargs)
             if bound is False:
                 # The process exited before the sampler could take a PID
                 # baseline.  Keep the shared fallback and do not later relabel
@@ -255,15 +291,57 @@ class DockerExecObserver:
             return container_name.startswith(self.container_prefix)
         return self.container_id is None and self.container_prefix is None
 
-    def _pop_by_tool_call_id(self, tool_call_id: str) -> _ActiveTool | None:
+    def _record_matches_active(
+        self,
+        record: DockerExecRecord,
+        active: _ActiveTool,
+    ) -> bool:
+        scope = active.request.resource_scope
+        if scope is not None and scope.container_id:
+            expected = _short_container_id(scope.container_id)
+            actual = _short_container_id(record.container_id)
+            return bool(
+                expected
+                and actual
+                and (actual.startswith(expected) or expected.startswith(actual))
+            )
+        # A scoped runtime without an exact container is not eligible for
+        # time-nearest matching against arbitrary host Docker events.
+        if active.request.runtime_id is not None:
+            return False
+        return self._container_matches(record.container_id, record.container_name)
+
+    def _pop_by_tool_call_id(
+        self,
+        tool_call_id: str,
+        runtime_id: str | None,
+        *,
+        owner: ToolCompletedEvent | None = None,
+    ) -> _ActiveTool | None:
         for key, active in list(self._active.items()):
-            if active.request.tool_call_id == tool_call_id:
+            if (
+                active.request.tool_call_id == tool_call_id
+                and active.request.runtime_id == runtime_id
+                and (owner is None or owners_compatible(active.request, owner))
+            ):
                 self._active.pop(key, None)
                 return active
         return None
 
-    def _pop_unique_by_tool_name(self, tool_name: str) -> _ActiveTool | None:
-        matches = [(key, active) for key, active in self._active.items() if active.request.tool_name == tool_name]
+    def _pop_unique_by_tool_name(
+        self,
+        tool_name: str,
+        runtime_id: str | None,
+        *,
+        owner: ToolCompletedEvent | None = None,
+    ) -> _ActiveTool | None:
+        matches = [
+            (key, active)
+            for key, active in self._active.items()
+            if active.request.tool_name == tool_name
+            and active.request.runtime_id == runtime_id
+            and (owner is None or owners_compatible(active.request, owner))
+        ]
         if len(matches) != 1:
             return None
         key, active = matches[0]
@@ -498,8 +576,25 @@ def _scope_for_record(record: DockerExecRecord) -> ResourceScope | None:
     )
 
 
-def _tool_key(tool_call_id: str | None, event_id: str) -> str:
-    return tool_call_id or event_id
+def _callback_accepts_runtime_id(callback: Callable[..., Any] | None) -> bool:
+    return _callback_accepts_keyword(callback, "runtime_id")
+
+
+def _callback_accepts_keyword(
+    callback: Callable[..., Any] | None,
+    name: str,
+) -> bool:
+    if callback is None:
+        return False
+    try:
+        parameters = inspect.signature(callback).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == name
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
 
 
 def _is_shared_runtime_scope(scope: ResourceScope) -> bool:

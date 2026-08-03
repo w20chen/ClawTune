@@ -9,6 +9,7 @@ workspace.
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import math
 import os
@@ -21,6 +22,7 @@ import tempfile
 import threading
 import time
 import traceback
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -62,6 +64,8 @@ _SANDBOX_TASK_PATH = ":".join(
 # OpenClaw talks only to the loopback Scheduler proxy in host-sandbox mode.
 # Keep the real upstream credential exclusively in the sidecar environment.
 _LOCAL_PROXY_API_KEY = "clawtune-local-proxy"
+_RUNTIME_PROXY_API_KEY_PREFIX = "clawtune-runtime."
+_BENCHMARK_GATEWAY_ID = "swe-rebench"
 
 _TOOL_RESOURCE_KB_SCHEMAS = {
     "runtime-tool-resource-kb.json": "runtime_tool_resource_kb_v1",
@@ -115,10 +119,17 @@ def run_host_sandbox_task(
     bundle_dir: Path,
     shared_kb_dir: Path | None = None,
     sidecar_port: int | None = None,
+    shared_sidecar_trace_dir: Path | None = None,
     manage_sidecar: bool = True,
     post_sandbox_scope: bool = True,
 ) -> ContainerResult:
-    """Run one task with host OpenClaw and OpenClaw Docker sandbox."""
+    """Run one task with host OpenClaw and OpenClaw Docker sandbox.
+
+    The runner, never the OpenClaw plugin, owns the sidecar lifecycle.  With
+    ``manage_sidecar=True`` this function owns a task-local sidecar.  Otherwise
+    the batch runner owns the supplied shared sidecar and this function only
+    drains and snapshots its runtime-specific output.
+    """
     started = time.monotonic()
     deadline = _task_deadline(config, started)
     trace_dir.mkdir(parents=True, exist_ok=True)
@@ -126,6 +137,7 @@ def run_host_sandbox_task(
     openclaw_home = trace_dir / "openclaw-home"
     sidecar_port = sidecar_port or _free_port()
     sidecar = None
+    sandbox_image: str | None = None
     exit_code = -1
     error: str | None = None
 
@@ -157,22 +169,25 @@ def run_host_sandbox_task(
             bundle_dir,
             shared_kb_dir=shared_kb_dir,
         )
-        _ensure_openclaw_sandbox_image(
+        sandbox_image = _ensure_openclaw_sandbox_image(
             task.image,
             trace_dir,
             config.docker.platform,
+            runtime_id=_runtime_id(workspace),
             deadline=deadline,
         )
         _verify_sandbox_launcher(
             trace_dir,
             workspace,
             config.docker.platform,
+            sandbox_image=sandbox_image,
             deadline=deadline,
         )
         _verify_sandbox_task_environment(
             trace_dir,
             workspace,
             config.docker.platform,
+            sandbox_image=sandbox_image,
             deadline=deadline,
         )
         _remaining_task_seconds(deadline, phase="sandbox preflight")
@@ -198,6 +213,7 @@ def run_host_sandbox_task(
             openclaw_home=openclaw_home,
             sidecar_port=sidecar_port,
             workspace=workspace,
+            sandbox_image=sandbox_image,
             config=config,
             deadline=deadline,
         )
@@ -264,6 +280,35 @@ def run_host_sandbox_task(
         raise
     finally:
         cleanup_error: BaseException | None = None
+        if not manage_sidecar and shared_sidecar_trace_dir is not None:
+            runtime_id = _runtime_id(workspace)
+            try:
+                _drain_runtime(
+                    sidecar_port,
+                    runtime_id,
+                    gateway_id=_BENCHMARK_GATEWAY_ID,
+                )
+            except BaseException as exc:
+                # A failed drain means the snapshot may be incomplete, but it
+                # must not make already durable telemetry disappear.  This is
+                # especially important when one shared sidecar serves many
+                # concurrent runtimes: the batch owner remains alive and the
+                # per-runtime JSONL files are still the best diagnostic record.
+                cleanup_error = exc
+            try:
+                _collect_runtime_traces(
+                    shared_sidecar_trace_dir,
+                    trace_dir,
+                    runtime_id,
+                )
+            except BaseException as exc:
+                cleanup_error = cleanup_error or exc
+            finally:
+                _delete_runtime_scope(
+                    sidecar_port,
+                    runtime_id,
+                    gateway_id=_BENCHMARK_GATEWAY_ID,
+                )
         try:
             _cleanup_openclaw_sandbox_containers(
                 trace_dir,
@@ -272,13 +317,15 @@ def run_host_sandbox_task(
                 strict=True,
             )
         except BaseException as exc:
-            cleanup_error = exc
+            cleanup_error = cleanup_error or exc
         finally:
             try:
                 if sidecar is not None:
                     _stop_process(sidecar)
             except BaseException as exc:
                 cleanup_error = cleanup_error or exc
+            if sandbox_image is not None:
+                _remove_sandbox_image(sandbox_image)
             if cleanup_error is not None and error is None:
                 error = f"task cleanup failed: {cleanup_error}"
             _write_result_summary(trace_dir, task, workspace, exit_code, error)
@@ -388,54 +435,21 @@ def _ensure_openclaw_sandbox_image(
     trace_dir: Path,
     platform: str = "",
     *,
+    runtime_id: str | None = None,
     deadline: float | None = None,
-) -> None:
-    """Tag the swe-rebench task image as the OpenClaw sandbox image.
+) -> str:
+    """Create a runtime-private tag for the OpenClaw sandbox image.
 
-    OpenClaw uses ``openclaw-sandbox:bookworm-slim`` as its default Docker
-    sandbox image.  Instead of building a minimal image from scratch, we
-    re-tag the swe-rebench task image so the sandbox inherits all of the
-    compilers, libraries, and tools that the upstream SWE-Rebench task
-    expects.
+    A global ``openclaw-sandbox:bookworm-slim`` tag is unsafe: concurrent
+    cases can retag it to different task images between configuration and
+    container creation.  The runtime ID is unique per isolated workspace.
     """
-    sandbox_image = "openclaw-sandbox:bookworm-slim"
+    if runtime_id is None:
+        runtime_id = "image-" + hashlib.sha256(
+            task_image.encode("utf-8")
+        ).hexdigest()[:20]
+    sandbox_image = f"clawtune-sandbox:{runtime_id}"
     docker = _require_executable("docker")
-
-    # Only re-tag when the task image differs from the current sandbox tag.
-    # ``docker image inspect`` reports the digest, so we compare the actual
-    # image identity rather than just the tag name.
-    tag_needed = True
-    inspect_sandbox = subprocess.run(
-        [docker, "image", "inspect", sandbox_image],
-        capture_output=True,
-        text=True,
-        timeout=_remaining_task_seconds(deadline, phase="sandbox image inspection"),
-    )
-    if inspect_sandbox.returncode == 0:
-        try:
-            sandbox_info = json.loads(inspect_sandbox.stdout)[0]
-            sandbox_digest = sandbox_info.get("RepoDigests", [None])[0]
-        except (json.JSONDecodeError, IndexError, KeyError):
-            sandbox_digest = None
-
-        inspect_task = subprocess.run(
-            [docker, "image", "inspect", task_image],
-            capture_output=True,
-            text=True,
-            timeout=_remaining_task_seconds(deadline, phase="task image inspection"),
-        )
-        if inspect_task.returncode == 0:
-            try:
-                task_info = json.loads(inspect_task.stdout)[0]
-                task_digest = task_info.get("RepoDigests", [None])[0]
-            except (json.JSONDecodeError, IndexError, KeyError):
-                task_digest = None
-
-            if sandbox_digest and task_digest and sandbox_digest == task_digest:
-                tag_needed = False
-
-    if not tag_needed:
-        return
 
     log_path = trace_dir / "sandbox-image-build.log"
     with log_path.open("w", encoding="utf-8") as log:
@@ -451,6 +465,22 @@ def _ensure_openclaw_sandbox_image(
             f"openclaw_sandbox_image_tag_failed exit={result.returncode}: "
             f"{_tail_text(log_path, 2000)}"
         )
+    return sandbox_image
+
+
+def _remove_sandbox_image(sandbox_image: str) -> None:
+    docker = shutil.which("docker")
+    if docker is None or not sandbox_image.startswith("clawtune-sandbox:"):
+        return
+    try:
+        subprocess.run(
+            [docker, "image", "rm", sandbox_image],
+            capture_output=True,
+            text=True,
+            timeout=_TASK_CLEANUP_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def _verify_sandbox_launcher(
@@ -458,6 +488,7 @@ def _verify_sandbox_launcher(
     workspace: Path,
     platform: str = "",
     *,
+    sandbox_image: str = "openclaw-sandbox:bookworm-slim",
     deadline: float | None = None,
 ) -> None:
     """Verify launcher mode and the environment its payload will inherit."""
@@ -488,7 +519,7 @@ def _verify_sandbox_launcher(
             "/workspace",
             "--entrypoint",
             "/bin/sh",
-            "openclaw-sandbox:bookworm-slim",
+            sandbox_image,
             "/workspace/.claw/bin/claw-launch",
             "diagnose",
         ],
@@ -534,6 +565,7 @@ def _verify_sandbox_task_environment(
     workspace: Path,
     platform: str = "",
     *,
+    sandbox_image: str = "openclaw-sandbox:bookworm-slim",
     deadline: float | None = None,
 ) -> None:
     """Fail early when a Python task would fall back outside its testbed env."""
@@ -584,7 +616,7 @@ def _verify_sandbox_task_environment(
                 "/workspace",
                 "--entrypoint",
                 "/bin/sh",
-                "openclaw-sandbox:bookworm-slim",
+                sandbox_image,
                 "-c",
                 script,
             ],
@@ -620,12 +652,18 @@ def _install_sandbox_launcher(workspace: Path, bundle_dir: Path) -> None:
         f'export PATH="{_SANDBOX_TASK_PATH}"\n'
         "export CLAW_LAUNCHER_PYTHONPATH=/workspace/.claw/scheduler/src\n"
         "export PYTHONPATH=\"$CLAW_LAUNCHER_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}\"\n"
-        # Keep the launcher on the image's modern system Python even when the
-        # payload PATH selects an older project-specific testbed interpreter.
-        # The forked /bin/sh payload still inherits _SANDBOX_TASK_PATH.
-        "_CLAW_LAUNCHER_PYTHON=/usr/bin/python3\n"
-        "if [ ! -x \"$_CLAW_LAUNCHER_PYTHON\" ]; then "
-        "echo 'claw-launch: /usr/bin/python3 is unavailable' >&2; exit 127; fi\n"
+        # Prefer a modern system interpreter but support images whose only
+        # Python is under /usr/local or a Conda prefix.  The payload itself
+        # still inherits _SANDBOX_TASK_PATH.
+        "_CLAW_LAUNCHER_PYTHON=\n"
+        "for _candidate in \"${CLAW_LAUNCHER_PYTHON:-}\" /usr/bin/python3 "
+        "/usr/local/bin/python3 \"$(command -v python3 2>/dev/null || true)\"; do\n"
+        "  [ -n \"$_candidate\" ] && [ -x \"$_candidate\" ] || continue\n"
+        "  if \"$_candidate\" -c 'import sys; assert sys.version_info >= (3, 10)' "
+        ">/dev/null 2>&1; then _CLAW_LAUNCHER_PYTHON=$_candidate; break; fi\n"
+        "done\n"
+        "if [ -z \"$_CLAW_LAUNCHER_PYTHON\" ]; then "
+        "echo 'claw-launch: Python >=3.10 is unavailable' >&2; exit 127; fi\n"
         "exec \"$_CLAW_LAUNCHER_PYTHON\" -m agent_scheduler.launcher \"$@\"\n",
         encoding="utf-8",
     )
@@ -698,7 +736,9 @@ def _start_sidecar(
             "AGENT_SCHEDULER_POLICY": "observe-only",
             "AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER": "true",
             "AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX": (
-                sandbox_container_prefix or _sandbox_container_prefix(workspace)
+                _sandbox_container_prefix(workspace)
+                if sandbox_container_prefix is None
+                else sandbox_container_prefix
             ),
             "AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED": (
                 "true" if config.runtime.stage2_required else "false"
@@ -1196,6 +1236,7 @@ def _configure_openclaw(
     openclaw_home: Path,
     sidecar_port: int,
     workspace: Path,
+    sandbox_image: str = "openclaw-sandbox:bookworm-slim",
     config: RunnerConfig,
     deadline: float | None = None,
 ) -> None:
@@ -1217,6 +1258,7 @@ def _configure_openclaw(
         endpoint_host=endpoint_host,
         endpoint_sandbox=endpoint_sandbox,
         workspace=workspace,
+        sandbox_image=sandbox_image,
         config=config,
     )
 
@@ -1236,7 +1278,7 @@ def _configure_openclaw(
                 "--custom-base-url",
                 f"{endpoint_host}/v1",
                 "--custom-api-key",
-                _LOCAL_PROXY_API_KEY,
+                _runtime_proxy_api_key(workspace),
                 "--custom-model-id",
                 config.llm.model,
             ],
@@ -1299,6 +1341,7 @@ def _run_openclaw_agent(
             "CLAW_ENABLE_CGROUP": "1",
             "CLAW_LAUNCH_MODE": "fork-exec",
             "CLAW_LAUNCH_DEBUG": "1",
+            "CLAW_REPO_KEY": task_repo_key(task),
         }
     )
     prompt_path = trace_dir / "agent_prompt.txt"
@@ -1470,6 +1513,7 @@ def _openclaw_config(
     endpoint_host: str,
     endpoint_sandbox: str,
     workspace: Path,
+    sandbox_image: str = "openclaw-sandbox:bookworm-slim",
     config: RunnerConfig,
 ) -> str:
     return json.dumps(
@@ -1484,6 +1528,7 @@ def _openclaw_config(
                         "scope": "session",
                         "workspaceAccess": "rw",
                         "docker": {
+                            "image": sandbox_image,
                             "containerPrefix": _sandbox_container_prefix(workspace),
                             "workdir": "/workspace",
                             "network": "bridge",
@@ -1512,6 +1557,12 @@ def _openclaw_config(
                         "enabled": True,
                         "config": {
                             "endpoint": endpoint_host,
+                            # The benchmark runner owns either the task-local
+                            # sidecar or the batch-wide shared sidecar. A
+                            # short-lived plugin instance must never own and
+                            # terminate that host service on process exit.
+                            "autoStartSidecar": False,
+                            "sidecarCommand": "",
                             "mode": "observe",
                             "decisionTimeoutMs": 800,
                             "reportTimeoutMs": 10000,
@@ -1711,10 +1762,18 @@ def _openclaw_env(
     workspace: Path | None = None,
 ) -> dict[str, str]:
     env = os.environ.copy()
-    # The sidecar owns benchmark trace writing.  Do not let a host-level
-    # plugin trace override leak into OpenClaw and re-enable the plugin's
-    # fallback trace writer for SWE-Rebench runs.
-    env.pop("OPENCLAW_AGENT_SCHEDULER_TRACE_DIR", None)
+    # The benchmark runner is the external sidecar owner. Plugin environment
+    # overrides take precedence over openclaw.json, so scrub stale settings
+    # that could make one short-lived OpenClaw process launch/own a sidecar,
+    # connect to a different endpoint, or write a competing local trace.
+    for name in (
+        "OPENCLAW_AGENT_SCHEDULER_AUTO_START_SIDECAR",
+        "OPENCLAW_AGENT_SCHEDULER_SIDECAR_COMMAND",
+        "OPENCLAW_AGENT_SCHEDULER_ENDPOINT",
+        "OPENCLAW_AGENT_SCHEDULER_TRACE_DIR",
+        "OPENCLAW_AGENT_SCHEDULER_PLUGIN_TRACE_DIR",
+    ):
+        env.pop(name, None)
     # A sudo -E benchmark must not inherit credentials/targets for the user's
     # long-running gateway. This run creates an isolated OPENCLAW_HOME; any
     # stale gateway variable can make sessions_spawn announce to the local
@@ -1737,8 +1796,16 @@ def _openclaw_env(
                 if workspace is not None
                 else openclaw_home / ".openclaw" / "workspace"
             ),
-            "VLLM_API_KEY": _LOCAL_PROXY_API_KEY,
-            "LLM_API_KEY": _LOCAL_PROXY_API_KEY,
+            "VLLM_API_KEY": (
+                _runtime_proxy_api_key(workspace)
+                if workspace is not None
+                else _LOCAL_PROXY_API_KEY
+            ),
+            "LLM_API_KEY": (
+                _runtime_proxy_api_key(workspace)
+                if workspace is not None
+                else _LOCAL_PROXY_API_KEY
+            ),
             "CLAW_SCHEDULER_ENDPOINT": f"http://host.docker.internal:{sidecar_port}",
             "CLAW_EXEC_WORKDIR": "/workspace",
             "CLAW_SANDBOX_HOST_WORKSPACE": str(workspace) if workspace is not None else "",
@@ -1746,6 +1813,9 @@ def _openclaw_env(
             "CLAW_ENABLE_CGROUP": "1",
             "CLAW_LAUNCH_MODE": "fork-exec",
             "CLAW_LAUNCH_DEBUG": "1",
+            "CLAW_RUNTIME_ID": _runtime_id(workspace) if workspace is not None else "",
+            "CLAW_GATEWAY_ID": _BENCHMARK_GATEWAY_ID,
+            "CLAW_REPO_KEY": _runtime_id(workspace) if workspace is not None else "openclaw",
         }
     )
     if config.docker.platform:
@@ -1783,7 +1853,12 @@ def _discover_sandbox_scope_loop(
                 scope = _docker_container_scope(docker, container_id)
                 if scope is None:
                     continue
-                _post_sandbox_scope(sidecar_port, scope)
+                _post_sandbox_scope(
+                    sidecar_port,
+                    scope,
+                    runtime_id=_runtime_id(workspace),
+                    gateway_id=_BENCHMARK_GATEWAY_ID,
+                )
                 seen.add(container_id)
                 _write_text(
                     trace_dir / "sandbox_scope.json",
@@ -1881,19 +1956,147 @@ def _read_host_cgroup_path(pid: int) -> str | None:
     return None
 
 
-def _post_sandbox_scope(sidecar_port: int, scope: dict[str, Any]) -> None:
+def _post_sandbox_scope(
+    sidecar_port: int,
+    scope: dict[str, Any],
+    *,
+    runtime_id: str | None = None,
+    gateway_id: str | None = None,
+) -> None:
     data = json.dumps(scope).encode("utf-8")
+    endpoint = (
+        "/v1/runtime/sandbox-scope"
+        if runtime_id is None
+        else (
+            "/v1/gateways/"
+            + urllib.parse.quote(gateway_id, safe="")
+            + "/runtimes/"
+            + urllib.parse.quote(runtime_id, safe="")
+            + "/sandbox-scope"
+            if gateway_id is not None
+            else "/v1/runtime/"
+        + urllib.parse.quote(runtime_id, safe="")
+        + "/sandbox-scope"
+        )
+    )
     request = urllib.request.Request(
-        f"http://127.0.0.1:{sidecar_port}/v1/runtime/sandbox-scope",
+        f"http://127.0.0.1:{sidecar_port}{endpoint}",
         data=data,
         method="POST",
         headers={"content-type": "application/json"},
     )
-    bearer = os.environ.get("AGENT_SCHEDULER_TOKEN") or os.environ.get("OPENCLAW_SCHEDULER_TOKEN")
-    if bearer:
-        request.add_header("authorization", f"Bearer {bearer}")
+    _add_sidecar_auth(request)
     with urllib.request.urlopen(request, timeout=2):
         pass
+
+
+def _drain_runtime(
+    sidecar_port: int,
+    runtime_id: str,
+    *,
+    timeout_seconds: float = 15.0,
+    gateway_id: str | None = None,
+) -> None:
+    endpoint = (
+        f"http://127.0.0.1:{sidecar_port}"
+        + (
+            "/v1/gateways/"
+            + urllib.parse.quote(gateway_id, safe="")
+            + "/runtimes/"
+            + urllib.parse.quote(runtime_id, safe="")
+            + "/drain"
+            if gateway_id is not None
+            else "/v1/runtime/"
+            + urllib.parse.quote(runtime_id, safe="")
+            + "/drain"
+        )
+    )
+    request = urllib.request.Request(endpoint, data=b"", method="POST")
+    _add_sidecar_auth(request)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds + 2.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            f"failed to drain shared sidecar runtime {runtime_id}: {exc}"
+        ) from exc
+    if not isinstance(payload, dict) or payload.get("drained") is not True:
+        raise RuntimeError(
+            f"shared sidecar runtime {runtime_id} did not drain: {payload!r}"
+        )
+
+
+def _collect_runtime_traces(
+    sidecar_trace_dir: Path,
+    task_trace_dir: Path,
+    runtime_id: str,
+) -> list[Path]:
+    sources = sorted(sidecar_trace_dir.glob(f"{runtime_id}__*.jsonl"))
+    copied: list[Path] = []
+    for source in sources:
+        destination = task_trace_dir / source.name
+        temporary = task_trace_dir / f".{source.name}.tmp-{os.getpid()}"
+        # The happy path drains the runtime before this snapshot.  When drain
+        # fails, the shared sidecar may still be appending a record.  Snapshot
+        # only newline-terminated JSONL records so a partial final write cannot
+        # corrupt the task trace and mask all telemetry during inspection.
+        data = source.read_bytes()
+        complete_length = data.rfind(b"\n") + 1
+        temporary.write_bytes(data[:complete_length])
+        os.replace(temporary, destination)
+        copied.append(destination)
+    return copied
+
+
+def _delete_runtime_scope(
+    sidecar_port: int,
+    runtime_id: str,
+    *,
+    gateway_id: str | None = None,
+) -> None:
+    endpoint = (
+        f"http://127.0.0.1:{sidecar_port}"
+        + (
+            "/v1/gateways/"
+            + urllib.parse.quote(gateway_id, safe="")
+            + "/runtimes/"
+            + urllib.parse.quote(runtime_id, safe="")
+            + "/sandbox-scope"
+            if gateway_id is not None
+            else "/v1/runtime/"
+            + urllib.parse.quote(runtime_id, safe="")
+            + "/sandbox-scope"
+        )
+    )
+    request = urllib.request.Request(endpoint, method="DELETE")
+    _add_sidecar_auth(request)
+    try:
+        with urllib.request.urlopen(request, timeout=2):
+            pass
+    except OSError:
+        pass
+
+
+def _add_sidecar_auth(request: urllib.request.Request) -> None:
+    bearer = (
+        os.getenv("AGENT_SCHEDULER_TOKEN")
+        or os.getenv("OPENCLAW_SCHEDULER_TOKEN")
+        or os.getenv("CLAW_SCHEDULER_TOKEN")
+    )
+    if bearer:
+        request.add_header("authorization", f"Bearer {bearer}")
+
+
+def _runtime_id(workspace: Path) -> str:
+    """Return the stable per-OpenClaw-runtime identity for one workspace."""
+
+    return _sandbox_container_prefix(workspace).rstrip("-")
+
+
+def _runtime_proxy_api_key(workspace: Path) -> str:
+    """Encode runtime identity in the local-only proxy credential."""
+
+    return _RUNTIME_PROXY_API_KEY_PREFIX + _runtime_id(workspace)
 
 
 def _walk_dicts(value: Any) -> list[dict[str, Any]]:

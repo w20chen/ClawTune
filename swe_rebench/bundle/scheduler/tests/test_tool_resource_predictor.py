@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
-import shutil
 import shlex
-from types import SimpleNamespace
+import shutil
+import threading
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -251,6 +254,8 @@ def test_predictor_passes_and_rebinds_trusted_execution_root(tmp_path: Path) -> 
         command="echo hi",
         container_id="a" * 64,
         trusted_root_pid=4242,
+        gateway_id="gateway-a",
+        runtime_id="runtime-a",
     )
     assert predictor.begin_execution(
         execution_id="exec-1",
@@ -258,8 +263,90 @@ def test_predictor_passes_and_rebinds_trusted_execution_root(tmp_path: Path) -> 
         command="echo hi",
         container_id="a" * 64,
         trusted_root_pid=4242,
+        gateway_id="gateway-a",
+        runtime_id="runtime-a",
     )
     assert bound_roots == [4242]
+    assert predictor.active_execution_ids("runtime-a") == ("exec-1",)
+    assert predictor.active_execution_ids("runtime-a", "gateway-a") == ("exec-1",)
+    assert predictor.active_execution_ids("runtime-a", "gateway-b") == ()
+    assert predictor.active_execution_ids("runtime-b") == ()
+
+    with pytest.raises(ValueError, match="active execution owner changed"):
+        predictor.begin_execution(
+            execution_id="exec-1",
+            tool_call_id="call-1",
+            command="echo hi",
+            container_id="a" * 64,
+            trusted_root_pid=4242,
+            gateway_id="gateway-b",
+            runtime_id="runtime-a",
+        )
+
+
+def test_concurrent_duplicate_execution_start_attaches_only_once(tmp_path: Path) -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0)),
+        repo="repo-1",
+        artifact_dir=tmp_path / "tool-resource",
+    )
+    starts = 0
+    starts_lock = threading.Lock()
+
+    class SDK:
+        def start_command(self, _context, tool_call_id: str, _command: str):
+            nonlocal starts
+            with starts_lock:
+                starts += 1
+            time.sleep(0.03)
+            return SimpleNamespace(
+                tool_call_id=tool_call_id,
+                _observer=SimpleNamespace(
+                    telemetry_available=True,
+                    unavailable_reason=None,
+                ),
+            )
+
+    predictor._sdk = SDK()  # type: ignore[assignment]
+
+    def begin() -> bool:
+        return predictor.begin_execution(
+            execution_id="same-execution",
+            tool_call_id="same-call",
+            command="printf ok",
+            container_id="a" * 64,
+            gateway_id="gateway",
+            runtime_id="runtime",
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+        assert all(executor.map(lambda _index: begin(), range(64)))
+    assert starts == 1
+
+
+def test_sanitized_execution_ids_cannot_collide_artifact_paths(tmp_path: Path) -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0)),
+        repo="repo-1",
+        artifact_dir=tmp_path / "tool-resource",
+    )
+    fake_sdk = _FakeToolResourceSDK()
+    predictor._sdk = fake_sdk  # type: ignore[assignment]
+
+    for execution_id in ("exec/a", "exec_a"):
+        assert predictor.begin_execution(
+            execution_id=execution_id,
+            tool_call_id=execution_id,
+            command="printf ok",
+            container_id="a" * 64,
+        )
+
+    paths = {context.artifact_path.name for context in fake_sdk.contexts}
+    assert len(paths) == 2
 
 
 def test_predictor_does_not_report_fail_isolated_collector_as_started(
@@ -312,6 +399,85 @@ def test_openclaw_trace_v6_loads_as_tool_resource_observations(tmp_path: Path) -
     assert completed.command == "python -m pytest tests -q"
     assert completed.ts_end - completed.ts_start == pytest.approx(1.2)
     assert completed.peak_memory_mb == 100
+
+
+def test_openclaw_trace_span_repo_overrides_batch_fallback(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.jsonl"
+    _write_trace(trace)
+    records = [
+        json.loads(line)
+        for line in trace.read_text(encoding="utf-8").splitlines()
+    ]
+    for record in records:
+        if record.get("kind") == "tool":
+            record["repo"] = "owner/project"
+    trace.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_openclaw_trace_observations(
+        trace,
+        repo="swe-rebench-batch",
+    )
+    assert len(loaded.completed_calls) == 1
+    assert loaded.completed_calls[0].repo == "owner/project"
+
+    predictor = ToolResourcePredictor.from_openclaw_traces(
+        [trace],
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="swe-rebench-batch",
+    )
+    owner_request = _tool_request(
+        "evt-owner",
+        "call-owner",
+        "python -m pytest tests -q",
+    ).model_copy(update={"repo": "owner/project"})
+    batch_request = _tool_request(
+        "evt-batch",
+        "call-batch",
+        "python -m pytest tests -q",
+    ).model_copy(update={"repo": "swe-rebench-batch"})
+
+    owner = asyncio.run(predictor.predict(owner_request))
+    batch = asyncio.run(predictor.predict(batch_request))
+
+    assert owner.tool_resource["continuous_predictions"]["latency_ms"][
+        "scope"
+    ] == "repo"
+    assert batch.tool_resource["continuous_predictions"]["latency_ms"][
+        "scope"
+    ] is None
+
+
+def test_openclaw_trace_rejects_mismatched_span_repos(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.jsonl"
+    _write_trace(trace)
+    records = [
+        json.loads(line)
+        for line in trace.read_text(encoding="utf-8").splitlines()
+    ]
+    for record in records:
+        if record.get("record_type") == "span_start":
+            record["repo"] = "owner/project-a"
+        elif record.get("record_type") == "span_end":
+            record["repo"] = "owner/project-b"
+    trace.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"tool span 'call-1' repo mismatch"):
+        load_openclaw_trace_observations(trace, repo="swe-rebench-batch")
+
+    predictor = ToolResourcePredictor.from_openclaw_traces(
+        [trace],
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="swe-rebench-batch",
+    )
+    assert predictor.report.openclaw_traces_accepted == 0
+    assert predictor.report.continuous_observations_loaded == 0
+    assert any("repo mismatch" in rejection for rejection in predictor.report.rejections)
 
 
 @pytest.mark.parametrize(
@@ -430,6 +596,9 @@ def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) ->
         "prediction": None,
         "unavailable_reason": "no_clause_latency_evidence",
         "continuous_predictions": {},
+        "lattice_time_predictions": _unavailable_lattice_time_predictions(
+            [("python", ["python", "-m", "pytest", "tests", "-q"])]
+        ),
         "prediction_algorithms": _prediction_algorithms(),
     }
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
@@ -536,6 +705,19 @@ def test_stage2_clause_identity_matches_online_prediction(tmp_path: Path, monkey
             "unavailable_reason": None,
         }
     ]
+    lattice = result.tool_resource["lattice_time_predictions"]
+    assert predictor.report.lattice_observations_loaded == 2
+    assert predictor.report.lattice_kb_available is True
+    assert len(lattice) == 1
+    assert lattice[0]["clause_index"] == 0
+    assert [item["algorithm"] for item in lattice[0]["predictions"]] == [
+        "shrinkage",
+        "loso",
+        "max_cardinality",
+    ]
+    assert [item["prediction_ms"] for item in lattice[0]["predictions"]] == pytest.approx(
+        [1200.0, 1200.0, 1200.0]
+    )
     assert result.tool_resource["continuous_predictions"]["peak_cpu_cores"][
         "conditional_p90"
     ] is None
@@ -596,6 +778,127 @@ def test_openclaw_trace_cold_start_persists_runtime_kb(tmp_path: Path) -> None:
     assert result.resource_class == "latency_medium"
     assert result.tool_resource["prediction"] is None
     assert result.tool_resource["continuous_predictions"]["latency_ms"]["key_kind"] == "command_prefix_depth_3"
+
+
+def test_shipped_runtime_snapshot_produces_public_predictions_for_any_repo(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "tool-resource"
+    artifact_dir.mkdir()
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "traces"
+        / "tool-resource"
+        / "runtime-tool-resource-kb.json"
+    )
+    shutil.copyfile(source, artifact_dir / "runtime-tool-resource-kb.json")
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0, 10_000.0)),
+        repo="12rambau/sepal_ui",
+        artifact_dir=artifact_dir,
+    )
+
+    result = asyncio.run(
+        predictor.predict(_tool_request("evt-public-runtime", "call-public-runtime", "git status"))
+    )
+
+    continuous = result.tool_resource["continuous_predictions"]
+    assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
+    assert continuous["latency_ms"]["scope"] == "public"
+    assert continuous["latency_ms"]["key_kind"] == "global"
+    assert continuous["latency_ms"]["evidence_count"] == 38
+    assert continuous["peak_cpu_cores"]["conditional_p90"] == pytest.approx(1.5)
+    assert continuous["peak_cpu_cores"]["scope"] == "public"
+    assert continuous["peak_cpu_cores"]["evidence_count"] == 38
+
+
+def test_shared_snapshots_reuse_same_repo_evidence_but_isolate_other_repos() -> None:
+    snapshot_dir = (
+        Path(__file__).resolve().parents[3] / "traces" / "tool-resource"
+    )
+    runtime = RuntimeToolResourceKB.from_json_obj(
+        json.loads(
+            (snapshot_dir / "runtime-tool-resource-kb.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    )
+    runtime_base_ts = (runtime._last_query_ts or 0.0) + 1.0
+    runtime.observe_completed_call(
+        CompletedCall(
+            repo="12rambau/sepal_ui",
+            tool_name="exec",
+            command="git status",
+            ts_start=runtime_base_ts,
+            ts_end=runtime_base_ts + 0.2,
+            peak_cpu_cores=0.25,
+            peak_cpu_cores_eligible=True,
+            peak_memory_mb=64.0,
+            peak_memory_mb_eligible=True,
+            ambient_before_mb=40.0,
+        )
+    )
+    same_repo = runtime.query(
+        ToolCallQuery(
+            repo="12rambau/sepal_ui",
+            tool_name="exec",
+            command="git status",
+            ts_start=runtime_base_ts + 2.0,
+            ambient_before_mb=50.0,
+        )
+    )
+    restored_runtime = RuntimeToolResourceKB.from_json_obj(runtime.to_json_obj())
+    other_repo = restored_runtime.query(
+        ToolCallQuery(
+            repo="other/project",
+            tool_name="exec",
+            command="git status",
+            ts_start=runtime_base_ts + 3.0,
+            ambient_before_mb=60.0,
+        )
+    )
+
+    assert same_repo["latency_ms"].scope == "repo"
+    assert same_repo["latency_ms"].conditional_p90 == pytest.approx(200.0)
+    assert same_repo["peak_memory_mb"].conditional_p90 == pytest.approx(74.0)
+    assert other_repo["latency_ms"].scope == "public"
+    assert other_repo["latency_ms"].conditional_p90 == pytest.approx(1200.0)
+    assert other_repo["peak_memory_mb"].scope == "public"
+    assert other_repo["peak_memory_mb"].conditional_p90 == pytest.approx(160.0)
+
+    clause = ClauseResourceKB.from_json_obj(
+        json.loads(
+            (snapshot_dir / "clause-resource-kb.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    )
+    clause_base_ts = (clause._last_query_ts or 0.0) + 1.0
+    clause.observe_completed_clause(
+        ClauseObservation(
+            repo="12rambau/sepal_ui",
+            bin="git",
+            argv=("git", "status"),
+            ts_start=clause_base_ts,
+            ts_end=clause_base_ts + 0.2,
+            latency_ms=200.0,
+        )
+    )
+    buckets = LatencyBuckets((100.0, 500.0, 2_000.0, 10_000.0))
+    same_clause = clause.predict_command_latency_bucket(
+        "12rambau/sepal_ui", "git status", clause_base_ts + 2.0, buckets
+    )
+    restored_clause = ClauseResourceKB.from_json_obj(clause.to_json_obj())
+    other_clause = restored_clause.predict_command_latency_bucket(
+        "other/project", "git status", clause_base_ts + 3.0, buckets
+    )
+
+    assert same_clause.prediction is not None
+    assert same_clause.prediction.scope == "repo"
+    assert other_clause.prediction is not None
+    assert other_clause.prediction.scope == "public"
 
 
 def test_shipped_clause_snapshot_produces_public_global_single_clause_bucket(
@@ -775,6 +1078,12 @@ def test_tool_resource_predictor_exposes_native_unavailable_reason(
         "prediction": None,
         "unavailable_reason": "compound_clause_evidence_incomplete",
         "continuous_predictions": {},
+        "lattice_time_predictions": _unavailable_lattice_time_predictions(
+            [
+                ("python", ["python", "-m", "pytest"]),
+                ("git", ["git", "status"]),
+            ]
+        ),
         "prediction_algorithms": _prediction_algorithms(),
     }
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
@@ -1034,6 +1343,71 @@ def test_tool_resource_predictor_learns_from_completion_without_cold_start() -> 
     ] == "memory prediction requires ambient_before_mb anchor"
 
 
+def test_completion_correlation_isolated_by_runtime_owner() -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+    )
+    first = _tool_request("evt-start-a", "shared-call", "python task_a.py").model_copy(
+        update={"gateway_id": "gateway-a", "runtime_id": "runtime-a"}
+    )
+    second = _tool_request("evt-start-b", "shared-call", "python task_b.py").model_copy(
+        update={"gateway_id": "gateway-b", "runtime_id": "runtime-b"}
+    )
+    predictor.record_tool_started(first)
+    predictor.record_tool_started(second)
+
+    # Omitting the optional agent identity forces the legacy-compatible lookup
+    # while the supplied runtime owner still makes the match unambiguous.
+    completion = _tool_completion("evt-end-b", "shared-call").model_copy(
+        update={
+            "gateway_id": "gateway-b",
+            "runtime_id": "runtime-b",
+            "agent_id": None,
+        }
+    )
+    assert predictor.observe_completion(
+        completion,
+        _runtime_sample("evt-end-b", "shared-call"),
+    ) == 1
+
+    remaining = list(predictor._starts.values())
+    assert remaining == [first]
+
+
+def test_legacy_completion_does_not_guess_between_ambiguous_runtime_owners() -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+    )
+    predictor.record_tool_started(
+        _tool_request("evt-start-a", "shared-call", "python task_a.py").model_copy(
+            update={"gateway_id": "gateway-a", "runtime_id": "runtime-a"}
+        )
+    )
+    predictor.record_tool_started(
+        _tool_request("evt-start-b", "shared-call", "python task_b.py").model_copy(
+            update={"gateway_id": "gateway-b", "runtime_id": "runtime-b"}
+        )
+    )
+
+    completion = _tool_completion("evt-end-legacy", "shared-call").model_copy(
+        update={"agent_id": None}
+    )
+    assert predictor.observe_completion(
+        completion,
+        _runtime_sample("evt-end-legacy", "shared-call"),
+    ) == 1
+
+    # A legacy peer without gateway/runtime identity is compatible with both
+    # starts, so neither owner is consumed or misattributed.
+    assert len(predictor._starts) == 2
+
+
 @pytest.mark.parametrize(
     "attribution_source",
     ["shared-sandbox-container", "shared-runtime-process"],
@@ -1149,8 +1523,118 @@ def test_tool_resource_predictor_explains_unknown_without_cold_start() -> None:
     assert continuous["peak_memory_mb"]["note"] == "memory prediction requires ambient_before_mb anchor"
     assert [item["name"] for item in result.tool_resource["prediction_algorithms"]["enabled"]] == [
         "clause_latency_bucket",
+        "lattice_shrinkage",
+        "lattice_loso",
+        "lattice_max_cardinality",
         "runtime_tool_resource_conditional_p90",
     ]
+
+
+def test_lattice_time_predictions_are_limited_to_ebpf_exec_clauses() -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+    )
+    predictor.lattice_kb.merge_historical(
+        [
+            ClauseObservation(
+                repo="repo-1",
+                bin="python",
+                argv=("python", "task.py"),
+                ts_start=1.0,
+                ts_end=2.0,
+                latency_ms=250.0,
+            )
+        ]
+    )
+    request = _tool_request("evt-read", "call-read", "ignored").model_copy(
+        update={
+            "tool_name": "read",
+            "tool_kind": "file",
+            "raw_params": {"path": "/workspace/task.py"},
+        }
+    )
+
+    result = asyncio.run(predictor.predict(request))
+
+    assert result.tool_resource["lattice_time_predictions"] == []
+
+
+def test_finish_execution_feeds_and_persists_the_shared_lattice_kb(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+        artifact_dir=tmp_path,
+    )
+    now = time.time()
+    observation = ClauseObservation(
+        repo="repo-1",
+        bin="python",
+        argv=("python", "task.py"),
+        ts_start=now - 2.0,
+        ts_end=now - 1.0,
+        latency_ms=250.0,
+    )
+    run = SimpleNamespace(
+        tool_call_id="call-online",
+        _observer=SimpleNamespace(
+            context=SimpleNamespace(artifact_path=tmp_path / "call-online.json")
+        ),
+    )
+    predictor._runs_by_execution_id["exec-online"] = run
+    prepare_threads: list[str] = []
+    original_prepare = predictor.lattice_kb.prepare
+
+    def track_prepare() -> None:
+        prepare_threads.append(threading.current_thread().name)
+        original_prepare()
+
+    monkeypatch.setattr(predictor.lattice_kb, "prepare", track_prepare)
+    monkeypatch.setattr(
+        predictor._sdk,
+        "finish_command",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            kb_observations=(observation,),
+            kb_observations_added=1,
+            kb_update_error=None,
+            call_telemetry={},
+            telemetry_artifact=None,
+        ),
+    )
+
+    summary = predictor.finish_execution(
+        execution_id="exec-online",
+        exit_code=0,
+        signal=None,
+        succeeded=True,
+    )
+    predictor.flush_kb_updates(timeout_seconds=2.0)
+
+    assert summary.kb_update_error is None
+    assert prepare_threads == ["clawtune-kb-writer"]
+    snapshot = json.loads(
+        (tmp_path / "clause-lattice-time-kb.json").read_text(encoding="utf-8")
+    )
+    assert len(snapshot["pending"]) == 1
+    monkeypatch.setattr(
+        "tool_time.lattice_kb._build_node_state",
+        lambda _observations: pytest.fail("prediction rebuilt the prepared lattice"),
+    )
+
+    prediction = asyncio.run(
+        predictor.predict(_tool_request("evt-online", "call-next", "python task.py"))
+    )
+    outcomes = prediction.tool_resource["lattice_time_predictions"][0]["predictions"]
+    assert [item["prediction_ms"] for item in outcomes] == pytest.approx(
+        [250.0, 250.0, 250.0]
+    )
 
 
 def test_tool_resource_predictor_explains_empty_continuous_memory_with_anchor() -> None:
@@ -1241,6 +1725,7 @@ def test_tool_resource_predictor_persists_clause_kb_prefixes(tmp_path: Path) -> 
         ),
         _runtime_sample("evt-1", "call-1"),
     ) == 1
+    predictor.flush_kb_updates(timeout_seconds=2.0)
     assert not (artifact_dir / "clause-resource-kb.json").is_file()
     assert (artifact_dir / "runtime-tool-resource-kb.json").is_file()
 
@@ -1259,6 +1744,97 @@ def test_tool_resource_predictor_persists_clause_kb_prefixes(tmp_path: Path) -> 
     assert result.tool_resource["prediction"] is None
     assert result.tool_resource["unavailable_reason"] == "no_clause_latency_evidence"
     assert result.tool_resource["continuous_predictions"]["latency_ms"]["key_kind"] == "command_prefix_depth_3"
+
+
+def test_tool_resource_predictor_concurrent_completions_persist_without_lost_update(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    artifact_dir = tmp_path / "tool-resource"
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+        artifact_dir=artifact_dir,
+    )
+    predictor._kb_writes = tool_resource_predictor._KnowledgeBaseWriteCoordinator(
+        predictor._flush_kb_batch,
+        batch_window_s=0.2,
+    )
+    writes: list[tuple[Path, str]] = []
+    original_write = tool_resource_predictor._write_json_atomic
+
+    def track_write(path: Path, obj) -> None:
+        writes.append((path, threading.current_thread().name))
+        original_write(path, obj)
+
+    monkeypatch.setattr(tool_resource_predictor, "_write_json_atomic", track_write)
+    predictor.record_tool_started(_tool_request("evt-1", "call-1", "python task_a.py"))
+    predictor.record_tool_started(_tool_request("evt-2", "call-2", "python task_b.py"))
+
+    def complete(event_id: str, tool_call_id: str) -> int:
+        return predictor.observe_completion(
+            ToolCompletedEvent(
+                schema_version="scheduler.v1",
+                event_id=event_id,
+                occurred_at="2026-07-24T17:29:45Z",
+                plugin_version="0.1.0",
+                run_id="run-1",
+                session_id="session-1",
+                session_key=None,
+                agent_id="main",
+                tool_call_id=tool_call_id,
+                decision_id=None,
+                lease_id=None,
+                execution_id=None,
+                tool_name="exec",
+                duration_ms=1200,
+                succeeded=True,
+                error_type=None,
+                error_digest=None,
+                result_size_bytes=None,
+                raw_result=None,
+                raw_event=None,
+                resource_scope=None,
+            ),
+            _runtime_sample(event_id, tool_call_id),
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda args: complete(*args),
+                [("evt-1", "call-1"), ("evt-2", "call-2")],
+            )
+        )
+
+    assert results == [1, 1]
+    predictor.flush_kb_updates(timeout_seconds=2.0)
+    runtime_writes = [
+        (path, thread_name)
+        for path, thread_name in writes
+        if path.name == "runtime-tool-resource-kb.json"
+    ]
+    assert runtime_writes == [
+        (artifact_dir / "runtime-tool-resource-kb.json", "clawtune-kb-writer")
+    ]
+    reloaded = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+        artifact_dir=artifact_dir,
+    )
+    first = asyncio.run(
+        reloaded.predict(_tool_request("evt-next-1", "call-next-1", "python task_a.py"))
+    )
+    second = asyncio.run(
+        reloaded.predict(_tool_request("evt-next-2", "call-next-2", "python task_b.py"))
+    )
+
+    assert first.tool_resource["continuous_predictions"]["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
+    assert second.tool_resource["continuous_predictions"]["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
 
 
 def test_tool_resource_predictor_continuous_memory_uses_ambient_anchor() -> None:
@@ -1503,6 +2079,9 @@ def test_trace_writes_tool_prediction_payload(tmp_path: Path) -> None:
     algorithms = tool_start["prediction"]["tool_resource"]["prediction_algorithms"]
     assert [item["name"] for item in algorithms["enabled"]] == [
         "clause_latency_bucket",
+        "lattice_shrinkage",
+        "lattice_loso",
+        "lattice_max_cardinality",
         "runtime_tool_resource_conditional_p90",
     ]
     assert algorithms["excluded"] == [
@@ -1538,6 +2117,32 @@ def _tool_request(event_id: str, tool_call_id: str, command: str) -> ToolBeforeR
             has_command_like_field=True,
         ),
         raw_params={"command": command},
+    )
+
+
+def _tool_completion(event_id: str, tool_call_id: str) -> ToolCompletedEvent:
+    return ToolCompletedEvent(
+        schema_version="scheduler.v1",
+        event_id=event_id,
+        occurred_at="2026-07-24T17:29:45Z",
+        plugin_version="0.1.0",
+        run_id="run-1",
+        session_id="session-1",
+        session_key=None,
+        agent_id="main",
+        tool_call_id=tool_call_id,
+        decision_id=None,
+        lease_id=None,
+        execution_id=None,
+        tool_name="exec",
+        duration_ms=1200,
+        succeeded=True,
+        error_type=None,
+        error_digest=None,
+        result_size_bytes=None,
+        raw_result=None,
+        raw_event=None,
+        resource_scope=None,
     )
 
 
@@ -1601,6 +2206,27 @@ def _prediction_algorithms() -> dict:
                 ],
             },
             {
+                "name": "lattice_shrinkage",
+                "family": "context_lattice",
+                "source": "LatticeTimeKB",
+                "targets": ["latency_ms"],
+                "outputs": ["clause_point_prediction_ms"],
+            },
+            {
+                "name": "lattice_loso",
+                "family": "context_lattice",
+                "source": "LatticeTimeKB",
+                "targets": ["latency_ms"],
+                "outputs": ["clause_point_prediction_ms"],
+            },
+            {
+                "name": "lattice_max_cardinality",
+                "family": "context_lattice",
+                "source": "LatticeTimeKB",
+                "targets": ["latency_ms"],
+                "outputs": ["clause_point_prediction_ms"],
+            },
+            {
                 "name": "runtime_tool_resource_conditional_p90",
                 "family": "empirical_ecdf",
                 "source": "RuntimeToolResourceKB",
@@ -1616,3 +2242,29 @@ def _prediction_algorithms() -> dict:
             }
         ],
     }
+
+
+def _unavailable_lattice_time_predictions(
+    clauses: list[tuple[str, list[str]]],
+) -> list[dict]:
+    return [
+        {
+            "clause_index": clause_index,
+            "bin": bin_,
+            "argv": argv,
+            "predictions": [
+                {
+                    "algorithm": algorithm,
+                    "prediction_ms": None,
+                    "selected_features": [],
+                    "evidence_count": 0,
+                    "selected_risk": None,
+                    "exact_match": None,
+                    "fallback": None,
+                    "unavailable_reason": "no_lattice_time_evidence",
+                }
+                for algorithm in ("shrinkage", "loso", "max_cardinality")
+            ],
+        }
+        for clause_index, (bin_, argv) in enumerate(clauses)
+    ]

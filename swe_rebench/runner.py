@@ -31,13 +31,17 @@ Or all-in-one::
 from __future__ import annotations
 
 import argparse
+import collections
 import concurrent.futures
 import errno
+import hashlib
 import json
 import math
 import os
+import platform
 import shutil
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -60,6 +64,7 @@ from swe_rebench.host_sandbox import (
     _reset_directory_with_docker,
     _seed_runtime_tool_resource_kb,
     _stop_process,
+    _validate_kb_snapshot_pair,
     run_host_sandbox_task,
 )
 from swe_rebench.prepare import build_bundle, bundle_needs_rebuild
@@ -1636,6 +1641,19 @@ def run_batch(
     export_after: bool = False,
 ) -> BatchReport:
     """Run a batch of tasks and return a summary report."""
+    _validate_runtime_architecture(config)
+    duplicate_ids = sorted(
+        task_id
+        for task_id, count in collections.Counter(
+            task.instance_id for task in tasks
+        ).items()
+        if count > 1
+    )
+    if duplicate_ids:
+        raise ValueError(
+            "duplicate task instance_id values are unsafe for concurrent "
+            f"runtime isolation: {duplicate_ids}"
+        )
     parallelism = max(1, config.batch.parallelism)
     _log(f"\n{'='*60}")
     mode_label = "serial execution" if parallelism == 1 else f"parallelism={parallelism}"
@@ -1656,6 +1674,11 @@ def run_batch(
     start_wall = time.monotonic()
     shared_sidecar_port: int | None = None
     shared_sidecar = None
+    shared_sidecar_trace_dir: Path | None = None
+    defer_container_kb_merge = (
+        normalize_runtime_mode(config.runtime.mode) == "container-openclaw"
+        and parallelism > 1
+    )
 
     # Container mode owns one long-running task container and benefits from a
     # batch pre-pull. Host-sandbox mode exports each repository from its task
@@ -1676,20 +1699,24 @@ def run_batch(
         from swe_rebench.host_sandbox import _free_port, _start_sidecar
 
         shared_sidecar_port = _free_port()
-        sidecar_dir = shared_kb_dir.parent / "sidecar"
-        sidecar_dir.mkdir(parents=True, exist_ok=True)
+        shared_sidecar_trace_dir = shared_kb_dir / "_sidecar"
+        shared_sidecar_trace_dir.mkdir(parents=True, exist_ok=True)
+        # The batch runner is the sole lifecycle owner. Every OpenClaw plugin
+        # is configured as a client of this already-ready endpoint and must
+        # neither auto-start nor stop it when its short-lived process exits.
         # The shared sidecar's DockerExecObserver cannot use a single
         # container-name prefix to match all tasks because each task uses
         # a per-workspace prefix (claw-srb-<hash>-) for correct cleanup
         # isolation during parallel execution.  Scope discovery still works
         # through _discover_sandbox_scope_loop (post_sandbox_scope=True).
         shared_sidecar = _start_sidecar(
-            trace_dir=sidecar_dir,
+            trace_dir=shared_sidecar_trace_dir,
             port=shared_sidecar_port,
             config=config,
             workspace=config.output.trace_root,
             repo="swe-rebench-batch",
             artifact_dir=shared_kb_dir,
+            sandbox_container_prefix="",
         )
         _log(f"Batch sidecar endpoint: http://127.0.0.1:{shared_sidecar_port}")
 
@@ -1760,6 +1787,7 @@ def run_batch(
 
     def run_task(task: TaskDef) -> ContainerResult:
         trace_dir = _task_trace_dir(config, task)
+        task_started = time.monotonic()
         try:
             return _run_one(
                 client,
@@ -1769,18 +1797,26 @@ def run_batch(
                 config,
                 shared_kb_dir=shared_kb_dir,
                 shared_sidecar_port=shared_sidecar_port,
+                shared_sidecar_trace_dir=shared_sidecar_trace_dir,
+                publish_task_kb=not defer_container_kb_merge,
             )
         except KnowledgeBaseSyncError:
             # KB sync failures must abort the batch to avoid propagating
             # corrupted or stale KB state to subsequent tasks.
             raise
         except Exception as exc:
+            # Host-sandbox cleanup can fail after the shared sidecar has
+            # already produced and snapshotted useful runtime telemetry. Keep
+            # those files attached to the failure result so report inspection
+            # does not regress to the misleading "traces=0 lines=0" outcome.
             return ContainerResult(
                 task_id=task.instance_id,
                 image=task.image,
                 exit_code=-1,
                 error=str(exc),
                 trace_dir=trace_dir,
+                trace_files=sorted(trace_dir.glob("*.jsonl")),
+                duration_seconds=time.monotonic() - task_started,
             )
 
     try:
@@ -1857,6 +1893,14 @@ def run_batch(
                         )
             _stop_process(shared_sidecar)
 
+    if defer_container_kb_merge:
+        try:
+            _merge_parallel_task_kbs(config, tasks, shared_kb_dir)
+        except KnowledgeBaseSyncError as exc:
+            report.aborted = True
+            report.abort_reason = str(exc)
+            _log(f"       aborting batch: {exc}")
+
     report.completed = completed_count
     report.failed = failed_count
     report.finished_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -1879,6 +1923,112 @@ def run_batch(
     return report
 
 
+def _validate_runtime_architecture(config: RunnerConfig) -> None:
+    host_arch = platform.machine().strip().lower()
+    mode = normalize_runtime_mode(config.runtime.mode)
+    if (
+        host_arch in {"aarch64", "arm64"}
+        and mode == "container-openclaw"
+        and config.runtime.stage2_required
+    ):
+        raise RuntimeError(
+            "strict Stage-2 telemetry on ARM/Kunpeng requires "
+            "runtime.mode=host-openclaw-sandbox; container-openclaw can run "
+            "an amd64/QEMU userspace against an arm64 kernel and misinterpret "
+            "BCC pt_regs telemetry"
+        )
+
+
+def _container_runtime_id(task: TaskDef) -> str:
+    digest = hashlib.sha256(task.instance_id.encode("utf-8")).hexdigest()[:20]
+    return f"claw-srb-container-{digest}"
+
+
+def _merge_parallel_task_kbs(
+    config: RunnerConfig,
+    tasks: list[TaskDef],
+    shared_kb_dir: Path,
+) -> None:
+    """Deterministically merge concurrent per-container observations.
+
+    Each task learns against the same frozen batch baseline.  We replay its
+    canonical trace and Stage-2 artifacts once at the batch barrier, then use
+    the existing transactional three-snapshot publisher.  This avoids both
+    mixed generations and last-writer-wins data loss.
+    """
+
+    from agent_scheduler.config import SchedulerConfig
+    from agent_scheduler.predictors.tool_resource import ToolResourcePredictor
+    from tool_resource.runtime_kb import LatencyBuckets
+
+    openclaw_paths: list[Path] = []
+    stage2_paths: list[Path] = []
+    snapshot_names = {
+        "runtime-tool-resource-kb.json",
+        "clause-resource-kb.json",
+        "clause-lattice-time-kb.json",
+    }
+    for task in sorted(tasks, key=lambda item: item.instance_id):
+        task_dir = _task_trace_dir(config, task)
+        openclaw_paths.extend(sorted(task_dir.glob("*.jsonl")))
+        artifact_dir = task_dir / "tool-resource"
+        if artifact_dir.is_dir():
+            stage2_paths.extend(
+                path
+                for path in sorted(artifact_dir.glob("*.json"))
+                if path.name not in snapshot_names
+            )
+
+    if not openclaw_paths and not stage2_paths:
+        _log("Parallel KB merge: no completed observations to merge")
+        return
+
+    scheduler_defaults = SchedulerConfig()
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".kb-merge-",
+            dir=shared_kb_dir.parent,
+        ) as temporary_root:
+            staging_root = Path(temporary_root) / "runtime"
+            _seed_runtime_tool_resource_kb(
+                staging_root,
+                config,
+                source_dir=shared_kb_dir,
+            )
+            staging_kb_dir = staging_root / "tool-resource"
+            predictor = ToolResourcePredictor.from_traces(
+                openclaw_trace_paths=openclaw_paths,
+                stage2_trace_paths=stage2_paths,
+                buckets=LatencyBuckets(
+                    scheduler_defaults.tool_resource_latency_buckets_ms
+                ),
+                repo="swe-rebench-batch",
+                artifact_dir=staging_kb_dir,
+                container_executable=(
+                    shutil.which("docker")
+                    or scheduler_defaults.tool_resource_container_executable
+                ),
+            )
+            if predictor.report.rejections:
+                raise KnowledgeBaseSyncError(
+                    "parallel KB merge rejected canonical inputs: "
+                    + "; ".join(predictor.report.rejections)
+                )
+            _validate_kb_snapshot_pair(staging_kb_dir)
+            _publish_tool_resource_kb(staging_root, shared_kb_dir)
+    except KnowledgeBaseSyncError:
+        raise
+    except Exception as exc:
+        raise KnowledgeBaseSyncError(
+            f"parallel KB observation merge failed: {exc}"
+        ) from exc
+
+    _log(
+        "Parallel KB merge: "
+        f"{len(openclaw_paths)} traces, {len(stage2_paths)} Stage-2 artifacts"
+    )
+
+
 def _run_one(
     client: Any,
     task: TaskDef,
@@ -1888,6 +2038,8 @@ def _run_one(
     *,
     shared_kb_dir: Path | None = None,
     shared_sidecar_port: int | None = None,
+    shared_sidecar_trace_dir: Path | None = None,
+    publish_task_kb: bool = True,
 ) -> ContainerResult:
     """Execute a single task container (called in worker thread)."""
     _reset_task_trace_dir(
@@ -1919,6 +2071,7 @@ def _run_one(
         config=config,
         shared_kb_dir=shared_kb_dir,
         shared_sidecar_port=shared_sidecar_port,
+        shared_sidecar_trace_dir=shared_sidecar_trace_dir,
     )
 
     # ── Publish task KB back to shared directory ──
@@ -1926,7 +2079,11 @@ def _run_one(
     # (container mode always; host-sandbox mode only without shared sidecar).
     # When a shared sidecar is active it writes KB directly to shared_kb_dir
     # so no per-task publish is needed and it would conflict with the sidecar.
-    if shared_kb_dir is not None and shared_sidecar_port is None:
+    if (
+        publish_task_kb
+        and shared_kb_dir is not None
+        and shared_sidecar_port is None
+    ):
         try:
             _publish_tool_resource_kb(trace_dir, shared_kb_dir)
         except KnowledgeBaseSyncError as exc:
@@ -1949,6 +2106,7 @@ def _execute_one(
     config: RunnerConfig,
     shared_kb_dir: Path | None,
     shared_sidecar_port: int | None,
+    shared_sidecar_trace_dir: Path | None,
 ) -> ContainerResult:
     """Execute a task after its isolated directory and shared KB are ready."""
 
@@ -1960,6 +2118,7 @@ def _execute_one(
             bundle_dir=bundle_dir,
             shared_kb_dir=shared_kb_dir,
             sidecar_port=shared_sidecar_port,
+            shared_sidecar_trace_dir=shared_sidecar_trace_dir,
             manage_sidecar=shared_sidecar_port is None,
             post_sandbox_scope=True,
         )
@@ -2003,6 +2162,9 @@ def _execute_one(
                 "TASK_BASE_COMMIT": task.base_commit,
                 "TASK_HINT_TEXT": task.hint_text,
                 "AGENT_SCHEDULER_TOOL_RESOURCE_REPO": task_repo_key(task),
+                "CLAW_REPO_KEY": task_repo_key(task),
+                "CLAW_GATEWAY_ID": "swe-rebench-container",
+                "CLAW_RUNTIME_ID": _container_runtime_id(task),
             },
         )
         last_result = result
@@ -2082,6 +2244,11 @@ def _reset_task_trace_dir(
     docker_platform: str = "",
 ) -> None:
     """Remove stale per-task artifacts before a fresh run."""
+    # On Windows, resolving a missing path may produce a normal drive path while
+    # resolving the same path after another worker creates it may produce the
+    # ``\\?\`` extended form.  Create the shared root first so concurrent task
+    # workers resolve both sides against one stable representation.
+    trace_root.mkdir(parents=True, exist_ok=True)
     root = trace_root.resolve()
     target = trace_dir.resolve()
 

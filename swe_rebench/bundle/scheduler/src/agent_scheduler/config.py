@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,9 +13,16 @@ DEFAULT_LLM_UPSTREAM_BASE_URL = "https://api.deepseek.com"
 @dataclass(frozen=True)
 class SchedulerConfig:
     policy: str = "observe-only"
-    max_global_concurrency: int = 4
+    # 0 means derive the technical active-tool ceiling from effective CPU.
+    max_global_concurrency: int = 0
     lease_ttl_ms: int = 300_000
     admission_wait_ms: int = 5_000
+    # Capacity defaults scale with the CPUs actually available to the
+    # sidecar.  An explicit reserve takes precedence over the ratio; the
+    # optional budget caps tool work after the housekeeping reserve.
+    cpu_reserve_ratio: float = 0.05
+    cpu_reserve_cores: int | None = None
+    cpu_budget_cores: float | None = None
     tool_resource_trace_paths: tuple[Path, ...] = ()
     tool_resource_stage2_trace_paths: tuple[Path, ...] = ()
     tool_resource_latency_buckets_ms: tuple[float, ...] = (100.0, 500.0, 2_000.0, 10_000.0)
@@ -61,9 +69,22 @@ class SchedulerConfig:
         tool_resource_artifact_dir = os.getenv("AGENT_SCHEDULER_TOOL_RESOURCE_ARTIFACT_DIR")
         return cls(
             policy=os.getenv("AGENT_SCHEDULER_POLICY", "observe-only"),
-            max_global_concurrency=int(os.getenv("AGENT_SCHEDULER_MAX_GLOBAL_CONCURRENCY", "4")),
+            max_global_concurrency=_nonnegative_int_from_env(
+                "AGENT_SCHEDULER_MAX_GLOBAL_CONCURRENCY",
+                0,
+            ),
             lease_ttl_ms=int(os.getenv("AGENT_SCHEDULER_LEASE_TTL_MS", "300000")),
             admission_wait_ms=int(os.getenv("AGENT_SCHEDULER_ADMISSION_WAIT_MS", "5000")),
+            cpu_reserve_ratio=_ratio_from_env(
+                "AGENT_SCHEDULER_CPU_RESERVE_RATIO",
+                0.05,
+            ),
+            cpu_reserve_cores=_optional_nonnegative_int_from_env(
+                "AGENT_SCHEDULER_CPU_RESERVE_CORES"
+            ),
+            cpu_budget_cores=_optional_nonnegative_float_from_env(
+                "AGENT_SCHEDULER_CPU_BUDGET_CORES"
+            ),
             tool_resource_trace_paths=tuple(
                 _resolve_path(item, env_base)
                 for item in _split_env_paths(tool_resource_traces)
@@ -188,6 +209,50 @@ def _optional_int(value: str | None) -> int | None:
     except ValueError:
         return None
     return parsed if parsed >= 0 else None
+
+
+def _ratio_from_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number between 0 and 1") from exc
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise ValueError(f"{name} must be a number between 0 and 1")
+    return value
+
+
+def _optional_nonnegative_int_from_env(name: str) -> int | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a non-negative integer") from exc
+    if value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return value
+
+
+def _nonnegative_int_from_env(name: str, default: int) -> int:
+    value = _optional_nonnegative_int_from_env(name)
+    return default if value is None else value
+
+
+def _optional_nonnegative_float_from_env(name: str) -> float | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a non-negative number") from exc
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError(f"{name} must be a non-negative number")
+    return value
 
 
 def _split_env_paths(value: str | None) -> list[str]:

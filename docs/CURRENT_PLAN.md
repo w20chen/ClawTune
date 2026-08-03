@@ -1893,3 +1893,128 @@ All privileged Python launch paths also disable user sites to prevent root or
 caller-local packages from changing runtime resolution. Focused tests passed
 (`146 passed, 2 skipped`), the plugin suite passed (`68 passed`), and
 `git diff --check` passed. Repeat setup and the one-task benchmark on x86.
+
+The shared-KB predictor regression suite passed (`40 passed`) and its Python
+sources compiled successfully. The focused Ruff command could not start in
+this Windows sandbox after repeated attempts because the Microsoft Store
+`python.exe` reported that its logon session no longer existed. The approved
+full scheduler Ruff command did run and reported 16 diagnostics outside the
+predictor/test pair (import ordering/unused imports and existing lazy
+re-exports); resolve or classify those during the full regression pass.
+
+## 2026-08-03 machine-wide concurrent Sidecar completion
+
+The maintained host-sandbox benchmark now has one batch-owned Sidecar for all
+concurrent cases. Every Plugin/agent process is a client only: it cannot start
+or stop that Sidecar. Benchmark events carry a fixed benchmark `gateway_id`
+and a unique runtime identity, while the public protocol also carries
+`agent_id`, `session_id`, `run_id`, and `tool_call_id`. Canonical scope, drain,
+and delete requests use the Gateway/Runtime route. Legacy routes remain for
+older callers but canonical callers do not borrow legacy/global scopes.
+For a 320-core deployment, `8 Gateways x 16 sessions` remains the recommended
+operational topology; it is deliberately not hardcoded. Today's benchmark can
+use independent `openclaw agent ...` runtimes with `--parallelism`, and future
+long-lived Gateways can reuse the same protocol and Sidecar without changing
+resource collection.
+
+The Sidecar's correlation maps, execution registry, Docker scope observer,
+runtime monitor, trace routing, completion/model deduplication, decision
+single-flight cache, and drain accounting use composite owner tuples. A
+same-named runtime, run, session, or tool call in another Gateway therefore
+does not become an identity boundary by accident. Sidecar HTTP calls that are
+safe to retry are idempotent, and the Plugin retries transient network,
+timeout, 408, 429, and 5xx failures.
+
+All sessions intentionally share one machine KB. Runtime and clause updates go
+through one background writer, batch adjacent updates, update the in-memory
+generation under a lock, persist versioned snapshots atomically, and expose a
+flush barrier. Runtime drain returns `drained: false` on either a timeout or a
+real persistence failure. Parallel container-mode observations are merged at
+the batch barrier rather than allowing last-writer-wins snapshot replacement.
+
+CPU capacity is derived from online CPUs intersected with process affinity and
+the effective cgroup cpuset, then capped by the tightest ancestor `cpu.max`.
+The default housekeeping reserve is 5%, always leaving tool capacity on small
+machines, with explicit reserve and budget overrides. Thus a 320-core machine
+reports 16 reserved and 304 tool cores, while smaller x86 or Kunpeng machines
+scale down automatically. Concurrency leases reserve predicted CPU p90 in
+millicores, cap oversized jobs at the whole available budget so they can run
+alone, and remain lifecycle-bound until completion, launcher exit, or exact
+runtime teardown. Placement remains advisory and is never sent to the
+launcher as an enforceable decision.
+
+Stage-2 eBPF now uses one process-wide BPF program, one set of syscall/bprm
+kprobes, one CPU-clock perf attachment, one ring callback, and one poller.
+Dynamic cgroup and PID-namespace allow maps are reference counted. Kernel
+events are fanned out to per-scope buffers; releasing one execution clears its
+buffer immediately without affecting overlapping scopes. The former 8192-item
+userspace exec-sequence queue was replaced by an atomic 64-bit BPF sequence.
+Loss counters are measured relative to each collector lease, poll/map failures
+fail closed, lifecycle methods are serialized, noisy per-call diagnostics were
+removed, and the container cgroup cache is locked and bounded. SDK run IDs and
+artifact reservations are also locked, preventing concurrent check-then-act
+collisions.
+
+Architecture review found no x86-only CPU-count, NUMA, or fixed L3 placement
+assumption in the maintained source. Syscall probe candidates are ordered for
+the detected `x86_64` or `aarch64` host, the highest unified/data cache level
+is used as LLC (including Kunpeng layouts where this can be L2), and the mvdan
+adapter cache/checksum selection remains architecture-qualified. On Kunpeng,
+the Sidecar and eBPF stay native arm64; only official amd64 SWE-Rebench task
+userspace uses QEMU. Strict Stage-2 rejects the unsafe configuration that
+would run an amd64 Sidecar against an arm64 kernel.
+
+Validation completed in this workspace:
+
+- source Scheduler: `210 passed, 2 skipped`;
+- root integration/runner suite: `169 passed, 2 skipped`;
+- focused concurrent eBPF/SDK/Predictor suite: `80 passed`;
+- focused SWE-Rebench runner suites: `132 passed, 2 skipped`;
+- OpenClaw Plugin build/tests: `68 passed`;
+- JSON Schema examples: all validated;
+- full Scheduler Ruff and focused runner Ruff: passed;
+- source-to-tracked-bundle hashes for Scheduler `src/tests` and Plugin
+  `src/test`: zero mismatches.
+
+The tracked bundle Scheduler test command reached `205 passed, 2 skipped` but
+five repository-layout tests could not run from the nested bundle directory:
+they intentionally resolve shipped KB snapshots and JSON Schemas relative to
+the repository root and therefore looked under `swe_rebench/traces` and
+`swe_rebench/contracts`. The identical source Scheduler suite passed from its
+supported location. `mypy.exe .` exited with status 1 and no diagnostic output
+in this managed Microsoft Store Python environment, so it was not usable as a
+validation result.
+
+Live BCC compilation/attachment, cgroup map updates, native arm64 syscall
+attachment, amd64 QEMU task execution, and the original one-task benchmark
+cannot run on this Windows host. Acceptance on Linux remains:
+`python3 scripts/clawtune.py setup`, then
+`python3 scripts/clawtune.py benchmark --sample 1`, followed by a multi-case
+run such as `--sample 128 --parallelism 128` sized to the actual machine.
+
+Final Windows regression also exposed and fixed a parallel first-use race in
+the per-task trace directory guard. One worker could resolve a not-yet-created
+root as a drive path while another resolved the newly-created root with the
+Windows extended-path prefix, causing a valid sibling task to be rejected as
+outside the trace root. The shared root is now created before either path is
+resolved, with a 16-worker regression test. Final validation after this fix:
+
+- Scheduler: `python -m pytest --basetemp ..\..\.pytest-tmp-final -q` from
+  `services/scheduler`: `210 passed, 2 skipped`;
+- framework: `python -m pytest tests --basetemp .pytest-tmp-root-final-2 -q`:
+  `170 passed, 2 skipped`;
+- Plugin: `npm.cmd test`: `68 passed`;
+- JSON Schema examples: `python tools\validate_contracts.py`: all validated;
+- source/bundle hash parity for Scheduler `src/tests` and Plugin `src/test`:
+  no mismatches;
+- `git diff --check`: passed.
+
+Validation commands that could not run as written in this environment:
+
+- bare `npm test` is blocked by the machine's PowerShell policy loading
+  `npm.ps1`; the equivalent `npm.cmd test` completed successfully;
+- bare repository-root `python -m pytest` is not a supported aggregate entry:
+  it collects both the source and bundled Scheduler suites under identical
+  module names and imports an older globally installed `agent_scheduler`.
+  The independently supported source Scheduler and root `tests/` suites above
+  both completed successfully.

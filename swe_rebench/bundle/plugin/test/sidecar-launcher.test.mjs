@@ -58,6 +58,7 @@ test("privileged sidecar launch resolves the checkout and preserves a narrow env
     const preserve = spec.args.find((value) => value.startsWith("--preserve-env="));
     assert(preserve?.includes("HTTPS_PROXY"));
     assert(preserve?.includes("AGENT_SCHEDULER_POLICY"));
+    assert(!preserve?.includes("HOME"));
     assert(!preserve?.includes("UNRELATED_VALUE"));
     assert(!spec.args.some((value) => value.includes(proxyValue)));
     const pathArg = spec.args.find((value) => value.startsWith("PATH="));
@@ -121,11 +122,12 @@ test("sidecar auto-start is single-flight and tolerates another launcher winning
       ensureSidecarRunning(opts),
     ]);
 
-    assert.strictEqual(first, second);
+    assert.notStrictEqual(first, second);
+    assert.notStrictEqual(first.cleanup, second.cleanup);
     assert.equal(first.child, null);
     assert.equal(await readFile(attemptsPath, "utf8"), "attempt\n");
     assert.equal(
-      messages.filter(([, message]) => message === "joining in-flight sidecar auto-start").length,
+      messages.filter(([, message]) => message === "joining shared sidecar auto-start").length,
       1,
     );
     assert.equal(
@@ -133,7 +135,7 @@ test("sidecar auto-start is single-flight and tolerates another launcher winning
       1,
     );
 
-    // Both plugin instances receive the same safe, repeatable cleanup handle.
+    // Each plugin receives a separate release handle for the shared launch.
     first.cleanup();
     second.cleanup();
   } finally {

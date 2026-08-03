@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import threading
-import time
 from dataclasses import dataclass
 from typing import Any
 
 from agent_scheduler.contracts.models import ResourceScope, ToolBeforeRequest, ToolCompletedEvent
+from agent_scheduler.identity import correlation_key, owners_compatible
 from agent_scheduler.monitoring.process import ProcessResourceSampler, ResourceSnapshot
 from agent_scheduler.tool_resource_commands import operation_from_request
 
@@ -77,13 +77,14 @@ class RealtimeToolMonitor:
         self.max_active = max_active
         self.poll_interval_s = poll_interval_s
         self.max_timeline_points = max_timeline_points
-        self._active: dict[str, _ActiveTool] = {}
+        self._active: dict[tuple[str | None, ...], _ActiveTool] = {}
         self._lock = threading.RLock()
+        self._stop = threading.Event()
         self._poller = threading.Thread(target=self._poll_active, daemon=True)
         self._poller.start()
 
     def begin(self, request: ToolBeforeRequest, resource_class: str) -> None:
-        key = self._key(request.tool_call_id, request.event_id)
+        key = correlation_key(request)
         snapshot = self.sampler.snapshot(request.resource_scope)
         with self._lock:
             if len(self._active) >= self.max_active:
@@ -102,13 +103,21 @@ class RealtimeToolMonitor:
             )
 
     def complete(self, completion: ToolCompletedEvent) -> ToolRuntimeSample:
-        key = self._key(completion.tool_call_id, completion.event_id)
+        key = correlation_key(completion)
         with self._lock:
             active = self._active.pop(key, None)
             if active is None and completion.tool_call_id is not None:
-                active = self._pop_by_tool_call_id(completion.tool_call_id)
+                active = self._pop_by_tool_call_id(
+                    completion.tool_call_id,
+                    completion.runtime_id,
+                    owner=completion,
+                )
             if active is None and completion.tool_call_id is None:
-                active = self._pop_unique_by_tool_name(completion.tool_name)
+                active = self._pop_unique_by_tool_name(
+                    completion.tool_name,
+                    completion.runtime_id,
+                    owner=completion,
+                )
         completion_scope = completion.resource_scope
         if completion_scope is None and active is not None:
             completion_scope = active.request.resource_scope
@@ -208,11 +217,27 @@ class RealtimeToolMonitor:
         with self._lock:
             return len(self._active)
 
-    def bind_scope(self, tool_call_id: str | None, scope: ResourceScope) -> bool:
+    def stop(self) -> None:
+        self._stop.set()
+        if self._poller is not threading.current_thread():
+            self._poller.join(timeout=max(0.1, self.poll_interval_s * 2))
+
+    def bind_scope(
+        self,
+        tool_call_id: str | None,
+        scope: ResourceScope,
+        runtime_id: str | None = None,
+        *,
+        owner: ToolBeforeRequest | ToolCompletedEvent | None = None,
+    ) -> bool:
         if tool_call_id is None:
             return False
         with self._lock:
-            active = self._pop_by_tool_call_id(tool_call_id)
+            active = self._pop_by_tool_call_id(
+                tool_call_id,
+                runtime_id,
+                owner=owner,
+            )
             if active is None:
                 return False
             current_scope = active.request.resource_scope
@@ -224,12 +249,12 @@ class RealtimeToolMonitor:
                 and current_scope.source == scope.source
                 and current_scope.attribution_source == scope.attribution_source
             ):
-                self._active[self._key(active.request.tool_call_id, active.request.event_id)] = active
+                self._active[correlation_key(active.request)] = active
                 return True
             request = active.request.model_copy(update={"resource_scope": scope})
             snapshot = self.sampler.snapshot(request.resource_scope)
             if not snapshot.available and active.latest_snapshot.available:
-                self._active[self._key(active.request.tool_call_id, active.request.event_id)] = active
+                self._active[correlation_key(active.request)] = active
                 return False
             if (
                 snapshot.available
@@ -239,7 +264,7 @@ class RealtimeToolMonitor:
                 # scope and cannot be subtracted from the newly discovered
                 # Docker-exec PID.  Rebase immediately while the process is
                 # alive; coverage will honestly report the late start.
-                self._active[self._key(request.tool_call_id, request.event_id)] = _ActiveTool(
+                self._active[correlation_key(request)] = _ActiveTool(
                     request=request,
                     snapshot=snapshot,
                     latest_snapshot=snapshot,
@@ -265,7 +290,7 @@ class RealtimeToolMonitor:
                 snapshot_count += 1
                 rss_bytes_peak = _max_optional(rss_bytes_peak, snapshot.rss_bytes)
             start_snapshot = active.snapshot if active.snapshot.available else snapshot
-            self._active[self._key(request.tool_call_id, request.event_id)] = _ActiveTool(
+            self._active[correlation_key(request)] = _ActiveTool(
                 request=request,
                 snapshot=start_snapshot,
                 latest_snapshot=snapshot,
@@ -278,15 +303,37 @@ class RealtimeToolMonitor:
             )
             return snapshot.available
 
-    def _pop_by_tool_call_id(self, tool_call_id: str) -> _ActiveTool | None:
+    def _pop_by_tool_call_id(
+        self,
+        tool_call_id: str,
+        runtime_id: str | None,
+        *,
+        owner: ToolBeforeRequest | ToolCompletedEvent | None = None,
+    ) -> _ActiveTool | None:
         for key, active in list(self._active.items()):
-            if active.request.tool_call_id == tool_call_id:
+            if (
+                active.request.tool_call_id == tool_call_id
+                and active.request.runtime_id == runtime_id
+                and (owner is None or owners_compatible(active.request, owner))
+            ):
                 self._active.pop(key, None)
                 return active
         return None
 
-    def _pop_unique_by_tool_name(self, tool_name: str) -> _ActiveTool | None:
-        matches = [(key, active) for key, active in self._active.items() if active.request.tool_name == tool_name]
+    def _pop_unique_by_tool_name(
+        self,
+        tool_name: str,
+        runtime_id: str | None,
+        *,
+        owner: ToolBeforeRequest | ToolCompletedEvent | None = None,
+    ) -> _ActiveTool | None:
+        matches = [
+            (key, active)
+            for key, active in self._active.items()
+            if active.request.tool_name == tool_name
+            and active.request.runtime_id == runtime_id
+            and (owner is None or owners_compatible(active.request, owner))
+        ]
         if len(matches) != 1:
             return None
         key, active = matches[0]
@@ -294,8 +341,7 @@ class RealtimeToolMonitor:
         return active
 
     def _poll_active(self) -> None:
-        while True:
-            time.sleep(self.poll_interval_s)
+        while not self._stop.wait(self.poll_interval_s):
             with self._lock:
                 items = list(self._active.items())
             for key, active in items:
@@ -325,11 +371,6 @@ class RealtimeToolMonitor:
                         resource_class=current.resource_class,
                         operation=current.operation,
                     )
-
-    @staticmethod
-    def _key(tool_call_id: str | None, event_id: str) -> str:
-        return tool_call_id or event_id
-
 
 def _delta_int(start: int | None, end: int | None) -> int | None:
     if start is None or end is None:
