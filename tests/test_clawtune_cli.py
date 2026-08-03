@@ -17,6 +17,11 @@ clawtune = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(clawtune)
 
 
+def test_scheduler_declares_python_310_typing_extensions_dependency() -> None:
+    pyproject = SCRIPT.parents[1] / "services" / "scheduler" / "pyproject.toml"
+    assert '"typing-extensions>=4.12"' in pyproject.read_text(encoding="utf-8")
+
+
 def test_package_manager_prefers_dnf(monkeypatch) -> None:
     monkeypatch.setattr(
         clawtune.shutil,

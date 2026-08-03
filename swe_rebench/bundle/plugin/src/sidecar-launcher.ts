@@ -208,7 +208,10 @@ export function buildPrivilegedSidecarLaunch(
       ...sudoPreserveEnvironmentArgs(runtime.env),
       "env",
       `PATH=${privilegedPath(runtime.env, runtime.platform)}`,
-      `PYTHONPATH=${projectRoot}`,
+      `HOME=${runtime.env.HOME ?? "/root"}`,
+      // This branch is Linux-only. Do not use the host Node process's path
+      // delimiter: cross-platform tests can construct a Linux runtime.
+      `PYTHONPATH=${projectRoot}:${join(projectRoot, "services", "scheduler", "src")}`,
       `BCC_KERNEL_SOURCE=${kernelSource}`,
       `AGENT_SCHEDULER_ENV_FILE=${join(projectRoot, ".env")}`,
       venvPython,

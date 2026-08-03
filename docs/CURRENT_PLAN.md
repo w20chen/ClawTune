@@ -1849,3 +1849,21 @@ wheel-build attempts could not start the Microsoft Store `python.exe` alias
 installed. The focused Ruff invocation hit the same launcher failure. Build
 the scheduler wheel and run its tests and Ruff in the project venv on the
 target Linux/x86 host before release.
+
+## 2026-08-03 Python 3.10 sidecar dependency repair
+
+An x86 benchmark reached sidecar startup but Uvicorn failed while importing
+`typing_extensions.NotRequired`. The scheduler now declares
+`typing-extensions>=4.12` directly instead of relying on a transitive
+dependency. The runtime container setup, prebuilt Dockerfile, import smoke
+checks, and tracked delivery bundle carry the same requirement. The tracked
+plugin bundle was also synchronized with the privileged launcher path fix so
+the maintained sources and delivery artifact do not diverge.
+
+Focused CLI/SWE-Rebench tests passed (`142 passed, 2 skipped`), the source
+plugin suite passed (`68 passed`), and `git diff --check` passed. The tracked
+bundle plugin suite could not run because that generated copy has no local
+`node_modules` and therefore no `tsc`; its corresponding source plugin suite
+passed after the same launcher changes. A live Python 3.10 sidecar start still
+must be repeated on the reported x86 Linux host by rerunning setup and the
+benchmark command.

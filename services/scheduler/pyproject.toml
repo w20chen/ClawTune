@@ -13,6 +13,7 @@ dependencies = [
   "pydantic>=2",
   "psutil>=5.9",
   "numpy>=1.26",
+  "typing-extensions>=4.12",
   "uvicorn>=0.27",
   "prometheus-client>=0.20"
 ]

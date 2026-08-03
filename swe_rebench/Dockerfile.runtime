@@ -28,8 +28,8 @@ RUN npm install -g openclaw@2026.7.1 \
 
 # ── Python deps for sidecar ──────────────────────────────────────
 RUN pip3 install --break-system-packages --no-cache-dir \
-        fastapi uvicorn pydantic psutil httpx prometheus-client \
-    && python3 -c "import fastapi, uvicorn, pydantic, psutil; print('deps OK')"
+        fastapi uvicorn pydantic psutil httpx prometheus-client typing-extensions \
+    && python3 -c "import fastapi, uvicorn, pydantic, psutil, typing_extensions; print('deps OK')"
 
 # Verify
 RUN node --version && openclaw --version && python3 --version

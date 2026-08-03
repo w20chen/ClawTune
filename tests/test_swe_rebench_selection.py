@@ -641,8 +641,14 @@ def test_entrypoint_installs_stable_launcher_path() -> None:
 def test_setup_installs_scheduler_runtime_dependencies() -> None:
     from swe_rebench.prepare import _SETUP_TEMPLATE
 
-    assert "fastapi uvicorn pydantic psutil httpx prometheus-client numpy" in _SETUP_TEMPLATE
-    assert "import fastapi, uvicorn, pydantic, psutil, numpy" in _SETUP_TEMPLATE
+    assert (
+        "fastapi uvicorn pydantic psutil httpx prometheus-client numpy typing-extensions"
+        in _SETUP_TEMPLATE
+    )
+    assert (
+        "import fastapi, uvicorn, pydantic, psutil, numpy, typing_extensions"
+        in _SETUP_TEMPLATE
+    )
     assert "python3-bpfcc bpfcc-tools libbpfcc libelf1" in _SETUP_TEMPLATE
     assert "clang llvm kmod" in _SETUP_TEMPLATE
     assert 'linux-headers-"$(uname -r)"' in _SETUP_TEMPLATE

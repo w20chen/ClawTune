@@ -1223,7 +1223,7 @@ echo "[claw] openclaw $(openclaw --version 2>&1 | head -1)"
 # ── Sidecar Python deps ─────────────────────────────────────────
 echo "[claw] installing sidecar Python deps..."
 $_CLW_PIP install --quiet \
-    fastapi uvicorn pydantic psutil httpx prometheus-client numpy \
+    fastapi uvicorn pydantic psutil httpx prometheus-client numpy typing-extensions \
     2>&1 | tail -1
 if [ -s /tmp/.claw_bcc_pythonpath ]; then
     export PYTHONPATH="$(cat /tmp/.claw_bcc_pythonpath)${PYTHONPATH:+:$PYTHONPATH}"
@@ -1247,16 +1247,16 @@ if [ -s "$_CLAW_BCC_PRELOAD_FILE" ]; then
 fi
 if [ -n "$_CLAW_BCC_LD_PRELOAD" ]; then
     if ! env "${_CLAW_BCC_RUNTIME_ENV[@]}" "$_CLW_PYTHON" \
-        -c "import fastapi, uvicorn, pydantic, psutil, numpy, bcc; print('[claw] sidecar deps and BCC OK with system libstdc++')"
+        -c "import fastapi, uvicorn, pydantic, psutil, numpy, typing_extensions, bcc; print('[claw] sidecar deps and BCC OK with system libstdc++')"
     then
         echo "[claw] system libstdc++ preload failed the combined sidecar/BCC probe; disabling the Stage-2 preload"
         rm -f "$_CLAW_BCC_PRELOAD_FILE" || true
         _CLAW_BCC_LD_PRELOAD=""
         _CLAW_BCC_RUNTIME_ENV=()
-        "$_CLW_PYTHON" -c "import fastapi, uvicorn, pydantic, psutil, numpy; print('[claw] sidecar deps OK')"
+        "$_CLW_PYTHON" -c "import fastapi, uvicorn, pydantic, psutil, numpy, typing_extensions; print('[claw] sidecar deps OK')"
     fi
 else
-    "$_CLW_PYTHON" -c "import fastapi, uvicorn, pydantic, psutil, numpy; print('[claw] sidecar deps OK')"
+    "$_CLW_PYTHON" -c "import fastapi, uvicorn, pydantic, psutil, numpy, typing_extensions; print('[claw] sidecar deps OK')"
 fi
 env "${_CLAW_BCC_RUNTIME_ENV[@]}" "$_CLW_PYTHON" - <<'PY' || true
 try:
