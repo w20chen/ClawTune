@@ -332,8 +332,11 @@ On x86 the default is native.
 The OpenClaw config contains a linked plugin path from an older checkout, for
 example `/home/user/claw/...` after the repository moved to
 `/home/user/ClawTune/...`. Current setup recognizes a missing ClawTune plugin
-link, backs up the config, removes only the missing `openclaw-plugin` entry,
-runs `openclaw doctor --fix`, then installs the link from the current checkout:
+link, backs up the config, and removes the missing `openclaw-plugin` entry
+from `plugins.load.paths`.  If the stale reference lives in OpenClaw's
+internal plugin state rather than in `plugins.load.paths`, setup falls back
+to `openclaw doctor --fix` to reconcile the internal registry, then removes
+any restored stale paths before installing the link from the current checkout:
 
 ```bash
 python3 scripts/clawtune.py setup

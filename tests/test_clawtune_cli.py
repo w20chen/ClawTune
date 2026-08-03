@@ -366,6 +366,77 @@ def test_plugin_install_does_not_repair_an_unrelated_invalid_config(monkeypatch)
         raise AssertionError("unrelated invalid plugin paths must not be auto-repaired")
 
 
+def test_plugin_install_falls_back_to_doctor_when_load_paths_are_empty(
+    tmp_path, monkeypatch,
+) -> None:
+    """When plugins.load.paths is empty but OpenClaw still reports a
+    stale openclaw-plugin path, the stale reference lives in OpenClaw's
+    internal plugin state rather than in plugins.load.paths.  Setup
+    falls back to ``openclaw doctor --fix``, which may restore the
+    stale path into plugins.load.paths via a last-known-good backup.
+    The code then removes it and retries the install."""
+    config = tmp_path / "openclaw.json"
+    # Empty load paths — stale reference is in OpenClaw's internal state.
+    document: dict = {"plugins": {"load": {"paths": []}}}
+    original = json.dumps(document)
+    config.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(config))
+
+    calls: list[tuple[str, ...]] = []
+    install_attempts = 0
+    doctor_called = False
+
+    def fake_run(command, **_kwargs):
+        nonlocal install_attempts, doctor_called
+        rendered = tuple(str(item) for item in command)
+        calls.append(rendered)
+        if "plugins" in rendered and "install" in rendered:
+            install_attempts += 1
+            if install_attempts == 1:
+                return subprocess.CompletedProcess(
+                    rendered,
+                    1,
+                    "",
+                    "plugins.load.paths: plugin: plugin path not found: "
+                    "/home/user/claw/packages/openclaw-plugin",
+                )
+            # Retry after doctor --fix should succeed.
+            return subprocess.CompletedProcess(rendered, 0, "ok", "")
+        if "doctor" in rendered and "--fix" in rendered:
+            doctor_called = True
+            # Simulate doctor restoring the stale path from a
+            # last-known-good backup.
+            restored = {
+                "plugins": {
+                    "load": {
+                        "paths": [
+                            "/home/user/claw/packages/openclaw-plugin",
+                            "/opt/another-plugin",
+                        ],
+                    },
+                },
+            }
+            config.write_text(json.dumps(restored), encoding="utf-8")
+            return subprocess.CompletedProcess(rendered, 0, "", "")
+        return subprocess.CompletedProcess(rendered, 0, "ok", "")
+
+    monkeypatch.setattr(clawtune, "run", fake_run)
+
+    clawtune.install_openclaw_plugin(
+        "/usr/bin/openclaw",
+        Path("/home/user/ClawTune/packages/openclaw-plugin"),
+    )
+
+    assert install_attempts == 2
+    assert doctor_called is True
+    # After doctor and second removal, only the unrelated path remains.
+    repaired = json.loads(config.read_text(encoding="utf-8"))
+    assert repaired["plugins"]["load"]["paths"] == ["/opt/another-plugin"]
+    backups = list(tmp_path.glob("openclaw.json.clawtune-backup-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == original
+
+
 def test_sidecar_health_reports_ready_loopback_service(monkeypatch) -> None:
     class Response:
         status = 200

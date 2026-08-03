@@ -310,7 +310,12 @@ def backup_openclaw_config() -> Path | None:
     return backup
 
 
-def remove_stale_clawtune_plugin_paths() -> None:
+def remove_stale_clawtune_plugin_paths() -> bool:
+    """Remove every plugins.load.paths entry whose leaf name is
+    ``openclaw-plugin``.  Returns ``True`` when at least one entry was
+    removed so that the caller can decide whether a follow-up repair
+    (e.g. ``openclaw doctor --fix``) is needed.
+    """
     config = openclaw_config_path()
     try:
         document = json.loads(config.read_text(encoding="utf-8"))
@@ -321,10 +326,12 @@ def remove_stale_clawtune_plugin_paths() -> None:
     load = plugins.get("load") if isinstance(plugins, dict) else None
     paths = load.get("paths") if isinstance(load, dict) else None
     if not isinstance(paths, list):
-        raise SetupError(
-            "OpenClaw reported a stale ClawTune plugin path, but "
-            f"plugins.load.paths is not a list in {config}"
+        log(
+            "plugins.load.paths is not a list in the OpenClaw config; "
+            "the stale plugin reference is stored in OpenClaw's internal "
+            "state rather than in plugins.load.paths."
         )
+        return False
 
     # Remove *every* plugins.load.paths entry whose leaf name is
     # "openclaw-plugin", regardless of whether it still exists on disk.
@@ -352,10 +359,12 @@ def remove_stale_clawtune_plugin_paths() -> None:
         f"{len(retained)} retained"
     )
     if removed == 0:
-        raise SetupError(
-            "OpenClaw reported a stale ClawTune plugin path, but no "
-            f"openclaw-plugin entry was found in plugins.load.paths in {config}"
+        log(
+            "No openclaw-plugin entry was found in plugins.load.paths. "
+            "The stale reference lives in OpenClaw's internal plugin state "
+            "rather than in plugins.load.paths."
         )
+        return False
 
     load["paths"] = retained
     temporary = config.with_name(f".{config.name}.clawtune.tmp")
@@ -371,6 +380,7 @@ def remove_stale_clawtune_plugin_paths() -> None:
         except OSError:
             pass
         raise SetupError(f"Could not repair OpenClaw config {config}: {exc}") from exc
+    return True
 
 
 def install_openclaw_plugin(openclaw: str, plugin: Path) -> None:
@@ -381,13 +391,40 @@ def install_openclaw_plugin(openclaw: str, plugin: Path) -> None:
     if installed.returncode != 0 and stale_clawtune_plugin_link(combined):
         log("Repairing a stale ClawTune plugin path in the OpenClaw config")
         backup_openclaw_config()
-        remove_stale_clawtune_plugin_paths()
-        # Retry the install immediately.  Do NOT invoke `config validate`
-        # or `doctor --fix` — both may trigger OpenClaw's internal
-        # last-known-good backup restore, which still references the
-        # stale path and would undo our removal.
+        removed = remove_stale_clawtune_plugin_paths()
+
+        if not removed:
+            # plugins.load.paths did not contain the stale entry.
+            # The stale reference is in OpenClaw's internal plugin state.
+            # Run doctor --fix so OpenClaw can reconcile its internal
+            # registry.  This may restore stale paths into
+            # plugins.load.paths, so run the removal again afterwards.
+            log(
+                "Running openclaw doctor --fix to repair OpenClaw's "
+                "internal plugin state"
+            )
+            run([openclaw, "doctor", "--fix"], check=False)
+            remove_stale_clawtune_plugin_paths()
+
+        # Retry the install.  Do NOT invoke `config validate` — it may
+        # trigger OpenClaw's internal last-known-good backup restore,
+        # which still references the stale path and would undo our
+        # removal.
         installed = run(command, check=False, capture=True)
         combined = f"{installed.stdout}\n{installed.stderr}"
+
+        # If the retry *still* fails with the same stale-path error,
+        # try one more round of doctor --fix (in case the first doctor
+        # restored a backup that was also stale).
+        if installed.returncode != 0 and stale_clawtune_plugin_link(combined):
+            log(
+                "Stale ClawTune plugin path persists; running "
+                "openclaw doctor --fix one more time"
+            )
+            run([openclaw, "doctor", "--fix"], check=False)
+            remove_stale_clawtune_plugin_paths()
+            installed = run(command, check=False, capture=True)
+            combined = f"{installed.stdout}\n{installed.stderr}"
 
     if installed.returncode != 0:
         normalized = combined.lower()
