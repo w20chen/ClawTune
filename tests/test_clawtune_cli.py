@@ -152,6 +152,69 @@ def test_plugin_install_repairs_stale_clawtune_link(tmp_path, monkeypatch) -> No
                     "plugins.load.paths: plugin: plugin path not found: "
                     "/home/user/claw/packages/openclaw-plugin",
                 )
+        if "config" in rendered and "validate" in rendered:
+            # After remove_stale_clawtune_plugin_paths, only the valid
+            # /opt/another-plugin entry should remain.
+            current = json.loads(config.read_text(encoding="utf-8"))
+            assert current["plugins"]["load"]["paths"] == [
+                "/opt/another-plugin"
+            ]
+        return subprocess.CompletedProcess(rendered, 0, "ok", "")
+
+    monkeypatch.setattr(clawtune, "run", fake_run)
+
+    clawtune.install_openclaw_plugin(
+        "/usr/bin/openclaw",
+        Path("/home/user/ClawTune/packages/openclaw-plugin"),
+    )
+
+    assert install_attempts == 2
+    assert ("/usr/bin/openclaw", "config", "validate") in calls
+    assert ("/usr/bin/openclaw", "doctor", "--fix") not in calls
+    backups = list(tmp_path.glob("openclaw.json.clawtune-backup-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == original
+    repaired = json.loads(config.read_text(encoding="utf-8"))
+    assert repaired["plugins"]["load"]["paths"] == ["/opt/another-plugin"]
+
+
+def test_plugin_install_config_validate_fails_falls_back_to_doctor(
+    tmp_path, monkeypatch,
+) -> None:
+    config = tmp_path / "openclaw.json"
+    original = (
+        '{"plugins": {"load": {"paths": ['
+        '"/home/user/claw/packages/openclaw-plugin", "/opt/another-plugin"'
+        ']}}}'
+    )
+    config.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(config))
+
+    calls: list[tuple[str, ...]] = []
+    install_attempts = 0
+    validate_calls = 0
+
+    def fake_run(command, **_kwargs):
+        nonlocal install_attempts, validate_calls
+        rendered = tuple(str(item) for item in command)
+        calls.append(rendered)
+        if "plugins" in rendered and "install" in rendered:
+            install_attempts += 1
+            if install_attempts == 1:
+                return subprocess.CompletedProcess(
+                    rendered,
+                    1,
+                    "",
+                    "plugins.load.paths: plugin: plugin path not found: "
+                    "/home/user/claw/packages/openclaw-plugin",
+                )
+        if "config" in rendered and "validate" in rendered:
+            validate_calls += 1
+            # Simulate config still being invalid after path removal,
+            # e.g. because another plugin path is also broken.
+            return subprocess.CompletedProcess(
+                rendered, 1, "", "invalid plugin path: /opt/another-plugin",
+            )
         if "doctor" in rendered:
             current = json.loads(config.read_text(encoding="utf-8"))
             assert current["plugins"]["load"]["paths"] == [
@@ -167,10 +230,15 @@ def test_plugin_install_repairs_stale_clawtune_link(tmp_path, monkeypatch) -> No
     )
 
     assert install_attempts == 2
+    assert validate_calls == 1
+    assert ("/usr/bin/openclaw", "config", "validate") in calls
     assert ("/usr/bin/openclaw", "doctor", "--fix") in calls
-    backups = list(tmp_path.glob("openclaw.json.clawtune-backup-*"))
-    assert len(backups) == 1
-    assert backups[0].read_text(encoding="utf-8") == original
+    # Validate must appear before doctor in the call sequence.
+    validate_idx = calls.index(
+        ("/usr/bin/openclaw", "config", "validate"),
+    )
+    doctor_idx = calls.index(("/usr/bin/openclaw", "doctor", "--fix"))
+    assert validate_idx < doctor_idx
     repaired = json.loads(config.read_text(encoding="utf-8"))
     assert repaired["plugins"]["load"]["paths"] == ["/opt/another-plugin"]
 

@@ -366,14 +366,24 @@ def install_openclaw_plugin(openclaw: str, plugin: Path) -> None:
         log("Repairing a stale ClawTune plugin path in the OpenClaw config")
         backup_openclaw_config()
         remove_stale_clawtune_plugin_paths()
-        repaired = run(
-            [openclaw, "doctor", "--fix"],
+        # Validate the repaired config before invoking doctor, because
+        # `doctor --fix` may auto-restore a last-known-good backup that
+        # still references the stale path, undoing our removal above.
+        validated = run(
+            [openclaw, "config", "validate"],
             check=False,
             capture=True,
         )
-        if repaired.returncode != 0:
-            detail = (repaired.stderr or repaired.stdout).strip()
-            raise SetupError(f"OpenClaw could not repair the stale plugin path:\n{detail}")
+        if validated.returncode != 0:
+            log("Config still invalid after removing stale paths; trying doctor --fix")
+            repaired = run(
+                [openclaw, "doctor", "--fix"],
+                check=False,
+                capture=True,
+            )
+            if repaired.returncode != 0:
+                detail = (repaired.stderr or repaired.stdout).strip()
+                raise SetupError(f"OpenClaw could not repair the stale plugin path:\n{detail}")
         installed = run(command, check=False, capture=True)
         combined = f"{installed.stdout}\n{installed.stderr}"
 
