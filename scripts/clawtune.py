@@ -326,19 +326,21 @@ def remove_stale_clawtune_plugin_paths() -> None:
             f"plugins.load.paths is not a list in {config}"
         )
 
+    # Remove *every* plugins.load.paths entry whose leaf name is
+    # "openclaw-plugin", regardless of whether it still exists on disk.
+    # A path may exist (old checkout directory is still present) yet be
+    # unusable (e.g. a broken symlink or an incompatible plugin version),
+    # and `openclaw plugins install --link` will add the correct path
+    # from the current checkout immediately after this repair.
     retained = [
         value
         for value in paths
-        if not (
-            isinstance(value, str)
-            and Path(value).name == "openclaw-plugin"
-            and not Path(value).exists()
-        )
+        if not (isinstance(value, str) and Path(value).name == "openclaw-plugin")
     ]
     if len(retained) == len(paths):
         raise SetupError(
-            "OpenClaw reported a stale ClawTune plugin path, but no missing "
-            f"openclaw-plugin entry was found in {config}"
+            "OpenClaw reported a stale ClawTune plugin path, but no "
+            f"openclaw-plugin entry was found in plugins.load.paths in {config}"
         )
 
     load["paths"] = retained
