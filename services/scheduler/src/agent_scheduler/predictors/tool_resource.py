@@ -346,6 +346,11 @@ class ToolResourcePredictor:
     ) -> "ToolResourcePredictor":
         openclaw_paths = list(_expand_trace_paths(openclaw_trace_paths))
         stage2_paths = list(_expand_trace_paths(stage2_trace_paths))
+        # When no explicit Stage-2 paths are configured, auto-discover
+        # individual call artifacts that have accumulated in the artifact
+        # directory across prior ``openclaw agent --local`` invocations.
+        if not stage2_paths and artifact_dir is not None:
+            stage2_paths = _discover_artifact_call_files(artifact_dir)
         observations: list[ClauseObservation] = []
         continuous_observations: list[CompletedCall] = []
         rejections: list[str] = []
@@ -2205,6 +2210,15 @@ def _prediction_error_reason(exc: Exception) -> str:
     return f"prediction_error:{type(exc).__name__}"
 
 
+_KNOWN_KB_SNAPSHOT_FILENAMES: frozenset[str] = frozenset(
+    {
+        "clause-resource-kb.json",
+        "runtime-tool-resource-kb.json",
+        "clause-lattice-time-kb.json",
+    }
+)
+
+
 def _clause_kb_snapshot_path(artifact_dir: Path | None) -> Path | None:
     if artifact_dir is None:
         return None
@@ -2221,6 +2235,36 @@ def _lattice_kb_snapshot_path(artifact_dir: Path | None) -> Path | None:
     if artifact_dir is None:
         return None
     return artifact_dir / "clause-lattice-time-kb.json"
+
+
+def _discover_artifact_call_files(artifact_dir: Path) -> list[Path]:
+    """Return Stage-2 call artifact paths found in *artifact_dir*.
+
+    Scans ``*.json`` files excluding the three known KB snapshot filenames.
+    A quick structural check (``version: 2``, ``mode: "clause"``) avoids
+    feeding unrelated JSON files into the validation pipeline.
+    """
+
+    discovered: list[Path] = []
+    try:
+        for entry in sorted(artifact_dir.iterdir()):
+            if not entry.is_file() or entry.suffix != ".json":
+                continue
+            if entry.name in _KNOWN_KB_SNAPSHOT_FILENAMES:
+                continue
+            try:
+                candidate = json.loads(entry.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if (
+                isinstance(candidate, dict)
+                and candidate.get("version") == 2
+                and candidate.get("mode") == "clause"
+            ):
+                discovered.append(entry)
+    except OSError:
+        pass
+    return discovered
 
 
 def _load_clause_kb_snapshot(
