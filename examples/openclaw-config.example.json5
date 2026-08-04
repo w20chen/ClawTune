@@ -3,6 +3,11 @@
     entries: {
       "agent-scheduler": {
         enabled: true,
+        // OpenClaw protects agent_end for external plugins. ClawTune uses
+        // that hook to finalize run-scoped writers and registry state.
+        hooks: {
+          allowConversationAccess: true
+        },
         config: {
           endpoint: "http://127.0.0.1:8765",
           mode: "observe",

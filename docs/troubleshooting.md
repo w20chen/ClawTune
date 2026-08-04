@@ -266,6 +266,22 @@ Add `deepseek`, `feishu`, or other inspected IDs only when those plugins are
 actually required. Omitting `agent-scheduler` would prevent ClawTune from
 loading.
 
+If OpenClaw instead reports that the external plugin cannot register the
+protected `agent_end` conversation hook, the installed configuration predates
+the required per-plugin permission. Update the checkout, rerun setup, and
+restart the Gateway:
+
+```bash
+python3 scripts/clawtune.py setup --skip-qemu
+openclaw config get plugins.entries.agent-scheduler.hooks
+openclaw config validate
+openclaw gateway restart
+```
+
+The first config command must show `allowConversationAccess: true`. This is a
+sibling of the plugin's `config` object; placing it inside `config` does not
+grant the OpenClaw hook permission.
+
 ## 13. Tool output contains `Failed to connect to bus: No medium found`
 
 This came from an older launcher trying `systemd-run --user` in an SSH session

@@ -510,6 +510,10 @@ def configure_openclaw() -> None:
             "entries": {
                 "agent-scheduler": {
                     "enabled": True,
+                    # agent_end is a protected conversation lifecycle hook
+                    # for non-bundled plugins. The handler uses only run/session
+                    # identity, but OpenClaw gates registration by hook name.
+                    "hooks": {"allowConversationAccess": True},
                     "config": {
                         "endpoint": "http://127.0.0.1:8765",
                         "autoStartSidecar": True,

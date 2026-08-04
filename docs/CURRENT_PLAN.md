@@ -2142,3 +2142,31 @@ issues:
 - `python -m ruff check .` reports `E402` in `tools/check_ebpf.py:19`;
 - `python -m ruff check . --exclude tools/check_ebpf.py` reports 18 existing
   findings in `tool_time/_lattice_vendor` and its generated bundle copy.
+
+## Protected external `agent_end` hook permission (2026-08-04)
+
+OpenClaw protects the `agent_end` conversation lifecycle hook for external
+plugins. Every maintained ClawTune configuration path now grants
+`plugins.entries.agent-scheduler.hooks.allowConversationAccess: true`: normal
+CLI setup, host-sandbox benchmark generation, container benchmark generation,
+the tracked benchmark bundle, and the public example. The permission remains
+a sibling of the plugin-specific `config` object. The handler uses lifecycle
+identity to finalize run writers and registry state; it does not persist the
+final conversation payload.
+
+Validation completed in this Windows workspace:
+
+- focused CLI and benchmark configuration suite: `157 passed, 2 skipped`;
+- full root integration/runner suite: `179 passed, 2 skipped`;
+- OpenClaw Plugin build/tests: `73 passed`;
+- changed production Python modules compiled successfully;
+- all ten JSON Schema examples validated.
+
+Validation unavailable in this Windows workspace:
+
+- `openclaw --version`, `openclaw config validate`, and a live Gateway hook
+  registration check cannot run because the OpenClaw CLI is not installed.
+  On the target Linux host, rerun `python3 scripts/clawtune.py setup`, restart
+  the Gateway, and verify
+  `openclaw config get plugins.entries.agent-scheduler.hooks` shows
+  `allowConversationAccess: true`.

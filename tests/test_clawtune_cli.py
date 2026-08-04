@@ -927,6 +927,8 @@ def test_openclaw_config_enables_gated_privileged_sidecar(monkeypatch) -> None:
     import json
 
     entry = json.loads(patches[0])["plugins"]["entries"]["agent-scheduler"]
+    assert entry["hooks"] == {"allowConversationAccess": True}
+    assert "hooks" not in entry["config"]
     assert entry["config"]["autoStartSidecar"] is True
     assert entry["config"]["sidecarCommand"] == ""
     assert str(clawtune.ROOT) not in entry["config"]["sidecarCommand"]

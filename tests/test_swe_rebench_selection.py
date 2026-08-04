@@ -767,8 +767,20 @@ def test_docker_runner_config_sets_sandbox_container_prefix_placeholder(tmp_path
     assert docker_cfg["containerPrefix"] == "__SANDBOX_CONTAINER_PREFIX__"
     assert parsed["env"]["CLAW_EXEC_WORKDIR"] == "/testbed"
     assert parsed["env"]["CLAW_SCHEDULER_ENDPOINT"] == "http://127.0.0.1:8765"
+    plugin_entry = parsed["plugins"]["entries"]["agent-scheduler"]
+    assert plugin_entry["hooks"] == {"allowConversationAccess": True}
+    assert "hooks" not in plugin_entry["config"]
     assert "__SANDBOX_CONTAINER_PREFIX__" in _ENTRYPOINT_TEMPLATE
     assert "openclaw config patch --stdin" in _ENTRYPOINT_TEMPLATE
+
+
+def test_tracked_openclaw_config_matches_generated_config(tmp_path: Path) -> None:
+    _write_plugin_config(tmp_path)
+
+    tracked = Path(__file__).parents[1] / "swe_rebench" / "bundle" / "openclaw-config.json5"
+    assert tracked.read_text(encoding="utf-8") == (
+        tmp_path / "openclaw-config.json5"
+    ).read_text(encoding="utf-8")
 
 
 def test_entrypoint_exports_container_runtime_identity_for_launcher() -> None:
@@ -1531,7 +1543,10 @@ def test_host_sandbox_openclaw_config_uses_only_public_top_level_keys(tmp_path: 
     assert docker_cfg["extraHosts"] == ["host.docker.internal:host-gateway"]
     assert "binds" not in docker_cfg
     assert parsed["agents"]["defaults"]["sandbox"]["workspaceAccess"] == "rw"
-    plugin_cfg = parsed["plugins"]["entries"]["agent-scheduler"]["config"]
+    plugin_entry = parsed["plugins"]["entries"]["agent-scheduler"]
+    assert plugin_entry["hooks"] == {"allowConversationAccess": True}
+    assert "hooks" not in plugin_entry["config"]
+    plugin_cfg = plugin_entry["config"]
     assert plugin_cfg["logLevel"] == "warn"
     assert plugin_cfg["reportTimeoutMs"] == 10000
     assert plugin_cfg["autoStartSidecar"] is False

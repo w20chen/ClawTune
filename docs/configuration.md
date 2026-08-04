@@ -117,7 +117,29 @@ Setup installs and patches the plugin with:
 - local sidecar endpoint `http://127.0.0.1:8765`;
 - an absolute managed-execution launcher from the repository `.venv`;
 - cgroup tracking enabled;
+- `hooks.allowConversationAccess: true`, required by
+  [OpenClaw's external-plugin hook policy](https://docs.openclaw.ai/plugins/hooks)
+  for the plugin's `agent_end` lifecycle hook;
 - automatic sidecar startup with an empty `sidecarCommand`.
+
+The permission is deliberately placed beside `config` under the
+`agent-scheduler` plugin entry, not inside the plugin-specific configuration:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "agent-scheduler": {
+        "hooks": {"allowConversationAccess": true},
+        "config": {"endpoint": "http://127.0.0.1:8765"}
+      }
+    }
+  }
+}
+```
+
+OpenClaw gates `agent_end` by hook name even though ClawTune's handler uses
+only lifecycle identity and does not persist the final conversation payload.
 
 An empty `sidecarCommand` is intentional, not a missing configuration. At
 runtime the plugin finds the checkout relative to its loaded package and

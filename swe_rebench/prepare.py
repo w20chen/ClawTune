@@ -1428,7 +1428,15 @@ def _write_plugin_config(bundle_dir: Path) -> None:
             "OPENCLAW_WORKSPACE_DIR": "/testbed",
             "OPENCLAW_REPO_ROOT": "/testbed",
         },
-        "plugins": {"entries": {"agent-scheduler": {"enabled": True, "config": _PLUGIN_CONFIG}}}
+        "plugins": {
+            "entries": {
+                "agent-scheduler": {
+                    "enabled": True,
+                    "hooks": {"allowConversationAccess": True},
+                    "config": _PLUGIN_CONFIG,
+                }
+            }
+        },
     }, indent=2) + "\n"
     dest = bundle_dir / "openclaw-config.json5"
     dest.write_text(cfg, encoding="utf-8")

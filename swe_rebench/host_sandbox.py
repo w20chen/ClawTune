@@ -1614,6 +1614,10 @@ def _openclaw_config(
                 "entries": {
                     "agent-scheduler": {
                         "enabled": True,
+                        # Required for the external plugin's agent_end
+                        # lifecycle hook. The handler does not persist the
+                        # final conversation payload.
+                        "hooks": {"allowConversationAccess": True},
                         "config": {
                             "endpoint": endpoint_host,
                             # The benchmark runner owns either the task-local

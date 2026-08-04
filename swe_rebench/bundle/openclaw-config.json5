@@ -33,6 +33,9 @@
     "entries": {
       "agent-scheduler": {
         "enabled": true,
+        "hooks": {
+          "allowConversationAccess": true
+        },
         "config": {
           "endpoint": "http://127.0.0.1:8765",
           "mode": "observe",
