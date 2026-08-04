@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
+from agent_scheduler import __version__ as _sidecar_version
 from agent_scheduler.api.dependencies import AppState, build_state
 from agent_scheduler.contracts.models import (
     ExecutionClaimRequest,
@@ -39,6 +40,7 @@ _STAGE2_COMPLETION_GRACE_SECONDS = 10.0
 _STAGE2_ORPHAN_GRACE_SECONDS = 1.0
 _HEALTH_SERVICE = "clawtune-scheduler"
 _HEALTH_SCHEMA_VERSION = "scheduler.health.v1"
+_PROTOCOL_VERSIONS = ["scheduler.api.v1", "trace.v6", "execution.v1"]
 _PROC_ROOT = Path("/proc")
 _CGROUP_V2_ROOT = Path("/sys/fs/cgroup")
 
@@ -684,6 +686,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
         return {
             "schema_version": _HEALTH_SCHEMA_VERSION,
             "service": _HEALTH_SERVICE,
+            "sidecar_version": _sidecar_version,
+            "protocol_versions": _PROTOCOL_VERSIONS,
             "live": True,
         }
 
@@ -692,6 +696,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
         return {
             "schema_version": _HEALTH_SCHEMA_VERSION,
             "service": _HEALTH_SERVICE,
+            "sidecar_version": _sidecar_version,
+            "protocol_versions": _PROTOCOL_VERSIONS,
             "ready": True,
         }
 

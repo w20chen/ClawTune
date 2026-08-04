@@ -4,7 +4,8 @@ import {readFileSync} from "node:fs";
 import {SidecarClient} from "./client.js";
 import {loadConfig, isRecord} from "./config.js";
 import {CorrelationMap} from "./correlation.js";
-import type {CommonEvent, ModelEvent, PluginConfig, ToolBeforeRequest, ToolCompletedEvent, ToolDecision} from "./contracts.js";
+import type {CommonEvent, ModelEvent, PluginConfig, SidecarHealth, ToolBeforeRequest, ToolCompletedEvent, ToolDecision} from "./contracts.js";
+import {MIN_COMPATIBLE_SIDECAR_VERSION, REQUIRED_PROTOCOL_VERSIONS} from "./contracts.js";
 import type {ResourceScope} from "./contracts.js";
 import {buildTrustedResourceScope, instrumentExecParams} from "./exec-instrumentation.js";
 import type {InstrumentResult} from "./exec-instrumentation.js";
@@ -66,7 +67,7 @@ export default definePluginEntry({
       logLevel: {enum: ["error", "warn", "info", "debug"], default: "info"},
       consoleMode: {enum: ["verbose", "quiet"], default: "verbose"},
       executionBackend: {enum: ["hook-only", "marker", "managed-wrapper"], default: "managed-wrapper"},
-      launcherPath: {type: "string", default: "/opt/claw/bin/claw-launch"},
+      launcherPath: {type: "string", default: "", description: "Absolute path to claw-launch. Empty = auto-resolve from PATH."},
       launcherInterpreter: {type: ["string", "null"], default: null},
       collectorSocket: {type: "string", default: "/run/claw/collector.sock"},
       instrumentHosts: {type: "array", items: {type: "string"}, default: ["gateway", "*"]},
@@ -153,6 +154,78 @@ export default definePluginEntry({
     await sidecarLaunchPromise;
     if (sidecarLaunchError !== null) {
       throw new Error(`required sidecar auto-start failed: ${String(sidecarLaunchError)}`);
+    }
+    // Verify the sidecar version is compatible with this plugin.
+    await checkSidecarCompatibility(config, logger);
+  }
+
+  /**
+   * Lightweight semver comparison: returns true when `version` >= `minimum`.
+   * Handles simple ``major.minor.patch`` strings (prerelease tags are ignored).
+   */
+  function semverGte(version: string, minimum: string): boolean {
+    const vParts = version.split(".").map(Number);
+    const mParts = minimum.split(".").map(Number);
+    for (let i = 0; i < Math.max(vParts.length, mParts.length); i++) {
+      const v = vParts[i] ?? 0;
+      const m = mParts[i] ?? 0;
+      if (isNaN(v) || isNaN(m)) return false;
+      if (v > m) return true;
+      if (v < m) return false;
+    }
+    return true; // equal
+  }
+
+  /**
+   * Check that the running sidecar meets the minimum version and protocol
+   * requirements.  Logs warnings when failOpen is true; throws when false.
+   */
+  async function checkSidecarCompatibility(
+    cfg: PluginConfig,
+    log: {warn?: (msg: string, data?: unknown) => void; error?: (msg: string, data?: unknown) => void},
+  ): Promise<void> {
+    let health: SidecarHealth | null = null;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      try {
+        const response = await fetch(`${cfg.endpoint}/health/live`, {
+          method: "GET",
+          signal: controller.signal,
+        });
+        if (response.ok) {
+          health = (await response.json()) as SidecarHealth;
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch {
+      // Health endpoint unreachable — the sidecar may still be starting.
+      // The failOpen path will handle this gracefully on the first request.
+      return;
+    }
+
+    if (!health) return;
+
+    const version = health.sidecar_version;
+    if (version && !semverGte(version, MIN_COMPATIBLE_SIDECAR_VERSION)) {
+      const msg = `sidecar version ${version} is older than minimum ${MIN_COMPATIBLE_SIDECAR_VERSION}`;
+      if (cfg.failOpen) {
+        log.warn?.(msg, {sidecarVersion: version, minVersion: MIN_COMPATIBLE_SIDECAR_VERSION});
+      } else {
+        throw new Error(msg);
+      }
+    }
+
+    const protocols = health.protocol_versions ?? [];
+    const missingProtocols = REQUIRED_PROTOCOL_VERSIONS.filter(p => !protocols.includes(p));
+    if (missingProtocols.length > 0) {
+      const msg = `sidecar is missing required protocol versions: ${missingProtocols.join(", ")}`;
+      if (cfg.failOpen) {
+        log.warn?.(msg, {sidecarProtocols: protocols, required: REQUIRED_PROTOCOL_VERSIONS});
+      } else {
+        throw new Error(msg);
+      }
     }
   }
 

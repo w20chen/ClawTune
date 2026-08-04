@@ -3,8 +3,8 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agent-scheduler"
-version = "0.1.0"
+name = "clawtune-sidecar"
+version = "0.2.0"
 description = "Hardware-aware scheduler sidecar for OpenClaw"
 requires-python = ">=3.10"
 dependencies = [
@@ -20,6 +20,10 @@ dependencies = [
 
 [project.scripts]
 claw-launch = "agent_scheduler.launcher:main"
+clawtune-sidecar = "agent_scheduler.main:main"
+clawtune-setup = "agent_scheduler.cli:setup_main"
+clawtune-doctor = "agent_scheduler.cli:doctor_main"
+clawtune-check = "agent_scheduler.cli:check_main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "jsonschema>=4"]

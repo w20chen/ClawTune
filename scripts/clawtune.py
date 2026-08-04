@@ -263,7 +263,9 @@ def create_venv(system_python: Path) -> None:
                 "from importlib.metadata import version; "
                 "import agent_scheduler, fastapi, httpx, numpy, pydantic, "
                 "prometheus_client, psutil, typing_extensions, uvicorn; "
-                "assert version('agent-scheduler') == '0.1.0'"
+                "try: pkg_ver = version('clawtune-sidecar')\n"
+                "except: pkg_ver = version('agent-scheduler')\n"
+                "assert pkg_ver == '0.2.0'"
             ),
         ],
         check=False,
@@ -504,7 +506,11 @@ def configure_openclaw() -> None:
     plugin = ROOT / "packages" / "openclaw-plugin"
     install_openclaw_plugin(openclaw, plugin)
     run([openclaw, "plugins", "enable", "agent-scheduler"])
-    launcher = (VENV / "bin" / "claw-launch").resolve()
+    # Resolve claw-launch: prefer the one on PATH (pip-installed), fall back
+    # to the repo .venv (dev checkout).
+    launcher = shutil.which("claw-launch")
+    if launcher is None:
+        launcher = str((VENV / "bin" / "claw-launch").resolve())
     patch = {
         "plugins": {
             "entries": {
@@ -517,14 +523,13 @@ def configure_openclaw() -> None:
                     "config": {
                         "endpoint": "http://127.0.0.1:8765",
                         "autoStartSidecar": True,
-                        # Empty by design: the plugin resolves the checkout,
-                        # venv and running-kernel build tree when it starts.
-                        # Persisting those absolute paths makes the config
-                        # stale whenever the repository is moved.
+                        # Empty by design: the plugin resolves the sidecar
+                        # command at runtime (well-known venv, installed
+                        # module, or repo checkout).
                         "sidecarCommand": "",
                         "recordRawTrace": True,
                         "executionBackend": "managed-wrapper",
-                        "launcherPath": str(launcher),
+                        "launcherPath": launcher,
                         "enableCgroup": True,
                         "securityBoundaryAccepted": True,
                     },

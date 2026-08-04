@@ -7,7 +7,7 @@
  * terminate the sidecar on shutdown.
  */
 
-import {spawn, type ChildProcess} from "node:child_process";
+import {execFileSync, spawn, type ChildProcess} from "node:child_process";
 import {existsSync, realpathSync, statSync} from "node:fs";
 import {release as kernelRelease} from "node:os";
 import {isAbsolute, join} from "node:path";
@@ -106,44 +106,148 @@ function sharedLaunches(): SharedLaunchRegistry {
 /**
  * Build a default command & environment for auto-starting the sidecar.
  *
- * Returns null when the project layout cannot be detected.  The caller
- * should fall back to the user-provided command or a plain `python -m
- * agent_scheduler.main` invocation with PYTHONPATH.
+ * Resolution priority:
+ *   1. ``~/.local/share/clawtune/venv`` (PyPI install well-known path).
+ *   2. ``python3 -c "import agent_scheduler"`` (already pip-installed).
+ *   3. Repo checkout with ``.venv`` and ``services/scheduler/src/`` (dev).
+ *   4. Plain ``python3 -m agent_scheduler.main`` (last resort).
+ *
+ * Returns null only when every strategy fails.  The caller should fall back
+ * to the user-provided ``sidecarCommand`` or report the failure.
  */
-function defaultSidecarEnv(endpoint: string): {
+function resolveSidecarCommand(endpoint: string): {
   command: string;
   args: string[];
   env: NodeJS.ProcessEnv;
 } | null {
-  const projectRoot = resolveProjectRoot();
-  if (!projectRoot) return null;
-
   const url = new URL(endpoint);
   const host = listenHost(url);
   const port = url.port || "8765";
-
-  // A normal ClawTune checkout installs the scheduler into .venv with access
-  // to the distribution BCC bindings. Resolve every path from the loaded
-  // plugin at launch time so moving the checkout does not leave a stale
-  // absolute sidecar command in openclaw.json. eBPF attachment still needs
-  // root; invoke sudo directly (without a shell) and keep a conservative PATH
-  // for the privileged compiler/toolchain lookup.
-  const privileged = buildPrivilegedSidecarLaunch(projectRoot, endpoint);
-  if (privileged) return privileged;
-
   const python = pythonCommand();
-  const schedulerSrc = join(projectRoot, "services", "scheduler", "src");
 
-  const sep = process.platform === "win32" ? ";" : ":";
-  const existingPythonpath = process.env.PYTHONPATH;
-  const pythonpath = existingPythonpath
-    ? schedulerSrc + sep + existingPythonpath
-    : schedulerSrc;
+  // 1. Well-known ClawTune venv (PyPI install)
+  const wellKnownVenv = tryWellKnownVenv(python, host, port);
+  if (wellKnownVenv) return wellKnownVenv;
 
+  // 2. agent_scheduler already importable on the default Python
+  const installed = tryInstalledModule(python, host, port);
+  if (installed) return installed;
+
+  // 3. Repo checkout (dev convenience — searches upwards from the plugin)
+  const repo = resolveProjectRoot();
+  if (repo) {
+    const privileged = buildPrivilegedSidecarLaunch(repo, endpoint);
+    if (privileged) return privileged;
+
+    const schedulerSrc = join(repo, "services", "scheduler", "src");
+    const sep = process.platform === "win32" ? ";" : ":";
+    const existingPythonpath = process.env.PYTHONPATH;
+    const pythonpath = existingPythonpath
+      ? schedulerSrc + sep + existingPythonpath
+      : schedulerSrc;
+    return {
+      command: python,
+      args: ["-m", "agent_scheduler.main", "--host", host, "--port", port],
+      env: {...process.env, PYTHONPATH: pythonpath},
+    };
+  }
+
+  // 4. Last resort: plain python -m (may fail if module isn't installed)
   return {
     command: python,
     args: ["-m", "agent_scheduler.main", "--host", host, "--port", port],
-    env: {...process.env, PYTHONPATH: pythonpath},
+    env: {...process.env},
+  };
+}
+
+/** Try the well-known PyPI-install venv at ``~/.local/share/clawtune/venv``. */
+function tryWellKnownVenv(
+  python: string,
+  host: string,
+  port: string,
+): {command: string; args: string[]; env: NodeJS.ProcessEnv} | null {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? "/root";
+  const clawtuneHome = process.env.CLAWTUNE_HOME
+    ?? join(home, ".local", "share", "clawtune");
+  const venvPython = join(clawtuneHome, "venv", "bin", "python");
+  try {
+    if (!statSync(venvPython).isFile()) return null;
+  } catch {
+    return null;
+  }
+  // Also try privileged launch from the well-known venv
+  const privileged = buildPrivilegedSidecarLaunchFromVenv(
+    venvPython, host, port,
+  );
+  if (privileged) return privileged;
+
+  return {
+    command: venvPython,
+    args: ["-m", "agent_scheduler.main", "--host", host, "--port", port],
+    env: {...process.env},
+  };
+}
+
+/** Check whether ``agent_scheduler`` is importable on the default Python. */
+function tryInstalledModule(
+  python: string,
+  host: string,
+  port: string,
+): {command: string; args: string[]; env: NodeJS.ProcessEnv} | null {
+  try {
+    execFileSync(python, ["-c", "import agent_scheduler"], {
+      stdio: "ignore",
+      timeout: 5000,
+    });
+    return {
+      command: python,
+      args: ["-m", "agent_scheduler.main", "--host", host, "--port", port],
+      env: {...process.env},
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Build a privileged launch from a known venv Python (not repo-relative). */
+function buildPrivilegedSidecarLaunchFromVenv(
+  venvPython: string,
+  host: string,
+  port: string,
+  runtime: SidecarRuntime = {
+    platform: process.platform,
+    kernelRelease: kernelRelease(),
+    env: process.env,
+  },
+): SidecarProcessSpec | null {
+  if (runtime.platform !== "linux") return null;
+  if (!existsSync(venvPython)) return null;
+
+  const configuredKernelSource = runtime.env.BCC_KERNEL_SOURCE;
+  const kernelCandidate = configuredKernelSource && existsSync(configuredKernelSource)
+    ? configuredKernelSource
+    : join("/lib/modules", runtime.kernelRelease, "build");
+  if (!existsSync(kernelCandidate)) return null;
+  const kernelSource = realpathSync(kernelCandidate);
+
+  return {
+    command: "sudo",
+    args: [
+      ...sudoPreserveEnvironmentArgs(runtime.env),
+      "env",
+      `PATH=${privilegedPath(runtime.env, runtime.platform)}`,
+      `HOME=${runtime.env.HOME ?? "/root"}`,
+      "PYTHONNOUSERSITE=1",
+      `BCC_KERNEL_SOURCE=${kernelSource}`,
+      venvPython,
+      "-m",
+      "agent_scheduler.main",
+      "--host",
+      host,
+      "--port",
+      port,
+    ],
+    env: {...runtime.env},
   };
 }
 
@@ -277,31 +381,26 @@ async function ensureSidecarRunningOnce(
       env: {...process.env},
     });
   } else {
-    // Default: use -m agent_scheduler.main with PYTHONPATH
-    const defaults = defaultSidecarEnv(endpoint);
-    if (defaults) {
-      resolvedCommand = `${defaults.command} ${defaults.args.join(" ")}`;
-      logger.info("auto-starting sidecar (detected project layout)", {
+    // Auto-resolve: try well-known venv, installed module, repo checkout.
+    const resolved = resolveSidecarCommand(endpoint);
+    if (resolved) {
+      resolvedCommand = `${resolved.command} ${resolved.args.join(" ")}`;
+      logger.info("auto-starting sidecar (auto-resolved)", {
         command: resolvedCommand,
-        pythonpath: defaults.env.PYTHONPATH,
+        pythonpath: resolved.env.PYTHONPATH,
       });
-      child = spawn(defaults.command, defaults.args, {
+      child = spawn(resolved.command, resolved.args, {
         stdio: ["ignore", "pipe", "pipe"],
         detached: false,
-        env: defaults.env,
+        env: resolved.env,
       });
     } else {
-      // Last resort: plain python -m with PYTHONPATH from env
-      const python = pythonCommand();
-      const host = listenHost(url);
-      const port = url.port || "8765";
-      resolvedCommand = `${python} -m agent_scheduler.main --host ${host} --port ${port}`;
-      logger.info("auto-starting sidecar (fallback)", {command: resolvedCommand});
-      child = spawn(python, ["-m", "agent_scheduler.main", "--host", host, "--port", port], {
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: false,
-        env: {...process.env},
-      });
+      // All resolution strategies exhausted.
+      throw new Error(
+        "sidecar auto-start failed: could not resolve a sidecar launch command. " +
+        "Install clawtune-sidecar (pip install clawtune-sidecar) or set " +
+        "sidecarCommand in the plugin config."
+      );
     }
   }
 

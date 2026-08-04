@@ -1,1 +1,0 @@
-{"version": 2, "mode": "clause", "provenance": {"repo": "repo-1"}, "calls": [{"eligible_for_kb": true, "clauses": [{"bin": "python", "argv": ["python", "-m", "pytest"], "latency_ms": 1200}]}]}

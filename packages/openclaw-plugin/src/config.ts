@@ -11,7 +11,8 @@ const defaults: PluginConfig = {
   logLevel: "info",
   consoleMode: "verbose",
   executionBackend: "managed-wrapper",
-  launcherPath: "/opt/claw/bin/claw-launch",
+  // Empty string = auto-resolve via `which claw-launch` at runtime.
+  launcherPath: "",
   launcherInterpreter: null,
   collectorSocket: "/run/claw/collector.sock",
   instrumentHosts: ["gateway"],
@@ -82,8 +83,8 @@ export function loadConfig(input: unknown): PluginConfig {
   if (!["off", "proc", "perf", "ksys", "vtune"].includes(String(config.profilingMode))) {
     throw new Error(`invalid profilingMode: ${String(config.profilingMode)}`);
   }
-  if (typeof config.launcherPath !== "string" || config.launcherPath.length === 0) {
-    throw new Error("launcherPath must be a non-empty string");
+  if (typeof config.launcherPath !== "string") {
+    throw new Error("launcherPath must be a string");
   }
   if (config.launcherInterpreter !== null
       && (typeof config.launcherInterpreter !== "string" || config.launcherInterpreter.length === 0)) {
@@ -219,13 +220,15 @@ function parseBoolean(value: string | undefined): boolean | null {
 }
 
 function validateManagedWrapperLauncherPath(value: string): void {
+  // Empty string is valid: the plugin resolves claw-launch from PATH at runtime.
+  if (value.length === 0) return;
   if (value === "/absolute/path/to/claw-launch" || value.includes("<")) {
     throw new Error(
-      "managed-wrapper launcherPath is still a placeholder; set it to `command -v claw-launch`"
+      "managed-wrapper launcherPath is still a placeholder; set it to an absolute path or leave empty for auto-resolve"
     );
   }
   if (!value.startsWith("/")) {
-    throw new Error("managed-wrapper launcherPath must be an absolute path");
+    throw new Error("managed-wrapper launcherPath must be an absolute path or empty for auto-resolve");
   }
 }
 

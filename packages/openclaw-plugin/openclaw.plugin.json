@@ -1,7 +1,7 @@
 {
   "id": "agent-scheduler",
   "name": "Agent Scheduler",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Agent scheduling and tracing bridge for OpenClaw.",
   "entry": "./dist/index.js",
   "runtime": "node",
@@ -17,7 +17,7 @@
       "recordRawTrace": {"type": "boolean", "default": false},
       "logLevel": {"enum": ["error", "warn", "info", "debug"], "default": "info"},
       "executionBackend": {"enum": ["hook-only", "marker", "managed-wrapper"], "default": "managed-wrapper"},
-      "launcherPath": {"type": "string", "default": "/opt/claw/bin/claw-launch"},
+      "launcherPath": {"type": "string", "default": "", "description": "Absolute path to claw-launch. Empty = auto-resolve from PATH."},
       "launcherInterpreter": {"type": ["string", "null"], "default": null},
       "collectorSocket": {"type": "string", "default": "/run/claw/collector.sock"},
       "instrumentHosts": {"type": "array", "items": {"type": "string"}, "default": ["gateway"]},

@@ -6,6 +6,12 @@
   "properties": {
     "schema_version": {"const": "scheduler.health.v1"},
     "service": {"const": "clawtune-scheduler"},
+    "sidecar_version": {"type": "string", "description": "Semver of the running clawtune-sidecar package."},
+    "protocol_versions": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Protocol versions this sidecar supports (scheduler.api.v1, trace.v6, execution.v1)."
+    },
     "live": {"type": "boolean"},
     "ready": {"type": "boolean"}
   },

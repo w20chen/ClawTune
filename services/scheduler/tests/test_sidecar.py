@@ -97,17 +97,21 @@ def test_health_endpoints_publish_stable_clawtune_identity(tmp_path: Path) -> No
     ready = client.get("/health/ready")
 
     assert live.status_code == 200
-    assert live.json() == {
-        "schema_version": "scheduler.health.v1",
-        "service": "clawtune-scheduler",
-        "live": True,
-    }
+    live_payload = live.json()
+    assert live_payload["schema_version"] == "scheduler.health.v1"
+    assert live_payload["service"] == "clawtune-scheduler"
+    assert live_payload["live"] is True
+    # Version-negotiation fields added in 0.2.0.
+    assert isinstance(live_payload.get("sidecar_version"), str)
+    assert isinstance(live_payload.get("protocol_versions"), list)
+
     assert ready.status_code == 200
-    assert ready.json() == {
-        "schema_version": "scheduler.health.v1",
-        "service": "clawtune-scheduler",
-        "ready": True,
-    }
+    ready_payload = ready.json()
+    assert ready_payload["schema_version"] == "scheduler.health.v1"
+    assert ready_payload["service"] == "clawtune-scheduler"
+    assert ready_payload["ready"] is True
+    assert isinstance(ready_payload.get("sidecar_version"), str)
+    assert isinstance(ready_payload.get("protocol_versions"), list)
 
 
 def _write_cgroup_fixture(path: Path, usage_usec: int = 100_000) -> None:

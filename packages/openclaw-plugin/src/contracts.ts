@@ -294,3 +294,19 @@ export type ExecutionRegistrationResponse = {
   one_time_token: string;
   expires_at: string;
 };
+
+/** Health-check payload returned by GET /health/live and /health/ready. */
+export type SidecarHealth = {
+  schema_version: string;
+  service: string;
+  sidecar_version?: string;
+  protocol_versions?: string[];
+  live?: boolean;
+  ready?: boolean;
+};
+
+/** Minimum compatible sidecar version. The plugin refuses to connect to older sidecars. */
+export const MIN_COMPATIBLE_SIDECAR_VERSION = "0.2.0";
+
+/** Protocol versions the plugin expects from the sidecar. */
+export const REQUIRED_PROTOCOL_VERSIONS = ["scheduler.api.v1", "execution.v1"];

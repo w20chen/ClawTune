@@ -1,4 +1,5 @@
 import {randomUUID} from "node:crypto";
+import {execFileSync} from "node:child_process";
 import type {PluginConfig, ResourceScope, ToolBeforeRequest, ToolDecision} from "./contracts.js";
 import {isRecord} from "./config.js";
 import {stableDigest} from "./redaction.js";
@@ -280,9 +281,10 @@ function launcherWorkdirOverride(): string | null {
 }
 
 function buildLauncherCommand(config: PluginConfig, executionId: string): string {
+  const resolvedPath = resolveLauncherPath(config.launcherPath);
   const launcherInvocation = [
     ...(config.launcherInterpreter === null ? [] : [shellQuote(config.launcherInterpreter)]),
-    shellQuote(config.launcherPath),
+    shellQuote(resolvedPath),
     "run",
     `--execution-id=${shellQuote(executionId)}`
   ].join(" ");
@@ -295,6 +297,24 @@ function buildLauncherCommand(config: PluginConfig, executionId: string): string
     "-c",
     shellQuote(`exec ${launcherInvocation}`)
   ].join(" ");
+}
+
+/** Resolve claw-launch to an absolute path.  When the configured path is empty
+ *  the plugin searches PATH; otherwise it returns the configured value as-is. */
+function resolveLauncherPath(configured: string): string {
+  if (configured.length > 0) return configured;
+  try {
+    const found = execFileSync("which", ["claw-launch"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 3000,
+    }).trim();
+    if (found) return found;
+  } catch {
+    // which failed — fall through to default
+  }
+  // Last resort: return the bare name; the shell may still resolve it.
+  return "claw-launch";
 }
 
 function shellQuote(value: string): string {
