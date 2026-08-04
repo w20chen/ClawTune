@@ -64,6 +64,13 @@ export type PluginConfig = {
    * path is persisted in OpenClaw config.
    */
   sidecarCommand: string;
+  /**
+   * Optional explicit KB repo namespace for every event this runtime emits.
+   * When unset the plugin derives one from the process working directory
+   * (git remote "origin", then directory basename).  `CLAW_REPO_KEY` env
+   * still takes precedence over this value (swe-rebench sets it per task).
+   */
+  repo?: string | null;
   trace: TracePluginConfig;
 };
 

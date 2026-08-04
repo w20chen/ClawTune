@@ -31,6 +31,7 @@
       "autoStartSidecar": {"type": "boolean", "default": false, "description": "Automatically start the scheduler sidecar if it is not already running. ClawTune setup enables this with the privileged eBPF runtime."},
       "sidecarStartupTimeoutMs": {"type": "integer", "default": 60000, "minimum": 1000, "maximum": 600000, "description": "Time allowed for sudo, Python/BCC cold start, and sidecar readiness."},
       "sidecarCommand": {"type": "string", "default": "", "description": "Advanced custom shell command. Leave empty so the plugin resolves the checkout, venv, kernel headers, and sudo command at runtime."},
+      "repo": {"type": ["string", "null"], "default": null, "description": "Optional explicit KB repo namespace for every event. When unset the plugin derives it from the working directory (git remote origin, then directory basename). CLAW_REPO_KEY env takes precedence."},
       "trace": {
         "type": "object",
         "additionalProperties": false,

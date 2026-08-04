@@ -68,6 +68,24 @@ Other CLI forms have deliberately narrower lifetimes:
 | `openclaw agent --local ...` | One embedded, non-interactive turn |
 | `python3 scripts/clawtune.py agent --local ...` | One-shot fallback when plugin-started sudo cannot prompt |
 
+## Per-Repository KB Namespaces
+
+Tool-resource knowledge is namespaced per repository. In normal use the plugin
+derives the namespace automatically from the working directory of the Gateway
+process — git remote `origin` when available, otherwise the directory name — so
+starting the Gateway from inside the repository is enough:
+
+```bash
+cd /path/to/acme/widgets
+openclaw gateway run
+```
+
+Override explicitly with `plugins.entries.agent-scheduler.config.repo`, the
+`OPENCLAW_AGENT_SCHEDULER_REPO` environment variable, or `CLAW_REPO_KEY`
+(highest priority). SWE-Rebench injects `CLAW_REPO_KEY` per task and is
+unaffected. See `docs/configuration.md` for the full priority order.
+
+
 ## End-to-End One-Shot Smoke Test
 
 ```bash

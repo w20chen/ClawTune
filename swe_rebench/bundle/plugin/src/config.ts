@@ -26,6 +26,7 @@ const defaults: PluginConfig = {
   autoStartSidecar: false,
   sidecarStartupTimeoutMs: 60_000,
   sidecarCommand: "",
+  repo: null,
   trace: {
     schema_version: 6,
     include_raw_events: false,
@@ -152,6 +153,7 @@ function envOverrides(): Partial<PluginConfig> {
   );
   setBoolean(output, "autoStartSidecar", schedulerEnv("AUTO_START_SIDECAR"));
   setString(output, "sidecarCommand", schedulerEnv("SIDECAR_COMMAND"));
+  setString(output, "repo", schedulerEnv("REPO"));
   const trace: Record<string, unknown> = {};
   const traceDir = schedulerEnv("PLUGIN_TRACE_DIR");
   if (traceDir !== undefined && traceDir.length > 0) trace.trace_dir = traceDir;

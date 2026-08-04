@@ -10,20 +10,17 @@ import {buildTrustedResourceScope, instrumentExecParams} from "./exec-instrument
 import type {InstrumentResult} from "./exec-instrumentation.js";
 import {consoleLogger} from "./logging.js";
 import {jsonSafe, paramFeatures, redact, stableDigest} from "./redaction.js";
+import {resolveRepoKey} from "./repo.js";
 import {normalizeSandboxToolParams} from "./sandbox-paths.js";
 import {ensureSidecarRunning, type SidecarLauncherResult} from "./sidecar-launcher.js";
 import {
   SpanRegistry,
 } from "./trace/registry.js";
-import {
-  TraceWriter,
-} from "./trace/writer.js";
+import {RunWriterManager, type RunWriterScope} from "./trace/run-writer-manager.js";
 import {
   monotonicNowNs,
   wallClockNowNs,
   durationNs,
-  CLOCK_SOURCE_DESCRIPTION,
-  CLOCK_PRECISION,
 } from "./trace/clock.js";
 import {
   sanitizeTraceData,
@@ -32,7 +29,6 @@ import {extractToolExitCode, traceExitCodeForTool} from "./tool-result.js";
 import type {
   SpanStartRecord,
   SpanEndRecord,
-  TraceMetadataRecord,
   SpanKind,
   StatusCode,
   ExecutionMode,
@@ -41,6 +37,7 @@ import type {
   CoverageReason,
   SpanEndExecution,
   SpanEndResources,
+  ActiveSpan,
 } from "./trace/schema.js";
 import { TRACE_SCHEMA_VERSION } from "./trace/schema.js";
 
@@ -50,111 +47,6 @@ const pluginVersion = "0.1.1";
 
 /** Unique instance ID generated once per plugin load (�?per CLI launch). */
 const instanceId = randomUUID();
-
-/** Per-run trace writers, keyed by normalized run identity. */
-const runWriters = new Map<string, TraceWriter>();
-
-/** Pending writer creation promises to prevent concurrent creation races. */
-const pendingWriters = new Map<string, Promise<TraceWriter | null>>();
-
-function safeFilename(segment: string | null): string {
-  if (!segment) return "unknown";
-  return segment.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").slice(0, 64);
-}
-
-/**
- * Get or create a trace writer for a run.
- *
- * Keys writers by runId (primary) or sessionId (fallback).
- * NEVER uses plugin instanceId as a key to prevent cross-run
- * accumulation in the same file.
- *
- * Returns null when neither runId nor sessionId is available
- * (trace data cannot be attributed to a specific run/session).
- */
-async function getRunWriter(
-  traceDir: string,
-  runtimeId: string,
-  runId: string | null,
-  sessionId: string | null,
-  agentId: string | null,
-  logger: { warn(message: string, data?: unknown): void },
-  flushSpanStart: boolean,
-  ownedWriters: Set<TraceWriter>,
-): Promise<TraceWriter | null> {
-  const runKey = runId ?? sessionId;
-  if (!runKey) {
-    logger.warn("trace: skipping write, no run_id or session_id available", {
-      runId,
-      sessionId,
-      agentId,
-      instanceId,
-    });
-    return null;
-  }
-  const key = JSON.stringify([traceDir, runtimeId, agentId, sessionId, runKey]);
-
-  const existing = runWriters.get(key);
-  if (existing) {
-    ownedWriters.add(existing);
-    return existing;
-  }
-
-  // Prevent concurrent creation: if another caller is already creating
-  // a writer for this key, wait for it and return the same writer.
-  const pending = pendingWriters.get(key);
-  if (pending) {
-    const writer = await pending;
-    if (writer) ownedWriters.add(writer);
-    return writer;
-  }
-
-  const promise = (async (): Promise<TraceWriter | null> => {
-    // Double-check after acquiring the creation slot
-    const recheck = runWriters.get(key);
-    if (recheck) return recheck;
-
-    const session = safeFilename(sessionId);
-    const run = safeFilename(runId);
-    // Note: agent_id is included per-record in the JSONL content.
-    // It is omitted from the filename because model hooks (model_call_started,
-    // model_call_ended) do not expose agent_id �?an OpenClaw limitation.
-    const identityDigest = stableDigest([runtimeId, agentId, sessionId, runId])
-      .replace(/^sha256:/, "")
-      .slice(0, 12);
-    const filename = `${safeFilename(runtimeId)}__${session}_${run}__${identityDigest}.jsonl`;
-    const { join } = await import("node:path");
-    const filePath = join(traceDir, filename);
-
-    const traceLogger = { warn: (msg: string, d?: unknown) => logger.warn(msg, d), info: (_msg: string, _d?: unknown) => {}, error: (_msg: string, _d?: unknown) => {} };
-    const w = new TraceWriter(filePath, flushSpanStart, traceLogger);
-    await w.open();
-
-    const metadata: TraceMetadataRecord = {
-      schema_version: TRACE_SCHEMA_VERSION,
-      record_type: "trace_metadata",
-      trace_format_version: TRACE_SCHEMA_VERSION,
-      scaffold: "openclaw",
-      mode: "collect",
-      created_at: new Date().toISOString().replace("+00:00", "Z"),
-      clock_source: CLOCK_SOURCE_DESCRIPTION,
-      clock_precision: CLOCK_PRECISION,
-    };
-    w.writeRecord(metadata);
-
-    runWriters.set(key, w);
-    return w;
-  })();
-
-  pendingWriters.set(key, promise);
-  try {
-    const writer = await promise;
-    if (writer) ownedWriters.add(writer);
-    return writer;
-  } finally {
-    pendingWriters.delete(key);
-  }
-}
 
 export default definePluginEntry({
   id: "agent-scheduler",
@@ -166,8 +58,8 @@ export default definePluginEntry({
     properties: {
       endpoint: {type: "string", default: "http://localhost:8765"},
       mode: {enum: ["observe", "enforce"], default: "observe"},
-      decisionTimeoutMs: {type: "integer", default: 800, minimum: 1},
-      reportTimeoutMs: {type: "integer", default: 800, minimum: 1},
+      decisionTimeoutMs: {type: "integer", default: 3000, minimum: 200, maximum: 30000},
+      reportTimeoutMs: {type: "integer", default: 3000, minimum: 200, maximum: 30000},
       failOpen: {type: "boolean", default: true},
       sendRawParams: {type: "boolean", default: false},
       recordRawTrace: {type: "boolean", default: false},
@@ -177,7 +69,7 @@ export default definePluginEntry({
       launcherPath: {type: "string", default: "/opt/claw/bin/claw-launch"},
       launcherInterpreter: {type: ["string", "null"], default: null},
       collectorSocket: {type: "string", default: "/run/claw/collector.sock"},
-      instrumentHosts: {type: "array", items: {type: "string"}, default: ["gateway"]},
+      instrumentHosts: {type: "array", items: {type: "string"}, default: ["gateway", "*"]},
       instrumentTools: {type: "array", items: {type: "string"}, default: ["exec"]},
       enableCgroup: {type: "boolean", default: true},
       enableAffinity: {type: "boolean", default: true},
@@ -219,8 +111,12 @@ export default definePluginEntry({
   const logger = api.logger ?? consoleLogger;
   const runtimeId = process.env.CLAW_RUNTIME_ID?.trim() || randomUUID();
   const gatewayId = process.env.CLAW_GATEWAY_ID?.trim() || runtimeId;
-  const runtimeRepo = process.env.CLAW_REPO_KEY?.trim() || null;
-  const ownedWriters = new Set<TraceWriter>();
+  // KB repo namespace: CLAW_REPO_KEY env wins (swe-rebench sets it per task),
+  // then plugin config `repo`, then git/working-directory auto-derivation.
+  const runtimeRepo = resolveRepoKey(config.repo);
+  if (runtimeRepo) {
+    logger.info?.("KB repo namespace", {repo: runtimeRepo});
+  }
 
   // ── Auto-start sidecar ───────────────────────────────────────────
   let sidecarLauncher: SidecarLauncherResult | null = null;
@@ -273,6 +169,21 @@ export default definePluginEntry({
   // Initialize trace v6 if trace_dir is configured
   const registry = new SpanRegistry();
   const traceCfg = config.trace;
+  const writerManager = new RunWriterManager(traceCfg.flush_span_start, logger);
+
+  function writerScope(
+    identity: HookIdentity,
+    sessionId: string | null = identity.sessionId,
+    agentId: string | null = identity.agentId,
+  ): RunWriterScope {
+    return {
+      traceDir: traceCfg.trace_dir,
+      runtimeId: identity.runtimeId,
+      runId: identity.runId,
+      sessionId,
+      agentId,
+    };
+  }
 
   // ── Console turn-by-turn logging (verbose mode) ──────────────────
   const CONSOLE_PREFIX = "[openclaw]";
@@ -299,128 +210,158 @@ export default definePluginEntry({
     return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "?";
   }
 
+  function oneLine(value: string): string {
+    return value.replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim();
+  }
+
   function formatProbabilityList(values: unknown): string | null {
     if (!Array.isArray(values) || values.length === 0) return null;
     return values
       .map((value, index) => `b${index}=${formatNumber(value, 2)}`)
-      .join(",");
+      .join(", ");
+  }
+
+  function formatBucketRange(bucketId: unknown): string {
+    if (typeof bucketId !== "number" || !Number.isInteger(bucketId) || bucketId < 0) {
+      return "unknown range";
+    }
+    const boundaries = [100, 500, 2_000, 10_000];
+    if (bucketId === 0) return "under 100ms";
+    if (bucketId < boundaries.length) {
+      return `${formatMs(boundaries[bucketId - 1])}–${formatMs(boundaries[bucketId])}`;
+    }
+    return "10s or more";
+  }
+
+  function formatEvidence(value: unknown): string {
+    if (!isRecord(value)) return "no evidence";
+    const scope = typeof value.scope === "string" ? value.scope : "unknown scope";
+    const keyKind = typeof value.key_kind === "string" ? value.key_kind : "unknown match";
+    const evidence = typeof value.evidence_count === "number" ? value.evidence_count : 0;
+    return `${scope}, ${keyKind}, ${evidence} sample${evidence === 1 ? "" : "s"}`;
   }
 
   function formatPredictionSource(value: unknown): string {
     if (!isRecord(value)) return "no evidence";
-    const rec = value as Record<string, unknown>;
-    const scope = typeof rec.scope === "string" ? rec.scope : "?";
-    const keyKind = typeof rec.key_kind === "string" ? rec.key_kind : "?";
-    const evidence = typeof rec.evidence_count === "number" ? rec.evidence_count : 0;
-    return `${scope}/${keyKind} n=${evidence}`;
+    const scope = typeof value.scope === "string" ? value.scope : "unknown scope";
+    const keyKind = typeof value.key_kind === "string" ? value.key_kind : "unknown match";
+    const evidence = typeof value.evidence_count === "number" ? value.evidence_count : 0;
+    return `${scope}, ${keyKind}, ${evidence} sample${evidence === 1 ? "" : "s"}`;
   }
 
   function continuousPredictionSummary(prediction: unknown, label: string, unit: string): string {
     if (!isRecord(prediction)) return `${label}=?`;
-    const rec = prediction as Record<string, unknown>;
-    const p90 = rec.conditional_p90;
-    const note = typeof rec.note === "string" && rec.note ? ` note=${rec.note}` : "";
-    const source = formatPredictionSource(rec);
+    const p90 = prediction.conditional_p90;
+    const note = typeof prediction.note === "string" && prediction.note
+      ? `; ${oneLine(prediction.note)}`
+      : "";
+    const source = formatPredictionSource(prediction);
     if (typeof p90 !== "number" || !Number.isFinite(p90)) {
-      return `${label}=unavailable (${source}${note})`;
+      return `${label}: unavailable (${source}${note})`;
     }
-    const value = unit === "ms" ? formatMs(p90) : `${formatNumber(p90, unit === "cores" ? 2 : 1)}${unit}`;
-    return `${label}_p90=${value} (${source}${note})`;
+    const value = unit === "ms"
+      ? formatMs(p90)
+      : `${formatNumber(p90, unit === "cores" ? 2 : 1)}${unit}`;
+    return `${label}: ${value} (${source}${note})`;
   }
 
   function summarizePrediction(decision: ToolDecision): string {
     const prediction = decision.prediction;
-    const header = [
-      `time p50=${formatMs(prediction.duration_p50_ms)} p90=${formatMs(prediction.duration_p90_ms)}`,
-      `class=${prediction.resource_class}`,
+    const lines: string[] = [
+      "prediction",
+      `  duration: typical ${formatMs(prediction.duration_p50_ms)}; p90 ${formatMs(prediction.duration_p90_ms)}`,
+      `  resources: class=${prediction.resource_class}`,
     ];
     if (prediction.confidence !== null && prediction.confidence !== undefined) {
-      header.push(`confidence=${formatNumber(prediction.confidence, 2)}`);
+      lines[2] += `; confidence=${formatNumber(prediction.confidence * 100, 0)}%`;
     }
-    const lines: string[] = [`  ${header.join(" │ ")}`];
     const toolResource = prediction.tool_resource;
     if (!toolResource) return lines.join("\n");
 
-    // --- bucket (clause latency bucket top-level) ---
     if (toolResource.prediction) {
       const probs = formatProbabilityList(toolResource.prediction.probability_by_bucket);
       lines.push(
-        `  bucket   bucket=${toolResource.prediction.bucket_id} (${formatPredictionSource(toolResource.prediction)}${probs ? ` probs=${probs}` : ""})`
+        `  latency bucket: #${toolResource.prediction.bucket_id} (${formatBucketRange(toolResource.prediction.bucket_id)}; ${formatEvidence(toolResource.prediction)})` +
+        (probs ? `\n    probabilities: ${probs}` : ""),
       );
     } else {
-      lines.push(`  bucket   unavailable (${toolResource.unavailable_reason ?? "unknown"})`);
+      lines.push(`  latency bucket: unavailable (${toolResource.unavailable_reason ?? "unknown reason"})`);
     }
 
-    // --- per-clause bucket predictions ---
     const clausePreds = toolResource.clause_predictions;
     if (Array.isArray(clausePreds) && clausePreds.length > 0) {
-      const clauseParts = clausePreds.map((cp, i) => {
-        if (!isRecord(cp)) return `[${i}] ?`;
-        const c = cp as Record<string, unknown>;
-        const idx = c.clause_index;
-        const bin = typeof c.bin === "string" ? c.bin : "?";
-        const pred = c.prediction;
-        if (isRecord(pred)) {
-          const p = pred as Record<string, unknown>;
-          const probs = formatProbabilityList(p.probability_by_bucket);
-          return `[${idx}] ${bin}=bucket(${p.bucket_id} ${formatPredictionSource(p)}${probs ? ` ${probs}` : ""})`;
+      lines.push("  clauses:");
+      for (const cp of clausePreds) {
+        if (!isRecord(cp)) {
+          lines.push("    unknown clause");
+          continue;
         }
-        const reason = typeof c.unavailable_reason === "string" ? c.unavailable_reason : "?";
-        return `[${idx}] ${bin}=unavailable(${reason})`;
-      });
-      lines.push(`  clauses  ${clauseParts.join(" │ ")}`);
+        const bin = typeof cp.bin === "string" ? oneLine(cp.bin) : "?";
+        if (isRecord(cp.prediction)) {
+          const p = cp.prediction;
+          const probs = formatProbabilityList(p.probability_by_bucket);
+          lines.push(
+            `    ${bin} → #${p.bucket_id} (${formatBucketRange(p.bucket_id)}; ${formatEvidence(p)})` +
+            (probs ? ` [${probs}]` : ""),
+          );
+        } else {
+          lines.push(`    ${bin} → unavailable (${cp.unavailable_reason ?? "unknown reason"})`);
+        }
+      }
     }
 
-    // --- continuous (runtime p90) ---
     const continuous = toolResource.continuous_predictions ?? {};
-    const contParts = [
-      continuousPredictionSummary(continuous.latency_ms, "latency", "ms"),
-      continuousPredictionSummary(continuous.peak_cpu_cores, "cpu", "cores"),
-      continuousPredictionSummary(continuous.peak_memory_mb, "mem", "MB"),
-    ].filter(s => s.length > 0);
-    if (contParts.length > 0) {
-      lines.push(`  runtime  ${contParts.join(" │ ")}`);
-    }
+    lines.push("  runtime p90:");
+    lines.push(`    ${continuousPredictionSummary(continuous.latency_ms, "latency", "ms")}`);
+    lines.push(`    ${continuousPredictionSummary(continuous.peak_cpu_cores, "cpu", "cores")}`);
+    lines.push(`    ${continuousPredictionSummary(continuous.peak_memory_mb, "memory", "MB")}`);
 
-    // --- lattice time predictions (per-clause point estimates) ---
     const latticePreds = toolResource.lattice_time_predictions;
     if (Array.isArray(latticePreds) && latticePreds.length > 0) {
-      const latticeLines = latticePreds.map((lp) => {
-        if (!isRecord(lp)) return "  lattice  ?";
-        const l = lp as Record<string, unknown>;
-        const idx = l.clause_index;
-        const bin = typeof l.bin === "string" ? l.bin : "?";
-        const preds = Array.isArray(l.predictions) ? l.predictions : [];
-        const algoParts = preds.map((ap) => {
-          if (!isRecord(ap)) return "?";
-          const a = ap as Record<string, unknown>;
-          const algo = typeof a.algorithm === "string" ? a.algorithm : "?";
-          const shortAlgo = algo.length > 6 ? algo.slice(0, 6) : algo; // shrinkage→shrink, loso stays, max_cardinality→max_ca
-          if (typeof a.prediction_ms === "number" && Number.isFinite(a.prediction_ms)) {
-            const feat = Array.isArray(a.selected_features) ? (a.selected_features as string[]).join(",") : "?";
-            const ev = typeof a.evidence_count === "number" ? a.evidence_count : 0;
-            const ex = a.exact_match === true ? "✓" : a.exact_match === false ? "~" : "?";
-            return `${shortAlgo}=${formatMs(a.prediction_ms)} feat=${feat} n=${ev} ${ex}`;
+      lines.push("  lattice estimates:");
+      for (const lp of latticePreds) {
+        if (!isRecord(lp)) {
+          lines.push("    unknown clause");
+          continue;
+        }
+        const bin = typeof lp.bin === "string" ? oneLine(lp.bin) : "?";
+        const predictions = Array.isArray(lp.predictions) ? lp.predictions : [];
+        const estimates = predictions.map((item) => {
+          if (!isRecord(item)) return "unknown";
+          const algorithm = typeof item.algorithm === "string" ? item.algorithm : "unknown";
+          if (typeof item.prediction_ms === "number" && Number.isFinite(item.prediction_ms)) {
+            const evidence = typeof item.evidence_count === "number" ? item.evidence_count : 0;
+            const match = item.exact_match === true ? "exact" : item.exact_match === false ? "generalized" : "unknown match";
+            return `${algorithm}=${formatMs(item.prediction_ms)} (${match}, ${evidence} sample${evidence === 1 ? "" : "s"})`;
           }
-          const reason = typeof a.unavailable_reason === "string" ? a.unavailable_reason : "?";
-          return `${shortAlgo}=unavailable(${reason})`;
+          return `${algorithm}=unavailable (${item.unavailable_reason ?? "unknown reason"})`;
         });
-        return `  lattice  [${idx}] ${bin}: ${algoParts.join(" │ ")}`;
-      });
-      lines.push(...latticeLines);
-    } else {
-      lines.push("  lattice  (none)");
+        lines.push(`    ${bin}: ${estimates.join("; ")}`);
+      }
     }
 
-    // --- algorithms ---
     const enabled = toolResource.prediction_algorithms?.enabled
       ?.map((item) => item.name)
       .filter((name): name is string => typeof name === "string" && name.length > 0);
     if (enabled && enabled.length > 0) {
-      lines.push(`  algo     ${enabled.join(" + ")}`);
+      lines.push(`  algorithms: ${enabled.join(", ")}`);
     }
-
     return lines.join("\n");
+  }
+
+  function extractTextContent(output: unknown): string | null {
+    if (!isRecord(output)) return null;
+    const choices = output.choices;
+    if (Array.isArray(choices) && choices.length > 0 && isRecord(choices[0])) {
+      const choice = choices[0];
+      const message = choice.message ?? choice.delta;
+      if (isRecord(message) && typeof message.content === "string" && message.content.length > 0) {
+        return message.content;
+      }
+    }
+    if (typeof output.content === "string" && output.content.length > 0) return output.content;
+    if (typeof output.text === "string" && output.text.length > 0) return output.text;
+    return null;
   }
 
   function summarizeObservedTelemetry(telemetry: unknown): string | null {
@@ -462,39 +403,6 @@ export default definePluginEntry({
     if (peakMem !== null) parts.push(`mem_peak=${formatNumber(peakMem, 1)}MB`);
     if (reason) parts.push(reason.trim());
     return parts.join("; ");
-  }
-
-  function summarizeMessages(messages: unknown): string {
-    if (!Array.isArray(messages)) return "? messages";
-    const roles = new Map<string, number>();
-    for (const m of messages) {
-      if (!isRecord(m)) continue;
-      const role = String((m as Record<string, unknown>).role ?? "unknown");
-      roles.set(role, (roles.get(role) ?? 0) + 1);
-    }
-    const parts = Array.from(roles.entries()).map(([r, c]) => `${r}×${c}`);
-    return parts.length > 0 ? parts.join(", ") : `${messages.length} messages`;
-  }
-
-  function extractTextContent(output: unknown): string | null {
-    if (!isRecord(output)) return null;
-    const o = output as Record<string, unknown>;
-    // OpenAI style: choices[0].message.content
-    const choices = o.choices;
-    if (Array.isArray(choices) && choices.length > 0 && isRecord(choices[0])) {
-      const msg = (choices[0] as Record<string, unknown>).message ?? (choices[0] as Record<string, unknown>).delta;
-      if (isRecord(msg)) {
-        const content = (msg as Record<string, unknown>).content;
-        if (typeof content === "string" && content.length > 0) return content;
-      }
-    }
-    // Direct content field
-    const content = o.content;
-    if (typeof content === "string" && content.length > 0) return content;
-    // text field
-    const text = o.text;
-    if (typeof text === "string" && text.length > 0) return text;
-    return null;
   }
 
   function extractToolCallsForDisplay(output: unknown): Array<{name: string; id: string}> {
@@ -540,43 +448,43 @@ export default definePluginEntry({
     if (!isRecord(event)) return "";
     const params = (event as Record<string, unknown>).params ?? (event as Record<string, unknown>).arguments ?? (event as Record<string, unknown>).input;
     if (params === null || params === undefined) return "";
-    if (typeof params === "string") return truncateStr(params, 200);
+    if (typeof params === "string") return `args="${truncateStr(oneLine(params), 200)}"`;
     if (isRecord(params)) {
       const keys = Object.keys(params as Record<string, unknown>);
       if (keys.length === 0) return "{}";
       // For known tools, print key fields
       const p = params as Record<string, unknown>;
       const cmd = p.command ?? p.cmd;
-      if (typeof cmd === "string") return `command="${truncateStr(cmd, 150)}"`;
+      if (typeof cmd === "string") return `command="${truncateStr(oneLine(cmd), 200)}"`;
       const filePath = p.file_path ?? p.path ?? p.filePath ?? p.file;
       if (typeof filePath === "string") {
         const content = p.content ?? p.text;
         const contentLen = typeof content === "string" ? ` (${content.length} chars)` : "";
-        return `path="${filePath}"${contentLen}`;
+        return `path="${truncateStr(oneLine(filePath), 120)}"${contentLen}`;
       }
       // Generic: list key=value pairs
       const entries = keys.slice(0, 3).map(k => {
         const v = p[k];
-        const vs = typeof v === "string" ? truncateStr(v, 60) : (typeof v === "object" ? "{...}" : String(v));
+        const vs = typeof v === "string"
+          ? truncateStr(oneLine(v), 80)
+          : (typeof v === "object" ? "{...}" : String(v));
         return `${k}=${vs}`;
       });
       return entries.join(", ") + (keys.length > 3 ? ` +${keys.length - 3} more` : "");
     }
-    return truncateStr(String(params), 200);
+    return `args="${truncateStr(oneLine(String(params)), 200)}"`;
   }
 
   function summarizeToolResult(event: unknown): string {
     if (!isRecord(event)) return "";
-    const result = (event as Record<string, unknown>).result ?? (event as Record<string, unknown>).output ?? (event as Record<string, unknown>).response;
-    if (result === null || result === undefined) return "(no output)";
-    if (typeof result === "string") return truncateStr(result, 300);
+    const result = event.result ?? event.output ?? event.response;
+    if (result === null || result === undefined) return "";
+    if (typeof result === "string") return truncateStr(oneLine(result), 120);
     if (isRecord(result)) {
-      const r = result as Record<string, unknown>;
-      const text = r.text ?? r.content ?? r.message ?? r.stdout;
-      if (typeof text === "string") return truncateStr(text, 300);
-      return truncateStr(JSON.stringify(result), 300);
+      const text = result.text ?? result.content ?? result.message ?? result.stdout;
+      if (typeof text === "string") return truncateStr(oneLine(text), 120);
     }
-    return truncateStr(String(result), 300);
+    return "";
   }
 
   // ── Debug: dump OpenClaw hook payload keys (once per hook type) ──
@@ -690,7 +598,7 @@ export default definePluginEntry({
           reason: correlationReason,
         } : undefined,
       };
-      const w = await getRunWriter(traceCfg.trace_dir, identity.runtimeId, runId, sessionId, agentId, logger, traceCfg.flush_span_start, ownedWriters);
+      const w = await writerManager.get(writerScope(identity));
       if (w) {
         w.writeRecord(spanStart);
         if (registry) registry.markStartWritten(registryKey, spanId);
@@ -702,7 +610,7 @@ export default definePluginEntry({
     payload.resource_scope = buildTrustedResourceScope(event, context) ?? buildRuntimeResourceScope(toolName);
     try {
       const decision = await client.decide(payload);
-      consoleVerbose(`prediction ${summarizePrediction(decision)}`);
+      consoleVerbose(summarizePrediction(decision));
       if (config.mode === "enforce" && decision.action === "block") {
         return {
           block: true,
@@ -741,6 +649,51 @@ export default definePluginEntry({
       return sandboxParams.changed && sandboxParams.params !== null ? {params: sandboxParams.params} : undefined;
     } catch (error) {
       logger.warn("Agent Scheduler decision failed", classifyError(error));
+
+      // ── failOpen with execution instrumentation ──────────────────────
+      // When the sidecar's decision endpoint is unreachable or times out
+      // the tool still runs (failOpen).  Execution registration and
+      // launcher wrapping should also proceed so that PID / cgroup /
+      // resource monitoring does not silently degrade to "unattributed"
+      // on every decision failure.
+      if (config.executionBackend !== "hook-only") {
+        try {
+          const instrumentation = await instrumentExecParams(
+            event, context, payload, /* decision */ null, client, config,
+          );
+          if (instrumentation.executionId !== null) {
+            correlation.set(
+              correlationId,
+              /* decisionId */ null,
+              /* leaseId */ null,
+              instrumentation.executionId,
+              toolCallId,
+            );
+          }
+          if (registry) {
+            const span = registry.getSpan(registryKey, spanId);
+            if (span) {
+              span.metadata = {
+                requestedCommand: instrumentation.requestedCommand,
+                effectiveCommand: instrumentation.effectiveCommand,
+                payloadCommand: instrumentation.payloadCommand,
+                executionId: instrumentation.executionId,
+              };
+            }
+          }
+          if (instrumentation.params !== null) {
+            const sandboxParams = normalizeSandboxToolParams(
+              instrumentation.params,
+              toolName,
+            );
+            return {params: sandboxParams.params ?? instrumentation.params};
+          }
+        } catch {
+          // Execution registration itself failed — fall through to the
+          // bare failOpen path below.
+        }
+      }
+
       const sandboxParams = normalizeSandboxToolParams(cloneEventParams(event), toolName);
       if ((config.mode === "observe" || config.failOpen) && sandboxParams.changed && sandboxParams.params !== null) {
         return {params: sandboxParams.params};
@@ -821,15 +774,16 @@ export default definePluginEntry({
     const toolExitCode = extractToolExitCode(completion.raw_result, completion.tool_name);
     const toolSucceeded = completion.succeeded && (toolExitCode === null || toolExitCode === 0);
 
-    // ── verbose console: tool result ──
+    // ── verbose console: concise tool result ──
     const durMs = completion.duration_ms ?? Math.round(Number(durNs) / 1e6);
-    const exitStr = toolExitCode !== null ? ` exit=${toolExitCode}` : "";
     const statusStr = completion.succeeded ? "ok" : (completion.error_type ?? "failed");
     const resultStr = summarizeToolResult(event);
-    consoleVerbose(`■ ${toolName} done (${durMs}ms) ${statusStr}${exitStr}${resultStr ? ` | ${resultStr}` : ""}`);
+    consoleVerbose(
+      `tool ${toolName}: ${statusStr} in ${durMs}ms${resultStr ? ` · result="${resultStr}"` : ""}`,
+    );
     const observedSummary = summarizeObservedTelemetry(toolResourceTelemetry);
     if (observedSummary !== null) {
-      consoleVerbose(`observed ${observedSummary}`);
+      consoleVerbose(`observed: ${observedSummary}`);
     }
 
     let statusCode: StatusCode = "unknown";
@@ -964,7 +918,7 @@ export default definePluginEntry({
           reason: "span_start_not_found",
         } : undefined,
       };
-      const w = await getRunWriter(traceCfg.trace_dir, identity.runtimeId, runId, finalSessionId, finalAgentId, logger, traceCfg.flush_span_start, ownedWriters);
+      const w = await writerManager.get(writerScope(identity, finalSessionId, finalAgentId));
       if (w) w.writeRecord(spanEnd);
     }
   });
@@ -990,8 +944,7 @@ export default definePluginEntry({
 
     // ── verbose console: turn start ──
     turnCounter++;
-    const inputMessages = extractModelInput(event);
-    consoleVerbose(`── Turn ${turnCounter} ── model: ${model} | input: ${summarizeMessages(inputMessages)}`);
+    consoleVerbose(`turn ${turnCounter}: model ${model}`);
 
     llmSeqCounter++;
     const spanId = callId ?? `${traceId}:model:${llmSeqCounter}`;
@@ -1045,7 +998,7 @@ export default definePluginEntry({
           execution_id: null,
         },
       };
-      const w = await getRunWriter(traceCfg.trace_dir, identity.runtimeId, runId, sessionId, agentId, logger, traceCfg.flush_span_start, ownedWriters);
+      const w = await writerManager.get(writerScope(identity));
       if (w) {
         w.writeRecord(spanStart);
         if (registry) registry.markStartWritten(registryKey, spanId);
@@ -1058,7 +1011,7 @@ export default definePluginEntry({
     // Store call_id -> span_id mapping for model_call_ended
     if (callId && registry) {
       // Store in a side map (we can use tool_call_parent with a special prefix)
-      registry.setToolCallParent(callCorrelationId, spanId);
+      registry.setToolCallParent(callCorrelationId, spanId, registryKey);
     }
   });
 
@@ -1102,22 +1055,21 @@ export default definePluginEntry({
     const outcome = extractString(event, ["outcome", "status"]);
     const durationMs = extractNumber(event, ["duration_ms", "durationMs"]);
 
-    // ── verbose console: model response ──
     const modelOutput = extractModelOutput(event);
     const textContent = extractTextContent(modelOutput);
-    const displayToolCalls = extractToolCallsForDisplay(modelOutput);
     if (textContent) {
-      consoleVerbose(`→ ${truncateStr(textContent, 500)}`);
+      consoleVerbose(`LLM: "${truncateStr(oneLine(textContent), 30)}"`);
     }
+    const displayToolCalls = extractToolCallsForDisplay(modelOutput);
     for (const tc of displayToolCalls) {
-      consoleVerbose(`→ tool: ${tc.name}`);
+      consoleVerbose(`next tool: ${tc.name}`);
     }
 
     // Extract tool calls from the response to set up parent mapping
     if (registry) {
       const toolCalls = extractToolCallsFromResponse(event);
       for (const tcId of toolCalls) {
-        registry.setToolCallParent(correlationKey(identity, tcId), spanId);
+        registry.setToolCallParent(correlationKey(identity, tcId), spanId, registryKey);
       }
     }
 
@@ -1189,12 +1141,98 @@ export default definePluginEntry({
           reason: "span_start_not_found",
         } : undefined,
       };
-      const w = await getRunWriter(traceCfg.trace_dir, identity.runtimeId, runId, finalSessionId, finalAgentId, logger, traceCfg.flush_span_start, ownedWriters);
+      const w = await writerManager.get(writerScope(identity, finalSessionId, finalAgentId));
       if (w) w.writeRecord(spanEnd);
     }
 
     // Original sidecar logic
     await reportModel(client, logger, event, context, "model_call_ended", config, runtimeId, gatewayId, runtimeRepo);
+  });
+
+  async function finalizeRunTrace(identity: HookIdentity): Promise<void> {
+    if (identity.runId === null) return;
+    // Model and tool hooks can describe the same run with different agent-id
+    // detail. Treat Gateway/runtime/session/run as the lifecycle boundary so
+    // neither variant survives agent_end.
+    const activeSpans = registry.clearRunsWhere((identityKey) => (
+      correlationScopeMatchesRun(identityKey, identity)
+    ));
+
+    try {
+      if (traceCfg.trace_dir && activeSpans.length > 0) {
+        const endWall = wallClockNowNs();
+        const endMono = monotonicNowNs();
+        for (const span of activeSpans) {
+          // Append the terminal record to the same agent/session writer variant
+          // that received span_start, then close every variant below.
+          const writer = await writerManager.get(writerScope(
+            identity,
+            span.sessionId,
+            span.agentId,
+          ));
+          if (writer) {
+            writer.writeRecord(interruptedSpanEnd(
+              span,
+              endWall,
+              endMono,
+              "agent run ended before span completion",
+            ));
+          }
+        }
+      }
+    } finally {
+      // clearRunsWhere already released spans, completed-span deduplication,
+      // sequence counters, and parent mappings for every identity variant.
+      // Always release handles even if terminal-record creation fails.
+      if (traceCfg.trace_dir) await writerManager.closeRun(writerScope(identity));
+    }
+  }
+
+  async function finalizeSessionTrace(identity: HookIdentity): Promise<void> {
+    if (identity.sessionId === null) return;
+    const activeSpans = registry.clearRunsWhere((identityKey) => (
+      correlationScopeMatchesSession(identityKey, identity)
+    ));
+
+    try {
+      if (traceCfg.trace_dir && activeSpans.length > 0) {
+        const endWall = wallClockNowNs();
+        const endMono = monotonicNowNs();
+        for (const span of activeSpans) {
+          // A session-level fallback is primarily for hooks without runId, so
+          // retain the lifecycle hook's writer key while selecting the span's
+          // agent-id variant.
+          const writer = await writerManager.get(writerScope(
+            identity,
+            span.sessionId,
+            span.agentId,
+          ));
+          if (writer) {
+            writer.writeRecord(interruptedSpanEnd(
+              span,
+              endWall,
+              endMono,
+              "session ended before span completion",
+            ));
+          }
+        }
+      }
+    } finally {
+      if (traceCfg.trace_dir) await writerManager.closeSession(writerScope(identity));
+    }
+  }
+
+  // A long-lived Gateway can execute thousands of runs. Finalize each run as
+  // soon as OpenClaw reports agent_end instead of retaining one writer and
+  // registry generation until the Gateway process eventually exits.
+  api.on("agent_end", async (event: unknown, context: unknown) => {
+    await finalizeRunTrace(hookIdentity(event, context, runtimeId, gatewayId));
+  });
+
+  // Older/partial hook payloads may not expose runId. Session end is the safe
+  // fallback for writer and registry state, and is idempotent after agent_end.
+  api.on("session_end", async (event: unknown, context: unknown) => {
+    await finalizeSessionTrace(hookIdentity(event, context, runtimeId, gatewayId));
   });
 
   // ── Shutdown handling ────────────────────────────────────────────────
@@ -1221,72 +1259,35 @@ export default definePluginEntry({
       sidecarLauncher.cleanup();
     }
 
-    if (traceCfg.trace_dir && (ownedWriters.size > 0 || registry.listActiveSpans().length > 0)) {
-      const activeSpans = registry.listActiveSpans();
-      const endWall = wallClockNowNs();
-      const endMono = monotonicNowNs();
+    try {
+      if (traceCfg.trace_dir && registry.listActiveSpans().length > 0) {
+        const activeSpans = registry.listActiveSpans();
+        const endWall = wallClockNowNs();
+        const endMono = monotonicNowNs();
 
-      for (const span of activeSpans) {
-        const durNs = durationNs(span.startMonotonicTimeNs, endMono);
-        const spanEnd: SpanEndRecord = {
-          schema_version: TRACE_SCHEMA_VERSION,
-          record_type: "span_end",
-          trace_id: span.traceId,
-          span_id: span.spanId,
-          parent_span_id: span.parentSpanId,
-          session_id: span.sessionId,
-          run_id: span.runId,
-          agent_id: span.agentId,
-          sequence_no: span.sequenceNo,
-          kind: span.kind,
-          name: span.name,
-          wall_time_ns: endWall.toString(),
-          monotonic_time_ns: endMono.toString(),
-          duration_ns: durNs.toString(),
-          duration_sec: (Number(durNs) / 1e9).toString(),
-          status: {
-            code: "interrupted",
-            message: "plugin shutdown before span completion",
-          },
-          output: {},
-          execution: {
-            mode: null,
-            execution_id: null,
-          },
-          resources: {
-            attribution_status: "not_applicable",
-            scope: "none",
-            quality: "unknown",
-            monitor_start_wall_time_ns: null,
-            monitor_end_wall_time_ns: null,
-            monitor_start_monotonic_ns: null,
-            monitor_end_monotonic_ns: null,
-            coverage_duration_ns: null,
-            action_duration_ns: durNs.toString(),
-            coverage_ratio: null,
-            coverage_reason: "not_applicable",
-          },
-        };
-        // Write only to this plugin registration's runtime-scoped writer.
-        const w = await getRunWriter(
-          traceCfg.trace_dir,
-          runtimeId,
-          span.runId,
-          span.sessionId,
-          span.agentId,
-          logger,
-          traceCfg.flush_span_start,
-          ownedWriters,
-        );
-        if (w) w.writeRecord(spanEnd);
+        for (const span of activeSpans) {
+          const identity: HookIdentity = {
+            gatewayId,
+            runtimeId: runtimeIdForSession(runtimeId, gatewayId, span.sessionId),
+            agentId: span.agentId,
+            sessionId: span.sessionId,
+            sessionKey: span.sessionId,
+            runId: span.runId,
+          };
+          const writer = await writerManager.get(writerScope(identity));
+          if (writer) {
+            writer.writeRecord(interruptedSpanEnd(
+              span,
+              endWall,
+              endMono,
+              "plugin shutdown before span completion",
+            ));
+          }
+        }
       }
-      for (const w of ownedWriters) {
-        await w.close();
-      }
-      for (const [key, writer] of runWriters.entries()) {
-        if (ownedWriters.has(writer)) runWriters.delete(key);
-      }
-      ownedWriters.clear();
+    } finally {
+      registry.clear();
+      await writerManager.closeAll();
     }
   }
 
@@ -1317,6 +1318,57 @@ type HookIdentity = {
   runId: string | null;
 };
 
+function runtimeIdForSession(
+  fallbackRuntimeId: string,
+  gatewayId: string,
+  sessionId: string | null,
+): string {
+  if (sessionId === null) return fallbackRuntimeId;
+  return `session-${stableDigest([gatewayId, sessionId]).replace(/^sha256:/, "").slice(0, 48)}`;
+}
+
+function interruptedSpanEnd(
+  span: ActiveSpan,
+  endWall: bigint,
+  endMono: bigint,
+  message: string,
+): SpanEndRecord {
+  const durNs = durationNs(span.startMonotonicTimeNs, endMono);
+  return {
+    schema_version: TRACE_SCHEMA_VERSION,
+    record_type: "span_end",
+    trace_id: span.traceId,
+    span_id: span.spanId,
+    parent_span_id: span.parentSpanId,
+    session_id: span.sessionId,
+    run_id: span.runId,
+    agent_id: span.agentId,
+    sequence_no: span.sequenceNo,
+    kind: span.kind,
+    name: span.name,
+    wall_time_ns: endWall.toString(),
+    monotonic_time_ns: endMono.toString(),
+    duration_ns: durNs.toString(),
+    duration_sec: (Number(durNs) / 1e9).toString(),
+    status: {code: "interrupted", message},
+    output: {},
+    execution: {mode: null, execution_id: null},
+    resources: {
+      attribution_status: "not_applicable",
+      scope: "none",
+      quality: "unknown",
+      monitor_start_wall_time_ns: null,
+      monitor_end_wall_time_ns: null,
+      monitor_start_monotonic_ns: null,
+      monitor_end_monotonic_ns: null,
+      coverage_duration_ns: null,
+      action_duration_ns: durNs.toString(),
+      coverage_ratio: null,
+      coverage_reason: "not_applicable",
+    },
+  };
+}
+
 /** Resolve one hook's Gateway -> runtime -> session -> run owner chain. */
 function hookIdentity(
   event: unknown,
@@ -1334,9 +1386,7 @@ function hookIdentity(
   const explicitRuntimeId = extractString(event, ["runtime_id", "runtimeId"])
     ?? extractString(context, ["runtimeId", "runtime_id"]);
   const configuredRuntimeId = process.env.CLAW_RUNTIME_ID?.trim() || null;
-  const derivedRuntimeId = sessionId === null
-    ? fallbackRuntimeId
-    : `session-${stableDigest([gatewayId, sessionId]).replace(/^sha256:/, "").slice(0, 48)}`;
+  const derivedRuntimeId = runtimeIdForSession(fallbackRuntimeId, gatewayId, sessionId);
   return {
     gatewayId: gatewayId.slice(0, 128),
     runtimeId: (explicitRuntimeId ?? configuredRuntimeId ?? derivedRuntimeId).slice(0, 128),
@@ -1359,6 +1409,37 @@ function correlationScopeKey(identity: HookIdentity): string {
     identity.sessionId,
     identity.runId,
   ]);
+}
+
+function correlationScopeMatchesRun(
+  identityKey: string,
+  identity: HookIdentity,
+): boolean {
+  try {
+    const value: unknown = JSON.parse(identityKey);
+    if (!Array.isArray(value) || value.length !== 5) return false;
+    return value[0] === identity.gatewayId
+      && value[1] === identity.runtimeId
+      && value[3] === identity.sessionId
+      && value[4] === identity.runId;
+  } catch {
+    return false;
+  }
+}
+
+function correlationScopeMatchesSession(
+  identityKey: string,
+  identity: HookIdentity,
+): boolean {
+  try {
+    const value: unknown = JSON.parse(identityKey);
+    if (!Array.isArray(value) || value.length !== 5) return false;
+    return value[0] === identity.gatewayId
+      && value[1] === identity.runtimeId
+      && value[3] === identity.sessionId;
+  } catch {
+    return false;
+  }
 }
 
 function correlationKey(identity: HookIdentity, callId: string | null): string {

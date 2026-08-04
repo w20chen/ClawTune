@@ -36,6 +36,60 @@ The public configuration defaults `docker.cgroup_required: true`. A false
 value is troubleshooting-only and its output is not accepted as complete
 per-tool telemetry.
 
+## Plugin KB repo auto-derivation (2026-08-05)
+
+Interactive OpenClaw use now derives the per-repository KB namespace
+automatically, so a user does not have to configure a repo key. The plugin
+resolves the value once per runtime with this priority:
+
+1. `CLAW_REPO_KEY` env — explicit override; SWE-Rebench already injects this
+   per task (`task_repo_key`), so the benchmark path is unchanged and never
+   triggers the derivation logic.
+2. plugin config `repo` (`plugins.entries.agent-scheduler.config.repo`, or
+   `OPENCLAW_AGENT_SCHEDULER_REPO` env).
+3. git remote `origin` of the process working directory → `owner/repo`
+   (HTTPS, SSH, `ssh://`, `git://`, and scp-like URLs; subgroup paths
+   preserved).
+4. working-directory basename (non-git workspace).
+5. `null` → the sidecar falls back to `AGENT_SCHEDULER_TOOL_RESOURCE_REPO`
+   (default `openclaw`).
+
+Implementation: new `packages/openclaw-plugin/src/repo.ts`
+(`resolveRepoKey`, `repoFromGitRemote`, `repoSlugFromGitUrl`); `PluginConfig`
+gains an optional `repo` field (contracts/config/manifest); `index.ts` calls
+`resolveRepoKey(config.repo)` where it previously read only
+`CLAW_REPO_KEY`. The tracked delivery bundle's plugin snapshot
+(`swe_rebench/bundle/plugin/`) was synchronized from the same source
+(src, manifest, test, rebuilt dist). The tracked
+`bundle-source-fingerprint.json` was deliberately NOT regenerated: the
+tracked bundle's Scheduler copy already carries pre-existing drift (13 files
+differ from `services/scheduler`), so a full fingerprint refresh belongs to a
+complete bundle sync, not to this plugin-only change.
+
+Validation completed in the Windows development workspace:
+
+- Plugin build: `node node_modules\typescript\bin\tsc -p tsconfig.json`
+  (direct `tsc`, bypassing the `npm.ps1` execution-policy block): exit 0.
+- Plugin tests: `node --test test\*.test.mjs`: `80 passed` (includes the new
+  `repo.test.mjs`, 7 cases: URL parsing, priority order, basename fallback,
+  real-checkout git origin, non-checkout null).
+- `git diff --check`: passed.
+
+Validation commands that cannot run in this Windows workspace:
+
+- A live interactive run (`openclaw gateway run` from inside a git checkout +
+  `openclaw tui --session main`) to observe the auto-derived `repo` in emitted
+  events and in the sidecar KB `repo` layer requires the Linux host, Docker,
+  cgroup v2, and BCC/eBPF. Acceptance: start the Gateway from inside a repo,
+  confirm the plugin logs `KB repo namespace {repo: <owner/repo>}` and the KB
+  snapshot carries `repo["<owner/repo>"]`.
+- A SWE-Rebench batch (`python3 scripts/clawtune.py benchmark --sample 1`)
+  to confirm benchmark per-task `repo` keys are unchanged and no git call is
+  made inside task runtimes.
+- `cd swe_rebench/bundle/plugin && npm.cmd test` cannot run directly because
+  the bundled plugin intentionally has no local `node_modules`; the identical
+  source suite was run from `packages/openclaw-plugin` instead.
+
 ## Shared-sidecar Stage-2 artifact collection (2026-08-04)
 
 A `host-openclaw-sandbox` batch run can fail every task with

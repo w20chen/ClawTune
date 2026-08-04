@@ -10,6 +10,7 @@ import {buildTrustedResourceScope, instrumentExecParams} from "./exec-instrument
 import type {InstrumentResult} from "./exec-instrumentation.js";
 import {consoleLogger} from "./logging.js";
 import {jsonSafe, paramFeatures, redact, stableDigest} from "./redaction.js";
+import {resolveRepoKey} from "./repo.js";
 import {normalizeSandboxToolParams} from "./sandbox-paths.js";
 import {ensureSidecarRunning, type SidecarLauncherResult} from "./sidecar-launcher.js";
 import {
@@ -110,7 +111,12 @@ export default definePluginEntry({
   const logger = api.logger ?? consoleLogger;
   const runtimeId = process.env.CLAW_RUNTIME_ID?.trim() || randomUUID();
   const gatewayId = process.env.CLAW_GATEWAY_ID?.trim() || runtimeId;
-  const runtimeRepo = process.env.CLAW_REPO_KEY?.trim() || null;
+  // KB repo namespace: CLAW_REPO_KEY env wins (swe-rebench sets it per task),
+  // then plugin config `repo`, then git/working-directory auto-derivation.
+  const runtimeRepo = resolveRepoKey(config.repo);
+  if (runtimeRepo) {
+    logger.info?.("KB repo namespace", {repo: runtimeRepo});
+  }
 
   // ── Auto-start sidecar ───────────────────────────────────────────
   let sidecarLauncher: SidecarLauncherResult | null = null;

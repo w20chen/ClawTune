@@ -168,3 +168,55 @@ additional five-second margin.
 OpenClaw provider traffic should use `http://127.0.0.1:8765/v1`. The plugin's
 full schema is in `packages/openclaw-plugin/openclaw.plugin.json`; values not
 covered here are advanced/developer options.
+
+## KB Repo Namespace
+
+The scheduler keeps per-repository tool-resource knowledge under a `repo` key
+(the KB `repo` layer). Each OpenClaw event already carries a `repo` field; the
+plugin resolves that value once per runtime with this priority:
+
+1. `CLAW_REPO_KEY` environment variable — explicit override. The SWE-Rebench
+   runner injects this per task (`task_repo_key`), so benchmark runs keep their
+   exact per-repository namespaces and never hit the derivation path.
+2. Plugin config `repo`
+   (`plugins.entries.agent-scheduler.config.repo`, or
+   `OPENCLAW_AGENT_SCHEDULER_REPO` env) — explicit user override for a gateway.
+3. Auto-derived from the process working directory:
+   - git remote `origin` → `owner/repo` (handles HTTPS, SSH, `ssh://`, `git://`
+     and scp-like URLs, preserves subgroup paths);
+   - otherwise the working-directory basename (non-git workspace).
+4. `null` — the sidecar falls back to `AGENT_SCHEDULER_TOOL_RESOURCE_REPO`
+   (default `openclaw`).
+
+Normal interactive use therefore needs no configuration: start the Gateway from
+inside the repository you are working on, and tool/model events are namespaced
+to that repository automatically.
+
+```bash
+# terminal 1 — from inside /path/to/acme/widgets
+cd /path/to/acme/widgets
+openclaw gateway run
+
+# terminal 2
+openclaw tui --session main
+```
+
+To pin a namespace explicitly (for example when one Gateway serves several
+repositories), set the plugin config or environment variable:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "agent-scheduler": {
+        "config": {"repo": "acme/widgets"}
+      }
+    }
+  }
+}
+```
+
+The value is fixed for the lifetime of the Gateway process. Use a separate
+Gateway process (with its own working directory, `repo`, or `CLAW_REPO_KEY`) to
+keep distinct repositories in separate namespaces, or let the sidecar default
+`AGENT_SCHEDULER_TOOL_RESOURCE_REPO` absorb everything as a single fallback.
