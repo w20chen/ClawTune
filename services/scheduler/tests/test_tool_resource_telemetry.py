@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tool_resource.clause_bridge import ExecImageRecord, _clause_status
+from tool_resource.clause_bridge import ExecImageRecord, _clause_status, bridge_command
 from tool_resource.telemetry import (
     BPF_PROGRAM,
     ClauseTelemetryCollector,
@@ -559,6 +559,53 @@ def test_clause_status_uses_terminal_image_from_owned_root_chain() -> None:
         "reason": None,
         "source": "root_exec_chain_terminal",
     }
+
+
+def test_explicit_builtin_path_is_bridged_as_external_exec(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tool_resource.clause_bridge.parse_command_clauses",
+        lambda _command: {
+            "clauses": [
+                {
+                    "bin": "echo",
+                    "argv": ["/bin/echo", "hello"],
+                    "in_loop": False,
+                    "in_pipe": False,
+                    "in_subst": False,
+                    "pipeline_position": -1,
+                }
+            ],
+            "control_edges": [],
+            "parse_failed": False,
+        },
+    )
+    image = ExecImageRecord(
+        host_pid=42,
+        exec_seq=1,
+        t_exec_ns=1_000_000_000,
+        t_end_ns=2_000_000_000,
+        bin="echo",
+        argv=("/bin/echo", "hello"),
+        terminal=True,
+        cpu_windows=(),
+        rss_bins=(),
+        normal_exit_status=0,
+        requested_executable_path="/bin/echo",
+    )
+
+    result = bridge_command(
+        "repo-1",
+        "/bin/echo hello",
+        (image,),
+        entry_pid=1,
+        fork_parent={42: 1},
+    )
+
+    assert result.data_valid is True
+    assert result.unobserved_builtins == []
+    assert result.coverage_gaps == []
+    assert len(result.bridged) == 1
+    assert result.bridged[0].observation.argv == ("/bin/echo", "hello")
 
 
 def _event(

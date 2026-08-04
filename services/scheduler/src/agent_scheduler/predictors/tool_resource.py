@@ -485,22 +485,61 @@ class ToolResourcePredictor:
     ) -> ToolPrediction:
         command = _command_for_request(request)
         repo = request.repo or self.repo
-        query_ts = time.time()
-        lattice_time_predictions: tuple[ClauseLatticeTimePredictions, ...] = ()
         try:
             clauses, parse_failed = clauses_from_tool_request(
                 request.tool_name,
                 request.raw_params,
             )
-            if request.tool_name == "exec":
-                lattice_time_predictions = self._lattice_predictions_for_clauses(
-                    clauses,
-                    query_ts,
-                    repo=repo,
-                    parse_failed=parse_failed,
-                    shell_command=True,
-                )
+        except Exception as exc:
+            # Timestamp acquisition and every KB read form one transaction.
+            # Taking the timestamp only after the lock prevents an older
+            # request from resuming behind a newer request and tripping the
+            # monotonic causal guards.
             with self._kb_lock:
+                query_ts = time.time()
+                continuous_predictions = self._continuous_predictions_for_request(
+                    request,
+                    command,
+                    query_ts,
+                    ambient_before_mb=ambient_before_mb,
+                )
+                runtime_p50_ms, runtime_p90_ms = self._continuous_latency_topline_ms(
+                    request,
+                    command,
+                    query_ts,
+                )
+                return ToolPrediction(
+                    duration_p50_ms=runtime_p50_ms,
+                    duration_p90_ms=runtime_p90_ms,
+                    resource_class=_resource_class_for_duration_ms(runtime_p90_ms),
+                    tool_resource=_tool_resource_prediction_payload(
+                        _unavailable_prediction_for_request(
+                            request,
+                            repo=repo,
+                            command=command,
+                            reason=_prediction_error_reason(exc),
+                        ),
+                        continuous_predictions=continuous_predictions,
+                        lattice_time_predictions=(),
+                        kv_ttl_cost=None,
+                    ),
+                )
+
+        # The three causal KBs share one wall-clock ordering contract.  Keep
+        # the full prediction transaction under the same re-entrant lock so
+        # their monotonic watermarks cannot be interleaved by another request.
+        with self._kb_lock:
+            query_ts = time.time()
+            lattice_time_predictions: tuple[ClauseLatticeTimePredictions, ...] = ()
+            try:
+                if request.tool_name == "exec":
+                    lattice_time_predictions = self._lattice_predictions_for_clauses(
+                        clauses,
+                        query_ts,
+                        repo=repo,
+                        parse_failed=parse_failed,
+                        shell_command=True,
+                    )
                 prediction = self.kb.predict_command_latency_bucket_from_clauses(
                     repo,
                     clauses,
@@ -510,93 +549,111 @@ class ToolResourcePredictor:
                     parse_failed=parse_failed,
                     shell_command=request.tool_name == "exec",
                 )
-        except Exception as exc:
+            except Exception as exc:
+                continuous_predictions = self._continuous_predictions_for_request(
+                    request,
+                    command,
+                    query_ts,
+                    ambient_before_mb=ambient_before_mb,
+                )
+                runtime_p50_ms, runtime_p90_ms = self._continuous_latency_topline_ms(
+                    request,
+                    command,
+                    query_ts,
+                )
+                return ToolPrediction(
+                    duration_p50_ms=runtime_p50_ms,
+                    duration_p90_ms=runtime_p90_ms,
+                    resource_class=_resource_class_for_duration_ms(runtime_p90_ms),
+                    tool_resource=_tool_resource_prediction_payload(
+                        _unavailable_prediction_for_request(
+                            request,
+                            repo=repo,
+                            command=command,
+                            reason=_prediction_error_reason(exc),
+                        ),
+                        continuous_predictions=continuous_predictions,
+                        lattice_time_predictions=lattice_time_predictions,
+                        kv_ttl_cost=None,
+                    ),
+                )
             continuous_predictions = self._continuous_predictions_for_request(
                 request,
                 command,
                 query_ts,
                 ambient_before_mb=ambient_before_mb,
             )
-            runtime_p50_ms, runtime_p90_ms = self._continuous_latency_topline_ms(
-                request,
-                command,
-                query_ts,
-            )
-            return ToolPrediction(
-                duration_p50_ms=runtime_p50_ms,
-                duration_p90_ms=runtime_p90_ms,
-                resource_class=_resource_class_for_duration_ms(runtime_p90_ms),
-                tool_resource=_tool_resource_prediction_payload(
-                    _unavailable_prediction_for_request(
-                        request,
-                        repo=repo,
-                        command=command,
-                        reason=_prediction_error_reason(exc),
+            if prediction.prediction is None:
+                runtime_p50_ms, runtime_p90_ms = self._continuous_latency_topline_ms(
+                    request,
+                    command,
+                    query_ts,
+                )
+                return ToolPrediction(
+                    duration_p50_ms=runtime_p50_ms,
+                    duration_p90_ms=runtime_p90_ms,
+                    resource_class=_resource_class_for_duration_ms(runtime_p90_ms),
+                    tool_resource=_tool_resource_prediction_payload(
+                        prediction,
+                        continuous_predictions=continuous_predictions,
+                        lattice_time_predictions=lattice_time_predictions,
+                        kv_ttl_cost=None,
                     ),
-                    continuous_predictions=continuous_predictions,
-                    lattice_time_predictions=lattice_time_predictions,
-                    kv_ttl_cost=None,
-                ),
-            )
-        continuous_predictions = self._continuous_predictions_for_request(
-            request,
-            command,
-            query_ts,
-            ambient_before_mb=ambient_before_mb,
-        )
-        if prediction.prediction is None:
+                )
+
+            bucket_prediction = prediction.prediction
             runtime_p50_ms, runtime_p90_ms = self._continuous_latency_topline_ms(
                 request,
                 command,
                 query_ts,
             )
+            duration_p50_ms = _bucket_percentile_ms(
+                bucket_prediction.probability_by_bucket,
+                self.buckets,
+                0.5,
+            )
+            duration_p90_ms = _bucket_percentile_ms(
+                bucket_prediction.probability_by_bucket,
+                self.buckets,
+                0.9,
+            )
+            uses_continuous_duration = (
+                runtime_p50_ms is not None or runtime_p90_ms is not None
+            )
             return ToolPrediction(
-                duration_p50_ms=runtime_p50_ms,
-                duration_p90_ms=runtime_p90_ms,
-                resource_class=_resource_class_for_duration_ms(runtime_p90_ms),
+                duration_p50_ms=(
+                    runtime_p50_ms
+                    if runtime_p50_ms is not None
+                    else duration_p50_ms
+                ),
+                duration_p90_ms=(
+                    runtime_p90_ms
+                    if runtime_p90_ms is not None
+                    else duration_p90_ms
+                ),
+                resource_class=(
+                    _resource_class_for_duration_ms(runtime_p90_ms)
+                    if runtime_p90_ms is not None
+                    else _resource_class_for_bucket(bucket_prediction.bucket_id)
+                ),
+                confidence=(
+                    None
+                    if uses_continuous_duration
+                    else max(
+                        bucket_prediction.probability_by_bucket,
+                        default=0.0,
+                    )
+                ),
                 tool_resource=_tool_resource_prediction_payload(
                     prediction,
                     continuous_predictions=continuous_predictions,
                     lattice_time_predictions=lattice_time_predictions,
-                    kv_ttl_cost=None,
+                    kv_ttl_cost=self._kv_ttl_cost_payload(
+                        bucket_prediction,
+                        reference_runtime_s=duration_p90_ms / 1000.0,
+                    ),
                 ),
             )
-
-        bucket_prediction = prediction.prediction
-        runtime_p50_ms, runtime_p90_ms = self._continuous_latency_topline_ms(
-            request,
-            command,
-            query_ts,
-        )
-        duration_p50_ms = _bucket_percentile_ms(
-            bucket_prediction.probability_by_bucket,
-            self.buckets,
-            0.5,
-        )
-        duration_p90_ms = _bucket_percentile_ms(
-            bucket_prediction.probability_by_bucket,
-            self.buckets,
-            0.9,
-        )
-        return ToolPrediction(
-            duration_p50_ms=runtime_p50_ms if runtime_p50_ms is not None else duration_p50_ms,
-            duration_p90_ms=runtime_p90_ms if runtime_p90_ms is not None else duration_p90_ms,
-            resource_class=(
-                _resource_class_for_duration_ms(runtime_p90_ms)
-                if runtime_p90_ms is not None
-                else _resource_class_for_bucket(bucket_prediction.bucket_id)
-            ),
-            confidence=max(bucket_prediction.probability_by_bucket, default=0.0),
-            tool_resource=_tool_resource_prediction_payload(
-                prediction,
-                continuous_predictions=continuous_predictions,
-                lattice_time_predictions=lattice_time_predictions,
-                kv_ttl_cost=self._kv_ttl_cost_payload(
-                    bucket_prediction,
-                    reference_runtime_s=duration_p90_ms / 1000.0,
-                ),
-            ),
-        )
 
     def _kv_ttl_cost_payload(
         self,
@@ -2075,9 +2132,11 @@ def _unavailable_lattice_time_predictions(
     outcomes: list[ClauseLatticeTimePredictions] = []
     for clause_index, clause in enumerate(clauses):
         bin_ = str(clause["bin"])
-        if shell_command and not shell_bin_requires_exec_evidence(bin_):
-            continue
         argv = tuple(str(value) for value in clause["argv"])
+        if shell_command and not shell_bin_requires_exec_evidence(
+            bin_, argv[0] if argv else None
+        ):
+            continue
         if not bin_ or not argv:
             continue
         outcomes.append(
@@ -2131,7 +2190,10 @@ def _unavailable_prediction_for_request(
             )
             for index, clause in enumerate(clauses)
             if request.tool_name != "exec"
-            or shell_bin_requires_exec_evidence(str(clause["bin"]))
+            or shell_bin_requires_exec_evidence(
+                str(clause["bin"]),
+                str(clause["argv"][0]) if clause.get("argv") else None,
+            )
         ),
     )
 

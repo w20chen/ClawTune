@@ -47,7 +47,10 @@ from fnmatch import fnmatchcase
 from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Sequence
 
-from tool_resource.features import NOEXEC_SHELL_BUILTINS, parse_command_clauses
+from tool_resource.features import (
+    parse_command_clauses,
+    shell_bin_requires_exec_evidence,
+)
 from tool_resource.runtime_kb import ClauseObservation
 
 # Kept in sync with the Stage-2 collector's windowing constants.
@@ -63,12 +66,24 @@ _SHELL_LOOKUP_DIAGNOSTIC = re.compile(
     r"(?P<head>[A-Za-z0-9_./+@%-]+): "
     r"(?:(?:command )?not found)$"
 )
-_NOEXEC_BUILTINS = NOEXEC_SHELL_BUILTINS
-# `source` is a bash-ism: the ONLY _NOEXEC_BUILTINS member a real POSIX sh
+# `source` is a bash-ism: the only no-exec builtin a real POSIX sh
 # (dash/ash) can report "not found" for. Every other member is mandated or
 # universally built in, so a "not found" diagnostic naming it can only be
 # forged payload and must keep failing closed.
 _DIALECT_DEPENDENT_BUILTINS = frozenset({"source"})
+
+
+def _clause_requires_exec_evidence(clause: Mapping[str, Any]) -> bool:
+    argv = clause.get("argv")
+    executable_head = (
+        str(argv[0])
+        if isinstance(argv, Sequence) and not isinstance(argv, (str, bytes)) and argv
+        else None
+    )
+    return shell_bin_requires_exec_evidence(
+        str(clause.get("bin", "")),
+        executable_head,
+    )
 
 
 @dataclass(frozen=True)
@@ -542,7 +557,7 @@ def _resolve_control_short_circuits(
             executable_rhs_indices = [
                 index
                 for index in rhs_indices
-                if str(static[index]["bin"]) not in _NOEXEC_BUILTINS
+                if _clause_requires_exec_evidence(static[index])
             ]
             for index in executable_rhs_indices:
                 if index in resolved:
@@ -1041,7 +1056,7 @@ def bridge_command(
         if (
             si not in assigned
             and si not in ambiguous
-            and identity[0] not in _NOEXEC_BUILTINS
+            and _clause_requires_exec_evidence(statics[si])
         ):
             failed_static_candidates.setdefault(identity, []).append(si)
     failed_assigned = {
@@ -1063,8 +1078,10 @@ def bridge_command(
             and si not in ambiguous
             and si not in failed_assigned
             and clause["argv"][0] == command_lookup_failure.executable_head
-            and str(clause["bin"])
-            not in (_NOEXEC_BUILTINS - _DIALECT_DEPENDENT_BUILTINS)
+            and (
+                _clause_requires_exec_evidence(clause)
+                or str(clause["bin"]) in _DIALECT_DEPENDENT_BUILTINS
+            )
         ]
         if len(lookup_candidates) == 1:
             lookup_assigned[lookup_candidates[0]] = command_lookup_failure
@@ -1084,7 +1101,7 @@ def bridge_command(
         guard_assigned = {
             si: safety_guard_blocked
             for si, clause in enumerate(static)
-            if str(clause["bin"]) not in _NOEXEC_BUILTINS
+            if _clause_requires_exec_evidence(clause)
         }
     control_assigned, control_gaps = (
         _resolve_control_short_circuits(
@@ -1186,7 +1203,7 @@ def bridge_command(
                     control_short_circuit=control_assigned[si],
                 )
             )
-        elif cbin in _NOEXEC_BUILTINS:
+        elif not _clause_requires_exec_evidence(clause):
             unobserved.append(cbin)
         else:
             gaps.append(

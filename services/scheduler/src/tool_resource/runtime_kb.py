@@ -767,7 +767,10 @@ class ClauseResourceKB:
             (index, clause)
             for index, clause in enumerate(effective)
             if not shell_command
-            or shell_bin_requires_exec_evidence(str(clause["bin"]))
+            or shell_bin_requires_exec_evidence(
+                str(clause["bin"]),
+                str(clause["argv"][0]) if clause.get("argv") else None,
+            )
         ]
         clause_predictions: tuple[ClauseLatencyBucketOutcome, ...] = ()
         reason: str | None = None

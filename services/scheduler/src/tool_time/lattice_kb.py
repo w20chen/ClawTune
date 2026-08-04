@@ -199,9 +199,11 @@ class LatticeTimeKB:
         outcomes: list[ClauseLatticeTimePredictions] = []
         for clause_index, clause in enumerate(clauses):
             bin_ = str(clause["bin"])
-            if shell_command and not shell_bin_requires_exec_evidence(bin_):
-                continue
             argv = tuple(str(value) for value in clause["argv"])
+            if shell_command and not shell_bin_requires_exec_evidence(
+                bin_, argv[0] if argv else None
+            ):
+                continue
             if not bin_ or not argv:
                 continue
             predictions = (

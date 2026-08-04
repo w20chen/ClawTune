@@ -258,6 +258,7 @@ def test_predict_clauses_filters_noexec_builtins_and_preserves_clause_indexes() 
         _clause(("python", "task.py")),
         _clause(("export", "MODE=test")),
         _clause(("pytest", "tests", "-q")),
+        _clause(("/bin/echo", "hello")),
     ]
 
     shell_outcomes = kb.predict_clauses(
@@ -269,6 +270,7 @@ def test_predict_clauses_filters_noexec_builtins_and_preserves_clause_indexes() 
     assert [(item.clause_index, item.bin, item.argv) for item in shell_outcomes] == [
         (1, "python", ("python", "task.py")),
         (3, "pytest", ("pytest", "tests", "-q")),
+        (4, "echo", ("/bin/echo", "hello")),
     ]
     for outcome in shell_outcomes:
         assert tuple(item.algorithm for item in outcome.predictions) == (
@@ -284,7 +286,7 @@ def test_predict_clauses_filters_noexec_builtins_and_preserves_clause_indexes() 
         parse_failed=True,
         shell_command=False,
     )
-    assert [item.clause_index for item in nonshell_outcomes] == [0, 1, 2, 3]
+    assert [item.clause_index for item in nonshell_outcomes] == [0, 1, 2, 3, 4]
 
 
 def test_online_observations_are_absorbed_only_when_strictly_causal() -> None:

@@ -2105,3 +2105,30 @@ python -m pytest services/scheduler/tests/test_tool_resource_predictor.py -q `
 # Validate the updated schema
 python tools/validate_contracts.py
 ```
+
+## Predictor causal-order and explicit-path fixes (2026-08-04)
+
+Fixed the prediction transaction so its timestamp and all causal KB reads are
+serialized under one lock.  Also kept explicit shell paths such as
+`/bin/echo` distinguishable from bare no-exec builtins in the Python
+classification/bridging layers, without modifying the external mvdan Go
+parser.  When continuous latency estimates replace bucket percentiles, the
+top-level bucket confidence is now omitted instead of being attached to a
+different estimate.
+
+Validation:
+
+- focused Scheduler regression suite: `97 passed`;
+- extended affected-area regression suite: `238 passed, 2 skipped`;
+- complete source Scheduler suite: `254 passed, 2 skipped`;
+- changed-file `py_compile`: passed;
+- changed-file Ruff check: passed;
+- JSON Schema example validation: passed;
+- `git diff --check`: passed.
+
+Validation commands that did not pass because of pre-existing, out-of-scope
+issues:
+
+- `python -m ruff check .` reports `E402` in `tools/check_ebpf.py:19`;
+- `python -m ruff check . --exclude tools/check_ebpf.py` reports 18 existing
+  findings in `tool_time/_lattice_vendor` and its generated bundle copy.

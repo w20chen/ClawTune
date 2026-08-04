@@ -22,6 +22,7 @@ from agent_scheduler.contracts.models import (
     ResourceScope,
     ToolBeforeRequest,
     ToolCompletedEvent,
+    ToolPrediction,
 )
 from agent_scheduler.monitoring.tool_runtime import ToolRuntimeSample
 from agent_scheduler.predictors.tool_resource import (
@@ -324,6 +325,74 @@ def test_concurrent_duplicate_execution_start_attaches_only_once(tmp_path: Path)
     with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
         assert all(executor.map(lambda _index: begin(), range(64)))
     assert starts == 1
+
+
+def test_concurrent_predictions_share_one_causal_kb_transaction(monkeypatch) -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0)),
+        repo="repo-1",
+    )
+    original_lattice = predictor._lattice_predictions_for_clauses
+    original_clause = predictor.kb.predict_command_latency_bucket_from_clauses
+    first_lattice_done = threading.Event()
+    second_clause_done = threading.Event()
+
+    def interleaved_lattice(*args, **kwargs):
+        result = original_lattice(*args, **kwargs)
+        if threading.current_thread().name == "first-prediction":
+            first_lattice_done.set()
+            # Before the fix, the second request could advance the clause KB
+            # while the first request was between independently locked KBs.
+            second_clause_done.wait(0.2)
+        return result
+
+    def observed_clause(*args, **kwargs):
+        result = original_clause(*args, **kwargs)
+        if threading.current_thread().name == "second-prediction":
+            second_clause_done.set()
+        return result
+
+    predictor._lattice_predictions_for_clauses = interleaved_lattice
+    predictor.kb.predict_command_latency_bucket_from_clauses = observed_clause
+    monkeypatch.setattr(
+        tool_resource_predictor.time,
+        "time",
+        lambda: (
+            1_000.0
+            if threading.current_thread().name == "first-prediction"
+            else 1_001.0
+        ),
+    )
+    results: dict[str, ToolPrediction] = {}
+
+    def predict_first() -> None:
+        results["first"] = predictor.predict(
+            _tool_request("event-first", "call-first", "python first.py")
+        )
+
+    def predict_second() -> None:
+        results["second"] = predictor.predict(
+            _tool_request("event-second", "call-second", "python second.py")
+        )
+
+    first = threading.Thread(target=predict_first, name="first-prediction")
+    second = threading.Thread(target=predict_second, name="second-prediction")
+    first.start()
+    assert first_lattice_done.wait(2.0)
+    second.start()
+    first.join(2.0)
+    second.join(2.0)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert results["first"].tool_resource["unavailable_reason"] == (
+        "no_clause_latency_evidence"
+    )
+    assert results["second"].tool_resource["unavailable_reason"] == (
+        "no_clause_latency_evidence"
+    )
 
 
 def test_sanitized_execution_ids_cannot_collide_artifact_paths(tmp_path: Path) -> None:
@@ -718,6 +787,29 @@ def test_stage2_clause_identity_matches_online_prediction(tmp_path: Path, monkey
     assert result.tool_resource["continuous_predictions"]["peak_cpu_cores"][
         "conditional_p90"
     ] is None
+
+    predictor.continuous_kb.observe_completed_call(
+        CompletedCall(
+            repo="repo-1",
+            tool_name="exec",
+            command="python -m pytest tests -q",
+            ts_start=4.0,
+            ts_end=4.9,
+            peak_cpu_cores=None,
+            peak_cpu_cores_eligible=False,
+            peak_memory_mb=None,
+            peak_memory_mb_eligible=False,
+            ambient_before_mb=None,
+        )
+    )
+    continuous_result = predictor.predict(
+        _tool_request("evt-2", "call-2", "python -m pytest tests -q")
+    )
+
+    assert continuous_result.duration_p50_ms == 900
+    assert continuous_result.duration_p90_ms == 900
+    assert continuous_result.confidence is None
+    assert continuous_result.tool_resource["prediction"] is not None
 
 
 def test_openclaw_trace_history_populates_repo_argv_prefix(tmp_path: Path) -> None:
@@ -1202,6 +1294,28 @@ def test_compound_prediction_ignores_noexec_builtins_but_preserves_raw_bins() ->
     assert builtin_compound.clause_predictions == ()
     assert builtin_compound.prediction is None
     assert builtin_compound.unavailable_reason == "compound_command_uncomposed"
+
+    kb.observe_completed_clause(
+        ClauseObservation(
+            repo="repo-1",
+            bin="echo",
+            argv=("/bin/echo", "hello"),
+            ts_start=4.1,
+            ts_end=4.2,
+            latency_ms=100.0,
+        )
+    )
+    explicit_builtin_path = kb.predict_command_latency_bucket_from_clauses(
+        "repo-1",
+        ({"bin": "echo", "argv": ("/bin/echo", "hello")},),
+        5.0,
+        buckets,
+        command="/bin/echo hello",
+    )
+
+    assert len(explicit_builtin_path.clause_predictions) == 1
+    assert explicit_builtin_path.clause_predictions[0].prediction is not None
+    assert explicit_builtin_path.unavailable_reason is None
 
 
 @pytest.mark.parametrize("tool_name", ["read", "edit"])
