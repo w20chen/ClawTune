@@ -35,7 +35,7 @@ def test_legacy_scheduler_setup_declares_runtime_metadata(monkeypatch) -> None:
 
     runpy.run_path(str(SCRIPT.parents[1] / "services" / "scheduler" / "setup.py"))
 
-    assert captured["name"] == "agent-scheduler"
+    assert captured["name"] == "clawtune-sidecar"
     assert "typing-extensions>=4.12" in captured["install_requires"]
     assert "dev" in captured["extras_require"]
     assert "tool_time" in captured["package_data"]
@@ -62,7 +62,8 @@ def test_create_venv_probes_runtime_dependencies(tmp_path, monkeypatch) -> None:
     assert calls[0][0][-2:] == ("-e", "services/scheduler[dev]")
     assert calls[0][1]["env"]["PYTHONNOUSERSITE"] == "1"
     assert "typing_extensions" in calls[1][0][-1]
-    assert "version('agent-scheduler') == '0.1.0'" in calls[1][0][-1]
+    assert "try: pkg_ver = version('clawtune-sidecar')" in calls[1][0][-1]
+    assert "assert pkg_ver == '0.2.0'" in calls[1][0][-1]
     assert calls[1][1]["env"]["PYTHONNOUSERSITE"] == "1"
 
 
