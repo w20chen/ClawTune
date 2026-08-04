@@ -26,6 +26,13 @@ class SchedulerConfig:
     tool_resource_trace_paths: tuple[Path, ...] = ()
     tool_resource_stage2_trace_paths: tuple[Path, ...] = ()
     tool_resource_latency_buckets_ms: tuple[float, ...] = (100.0, 500.0, 2_000.0, 10_000.0)
+    # KV-TTL cost proxy policy for the tool-resource prediction output.
+    # ``tool_resource_ttl_by_bucket_s`` holds one KV TTL (seconds) per latency
+    # bucket edge; when None, the TTL defaults to the bucket upper bound in
+    # seconds. ``tool_resource_miss_penalty_s`` is an optional non-negative
+    # miss penalty (seconds) added to the proxy cost on a KV cache miss.
+    tool_resource_ttl_by_bucket_s: tuple[float, ...] | None = None
+    tool_resource_miss_penalty_s: float | None = None
     tool_resource_repo: str = "openclaw"
     tool_resource_artifact_dir: Path | None = None
     tool_resource_container_executable: str = "docker"
@@ -67,6 +74,9 @@ class SchedulerConfig:
             os.getenv("AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_TRACES"),
         )
         tool_resource_artifact_dir = os.getenv("AGENT_SCHEDULER_TOOL_RESOURCE_ARTIFACT_DIR")
+        tool_resource_ttl_by_bucket_raw = os.getenv(
+            "AGENT_SCHEDULER_TOOL_RESOURCE_TTL_BY_BUCKET_S"
+        )
         return cls(
             policy=os.getenv("AGENT_SCHEDULER_POLICY", "observe-only"),
             max_global_concurrency=_nonnegative_int_from_env(
@@ -98,6 +108,15 @@ class SchedulerConfig:
                     os.getenv("AGENT_SCHEDULER_TOOL_RESOURCE_LATENCY_BUCKETS_MS"),
                     default=(100.0, 500.0, 2_000.0, 10_000.0),
                 )
+            ),
+            tool_resource_ttl_by_bucket_s=(
+                tuple(_parse_float_list(tool_resource_ttl_by_bucket_raw, default=()))
+                if tool_resource_ttl_by_bucket_raw is not None
+                and tool_resource_ttl_by_bucket_raw.strip()
+                else None
+            ),
+            tool_resource_miss_penalty_s=_optional_nonnegative_float_from_env(
+                "AGENT_SCHEDULER_TOOL_RESOURCE_MISS_PENALTY_S"
             ),
             tool_resource_repo=os.getenv("AGENT_SCHEDULER_TOOL_RESOURCE_REPO", "openclaw"),
             tool_resource_artifact_dir=(

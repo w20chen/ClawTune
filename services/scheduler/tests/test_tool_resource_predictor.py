@@ -30,6 +30,7 @@ from agent_scheduler.predictors.tool_resource import (
     load_openclaw_trace_observations,
 )
 from tool_resource.runtime_kb import (
+    ClauseLatencyBucketPrediction,
     ClauseObservation,
     ClauseResourceKB,
     CompletedCall,
@@ -2268,3 +2269,165 @@ def _unavailable_lattice_time_predictions(
         }
         for clause_index, (bin_, argv) in enumerate(clauses)
     ]
+
+
+# ---------------------------------------------------------------------------
+# KV-TTL cost proxy integration tests
+# ---------------------------------------------------------------------------
+
+
+def _bucket_prediction(
+    bucket_id: int = 1,
+    *,
+    probability_by_bucket: tuple[float, ...] = (0.1, 0.8, 0.05, 0.05),
+) -> ClauseLatencyBucketPrediction:
+    return ClauseLatencyBucketPrediction(
+        bucket_id=bucket_id,
+        probability_by_bucket=probability_by_bucket,
+        scope="exact_clause",
+        key_kind="exact_clause",
+        evidence_count=10,
+        fallback_path=(),
+    )
+
+
+def _edge_predictor(
+    edges_ms: tuple[float, ...] = (100.0, 500.0, 2_000.0),
+    **kwargs,
+) -> ToolResourcePredictor:
+    return ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets(edges_ms),
+        repo="test-repo",
+        **kwargs,
+    )
+
+
+def test_kv_ttl_cost_payload_with_derived_ttl() -> None:
+    predictor = _edge_predictor()
+    bp = _bucket_prediction(bucket_id=1)
+    cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=0.3)
+
+    assert cost is not None
+    # Derived TTL: buckets_s = [0.1, 0.5, 2.0] → ttl[1] = 0.5
+    assert cost["buckets_s"] == [0.1, 0.5, 2.0]
+    assert cost["ttl_by_bucket_s"] == [0.1, 0.5, 2.0]
+    assert cost["initial_bucket_index"] == 1
+    assert cost["ttl_s"] == 0.5
+    assert cost["reference_runtime_s"] == 0.3
+    # 0.3 > 0.5? No → no miss, retention = min(0.3, 0.5) = 0.3
+    assert cost["kv_retention_time_s"] == 0.3
+    assert cost["kv_cache_miss"] is False
+    assert cost["num_bucket_jumps"] == 0
+    assert cost["proxy_cost_s"] is None
+    assert cost["miss_penalty_s"] is None
+
+
+def test_kv_ttl_cost_payload_with_miss_penalty() -> None:
+    predictor = _edge_predictor(miss_penalty_s=2.0)
+    bp = _bucket_prediction(bucket_id=0)
+    # reference_runtime 0.6s → exceeds TTL 0.1s → miss
+    cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=0.6)
+
+    assert cost is not None
+    assert cost["ttl_s"] == 0.1
+    assert cost["kv_retention_time_s"] == 0.1
+    assert cost["kv_cache_miss"] is True
+    assert cost["proxy_cost_s"] == 2.1  # 0.1 + 2.0 * 1
+    assert cost["miss_penalty_s"] == 2.0
+
+
+def test_kv_ttl_cost_payload_jumps_multiple_buckets() -> None:
+    predictor = _edge_predictor()
+    bp = _bucket_prediction(bucket_id=0)
+    # p90 = 3.0s → jumps from bucket 0 through bucket 2
+    cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=3.0)
+
+    assert cost is not None
+    assert cost["initial_bucket_index"] == 0
+    assert cost["final_bucket_index"] == 2
+    assert cost["num_bucket_jumps"] == 2
+    assert cost["bucket_exhausted"] is True
+    # TTL from initial bucket 0 = 0.1s, actual 3.0s → miss
+    assert cost["kv_cache_miss"] is True
+    assert cost["kv_retention_time_s"] == 0.1
+
+
+def test_kv_ttl_cost_payload_last_bucket_out_of_range() -> None:
+    predictor = _edge_predictor(edges_ms=(100.0, 500.0))
+    bp = _bucket_prediction(bucket_id=2)
+    cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=5.0)
+
+    assert cost is not None
+    assert cost["unavailable_reason"] == "initial_bucket_out_of_range"
+    assert cost["initial_bucket_index"] == 2
+    # No cost fields injected for out-of-range case
+    assert "ttl_s" not in cost
+
+
+def test_kv_ttl_cost_payload_with_custom_ttl_by_bucket() -> None:
+    predictor = _edge_predictor(
+        edges_ms=(100.0, 500.0, 2_000.0),
+        ttl_by_bucket_s=(2.0, 1.0, 0.0),
+    )
+    bp = _bucket_prediction(bucket_id=2)
+    cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=0.5)
+
+    assert cost is not None
+    assert cost["ttl_by_bucket_s"] == [2.0, 1.0, 0.0]
+    # Initial bucket 2 → TTL = 0.0 (immediate evict)
+    assert cost["ttl_s"] == 0.0
+    assert cost["kv_cache_miss"] is True
+    assert cost["kv_retention_time_s"] == 0.0
+
+
+def test_sidecar_response_includes_kv_ttl_cost_key(tmp_path: Path) -> None:
+    """Prediction payload always carries the ``kv_ttl_cost`` key, even when
+    None (no Stage-2 data available for a bucket prediction)."""
+    trace = tmp_path / "trace.jsonl"
+    _write_trace(trace)
+    state = build_state(
+        SchedulerConfig(
+            tool_resource_trace_paths=(trace,),
+            tool_resource_latency_buckets_ms=(100.0, 500.0, 2_000.0),
+            tool_resource_artifact_dir=tmp_path / "tool-resource",
+        )
+    )
+    client = TestClient(create_app(state))
+
+    response = client.post(
+        "/v1/decisions/tool",
+        json={
+            "schema_version": "scheduler.v1",
+            "event_id": "evt-1",
+            "occurred_at": "2026-07-24T17:29:44Z",
+            "plugin_version": "0.1.0",
+            "run_id": "run-2",
+            "session_id": "session-1",
+            "session_key": None,
+            "agent_id": "main",
+            "tool_call_id": "call-2",
+            "tool_name": "exec",
+            "tool_kind": "shell",
+            "tool_input_kind": "json",
+            "operation_hint": None,
+            "derived_paths": [],
+            "params_digest": "sha256:" + "a" * 64,
+            "param_features": {
+                "serialized_size_bytes": 10,
+                "string_length": 10,
+                "list_item_count": 0,
+                "path_count": 0,
+                "has_command_like_field": True,
+            },
+            "raw_params": {"command": "python -m pytest tests -q"},
+            "resource_scope": None,
+        },
+    )
+
+    assert response.status_code == 200
+    tr = response.json()["prediction"]["tool_resource"]
+    assert "kv_ttl_cost" in tr
+    # No Stage-2 data → no bucket prediction → kv_ttl_cost is None
+    assert tr["kv_ttl_cost"] is None

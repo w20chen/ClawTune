@@ -30,6 +30,7 @@ from tool_resource.features import (
     parse_command_clauses,
     shell_bin_requires_exec_evidence,
 )
+from tool_resource.kv_ttl import evaluate_bucket_ttl
 from tool_resource.metrics import ecdf_quantile
 from tool_resource.runtime_kb import (
     ClauseLatencyBucketOutcome,
@@ -279,6 +280,8 @@ class ToolResourcePredictor:
         runtime_kb_snapshot_path: Path | None = None,
         lattice_kb: LatticeTimeKB | None = None,
         lattice_kb_snapshot_path: Path | None = None,
+        ttl_by_bucket_s: tuple[float, ...] | None = None,
+        miss_penalty_s: float | None = None,
     ) -> None:
         self.kb = kb
         self.continuous_kb = RuntimeToolResourceKB()
@@ -291,6 +294,20 @@ class ToolResourcePredictor:
         self.runtime_kb_snapshot_path = runtime_kb_snapshot_path
         self.lattice_kb = lattice_kb or LatticeTimeKB()
         self.lattice_kb_snapshot_path = lattice_kb_snapshot_path
+        # KV-TTL cost proxy policy.  Bucket upper bounds are derived from the
+        # configured latency edges (seconds); the per-bucket TTL defaults to
+        # the bucket upper bound when no explicit policy is configured.
+        self.buckets_s = tuple(edge / 1000.0 for edge in buckets.edges_ms)
+        self.ttl_by_bucket_s = (
+            ttl_by_bucket_s if ttl_by_bucket_s is not None else self.buckets_s
+        )
+        self.miss_penalty_s = miss_penalty_s
+        if len(self.ttl_by_bucket_s) != len(self.buckets_s):
+            raise ValueError(
+                "tool_resource_ttl_by_bucket_s must have one entry per latency "
+                f"bucket edge (got {len(self.ttl_by_bucket_s)} entries for "
+                f"{len(self.buckets_s)} edges)"
+            )
         self._kb_lock = threading.RLock()
         self._execution_lock = threading.RLock()
         self._execution_start_lock = threading.Lock()
@@ -324,6 +341,8 @@ class ToolResourcePredictor:
         repo: str = "openclaw",
         artifact_dir: Path | None = None,
         container_executable: str = "docker",
+        ttl_by_bucket_s: tuple[float, ...] | None = None,
+        miss_penalty_s: float | None = None,
     ) -> "ToolResourcePredictor":
         openclaw_paths = list(_expand_trace_paths(openclaw_trace_paths))
         stage2_paths = list(_expand_trace_paths(stage2_trace_paths))
@@ -420,6 +439,8 @@ class ToolResourcePredictor:
             runtime_kb_snapshot_path=runtime_snapshot_path,
             lattice_kb=lattice_kb,
             lattice_kb_snapshot_path=lattice_snapshot_path,
+            ttl_by_bucket_s=ttl_by_bucket_s,
+            miss_penalty_s=miss_penalty_s,
         )
         loaded_runtime_snapshot = _load_runtime_kb_snapshot(
             runtime_snapshot_path,
@@ -444,12 +465,16 @@ class ToolResourcePredictor:
         *,
         buckets: LatencyBuckets,
         repo: str = "openclaw",
+        ttl_by_bucket_s: tuple[float, ...] | None = None,
+        miss_penalty_s: float | None = None,
     ) -> "ToolResourcePredictor":
         return cls.from_traces(
             openclaw_trace_paths=trace_paths,
             stage2_trace_paths=(),
             buckets=buckets,
             repo=repo,
+            ttl_by_bucket_s=ttl_by_bucket_s,
+            miss_penalty_s=miss_penalty_s,
         )
 
     def predict(
@@ -510,6 +535,7 @@ class ToolResourcePredictor:
                     ),
                     continuous_predictions=continuous_predictions,
                     lattice_time_predictions=lattice_time_predictions,
+                    kv_ttl_cost=None,
                 ),
             )
         continuous_predictions = self._continuous_predictions_for_request(
@@ -532,6 +558,7 @@ class ToolResourcePredictor:
                     prediction,
                     continuous_predictions=continuous_predictions,
                     lattice_time_predictions=lattice_time_predictions,
+                    kv_ttl_cost=None,
                 ),
             )
 
@@ -564,8 +591,60 @@ class ToolResourcePredictor:
                 prediction,
                 continuous_predictions=continuous_predictions,
                 lattice_time_predictions=lattice_time_predictions,
+                kv_ttl_cost=self._kv_ttl_cost_payload(
+                    bucket_prediction,
+                    reference_runtime_s=duration_p90_ms / 1000.0,
+                ),
             ),
         )
+
+    def _kv_ttl_cost_payload(
+        self,
+        bucket_prediction: ClauseLatencyBucketPrediction,
+        *,
+        reference_runtime_s: float,
+    ) -> dict[str, Any] | None:
+        """Prediction-time KV-TTL cost estimate against the predicted runtime.
+
+        The KV TTL is pinned by the predicted bucket (``bucket_id``).  The
+        reference runtime is the prediction's p90 duration, so this is a
+        planning estimate: it answers "given TTL fixed from the modal
+        prediction, what retention / miss / cost do we expect at p90?".
+
+        The final open-ended bucket has no TTL policy entry (the kv_ttl module
+        requires ``initial_bucket_index < len(buckets)``), so predictions that
+        land there report ``unavailable_reason`` instead of a fabricated value.
+        """
+
+        if bucket_prediction.bucket_id >= len(self.buckets_s):
+            return {
+                "unavailable_reason": "initial_bucket_out_of_range",
+                "initial_bucket_index": bucket_prediction.bucket_id,
+            }
+        try:
+            evaluation = evaluate_bucket_ttl(
+                actual_time_s=reference_runtime_s,
+                initial_bucket_index=bucket_prediction.bucket_id,
+                buckets=list(self.buckets_s),
+                ttl_by_bucket=list(self.ttl_by_bucket_s),
+                miss_penalty_s=self.miss_penalty_s,
+            )
+        except ValueError as exc:
+            return {"unavailable_reason": f"evaluation_error:{type(exc).__name__}"}
+        return {
+            "reference_runtime_s": evaluation.actual_time_s,
+            "initial_bucket_index": evaluation.initial_bucket_index,
+            "final_bucket_index": evaluation.final_bucket_index,
+            "num_bucket_jumps": evaluation.num_bucket_jumps,
+            "bucket_exhausted": evaluation.bucket_exhausted,
+            "ttl_s": evaluation.ttl_s,
+            "kv_retention_time_s": evaluation.kv_retention_time_s,
+            "kv_cache_miss": evaluation.kv_cache_miss,
+            "proxy_cost_s": evaluation.proxy_cost_s,
+            "buckets_s": list(self.buckets_s),
+            "ttl_by_bucket_s": list(self.ttl_by_bucket_s),
+            "miss_penalty_s": self.miss_penalty_s,
+        }
 
     def record_tool_started(self, request: ToolBeforeRequest) -> None:
         with self._starts_lock:
@@ -1919,6 +1998,7 @@ def _tool_resource_prediction_payload(
     *,
     continuous_predictions: dict[str, Any] | None = None,
     lattice_time_predictions: Sequence[ClauseLatticeTimePredictions] = (),
+    kv_ttl_cost: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     clause_prediction = prediction.prediction
     return {
@@ -1943,6 +2023,7 @@ def _tool_resource_prediction_payload(
             _clause_lattice_time_predictions_payload(item)
             for item in lattice_time_predictions
         ],
+        "kv_ttl_cost": kv_ttl_cost,
         "prediction_algorithms": _prediction_algorithms_payload(),
     }
 

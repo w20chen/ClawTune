@@ -149,6 +149,53 @@
       },
       "required": ["clause_index", "bin", "argv", "predictions"],
       "additionalProperties": false
+    },
+    "kvTTLCost": {
+      "type": "object",
+      "description": "Prediction-time KV-TTL cost proxy against the p90 bucket distribution estimate.",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "reference_runtime_s": {"type": "number", "minimum": 0},
+            "initial_bucket_index": {"type": "integer", "minimum": 0},
+            "final_bucket_index": {"type": "integer", "minimum": 0},
+            "num_bucket_jumps": {"type": "integer", "minimum": 0},
+            "bucket_exhausted": {"type": "boolean"},
+            "ttl_s": {"type": "number", "minimum": 0},
+            "kv_retention_time_s": {"type": "number", "minimum": 0},
+            "kv_cache_miss": {"type": "boolean"},
+            "proxy_cost_s": {"type": ["number", "null"], "minimum": 0},
+            "buckets_s": {"type": "array", "items": {"type": "number", "minimum": 0}},
+            "ttl_by_bucket_s": {"type": "array", "items": {"type": "number", "minimum": 0}},
+            "miss_penalty_s": {"type": ["number", "null"], "minimum": 0}
+          },
+          "required": [
+            "reference_runtime_s",
+            "initial_bucket_index",
+            "final_bucket_index",
+            "num_bucket_jumps",
+            "bucket_exhausted",
+            "ttl_s",
+            "kv_retention_time_s",
+            "kv_cache_miss",
+            "proxy_cost_s",
+            "buckets_s",
+            "ttl_by_bucket_s",
+            "miss_penalty_s"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "unavailable_reason": {"type": "string", "minLength": 1},
+            "initial_bucket_index": {"type": "integer", "minimum": 0}
+          },
+          "required": ["unavailable_reason"],
+          "additionalProperties": false
+        }
+      ]
     }
   },
   "required": ["decision_id", "action", "reason_code", "reason", "policy_name", "policy_version", "lease_id", "prediction", "placement_advice"],
@@ -253,6 +300,12 @@
               },
               "required": ["enabled", "excluded"],
               "additionalProperties": false
+            },
+            "kv_ttl_cost": {
+              "anyOf": [
+                {"type": "null"},
+                {"$ref": "#/$defs/kvTTLCost"}
+              ]
             }
           },
           "required": [

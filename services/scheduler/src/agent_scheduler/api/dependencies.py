@@ -97,6 +97,8 @@ def build_state(config: SchedulerConfig | None = None) -> AppState:
             else cfg.trace_dir / "tool-resource"
         ),
         container_executable=cfg.tool_resource_container_executable,
+        ttl_by_bucket_s=cfg.tool_resource_ttl_by_bucket_s,
+        miss_penalty_s=cfg.tool_resource_miss_penalty_s,
     )
     if predictor.artifact_dir is not None:
         predictor.artifact_dir.mkdir(parents=True, exist_ok=True)

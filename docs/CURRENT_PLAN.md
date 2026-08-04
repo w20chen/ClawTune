@@ -2065,3 +2065,43 @@ Validation commands that could not run as written in this environment:
   module names and imports an older globally installed `agent_scheduler`.
   The independently supported source Scheduler and root `tests/` suites above
   both completed successfully.
+
+## KV-TTL cost proxy integration (2026-08-04)
+
+Added `tool_resource/kv_ttl.py` → `evaluate_bucket_ttl()` integration into the
+tool-resource prediction output.  The prediction payload now carries a
+`kv_ttl_cost` section computed at prediction time against the conservative p90
+duration estimate.
+
+### Configuration
+
+- `tool_resource_ttl_by_bucket_s: tuple[float, ...] | None` — per-bucket KV TTL
+  in seconds.  When `None`, defaults to the bucket upper bound derived from
+  `tool_resource_latency_buckets_ms / 1000`.  Env:
+  `AGENT_SCHEDULER_TOOL_RESOURCE_TTL_BY_BUCKET_S` (comma-separated floats).
+- `tool_resource_miss_penalty_s: float | None` — optional miss penalty added to
+  proxy cost.  Env: `AGENT_SCHEDULER_TOOL_RESOURCE_MISS_PENALTY_S`.
+
+### Schema
+
+`contracts/tool-decision.schema.json` updated: `tool_resource` now accepts an
+optional `kv_ttl_cost` property (null or a `kvTTLCost` $def with the full
+evaluation or an unavailable_reason fallback).
+
+### Validation commands
+
+```powershell
+# Run the kv_ttl module tests (standalone, no infra)
+$env:PYTHONPATH = "services/scheduler/src"
+python -m pytest services/scheduler/tests/test_kv_ttl.py -q
+
+# Run the config parsing tests including new env vars
+python -m pytest services/scheduler/tests/test_config.py -q
+
+# Run the prediction integration tests (kv_ttl + existing sidecar)
+python -m pytest services/scheduler/tests/test_tool_resource_predictor.py -q `
+  -k "kv_ttl or sidecar_response_includes or sidecar_uses_tool_resource_predictor"
+
+# Validate the updated schema
+python tools/validate_contracts.py
+```
