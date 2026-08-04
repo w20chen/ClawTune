@@ -11,22 +11,29 @@ modify OpenClaw core, and placement advice remains advisory.
 
 ## Recommended Host Deployment
 
-Complete [installation and first run](getting-started.md), then start:
+For interactive use, complete [installation and first run](getting-started.md),
+then start one Gateway and attach the TUI:
+
+```bash
+openclaw gateway run
+# in a second terminal
+openclaw tui --session main
+```
+
+The plugin auto-starts the sidecar and waits for readiness. It derives the
+checkout, `.venv`, `.env`, matching kernel build tree, and `sudo` arguments;
+setup leaves `sidecarCommand` empty so a repository move cannot stale a
+persisted absolute shell command.
+
+A managed service without a controlling terminal should instead start the
+long-lived sidecar explicitly because sudo cannot prompt there:
 
 ```bash
 python3 scripts/clawtune.py sidecar
 ```
 
-The wrapper supplies the exact `.venv`, kernel build tree, `.env`, and clean
-executable path that passed setup. It is the stable deployment command for both
-openEuler/Kunpeng and x86 Linux.
-
-Interactive OpenClaw use auto-starts this process and waits for readiness. The
-plugin derives the checkout, `.venv`, `.env`, matching kernel build tree, and
-`sudo` arguments when it launches; setup leaves `sidecarCommand` empty so a
-repository move cannot stale a persisted absolute shell command. A managed
-service without a controlling terminal should start the long-lived sidecar
-explicitly because sudo cannot prompt there.
+This wrapper supplies the exact environment that passed setup and is the
+stable service-manager command for both openEuler/Kunpeng and x86 Linux.
 
 ## Health and Observability
 
@@ -66,10 +73,11 @@ variables:
 python3 scripts/clawtune.py benchmark --sample 1
 ```
 
-It prepares a current bundle, starts the verified sidecar for each task, and
-exports results. Kunpeng automatically uses amd64 task images through QEMU;
-x86 uses native images. `SWE_REBENCH_DOCKER_PLATFORM` is the explicit override
-for either host. See [SWE-Rebench usage](../swe_rebench/README.md).
+It prepares a current bundle, starts one verified batch-owned Sidecar shared by
+the selected task runtimes, and exports results. Kunpeng automatically uses
+amd64 task images through QEMU; x86 uses native images.
+`SWE_REBENCH_DOCKER_PLATFORM` is the explicit override for either host. See
+[SWE-Rebench usage](../swe_rebench/README.md).
 
 ## Container-Only Development
 

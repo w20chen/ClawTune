@@ -15,15 +15,11 @@ import {ensureSidecarRunning, type SidecarLauncherResult} from "./sidecar-launch
 import {
   SpanRegistry,
 } from "./trace/registry.js";
-import {
-  TraceWriter,
-} from "./trace/writer.js";
+import {RunWriterManager, type RunWriterScope} from "./trace/run-writer-manager.js";
 import {
   monotonicNowNs,
   wallClockNowNs,
   durationNs,
-  CLOCK_SOURCE_DESCRIPTION,
-  CLOCK_PRECISION,
 } from "./trace/clock.js";
 import {
   sanitizeTraceData,
@@ -32,7 +28,6 @@ import {extractToolExitCode, traceExitCodeForTool} from "./tool-result.js";
 import type {
   SpanStartRecord,
   SpanEndRecord,
-  TraceMetadataRecord,
   SpanKind,
   StatusCode,
   ExecutionMode,
@@ -41,6 +36,7 @@ import type {
   CoverageReason,
   SpanEndExecution,
   SpanEndResources,
+  ActiveSpan,
 } from "./trace/schema.js";
 import { TRACE_SCHEMA_VERSION } from "./trace/schema.js";
 
@@ -50,111 +46,6 @@ const pluginVersion = "0.1.1";
 
 /** Unique instance ID generated once per plugin load (�?per CLI launch). */
 const instanceId = randomUUID();
-
-/** Per-run trace writers, keyed by normalized run identity. */
-const runWriters = new Map<string, TraceWriter>();
-
-/** Pending writer creation promises to prevent concurrent creation races. */
-const pendingWriters = new Map<string, Promise<TraceWriter | null>>();
-
-function safeFilename(segment: string | null): string {
-  if (!segment) return "unknown";
-  return segment.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").slice(0, 64);
-}
-
-/**
- * Get or create a trace writer for a run.
- *
- * Keys writers by runId (primary) or sessionId (fallback).
- * NEVER uses plugin instanceId as a key to prevent cross-run
- * accumulation in the same file.
- *
- * Returns null when neither runId nor sessionId is available
- * (trace data cannot be attributed to a specific run/session).
- */
-async function getRunWriter(
-  traceDir: string,
-  runtimeId: string,
-  runId: string | null,
-  sessionId: string | null,
-  agentId: string | null,
-  logger: { warn(message: string, data?: unknown): void },
-  flushSpanStart: boolean,
-  ownedWriters: Set<TraceWriter>,
-): Promise<TraceWriter | null> {
-  const runKey = runId ?? sessionId;
-  if (!runKey) {
-    logger.warn("trace: skipping write, no run_id or session_id available", {
-      runId,
-      sessionId,
-      agentId,
-      instanceId,
-    });
-    return null;
-  }
-  const key = JSON.stringify([traceDir, runtimeId, agentId, sessionId, runKey]);
-
-  const existing = runWriters.get(key);
-  if (existing) {
-    ownedWriters.add(existing);
-    return existing;
-  }
-
-  // Prevent concurrent creation: if another caller is already creating
-  // a writer for this key, wait for it and return the same writer.
-  const pending = pendingWriters.get(key);
-  if (pending) {
-    const writer = await pending;
-    if (writer) ownedWriters.add(writer);
-    return writer;
-  }
-
-  const promise = (async (): Promise<TraceWriter | null> => {
-    // Double-check after acquiring the creation slot
-    const recheck = runWriters.get(key);
-    if (recheck) return recheck;
-
-    const session = safeFilename(sessionId);
-    const run = safeFilename(runId);
-    // Note: agent_id is included per-record in the JSONL content.
-    // It is omitted from the filename because model hooks (model_call_started,
-    // model_call_ended) do not expose agent_id �?an OpenClaw limitation.
-    const identityDigest = stableDigest([runtimeId, agentId, sessionId, runId])
-      .replace(/^sha256:/, "")
-      .slice(0, 12);
-    const filename = `${safeFilename(runtimeId)}__${session}_${run}__${identityDigest}.jsonl`;
-    const { join } = await import("node:path");
-    const filePath = join(traceDir, filename);
-
-    const traceLogger = { warn: (msg: string, d?: unknown) => logger.warn(msg, d), info: (_msg: string, _d?: unknown) => {}, error: (_msg: string, _d?: unknown) => {} };
-    const w = new TraceWriter(filePath, flushSpanStart, traceLogger);
-    await w.open();
-
-    const metadata: TraceMetadataRecord = {
-      schema_version: TRACE_SCHEMA_VERSION,
-      record_type: "trace_metadata",
-      trace_format_version: TRACE_SCHEMA_VERSION,
-      scaffold: "openclaw",
-      mode: "collect",
-      created_at: new Date().toISOString().replace("+00:00", "Z"),
-      clock_source: CLOCK_SOURCE_DESCRIPTION,
-      clock_precision: CLOCK_PRECISION,
-    };
-    w.writeRecord(metadata);
-
-    runWriters.set(key, w);
-    return w;
-  })();
-
-  pendingWriters.set(key, promise);
-  try {
-    const writer = await promise;
-    if (writer) ownedWriters.add(writer);
-    return writer;
-  } finally {
-    pendingWriters.delete(key);
-  }
-}
 
 export default definePluginEntry({
   id: "agent-scheduler",
@@ -220,7 +111,6 @@ export default definePluginEntry({
   const runtimeId = process.env.CLAW_RUNTIME_ID?.trim() || randomUUID();
   const gatewayId = process.env.CLAW_GATEWAY_ID?.trim() || runtimeId;
   const runtimeRepo = process.env.CLAW_REPO_KEY?.trim() || null;
-  const ownedWriters = new Set<TraceWriter>();
 
   // ── Auto-start sidecar ───────────────────────────────────────────
   let sidecarLauncher: SidecarLauncherResult | null = null;
@@ -273,6 +163,21 @@ export default definePluginEntry({
   // Initialize trace v6 if trace_dir is configured
   const registry = new SpanRegistry();
   const traceCfg = config.trace;
+  const writerManager = new RunWriterManager(traceCfg.flush_span_start, logger);
+
+  function writerScope(
+    identity: HookIdentity,
+    sessionId: string | null = identity.sessionId,
+    agentId: string | null = identity.agentId,
+  ): RunWriterScope {
+    return {
+      traceDir: traceCfg.trace_dir,
+      runtimeId: identity.runtimeId,
+      runId: identity.runId,
+      sessionId,
+      agentId,
+    };
+  }
 
   // ── Console turn-by-turn logging (verbose mode) ──────────────────
   const CONSOLE_PREFIX = "[openclaw]";
@@ -687,7 +592,7 @@ export default definePluginEntry({
           reason: correlationReason,
         } : undefined,
       };
-      const w = await getRunWriter(traceCfg.trace_dir, identity.runtimeId, runId, sessionId, agentId, logger, traceCfg.flush_span_start, ownedWriters);
+      const w = await writerManager.get(writerScope(identity));
       if (w) {
         w.writeRecord(spanStart);
         if (registry) registry.markStartWritten(registryKey, spanId);
@@ -1007,7 +912,7 @@ export default definePluginEntry({
           reason: "span_start_not_found",
         } : undefined,
       };
-      const w = await getRunWriter(traceCfg.trace_dir, identity.runtimeId, runId, finalSessionId, finalAgentId, logger, traceCfg.flush_span_start, ownedWriters);
+      const w = await writerManager.get(writerScope(identity, finalSessionId, finalAgentId));
       if (w) w.writeRecord(spanEnd);
     }
   });
@@ -1087,7 +992,7 @@ export default definePluginEntry({
           execution_id: null,
         },
       };
-      const w = await getRunWriter(traceCfg.trace_dir, identity.runtimeId, runId, sessionId, agentId, logger, traceCfg.flush_span_start, ownedWriters);
+      const w = await writerManager.get(writerScope(identity));
       if (w) {
         w.writeRecord(spanStart);
         if (registry) registry.markStartWritten(registryKey, spanId);
@@ -1100,7 +1005,7 @@ export default definePluginEntry({
     // Store call_id -> span_id mapping for model_call_ended
     if (callId && registry) {
       // Store in a side map (we can use tool_call_parent with a special prefix)
-      registry.setToolCallParent(callCorrelationId, spanId);
+      registry.setToolCallParent(callCorrelationId, spanId, registryKey);
     }
   });
 
@@ -1158,7 +1063,7 @@ export default definePluginEntry({
     if (registry) {
       const toolCalls = extractToolCallsFromResponse(event);
       for (const tcId of toolCalls) {
-        registry.setToolCallParent(correlationKey(identity, tcId), spanId);
+        registry.setToolCallParent(correlationKey(identity, tcId), spanId, registryKey);
       }
     }
 
@@ -1230,12 +1135,98 @@ export default definePluginEntry({
           reason: "span_start_not_found",
         } : undefined,
       };
-      const w = await getRunWriter(traceCfg.trace_dir, identity.runtimeId, runId, finalSessionId, finalAgentId, logger, traceCfg.flush_span_start, ownedWriters);
+      const w = await writerManager.get(writerScope(identity, finalSessionId, finalAgentId));
       if (w) w.writeRecord(spanEnd);
     }
 
     // Original sidecar logic
     await reportModel(client, logger, event, context, "model_call_ended", config, runtimeId, gatewayId, runtimeRepo);
+  });
+
+  async function finalizeRunTrace(identity: HookIdentity): Promise<void> {
+    if (identity.runId === null) return;
+    // Model and tool hooks can describe the same run with different agent-id
+    // detail. Treat Gateway/runtime/session/run as the lifecycle boundary so
+    // neither variant survives agent_end.
+    const activeSpans = registry.clearRunsWhere((identityKey) => (
+      correlationScopeMatchesRun(identityKey, identity)
+    ));
+
+    try {
+      if (traceCfg.trace_dir && activeSpans.length > 0) {
+        const endWall = wallClockNowNs();
+        const endMono = monotonicNowNs();
+        for (const span of activeSpans) {
+          // Append the terminal record to the same agent/session writer variant
+          // that received span_start, then close every variant below.
+          const writer = await writerManager.get(writerScope(
+            identity,
+            span.sessionId,
+            span.agentId,
+          ));
+          if (writer) {
+            writer.writeRecord(interruptedSpanEnd(
+              span,
+              endWall,
+              endMono,
+              "agent run ended before span completion",
+            ));
+          }
+        }
+      }
+    } finally {
+      // clearRunsWhere already released spans, completed-span deduplication,
+      // sequence counters, and parent mappings for every identity variant.
+      // Always release handles even if terminal-record creation fails.
+      if (traceCfg.trace_dir) await writerManager.closeRun(writerScope(identity));
+    }
+  }
+
+  async function finalizeSessionTrace(identity: HookIdentity): Promise<void> {
+    if (identity.sessionId === null) return;
+    const activeSpans = registry.clearRunsWhere((identityKey) => (
+      correlationScopeMatchesSession(identityKey, identity)
+    ));
+
+    try {
+      if (traceCfg.trace_dir && activeSpans.length > 0) {
+        const endWall = wallClockNowNs();
+        const endMono = monotonicNowNs();
+        for (const span of activeSpans) {
+          // A session-level fallback is primarily for hooks without runId, so
+          // retain the lifecycle hook's writer key while selecting the span's
+          // agent-id variant.
+          const writer = await writerManager.get(writerScope(
+            identity,
+            span.sessionId,
+            span.agentId,
+          ));
+          if (writer) {
+            writer.writeRecord(interruptedSpanEnd(
+              span,
+              endWall,
+              endMono,
+              "session ended before span completion",
+            ));
+          }
+        }
+      }
+    } finally {
+      if (traceCfg.trace_dir) await writerManager.closeSession(writerScope(identity));
+    }
+  }
+
+  // A long-lived Gateway can execute thousands of runs. Finalize each run as
+  // soon as OpenClaw reports agent_end instead of retaining one writer and
+  // registry generation until the Gateway process eventually exits.
+  api.on("agent_end", async (event: unknown, context: unknown) => {
+    await finalizeRunTrace(hookIdentity(event, context, runtimeId, gatewayId));
+  });
+
+  // Older/partial hook payloads may not expose runId. Session end is the safe
+  // fallback for writer and registry state, and is idempotent after agent_end.
+  api.on("session_end", async (event: unknown, context: unknown) => {
+    await finalizeSessionTrace(hookIdentity(event, context, runtimeId, gatewayId));
   });
 
   // ── Shutdown handling ────────────────────────────────────────────────
@@ -1262,72 +1253,35 @@ export default definePluginEntry({
       sidecarLauncher.cleanup();
     }
 
-    if (traceCfg.trace_dir && (ownedWriters.size > 0 || registry.listActiveSpans().length > 0)) {
-      const activeSpans = registry.listActiveSpans();
-      const endWall = wallClockNowNs();
-      const endMono = monotonicNowNs();
+    try {
+      if (traceCfg.trace_dir && registry.listActiveSpans().length > 0) {
+        const activeSpans = registry.listActiveSpans();
+        const endWall = wallClockNowNs();
+        const endMono = monotonicNowNs();
 
-      for (const span of activeSpans) {
-        const durNs = durationNs(span.startMonotonicTimeNs, endMono);
-        const spanEnd: SpanEndRecord = {
-          schema_version: TRACE_SCHEMA_VERSION,
-          record_type: "span_end",
-          trace_id: span.traceId,
-          span_id: span.spanId,
-          parent_span_id: span.parentSpanId,
-          session_id: span.sessionId,
-          run_id: span.runId,
-          agent_id: span.agentId,
-          sequence_no: span.sequenceNo,
-          kind: span.kind,
-          name: span.name,
-          wall_time_ns: endWall.toString(),
-          monotonic_time_ns: endMono.toString(),
-          duration_ns: durNs.toString(),
-          duration_sec: (Number(durNs) / 1e9).toString(),
-          status: {
-            code: "interrupted",
-            message: "plugin shutdown before span completion",
-          },
-          output: {},
-          execution: {
-            mode: null,
-            execution_id: null,
-          },
-          resources: {
-            attribution_status: "not_applicable",
-            scope: "none",
-            quality: "unknown",
-            monitor_start_wall_time_ns: null,
-            monitor_end_wall_time_ns: null,
-            monitor_start_monotonic_ns: null,
-            monitor_end_monotonic_ns: null,
-            coverage_duration_ns: null,
-            action_duration_ns: durNs.toString(),
-            coverage_ratio: null,
-            coverage_reason: "not_applicable",
-          },
-        };
-        // Write only to this plugin registration's runtime-scoped writer.
-        const w = await getRunWriter(
-          traceCfg.trace_dir,
-          runtimeId,
-          span.runId,
-          span.sessionId,
-          span.agentId,
-          logger,
-          traceCfg.flush_span_start,
-          ownedWriters,
-        );
-        if (w) w.writeRecord(spanEnd);
+        for (const span of activeSpans) {
+          const identity: HookIdentity = {
+            gatewayId,
+            runtimeId: runtimeIdForSession(runtimeId, gatewayId, span.sessionId),
+            agentId: span.agentId,
+            sessionId: span.sessionId,
+            sessionKey: span.sessionId,
+            runId: span.runId,
+          };
+          const writer = await writerManager.get(writerScope(identity));
+          if (writer) {
+            writer.writeRecord(interruptedSpanEnd(
+              span,
+              endWall,
+              endMono,
+              "plugin shutdown before span completion",
+            ));
+          }
+        }
       }
-      for (const w of ownedWriters) {
-        await w.close();
-      }
-      for (const [key, writer] of runWriters.entries()) {
-        if (ownedWriters.has(writer)) runWriters.delete(key);
-      }
-      ownedWriters.clear();
+    } finally {
+      registry.clear();
+      await writerManager.closeAll();
     }
   }
 
@@ -1358,6 +1312,57 @@ type HookIdentity = {
   runId: string | null;
 };
 
+function runtimeIdForSession(
+  fallbackRuntimeId: string,
+  gatewayId: string,
+  sessionId: string | null,
+): string {
+  if (sessionId === null) return fallbackRuntimeId;
+  return `session-${stableDigest([gatewayId, sessionId]).replace(/^sha256:/, "").slice(0, 48)}`;
+}
+
+function interruptedSpanEnd(
+  span: ActiveSpan,
+  endWall: bigint,
+  endMono: bigint,
+  message: string,
+): SpanEndRecord {
+  const durNs = durationNs(span.startMonotonicTimeNs, endMono);
+  return {
+    schema_version: TRACE_SCHEMA_VERSION,
+    record_type: "span_end",
+    trace_id: span.traceId,
+    span_id: span.spanId,
+    parent_span_id: span.parentSpanId,
+    session_id: span.sessionId,
+    run_id: span.runId,
+    agent_id: span.agentId,
+    sequence_no: span.sequenceNo,
+    kind: span.kind,
+    name: span.name,
+    wall_time_ns: endWall.toString(),
+    monotonic_time_ns: endMono.toString(),
+    duration_ns: durNs.toString(),
+    duration_sec: (Number(durNs) / 1e9).toString(),
+    status: {code: "interrupted", message},
+    output: {},
+    execution: {mode: null, execution_id: null},
+    resources: {
+      attribution_status: "not_applicable",
+      scope: "none",
+      quality: "unknown",
+      monitor_start_wall_time_ns: null,
+      monitor_end_wall_time_ns: null,
+      monitor_start_monotonic_ns: null,
+      monitor_end_monotonic_ns: null,
+      coverage_duration_ns: null,
+      action_duration_ns: durNs.toString(),
+      coverage_ratio: null,
+      coverage_reason: "not_applicable",
+    },
+  };
+}
+
 /** Resolve one hook's Gateway -> runtime -> session -> run owner chain. */
 function hookIdentity(
   event: unknown,
@@ -1375,9 +1380,7 @@ function hookIdentity(
   const explicitRuntimeId = extractString(event, ["runtime_id", "runtimeId"])
     ?? extractString(context, ["runtimeId", "runtime_id"]);
   const configuredRuntimeId = process.env.CLAW_RUNTIME_ID?.trim() || null;
-  const derivedRuntimeId = sessionId === null
-    ? fallbackRuntimeId
-    : `session-${stableDigest([gatewayId, sessionId]).replace(/^sha256:/, "").slice(0, 48)}`;
+  const derivedRuntimeId = runtimeIdForSession(fallbackRuntimeId, gatewayId, sessionId);
   return {
     gatewayId: gatewayId.slice(0, 128),
     runtimeId: (explicitRuntimeId ?? configuredRuntimeId ?? derivedRuntimeId).slice(0, 128),
@@ -1400,6 +1403,37 @@ function correlationScopeKey(identity: HookIdentity): string {
     identity.sessionId,
     identity.runId,
   ]);
+}
+
+function correlationScopeMatchesRun(
+  identityKey: string,
+  identity: HookIdentity,
+): boolean {
+  try {
+    const value: unknown = JSON.parse(identityKey);
+    if (!Array.isArray(value) || value.length !== 5) return false;
+    return value[0] === identity.gatewayId
+      && value[1] === identity.runtimeId
+      && value[3] === identity.sessionId
+      && value[4] === identity.runId;
+  } catch {
+    return false;
+  }
+}
+
+function correlationScopeMatchesSession(
+  identityKey: string,
+  identity: HookIdentity,
+): boolean {
+  try {
+    const value: unknown = JSON.parse(identityKey);
+    if (!Array.isArray(value) || value.length !== 5) return false;
+    return value[0] === identity.gatewayId
+      && value[1] === identity.runtimeId
+      && value[3] === identity.sessionId;
+  } catch {
+    return false;
+  }
 }
 
 function correlationKey(identity: HookIdentity, callId: string | null): string {

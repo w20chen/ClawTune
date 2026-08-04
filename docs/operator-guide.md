@@ -37,7 +37,38 @@ AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=provider/real-model
 Only use the explicit upstream-key override when the proxy must intentionally
 use a different credential than OpenClaw. Do not commit keys.
 
-## End-to-End Smoke Test
+## Choose the CLI Lifetime
+
+For normal multi-turn use, keep one Gateway running and connect the TUI:
+
+```bash
+# terminal 1
+openclaw gateway run
+
+# terminal 2
+openclaw tui --session main
+```
+
+The useful ownership model is:
+
+```text
+Gateway -> agent -> session -> run (one submitted turn)
+```
+
+The Gateway and sidecar may be long-lived, while ClawTune finalizes per-run
+writer and registry state at `agent_end`. `session_end` supplies cleanup for
+older or incomplete hook payloads without a run ID. Ordinary CLI use needs one
+Gateway and only modest session concurrency.
+
+Other CLI forms have deliberately narrower lifetimes:
+
+| Command | Use |
+| --- | --- |
+| `openclaw chat` | Interactive embedded TUI without a Gateway |
+| `openclaw agent --local ...` | One embedded, non-interactive turn |
+| `python3 scripts/clawtune.py agent --local ...` | One-shot fallback when plugin-started sudo cannot prompt |
+
+## End-to-End One-Shot Smoke Test
 
 ```bash
 openclaw agent --local --agent main --model "vllm/<model>" \
@@ -47,7 +78,8 @@ openclaw agent --local --agent main --model "vllm/<model>" \
 
 The plugin waits for sidecar readiness before OpenClaw can make its first model
 request. A separately running sidecar is reused. The explicit Python wrapper
-remains the fallback for non-interactive sudo environments.
+remains the one-shot fallback for non-interactive sudo environments. This
+smoke command is not the recommended ongoing CLI interface.
 
 Inspect the correlated execution:
 

@@ -7,7 +7,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { open, unlink } from "node:fs/promises";
+import { open, readFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 const traceSchema = await import("../dist/trace/schema.js");
 const traceClock = await import("../dist/trace/clock.js");
 const traceWriter = await import("../dist/trace/writer.js");
+const runWriterManager = await import("../dist/trace/run-writer-manager.js");
 const traceRegistry = await import("../dist/trace/registry.js");
 const traceSanitizer = await import("../dist/trace/sanitizer.js");
 const traceValidator = await import("../dist/trace/validator.js");
@@ -148,6 +149,86 @@ test("clearRun removes all spans for a run", () => {
   assert.equal(reg.listActiveSpans().length, 0);
 });
 
+test("clearRun removes only the selected composite identity state", () => {
+  const reg = new traceRegistry.SpanRegistry();
+  for (const [identityKey, spanId] of [["gateway-a:run-1", "a"], ["gateway-b:run-1", "b"]]) {
+    reg.beginSpan({
+      identityKey,
+      traceId: "run-1",
+      spanId,
+      parentSpanId: null,
+      sessionId: "sess-1",
+      runId: "run-1",
+      agentId: "main",
+      kind: "tool",
+      name: "exec",
+      startWallTimeNs: 100n,
+      startMonotonicTimeNs: 100n,
+    });
+  }
+  reg.setToolCallParent("call-a", "parent-a", "gateway-a:run-1");
+  reg.setToolCallParent("call-b", "parent-b", "gateway-b:run-1");
+
+  reg.clearRun("gateway-a:run-1");
+
+  assert.equal(reg.listActiveSpans("gateway-a:run-1").length, 0);
+  assert.equal(reg.listActiveSpans("gateway-b:run-1").length, 1);
+  assert.equal(reg.getToolCallParent("call-a"), null);
+  assert.equal(reg.getToolCallParent("call-b"), "parent-b");
+});
+
+test("clearRunsWhere removes every agent-id variant for one run", () => {
+  const reg = new traceRegistry.SpanRegistry();
+  const identities = [
+    JSON.stringify(["gateway-a", "runtime-1", null, "session-1", "run-1"]),
+    JSON.stringify(["gateway-a", "runtime-1", "main", "session-1", "run-1"]),
+    JSON.stringify(["gateway-a", "runtime-1", "main", "session-1", "run-2"]),
+    JSON.stringify(["gateway-a", "runtime-1", "main", "session-2", "run-3"]),
+  ];
+  identities.forEach((identityKey, index) => {
+    reg.beginSpan({
+      identityKey,
+      traceId: `run-${index + 1}`,
+      spanId: `span-${index + 1}`,
+      parentSpanId: null,
+      sessionId: index === 3 ? "session-2" : "session-1",
+      runId: index === 2 ? "run-2" : index === 3 ? "run-3" : "run-1",
+      agentId: index === 0 ? null : "main",
+      kind: "tool",
+      name: "exec",
+      startWallTimeNs: 100n,
+      startMonotonicTimeNs: 100n,
+    });
+    reg.setToolCallParent(`call-${index + 1}`, `parent-${index + 1}`, identityKey);
+  });
+
+  const active = reg.clearRunsWhere((identityKey) => {
+    const [gatewayId, runtimeId, , sessionId, runId] = JSON.parse(identityKey);
+    return gatewayId === "gateway-a"
+      && runtimeId === "runtime-1"
+      && sessionId === "session-1"
+      && runId === "run-1";
+  });
+
+  assert.deepEqual(active.map((span) => span.spanId).sort(), ["span-1", "span-2"]);
+  assert.deepEqual(reg.listActiveSpans().map((span) => span.spanId).sort(), ["span-3", "span-4"]);
+  assert.equal(reg.getToolCallParent("call-1"), null);
+  assert.equal(reg.getToolCallParent("call-2"), null);
+  assert.equal(reg.getToolCallParent("call-3"), "parent-3");
+  assert.equal(reg.getToolCallParent("call-4"), "parent-4");
+
+  const sessionActive = reg.clearRunsWhere((identityKey) => {
+    const [gatewayId, runtimeId, , sessionId] = JSON.parse(identityKey);
+    return gatewayId === "gateway-a"
+      && runtimeId === "runtime-1"
+      && sessionId === "session-1";
+  });
+  assert.deepEqual(sessionActive.map((span) => span.spanId), ["span-3"]);
+  assert.deepEqual(reg.listActiveSpans().map((span) => span.spanId), ["span-4"]);
+  assert.equal(reg.getToolCallParent("call-3"), null);
+  assert.equal(reg.getToolCallParent("call-4"), "parent-4");
+});
+
 // ── Writer Tests ──────────────────────────────────────────────────────
 
 test("writer writes metadata and span records", async () => {
@@ -180,7 +261,7 @@ test("writer writes metadata and span records", async () => {
 
   await w.close();
 
-  const content = await (await open(path, "r")).readFile("utf-8");
+  const content = await readFile(path, "utf-8");
   const lines = content.trim().split("\n").filter(l => l);
   assert.equal(lines.length, 2);
   // Verify each line is valid JSON
@@ -260,7 +341,7 @@ test("writer does not interleave concurrent writes", async () => {
 
   await w.close();
 
-  const content = await (await open(path, "r")).readFile("utf-8");
+  const content = await readFile(path, "utf-8");
   const lines = content.trim().split("\n").filter(l => l);
   assert.equal(lines.length, 50);
 
@@ -314,6 +395,94 @@ test("concurrent getRunWriter creates only one writer per key", async () => {
   assert.equal(uniqueLabels.length, 1, 
     `race: expected 1 writer (got ${uniqueLabels.length}). Labels: ${labels.join(",")}`);
   assert.equal(writers.size, 1, `race: expected 1 writer in map, got ${writers.size}`);
+});
+
+test("run writer manager closes every agent-id variant at agent end", async () => {
+  const dir = join(tmpdir(), `trace-writer-manager-${randomUUID()}`);
+  const {rmSync, readdirSync} = await import("node:fs");
+  const {consoleLogger} = await import("../dist/logging.js");
+  const manager = new runWriterManager.RunWriterManager(false, consoleLogger);
+  const common = {
+    traceDir: dir,
+    runtimeId: "runtime-1",
+    runId: "run-1",
+    sessionId: "session-1",
+  };
+
+  const [modelWriter, toolWriter, duplicateToolWriter] = await Promise.all([
+    manager.get({...common, agentId: null}),
+    manager.get({...common, agentId: "main"}),
+    manager.get({...common, agentId: "main"}),
+  ]);
+
+  assert.ok(modelWriter);
+  assert.ok(toolWriter);
+  assert.strictEqual(toolWriter, duplicateToolWriter);
+  assert.equal(manager.activeWriterCount(), 2);
+  assert.equal(manager.pendingWriterCount(), 0);
+
+  const closed = await manager.closeRun({...common, agentId: "main"});
+  assert.equal(closed, 2);
+  assert.equal(manager.activeWriterCount(), 0);
+  assert.equal(manager.pendingWriterCount(), 0);
+  assert.equal(readdirSync(dir).filter((name) => name.endsWith(".jsonl")).length, 2);
+
+  rmSync(dir, {recursive: true, force: true});
+});
+
+test("run writer manager closes a writer whose creation is still in flight", async () => {
+  const dir = join(tmpdir(), `trace-writer-race-${randomUUID()}`);
+  const {rmSync} = await import("node:fs");
+  const {consoleLogger} = await import("../dist/logging.js");
+  const manager = new runWriterManager.RunWriterManager(false, consoleLogger);
+  const scope = {
+    traceDir: dir,
+    runtimeId: "runtime-1",
+    runId: "run-1",
+    sessionId: "session-1",
+    agentId: "main",
+  };
+
+  const creating = manager.get(scope);
+  const closing = manager.closeRun(scope);
+  assert.ok(await creating);
+  assert.equal(await closing, 1);
+  assert.equal(manager.activeWriterCount(), 0);
+  assert.equal(manager.pendingWriterCount(), 0);
+
+  rmSync(dir, {recursive: true, force: true});
+});
+
+test("session end closes fallback and run writers only for its session", async () => {
+  const dir = join(tmpdir(), `trace-session-writer-${randomUUID()}`);
+  const {rmSync} = await import("node:fs");
+  const {consoleLogger} = await import("../dist/logging.js");
+  const manager = new runWriterManager.RunWriterManager(false, consoleLogger);
+  const fallbackScope = {
+    traceDir: dir,
+    runtimeId: "runtime-1",
+    runId: null,
+    sessionId: "session-1",
+    agentId: "main",
+  };
+  const runScope = {...fallbackScope, runId: "run-1", agentId: null};
+  const otherSessionScope = {
+    ...fallbackScope,
+    runId: "run-2",
+    sessionId: "session-2",
+  };
+
+  assert.ok(await manager.get(fallbackScope));
+  assert.ok(await manager.get(runScope));
+  assert.ok(await manager.get(otherSessionScope));
+  assert.equal(await manager.closeRun(fallbackScope), 0);
+  assert.equal(manager.activeWriterCount(), 3);
+  assert.equal(await manager.closeSession(fallbackScope), 2);
+  assert.equal(manager.activeWriterCount(), 1);
+  assert.equal(await manager.closeAll(), 1);
+  assert.equal(manager.activeWriterCount(), 0);
+
+  rmSync(dir, {recursive: true, force: true});
 });
 
 // ── Sanitizer Tests ───────────────────────────────────────────────────

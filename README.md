@@ -96,9 +96,38 @@ Secrets are ignored by Git. Do not commit `.env`, OpenClaw credentials, or
 
 ### 3. Run ClawTune with OpenClaw
 
-Run OpenClaw normally. The configured plugin starts the privileged eBPF
-sidecar and waits for readiness before the first model request. Replace the
-model name with the one you configured:
+For normal interactive CLI use, run one local Gateway and connect the TUI from
+a second terminal:
+
+```bash
+# terminal 1: owns agents, sessions, runs, hooks, and the ClawTune plugin
+openclaw gateway run
+
+# terminal 2: reuse the default session, or choose another session key
+openclaw tui --session main
+```
+
+This is the recommended everyday topology for one user: one Gateway and a
+small number of active sessions. A session contains repeated turns; each turn
+is a run. ClawTune keeps the sidecar alive with the Gateway, finalizes trace
+state after each run, and releases session fallback state when a session ends.
+It does not require the Gateway itself to be a large-scale batch scheduler.
+Docker is an execution/isolation boundary for sandboxed tools and benchmark
+tasks; it is not another conversation owner and does not imply one container
+per Gateway turn.
+
+Use the following forms for narrower cases:
+
+| Need | Command | Lifetime |
+| --- | --- | --- |
+| Interactive use through the Gateway | `openclaw tui --session main` | Reuses Gateway-owned sessions and sidecar |
+| Interactive local use without a Gateway | `openclaw chat` | One embedded TUI process |
+| One non-interactive smoke turn | `openclaw agent --local ...` | One embedded run, then process cleanup |
+| Non-interactive sudo fallback | `python3 scripts/clawtune.py agent --local ...` | Wrapper starts and stops the sidecar for that invocation |
+
+The configured plugin starts the privileged eBPF sidecar and waits for
+readiness before the first model request. For example, this one-shot command
+is useful as an installation smoke test:
 
 ```bash
 openclaw agent --local --agent main \
@@ -110,7 +139,8 @@ openclaw agent --local --agent main \
 
 If a sidecar is already running, the plugin reuses it. The explicit
 `python3 scripts/clawtune.py agent ...` wrapper remains available for
-non-interactive environments where plugin-spawned sudo cannot use a terminal.
+one-shot, non-interactive environments where plugin-spawned sudo cannot use a
+terminal. It is not the normal entry point for an ongoing CLI conversation.
 The plugin resolves the current checkout, `.venv`, matching kernel build tree,
 and privileged launch arguments at runtime. It does not persist a generated
 absolute sidecar command that would become stale after the checkout moves.
@@ -164,10 +194,10 @@ python3 scripts/clawtune.py benchmark --sample 128 --parallelism 128
 `--sample` selects how many cases run; `--parallelism` limits simultaneous
 cases. Parallelism defaults to `1`, so an upgrade never starts a large batch
 implicitly. CPU capacity is derived from online CPUs, affinity, and cgroup
-limits; `128` is an example, not a hardcoded limit. On a 320-core host, a
-useful future Gateway layout is 8 Gateways with up to 16 sessions each. The
-current benchmark may use independent OpenClaw runtimes with the same
-Plugin-to-Sidecar protocol.
+limits; `128` is an example, not a hardcoded limit. Benchmark concurrency comes
+from independent task runtimes sharing the batch Sidecar. It is separate from
+the ordinary one-user Gateway topology and is not a reason to run many
+Gateways or many interactive sessions.
 
 ## Documentation
 

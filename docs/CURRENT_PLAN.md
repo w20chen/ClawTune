@@ -11,10 +11,20 @@ The user-facing path is intentionally limited to:
 ```bash
 python3 scripts/clawtune.py setup
 python3 scripts/clawtune.py doctor
+openclaw gateway run
+openclaw tui --session main
+# one-shot smoke/non-interactive fallback only:
 python3 scripts/clawtune.py agent --local --agent main --model "vllm/<model>" --message "..."
+# explicit sidecar ownership only when automatic privilege prompting is unavailable:
 python3 scripts/clawtune.py sidecar
 python3 scripts/clawtune.py benchmark --sample 1
 ```
+
+Normal CLI use is one long-lived Gateway serving one user and a small number of
+sessions. `agent --local` is an embedded one-shot path, not the normal
+multi-turn entry point. Benchmark concurrency is implemented by independent
+task runtimes sharing one batch Sidecar and does not require scaling the normal
+Gateway topology.
 
 The wrapper selects a system Python with `bcc`/`bpfcc`, owns the single `.venv`
 path, supplies kernel/sudo environment, installs distro packages through `dnf`
@@ -1958,11 +1968,11 @@ and a unique runtime identity, while the public protocol also carries
 `agent_id`, `session_id`, `run_id`, and `tool_call_id`. Canonical scope, drain,
 and delete requests use the Gateway/Runtime route. Legacy routes remain for
 older callers but canonical callers do not borrow legacy/global scopes.
-For a 320-core deployment, `8 Gateways x 16 sessions` remains the recommended
-operational topology; it is deliberately not hardcoded. Today's benchmark can
-use independent `openclaw agent ...` runtimes with `--parallelism`, and future
-long-lived Gateways can reuse the same protocol and Sidecar without changing
-resource collection.
+The earlier `8 Gateways x 16 sessions` capacity sketch is not a recommendation
+for normal users. Today's benchmark obtains concurrency from independent
+`openclaw agent ...` runtimes with `--parallelism`; ordinary CLI use should
+remain one Gateway with modest session concurrency. Both paths reuse the same
+protocol and Sidecar resource-collection mechanisms.
 
 The Sidecar's correlation maps, execution registry, Docker scope observer,
 runtime monitor, trace routing, completion/model deduplication, decision

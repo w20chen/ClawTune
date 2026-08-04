@@ -14,12 +14,16 @@ import type {
 } from "./schema.js";
 
 type SpanKey = string; // `${runId}:${spanId}`
+type ToolCallParent = {
+  parentSpanId: string;
+  identityKey: string | null;
+};
 
 export class SpanRegistry {
   /** active spans: keyed by runId:spanId */
   private spans = new Map<SpanKey, ActiveSpan>();
   /** tool_call_id → parent LLM spanId (per run) */
-  private toolCallParents = new Map<string, string>();
+  private toolCallParents = new Map<string, ToolCallParent>();
   /** completed span keys (to detect duplicate ends) */
   private completed = new Set<SpanKey>();
   /** sequence number counter per run */
@@ -89,21 +93,44 @@ export class SpanRegistry {
     return span ?? null;
   }
 
-  /** List all currently active spans (not yet ended). */
-  listActiveSpans(): ActiveSpan[] {
-    return Array.from(this.spans.values());
+  /** List active spans globally or for one composite run identity. */
+  listActiveSpans(identityKey?: string): ActiveSpan[] {
+    if (identityKey === undefined) return Array.from(this.spans.values());
+    const prefix = `${identityKey}:`;
+    return Array.from(this.spans.entries())
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([, span]) => span);
+  }
+
+  /**
+   * Remove every run identity selected by the caller and return active spans
+   * that still need a terminal record. Identity keys are opaque to the
+   * registry; the plugin owns their Gateway/runtime/session structure.
+   */
+  clearRunsWhere(matches: (identityKey: string) => boolean): ActiveSpan[] {
+    const identities = Array.from(this.sequenceCounters.keys()).filter(matches);
+    const active = identities.flatMap((identityKey) => this.listActiveSpans(identityKey));
+    for (const identityKey of identities) this.clearRun(identityKey);
+    return active;
   }
 
   // ── Parent Mapping ─────────────────────────────────────────────────
 
   /** Register a tool_call_id → parent LLM spanId mapping. */
-  setToolCallParent(toolCallId: string, parentLlmSpanId: string): void {
-    this.toolCallParents.set(toolCallId, parentLlmSpanId);
+  setToolCallParent(
+    toolCallId: string,
+    parentLlmSpanId: string,
+    identityKey: string | null = null,
+  ): void {
+    this.toolCallParents.set(toolCallId, {
+      parentSpanId: parentLlmSpanId,
+      identityKey,
+    });
   }
 
   /** Look up the parent LLM spanId for a tool_call_id. */
   getToolCallParent(toolCallId: string): string | null {
-    return this.toolCallParents.get(toolCallId) ?? null;
+    return this.toolCallParents.get(toolCallId)?.parentSpanId ?? null;
   }
 
   /** Remove a tool_call_id mapping (after the tool is done). */
@@ -123,10 +150,9 @@ export class SpanRegistry {
       if (key.startsWith(prefix)) this.completed.delete(key);
     }
     this.sequenceCounters.delete(runId);
-    // Also clean up toolCallParents for this run
-    // (we don't track which run a toolCallParent belongs to, so we can't
-    //  selectively clear — this is acceptable for MVP since runs are
-    //  typically sequential)
+    for (const [key, parent] of this.toolCallParents.entries()) {
+      if (parent.identityKey === runId) this.toolCallParents.delete(key);
+    }
   }
 
   /** Reset all state (for testing). */

@@ -101,12 +101,32 @@ upstream URL is not DeepSeek-compatible, set
 
 ## Start and Verify
 
-Run OpenClaw normally:
+For an ongoing CLI conversation, start one Gateway and attach the TUI:
+
+```bash
+# terminal 1
+openclaw gateway run
+
+# terminal 2
+openclaw tui --session main
+```
+
+The Gateway owns the agent runtime and reusable sessions. Each submitted turn
+is a run; ClawTune closes that run's trace writers and clears its correlation
+state when the turn ends. One Gateway with a few sessions is the intended
+normal-user shape.
+
+For a quick one-shot verification instead, run:
 
 ```bash
 openclaw agent --local --agent main --model "vllm/<model>" \
   --message "Use the shell to run uname -a, then summarize it."
 ```
+
+`--local` creates an embedded run and exits after the reply. It is appropriate
+for smoke tests and scripts, but it is not the primary entry point for a
+multi-turn CLI conversation. `openclaw chat` is the interactive embedded-TUI
+alternative when Gateway-only features are not needed.
 
 The plugin asks for sudo when needed, starts the eBPF sidecar with the verified
 `.venv` and kernel environment, and blocks the first agent turn until port 8765
@@ -121,7 +141,7 @@ it is the trusted managed-execution boundary used for instrumented tools, and
 setup refreshes it whenever the checkout moves.
 
 For a non-interactive service without a controlling terminal, either provide
-site-managed privilege or use the explicit long-lived form:
+site-managed privilege or start the sidecar explicitly before OpenClaw:
 
 ```bash
 python3 scripts/clawtune.py sidecar

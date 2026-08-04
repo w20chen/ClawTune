@@ -130,9 +130,12 @@ for managed, instrumented tool execution. An absolute path is a security
 requirement, not a host-specific literal in source. Rerunning setup after a
 move refreshes it. The pre-agent gate waits for a health response with the
 expected ClawTune service and schema identity before OpenClaw can contact the
-local model proxy. Interactive use can therefore run `openclaw agent ...`
-directly. Use the explicit `agent` wrapper or `sidecar` command where sudo
-cannot prompt on a controlling terminal.
+local model proxy. Normal interactive use can therefore run
+`openclaw gateway run` and attach `openclaw tui --session main`; the Gateway
+keeps the plugin and sidecar available across turns. Use `openclaw chat` for an
+embedded local TUI, `agent --local` for one-shot execution, or the explicit
+ClawTune `agent`/`sidecar` wrappers where sudo cannot prompt on a controlling
+terminal.
 
 The default sidecar startup window is 60 seconds so a Kunpeng cold start and
 an interactive sudo prompt do not consume the old 15-second limit. Advanced

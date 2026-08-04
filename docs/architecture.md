@@ -3,11 +3,30 @@
 Runtime path:
 
 ```text
-OpenClaw agent
-  -> agent-scheduler plugin hooks
-  -> scheduler sidecar
-  -> JSONL traces + SQLite state + recent metrics
+OpenClaw CLI / TUI / chat channel
+  -> one Gateway (normal long-lived owner)
+    -> agent
+      -> session
+        -> run (one submitted turn)
+          -> agent-scheduler plugin hooks
+            -> scheduler sidecar + eBPF collector
+              -> JSONL traces + SQLite state + recent metrics
 ```
+
+For ordinary use, a single Gateway serves one user and a small number of
+sessions. The Gateway and sidecar can remain alive, but plugin trace writers,
+span registries, sequence counters, and parent mappings are finalized per run;
+session-level cleanup is the fallback when a run ID is unavailable.
+
+`openclaw agent --local` bypasses the Gateway and owns one embedded run. It is
+useful for smoke tests and automation, not the default multi-turn CLI shape.
+`openclaw chat` similarly uses an embedded runtime but keeps an interactive TUI
+open for its process lifetime.
+
+Docker sits beside this ownership chain rather than inside it. When OpenClaw
+sandboxing is enabled, containers isolate tool execution; ClawTune correlates
+their cgroups and processes back to the owning run. A Docker container is not
+a session, and normal use does not require creating one container per turn.
 
 Full LLM content is captured when OpenClaw uses the sidecar as an
 OpenAI-compatible proxy:

@@ -5,20 +5,34 @@ the eBPF collector, records traces, and serves recent measurements/predictions.
 
 ## Start the Sidecar
 
-For an interactive agent run, plugin startup and cleanup are automatic:
+Normally, do not start the sidecar separately. The plugin starts it on demand
+inside whichever OpenClaw runtime owns the work. With a Gateway, the same
+sidecar is reused across sessions and runs until the Gateway exits:
+
+```bash
+# terminal 1
+openclaw gateway run
+
+# terminal 2
+openclaw tui --session main
+```
+
+For a one-shot embedded run, plugin startup and cleanup follow that process:
 
 ```bash
 openclaw agent --local --agent main --model "vllm/<model>" \
   --message "Run uname -a"
 ```
 
-For a long-lived gateway or multiple invocations, start it explicitly:
+Start the sidecar explicitly only when OpenClaw is non-interactive and cannot
+perform the required privilege prompt, or when a service manager deliberately
+owns its lifetime:
 
 ```bash
 python3 scripts/clawtune.py sidecar
 ```
 
-Both paths use `.env`, listen on `127.0.0.1:8765`, and ask for the kernel
+All paths use `.env`, listen on `127.0.0.1:8765`, and require the kernel
 privileges needed by eBPF. The plugin keeps `sidecarCommand` empty and resolves
 the current checkout, `.venv`, matching kernel build tree, and `sudo` launch at
 runtime. A pre-agent hook waits for an identified ClawTune health response to

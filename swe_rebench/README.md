@@ -165,9 +165,10 @@ host capacity, and applies weighted admission using predicted CPU demand.
 Consequently, `128` is neither a universal safe value nor a hardcoded limit;
 also account for memory, Docker I/O, provider quota, and QEMU overhead.
 
-On a 320-core machine, `8 Gateways x 16 sessions` is a reasonable future
-long-lived topology. Benchmark mode does not need eight Gateways: independent
-runtimes already use the same Plugin/Sidecar protocol.
+This benchmark concurrency should not be copied into the normal-user topology.
+Routine CLI use is one Gateway with a small number of sessions. Benchmark mode
+uses independent task runtimes because it is a batch harness, while reusing the
+same Plugin/Sidecar protocol.
 
 ## Knowledge Sharing within a Batch
 

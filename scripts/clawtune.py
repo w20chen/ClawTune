@@ -678,8 +678,8 @@ def doctor() -> int:
         )
         if not report["sidecar"]["running"]:
             log(
-                "The sidecar is not running; this is normal. `openclaw agent` "
-                "starts it automatically before the first request."
+                "The sidecar is not running; this is normal. The enabled plugin "
+                "starts it before the first Gateway or embedded-agent request."
             )
         return 0
     log("Environment is not ready. Run `python3 scripts/clawtune.py setup`.")
@@ -738,7 +738,8 @@ def setup(args: argparse.Namespace) -> None:
             log("Runtime-level tool-span predictions will still work.")
             log("To suppress this check: python3 scripts/clawtune.py setup --skip-ebpf-check")
     log("The OpenClaw plugin starts and waits for the eBPF sidecar automatically.")
-    log("Run an agent directly: openclaw agent <options>")
+    log("For normal CLI use: run `openclaw gateway run`, then `openclaw tui --session main`.")
+    log("For a one-shot smoke turn: openclaw agent --local <options>")
     log("Run a benchmark: python3 scripts/clawtune.py benchmark --sample 1")
 
 
