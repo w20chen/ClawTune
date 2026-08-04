@@ -1,0 +1,15 @@
+{
+  "action_id": "llm-proxy-c80defc6-cad1-434f-a8ee-0af551ba1b70",
+  "upstream": "https://upstream.example/v1/chat/completions",
+  "request_model": "test-model",
+  "request_stream": true,
+  "status_code": 200,
+  "chunk_count": 1,
+  "message_content_bytes": 0,
+  "has_tool_calls": false,
+  "finish_reason": "stop",
+  "error": "upstream_empty_response",
+  "raw_preview_bytes": 71,
+  "raw_preview_sha256": "3974e02a9b8e297683177cfdbfae21685dcea6780e9f8a4b118edc3372ebb78c",
+  "automatic_empty_diagnostic": true
+}

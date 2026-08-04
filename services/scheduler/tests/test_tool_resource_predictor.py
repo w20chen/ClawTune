@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import concurrent.futures
 import json
 import shlex
@@ -440,8 +439,8 @@ def test_openclaw_trace_span_repo_overrides_batch_fallback(tmp_path: Path) -> No
         "python -m pytest tests -q",
     ).model_copy(update={"repo": "swe-rebench-batch"})
 
-    owner = asyncio.run(predictor.predict(owner_request))
-    batch = asyncio.run(predictor.predict(batch_request))
+    owner = predictor.predict(owner_request)
+    batch = predictor.predict(batch_request)
 
     assert owner.tool_resource["continuous_predictions"]["latency_ms"][
         "scope"
@@ -527,11 +526,9 @@ def test_openclaw_trace_shared_scope_keeps_only_runtime_latency(
         buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
         repo="repo-1",
     )
-    prediction = asyncio.run(
-        predictor.predict(
-            _tool_request("evt-next", "call-next", "python -m pytest tests -q"),
-            ambient_before_mb=50.0,
-        )
+    prediction = predictor.predict(
+        _tool_request("evt-next", "call-next", "python -m pytest tests -q"),
+        ambient_before_mb=50.0,
     )
     continuous = prediction.tool_resource["continuous_predictions"]
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
@@ -572,7 +569,7 @@ def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) ->
         raw_params={"command": "python -m pytest tests -q"},
     )
 
-    result = asyncio.run(predictor.predict(request))
+    result = predictor.predict(request)
 
     assert result.resource_class == "latency_medium"
     assert result.duration_p50_ms == 1200
@@ -600,6 +597,7 @@ def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) ->
         "lattice_time_predictions": _unavailable_lattice_time_predictions(
             [("python", ["python", "-m", "pytest", "tests", "-q"])]
         ),
+        "kv_ttl_cost": None,
         "prediction_algorithms": _prediction_algorithms(),
     }
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
@@ -685,9 +683,7 @@ def test_stage2_clause_identity_matches_online_prediction(tmp_path: Path, monkey
         repo="repo-1",
     )
 
-    result = asyncio.run(
-        predictor.predict(_tool_request("evt-1", "call-1", "python -m pytest tests -q"))
-    )
+    result = predictor.predict(_tool_request("evt-1", "call-1", "python -m pytest tests -q"))
 
     assert predictor.report.observations_loaded == 2
     assert result.resource_class == "latency_medium"
@@ -733,9 +729,7 @@ def test_openclaw_trace_history_populates_repo_argv_prefix(tmp_path: Path) -> No
         repo="repo-1",
     )
 
-    result = asyncio.run(
-        predictor.predict(_tool_request("evt-prefix", "call-prefix", "python -m pytest integration -q"))
-    )
+    result = predictor.predict(_tool_request("evt-prefix", "call-prefix", "python -m pytest integration -q"))
 
     assert result.resource_class == "latency_medium"
     assert result.tool_resource["prediction"] is None
@@ -772,9 +766,7 @@ def test_openclaw_trace_cold_start_persists_runtime_kb(tmp_path: Path) -> None:
         repo="repo-1",
         artifact_dir=artifact_dir,
     )
-    result = asyncio.run(
-        reloaded.predict(_tool_request("evt-prefix", "call-prefix", "python -m pytest integration -q"))
-    )
+    result = reloaded.predict(_tool_request("evt-prefix", "call-prefix", "python -m pytest integration -q"))
 
     assert result.resource_class == "latency_medium"
     assert result.tool_resource["prediction"] is None
@@ -801,9 +793,7 @@ def test_shipped_runtime_snapshot_produces_public_predictions_for_any_repo(
         artifact_dir=artifact_dir,
     )
 
-    result = asyncio.run(
-        predictor.predict(_tool_request("evt-public-runtime", "call-public-runtime", "git status"))
-    )
+    result = predictor.predict(_tool_request("evt-public-runtime", "call-public-runtime", "git status"))
 
     continuous = result.tool_resource["continuous_predictions"]
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
@@ -922,9 +912,7 @@ def test_shipped_clause_snapshot_produces_public_global_single_clause_bucket(
         artifact_dir=artifact_dir,
     )
 
-    result = asyncio.run(
-        predictor.predict(_tool_request("evt-public", "call-public", "python -V"))
-    )
+    result = predictor.predict(_tool_request("evt-public", "call-public", "python -V"))
 
     prediction = result.tool_resource["prediction"]
     assert predictor.report.kb_available is True
@@ -963,13 +951,11 @@ def test_shipped_clause_snapshot_predicts_exec_clause_in_real_compound_command(
         artifact_dir=artifact_dir,
     )
 
-    result = asyncio.run(
-        predictor.predict(
-            _tool_request(
-                "evt-compound-public",
-                "call-compound-public",
-                "cd /workspace && python3 -m pytest tests -q",
-            )
+    result = predictor.predict(
+        _tool_request(
+            "evt-compound-public",
+            "call-compound-public",
+            "cd /workspace && python3 -m pytest tests -q",
         )
     )
 
@@ -1048,9 +1034,7 @@ def test_tool_resource_predictor_exposes_native_unavailable_reason(
         repo="repo-1",
     )
 
-    result = asyncio.run(
-        predictor.predict(_tool_request("evt-1", "call-1", "python -m pytest && git status"))
-    )
+    result = predictor.predict(_tool_request("evt-1", "call-1", "python -m pytest && git status"))
 
     assert result.resource_class == "latency_medium"
     continuous = result.tool_resource["continuous_predictions"]
@@ -1085,6 +1069,7 @@ def test_tool_resource_predictor_exposes_native_unavailable_reason(
                 ("git", ["git", "status"]),
             ]
         ),
+        "kv_ttl_cost": None,
         "prediction_algorithms": _prediction_algorithms(),
     }
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
@@ -1326,9 +1311,7 @@ def test_tool_resource_predictor_learns_from_completion_without_cold_start() -> 
         ),
         _runtime_sample("evt-1", "call-1"),
     )
-    result = asyncio.run(
-        predictor.predict(_tool_request("evt-2", "call-2", "python -m pytest tests -q"))
-    )
+    result = predictor.predict(_tool_request("evt-2", "call-2", "python -m pytest tests -q"))
 
     assert added == 1
     assert result.resource_class == "latency_medium"
@@ -1484,15 +1467,13 @@ def test_live_shared_scope_keeps_only_runtime_latency(
 
     predictor.record_tool_started(request)
     assert predictor.observe_completion(completion, sample) == 1
-    prediction = asyncio.run(
-        predictor.predict(
-            _tool_request(
-                "evt-shared-next",
-                "call-shared-next",
-                "python -m pytest tests -q",
-            ),
-            ambient_before_mb=50.0,
-        )
+    prediction = predictor.predict(
+        _tool_request(
+            "evt-shared-next",
+            "call-shared-next",
+            "python -m pytest tests -q",
+        ),
+        ambient_before_mb=50.0,
     )
     continuous = prediction.tool_resource["continuous_predictions"]
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
@@ -1508,9 +1489,7 @@ def test_tool_resource_predictor_explains_unknown_without_cold_start() -> None:
         repo="repo-1",
     )
 
-    result = asyncio.run(
-        predictor.predict(_tool_request("evt-1", "call-1", "python -m pytest tests -q"))
-    )
+    result = predictor.predict(_tool_request("evt-1", "call-1", "python -m pytest tests -q"))
 
     assert result.resource_class == "unknown"
     assert result.tool_resource["repo"] == "repo-1"
@@ -1558,7 +1537,7 @@ def test_lattice_time_predictions_are_limited_to_ebpf_exec_clauses() -> None:
         }
     )
 
-    result = asyncio.run(predictor.predict(request))
+    result = predictor.predict(request)
 
     assert result.tool_resource["lattice_time_predictions"] == []
 
@@ -1629,9 +1608,7 @@ def test_finish_execution_feeds_and_persists_the_shared_lattice_kb(
         lambda _observations: pytest.fail("prediction rebuilt the prepared lattice"),
     )
 
-    prediction = asyncio.run(
-        predictor.predict(_tool_request("evt-online", "call-next", "python task.py"))
-    )
+    prediction = predictor.predict(_tool_request("evt-online", "call-next", "python task.py"))
     outcomes = prediction.tool_resource["lattice_time_predictions"][0]["predictions"]
     assert [item["prediction_ms"] for item in outcomes] == pytest.approx(
         [250.0, 250.0, 250.0]
@@ -1646,11 +1623,9 @@ def test_tool_resource_predictor_explains_empty_continuous_memory_with_anchor() 
         repo="repo-1",
     )
 
-    result = asyncio.run(
-        predictor.predict(
-            _tool_request("evt-1", "call-1", "python -m pytest tests -q"),
-            ambient_before_mb=10.0,
-        )
+    result = predictor.predict(
+        _tool_request("evt-1", "call-1", "python -m pytest tests -q"),
+        ambient_before_mb=10.0,
     )
 
     memory = result.tool_resource["continuous_predictions"]["peak_memory_mb"]
@@ -1677,9 +1652,7 @@ def test_exec_prediction_uses_fallback_parser_when_mvdan_fails(
     monkeypatch.setattr(tool_resource_predictor, "parse_command_clauses", fail_parse)
     monkeypatch.setattr(tool_resource_runtime_kb, "parse_command_clauses", fail_parse)
 
-    result = asyncio.run(
-        predictor.predict(_tool_request("evt-1", "call-1", command))
-    )
+    result = predictor.predict(_tool_request("evt-1", "call-1", command))
 
     assert result.resource_class == "latency_medium"
     assert result.tool_resource["unavailable_reason"] == "no_clause_latency_evidence"
@@ -1737,9 +1710,7 @@ def test_tool_resource_predictor_persists_clause_kb_prefixes(tmp_path: Path) -> 
         repo="repo-1",
         artifact_dir=artifact_dir,
     )
-    result = asyncio.run(
-        reloaded.predict(_tool_request("evt-2", "call-2", "python -m pytest integration -q"))
-    )
+    result = reloaded.predict(_tool_request("evt-2", "call-2", "python -m pytest integration -q"))
 
     assert result.resource_class == "latency_medium"
     assert result.tool_resource["prediction"] is None
@@ -1827,12 +1798,8 @@ def test_tool_resource_predictor_concurrent_completions_persist_without_lost_upd
         repo="repo-1",
         artifact_dir=artifact_dir,
     )
-    first = asyncio.run(
-        reloaded.predict(_tool_request("evt-next-1", "call-next-1", "python task_a.py"))
-    )
-    second = asyncio.run(
-        reloaded.predict(_tool_request("evt-next-2", "call-next-2", "python task_b.py"))
-    )
+    first = reloaded.predict(_tool_request("evt-next-1", "call-next-1", "python task_a.py"))
+    second = reloaded.predict(_tool_request("evt-next-2", "call-next-2", "python task_b.py"))
 
     assert first.tool_resource["continuous_predictions"]["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
     assert second.tool_resource["continuous_predictions"]["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
@@ -1874,11 +1841,9 @@ def test_tool_resource_predictor_continuous_memory_uses_ambient_anchor() -> None
         _runtime_sample("evt-1", "call-1"),
     ) == 1
 
-    result = asyncio.run(
-        predictor.predict(
-            _tool_request("evt-2", "call-2", "python -m pytest tests -q"),
-            ambient_before_mb=50.0,
-        )
+    result = predictor.predict(
+        _tool_request("evt-2", "call-2", "python -m pytest tests -q"),
+        ambient_before_mb=50.0,
     )
 
     memory = result.tool_resource["continuous_predictions"]["peak_memory_mb"]

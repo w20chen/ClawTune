@@ -32,6 +32,21 @@ def _safe_filename(segment: str | None) -> str:
     return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", segment)[:64]
 
 
+class _FlushMarker:
+    """Queue sentinel that makes the writer thread signal a flush event.
+
+    Because the write queue is strictly FIFO, the writer thread only reaches
+    this marker after every record enqueued before it has been written to
+    disk.  ``AgentTestBenchTraceWriter.flush`` uses it to make the
+    ``{"stored": True}`` acknowledgement durable.
+    """
+
+    __slots__ = ("event",)
+
+    def __init__(self, event: threading.Event) -> None:
+        self.event = event
+
+
 class AgentTestBenchTraceWriter:
     """Per-run trace writer. Creates one JSONL file per run under trace_dir.
 
@@ -64,7 +79,7 @@ class AgentTestBenchTraceWriter:
         # Maps tool_call_id → parent LLM span_id for resolving parent_span_id
         # on tool spans. Populated when an LLM span produces tool calls.
         self._tool_parent_map: dict[tuple[str | None, ...], str] = {}
-        self._write_queue: queue.Queue[tuple[Path, str] | None] = queue.Queue()
+        self._write_queue: queue.Queue[object] = queue.Queue()
         self._writer_thread = threading.Thread(
             target=self._writer_loop,
             name="clawtune-trace-writer",
@@ -565,6 +580,9 @@ class AgentTestBenchTraceWriter:
             item = self._write_queue.get()
             if item is None:  # graceful shutdown sentinel
                 break
+            if isinstance(item, _FlushMarker):
+                item.event.set()
+                continue
             filepath, line = item
             try:
                 filepath.parent.mkdir(parents=True, exist_ok=True)
@@ -574,6 +592,18 @@ class AgentTestBenchTraceWriter:
                 # Trace persistence is best-effort; a lost span_end is
                 # preferable to a crashed sidecar.
                 pass
+
+    def flush(self, timeout: float = 10.0) -> bool:
+        """Block until every record enqueued so far is written to disk.
+
+        The write queue is FIFO, so enqueueing a flush marker behind the
+        pending records and waiting for the writer thread to reach it makes
+        the earlier records durable.  Returns ``False`` if the writer thread
+        could not drain within *timeout* seconds.
+        """
+        event = threading.Event()
+        self._write_queue.put(_FlushMarker(event))
+        return event.wait(timeout)
 
     def close(self) -> None:
         """Drain pending writes and stop the writer thread."""

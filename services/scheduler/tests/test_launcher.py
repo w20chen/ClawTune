@@ -490,6 +490,7 @@ def test_launcher_reports_started_once_after_spawning_cgroup_payload(monkeypatch
 
     monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
     monkeypatch.setenv("CLAW_CGROUP_ROOT", str(tmp_path))
+    monkeypatch.setattr(launcher, "_cgroup_procs_writable", lambda _path: True)
     monkeypatch.setattr(launcher, "_post_json", fake_post_json)
     monkeypatch.setattr(launcher, "_post_json_best_effort", fake_best_effort)
     monkeypatch.setattr(launcher, "_spawn_shell_gated", fake_gated_spawn)
@@ -667,6 +668,7 @@ def test_launcher_extracts_cpu_and_numa_placement() -> None:
 def test_launcher_prepares_cgroup_with_cpuset_order(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
     monkeypatch.setenv("CLAW_CGROUP_ROOT", str(tmp_path))
+    monkeypatch.setattr(launcher, "_cgroup_procs_writable", lambda _path: True)
 
     cgroup_path = launcher._prepare_cgroup(
         "exec:1",
@@ -699,6 +701,7 @@ def test_launcher_can_require_cgroup(monkeypatch, tmp_path) -> None:
 def test_launcher_required_cgroup_overrides_profiling_disable(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
     monkeypatch.setenv("CLAW_CGROUP_ROOT", str(tmp_path))
+    monkeypatch.setattr(launcher, "_cgroup_procs_writable", lambda _path: True)
     monkeypatch.setenv("CLAW_CGROUP_REQUIRED", "1")
     monkeypatch.delenv("CLAW_CGROUP_PATH", raising=False)
 
@@ -980,6 +983,7 @@ def test_launcher_join_failure_restarts_in_systemd_scope(monkeypatch, tmp_path) 
 
     monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
     monkeypatch.setenv("CLAW_CGROUP_ROOT", str(tmp_path))
+    monkeypatch.setattr(launcher, "_cgroup_procs_writable", lambda _path: True)
     monkeypatch.setattr(launcher, "_post_json", fake_post_json)
     monkeypatch.setattr(launcher, "_post_json_best_effort", fake_best_effort)
     monkeypatch.setattr(launcher, "_spawn_shell_gated", fake_gated_spawn)
@@ -1043,6 +1047,7 @@ def test_launcher_passes_placement_to_spawn(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
     monkeypatch.setenv("CLAW_CGROUP_ROOT", str(tmp_path))
+    monkeypatch.setattr(launcher, "_cgroup_procs_writable", lambda _path: True)
     monkeypatch.setattr(launcher, "_post_json", fake_post_json)
     monkeypatch.setattr(launcher, "_post_json_best_effort", fake_best_effort)
     monkeypatch.setattr(launcher, "_spawn_shell_gated", fake_gated_spawn)

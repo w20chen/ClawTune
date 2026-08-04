@@ -1212,6 +1212,10 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     s._recent_samples.pop()
                 if s.trace_writer is not None:
                     s.trace_writer.record_tool(event, sample)
+                    # Make the {"stored": True} acknowledgement durable: the
+                    # trace writer persists asynchronously on a dedicated
+                    # thread, so drain its queue before responding.
+                    await asyncio.to_thread(s.trace_writer.flush)
             if event.execution_id is not None:
                 s.executions.mark_completed(event.execution_id)
             s.metrics.inc("scheduler_tool_completions_total")
@@ -1256,6 +1260,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
         try:
             if s.trace_writer is not None:
                 s.trace_writer.record_model(event)
+                # Drain the asynchronous writer so the stored acknowledgement
+                # is durable before the plugin proceeds.
+                await asyncio.to_thread(s.trace_writer.flush)
             return {"stored": True}
         except BaseException:
             s._model_event_ids.discard(model_key)

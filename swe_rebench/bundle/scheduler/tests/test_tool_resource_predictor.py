@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import concurrent.futures
 import json
 import shlex
@@ -30,6 +29,7 @@ from agent_scheduler.predictors.tool_resource import (
     load_openclaw_trace_observations,
 )
 from tool_resource.runtime_kb import (
+    ClauseLatencyBucketPrediction,
     ClauseObservation,
     ClauseResourceKB,
     CompletedCall,
@@ -439,8 +439,8 @@ def test_openclaw_trace_span_repo_overrides_batch_fallback(tmp_path: Path) -> No
         "python -m pytest tests -q",
     ).model_copy(update={"repo": "swe-rebench-batch"})
 
-    owner = asyncio.run(predictor.predict(owner_request))
-    batch = asyncio.run(predictor.predict(batch_request))
+    owner = predictor.predict(owner_request)
+    batch = predictor.predict(batch_request)
 
     assert owner.tool_resource["continuous_predictions"]["latency_ms"][
         "scope"
@@ -526,11 +526,9 @@ def test_openclaw_trace_shared_scope_keeps_only_runtime_latency(
         buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
         repo="repo-1",
     )
-    prediction = asyncio.run(
-        predictor.predict(
-            _tool_request("evt-next", "call-next", "python -m pytest tests -q"),
-            ambient_before_mb=50.0,
-        )
+    prediction = predictor.predict(
+        _tool_request("evt-next", "call-next", "python -m pytest tests -q"),
+        ambient_before_mb=50.0,
     )
     continuous = prediction.tool_resource["continuous_predictions"]
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
@@ -571,7 +569,7 @@ def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) ->
         raw_params={"command": "python -m pytest tests -q"},
     )
 
-    result = asyncio.run(predictor.predict(request))
+    result = predictor.predict(request)
 
     assert result.resource_class == "latency_medium"
     assert result.duration_p50_ms == 1200
@@ -599,6 +597,7 @@ def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) ->
         "lattice_time_predictions": _unavailable_lattice_time_predictions(
             [("python", ["python", "-m", "pytest", "tests", "-q"])]
         ),
+        "kv_ttl_cost": None,
         "prediction_algorithms": _prediction_algorithms(),
     }
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
@@ -684,9 +683,7 @@ def test_stage2_clause_identity_matches_online_prediction(tmp_path: Path, monkey
         repo="repo-1",
     )
 
-    result = asyncio.run(
-        predictor.predict(_tool_request("evt-1", "call-1", "python -m pytest tests -q"))
-    )
+    result = predictor.predict(_tool_request("evt-1", "call-1", "python -m pytest tests -q"))
 
     assert predictor.report.observations_loaded == 2
     assert result.resource_class == "latency_medium"
@@ -732,9 +729,7 @@ def test_openclaw_trace_history_populates_repo_argv_prefix(tmp_path: Path) -> No
         repo="repo-1",
     )
 
-    result = asyncio.run(
-        predictor.predict(_tool_request("evt-prefix", "call-prefix", "python -m pytest integration -q"))
-    )
+    result = predictor.predict(_tool_request("evt-prefix", "call-prefix", "python -m pytest integration -q"))
 
     assert result.resource_class == "latency_medium"
     assert result.tool_resource["prediction"] is None
@@ -771,9 +766,7 @@ def test_openclaw_trace_cold_start_persists_runtime_kb(tmp_path: Path) -> None:
         repo="repo-1",
         artifact_dir=artifact_dir,
     )
-    result = asyncio.run(
-        reloaded.predict(_tool_request("evt-prefix", "call-prefix", "python -m pytest integration -q"))
-    )
+    result = reloaded.predict(_tool_request("evt-prefix", "call-prefix", "python -m pytest integration -q"))
 
     assert result.resource_class == "latency_medium"
     assert result.tool_resource["prediction"] is None
@@ -800,9 +793,7 @@ def test_shipped_runtime_snapshot_produces_public_predictions_for_any_repo(
         artifact_dir=artifact_dir,
     )
 
-    result = asyncio.run(
-        predictor.predict(_tool_request("evt-public-runtime", "call-public-runtime", "git status"))
-    )
+    result = predictor.predict(_tool_request("evt-public-runtime", "call-public-runtime", "git status"))
 
     continuous = result.tool_resource["continuous_predictions"]
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
@@ -921,9 +912,7 @@ def test_shipped_clause_snapshot_produces_public_global_single_clause_bucket(
         artifact_dir=artifact_dir,
     )
 
-    result = asyncio.run(
-        predictor.predict(_tool_request("evt-public", "call-public", "python -V"))
-    )
+    result = predictor.predict(_tool_request("evt-public", "call-public", "python -V"))
 
     prediction = result.tool_resource["prediction"]
     assert predictor.report.kb_available is True
@@ -962,13 +951,11 @@ def test_shipped_clause_snapshot_predicts_exec_clause_in_real_compound_command(
         artifact_dir=artifact_dir,
     )
 
-    result = asyncio.run(
-        predictor.predict(
-            _tool_request(
-                "evt-compound-public",
-                "call-compound-public",
-                "cd /workspace && python3 -m pytest tests -q",
-            )
+    result = predictor.predict(
+        _tool_request(
+            "evt-compound-public",
+            "call-compound-public",
+            "cd /workspace && python3 -m pytest tests -q",
         )
     )
 
@@ -1047,9 +1034,7 @@ def test_tool_resource_predictor_exposes_native_unavailable_reason(
         repo="repo-1",
     )
 
-    result = asyncio.run(
-        predictor.predict(_tool_request("evt-1", "call-1", "python -m pytest && git status"))
-    )
+    result = predictor.predict(_tool_request("evt-1", "call-1", "python -m pytest && git status"))
 
     assert result.resource_class == "latency_medium"
     continuous = result.tool_resource["continuous_predictions"]
@@ -1084,6 +1069,7 @@ def test_tool_resource_predictor_exposes_native_unavailable_reason(
                 ("git", ["git", "status"]),
             ]
         ),
+        "kv_ttl_cost": None,
         "prediction_algorithms": _prediction_algorithms(),
     }
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
@@ -1325,9 +1311,7 @@ def test_tool_resource_predictor_learns_from_completion_without_cold_start() -> 
         ),
         _runtime_sample("evt-1", "call-1"),
     )
-    result = asyncio.run(
-        predictor.predict(_tool_request("evt-2", "call-2", "python -m pytest tests -q"))
-    )
+    result = predictor.predict(_tool_request("evt-2", "call-2", "python -m pytest tests -q"))
 
     assert added == 1
     assert result.resource_class == "latency_medium"
@@ -1483,15 +1467,13 @@ def test_live_shared_scope_keeps_only_runtime_latency(
 
     predictor.record_tool_started(request)
     assert predictor.observe_completion(completion, sample) == 1
-    prediction = asyncio.run(
-        predictor.predict(
-            _tool_request(
-                "evt-shared-next",
-                "call-shared-next",
-                "python -m pytest tests -q",
-            ),
-            ambient_before_mb=50.0,
-        )
+    prediction = predictor.predict(
+        _tool_request(
+            "evt-shared-next",
+            "call-shared-next",
+            "python -m pytest tests -q",
+        ),
+        ambient_before_mb=50.0,
     )
     continuous = prediction.tool_resource["continuous_predictions"]
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
@@ -1507,9 +1489,7 @@ def test_tool_resource_predictor_explains_unknown_without_cold_start() -> None:
         repo="repo-1",
     )
 
-    result = asyncio.run(
-        predictor.predict(_tool_request("evt-1", "call-1", "python -m pytest tests -q"))
-    )
+    result = predictor.predict(_tool_request("evt-1", "call-1", "python -m pytest tests -q"))
 
     assert result.resource_class == "unknown"
     assert result.tool_resource["repo"] == "repo-1"
@@ -1557,7 +1537,7 @@ def test_lattice_time_predictions_are_limited_to_ebpf_exec_clauses() -> None:
         }
     )
 
-    result = asyncio.run(predictor.predict(request))
+    result = predictor.predict(request)
 
     assert result.tool_resource["lattice_time_predictions"] == []
 
@@ -1628,9 +1608,7 @@ def test_finish_execution_feeds_and_persists_the_shared_lattice_kb(
         lambda _observations: pytest.fail("prediction rebuilt the prepared lattice"),
     )
 
-    prediction = asyncio.run(
-        predictor.predict(_tool_request("evt-online", "call-next", "python task.py"))
-    )
+    prediction = predictor.predict(_tool_request("evt-online", "call-next", "python task.py"))
     outcomes = prediction.tool_resource["lattice_time_predictions"][0]["predictions"]
     assert [item["prediction_ms"] for item in outcomes] == pytest.approx(
         [250.0, 250.0, 250.0]
@@ -1645,11 +1623,9 @@ def test_tool_resource_predictor_explains_empty_continuous_memory_with_anchor() 
         repo="repo-1",
     )
 
-    result = asyncio.run(
-        predictor.predict(
-            _tool_request("evt-1", "call-1", "python -m pytest tests -q"),
-            ambient_before_mb=10.0,
-        )
+    result = predictor.predict(
+        _tool_request("evt-1", "call-1", "python -m pytest tests -q"),
+        ambient_before_mb=10.0,
     )
 
     memory = result.tool_resource["continuous_predictions"]["peak_memory_mb"]
@@ -1676,9 +1652,7 @@ def test_exec_prediction_uses_fallback_parser_when_mvdan_fails(
     monkeypatch.setattr(tool_resource_predictor, "parse_command_clauses", fail_parse)
     monkeypatch.setattr(tool_resource_runtime_kb, "parse_command_clauses", fail_parse)
 
-    result = asyncio.run(
-        predictor.predict(_tool_request("evt-1", "call-1", command))
-    )
+    result = predictor.predict(_tool_request("evt-1", "call-1", command))
 
     assert result.resource_class == "latency_medium"
     assert result.tool_resource["unavailable_reason"] == "no_clause_latency_evidence"
@@ -1736,9 +1710,7 @@ def test_tool_resource_predictor_persists_clause_kb_prefixes(tmp_path: Path) -> 
         repo="repo-1",
         artifact_dir=artifact_dir,
     )
-    result = asyncio.run(
-        reloaded.predict(_tool_request("evt-2", "call-2", "python -m pytest integration -q"))
-    )
+    result = reloaded.predict(_tool_request("evt-2", "call-2", "python -m pytest integration -q"))
 
     assert result.resource_class == "latency_medium"
     assert result.tool_resource["prediction"] is None
@@ -1826,12 +1798,8 @@ def test_tool_resource_predictor_concurrent_completions_persist_without_lost_upd
         repo="repo-1",
         artifact_dir=artifact_dir,
     )
-    first = asyncio.run(
-        reloaded.predict(_tool_request("evt-next-1", "call-next-1", "python task_a.py"))
-    )
-    second = asyncio.run(
-        reloaded.predict(_tool_request("evt-next-2", "call-next-2", "python task_b.py"))
-    )
+    first = reloaded.predict(_tool_request("evt-next-1", "call-next-1", "python task_a.py"))
+    second = reloaded.predict(_tool_request("evt-next-2", "call-next-2", "python task_b.py"))
 
     assert first.tool_resource["continuous_predictions"]["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
     assert second.tool_resource["continuous_predictions"]["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
@@ -1873,11 +1841,9 @@ def test_tool_resource_predictor_continuous_memory_uses_ambient_anchor() -> None
         _runtime_sample("evt-1", "call-1"),
     ) == 1
 
-    result = asyncio.run(
-        predictor.predict(
-            _tool_request("evt-2", "call-2", "python -m pytest tests -q"),
-            ambient_before_mb=50.0,
-        )
+    result = predictor.predict(
+        _tool_request("evt-2", "call-2", "python -m pytest tests -q"),
+        ambient_before_mb=50.0,
     )
 
     memory = result.tool_resource["continuous_predictions"]["peak_memory_mb"]
@@ -2268,3 +2234,165 @@ def _unavailable_lattice_time_predictions(
         }
         for clause_index, (bin_, argv) in enumerate(clauses)
     ]
+
+
+# ---------------------------------------------------------------------------
+# KV-TTL cost proxy integration tests
+# ---------------------------------------------------------------------------
+
+
+def _bucket_prediction(
+    bucket_id: int = 1,
+    *,
+    probability_by_bucket: tuple[float, ...] = (0.1, 0.8, 0.05, 0.05),
+) -> ClauseLatencyBucketPrediction:
+    return ClauseLatencyBucketPrediction(
+        bucket_id=bucket_id,
+        probability_by_bucket=probability_by_bucket,
+        scope="exact_clause",
+        key_kind="exact_clause",
+        evidence_count=10,
+        fallback_path=(),
+    )
+
+
+def _edge_predictor(
+    edges_ms: tuple[float, ...] = (100.0, 500.0, 2_000.0),
+    **kwargs,
+) -> ToolResourcePredictor:
+    return ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets(edges_ms),
+        repo="test-repo",
+        **kwargs,
+    )
+
+
+def test_kv_ttl_cost_payload_with_derived_ttl() -> None:
+    predictor = _edge_predictor()
+    bp = _bucket_prediction(bucket_id=1)
+    cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=0.3)
+
+    assert cost is not None
+    # Derived TTL: buckets_s = [0.1, 0.5, 2.0] → ttl[1] = 0.5
+    assert cost["buckets_s"] == [0.1, 0.5, 2.0]
+    assert cost["ttl_by_bucket_s"] == [0.1, 0.5, 2.0]
+    assert cost["initial_bucket_index"] == 1
+    assert cost["ttl_s"] == 0.5
+    assert cost["reference_runtime_s"] == 0.3
+    # 0.3 > 0.5? No → no miss, retention = min(0.3, 0.5) = 0.3
+    assert cost["kv_retention_time_s"] == 0.3
+    assert cost["kv_cache_miss"] is False
+    assert cost["num_bucket_jumps"] == 0
+    assert cost["proxy_cost_s"] is None
+    assert cost["miss_penalty_s"] is None
+
+
+def test_kv_ttl_cost_payload_with_miss_penalty() -> None:
+    predictor = _edge_predictor(miss_penalty_s=2.0)
+    bp = _bucket_prediction(bucket_id=0)
+    # reference_runtime 0.6s → exceeds TTL 0.1s → miss
+    cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=0.6)
+
+    assert cost is not None
+    assert cost["ttl_s"] == 0.1
+    assert cost["kv_retention_time_s"] == 0.1
+    assert cost["kv_cache_miss"] is True
+    assert cost["proxy_cost_s"] == 2.1  # 0.1 + 2.0 * 1
+    assert cost["miss_penalty_s"] == 2.0
+
+
+def test_kv_ttl_cost_payload_jumps_multiple_buckets() -> None:
+    predictor = _edge_predictor()
+    bp = _bucket_prediction(bucket_id=0)
+    # p90 = 3.0s → jumps from bucket 0 through bucket 2
+    cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=3.0)
+
+    assert cost is not None
+    assert cost["initial_bucket_index"] == 0
+    assert cost["final_bucket_index"] == 2
+    assert cost["num_bucket_jumps"] == 2
+    assert cost["bucket_exhausted"] is True
+    # TTL from initial bucket 0 = 0.1s, actual 3.0s → miss
+    assert cost["kv_cache_miss"] is True
+    assert cost["kv_retention_time_s"] == 0.1
+
+
+def test_kv_ttl_cost_payload_last_bucket_out_of_range() -> None:
+    predictor = _edge_predictor(edges_ms=(100.0, 500.0))
+    bp = _bucket_prediction(bucket_id=2)
+    cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=5.0)
+
+    assert cost is not None
+    assert cost["unavailable_reason"] == "initial_bucket_out_of_range"
+    assert cost["initial_bucket_index"] == 2
+    # No cost fields injected for out-of-range case
+    assert "ttl_s" not in cost
+
+
+def test_kv_ttl_cost_payload_with_custom_ttl_by_bucket() -> None:
+    predictor = _edge_predictor(
+        edges_ms=(100.0, 500.0, 2_000.0),
+        ttl_by_bucket_s=(2.0, 1.0, 0.0),
+    )
+    bp = _bucket_prediction(bucket_id=2)
+    cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=0.5)
+
+    assert cost is not None
+    assert cost["ttl_by_bucket_s"] == [2.0, 1.0, 0.0]
+    # Initial bucket 2 → TTL = 0.0 (immediate evict)
+    assert cost["ttl_s"] == 0.0
+    assert cost["kv_cache_miss"] is True
+    assert cost["kv_retention_time_s"] == 0.0
+
+
+def test_sidecar_response_includes_kv_ttl_cost_key(tmp_path: Path) -> None:
+    """Prediction payload always carries the ``kv_ttl_cost`` key, even when
+    None (no Stage-2 data available for a bucket prediction)."""
+    trace = tmp_path / "trace.jsonl"
+    _write_trace(trace)
+    state = build_state(
+        SchedulerConfig(
+            tool_resource_trace_paths=(trace,),
+            tool_resource_latency_buckets_ms=(100.0, 500.0, 2_000.0),
+            tool_resource_artifact_dir=tmp_path / "tool-resource",
+        )
+    )
+    client = TestClient(create_app(state))
+
+    response = client.post(
+        "/v1/decisions/tool",
+        json={
+            "schema_version": "scheduler.v1",
+            "event_id": "evt-1",
+            "occurred_at": "2026-07-24T17:29:44Z",
+            "plugin_version": "0.1.0",
+            "run_id": "run-2",
+            "session_id": "session-1",
+            "session_key": None,
+            "agent_id": "main",
+            "tool_call_id": "call-2",
+            "tool_name": "exec",
+            "tool_kind": "shell",
+            "tool_input_kind": "json",
+            "operation_hint": None,
+            "derived_paths": [],
+            "params_digest": "sha256:" + "a" * 64,
+            "param_features": {
+                "serialized_size_bytes": 10,
+                "string_length": 10,
+                "list_item_count": 0,
+                "path_count": 0,
+                "has_command_like_field": True,
+            },
+            "raw_params": {"command": "python -m pytest tests -q"},
+            "resource_scope": None,
+        },
+    )
+
+    assert response.status_code == 200
+    tr = response.json()["prediction"]["tool_resource"]
+    assert "kv_ttl_cost" in tr
+    # No Stage-2 data → no bucket prediction → kv_ttl_cost is None
+    assert tr["kv_ttl_cost"] is None
