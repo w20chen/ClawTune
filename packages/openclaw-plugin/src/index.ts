@@ -352,10 +352,19 @@ export default definePluginEntry({
     if (!toolResource) return lines.join("\n");
 
     if (toolResource.prediction) {
-      const probs = formatProbabilityList(toolResource.prediction.probability_by_bucket);
+      let bucketTag: string;
+      let probsSuffix = "";
+      if (toolResource.composed === true) {
+        const total = typeof toolResource.composed_total_ms === "number" ? toolResource.composed_total_ms : 0;
+        const count = toolResource.prediction.evidence_count;
+        bucketTag = `composed; total ~${formatMs(total)}; ${count} clause${count === 1 ? "" : "s"}`;
+      } else {
+        const probs = formatProbabilityList(toolResource.prediction.probability_by_bucket);
+        bucketTag = `${formatBucketRange(toolResource.prediction.bucket_id)}; ${formatEvidence(toolResource.prediction)}`;
+        probsSuffix = probs ? `\n    probabilities: ${probs}` : "";
+      }
       lines.push(
-        `  latency bucket: #${toolResource.prediction.bucket_id} (${formatBucketRange(toolResource.prediction.bucket_id)}; ${formatEvidence(toolResource.prediction)})` +
-        (probs ? `\n    probabilities: ${probs}` : ""),
+        `  latency bucket: #${toolResource.prediction.bucket_id} (${bucketTag})` + probsSuffix,
       );
     } else {
       lines.push(`  latency bucket: unavailable (${toolResource.unavailable_reason ?? "unknown reason"})`);
@@ -380,6 +389,22 @@ export default definePluginEntry({
         } else {
           lines.push(`    ${bin} → unavailable (${cp.unavailable_reason ?? "unknown reason"})`);
         }
+      }
+    }
+
+    const composition = toolResource.composition;
+    if (Array.isArray(composition) && composition.length > 0) {
+      lines.push("  composition:");
+      for (const unit of composition) {
+        if (!isRecord(unit)) continue;
+        const kind = unit.kind === "pipeline" ? "|" : "serial";
+        const bins = Array.isArray(unit.bins) ? unit.bins.join(" ") : "?";
+        const dropped =
+          Array.isArray(unit.dropped_viewer_bins) && unit.dropped_viewer_bins.length > 0
+            ? ` (dropped viewer: ${unit.dropped_viewer_bins.join(", ")})`
+            : "";
+        const timeMs = typeof unit.time_ms === "number" ? unit.time_ms : 0;
+        lines.push(`    ${kind} ${bins} ~${formatMs(timeMs)}${dropped}`);
       }
     }
 

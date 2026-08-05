@@ -643,7 +643,7 @@ class ToolResourcePredictor:
                 ),
                 confidence=(
                     None
-                    if uses_continuous_duration
+                    if uses_continuous_duration or prediction.composed
                     else max(
                         bucket_prediction.probability_by_bucket,
                         default=0.0,
@@ -2063,7 +2063,7 @@ def _tool_resource_prediction_payload(
     kv_ttl_cost: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     clause_prediction = prediction.prediction
-    return {
+    payload = {
         "repo": prediction.repo,
         "command": prediction.command,
         "parse_failed": prediction.parse_failed,
@@ -2088,6 +2088,14 @@ def _tool_resource_prediction_payload(
         "kv_ttl_cost": kv_ttl_cost,
         "prediction_algorithms": _prediction_algorithms_payload(),
     }
+    # Derived compound composition: only present when the command-level
+    # bucket was actually composed from per-clause medians. Kept out of the
+    # payload otherwise so existing consumers see no new keys.
+    if prediction.composed:
+        payload["composed"] = True
+        payload["composed_total_ms"] = prediction.composed_total_ms
+        payload["composition"] = list(prediction.composition)
+    return payload
 
 
 def _clause_bucket_prediction_payload(

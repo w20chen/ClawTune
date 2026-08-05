@@ -196,6 +196,18 @@
           "additionalProperties": false
         }
       ]
+    },
+    "compositionUnit": {
+      "type": "object",
+      "description": "One unit of a derived compound-latency composition. Serial units (; && ||) sum; pipeline units (|) contribute their slowest stage after trailing result-viewing consumers are dropped.",
+      "required": ["kind", "bins", "time_ms", "dropped_viewer_bins"],
+      "properties": {
+        "kind": {"enum": ["single", "pipeline"]},
+        "bins": {"type": "array", "items": {"type": "string"}},
+        "time_ms": {"type": "number", "minimum": 0},
+        "dropped_viewer_bins": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
     }
   },
   "required": ["decision_id", "action", "reason_code", "reason", "policy_name", "policy_version", "lease_id", "prediction", "placement_advice"],
@@ -306,6 +318,20 @@
                 {"type": "null"},
                 {"$ref": "#/$defs/kvTTLCost"}
               ]
+            },
+            "composed": {
+              "type": "boolean",
+              "description": "True when the command-level prediction is a derived total composed from per-clause median latencies."
+            },
+            "composed_total_ms": {
+              "type": ["number", "null"],
+              "minimum": 0,
+              "description": "Composed total latency in milliseconds when composed is true."
+            },
+            "composition": {
+              "type": "array",
+              "description": "Per-unit breakdown of the derived composition when composed is true.",
+              "items": {"$ref": "#/$defs/compositionUnit"}
             }
           },
           "required": [

@@ -1053,8 +1053,20 @@ def test_shipped_clause_snapshot_predicts_exec_clause_in_real_compound_command(
 
     tool_resource = result.tool_resource
     assert tool_resource["clause_bins"] == ["cd", "python3"]
-    assert tool_resource["prediction"] is None
-    assert tool_resource["unavailable_reason"] == "compound_command_uncomposed"
+    assert tool_resource["prediction"] is not None
+    assert tool_resource["unavailable_reason"] is None
+    assert tool_resource["composed"] is True
+    assert tool_resource["prediction"]["scope"] == "composed"
+    assert tool_resource["prediction"]["key_kind"] == "compound_composed"
+    assert tool_resource["composed_total_ms"] is not None
+    assert tool_resource["composition"] == [
+        {
+            "kind": "single",
+            "bins": ["python3"],
+            "time_ms": tool_resource["composed_total_ms"],
+            "dropped_viewer_bins": [],
+        }
+    ]
     assert len(tool_resource["clause_predictions"]) == 1
     clause = tool_resource["clause_predictions"][0]
     assert clause["clause_index"] == 1
@@ -1227,10 +1239,15 @@ def test_compound_prediction_requires_evidence_for_every_effective_clause() -> N
         command="python -m pytest && apt-get update",
     )
 
-    assert complete.prediction is None
-    assert complete.unavailable_reason == "compound_command_uncomposed"
+    assert complete.prediction is not None
+    assert complete.composed is True
+    assert complete.unavailable_reason is None
+    assert complete.prediction.scope == "composed"
+    assert complete.prediction.bucket_id == 2
+    assert complete.composed_total_ms == pytest.approx(980.0)
     assert all(item.prediction is not None for item in complete.clause_predictions)
     assert all(item.unavailable_reason is None for item in complete.clause_predictions)
+    assert [unit["kind"] for unit in complete.composition] == ["single", "single"]
 
 
 def test_compound_prediction_ignores_noexec_builtins_but_preserves_raw_bins() -> None:
@@ -1259,8 +1276,10 @@ def test_compound_prediction_ignores_noexec_builtins_but_preserves_raw_bins() ->
     )
 
     assert compound.clause_bins == ("cd", "python")
-    assert compound.prediction is None
-    assert compound.unavailable_reason == "compound_command_uncomposed"
+    assert compound.prediction is not None
+    assert compound.composed is True
+    assert compound.unavailable_reason is None
+    assert compound.composed_total_ms == pytest.approx(200.0)
     assert len(compound.clause_predictions) == 1
     assert compound.clause_predictions[0].clause_index == 1
     assert compound.clause_predictions[0].bin == "python"
@@ -1293,7 +1312,7 @@ def test_compound_prediction_ignores_noexec_builtins_but_preserves_raw_bins() ->
     assert builtin_compound.clause_bins == ("cd", "export")
     assert builtin_compound.clause_predictions == ()
     assert builtin_compound.prediction is None
-    assert builtin_compound.unavailable_reason == "compound_command_uncomposed"
+    assert builtin_compound.unavailable_reason == "no_executable_clauses"
 
     kb.observe_completed_clause(
         ClauseObservation(
@@ -1316,6 +1335,246 @@ def test_compound_prediction_ignores_noexec_builtins_but_preserves_raw_bins() ->
     assert len(explicit_builtin_path.clause_predictions) == 1
     assert explicit_builtin_path.clause_predictions[0].prediction is not None
     assert explicit_builtin_path.unavailable_reason is None
+
+
+def test_compound_composition_sums_serial_units() -> None:
+    kb = ClauseResourceKB()
+    buckets = LatencyBuckets((100.0, 500.0))
+    kb.observe_completed_clause(
+        ClauseObservation(
+            repo="repo-1",
+            bin="python",
+            argv=("python", "-V"),
+            ts_start=1.0,
+            ts_end=1.05,
+            latency_ms=50.0,
+        )
+    )
+    kb.observe_completed_clause(
+        ClauseObservation(
+            repo="repo-1",
+            bin="git",
+            argv=("git", "status"),
+            ts_start=1.1,
+            ts_end=1.3,
+            latency_ms=200.0,
+        )
+    )
+
+    result = kb.predict_command_latency_bucket_from_clauses(
+        "repo-1",
+        (
+            {"bin": "python", "argv": ("python", "-V")},
+            {"bin": "git", "argv": ("git", "status")},
+        ),
+        2.0,
+        buckets,
+        command="python -V && git status",
+    )
+
+    assert result.composed is True
+    assert result.unavailable_reason is None
+    assert result.composed_total_ms == pytest.approx(250.0)
+    assert result.prediction is not None
+    assert result.prediction.scope == "composed"
+    assert [unit["kind"] for unit in result.composition] == ["single", "single"]
+    assert [unit["time_ms"] for unit in result.composition] == pytest.approx(
+        [50.0, 200.0]
+    )
+
+
+def test_compound_composition_uses_pipeline_max() -> None:
+    kb = ClauseResourceKB()
+    buckets = LatencyBuckets((100.0, 500.0))
+    kb.observe_completed_clause(
+        ClauseObservation(
+            repo="repo-1",
+            bin="grep",
+            argv=("grep", "pat"),
+            ts_start=1.0,
+            ts_end=1.4,
+            latency_ms=400.0,
+        )
+    )
+    kb.observe_completed_clause(
+        ClauseObservation(
+            repo="repo-1",
+            bin="python",
+            argv=("python", "-c", "1"),
+            ts_start=1.0,
+            ts_end=1.15,
+            latency_ms=150.0,
+        )
+    )
+
+    result = kb.predict_command_latency_bucket_from_clauses(
+        "repo-1",
+        (
+            {
+                "bin": "grep",
+                "argv": ("grep", "pat"),
+                "in_pipe": True,
+                "pipeline_position": 0,
+            },
+            {
+                "bin": "python",
+                "argv": ("python", "-c", "1"),
+                "in_pipe": True,
+                "pipeline_position": 1,
+            },
+        ),
+        2.0,
+        buckets,
+        command="grep pat | python -c 1",
+    )
+
+    assert result.composed is True
+    assert result.composed_total_ms == pytest.approx(400.0)
+    assert result.composition[0]["kind"] == "pipeline"
+    assert result.composition[0]["bins"] == ["grep", "python"]
+    assert result.composition[0]["dropped_viewer_bins"] == []
+
+
+def test_compound_composition_drops_trailing_pipe_viewer() -> None:
+    kb = ClauseResourceKB()
+    buckets = LatencyBuckets((100.0, 500.0))
+    kb.observe_completed_clause(
+        ClauseObservation(
+            repo="repo-1",
+            bin="ls",
+            argv=("ls", "-la"),
+            ts_start=1.0,
+            ts_end=1.05,
+            latency_ms=50.0,
+        )
+    )
+    kb.observe_completed_clause(
+        ClauseObservation(
+            repo="repo-1",
+            bin="head",
+            argv=("head", "-20"),
+            ts_start=1.0,
+            ts_end=1.3,
+            latency_ms=300.0,
+        )
+    )
+
+    result = kb.predict_command_latency_bucket_from_clauses(
+        "repo-1",
+        (
+            {
+                "bin": "ls",
+                "argv": ("ls", "-la"),
+                "in_pipe": True,
+                "pipeline_position": 0,
+            },
+            {
+                "bin": "head",
+                "argv": ("head", "-20"),
+                "in_pipe": True,
+                "pipeline_position": 1,
+            },
+        ),
+        2.0,
+        buckets,
+        command="ls -la | head -20",
+    )
+
+    assert result.composed is True
+    # head runs concurrently with ls and its wall clock tracks the producer,
+    # so it is dropped from composition and adds no independent time.
+    assert result.composed_total_ms == pytest.approx(50.0)
+    assert result.prediction is not None
+    assert result.prediction.bucket_id == 0
+    unit = result.composition[0]
+    assert unit["kind"] == "pipeline"
+    assert unit["bins"] == ["ls"]
+    assert unit["dropped_viewer_bins"] == ["head"]
+    # The per-clause outcome for head is still reported transparently.
+    assert [item.bin for item in result.clause_predictions] == ["ls", "head"]
+    assert all(item.prediction is not None for item in result.clause_predictions)
+
+
+def test_compound_composition_keeps_pipeline_lead_viewer() -> None:
+    kb = ClauseResourceKB()
+    buckets = LatencyBuckets((100.0, 500.0))
+    kb.observe_completed_clause(
+        ClauseObservation(
+            repo="repo-1",
+            bin="head",
+            argv=("head", "-5"),
+            ts_start=1.0,
+            ts_end=1.3,
+            latency_ms=300.0,
+        )
+    )
+    kb.observe_completed_clause(
+        ClauseObservation(
+            repo="repo-1",
+            bin="wc",
+            argv=("wc", "-l"),
+            ts_start=1.0,
+            ts_end=1.1,
+            latency_ms=100.0,
+        )
+    )
+
+    result = kb.predict_command_latency_bucket_from_clauses(
+        "repo-1",
+        (
+            {
+                "bin": "head",
+                "argv": ("head", "-5"),
+                "in_pipe": True,
+                "pipeline_position": 0,
+            },
+            {
+                "bin": "wc",
+                "argv": ("wc", "-l"),
+                "in_pipe": True,
+                "pipeline_position": 1,
+            },
+        ),
+        2.0,
+        buckets,
+        command="head -5 file | wc -l",
+    )
+
+    assert result.composed is True
+    # A viewer leading the pipeline (position 0) does real work and is kept;
+    # only the trailing consumer wc is dropped.
+    assert result.composed_total_ms == pytest.approx(300.0)
+    unit = result.composition[0]
+    assert unit["bins"] == ["head"]
+    assert unit["dropped_viewer_bins"] == ["wc"]
+
+
+def test_standalone_viewer_clause_is_not_composed() -> None:
+    kb = ClauseResourceKB()
+    buckets = LatencyBuckets((100.0, 500.0))
+    kb.observe_completed_clause(
+        ClauseObservation(
+            repo="repo-1",
+            bin="cat",
+            argv=("cat", "file"),
+            ts_start=1.0,
+            ts_end=1.2,
+            latency_ms=200.0,
+        )
+    )
+
+    result = kb.predict_command_latency_bucket_from_clauses(
+        "repo-1",
+        ({"bin": "cat", "argv": ("cat", "file")},),
+        2.0,
+        buckets,
+        command="cat file",
+    )
+
+    assert result.composed is False
+    assert result.prediction is not None
+    assert result.prediction.scope != "composed"
+    assert result.composed_total_ms is None
 
 
 @pytest.mark.parametrize("tool_name", ["read", "edit"])

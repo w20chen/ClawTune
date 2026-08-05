@@ -159,6 +159,14 @@ export type ToolResourceCommandPrediction = {
   continuous_predictions?: Record<string, ToolResourceContinuousPrediction> | null;
   lattice_time_predictions?: ToolResourceClauseLatticeTimePredictions[];
   prediction_algorithms?: ToolResourcePredictionAlgorithms | null;
+  composed?: boolean;
+  composed_total_ms?: number | null;
+  composition?: Array<{
+    kind: "single" | "pipeline";
+    bins: string[];
+    time_ms: number;
+    dropped_viewer_bins: string[];
+  }>;
 };
 
 export type ToolResourceClausePredictionOutcome = {
