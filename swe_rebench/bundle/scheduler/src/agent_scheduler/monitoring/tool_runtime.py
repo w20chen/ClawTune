@@ -485,6 +485,11 @@ def _relative_timeline(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
             # live on different cumulative epochs, so start a fresh segment
             # baseline instead of subtracting a foreign base.
             base = point
+        # The first sample of a segment (list head or a source change) has no
+        # same-source predecessor: its point-to-point per-second rates must be
+        # unavailable rather than subtracted from the previous foreign-source
+        # sample (which produced garbage rates at source boundaries).
+        segment_origin = prev is None or point.get("source") != prev.get("source")
         elapsed_s = _timeline_delta_float(base.get("ts"), point.get("ts"))
         interval_s = None if prev is None else _timeline_delta_float(prev.get("ts"), point.get("ts"))
         read_delta = _timeline_counter_delta(base.get("read_bytes"), point.get("read_bytes"))
@@ -492,10 +497,10 @@ def _relative_timeline(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
         net_rx_delta = _timeline_counter_delta(base.get("net_rx_bytes"), point.get("net_rx_bytes"))
         net_tx_delta = _timeline_counter_delta(base.get("net_tx_bytes"), point.get("net_tx_bytes"))
         ctx_delta = _timeline_counter_delta(base.get("ctx_switches"), point.get("ctx_switches"))
-        point_read_delta = None if prev is None else _timeline_counter_delta(prev.get("read_bytes"), point.get("read_bytes"))
-        point_write_delta = None if prev is None else _timeline_counter_delta(prev.get("write_bytes"), point.get("write_bytes"))
-        point_net_rx_delta = None if prev is None else _timeline_counter_delta(prev.get("net_rx_bytes"), point.get("net_rx_bytes"))
-        point_net_tx_delta = None if prev is None else _timeline_counter_delta(prev.get("net_tx_bytes"), point.get("net_tx_bytes"))
+        point_read_delta = None if segment_origin else _timeline_counter_delta(prev.get("read_bytes"), point.get("read_bytes"))
+        point_write_delta = None if segment_origin else _timeline_counter_delta(prev.get("write_bytes"), point.get("write_bytes"))
+        point_net_rx_delta = None if segment_origin else _timeline_counter_delta(prev.get("net_rx_bytes"), point.get("net_rx_bytes"))
+        point_net_tx_delta = None if segment_origin else _timeline_counter_delta(prev.get("net_tx_bytes"), point.get("net_tx_bytes"))
         out.append(
             {
                 "ts": point.get("ts"),

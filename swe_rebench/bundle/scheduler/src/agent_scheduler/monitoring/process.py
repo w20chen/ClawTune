@@ -30,6 +30,22 @@ class ResourceSnapshot:
     source: str
 
 
+def _net_accounting_isolated(scope: ResourceScope) -> bool:
+    """True when a scope's pid set is per-tool disjoint.
+
+    Only per-PID trees and per-execution cgroups (``exclusive-execution-cgroup``)
+    isolate one tool's processes.  The shared sandbox/runtime container cgroup,
+    and any host-derived container cgroup, overlap every concurrent tool, so the
+    per-tgid BCC tracker's reset() must not be used for them.
+    """
+    if scope.kind == "pid":
+        return True
+    return (
+        scope.kind == "cgroup-v2"
+        and scope.attribution_source == "exclusive-execution-cgroup"
+    )
+
+
 class ProcessResourceSampler:
     """Best-effort sampler for a target process tree.
 
@@ -123,6 +139,18 @@ class ProcessResourceSampler:
         Falls back to the namespace-wide ``/proc/net/dev`` view when the
         isolated per-process BCC tracker is unavailable.
         """
+        # The per-tgid BCC tracker's reset() deletes counters, which is only
+        # safe when the scope's pid set is per-tool disjoint (a per-execution
+        # cgroup or a per-PID tree).  Shared container/runtime cgroups overlap
+        # every concurrent tool, so resets would clobber the other tools'
+        # windows and complete() would read a non-deterministic slice.  Keep
+        # the namespace-wide cumulative delta (begin baseline vs complete) for
+        # shared scopes instead.
+        if not _net_accounting_isolated(scope):
+            net = self._read_proc_net_dev(scope.root_pid or scope.pid)
+            if net is None:
+                return None, None
+            return net[0], net[1]
         accounting = self._net_accounting(scope)
         if accounting is not None and accounting.available:
             if net_mode == "reset":
