@@ -124,3 +124,34 @@ listening; setup/check prove kernel collection.
 
 See [configuration](configuration.md) for settings and
 [troubleshooting](troubleshooting.md) for symptom-based recovery.
+
+## Replay SWE-Rebench Tool Workloads
+
+Replay is a benchmark-analysis workflow, not an interactive OpenClaw mode.
+It reads a v6 JSONL trace, uses a local deterministic model endpoint to replay
+the recorded LLM turns, and lets the normal OpenClaw runtime issue the
+recorded tool calls. The task image, sandbox filesystem, task environment,
+launcher, sidecar, cgroup attribution, and eBPF collector are the same ones
+used by `host-openclaw-sandbox` benchmark runs.
+
+Run it from the repository root on Linux:
+
+```bash
+python3 scripts/clawtune.py replay \
+  --dataset /path/to/tasks.json \
+  --task-id <instance-id> \
+  --trace swe_rebench/.runtime/traces/<instance-id> \
+  --timing exact
+```
+
+The dataset and trace must describe the same case. The dataset supplies the
+Docker image; the trace supplies the LLM/tool sequence. Replay creates a
+separate workspace and writes results to
+`swe_rebench/replays/<instance-id>/`. It does not call the configured upstream
+provider. `--timing none` is useful for smoke tests; `--timing exact` is for
+latency-sensitive experiments.
+
+Replay currently supports v6 traces and managed `exec` calls. Missing,
+redacted, or ambiguous command input is rejected rather than reconstructed
+from predictions or launcher wrappers. Treat source traces as executable
+input: review them first and use only disposable workspaces.

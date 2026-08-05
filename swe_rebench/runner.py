@@ -66,6 +66,7 @@ from swe_rebench.host_sandbox import (
     _stop_process,
     _validate_kb_snapshot_pair,
     run_host_sandbox_task,
+    run_host_sandbox_replay_task,
 )
 from swe_rebench.prepare import build_bundle, bundle_needs_rebuild
 from swe_rebench.task_source import (
@@ -2180,6 +2181,38 @@ def _execute_one(
     )
 
 
+def run_replay(
+    config: RunnerConfig,
+    task: TaskDef,
+    bundle_dir: Path,
+    source_trace: Path,
+    *,
+    timing: str = "exact",
+    timing_scale: float = 1.0,
+) -> ContainerResult:
+    """Replay one SWE-Rebench case through host-openclaw-sandbox."""
+    if normalize_runtime_mode(config.runtime.mode) != "host-openclaw-sandbox":
+        raise ValueError(
+            "SWE-Rebench replay currently requires runtime.mode=host-openclaw-sandbox"
+        )
+    trace_dir = config.output.trace_root.parent / "replays" / task.instance_id.replace("/", "_")
+    _reset_task_trace_dir(
+        config.output.trace_root.parent / "replays",
+        trace_dir,
+        docker_cleanup_image=task.image,
+        docker_platform=config.docker.platform,
+    )
+    return run_host_sandbox_replay_task(
+        task=task,
+        trace_dir=trace_dir,
+        config=config,
+        bundle_dir=bundle_dir,
+        source_trace=source_trace,
+        timing=timing,
+        timing_scale=timing_scale,
+    )
+
+
 def _new_batch_shared_kb_dir(config: RunnerConfig) -> Path:
     """Allocate an isolated KB generation shared only by this batch run."""
 
@@ -2555,6 +2588,22 @@ def main() -> None:
         help="Print the complete report JSON to stdout (it is always saved to report_path)",
     )
 
+    # ── replay ──
+    replay = sub.add_parser(
+        "replay",
+        help="Replay one SWE-Rebench v6 trace through host-openclaw-sandbox",
+    )
+    add_config_arg(replay)
+    replay.add_argument("--trace", required=True, help="Source v6 JSONL file or trace directory")
+    replay.add_argument("--dataset", default=None, help="Task dataset containing the source case")
+    replay.add_argument("--tasks", default=None, help="Simple JSON task list containing the source case")
+    replay.add_argument("--task-id", required=True, help="SWE-Rebench instance ID")
+    replay.add_argument("--timing", choices=("exact", "scale", "none"), default="exact")
+    replay.add_argument("--timing-scale", type=float, default=1.0)
+    replay.add_argument("--runtime-mode", default="host-openclaw-sandbox", choices=("host-openclaw-sandbox", "host-openclaw-container"))
+    replay.add_argument("--stage2-required", action=argparse.BooleanOptionalAction, default=True)
+    replay.add_argument("--prepare", action="store_true", dest="do_prepare")
+
     # ── cleanup ──
     cln = sub.add_parser("cleanup", help="(No-op: containers are auto-removed)")
     add_config_arg(cln)
@@ -2657,6 +2706,40 @@ def main() -> None:
         if report.failed > 0:
             sys.exit(1)
 
+    elif args.command == "replay":
+        _apply_runtime_overrides(
+            config,
+            runtime_mode=args.runtime_mode,
+            stage2_required=args.stage2_required,
+        )
+        if args.timing_scale < 0:
+            parser.error("--timing-scale must be >= 0")
+        bundle_dir = repo_root / config.bundle.output_dir
+        if args.do_prepare or bundle_needs_rebuild(config, bundle_dir):
+            _log("Preparing runtime bundle...")
+            build_bundle(config)
+        tasks = _load_tasks(args, repo_root)
+        selected = [task for task in tasks if task.instance_id == args.task_id]
+        if len(selected) != 1:
+            raise SystemExit(
+                f"task id {args.task_id!r} was not found uniquely in the selected task source"
+            )
+        result = run_replay(
+            config,
+            selected[0],
+            bundle_dir,
+            _resolve_path(args.trace, repo_root),
+            timing=args.timing,
+            timing_scale=args.timing_scale,
+        )
+        _log(
+            f"Replay {'OK' if result.exit_code == 0 and not result.error else 'FAIL'}: "
+            f"task={result.task_id} exit={result.exit_code} trace_dir={result.trace_dir}"
+        )
+        if result.error:
+            _log(f"Replay error: {result.error}")
+            sys.exit(1)
+
     elif args.command == "collect":
         if args.export_dir:
             config.output.flat_export_dir = _resolve_path(args.export_dir, repo_root)
@@ -2670,13 +2753,13 @@ def main() -> None:
 def _load_tasks(args: argparse.Namespace, repo_root: Path) -> list[TaskDef]:
     """Load tasks from whichever source was specified."""
     # Single image mode
-    if args.image:
+    if getattr(args, "image", None):
         task_id = args.task_id or "task-1"
         problem = args.problem or ""
         return [create_single_task(task_id, args.image, problem)]
 
     # Simple JSON task list
-    if args.tasks:
+    if getattr(args, "tasks", None):
         path = _resolve_path(args.tasks, repo_root)
         if not path.exists():
             raise FileNotFoundError(
@@ -2688,7 +2771,7 @@ def _load_tasks(args: argparse.Namespace, repo_root: Path) -> list[TaskDef]:
         return load_tasks_from_simple_list(path)
 
     # Swe-bench dataset
-    if args.dataset:
+    if getattr(args, "dataset", None):
         path = _resolve_path(args.dataset, repo_root)
         if not path.exists():
             raise FileNotFoundError(

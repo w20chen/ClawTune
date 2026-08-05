@@ -210,3 +210,44 @@ an invalid old ClawTune link before plugin installation. It backs up
 current checkout. It also refreshes the absolute trusted `launcherPath`; the
 sidecar command stays empty and is rediscovered at runtime. Other valid plugin
 paths are retained by OpenClaw.
+
+## Replay a SWE-Rebench Trace
+
+After one benchmark case has completed, you can replay its recorded
+interaction without contacting the LLM provider. Replay uses the original
+case's Docker image and the same `host-openclaw-sandbox` setup as a normal
+benchmark, so the task filesystem and installed Python dependencies are
+recreated from the image. The recorded LLM durations are simulated locally;
+recorded `exec` tools are sent through OpenClaw's normal sandbox, ClawTune's
+managed launcher, and the existing cgroup/eBPF telemetry path.
+
+Replay requires all of the normal Linux prerequisites: Docker, cgroup v2,
+BCC/eBPF permissions, matching kernel headers, and the prepared `.venv`.
+The task dataset is required to resolve the case image, and the source must be
+a ClawTune v6 JSONL trace from that same case.
+
+Use the unified wrapper so the required interpreter and privileged runtime are
+selected automatically:
+
+```bash
+python3 scripts/clawtune.py replay \
+  --dataset /path/to/tasks.json \
+  --task-id django__django-12345 \
+  --trace swe_rebench/.runtime/traces/django__django-12345 \
+  --timing none
+```
+
+Start with `--timing none` for a short smoke test. Use `--timing exact` to
+preserve the recorded LLM wait time, or
+`--timing scale --timing-scale 0.1` to preserve only 10% of it. Tool latency
+and resource usage are measured during replay and are not copied from the
+source trace.
+
+Replay results are stored under
+`swe_rebench/replays/<task-id>/`. Inspect `replay_manifest.json`, the new
+JSONL trace, and `tool-resource/` artifacts. Review commands in the source
+trace before replaying it; replay executes recorded commands in a disposable
+task workspace and must not be used with untrusted traces on a sensitive host.
+
+For all options and lower-level runner usage, see
+[SWE-Rebench usage](../swe_rebench/README.md#replay-a-case).

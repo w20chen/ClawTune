@@ -36,9 +36,10 @@ If it still fails, match the final error to a section below. Include the
 - [15. Benchmark cannot find `LLM_API_KEY`](#15-benchmark-cannot-find-llm_api_key)
 - [16. OpenClaw rejects `agents.defaults.sandbox.docker.platform`](#16-openclaw-rejects-agentsdefaultssandboxdockerplatform)
 - [17. OpenClaw reports `plugins.load.paths: plugin path not found`](#17-openclaw-reports-pluginsloadpaths-plugin-path-not-found)
-- [18. Kunpeng cannot run an amd64 image](#18-kunpeng-cannot-run-an-amd64-image)
+- [18. Kunpeng/ARM cannot run an amd64 image](#18-kunpengarm-cannot-run-an-amd64-image)
 - [19. Benchmark fails or produces no final report](#19-benchmark-fails-or-produces-no-final-report)
 - [20. A trace reports `mvdan adapter is missing` or repeated `analysis_failure`](#20-a-trace-reports-mvdan-adapter-is-missing-or-repeated-analysis_failure)
+- [21. Replay failures](#21-replay-failures)
 
 ## 1. `apt-get: command not found`
 
@@ -450,3 +451,45 @@ architectures:
 ```bash
 python3 scripts/clawtune.py setup
 ```
+
+
+## 21. Replay failures
+
+SWE-Rebench replay currently supports only a v6 JSONL trace and the
+`host-openclaw-sandbox` runtime. It intentionally reuses the normal task-image
+export, OpenClaw sandbox, task environment, launcher, sidecar, cgroup, and
+eBPF path; it does not execute tools directly on the host.
+
+If replay rejects a trace, inspect `replay_error.txt`. Common causes are a v5
+`action` trace, an incomplete LLM span, or a tool span whose
+`input.requested_args` was redacted or truncated. These cases are fail-closed
+because reconstructing a command from a prediction or launcher wrapper would
+be unsafe. If the replay has no resource artifact, inspect
+`tool_resource_preflight_host.json`, `sidecar-stderr.txt`, and
+  `replay_manifest.json`; the same Linux, Docker, cgroup v2, BCC/eBPF, and
+privilege requirements as a normal host-sandbox benchmark apply.
+
+Before troubleshooting the runtime, verify that the task dataset and source
+trace identify the same case. The dataset supplies the Docker image and the
+trace supplies the recorded interaction; a trace alone cannot recreate the
+SWE-Rebench filesystem or installed dependencies. Replay output is stored in
+`swe_rebench/replays/<task-id>/`.
+
+Typical commands and their causes:
+
+- `task id ... was not found uniquely`: pass the dataset containing the exact
+  `--task-id`, or use the correct instance ID from the trace directory.
+- `trace ... is not trace v6`: the source is an old v5/action trace; first
+  export or collect a ClawTune v6 trace.
+- `has no replayable requested arguments`: raw tool arguments were disabled,
+  redacted, or truncated. Replay does not infer commands from predictions or
+  launcher wrappers.
+- no new JSONL or Stage-2 artifact: inspect `phase3.log`,
+  `launcher-preflight.log`, `tool_resource_preflight_host.json`, and
+  `sidecar-stderr.txt` in the replay directory. The replay needs the same
+  Linux host privileges and eBPF readiness as a normal benchmark.
+
+Replay uses a separate workspace and does not modify the source trace. If a
+replay command is unsafe or unexpected, stop the run and remove the replay
+workspace and `swe_rebench/replays/<task-id>/` artifacts after collecting the
+diagnostic logs.

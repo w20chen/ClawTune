@@ -4,6 +4,127 @@ Current objective: provide one reliable, eBPF-required user journey from host
 setup to OpenClaw and SWE-Rebench execution, prioritizing Kunpeng/openEuler
 while retaining native x86_64 Linux support.
 
+## SWE-Rebench Host-Sandbox Trace Replay (implementation plan, 2026-08-05)
+
+### Goal and non-goals
+
+Replay consumes a ClawTune v6 JSONL trace from one SWE-Rebench case, sleeps for
+recorded LLM durations without contacting an LLM provider, and re-executes the
+recorded tool calls on the CPU. Replay must produce a new trace and new
+resource measurements; it must never modify the source trace or claim that
+recorded resource values are new measurements. v5/action traces are out of
+scope for the first implementation unless an explicit adapter is added.
+
+### Recommended architecture
+
+Do **not** reimplement the OpenClaw agent runtime for the MVP. Implement a
+SWE-Rebench-aware replay path in the existing runner that reuses the exact
+host-openclaw-sandbox preparation path: task image, `/testbed` export,
+OpenClaw sandbox image, task PATH, launcher installation, OpenClaw home,
+sidecar startup, runtime identity, and teardown. The replay driver replaces
+only the agent/model phase; it reuses the existing managed launcher, sidecar
+execution lifecycle, cgroup attribution, and eBPF collector:
+
+```text
+v6 JSONL + TaskDef
+  -> existing host-openclaw-sandbox image/filesystem/environment setup
+  -> parser/validator -> causal replay plan
+  -> recorded LLM output + sleep(duration)
+  -> existing claw-launch / managed execution -> real CPU tool run
+  -> existing sidecar + cgroup/eBPF telemetry
+  -> new replay v6 JSONL + replay manifest + artifacts
+```
+
+The runner should use the recorded LLM `span_end.output` only as the
+deterministic source of subsequent tool-call order. It should not call the
+model. For each tool, prefer `span_start.input.requested_args`; fall back to a
+sanitized recorded command only when the input is unavailable, and fail closed
+for missing or ambiguous executable input. Tool output and status are produced
+by the replay execution, not copied from the source trace. The initial
+implementation will support the `exec` tool, because it is the path with the
+existing launcher/eBPF lifecycle; unsupported in-process tools fail clearly
+instead of being silently skipped.
+
+Reuse the existing `claw-launch`/execution-registration path for managed
+`exec` calls so the sidecar can create an execution scope and the existing
+Stage-2 eBPF collector can attribute process trees and shell clauses. In-process
+tools should initially be supported through a small explicit adapter/allowlist;
+they cannot acquire dedicated eBPF attribution merely by being replayed.
+
+### Why not drive OpenClaw first
+
+OpenClaw is the right reuse target for a later compatibility mode, but it is
+not the right MVP scheduler: its model/provider loop owns conversation state,
+tool schemas, retries, and hook timing, while a trace replay needs deterministic
+causal control and must not accidentally make a network model request. A
+future `--runtime openclaw` adapter can reuse OpenClaw by pointing its provider
+at a local mock OpenAI endpoint that returns recorded LLM responses and delays
+for the recorded duration. That mode should be added only after the standalone
+runner has fixtures proving tool-call identity, parent mapping, failure, and
+interruption behavior.
+
+### Replay phases
+
+1. **Read/validate:** parse metadata and paired v6 spans, reject duplicate or
+   ambiguous spans, preserve `trace_id`/`span_id` as source identifiers, and
+   create a new `replay_id`. Validate that sensitive-data redaction or truncation
+   has not removed required tool commands.
+2. **Plan:** build a causal plan from LLM outputs and tool parent IDs rather than
+   blindly sleeping wall-clock gaps. Support sequential spans first; report
+   concurrent/overlapping spans explicitly instead of silently serializing them.
+3. **Execute:** sleep for LLM `duration_ns` (with `--timing exact|scale|none`),
+   execute tools through the managed launcher on CPU, enforce per-tool and
+   whole-replay timeouts, and default to a network-disabled disposable
+   workspace/container. Never execute a command merely because it appears in a
+   prediction or effective launcher wrapper.
+4. **Observe:** let the existing sidecar finalize execution telemetry and
+   collect Stage-2 artifacts. Record source/replay correlation, actual exit
+   status, actual duration, and actual resource fields in the output trace.
+5. **Report:** write a manifest containing source digest, replay ID, timing
+   mode/scale, runtime identity, environment fingerprint, tool counts, failed
+   tools, and telemetry coverage. Add a comparison command that separates
+   recorded measurements from replay measurements and reports attribution
+   gaps.
+
+### Proposed implementation boundaries
+
+- `swe_rebench/replay.py`: v6 parser, planner, timing policy, command policy,
+  replay event writer, manifest;
+- `swe_rebench/replay_host_sandbox.py`: reuse the same host-sandbox setup and
+  teardown helpers as `run_host_sandbox_task`, with a replay-specific agent
+  phase and the same per-case task image/filesystem/environment;
+- `swe_rebench/runner.py`: `replay` subcommand selecting a `TaskDef`, source
+  trace, and output directory;
+- `scripts/clawtune.py`: privileged Linux wrapper for replay, matching the
+  benchmark wrapper's interpreter, Docker, sudo, and ARM platform handling;
+- shared trace-v6 parsing/validation code extracted from existing plugin/tool
+  logic, rather than duplicating ad-hoc JSONL parsing;
+- existing `services/scheduler` execution endpoints and `claw-launch`; avoid
+  changing `services/scheduler/src/tool_resource` unless an integration gap is
+  demonstrated;
+- new replay fixtures/tests for sequential `exec` tools, tool failure, missing
+  input, redacted input, incomplete spans, task-image selection, and resource
+  attribution;
+- documentation for Linux-only requirements, safety policy, CPU/network
+  isolation, and the distinction between replayed LLM latency and measured tool
+  telemetry.
+
+### Validation gates
+
+Windows development validation can cover parser/planner, policy, timing with
+sleep mocked, manifest generation, and trace comparison. The following
+acceptance commands cannot run in this Windows workspace and must be run on a
+Linux host with Docker, cgroup v2, BCC/eBPF privileges, and a configured
+`claw-launch`/sidecar:
+
+- replay one fixture with a harmless CPU command against its actual task image
+  and verify a new v6 trace plus Stage-2 artifact;
+- replay a real trace in an isolated disposable workspace with network disabled;
+- verify resource attribution and compare source versus replay without using
+  source `resources` as replay measurements;
+- verify timeout, cancellation, missing/redacted command, and eBPF startup
+  failures are fail-closed and appear in the manifest.
+
 ## Supported user commands
 
 The user-facing path is intentionally limited to:

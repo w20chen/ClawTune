@@ -3,16 +3,16 @@
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-%E2%89%A52026.7.1-6e40c9.svg)](https://openclaw.ai/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-ClawTune adds hardware-aware tracing and scheduling to OpenClaw. It combines
-an OpenClaw plugin with a local scheduler sidecar and uses eBPF to measure the
+ClawTune adds hardware-aware tracing and profiling to OpenClaw. It combines
+an OpenClaw plugin with a local sidecar and uses eBPF to measure the
 CPU, memory, process lifecycle, model calls, and tool calls of real agent work.
-It can also run SWE-Rebench tasks and export the resulting traces. eBPF collection is enabled and required by default.
+It can also run agent benchmarks (SWE-Rebench and Deep Research Bench) and export the resulting traces. eBPF collection is enabled and required by default.
 
 ## Supported Hosts
 
 | Host | Status | Notes |
 | --- | --- | --- |
-| Kunpeng / arm64 + openEuler | Supported | eBPF runs natively; the setup command enables QEMU for amd64 benchmark images |
+| Kunpeng / arm64 + openEuler | Supported | eBPF runs natively; the setup command enables QEMU for amd64 benchmark images of SWE-Rebench |
 | x86_64 Linux | Supported | eBPF and benchmark images run natively |
 
 The Linux host needs Docker, Node.js/npm, OpenClaw 2026.7.1 or newer, Python
@@ -61,6 +61,17 @@ python3 scripts/clawtune.py doctor
 `setup` creates `.env` and `swe_rebench/config.yaml` without overwriting an
 existing file.
 
+For normal OpenClaw use, configure an OpenAI-compatible provider that points
+to ClawTune's local proxy:
+
+```bash
+openclaw onboard --non-interactive --accept-risk --skip-health \
+  --mode local --auth-choice vllm \
+  --custom-base-url "http://127.0.0.1:8765/v1" \
+  --custom-api-key "<provider-api-key>" \
+  --custom-model-id "<model>"
+```
+
 For SWE-Rebench, export the provider key in the shell that starts the run:
 
 ```bash
@@ -78,17 +89,6 @@ llm:
   upstream_base_url: "https://api.deepseek.com"
   model: "your-model-name"
   openclaw_model_ref: "vllm/your-model-name"
-```
-
-For normal OpenClaw use, configure an OpenAI-compatible provider that points
-to ClawTune's local proxy:
-
-```bash
-openclaw onboard --non-interactive --accept-risk --skip-health \
-  --mode local --auth-choice vllm \
-  --custom-base-url "http://127.0.0.1:8765/v1" \
-  --custom-api-key "<provider-api-key>" \
-  --custom-model-id "<model>"
 ```
 
 Secrets are ignored by Git. Do not commit `.env`, OpenClaw credentials, or
@@ -111,7 +111,6 @@ This is the recommended everyday topology for one user: one Gateway and a
 small number of active sessions. A session contains repeated turns; each turn
 is a run. ClawTune keeps the sidecar alive with the Gateway, finalizes trace
 state after each run, and releases session fallback state when a session ends.
-It does not require the Gateway itself to be a large-scale batch scheduler.
 Docker is an execution/isolation boundary for sandboxed tools and benchmark
 tasks; it is not another conversation owner and does not imply one container
 per Gateway turn.
@@ -206,6 +205,7 @@ Gateways or many interactive sessions.
 - [Kunpeng and arm64](docs/arm-qemu.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [SWE-Rebench usage](swe_rebench/README.md)
+- [SWE-Rebench trace replay](swe_rebench/README.md#replay-a-case)
 - [Architecture and developer references](docs/architecture.md)
 
 ## Development Checks

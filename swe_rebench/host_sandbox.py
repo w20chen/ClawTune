@@ -347,6 +347,192 @@ def run_host_sandbox_task(
     )
 
 
+def run_host_sandbox_replay_task(
+    *,
+    task: TaskDef,
+    trace_dir: Path,
+    config: RunnerConfig,
+    bundle_dir: Path,
+    source_trace: Path,
+    timing: str = "exact",
+    timing_scale: float = 1.0,
+) -> ContainerResult:
+    """Replay one trace using the normal host-openclaw-sandbox topology.
+
+    The task image is exported and configured exactly like a normal benchmark
+    case. Only the model endpoint is replaced by a local deterministic replay
+    server; OpenClaw, its Docker sandbox, the plugin, sidecar, launcher, cgroup
+    scope, and eBPF collector remain the normal production path.
+    """
+    from swe_rebench.replay import ReplayLLMServer, load_replay_plan, write_replay_manifest
+
+    started = time.monotonic()
+    deadline = _task_deadline(config, started)
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    workspace = _task_workspace(config, task).with_name(
+        _task_workspace(config, task).name + "-replay"
+    )
+    openclaw_home = trace_dir / "openclaw-home"
+    sidecar = None
+    sandbox_image: str | None = None
+    server = None
+    exit_code = -1
+    error: str | None = None
+    try:
+        plan = load_replay_plan(source_trace)
+        if plan.incomplete_tool_count:
+            _log(
+                f"[replay] source has {plan.incomplete_tool_count} incomplete tool spans; "
+                "replaying only complete causal model responses"
+            )
+        _write_host_tool_resource_preflight(trace_dir, config, deadline=deadline)
+        _reset_directory(
+            workspace,
+            docker_cleanup_image=task.image,
+            docker_platform=config.docker.platform,
+            deadline=deadline,
+        )
+        _reset_directory(openclaw_home, deadline=deadline)
+        _export_testbed_from_image(
+            task.image,
+            workspace,
+            config.docker.pull_policy,
+            config.docker.platform,
+            deadline=deadline,
+        )
+        _make_sandbox_workspace_writable(workspace)
+        _install_sandbox_launcher(workspace, bundle_dir)
+        _write_task_inputs(
+            trace_dir,
+            task,
+            config,
+            workspace,
+            bundle_dir,
+            shared_kb_dir=None,
+        )
+        _write_text(
+            trace_dir / "replay_prompt.txt",
+            "Replay mode: reproduce the recorded SWE-Rebench interaction. "
+            "Use the tools requested by the model and do not contact external services.\n",
+        )
+        sandbox_image = _ensure_openclaw_sandbox_image(
+            task.image,
+            trace_dir,
+            config.docker.platform,
+            runtime_id=_runtime_id(workspace),
+            deadline=deadline,
+        )
+        _verify_sandbox_launcher(
+            trace_dir,
+            workspace,
+            config.docker.platform,
+            sandbox_image=sandbox_image,
+            deadline=deadline,
+        )
+        _verify_sandbox_task_environment(
+            trace_dir,
+            workspace,
+            config.docker.platform,
+            sandbox_image=sandbox_image,
+            deadline=deadline,
+        )
+        _seed_runtime_tool_resource_kb(trace_dir, config)
+        sidecar_port = _free_port()
+        sidecar = _start_sidecar(
+            trace_dir=trace_dir,
+            port=sidecar_port,
+            config=config,
+            workspace=workspace,
+            repo=task_repo_key(task),
+            deadline=deadline,
+        )
+        server = ReplayLLMServer(plan, timing=timing, scale=timing_scale)
+        server.start()
+        _configure_openclaw(
+            trace_dir=trace_dir,
+            openclaw_home=openclaw_home,
+            sidecar_port=sidecar_port,
+            workspace=workspace,
+            sandbox_image=sandbox_image,
+            config=config,
+            deadline=deadline,
+            model_endpoint=server.base_url,
+            model_api_key="clawtune-replay",
+            model_id=plan.model,
+        )
+        _cleanup_openclaw_sandbox_containers(
+            trace_dir,
+            workspace,
+            timeout_seconds=_TASK_CLEANUP_TIMEOUT_SECONDS,
+            strict=True,
+        )
+        exit_code = _run_openclaw_agent(
+            trace_dir=trace_dir,
+            openclaw_home=openclaw_home,
+            workspace=workspace,
+            sidecar_port=sidecar_port,
+            task=task,
+            config=config,
+            task_deadline=deadline,
+            post_sandbox_scope=True,
+            prompt_path=trace_dir / "replay_prompt.txt",
+            model_ref=plan.model,
+        )
+        _remaining_task_seconds(deadline, phase="replay result collection")
+        _cleanup_runtime_artifacts(workspace, deadline=deadline)
+        _collect_patch(trace_dir, workspace, task, deadline=deadline)
+        write_replay_manifest(
+            trace_dir / "replay_manifest.json",
+            plan=plan,
+            task_id=task.instance_id,
+            image=task.image,
+            timing=timing,
+            scale=timing_scale,
+            requests=server.requests if server is not None else None,
+            result={"exit_code": exit_code, "error": error},
+        )
+    except TaskDeadlineExceeded as exc:
+        exit_code = 124
+        error = str(exc)
+        _write_timeout_record(
+            trace_dir,
+            scope="replay",
+            message=error,
+            configured_seconds=config.batch.task_timeout_seconds,
+        )
+    except Exception as exc:
+        error = str(exc)
+        _write_text(trace_dir / "replay_error.txt", traceback.format_exc())
+    finally:
+        if server is not None:
+            server.close()
+        try:
+            _cleanup_openclaw_sandbox_containers(
+                trace_dir,
+                workspace,
+                timeout_seconds=_TASK_CLEANUP_TIMEOUT_SECONDS,
+                strict=True,
+            )
+        except Exception as exc:
+            if error is None:
+                error = f"replay sandbox cleanup failed: {exc}"
+        if sidecar is not None:
+            _stop_process(sidecar)
+        if sandbox_image is not None:
+            _remove_sandbox_image(sandbox_image)
+        _write_result_summary(trace_dir, task, workspace, exit_code, error)
+
+    return ContainerResult(
+        task_id=task.instance_id,
+        image=task.image,
+        exit_code=exit_code,
+        error=error,
+        trace_dir=trace_dir,
+        trace_files=sorted(trace_dir.glob("*.jsonl")),
+        duration_seconds=time.monotonic() - started,
+    )
+
+
 def _task_workspace(config: RunnerConfig, task: TaskDef) -> Path:
     safe_id = task.instance_id.replace("/", "_").replace(":", "_")
     return config.output.trace_root.parent / "workspaces" / safe_id
@@ -1243,6 +1429,9 @@ def _configure_openclaw(
     sandbox_image: str = "openclaw-sandbox:bookworm-slim",
     config: RunnerConfig,
     deadline: float | None = None,
+    model_endpoint: str | None = None,
+    model_api_key: str | None = None,
+    model_id: str | None = None,
 ) -> None:
     openclaw = _require_executable("openclaw")
     env = _openclaw_env(openclaw_home, sidecar_port, config, workspace)
@@ -1280,11 +1469,11 @@ def _configure_openclaw(
                 "--auth-choice",
                 "vllm",
                 "--custom-base-url",
-                f"{endpoint_host}/v1",
+                model_endpoint or f"{endpoint_host}/v1",
                 "--custom-api-key",
-                _runtime_proxy_api_key(workspace),
+                model_api_key or _runtime_proxy_api_key(workspace),
                 "--custom-model-id",
-                config.llm.model,
+                model_id or config.llm.model,
             ],
             env,
             log,
@@ -1392,6 +1581,8 @@ def _run_openclaw_agent(
     config: RunnerConfig,
     task_deadline: float | None = None,
     post_sandbox_scope: bool = True,
+    prompt_path: Path | None = None,
+    model_ref: str | None = None,
 ) -> int:
     _remaining_task_seconds(task_deadline, phase="agent startup")
     openclaw = _require_executable("openclaw")
@@ -1409,7 +1600,7 @@ def _run_openclaw_agent(
             "CLAW_REPO_KEY": task_repo_key(task),
         }
     )
-    prompt_path = trace_dir / "agent_prompt.txt"
+    prompt_path = prompt_path or trace_dir / "agent_prompt.txt"
     stdout_path = trace_dir / "agent-stdout.txt"
     stderr_path = trace_dir / "agent-stderr.txt"
     stdout_file = stdout_path.open("w", encoding="utf-8")
@@ -1437,7 +1628,7 @@ def _run_openclaw_agent(
         process = subprocess.Popen(
             _openclaw_agent_argv(
                 openclaw,
-                model_ref=config.llm.openclaw_model_ref,
+                model_ref=model_ref or config.llm.openclaw_model_ref,
                 prompt_path=prompt_path,
                 extra_args=config.agent.extra_args,
             ),

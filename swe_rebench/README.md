@@ -76,6 +76,106 @@ Always start with one task:
 python3 scripts/clawtune.py benchmark --sample 1
 ```
 
+## Replay a Case
+
+Replay is currently supported for one v6 JSONL trace in the
+`host-openclaw-sandbox` topology. It uses the same task image, `/testbed`
+export, OpenClaw Docker sandbox, task Python environment, launcher, sidecar,
+cgroup scope, and Stage-2 eBPF path as a normal benchmark case. Only the model
+provider is replaced by a local deterministic server: recorded LLM turns sleep
+for their recorded duration and return the recorded tool calls; `exec` tools
+then run normally on the task image's CPU environment.
+
+The source trace is never modified. Replay outputs are written below
+`swe_rebench/replays/<task-id>/`, including a new v6 trace, resource artifacts,
+`replay_manifest.json`, and logs. A source trace with redacted or missing tool
+arguments is rejected rather than executing an ambiguous command.
+
+### Prerequisites
+
+Replay runs on the Linux host, not on Windows or macOS. Complete the root
+[installation guide](../docs/getting-started.md), run the eBPF check, and
+ensure the task dataset and source trace refer to the same SWE-Rebench case.
+The dataset is required because it supplies the task image; the trace alone
+does not contain the complete image filesystem or installed dependencies.
+
+The source trace must be a ClawTune v6 JSONL trace. Locate a completed case
+under the benchmark output directory, for example:
+
+```text
+swe_rebench/.runtime/traces/<task-id>/*.jsonl
+```
+
+Run the first replay with the same `host-openclaw-sandbox` mode used by the
+benchmark and with `--timing none` to reduce the smoke-test duration:
+
+```bash
+python3 scripts/clawtune.py replay \
+  --dataset /path/to/tasks.json \
+  --task-id django__django-12345 \
+  --trace swe_rebench/.runtime/traces/django__django-12345 \
+  --timing none
+```
+
+The lower-level runner is also available when the `.venv` and privilege
+environment are already configured:
+
+```bash
+python3 -m swe_rebench.runner replay \
+  --config swe_rebench/config.yaml \
+  --dataset /path/to/tasks.json \
+  --task-id django__django-12345 \
+  --trace swe_rebench/.runtime/traces/django__django-12345 \
+  --timing exact
+```
+
+### Timing modes
+
+- `--timing exact`: sleep for each recorded LLM duration;
+- `--timing scale --timing-scale 0.1`: sleep for 10% of each recorded LLM
+  duration;
+- `--timing none`: do not wait for recorded LLM latency.
+
+Timing applies only to simulated LLM calls. Tool calls are executed normally
+and their replay duration is measured again. Replay does not call the original
+LLM provider and does not reuse source-trace resource values.
+
+### Outputs and verification
+
+Replay outputs are written below:
+
+```text
+swe_rebench/replays/<task-id>/
+```
+
+Check these files after a run:
+
+```bash
+find swe_rebench/replays/django__django-12345 -maxdepth 2 -type f | sort
+cat swe_rebench/replays/django__django-12345/replay_manifest.json
+python tools/inspect_trace.py \
+  swe_rebench/replays/django__django-12345/*.jsonl --all --details
+```
+
+The replay directory contains a new v6 JSONL trace, a new `tool-resource/`
+artifact directory, `replay_manifest.json`, and sidecar/sandbox logs. Compare
+the replay `resources` and `execution.tool_resource` fields with the source
+trace only as two separate measurements; do not overwrite or merge them.
+
+Replay currently requires `runtime.mode=host-openclaw-sandbox`. It fails closed
+for unsupported runtime modes, old v5 traces, incomplete LLM spans, or tool
+arguments that were redacted/truncated. The first Linux acceptance run should
+use a harmless trace and verify the manifest, a new v6 JSONL file, and one
+Stage-2 artifact before replaying a real case.
+
+### Safety and cleanup
+
+Replay executes commands recorded in the source trace. Review the trace before
+running it, use a disposable task workspace, and keep the normal sandbox and
+network policy enabled. Do not replay untrusted traces on a host with access
+to sensitive files or credentials. The source trace is never modified, and
+the replay workspace is separate from the original benchmark workspace.
+
 Limit every task to ten minutes (the shorter `--timeout-seconds` alias is also
 accepted):
 

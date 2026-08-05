@@ -910,6 +910,39 @@ def benchmark(extra: Sequence[str]) -> None:
     run(command)
 
 
+def replay(extra: Sequence[str]) -> None:
+    """Run a SWE-Rebench v6 trace through the host sandbox replay path."""
+    require_linux()
+    if not (VENV / "bin" / "python").exists():
+        raise SetupError(".venv is missing; run setup first.")
+    config = ROOT / "swe_rebench" / "config.yaml"
+    if not config.exists():
+        raise SetupError("swe_rebench/config.yaml is missing; run setup first.")
+    env_items: list[str] = []
+    if (
+        host_arch() in ARM_ARCHES
+        and "SWE_REBENCH_DOCKER_PLATFORM" not in os.environ
+    ):
+        env_items.append("SWE_REBENCH_DOCKER_PLATFORM=linux/amd64")
+    command = privileged_command(
+        [
+            *env_items,
+            VENV / "bin" / "python",
+            "-m",
+            "swe_rebench.runner",
+            "replay",
+            "--config",
+            config,
+            *extra,
+        ],
+        preserve_env=(
+            *BENCHMARK_PRESERVE_ENV,
+            *(name for name in os.environ if name.startswith("LC_")),
+        ),
+    )
+    run(command)
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         description=(
@@ -939,6 +972,7 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("sidecar", help="Start the privileged Scheduler sidecar")
     sub.add_parser("agent", help="Start eBPF sidecar, run OpenClaw agent, then clean up")
     sub.add_parser("benchmark", help="Run SWE-Rebench; remaining options go to the runner")
+    sub.add_parser("replay", help="Replay one SWE-Rebench v6 trace; remaining options go to the runner")
     return result
 
 
@@ -959,6 +993,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             agent(extra)
         elif args.command == "benchmark":
             benchmark(extra)
+        elif args.command == "replay":
+            replay(extra)
     except (SetupError, subprocess.CalledProcessError) as exc:
         log(f"Failed: {exc}")
         return 1
