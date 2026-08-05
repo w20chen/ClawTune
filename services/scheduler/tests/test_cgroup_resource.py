@@ -150,7 +150,7 @@ def test_write_cgroup_resource_writes_independent_artifact(tmp_path: Path) -> No
 
 
 def test_write_cgroup_resource_skips_non_cgroup_or_no_exec(tmp_path: Path) -> None:
-    # non-cgroup monitor source -> no artifact
+    # non-cgroup/process-tree monitor source -> no artifact
     assert (
         write_cgroup_resource(
             tmp_path,
@@ -177,6 +177,51 @@ def test_write_cgroup_resource_skips_non_cgroup_or_no_exec(tmp_path: Path) -> No
         write_cgroup_resource(tmp_path, None, execution_id="e", tool_call_id="c", tool_name="exec")
         is None
     )
+
+
+def test_write_cgroup_resource_psutil_process_tree(tmp_path: Path) -> None:
+    sample = _sample(monitor_source="psutil-process-tree")
+    rel = write_cgroup_resource(
+        tmp_path,
+        sample,
+        execution_id="exec-pid-1",
+        tool_call_id="c",
+        tool_name="exec",
+        attribution_source="trusted-execution-root-pid",
+    )
+    assert rel == "tool-resource/cgroup-resource-exec-pid-1.json"
+    data = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
+    assert data["source"] == "process-tree"
+    assert data["monitor_source"] == "psutil-process-tree"
+    assert data["cpu_time_s"] == 0.239
+    assert data["network_rx_bytes_delta"] == 1234
+
+
+def test_verified_host_pid_scope_helpers() -> None:
+    from agent_scheduler.api.app import (
+        _is_verified_host_pid_scope,
+        _verified_host_pid_scope,
+    )
+    from agent_scheduler.contracts.models import ResourceScope
+
+    scope = _verified_host_pid_scope("exec-1", 4242, 123)
+    assert scope.kind == "pid"
+    assert scope.pid == 4242
+    assert scope.root_pid == 4242
+    assert scope.root_starttime_ticks == 123
+    assert scope.include_children is True
+    assert scope.attribution_source == "trusted-execution-root-pid"
+    assert _is_verified_host_pid_scope(scope)
+
+    sandbox = ResourceScope(
+        kind="cgroup-v2",
+        cgroup_path="/sys/fs/cgroup/x",
+        include_children=True,
+        source="openclaw-sandbox",
+        attribution_source="shared-sandbox-container",
+    )
+    assert not _is_verified_host_pid_scope(sandbox)
+    assert not _is_verified_host_pid_scope(None)
 
 
 def test_trace_writer_emits_cgroup_artifact_path(tmp_path: Path) -> None:
@@ -230,11 +275,39 @@ def test_compact_clauses_maps_artifact_resource_keys(tmp_path: Path) -> None:
             },
             "network_rx_bytes": None,
             "network_tx_bytes": None,
-        }
+        },
+        {
+            # old-format row: seconds-form key only (unit-trap regression:
+            # it must NOT be divided by 1e9 a second time).
+            "bin": "sh",
+            "argv": ["sh", "x.sh"],
+            "status": {"state": "exited", "exit_code": 0},
+            "availability": {
+                "latency": "ok",
+                "cpu": "ok",
+                "memory": "ok",
+                "disk_io": "ok",
+                "status": "ok",
+            },
+            "ts_start": 1.0,
+            "ts_end": 3.0,
+            "latency_ms": 2000.0,
+            "cumulative_cpu_s": 1.25,  # seconds form, no ns key present
+            "peak_cpu_cores": 2.0,
+            "sampled_peak_rss_mb": 128.0,
+            "disk_io": {
+                "read_bytes_total": 1024,
+                "write_bytes_total": 2048,
+                "availability": "ok",
+            },
+            "network_rx_bytes": None,
+            "network_tx_bytes": None,
+        },
     ]
     compact = _compact_clauses(rows)
-    assert len(compact) == 1
+    assert len(compact) == 2
     c = compact[0]
+    assert c["cpu_ns_cumulative"] == 500_000_000
     assert c["cumulative_cpu_s"] == 0.5
     assert c["peak_cpu_cores"] == 1.2
     assert c["peak_memory_mb"] == 64.0
@@ -242,3 +315,7 @@ def test_compact_clauses_maps_artifact_resource_keys(tmp_path: Path) -> None:
     assert c["disk_write_bytes"] == 8192
     assert c["network_rx_bytes"] is None
     assert c["network_tx_bytes"] is None
+    c2 = compact[1]
+    assert c2["cpu_ns_cumulative"] == 1_250_000_000  # seconds -> ns
+    assert c2["cumulative_cpu_s"] == 1.25
+    assert c2["peak_memory_mb"] == 128.0

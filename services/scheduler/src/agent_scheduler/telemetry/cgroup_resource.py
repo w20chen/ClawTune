@@ -79,6 +79,11 @@ def build_cgroup_resource(
         execution_id=execution_id,
         tool_call_id=tool_call_id,
         tool_name=tool_name,
+        source=(
+            "cgroup-v2"
+            if sample.monitor_source == "cgroup-v2"
+            else "process-tree"
+        ),
         monitor_source=sample.monitor_source,
         attribution_source=attribution_source,
         ts_start=sample.started_at,
@@ -114,7 +119,9 @@ def write_cgroup_resource(
     sampler was not cgroup-backed, or the tool is fully in-process with no
     execution), so no dangling reference is emitted.
     """
-    if sample is None or sample.monitor_source != "cgroup-v2":
+    if sample is None:
+        return None
+    if sample.monitor_source not in ("cgroup-v2", "psutil-process-tree"):
         return None
     if not execution_id:
         return None

@@ -330,6 +330,49 @@ def _verified_host_execution_scope(
     )
 
 
+def _verified_host_pid_scope(
+    execution_id: str,
+    host_pid: int,
+    starttime_ticks: int | None,
+) -> ResourceScope:
+    """Build a host-PID process-tree scope for per-PID attribution.
+
+    The launcher reports a container-namespace child pid.  After the sidecar
+    resolves the matching host pid (pid-namespace + starttime), sampling that
+    pid's process tree attributes cpu / memory / disk / network to the payload
+    and its descendants instead of the whole shared sandbox container cgroup.
+    """
+    return ResourceScope(
+        kind="pid",
+        execution_id=execution_id,
+        pid=host_pid,
+        root_pid=host_pid,
+        process_start_time=None,
+        root_starttime_ticks=starttime_ticks,
+        cgroup_path=None,
+        pid_namespace_inode=None,
+        container_id=None,
+        include_children=True,
+        source="claw-sidecar-host-derived",
+        attribution_source="trusted-execution-root-pid",
+    )
+
+
+def _is_verified_host_pid_scope(scope: ResourceScope | None) -> bool:
+    """True for a host-PID process-tree scope we resolved ourselves.
+
+    Unlike a raw launcher child_pid (container namespace), a verified host pid
+    is safe for the host sampler, so the sandbox cgroup fallback must not
+    override it.
+    """
+    return (
+        scope is not None
+        and scope.kind == "pid"
+        and scope.pid is not None
+        and scope.attribution_source == "trusted-execution-root-pid"
+    )
+
+
 def _prepare_host_execution_cgroup(
     execution_id: str,
     request: ExecutionStartedRequest,
@@ -649,7 +692,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
             existing is not None
             and not _is_shared_runtime_scope(existing)
             and (
-                event.execution_id is None
+                _is_verified_host_pid_scope(existing)
+                or event.execution_id is None
                 or _has_usable_cgroup_scope(existing)
             )
         ):
@@ -667,6 +711,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             scope = s.executions.scope(event.execution_id)
             if (
                 _has_usable_cgroup_scope(scope)
+                or _is_verified_host_pid_scope(scope)
                 or (
                     sandbox_fallback_scope(
                         s,
@@ -1509,11 +1554,30 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 # resolves both PID identity and cgroup membership. The
                 # launcher-supplied path is never an attribution authority.
                 record.scope = None
+        # Per-PID attribution fallback: when no per-execution cgroup could be
+        # created (fork-exec in a read-only-cgroupfs sandbox) but the launcher
+        # PID was resolved to a verified host PID, attribute to that PID's
+        # process tree instead of the shared sandbox container cgroup.
+        if (
+            record is not None
+            and trusted_root_pid is not None
+            and (record.scope is None or not _has_usable_cgroup_scope(record.scope))
+        ):
+            s.executions.update_scope(
+                execution_id,
+                _verified_host_pid_scope(
+                    execution_id,
+                    trusted_root_pid,
+                    request.process_starttime_ticks,
+                ),
+            )
+            record = s.executions.get(execution_id)
         if record is not None and record.scope is not None:
             monitor_scope = record.scope
             if (
                 fallback_scope is not None
                 and not _has_usable_cgroup_scope(monitor_scope)
+                and not _is_verified_host_pid_scope(monitor_scope)
             ):
                 # In host-openclaw-sandbox mode launcher PIDs belong to the
                 # container PID namespace.  Sampling the same numeric PID on

@@ -62,7 +62,16 @@
         "ts_end": {"type": "number"},
         "latency_ms": {"type": ["number", "null"], "minimum": 0},
         "status": {"$ref": "#/$defs/clauseStatus"},
-        "cumulative_cpu_s": {"type": ["number", "null"], "minimum": 0},
+        "cpu_ns_cumulative": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Cumulative CPU time for the clause in nanoseconds (the collector's raw key)."
+        },
+        "cumulative_cpu_s": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Human-readable seconds form of cpu_ns_cumulative (cpu_ns_cumulative / 1e9)."
+        },
         "peak_cpu_cores": {"type": ["number", "null"], "minimum": 0},
         "peak_memory_mb": {"type": ["number", "null"], "minimum": 0},
         "disk_read_bytes": {"type": ["integer", "null"], "minimum": 0},

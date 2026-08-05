@@ -1748,6 +1748,29 @@ def _cpu_ns_to_s(value: Any) -> float | None:
         return None
 
 
+def _cpu_ns_from_row(row: Mapping[str, Any]) -> int | None:
+    """Normalize the clause CPU accumulator to ns.
+
+    Prefers the collector's raw ns key (``cpu_ns_cumulative``) and falls back
+    to the seconds-form key (``cumulative_cpu_s``) by scaling back to ns, so
+    both emitted CPU fields always agree: ``cumulative_cpu_s`` is just the
+    human-readable seconds form of ``cpu_ns_cumulative``.
+    """
+    raw_ns = row.get("cpu_ns_cumulative")
+    if raw_ns is not None:
+        try:
+            return int(raw_ns)
+        except (TypeError, ValueError):
+            return None
+    seconds = row.get("cumulative_cpu_s")
+    if seconds is not None:
+        try:
+            return int(float(seconds) * 1e9)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def _nested(row: Mapping[str, Any], path: tuple[str, ...]) -> Any:
     cur: Any = row
     for key in path:
@@ -1764,6 +1787,7 @@ def _compact_clauses(clauses: Any) -> list[dict[str, Any]]:
     for row in clauses:
         if not isinstance(row, Mapping):
             continue
+        cpu_ns = _cpu_ns_from_row(row)
         compact.append(
             {
                 "bin": row.get("bin"),
@@ -1776,9 +1800,10 @@ def _compact_clauses(clauses: Any) -> list[dict[str, Any]]:
                 # Map from the Stage-2 artifact's actual keys: the clause row
                 # carries cpu_ns_cumulative, sampled_peak_rss_mb and a nested
                 # disk_io object (the eBPF collector does not monitor network).
-                "cumulative_cpu_s": _cpu_ns_to_s(
-                    _first_value(row.get("cumulative_cpu_s"), row.get("cpu_ns_cumulative"))
-                ),
+                # Both CPU fields come from one normalized ns value so they
+                # always agree; cumulative_cpu_s is the human-readable form.
+                "cpu_ns_cumulative": cpu_ns,
+                "cumulative_cpu_s": _cpu_ns_to_s(cpu_ns),
                 "peak_cpu_cores": row.get("peak_cpu_cores"),
                 "peak_memory_mb": _first_value(
                     row.get("peak_memory_mb"), row.get("sampled_peak_rss_mb")

@@ -1,0 +1,81 @@
+{
+  "call_coverage": {
+    "eligible_call_count": 0,
+    "eligible_fraction": 0.0,
+    "total_call_count": 1,
+    "withheld_call_count": 1
+  },
+  "calls": [
+    {
+      "clauses": [],
+      "command": "printf ok",
+      "eligible_for_kb": false,
+      "integrity": {
+        "errors": [
+          "call-analysis: telemetry analysis failed: MvdanClientError: adapter unavailable"
+        ],
+        "status": "failed"
+      },
+      "invalid_reasons": [
+        {
+          "detail": "call-analysis: telemetry analysis failed: MvdanClientError: adapter unavailable",
+          "kind": "analysis_failure"
+        }
+      ],
+      "no_runtime_exec": [],
+      "telemetry_quality": "invalid",
+      "tool_call_id": "call-analysis",
+      "tool_trace_ref": "call-analysis",
+      "version": 2
+    }
+  ],
+  "cgroup_id": 0,
+  "cleanup": "ok",
+  "collection_validity": "invalid",
+  "collector": {
+    "disabled_reason": null,
+    "eligible_call_count": 0,
+    "first_disabled_call": null,
+    "health": "healthy",
+    "invalid_call_count": 1,
+    "kprobe_total_hits": 17,
+    "state": "closed",
+    "state_before_close": "active",
+    "unavailable_call_count": 0,
+    "valid_call_count": 0
+  },
+  "container_id": null,
+  "formal_completeness": "partial",
+  "integrity": {
+    "errors": [],
+    "status": "failed"
+  },
+  "mode": "clause",
+  "provenance": {
+    "align_bin_ns": 20000000,
+    "cadence_ns": 10000000,
+    "collector": "stage2_ebpf",
+    "disk_io_fields": [
+      "task->ioac.read_bytes",
+      "task->ioac.write_bytes",
+      "task->ioac.cancelled_write_bytes"
+    ],
+    "disk_io_semantics": "nonnegative_per_tid_linux_task_io_accounting_deltas",
+    "page_size_bytes": 4096,
+    "repo": "/repo",
+    "window_ns": 500000000
+  },
+  "quota_cores": 0.0,
+  "replay_execution": "completed",
+  "ring_loss_total": 0,
+  "schema": "clause_telemetry_v2",
+  "status_model": "call_granular_v1",
+  "telemetry_loss_total": {
+    "argv_boundary_read_failures": 0,
+    "argv_read_failures": 0,
+    "ringbuf_reserve_failures": 0,
+    "total": 0
+  },
+  "telemetry_quality": "invalid",
+  "version": 2
+}

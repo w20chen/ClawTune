@@ -2224,6 +2224,40 @@ using the writable workspace temporary directory.
   could not run in the current Windows validation environment because the only
   discovered Python executables are Microsoft Store aliases and launching
   `python.exe` failed with `A specified logon session does not exist`.
+
+## 2026-08-05 Clause CPU resource: emit ns + s together (unit-trap fix)
+
+The trace compaction `_compact_clauses` (`agent_scheduler/predictors/tool_resource.py`)
+now emits BOTH `cpu_ns_cumulative` (ns) and `cumulative_cpu_s` (s) for every
+clause, derived from a single normalized ns value so the two always agree
+(`cumulative_cpu_s = cpu_ns_cumulative / 1e9`; the seconds field is just the
+human-readable form). This also removes the unit trap: the old code fed the
+seconds-form key `cumulative_cpu_s` through `_cpu_ns_to_s()` (÷1e9), which
+would under-report an old-format artifact by 1e9x. The new `_cpu_ns_from_row()`
+normalizes to ns — preferring the collector's raw `cpu_ns_cumulative` and, for
+old-format rows, scaling `cumulative_cpu_s` back to ns (*1e9).
+`contracts/clause-telemetry.schema.json` `$defs/clause` now declares
+`cpu_ns_cumulative` (the collector's real key) alongside `cumulative_cpu_s`.
+
+Validation completed in the Windows development workspace:
+
+- Scheduler affected suites (`test_cgroup_resource.py`,
+  `test_tool_resource_predictor.py`): `60 passed`; full scheduler suite:
+  `269 passed, 2 skipped`. New regression row proves the seconds-form input
+  normalizes to ns (`cumulative_cpu_s: 1.25` -> `cpu_ns_cumulative: 1250000000`,
+  not 1.25e-9).
+- `python tools/validate_contracts.py`: all contract examples validated.
+- `python -m swe_rebench.runner prepare --config swe_rebench/config.yaml`:
+  runtime bundle regenerated. The previous `.runtime/bundle` scheduler copy was
+  stale — it predated even the `f6dabb4` eBPF resource-key mapping fix, so the
+  benchmark runtime was running the original buggy `_compact_clauses`.
+- `git diff --check`: passed.
+
+Validation commands that cannot run in this Windows workspace:
+
+- A live SWE-Rebench run confirming `cpu_ns_cumulative`/`cumulative_cpu_s`
+  populate on real read/edit spans still requires the Linux host with Docker,
+  cgroup v2, BCC/eBPF, OpenClaw, and an upstream model.
 - `git diff --check` could not run because the provided Windows workspace does
   not expose the checkout as a Git worktree.
 
@@ -2559,3 +2593,53 @@ Validation commands that cannot run in this Windows workspace:
   nonzero and plausible on a live run, and that `cumulative_cpu_s`/disk now
   populate in `call_telemetry.clauses[]` from real Stage-2 eBPF sampling —
   requires the Linux host with Docker, cgroup v2, and BCC/eBPF.
+
+## Per-PID attribution (trusted-execution-root-pid) (2026-08-05)
+
+`shared-sandbox-container` attribution was correct as a cgroup view but not
+"attributed to the pid": every tool in host-openclaw-sandbox was charged the
+whole sandbox container's cgroup.  The launcher runs inside the container
+(read-only cgroupfs), so it cannot create a per-execution cgroup; its
+`/started` child_pid is a container-namespace pid, which is unsafe to sample
+directly on the host.
+
+Fix: the sidecar now resolves the payload's **host** pid from the launcher's
+container pid via `_resolve_host_pid` (pid-namespace inode + starttime ticks,
+which `_post_started` already sends), and attributes to that pid's process
+tree:
+
+- New `_verified_host_pid_scope()` builds a `kind="pid"`, `include_children`
+  process-tree scope with `attribution_source="trusted-execution-root-pid"`.
+- The `/started` handler sets it on the execution when no per-execution cgroup
+  could be created (fork-exec sandbox) and the host pid was resolved.
+- Three guards now keep it instead of the sandbox fallback:
+  `completed_with_sandbox_fallback`, `completed_with_execution_scope`, and the
+  tool-monitor bind (all gated on `_is_verified_host_pid_scope`, so raw
+  container pids still fall back safely).
+- The sampler's process-tree path (`psutil-process-tree`) reads
+  cpu/memory/disk/network per pid + descendants; the independent resource
+  artifact now also writes for process-tree samples (`source: "process-tree"`),
+  so per-PID cpu/mem/disk/network are available even without a cgroup.
+
+Result: the trace `span_end` for exec spans should show
+`attribution_source=trusted-execution-root-pid`, `scope=process_tree`, a real
+`payload_pid` (host pid), and per-pid `cpu_time_s`/memory/disk/net instead of
+the whole-container `shared-sandbox-container` figures.  read/edit (in-process,
+no execution) still carry the shared-runtime/sandbox scope — correct, since
+they have no dedicated pid.
+
+Validation completed in the Windows development workspace:
+
+- New `test_cgroup_resource.py` cases: `_verified_host_pid_scope`/guard helper
+  semantics and process-tree artifact writing (`source: "process-tree"`).
+- Affected suites (`test_cgroup_resource`, `test_sidecar`,
+  `test_tool_resource_predictor`): `110 passed`.
+- `git diff --check`: passed.
+
+Validation commands that cannot run in this Windows workspace:
+
+- A live host-openclaw-sandbox run to confirm exec spans now carry
+  `trusted-execution-root-pid` with a real host `payload_pid` and per-pid
+  resource numbers (and that `_resolve_host_pid` resolves the fork-exec child
+  through the pid namespace) — requires the Linux host with Docker, cgroup v2,
+  and BCC/eBPF.
