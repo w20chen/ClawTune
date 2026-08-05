@@ -195,8 +195,22 @@ class RealtimeToolMonitor:
         cpu_delta = _delta_float(start.process_cpu_time_s, end.process_cpu_time_s)
         read_delta = _delta_int(start.read_bytes, end.read_bytes)
         write_delta = _delta_int(start.write_bytes, end.write_bytes)
-        net_rx_delta = _delta_int(start.net_rx_bytes, end.net_rx_bytes)
-        net_tx_delta = _delta_int(start.net_tx_bytes, end.net_tx_bytes)
+        # The tool's process usually exits before the completion snapshot, so a
+        # cgroup scope's final /proc/<pid>/net/dev read fails (end net is None)
+        # even though the poll loop captured live per-window net points.  Fall
+        # back to the last live net sample for the window aggregate.
+        end_net_rx = end.net_rx_bytes
+        end_net_tx = end.net_tx_bytes
+        if (
+            end_net_rx is None
+            and active is not None
+            and active.latest_snapshot.available
+            and active.latest_snapshot.net_rx_bytes is not None
+        ):
+            end_net_rx = active.latest_snapshot.net_rx_bytes
+            end_net_tx = active.latest_snapshot.net_tx_bytes
+        net_rx_delta = _delta_int(start.net_rx_bytes, end_net_rx)
+        net_tx_delta = _delta_int(start.net_tx_bytes, end_net_tx)
         cpu_avg_cores = _rate(cpu_delta, duration_s)
         normalized_timeline = _relative_timeline(timeline)
         return ToolRuntimeSample(

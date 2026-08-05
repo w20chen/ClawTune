@@ -417,6 +417,84 @@ def test_complete_cross_source_guard_emits_none_not_garbage() -> None:
     assert sample.rss_bytes_after == 8192
 
 
+def _snapshot_with_net(
+    *,
+    captured_at: float,
+    cpu_s: float | None,
+    net_rx: int | None,
+    net_tx: int | None,
+) -> ResourceSnapshot:
+    return ResourceSnapshot(
+        captured_at=captured_at,
+        monotonic_s=captured_at,
+        process_cpu_time_s=cpu_s,
+        rss_bytes=1_000_000,
+        read_bytes=None,
+        write_bytes=None,
+        net_rx_bytes=net_rx,
+        net_tx_bytes=net_tx,
+        ctx_switches=None,
+        target_pid=123,
+        process_count=1,
+        available=True,
+        source="cgroup-v2",
+    )
+
+
+def test_complete_cgroup_net_falls_back_to_last_live_sample() -> None:
+    # A cgroup-scoped tool's process usually exits before the completion
+    # snapshot, so the final /proc/<pid>/net/dev read fails (end net is None)
+    # even though the live window baseline had net values.  complete() must
+    # fall back to the last live net sample so the window aggregate is a
+    # number, not None.
+    sampler = QueueSampler(
+        [
+            _snapshot_with_net(captured_at=40.0, cpu_s=100.0, net_rx=1_000, net_tx=500),
+            _snapshot_with_net(captured_at=40.3, cpu_s=105.0, net_rx=None, net_tx=None),
+        ]
+    )
+    monitor = RealtimeToolMonitor(sampler=sampler, poll_interval_s=60)
+    cgroup_scope = ResourceScope(
+        kind="cgroup-v2",
+        pid=10,
+        root_pid=10,
+        cgroup_path="/sys/fs/cgroup/system.slice/docker-x.scope",
+        source="claw-sidecar-host-derived",
+        attribution_source="trusted-execution-root-pid",
+    )
+    monitor.begin(_request(cgroup_scope), "unknown")
+    sample = monitor.complete(
+        ToolCompletedEvent(
+            schema_version="scheduler.v1",
+            event_id="evt-end",
+            occurred_at="2026-07-16T03:23:01Z",
+            plugin_version="0.1.0",
+            run_id="run-1",
+            session_id="session-1",
+            session_key=None,
+            agent_id=None,
+            tool_call_id="call-1",
+            decision_id=None,
+            lease_id=None,
+            execution_id="call-1",
+            tool_name="exec",
+            duration_ms=300,
+            succeeded=True,
+            error_type=None,
+            error_digest=None,
+            result_size_bytes=None,
+            resource_scope=cgroup_scope,
+        )
+    )
+
+    assert sample.monitor_source == "cgroup-v2"
+    # Without the fallback the end net is None and the delta would be None;
+    # with the last-live-sample fallback it is a real window aggregate (0 here
+    # because no poll ran, but crucially not None).
+    assert sample.net_rx_bytes_delta == 0
+    assert sample.net_tx_bytes_delta == 0
+
+
 def test_relative_timeline_resets_base_on_source_change() -> None:
     points = [
         {
