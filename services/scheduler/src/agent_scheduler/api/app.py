@@ -516,6 +516,7 @@ def _log_execution_started_decision(
     trusted_root_pid: int | None,
     scope: ResourceScope | None,
     gate_failed: bool,
+    backend: str | None = None,
 ) -> None:
     """One-line per-execution decision log (captured in sidecar-stderr.txt)."""
     print(
@@ -523,7 +524,7 @@ def _log_execution_started_decision(
         f"id={execution_id} "
         f"gate={request.host_cgroup_gate} "
         f"launcher_cgroup={request.cgroup_path or '-'} "
-        f"backend={getattr(request, 'backend', None)} "
+        f"backend={backend or '-'} "
         f"container={request.container_id or '-'} "
         f"trusted_root_pid={trusted_root_pid} "
         f"gate_failed={gate_failed} "
@@ -1878,6 +1879,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 trusted_root_pid,
                 record.scope,
                 host_cgroup_gate_failed,
+                record.request.backend,
             )
         if record is not None and record.scope is not None:
             monitor_scope = record.scope
