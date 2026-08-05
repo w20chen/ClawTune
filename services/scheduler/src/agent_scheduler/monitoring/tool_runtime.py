@@ -198,19 +198,9 @@ class RealtimeToolMonitor:
         # The tool's process usually exits before the completion snapshot, so a
         # cgroup scope's final /proc/<pid>/net/dev read fails (end net is None)
         # even though the poll loop captured live per-window net points.  Fall
-        # back to the last live net sample for the window aggregate.
-        end_net_rx = end.net_rx_bytes
-        end_net_tx = end.net_tx_bytes
-        if (
-            end_net_rx is None
-            and active is not None
-            and active.latest_snapshot.available
-            and active.latest_snapshot.net_rx_bytes is not None
-        ):
-            end_net_rx = active.latest_snapshot.net_rx_bytes
-            end_net_tx = active.latest_snapshot.net_tx_bytes
-        net_rx_delta = _delta_int(start.net_rx_bytes, end_net_rx)
-        net_tx_delta = _delta_int(start.net_tx_bytes, end_net_tx)
+        # back to the last live net sample in the poll timeline for the window
+        # aggregate (and the first live sample when the begin was unattributed).
+        net_rx_delta, net_tx_delta = _net_window_delta(start, end, timeline)
         cpu_avg_cores = _rate(cpu_delta, duration_s)
         normalized_timeline = _relative_timeline(timeline)
         return ToolRuntimeSample(
@@ -442,6 +432,41 @@ def _rate(delta: float | int | None, duration_s: float | None) -> float | None:
     if delta is None or duration_s is None or duration_s <= 0:
         return None
     return max(0.0, float(delta) / duration_s)
+
+
+def _net_window_delta(
+    start: ResourceSnapshot,
+    end: ResourceSnapshot,
+    timeline: list[dict[str, Any]],
+) -> tuple[int | None, int | None]:
+    """Window net aggregate for a tool whose process may exit before completion.
+
+    For cgroup scopes the net fallback is the namespace /proc/net/dev cumulative
+    read keyed by the tool's root pid.  The completion snapshot often happens
+    after the process exited, so end net is None while the poll loop captured
+    live per-window points.  Fall back to the last live net sample in
+    ``timeline`` as the end baseline, and to the first live sample when the
+    begin snapshot itself had no live net (late/unattributed start).
+    """
+    end_net_rx = end.net_rx_bytes
+    end_net_tx = end.net_tx_bytes
+    start_net_rx = start.net_rx_bytes
+    start_net_tx = start.net_tx_bytes
+    if end_net_rx is None:
+        first_live: dict[str, Any] | None = None
+        last_live: dict[str, Any] | None = None
+        for point in timeline:
+            if point.get("net_rx_bytes") is not None:
+                if first_live is None:
+                    first_live = point
+                last_live = point
+        if last_live is not None:
+            end_net_rx = last_live.get("net_rx_bytes")
+            end_net_tx = last_live.get("net_tx_bytes")
+            if start_net_rx is None and first_live is not None:
+                start_net_rx = first_live.get("net_rx_bytes")
+                start_net_tx = first_live.get("net_tx_bytes")
+    return _delta_int(start_net_rx, end_net_rx), _delta_int(start_net_tx, end_net_tx)
 
 
 def _attribution_status(start: ResourceSnapshot, end: ResourceSnapshot) -> str:

@@ -7,6 +7,7 @@ from agent_scheduler.monitoring.process import ProcessResourceSampler, ResourceS
 from agent_scheduler.monitoring.tool_runtime import (
     RealtimeToolMonitor,
     _first_timeline_point_of_source,
+    _net_window_delta,
     _relative_timeline,
     _snapshot_from_point,
 )
@@ -493,6 +494,46 @@ def test_complete_cgroup_net_falls_back_to_last_live_sample() -> None:
     # because no poll ran, but crucially not None).
     assert sample.net_rx_bytes_delta == 0
     assert sample.net_tx_bytes_delta == 0
+
+
+def test_net_window_delta_uses_last_live_timeline_sample() -> None:
+    # The completion snapshot is post-process-exit (end net None) but the poll
+    # loop captured live points; the window aggregate must use the LAST live
+    # net value as the end baseline.
+    start = _snapshot_with_net(captured_at=40.0, cpu_s=100.0, net_rx=1_000, net_tx=500)
+    end = _snapshot_with_net(captured_at=40.5, cpu_s=105.0, net_rx=None, net_tx=None)
+    timeline = [
+        {"ts": 40.0, "net_rx_bytes": 1_000, "net_tx_bytes": 500},
+        {"ts": 40.2, "net_rx_bytes": 4_000, "net_tx_bytes": 2_000},
+        {"ts": 40.3, "net_rx_bytes": 5_000, "net_tx_bytes": 2_500},
+        {"ts": 40.5, "net_rx_bytes": None, "net_tx_bytes": None},
+    ]
+    rx, tx = _net_window_delta(start, end, timeline)
+    assert rx == 4_000  # 5000 - 1000
+    assert tx == 2_000  # 2500 - 500
+
+
+def test_net_window_delta_recovers_when_start_unattributed() -> None:
+    # When the begin snapshot itself had no live net (late/unattributed start),
+    # the first live timeline sample becomes the window base.
+    start = _snapshot_with_net(captured_at=40.0, cpu_s=100.0, net_rx=None, net_tx=None)
+    end = _snapshot_with_net(captured_at=40.5, cpu_s=105.0, net_rx=None, net_tx=None)
+    timeline = [
+        {"ts": 40.0, "net_rx_bytes": None, "net_tx_bytes": None},
+        {"ts": 40.2, "net_rx_bytes": 3_000, "net_tx_bytes": 1_500},
+        {"ts": 40.3, "net_rx_bytes": 5_000, "net_tx_bytes": 2_500},
+    ]
+    rx, tx = _net_window_delta(start, end, timeline)
+    assert rx == 2_000  # 5000 - 3000
+    assert tx == 1_000  # 2500 - 1500
+
+
+def test_net_window_delta_all_none_when_no_live_net() -> None:
+    start = _snapshot_with_net(captured_at=40.0, cpu_s=100.0, net_rx=None, net_tx=None)
+    end = _snapshot_with_net(captured_at=40.5, cpu_s=105.0, net_rx=None, net_tx=None)
+    rx, tx = _net_window_delta(start, end, [])
+    assert rx is None
+    assert tx is None
 
 
 def test_relative_timeline_resets_base_on_source_change() -> None:
