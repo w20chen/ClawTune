@@ -2334,8 +2334,17 @@ def _export_traces(config: RunnerConfig, report: BatchReport) -> None:
             src = Path(tf_path_str)
             if not src.exists():
                 continue
-            # Name: {task_id}_{original_name}
-            dst_name = f"{task_id}_{src.name}"
+            # Collected host-sandbox traces already carry the case label
+            # (e.g. <task_id>__<runtime_id>__...jsonl), so only prepend the
+            # task id when the basename does not already start with it.  This
+            # avoids a redundant "<task_id>_<task_id>__" prefix while keeping
+            # unattributed (e.g. container-mode) traces identifiable.
+            if src.name.startswith(f"{task_id}__") or src.name.startswith(
+                f"{task_id}_"
+            ):
+                dst_name = src.name
+            else:
+                dst_name = f"{task_id}_{src.name}"
             dst = export_dir / dst_name
             shutil.copy2(src, dst)
             exported += 1

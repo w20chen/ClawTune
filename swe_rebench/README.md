@@ -330,6 +330,7 @@ Generated data is Git-ignored under:
 swe_rebench/.runtime/
   traces/<task-id>/
   kb-batches/<batch-id>/
+    _sidecar/                       # shared sidecar: in-flight per-runtime JSONL
     clause-resource-kb.json
     runtime-tool-resource-kb.json
   export/
@@ -341,6 +342,14 @@ under `traces/<task-id>/tool-resource/`. The batch directory above is the
 auditable final aggregate generation, and its exact path is recorded as
 `shared_kb_dir` in `report.json`. The maintained host-sandbox mode also records
 it in each task manifest.
+
+With the shared batch sidecar, trace JSONL files are named
+`<runtime_id>__<session>_<run>__<digest>.jsonl` (`runtime_id` is the opaque
+`claw-srb-<hash>`). The runner labels collected copies with the case id, so
+`traces/<task-id>/` contains `<task-id>__<runtime_id>__...jsonl`. While a batch
+is still running, `kb-batches/<batch-id>/_sidecar/runtime-case-map.json` maps
+each in-flight `runtime_id` to its case id so traces are attributable before
+collection finishes.
 
 Inspect a trace:
 

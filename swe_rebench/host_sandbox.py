@@ -134,6 +134,12 @@ def run_host_sandbox_task(
     deadline = _task_deadline(config, started)
     trace_dir.mkdir(parents=True, exist_ok=True)
     workspace = _task_workspace(config, task)
+    if not manage_sidecar and shared_sidecar_trace_dir is not None:
+        _write_runtime_case_map(
+            shared_sidecar_trace_dir,
+            _runtime_id(workspace),
+            task.instance_id,
+        )
     openclaw_home = trace_dir / "openclaw-home"
     sidecar_port = sidecar_port or _free_port()
     sidecar = None
@@ -300,6 +306,7 @@ def run_host_sandbox_task(
                     shared_sidecar_trace_dir,
                     trace_dir,
                     runtime_id,
+                    task_label=_safe_trace_label(task.instance_id),
                 )
                 _collect_runtime_stage2_artifacts(
                     shared_kb_dir,
@@ -2299,15 +2306,84 @@ def _drain_runtime(
         )
 
 
+_RUNTIME_CASE_MAP_LOCK = threading.Lock()
+
+
+def _write_runtime_case_map(
+    sidecar_trace_dir: Path,
+    runtime_id: str,
+    instance_id: str,
+) -> None:
+    """Record ``runtime_id -> instance_id`` so in-flight sidecar traces are attributable.
+
+    A shared sidecar serves many concurrent tasks and its trace filenames only
+    carry the ``claw-srb-<hash>`` runtime id, not the SWE-Rebench case name.
+    The runner is the only component that knows both, so it publishes one JSON
+    map under the sidecar trace dir while the batch runs.  Best-effort: a write
+    failure must never fail the task.
+    """
+    if not runtime_id:
+        return
+    mapping_path = sidecar_trace_dir / "runtime-case-map.json"
+    try:
+        sidecar_trace_dir.mkdir(parents=True, exist_ok=True)
+        with _RUNTIME_CASE_MAP_LOCK:
+            mapping: dict[str, str] = {}
+            if mapping_path.exists():
+                try:
+                    mapping = json.loads(
+                        mapping_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError):
+                    mapping = {}
+            mapping[runtime_id] = instance_id
+            temporary = mapping_path.with_name(
+                f".{mapping_path.name}.tmp-{os.getpid()}"
+            )
+            temporary.write_text(
+                json.dumps(mapping, indent=2, sort_keys=True, ensure_ascii=False)
+                + "\n",
+                encoding="utf-8",
+            )
+            os.replace(temporary, mapping_path)
+    except Exception:
+        # The mapping is best-effort diagnostics; never fail the task on it.
+        # Catch broadly so an unexpected error can never take the task down
+        # before its try/finally cleanup runs.
+        pass
+
+
+_ALLOWED_LABEL_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+)
+
+
+def _safe_trace_label(instance_id: str) -> str:
+    """Return a filesystem-safe case label for trace filenames."""
+    safe = "".join(
+        ch if ch in _ALLOWED_LABEL_CHARS else "_" for ch in instance_id
+    ).strip("._")
+    return safe or "task"
+
+
 def _collect_runtime_traces(
     sidecar_trace_dir: Path,
     task_trace_dir: Path,
     runtime_id: str,
+    task_label: str | None = None,
 ) -> list[Path]:
+    """Snapshot a runtime's JSONL traces into its task trace directory.
+
+    ``task_label`` (the SWE-Rebench case id) is prefixed to the copied filename
+    so the resulting traces are identifiable by case, e.g.
+    ``<task_id>__<runtime_id>__<session>_<run>__<digest>.jsonl``.
+    """
     sources = sorted(sidecar_trace_dir.glob(f"{runtime_id}__*.jsonl"))
     copied: list[Path] = []
     for source in sources:
         destination = task_trace_dir / source.name
+        if task_label:
+            destination = task_trace_dir / f"{task_label}__{source.name}"
         temporary = task_trace_dir / f".{source.name}.tmp-{os.getpid()}"
         # The happy path drains the runtime before this snapshot.  When drain
         # fails, the shared sidecar may still be appending a record.  Snapshot

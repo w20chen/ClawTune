@@ -1256,7 +1256,8 @@ def test_shared_sidecar_trace_snapshot_survives_drain_failure(
             manage_sidecar=False,
         )
 
-    destination = trace_dir / source.name
+    task_label = task.instance_id.replace("/", "_").replace(":", "_")
+    destination = trace_dir / f"{task_label}__{source.name}"
     assert destination.read_bytes() == (
         b'{"schema_version":6,"record_type":"trace_metadata"}\n'
     )
@@ -1461,7 +1462,59 @@ def test_shared_sidecar_stage2_artifacts_collected_into_task_trace(
     collected = trace_dir / "tool-resource" / "exec-abc123.json"
     assert json.loads(collected.read_text(encoding="utf-8")) == artifact
     assert not (trace_dir / "tool-resource" / "clause-resource-kb.json").exists()
-    assert (trace_dir / source.name).exists()
+    task_label = task.instance_id.replace("/", "_").replace(":", "_")
+    assert (trace_dir / f"{task_label}__{source.name}").exists()
+
+
+def test_export_traces_does_not_double_prefix_case_labeled_traces(
+    tmp_path: Path,
+) -> None:
+    from swe_rebench.runner import BatchReport, _export_traces
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "output:\n  flat_export_dir: export\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    export_dir = config.output.flat_export_dir
+    trace_dir = tmp_path / "traces"
+    trace_dir.mkdir()
+
+    task_id = "owner__repo-1"
+    # Collected host-sandbox trace already carries the case label:
+    # <task_id>__<runtime_id>__<session>_<run>__<digest>.jsonl
+    labeled = trace_dir / f"{task_id}__claw-srb-abc__s1_r1__digest.jsonl"
+    labeled.write_text('{"schema_version": 6}\n', encoding="utf-8")
+    # Container-mode trace: unattributed basename, still needs the prefix.
+    unattributed = trace_dir / "claw-srb-xyz__s2_r2__digest.jsonl"
+    unattributed.write_text('{"schema_version": 6}\n', encoding="utf-8")
+
+    report = BatchReport(
+        config_path="config.yaml",
+        total_tasks=1,
+        results=[
+            {
+                "task_id": task_id,
+                "trace_files": [str(labeled), str(unattributed)],
+            }
+        ],
+    )
+
+    _export_traces(config, report)
+
+    assert (
+        export_dir / f"{task_id}__claw-srb-abc__s1_r1__digest.jsonl"
+    ).exists()
+    # Unattributed traces still get the task id prefixed.
+    assert (
+        export_dir / f"{task_id}_claw-srb-xyz__s2_r2__digest.jsonl"
+    ).exists()
+    # No redundant "<task_id>_<task_id>__" double prefix.
+    assert not (
+        export_dir / f"{task_id}_{task_id}__claw-srb-abc__s1_r1__digest.jsonl"
+    ).exists()
+
 
 
 def test_run_one_propagates_container_stage2_fallback_mode(monkeypatch, tmp_path: Path) -> None:
