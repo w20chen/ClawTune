@@ -2643,3 +2643,180 @@ Validation commands that cannot run in this Windows workspace:
   resource numbers (and that `_resolve_host_pid` resolves the fork-exec child
   through the pid namespace) — requires the Linux host with Docker, cgroup v2,
   and BCC/eBPF.
+
+## Mixed-baseline resource attribution fix (2026-08-05, trace audit)
+
+Audit of a real host-openclaw-sandbox trace (`claw-srb-bcaea58472bd...jsonl`,
+83 lines, 16 exec + 4 read/edit spans) found that the per-PID attribution
+change above was producing garbage for exec spans:
+
+- `resources.cpu_time_s` was `0.0` in 15/16 exec spans even though the Stage-2
+  eBPF clauses measured 0.03–25.7 s of CPU (sum: 90.57 s eBPF vs 5.82 s
+  psutil).  `quality="complete"` spans (e.g. `k410`, `N0yp`) were also 0.0.
+- `resource_timeline` internally contradicted `resources`: the early phase was
+  `src=cgroup-v2` (whole shared container, up to 54 MB RSS) while
+  `monitor_source`/`cpu_time_s` were psutil per-pid.  `memory_rss_bytes_before`
+  (container `memory.current`) vs `after` (psutil pid-tree RSS) came from
+  different sources; `process_count_before/after` had different meanings too.
+
+ROOT CAUSE: `with_sandbox_fallback` gives every before-request the shared
+sandbox container cgroup, so `RealtimeToolMonitor.begin()` starts a container
+cgroup baseline (`cpu.stat usage_usec`, cumulative since container creation).
+When `/started` binds the verified host PID scope, `bind_scope` only rebased
+for `docker-exec-pid`; for `trusted-execution-root-pid` it kept the container
+baseline.  `complete()` then computed `cpu_time_delta_s = max(0, per-pid_psutil
+− container_cgroup)` → negative → clamped to 0.0.
+
+FIX (services/scheduler/src/agent_scheduler/monitoring/tool_runtime.py,
+mirrored into swe_rebench/bundle/scheduler/src/...):
+
+- `bind_scope` now rebases whenever both the old and the new baseline are
+  available (reaching past the identical-scope guard means the measurement
+  target changed), not just for `docker-exec-pid`.  The timeline resets to the
+  new source so per-execution data is per-tool only.
+- `complete()` gained a defensive cross-source guard: if `start.source !=
+  end.source` it rebases the baseline to the first timeline sample of the end
+  source (strictly before the end snapshot), else emits `None` deltas instead
+  of garbage.  `_first_timeline_point_of_source`/`_snapshot_from_point` helpers
+  added.
+- `_relative_timeline` resets its delta base whenever the measurement source
+  changes, so a container→pid transition no longer zeroes every subsequent
+  cpu/io delta.
+- `_v6_quality` (trace.py) no longer reports `complete` when the sampler
+  quality is `partial`/`low`; `complete` now requires `sampling_quality="ok"`
+  AND `coverage_reason="full_window"`.
+- `_launcher_cgroup_failure_detail` (swe_rebench/runner.py) appends a
+  "launcher scope breakdown: cgroup=.., attributed=.., unattributed=.." plus
+  sandbox-scope discovery state to the cgroup telemetry gate message so
+  process-tree attribution is distinguishable from no attribution.
+
+Regression tests: `test_trusted_exec_pid_binding_rebases_shared_cgroup_baseline`,
+`test_complete_cross_source_guard_emits_none_not_garbage`,
+`test_relative_timeline_resets_base_on_source_change`,
+`test_first_timeline_point_of_source_respects_before_cutoff`
+(test_tool_runtime_monitor.py), `test_v6_quality_is_honest_about_partial_sampling`
+(test_sidecar.py).
+
+Validation completed in the Windows development workspace:
+
+- Scheduler suite: `274 passed, 2 skipped`.
+- Root suite: `54 passed`.
+- Bundle scheduler suite: `203 passed, 2 skipped` (13 pre-existing failures in
+  the STALE bundle test snapshot, all `kv_ttl_cost`/path drift in
+  `test_tool_resource_predictor.py` — the committed bundle `tool_resource.py`
+  still lacks `_kv_ttl_cost_payload`; unrelated to this change).
+- `git diff --check`: passed.
+
+Validation commands that cannot run in this Windows workspace:
+
+- A live host-openclaw-sandbox run to confirm exec spans now carry a non-zero
+  per-PID `cpu_time_s` matching the eBPF clause CPU (the mixed-baseline fix is
+  exercised only by unit tests here) — requires the Linux host with Docker,
+  cgroup v2, and BCC/eBPF.  Regenerate the runtime bundle with
+  `python -m swe_rebench.runner prepare --config swe_rebench/config.yaml` on
+  the host (needs npm.cmd) before the next run.
+
+## Cgroup-first resource accounting + permission handling + per-PID network (2026-08-05)
+
+Follow-up to the audit: resource accounting must prefer cgroup (exact kernel
+counters) whenever a per-execution cgroup can be created, handle the
+permission/delegation cases so cgroup creation succeeds wherever the host
+allows it, and attribute network per PID (cgroup v2 has no native net counter).
+
+Why the audited trace showed psutil for exec: cgroup IS the first choice.  In
+`execution_started` the sidecar calls `_prepare_host_execution_cgroup` first
+(`exclusive-execution-cgroup`, `monitor_source=cgroup-v2`); only when that
+returns None (the host did not delegate a writable cgroup subtree to the
+sidecar) does it fall back to the verified host PID process tree.  The PID
+(resolved through the pid namespace + starttime) is exactly what enables the
+per-execution cgroup: the host PID is moved into a dedicated cgroup whose
+`cpu.stat`/`memory.current`/`io.stat` then only cover that tool.
+
+Changes (services/scheduler/src/agent_scheduler/api/app.py):
+
+- `_host_execution_cgroup_roots` is permission-aware: euid 0 → `/sys/fs/cgroup/
+  claw` first; unprivileged → the systemd user slice (pre-delegated via
+  PAM/logind) first, then an existing/delegated claw root, then the container
+  subtree, then claw when the v2 root is available.  An explicit
+  `execution_cgroup_root` config short-circuits the search.
+- `_enable_cgroup_controllers` enables cpu/memory/cpuset on the parent
+  (best-effort) so the child cgroup actually accumulates counters.
+- `_cgroup_accounting_usable` verifies a candidate root can yield cpu/memory
+  accounting (delegated in `subtree_control` or available on the parent
+  `cgroup.controllers`); it is deliberately best-effort — an uninspectable /
+  explicitly configured root is assumed usable rather than rejected, so a
+  misconfigured host degrades to per-PID with an honest gate message instead
+  of failing the run.
+
+Per-PID network (services/scheduler/src/agent_scheduler/monitoring/
+net_accounting.py + process.py + tool_runtime.py, mirrored into the bundle):
+
+- New isolated, fail-soft BCC program (`ProcessNetAccounting`) attaches
+  kretprobes on `tcp_sendmsg`/`tcp_recvmsg` and accumulates rx/tx bytes per
+  host tgid, filtered to the sandbox's PID namespace.  If BCC/kprobes are
+  unavailable it stays `available=False` and the sampler falls back to the
+  namespace-wide `/proc/net/dev` view — nothing else is affected.
+- `ProcessResourceSampler.snapshot(scope, net_mode=...)`:
+  - `reset` (tool begin): zeroes the pid tree's counters so the window only
+    counts traffic from that point (handles long-lived in-process tools).
+  - `read` (tool complete): sums the pid tree's counters since reset.
+  - `ignore` (polling / rebasing): leaves counters untouched, emits None.
+- The monitor wires begin→reset, bind→reset (rebase baseline), complete→read.
+- Per-PID net is used for BOTH the process-tree path AND the cgroup path (for a
+  per-execution cgroup, `cgroup.procs` holds only that tool's pids, so summing
+  their per-tgid counters gives per-PID net alongside the cgroup cpu/mem/io).
+
+read/edit in `host-openclaw-sandbox` are NOT in-process: the OpenClaw agent
+runs on the host and every tool (read/edit/write/apply_patch/...) is executed
+by OpenClaw's Docker sandbox as a separate `docker exec` into the sandbox
+container, so each call has its own host PID.  The Docker observer
+(`DockerExecObserver`, enabled in this mode via
+`AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER=true`) watches `docker exec` events and
+attributes these tools to the per-tool PID (`source=docker-events`,
+`attribution_source=docker-exec-pid`, `scope=process_tree`) instead of the
+whole-container `shared-sandbox-container` scope.  The `begin_tool` guard
+already accepts the `openclaw-sandbox` scope that `with_sandbox_fallback`
+attaches, and the sandbox-scoped read→docker-exec-PID path is covered by
+`test_host_sandbox_scoped_read_gets_docker_exec_pid`.  The audited trace showed
+read/edit as `shared-sandbox-container` because that run's docker exec events
+were not observed/matched by the observer (operational, host-dependent — e.g.
+docker socket/events availability), not because read/edit are in-process; on
+the audited trace they still fell back to the container cgroup.  `_container_matches`
+was hardened to fall back to the prefix/global rules when the configured
+container id is stale, so real docker exec events are not dropped.  In
+`container-openclaw` mode (agent inside the container), read/edit genuinely are
+in-process and the container cgroup is the accurate measurement — the two modes
+differ, matching the design intent of the observer.
+
+Remaining by-design notes:
+
+- exec per-execution cgroup is only possible on hosts that delegate a writable
+  cgroup subtree to the sidecar; otherwise it degrades to per-PID process-tree
+  and the gate reports the launcher scope breakdown.  On the audited host the
+  sidecar could not create a child cgroup (no delegation), which is why that
+  trace used psutil.
+- `resources.completion_duration_ns` is always null in the sidecar trace: the
+  plugin sets it after `reportCompletion`, so it only appears in the plugin's
+  own trace.  `decision_duration_ns` and `scheduler_overhead_ns` are the same
+  measurement (before-hook scheduler RTT).
+
+Validation completed in the Windows development workspace:
+
+- Scheduler suite: `280 passed, 2 skipped`.
+- Root suite: `54 passed`.
+- New tests: `test_sampler_snapshot_net_reset_read_ignore`,
+  `test_snapshot_cgroup_uses_per_process_net`,
+  `test_process_net_accounting_api_is_safe`, `test_monitor_passes_net_modes`
+  (test_tool_runtime_monitor.py), `test_host_execution_cgroup_roots_are_permission_aware`,
+  `test_cgroup_accounting_usable_reads_subtree_control` (test_sidecar.py).
+- Runtime bundle regenerated (`swe_rebench/.runtime/bundle`, includes
+  `net_accounting.py`).
+
+Validation commands that cannot run in this Windows workspace:
+
+- The per-PID BCC network tracker (`net_accounting.py`) compiles/attaches only
+  on the Linux host (BCC + `tcp_sendmsg`/`tcp_recvmsg` kprobes); the Python
+  reset/read/fail-soft logic is unit-tested here but the BPF program itself
+  requires a live host-openclaw-sandbox run to confirm per-tool net bytes and
+  that `perf`-style losses stay zero.  Run `python -m swe_rebench.runner
+  prepare --config swe_rebench/config.yaml` on the host before the next run.

@@ -85,7 +85,7 @@ class RealtimeToolMonitor:
 
     def begin(self, request: ToolBeforeRequest, resource_class: str) -> None:
         key = correlation_key(request)
-        snapshot = self.sampler.snapshot(request.resource_scope)
+        snapshot = self.sampler.snapshot(request.resource_scope, net_mode="reset")
         with self._lock:
             if len(self._active) >= self.max_active:
                 oldest = next(iter(self._active))
@@ -121,7 +121,7 @@ class RealtimeToolMonitor:
         completion_scope = completion.resource_scope
         if completion_scope is None and active is not None:
             completion_scope = active.request.resource_scope
-        end = self.sampler.snapshot(completion_scope)
+        end = self.sampler.snapshot(completion_scope, net_mode="read")
         final_snapshot_available = end.available
         used_latest_snapshot = False
         if active is not None and not end.available and active.latest_snapshot.available:
@@ -152,6 +152,40 @@ class RealtimeToolMonitor:
                 )
                 snapshot_count += 1
                 rss_bytes_peak = _max_optional(rss_bytes_peak, end.rss_bytes)
+        # Defensive cross-source guard: if the start baseline and the end
+        # snapshot come from different measurement sources (e.g. bind_scope
+        # never ran, so the baseline is still the shared container cgroup
+        # while the completion scope resolved to a per-execution PID/cgroup),
+        # their counters live on different cumulative epochs and must not be
+        # subtracted.  Rebase the baseline to the first timeline sample that
+        # shares the end snapshot's source; if none exists, fall back to an
+        # empty baseline so the deltas read as unavailable instead of garbage.
+        if start.source != end.source:
+            rebased_point = _first_timeline_point_of_source(
+                timeline, end.source, before=end.captured_at
+            )
+            if rebased_point is not None:
+                start = _snapshot_from_point(
+                    rebased_point, target_pid=end.target_pid
+                )
+            else:
+                start = _snapshot_from_point(
+                    {
+                        "ts": end.captured_at,
+                        "cpu_time_s": None,
+                        "rss_bytes": None,
+                        "read_bytes": None,
+                        "write_bytes": None,
+                        "net_rx_bytes": None,
+                        "net_tx_bytes": None,
+                        "ctx_switches": None,
+                        "process_count": None,
+                        "available": False,
+                        "source": end.source,
+                    },
+                    target_pid=end.target_pid,
+                )
+
         wall_started_at, wall_ended_at = _wall_times_from_duration(
             start.captured_at,
             end.captured_at,
@@ -252,17 +286,21 @@ class RealtimeToolMonitor:
                 self._active[correlation_key(active.request)] = active
                 return True
             request = active.request.model_copy(update={"resource_scope": scope})
-            snapshot = self.sampler.snapshot(request.resource_scope)
+            # Reset the per-process network baseline on a scope rebase so the
+            # new target's counters only count traffic from this point on.
+            snapshot = self.sampler.snapshot(request.resource_scope, net_mode="reset")
             if not snapshot.available and active.latest_snapshot.available:
                 self._active[correlation_key(active.request)] = active
                 return False
-            if (
-                snapshot.available
-                and scope.attribution_source == "docker-exec-pid"
-            ):
-                # The old baseline belongs to the shared container/runtime
-                # scope and cannot be subtracted from the newly discovered
-                # Docker-exec PID.  Rebase immediately while the process is
+            if snapshot.available and active.snapshot.available:
+                # The scope guard above only returns early when the target is
+                # unchanged, so reaching here means the new scope measures a
+                # DIFFERENT target (e.g. shared container cgroup -> per-exec
+                # host PID, or shared container cgroup -> per-execution
+                # cgroup).  The old baseline's counters live on a different
+                # cumulative epoch (container cgroup usage_usec vs per-process
+                # psutil cpu_times) and must not be subtracted from the new
+                # scope's samples.  Rebase immediately while the process is
                 # alive; coverage will honestly report the late start.
                 self._active[correlation_key(request)] = _ActiveTool(
                     request=request,
@@ -347,7 +385,9 @@ class RealtimeToolMonitor:
             for key, active in items:
                 if active.request.resource_scope is None:
                     continue
-                snapshot = self.sampler.snapshot(active.request.resource_scope)
+                snapshot = self.sampler.snapshot(
+                    active.request.resource_scope, net_mode="ignore"
+                )
                 if not snapshot.available:
                     continue
                 with self._lock:
@@ -439,6 +479,17 @@ def _relative_timeline(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     prev: dict[str, Any] | None = None
     for point in points:
+        if prev is not None and point.get("source") != prev.get("source"):
+            # Measurement source changed (e.g. shared container cgroup ->
+            # per-execution process tree).  Counters from different sources
+            # live on different cumulative epochs, so start a fresh segment
+            # baseline instead of subtracting a foreign base.
+            base = point
+        # The first sample of a segment (list head or a source change) has no
+        # same-source predecessor: its point-to-point per-second rates must be
+        # unavailable rather than subtracted from the previous foreign-source
+        # sample (which produced garbage rates at source boundaries).
+        segment_origin = prev is None or point.get("source") != prev.get("source")
         elapsed_s = _timeline_delta_float(base.get("ts"), point.get("ts"))
         interval_s = None if prev is None else _timeline_delta_float(prev.get("ts"), point.get("ts"))
         read_delta = _timeline_counter_delta(base.get("read_bytes"), point.get("read_bytes"))
@@ -446,10 +497,10 @@ def _relative_timeline(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
         net_rx_delta = _timeline_counter_delta(base.get("net_rx_bytes"), point.get("net_rx_bytes"))
         net_tx_delta = _timeline_counter_delta(base.get("net_tx_bytes"), point.get("net_tx_bytes"))
         ctx_delta = _timeline_counter_delta(base.get("ctx_switches"), point.get("ctx_switches"))
-        point_read_delta = None if prev is None else _timeline_counter_delta(prev.get("read_bytes"), point.get("read_bytes"))
-        point_write_delta = None if prev is None else _timeline_counter_delta(prev.get("write_bytes"), point.get("write_bytes"))
-        point_net_rx_delta = None if prev is None else _timeline_counter_delta(prev.get("net_rx_bytes"), point.get("net_rx_bytes"))
-        point_net_tx_delta = None if prev is None else _timeline_counter_delta(prev.get("net_tx_bytes"), point.get("net_tx_bytes"))
+        point_read_delta = None if segment_origin else _timeline_counter_delta(prev.get("read_bytes"), point.get("read_bytes"))
+        point_write_delta = None if segment_origin else _timeline_counter_delta(prev.get("write_bytes"), point.get("write_bytes"))
+        point_net_rx_delta = None if segment_origin else _timeline_counter_delta(prev.get("net_rx_bytes"), point.get("net_rx_bytes"))
+        point_net_tx_delta = None if segment_origin else _timeline_counter_delta(prev.get("net_tx_bytes"), point.get("net_tx_bytes"))
         out.append(
             {
                 "ts": point.get("ts"),
@@ -472,6 +523,54 @@ def _relative_timeline(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
         prev = point
     return out
+
+
+def _first_timeline_point_of_source(
+    timeline: list[dict[str, Any]],
+    source: str,
+    *,
+    before: float | None = None,
+) -> dict[str, Any] | None:
+    """Return the earliest available timeline sample for a measurement source.
+
+    When ``before`` is given, only samples captured strictly before that
+    timestamp are considered (used to avoid rebasing onto the end snapshot
+    itself when no earlier sample of that source exists).
+    """
+    for point in timeline:
+        if point.get("source") != source or not point.get("available"):
+            continue
+        if before is not None:
+            ts = point.get("ts")
+            if not isinstance(ts, (int, float)) or ts >= before:
+                continue
+        return point
+    return None
+
+
+def _snapshot_from_point(
+    point: dict[str, Any],
+    *,
+    target_pid: int | None,
+) -> ResourceSnapshot:
+    """Rebuild a ResourceSnapshot from a raw timeline point (see _timeline_point)."""
+    ts = point.get("ts")
+    ts = float(ts) if isinstance(ts, (int, float)) else 0.0
+    return ResourceSnapshot(
+        captured_at=ts,
+        monotonic_s=ts,
+        process_cpu_time_s=point.get("cpu_time_s"),
+        rss_bytes=point.get("rss_bytes"),
+        read_bytes=point.get("read_bytes"),
+        write_bytes=point.get("write_bytes"),
+        net_rx_bytes=point.get("net_rx_bytes"),
+        net_tx_bytes=point.get("net_tx_bytes"),
+        ctx_switches=point.get("ctx_switches"),
+        target_pid=target_pid,
+        process_count=point.get("process_count"),
+        available=bool(point.get("available")),
+        source=point.get("source") or "unknown",
+    )
 
 
 def _timeline_counter_delta(start: Any, end: Any) -> float | int | None:

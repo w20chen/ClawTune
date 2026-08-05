@@ -1148,6 +1148,45 @@ def _agent_diagnostics(
     }
 
 
+def _launcher_cgroup_failure_detail(result: dict[str, Any]) -> str:
+    """Explain WHY launcher cgroup attribution is missing.
+
+    Lets an operator distinguish process-tree attribution (per-PID fallback
+    that is correct but not cgroup-backed) from no attribution at all, and
+    surfaces the sandbox-scope discovery state that drove the decision.
+    """
+    resources = result.get("resource_summary")
+    resources = resources if isinstance(resources, dict) else {}
+    trace_dir = result.get("trace_dir")
+    cgroup_spans = int(resources.get("launcher_cgroup_tool_span_ends", 0))
+    attributed_spans = int(resources.get("launcher_attributed_tool_span_ends", 0))
+    unattributed_spans = int(resources.get("unattributed_launcher_tool_span_ends", 0))
+    parts = [
+        f"launcher scope breakdown: cgroup={cgroup_spans}, "
+        f"attributed={attributed_spans}, unattributed={unattributed_spans}"
+    ]
+    sandbox_scope_path: Path | None = None
+    discovery_error: str | None = None
+    if trace_dir and isinstance(trace_dir, str):
+        base = Path(trace_dir)
+        sandbox_scope_path = base / "sandbox_scope.json"
+        err_file = base / "sandbox_scope_discovery_last_error.txt"
+        if err_file.is_file():
+            try:
+                discovery_error = err_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                discovery_error = None
+    scope_discovered = (
+        sandbox_scope_path is not None and sandbox_scope_path.is_file()
+    )
+    parts.append(
+        "sandbox scope: discovered" if scope_discovered else "sandbox scope: NOT discovered"
+    )
+    if not scope_discovered and discovery_error:
+        parts.append(f"sandbox-scope discovery last error: {discovery_error}")
+    return "; ".join(parts)
+
+
 def _required_telemetry_error(
     config: RunnerConfig,
     result: dict[str, Any],
@@ -1172,7 +1211,8 @@ def _required_telemetry_error(
     if launcher_cgroup_spans != launcher_spans:
         return (
             "required launcher cgroup-v2 telemetry is incomplete: "
-            f"sampled {launcher_cgroup_spans}/{launcher_spans} launcher tool spans"
+            f"sampled {launcher_cgroup_spans}/{launcher_spans} launcher tool spans; "
+            + _launcher_cgroup_failure_detail(result)
         )
     artifact_count = int(artifacts.get("artifact_count", 0))
     expected_artifacts = int(resources.get("launcher_stage2_expected_span_ends", 0))

@@ -960,6 +960,113 @@ def test_container_mode_honors_explicit_stage2_requirement(tmp_path):
     ) is None
 
 
+def test_cgroup_telemetry_failure_reports_attribution_diagnostics(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "runtime:\n  mode: host-openclaw-sandbox\n  stage2_required: true\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+
+    trace_dir = tmp_path / "trace"
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    (trace_dir / "sandbox_scope_discovery_last_error.txt").write_text(
+        "docker inspect failed\n",
+        encoding="utf-8",
+    )
+
+    def result_dict() -> dict:
+        return {
+            "trace_dir": str(trace_dir),
+            "resource_summary": {
+                "tool_span_ends": 2,
+                "resource_sampled_tool_span_ends": 2,
+                "launcher_tool_span_ends": 2,
+                "launcher_cgroup_tool_span_ends": 0,
+                "launcher_attributed_tool_span_ends": 2,
+                "unattributed_launcher_tool_span_ends": 0,
+                "launcher_stage2_expected_span_ends": 2,
+            },
+            "tool_resource_artifacts": {"artifact_count": 2},
+        }
+
+    error = _required_telemetry_error(config, result_dict())
+    assert error is not None
+    assert (
+        "required launcher cgroup-v2 telemetry is incomplete: "
+        "sampled 0/2 launcher tool spans" in error
+    )
+    # The gate failure must explain WHY cgroup attribution is missing so the
+    # operator can tell process-tree attribution from no attribution at all.
+    assert "launcher scope breakdown: cgroup=0, attributed=2, unattributed=0" in error
+    assert "sandbox scope: NOT discovered" in error
+    assert "sandbox-scope discovery last error: docker inspect failed" in error
+
+    # A discovered sandbox scope flips the diagnostic.
+    (trace_dir / "sandbox_scope.json").write_text("{}", encoding="utf-8")
+    discovered_error = _required_telemetry_error(config, result_dict())
+    assert discovered_error is not None
+    assert "sandbox scope: discovered" in discovered_error
+    assert "sandbox-scope discovery last error" not in discovered_error
+
+
+def test_wait_process_exit_tolerates_keyboard_interrupt():
+    import subprocess
+
+    proc = subprocess.Popen(
+        ["python", "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    try:
+        real_wait = proc.wait
+
+        def interrupt_wait(timeout):
+            raise KeyboardInterrupt
+
+        # Simulate a user Ctrl+C landing while the harness waits for the
+        # process: the wait must not raise and must report the current state.
+        proc.wait = interrupt_wait  # type: ignore[method-assign]
+        assert host_sandbox._wait_process_exit(proc, timeout=5) is False
+        assert proc.poll() is None
+
+        # Restoring the real wait, SIGTERM still reaps the process.
+        proc.wait = real_wait  # type: ignore[method-assign]
+        proc.terminate()
+        assert host_sandbox._wait_process_exit(proc, timeout=5) is True
+        assert proc.poll() is not None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_stop_process_raises_when_process_never_exits():
+    import subprocess
+
+    class _NeverExits:
+        def poll(self) -> None:
+            # Explicit None is the "still running" sentinel (never exits).
+            return None
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
+
+        def wait(self, timeout: float = 5) -> None:
+            raise subprocess.TimeoutExpired("cmd", timeout)
+
+    try:
+        host_sandbox._stop_process(_NeverExits())  # type: ignore[arg-type]
+    except RuntimeError as exc:
+        assert "sidecar did not exit after terminate and kill" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError for a process that never exits")
+
+
 def _runner_config(tmp_path: Path, parallelism: int) -> RunnerConfig:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

@@ -1166,6 +1166,8 @@ def _v6_attribution(sample: ToolRuntimeSample, scope: Any | None = None) -> str:
 def _v6_quality(sampling_quality: str, coverage_reason: str | None) -> str:
     if sampling_quality in {"unknown", "unattributed", "unavailable"}:
         return "unknown"
+    if sampling_quality in {"partial", "low"}:
+        return "partial"
     if coverage_reason == "full_window":
         return "complete"
     return "partial"

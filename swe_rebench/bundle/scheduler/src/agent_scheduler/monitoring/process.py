@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from agent_scheduler.contracts.models import ResourceScope
+from agent_scheduler.monitoring.net_accounting import (
+    ProcessNetAccounting,
+    _pid_namespace_inode,
+)
 
 
 @dataclass(frozen=True)
@@ -35,8 +40,15 @@ class ProcessResourceSampler:
 
     def __init__(self) -> None:
         self._psutil = self._load_psutil()
+        self._net: ProcessNetAccounting | None = None
+        self._net_lock = threading.Lock()
 
-    def snapshot(self, scope: ResourceScope | None = None) -> ResourceSnapshot:
+    def snapshot(
+        self,
+        scope: ResourceScope | None = None,
+        *,
+        net_mode: str = "ignore",
+    ) -> ResourceSnapshot:
         now = time.time()
         mono = time.monotonic()
         if scope is None:
@@ -44,7 +56,7 @@ class ProcessResourceSampler:
         if scope.kind == "cgroup-v2" and scope.cgroup_path:
             if _is_cgroup_root(scope.cgroup_path):
                 return self._empty(now, mono, None, "cgroup-root-unattributed")
-            cgroup = self._snapshot_cgroup(now, mono, scope)
+            cgroup = self._snapshot_cgroup(now, mono, scope, net_mode=net_mode)
             return cgroup
         if scope.pid is None:
             return self._empty(now, mono, scope.root_pid, "pid-unavailable")
@@ -66,15 +78,71 @@ class ProcessResourceSampler:
                     processes.extend(process.children(recursive=True))
                 except Exception:
                     pass
-            return self._snapshot_processes(now, mono, scope.pid, processes)
+            pids = [p.pid for p in processes]
+            net_rx_bytes, net_tx_bytes = self._snapshot_net(
+                scope, pids, net_mode
+            )
+            return self._snapshot_processes(
+                now,
+                mono,
+                scope.pid,
+                processes,
+                net_rx_bytes=net_rx_bytes,
+                net_tx_bytes=net_tx_bytes,
+            )
         except Exception:
             return self._empty(now, mono, scope.pid, "pid-unavailable")
+
+    def _net_accounting(self, scope: ResourceScope) -> ProcessNetAccounting | None:
+        """Lazily create (and namespace-seed) the shared per-process net tracker."""
+        probe_pid = scope.root_pid or scope.pid
+        ns_inode = _pid_namespace_inode(probe_pid) if probe_pid else None
+        if ns_inode is None:
+            return None
+        with self._net_lock:
+            if self._net is None:
+                self._net = ProcessNetAccounting([ns_inode])
+            else:
+                self._net.add_namespace(ns_inode)
+            return self._net
+
+    def _snapshot_net(
+        self,
+        scope: ResourceScope,
+        pids: list[int],
+        net_mode: str,
+    ) -> tuple[int | None, int | None]:
+        """Return per-process (rx, tx) for the tool's pid tree.
+
+        net_mode:
+          - ``reset``   tool begin: zero the pids' counters so the window only
+                        counts traffic after this point.
+          - ``read``    tool complete: sum the pids' counters since reset.
+          - ``ignore``  polling / rebasing: do not disturb the counters and
+                        emit None (the window aggregate is read at complete).
+        Falls back to the namespace-wide ``/proc/net/dev`` view when the
+        isolated per-process BCC tracker is unavailable.
+        """
+        accounting = self._net_accounting(scope)
+        if accounting is not None and accounting.available:
+            if net_mode == "reset":
+                accounting.reset(pids)
+                return 0, 0
+            if net_mode == "read":
+                return accounting.rx_tx_for(pids)
+            return None, None
+        net = self._read_proc_net_dev(scope.root_pid or scope.pid)
+        if net is None:
+            return None, None
+        return net[0], net[1]
 
     def _snapshot_cgroup(
         self,
         now: float,
         mono: float,
         scope: ResourceScope,
+        *,
+        net_mode: str = "ignore",
     ) -> ResourceSnapshot:
         cgroup_path = Path(scope.cgroup_path or "")
         cpu_usec = self._read_cgroup_cpu_usec(cgroup_path)
@@ -82,7 +150,9 @@ class ProcessResourceSampler:
         io = self._read_cgroup_io_stat(cgroup_path)
         pids = self._read_cgroup_pids(cgroup_path)
         ctx_switches = self._aggregate_context_switches(pids)
-        net = self._read_proc_net_dev(scope.root_pid or scope.pid)
+        # cgroup v2 exposes no native network counter; use the per-process BCC
+        # tracker summed over the cgroup's own pid set so net stays per-PID.
+        net_rx_bytes, net_tx_bytes = self._snapshot_net(scope, pids, net_mode)
         cgroup_available = (
             (cpu_usec is not None and cpu_usec > 0)
             or memory_current is not None
@@ -97,8 +167,8 @@ class ProcessResourceSampler:
             rss_bytes=memory_current,
             read_bytes=None if io is None else io[0],
             write_bytes=None if io is None else io[1],
-            net_rx_bytes=None if net is None else net[0],
-            net_tx_bytes=None if net is None else net[1],
+            net_rx_bytes=net_rx_bytes,
+            net_tx_bytes=net_tx_bytes,
             ctx_switches=ctx_switches,
             target_pid=scope.root_pid or scope.pid,
             process_count=len(pids) if pids else None,
@@ -241,6 +311,9 @@ class ProcessResourceSampler:
         mono: float,
         target_pid: int,
         processes: list[Any],
+        *,
+        net_rx_bytes: int | None = None,
+        net_tx_bytes: int | None = None,
     ) -> ResourceSnapshot:
         cpu_time = 0.0
         rss_bytes = 0
@@ -278,7 +351,6 @@ class ProcessResourceSampler:
             except Exception:
                 pass
             process_count += 1
-        net = self._read_proc_net_dev(target_pid)
         return ResourceSnapshot(
             captured_at=now,
             monotonic_s=mono,
@@ -286,8 +358,8 @@ class ProcessResourceSampler:
             rss_bytes=rss_bytes if found_memory else None,
             read_bytes=read_bytes if found_io else None,
             write_bytes=write_bytes if found_io else None,
-            net_rx_bytes=None if net is None else net[0],
-            net_tx_bytes=None if net is None else net[1],
+            net_rx_bytes=net_rx_bytes,
+            net_tx_bytes=net_tx_bytes,
             ctx_switches=ctx_switches if found_ctx else None,
             target_pid=target_pid,
             process_count=process_count,

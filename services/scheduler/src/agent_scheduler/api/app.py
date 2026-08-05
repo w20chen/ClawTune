@@ -373,23 +373,128 @@ def _is_verified_host_pid_scope(scope: ResourceScope | None) -> bool:
     )
 
 
+def _host_execution_cgroup_roots(
+    fallback_scope: ResourceScope | None,
+    configured_root: str | None,
+) -> list[str]:
+    """Candidate per-execution cgroup roots, in priority order.
+
+    The sidecar runs on the host and needs a writable cgroup-v2 subtree to
+    create per-execution cgroups.  Ordering is permission-aware:
+      - root (euid 0): /sys/fs/cgroup/claw first (root-managed, controllers
+        can be delegated there), then the container subtree.
+      - non-root: the systemd user slice first (pre-delegated via PAM/logind
+        and writable by the unprivileged sidecar), then /sys/fs/cgroup/claw,
+        then the container subtree.
+    An explicit ``configured_root`` short-circuits the search.
+    """
+    roots: list[str] = []
+    if configured_root:
+        return [configured_root]
+    claw_root = _CGROUP_V2_ROOT / "claw"
+    try:
+        euid = os.geteuid()
+    except (AttributeError, OSError):
+        euid = -1
+    if euid == 0:
+        # Privileged service: root-managed claw cgroup is the natural target.
+        roots.append(str(_CGROUP_V2_ROOT / "claw"))
+    else:
+        # Unprivileged service: systemd user manager slice is pre-delegated.
+        if euid > 0:
+            roots.append(
+                f"/sys/fs/cgroup/user.slice/user-{euid}.slice/"
+                f"user@{euid}.service/claw-executions"
+            )
+        if claw_root.exists():
+            roots.append(str(claw_root))
+    if fallback_scope is not None and fallback_scope.cgroup_path:
+        roots.append(
+            f"{fallback_scope.cgroup_path.rstrip('/')}/claw-executions"
+        )
+    # When the v2 root is available (cgroup.controllers exists), the claw
+    # cgroup is a valid candidate for both root and unprivileged services
+    # (root creates it; a delegated claw is writable by the sidecar).
+    if (_CGROUP_V2_ROOT / "cgroup.controllers").is_file():
+        claw = str(_CGROUP_V2_ROOT / "claw")
+        if claw not in roots:
+            roots.append(claw)
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for root in roots:
+        if root not in seen:
+            seen.add(root)
+            unique.append(root)
+    return unique
+
+
+def _enable_cgroup_controllers(root: Path) -> None:
+    """Best-effort enable of cpu/memory/cpuset on a delegated cgroup parent."""
+    wanted = ("cpu", "memory", "cpuset")
+    try:
+        current = (
+            (root / "cgroup.subtree_control").read_text(encoding="utf-8").split()
+        )
+    except OSError:
+        return
+    additions = [name for name in wanted if name not in current]
+    if not additions:
+        return
+    try:
+        (root / "cgroup.subtree_control").write_text(
+            " ".join(f"+{name}" for name in additions),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _cgroup_accounting_usable(root_path: Path) -> bool:
+    """True when cpu/memory accounting can be obtained for a child cgroup.
+
+    A per-execution cgroup is only useful for resource accounting when cpu or
+    memory is delegated via the parent's ``cgroup.subtree_control`` or is
+    available on the parent's ``cgroup.controllers`` so it can be delegated.
+    Otherwise ``cpu.stat``/``memory.current`` stay empty and the cgroup view
+    would be worse than the per-PID fallback.
+
+    This is deliberately best-effort: when the cgroupfs files are not
+    inspectable (e.g. an explicitly configured root, or the sidecar cannot
+    read the control files), the cgroup is assumed usable rather than failing
+    -- only positive evidence that no accounting controller is available
+    rejects the candidate.
+    """
+    subtree_readable = False
+    try:
+        control = (
+            (root_path / "cgroup.subtree_control").read_text(encoding="utf-8").split()
+        )
+        subtree_readable = True
+        if any(name in control for name in ("cpu", "memory")):
+            return True
+    except OSError:
+        pass
+    try:
+        available = (
+            (root_path.parent / "cgroup.controllers")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+    except OSError:
+        # Cannot inspect the parent's available controllers.  If the subtree
+        # control was readable and already had no accounting controller, this
+        # is positive evidence the subtree is not delegated.
+        return not subtree_readable
+    return any(name in available for name in ("cpu", "memory"))
+
+
 def _prepare_host_execution_cgroup(
     execution_id: str,
     request: ExecutionStartedRequest,
     fallback_scope: ResourceScope | None,
     configured_root: str | None,
 ) -> ResourceScope | None:
-    root = configured_root or (
-        f"{fallback_scope.cgroup_path.rstrip('/')}/claw-executions"
-        if fallback_scope is not None and fallback_scope.cgroup_path
-        else (
-            str(_CGROUP_V2_ROOT / "claw")
-            if (_CGROUP_V2_ROOT / "cgroup.controllers").is_file()
-            else None
-        )
-    )
-    if root is None:
-        return None
     host_pid = _resolve_host_pid(
         request.child_pid,
         pid_namespace_inode=request.pid_namespace_inode,
@@ -397,30 +502,47 @@ def _prepare_host_execution_cgroup(
     )
     if host_pid is None:
         return None
-    cgroup_path = Path(root) / _safe_cgroup_name(execution_id)
-    try:
-        cgroup_path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        (cgroup_path / "cgroup.procs").write_text(str(host_pid), encoding="utf-8")
-    except OSError:
-        return None
-    if not _host_pid_in_cgroup(host_pid, cgroup_path):
-        _cleanup_owned_cgroup(str(cgroup_path))
-        return None
-    return ResourceScope(
-        kind="cgroup-v2",
-        execution_id=execution_id,
-        pid=host_pid,
-        root_pid=host_pid,
-        root_starttime_ticks=_pid_starttime_ticks(host_pid),
-        cgroup_path=str(cgroup_path),
-        pid_namespace_inode=_pid_namespace_inode(host_pid),
-        container_id=request.container_id or (
-            fallback_scope.container_id if fallback_scope is not None else None
-        ),
-        include_children=True,
-        source="claw-sidecar-host-cgroup",
-        attribution_source="exclusive-execution-cgroup",
-    )
+    for root in _host_execution_cgroup_roots(fallback_scope, configured_root):
+        root_path = Path(root)
+        cgroup_path = root_path / _safe_cgroup_name(execution_id)
+        try:
+            root_path.mkdir(parents=True, exist_ok=True)
+            _enable_cgroup_controllers(root_path)
+            if not _cgroup_accounting_usable(root_path):
+                # No accounting controller delegated at this root: the cgroup
+                # would yield empty cpu/mem.  Try the next candidate.
+                raise PermissionError(f"no accounting controller at {root}")
+            cgroup_path.mkdir(mode=0o700, exist_ok=True)
+            (cgroup_path / "cgroup.procs").write_text(
+                str(host_pid), encoding="utf-8"
+            )
+        except OSError as exc:
+            # Unusable root (read-only / no delegation / no permission);
+            # try the next one.
+            try:
+                cgroup_path.rmdir()
+            except OSError:
+                pass
+            continue
+        if not _host_pid_in_cgroup(host_pid, cgroup_path):
+            _cleanup_owned_cgroup(str(cgroup_path))
+            continue
+        return ResourceScope(
+            kind="cgroup-v2",
+            execution_id=execution_id,
+            pid=host_pid,
+            root_pid=host_pid,
+            root_starttime_ticks=_pid_starttime_ticks(host_pid),
+            cgroup_path=str(cgroup_path),
+            pid_namespace_inode=_pid_namespace_inode(host_pid),
+            container_id=request.container_id or (
+                fallback_scope.container_id if fallback_scope is not None else None
+            ),
+            include_children=True,
+            source="claw-sidecar-host-cgroup",
+            attribution_source="exclusive-execution-cgroup",
+        )
+    return None
 
 
 def _host_pid_in_cgroup(host_pid: int, cgroup_path: Path) -> bool:

@@ -16,7 +16,7 @@ import agent_scheduler.api.app as app_module
 from agent_scheduler.api.app import create_app
 from agent_scheduler.api.dependencies import build_state
 from agent_scheduler.config import SchedulerConfig
-from agent_scheduler.contracts.models import ParamFeatures, ToolBeforeRequest
+from agent_scheduler.contracts.models import ParamFeatures, ResourceScope, ToolBeforeRequest
 from agent_scheduler.llm_proxy import (
     _forward_headers,
     _parse_sse_buffer,
@@ -46,6 +46,67 @@ def test_coverage_ratio_is_defensively_bounded() -> None:
     assert duration_ns == 100
     assert ratio == 1.0
     assert reason == "full_window"
+
+
+def test_v6_quality_is_honest_about_partial_sampling() -> None:
+    from agent_scheduler.trace import _v6_quality
+
+    # Full window coverage with healthy sampling is the only "complete".
+    assert _v6_quality("ok", "full_window") == "complete"
+    # Partial/low sampling must never be labelled complete even under full
+    # coverage (e.g. a rebased/mixed baseline that only sampled a late window).
+    assert _v6_quality("partial", "full_window") == "partial"
+    assert _v6_quality("low", "full_window") == "partial"
+    assert _v6_quality("partial", "pid_registered_late") == "partial"
+    assert _v6_quality("ok", "pid_registered_late") == "partial"
+    assert _v6_quality("unattributed", "full_window") == "unknown"
+    assert _v6_quality("unavailable", "full_window") == "unknown"
+
+
+def test_host_execution_cgroup_roots_are_permission_aware(monkeypatch) -> None:
+    from agent_scheduler.api import app as app_module
+
+    fallback = ResourceScope(
+        kind="cgroup-v2",
+        pid=1,
+        root_pid=1,
+        cgroup_path="/sys/fs/cgroup/system.slice/docker-x.scope",
+        source="openclaw-sandbox",
+        attribution_source="shared-sandbox-container",
+    )
+    # Non-root (no geteuid on this platform -> euid -1): only the fallback
+    # container subtree candidate is emitted.
+    roots = app_module._host_execution_cgroup_roots(fallback, None)
+    assert "/sys/fs/cgroup/system.slice/docker-x.scope/claw-executions" in roots
+
+    # A configured root short-circuits the search entirely.
+    assert app_module._host_execution_cgroup_roots(fallback, "/cfg/claw") == [
+        "/cfg/claw"
+    ]
+
+    # Root (euid 0): the root-managed claw cgroup is the first candidate.
+    # ``os`` is a frozen module on Windows, so patch the module reference with
+    # a stand-in that only carries ``geteuid``.
+    import types
+
+    monkeypatch.setattr(
+        app_module, "os", types.SimpleNamespace(geteuid=lambda: 0)
+    )
+    roots_root = app_module._host_execution_cgroup_roots(fallback, None)
+    assert roots_root[0].replace("\\", "/") == "/sys/fs/cgroup/claw"
+    assert "/sys/fs/cgroup/system.slice/docker-x.scope/claw-executions" in roots_root
+
+
+def test_cgroup_accounting_usable_reads_subtree_control(tmp_path) -> None:
+    from agent_scheduler.api import app as app_module
+
+    parent = tmp_path / "cg"
+    parent.mkdir()
+    (parent / "cgroup.subtree_control").write_text("cpu memory", encoding="utf-8")
+    assert app_module._cgroup_accounting_usable(parent) is True
+
+    (parent / "cgroup.subtree_control").write_text("pids", encoding="utf-8")
+    assert app_module._cgroup_accounting_usable(parent) is False
 
 
 def _read_trace_records(trace_dir: Path) -> list[dict]:
@@ -704,6 +765,117 @@ def test_internal_tool_overrides_shared_runtime_scope_with_docker_exec(tmp_path:
     assert tool_end["resources"]["scope"] == "process_tree"
     assert tool_end["resources"]["attribution_source"] == "docker-exec-pid"
     assert tool_end["resources"]["coverage_reason"] != "shared_runtime_process"
+
+
+def test_host_sandbox_scoped_read_gets_docker_exec_pid(tmp_path: Path) -> None:
+    """host-openclaw-sandbox: read/edit run as docker execs with a per-tool PID.
+
+    ``with_sandbox_fallback`` gives the before-request an openclaw-sandbox
+    (shared-sandbox-container) scope, but the Docker observer must still
+    register the tool and override that whole-container scope with the
+    per-tool docker-exec PID captured from the sandbox's ``docker exec``.
+    """
+    sandbox_cgroup = tmp_path / "sandbox-cgroup"
+    _write_cgroup_fixture(sandbox_cgroup, usage_usec=100_000)
+    trace_dir = tmp_path / "traces"
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=trace_dir,
+            sandbox_cgroup_path=str(sandbox_cgroup),
+            sandbox_container_id="sandbox-1",
+        )
+    )
+    state.docker_exec_observer = DockerExecObserver(
+        enabled=True,
+        container_id="sandbox-1",
+        autostart=False,
+    )
+    client = TestClient(create_app(state))
+    sandbox_scope: dict[str, object] = {
+        "kind": "cgroup-v2",
+        "execution_id": None,
+        "pid": os.getpid(),
+        "root_pid": os.getpid(),
+        "process_start_time": None,
+        "root_starttime_ticks": None,
+        "cgroup_path": str(sandbox_cgroup),
+        "pid_namespace_inode": None,
+        "container_id": "sandbox-1",
+        "include_children": True,
+        "source": "openclaw-sandbox",
+        "attribution_source": "shared-sandbox-container",
+    }
+    request: dict[str, object] = {
+        "schema_version": "scheduler.v1",
+        "event_id": "evt-read-sandbox-start",
+        "occurred_at": "2026-07-16T03:23:00Z",
+        "plugin_version": "0.1.0",
+        "run_id": "run-docker-exec",
+        "session_id": "session-docker-exec",
+        "session_key": None,
+        "agent_id": None,
+        "tool_call_id": "call-read-sandbox",
+        "tool_name": "read",
+        "tool_kind": "file",
+        "tool_input_kind": "json",
+        "operation_hint": None,
+        "derived_paths": [],
+        "params_digest": "sha256:" + "a" * 64,
+        "param_features": {
+            "serialized_size_bytes": 10,
+            "string_length": 5,
+            "list_item_count": 0,
+            "path_count": 1,
+            "has_command_like_field": False,
+        },
+        "raw_params": {"path": "README.md"},
+        "resource_scope": sandbox_scope,
+    }
+    decision = client.post("/v1/decisions/tool", json=request).json()
+    state.docker_exec_observer.record_exec_start(
+        exec_id="exec-read-sandbox-1",
+        container_id="sandbox-1",
+        pid=os.getpid(),
+        command="openclaw-sandbox-fs read README.md",
+    )
+    completion: dict[str, object] = {
+        "schema_version": "scheduler.v1",
+        "event_id": "evt-read-sandbox-end",
+        "occurred_at": "2026-07-16T03:23:01Z",
+        "plugin_version": "0.1.0",
+        "run_id": "run-docker-exec",
+        "session_id": "session-docker-exec",
+        "session_key": None,
+        "agent_id": None,
+        "tool_call_id": "call-read-sandbox",
+        "decision_id": decision["decision_id"],
+        "lease_id": decision["lease_id"],
+        "execution_id": None,
+        "tool_name": "read",
+        "duration_ms": 100,
+        "succeeded": True,
+        "error_type": None,
+        "error_digest": None,
+        "result_size_bytes": 4,
+        "raw_result": "data",
+        "resource_scope": sandbox_scope,
+    }
+
+    assert client.post("/v1/events/tool-completed", json=completion).json() == {
+        "stored": True
+    }
+
+    tool_end = [
+        record
+        for record in _read_trace_records(trace_dir)
+        if record.get("record_type") == "span_end" and record.get("kind") == "tool"
+    ][0]
+    assert tool_end["execution"]["source"] == "docker-events"
+    assert tool_end["execution"]["payload_pid"] == os.getpid()
+    assert tool_end["resources"]["scope"] == "process_tree"
+    assert tool_end["resources"]["attribution_source"] == "docker-exec-pid"
+    assert tool_end["resources"]["attribution_status"] == "attributed"
+    assert tool_end["resources"]["coverage_reason"] != "shared_sandbox_container"
 
 
 def test_docker_exec_event_uses_exec_id_attribute_not_container_id() -> None:

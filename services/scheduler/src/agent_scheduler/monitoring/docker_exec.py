@@ -286,7 +286,12 @@ class DockerExecObserver:
     def _container_matches(self, container_id: str | None, container_name: str | None) -> bool:
         short = _short_container_id(container_id)
         if self.container_id and short:
-            return short.startswith(self.container_id) or self.container_id.startswith(short)
+            # The exact-id branch is the strongest signal; when it does not
+            # match, fall through to the prefix/global rules instead of
+            # dropping the event (the configured id may be a stale snapshot
+            # while the runtime-discovered prefix is still correct).
+            if short.startswith(self.container_id) or self.container_id.startswith(short):
+                return True
         if self.container_prefix and container_name:
             return container_name.startswith(self.container_prefix)
         return self.container_id is None and self.container_prefix is None
