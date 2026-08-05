@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -312,8 +313,15 @@ def _verified_host_execution_scope(
     if derived is None:
         return None
     if request.cgroup_path is not None:
+        # The launcher may report a cgroup path from ITS OWN cgroup namespace
+        # (host-openclaw-sandbox: the container's cgroupfs view), which is not
+        # host-visible or is rewritten relative to the container cgroup root.
+        # /proc/<host_pid>/cgroup is the host authority (the pid was already
+        # confirmed a member of the derived path), so only reject when BOTH
+        # the claimed and derived paths are host-valid and disagree (that
+        # would mean the process moved since the launcher reported its path).
         claimed = _canonical_cgroup_path(request.cgroup_path)
-        if claimed is None or claimed != Path(derived):
+        if claimed is not None and claimed != Path(derived):
             return None
     return ResourceScope(
         kind="cgroup-v2",
@@ -500,6 +508,31 @@ def _cgroup_accounting_usable(root_path: Path) -> bool:
 def _record_cgroup_diag(diagnostics: list[str] | None, message: str) -> None:
     if diagnostics is not None:
         diagnostics.append(message)
+
+
+def _log_execution_started_decision(
+    execution_id: str,
+    request: ExecutionStartedRequest,
+    trusted_root_pid: int | None,
+    scope: ResourceScope | None,
+    gate_failed: bool,
+) -> None:
+    """One-line per-execution decision log (captured in sidecar-stderr.txt)."""
+    print(
+        "execution_started "
+        f"id={execution_id} "
+        f"gate={request.host_cgroup_gate} "
+        f"launcher_cgroup={request.cgroup_path or '-'} "
+        f"backend={getattr(request, 'backend', None)} "
+        f"container={request.container_id or '-'} "
+        f"trusted_root_pid={trusted_root_pid} "
+        f"gate_failed={gate_failed} "
+        f"scope_kind={scope.kind if scope else None} "
+        f"scope_source={scope.source if scope else None} "
+        f"scope_cgroup={scope.cgroup_path if scope else None}",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _write_trace_dir_diag(s: AppState, filename: str, lines: list[str]) -> None:
@@ -1814,24 +1847,38 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 # resolves both PID identity and cgroup membership. The
                 # launcher-supplied path is never an attribution authority.
                 record.scope = None
-        # Per-PID attribution fallback: when no per-execution cgroup could be
-        # created (fork-exec in a read-only-cgroupfs sandbox) but the launcher
-        # PID was resolved to a verified host PID, attribute to that PID's
-        # process tree instead of the shared sandbox container cgroup.
+        # Host-backed fallback: when no per-execution cgroup could be created
+        # on the host (read-only-cgroupfs sandbox, or a launcher-side container
+        # cgroup that is not host-valid) but the launcher PID was resolved to a
+        # verified host PID, first derive the process's ACTUAL host cgroup from
+        # /proc/<host_pid>/cgroup (cgroup-backed), and only if that is not
+        # usable fall back to per-PID process-tree attribution.
         if (
             record is not None
             and trusted_root_pid is not None
             and (record.scope is None or not _has_usable_cgroup_scope(record.scope))
         ):
-            s.executions.update_scope(
+            host_scope = _verified_host_execution_scope(
                 execution_id,
-                _verified_host_pid_scope(
+                request,
+                trusted_root_pid,
+            )
+            if host_scope is None:
+                host_scope = _verified_host_pid_scope(
                     execution_id,
                     trusted_root_pid,
                     request.process_starttime_ticks,
-                ),
-            )
+                )
+            s.executions.update_scope(execution_id, host_scope)
             record = s.executions.get(execution_id)
+        if record is not None:
+            _log_execution_started_decision(
+                execution_id,
+                request,
+                trusted_root_pid,
+                record.scope,
+                host_cgroup_gate_failed,
+            )
         if record is not None and record.scope is not None:
             monitor_scope = record.scope
             if (

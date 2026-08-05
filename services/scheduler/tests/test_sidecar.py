@@ -1744,6 +1744,146 @@ def test_execution_started_host_cgroup_gate_creates_exact_scope(
     assert begin_calls[-1]["cgroup_path"] == str(exact)
 
 
+def test_execution_started_derives_host_cgroup_when_launcher_gate_off(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """host_cgroup_gate=False (the launcher created its own cgroup in the
+    container) must still derive the launcher's ACTUAL host cgroup from
+    /proc/<host_pid>/cgroup instead of jumping straight to per-PID psutil.
+    The launcher-supplied container-namespace path is not host-valid and must
+    not block the host derivation."""
+    host_cgroup = tmp_path / "host-cgroup"
+    _write_cgroup_fixture(host_cgroup)
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=tmp_path / "traces",
+            sandbox_cgroup_path=str(host_cgroup),
+            sandbox_container_id="b" * 64,
+            tool_resource_stage2_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
+    monkeypatch.setattr(app_module, "_resolve_host_pid", lambda *_args, **_kwargs: 4242)
+    monkeypatch.setattr(
+        app_module,
+        "_host_cgroup_path_for_pid",
+        lambda _pid: str(host_cgroup.resolve()),
+    )
+    monkeypatch.setattr(app_module, "_pid_starttime_ticks", lambda _pid: 99)
+    monkeypatch.setattr(app_module, "_pid_namespace_inode", lambda _pid: 123)
+
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-host-cgroup-derive",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"enable_cgroup": True},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": 100,
+        },
+    ).json()
+    started = client.post(
+        "/v2/executions/call-exec/started",
+        json={
+            "update_token": claim["update_token"],
+            "launcher_pid": 100,
+            "child_pid": 7,
+            "process_starttime_ticks": 99,
+            "cgroup_path": "/claw-executions/call-exec",
+            "pid_namespace_inode": 123,
+            "container_id": "b" * 64,
+            "host_cgroup_gate": False,
+        },
+    )
+
+    assert started.status_code == 200
+    scope = client.get("/v2/executions/call-exec/scope").json()["execution_scope"]
+    assert scope["kind"] == "cgroup-v2"
+    assert scope["cgroup_path"] == str(host_cgroup.resolve())
+    assert scope["attribution_source"] == "trusted-execution-root-pid"
+    assert scope["root_pid"] == 4242
+
+
+def test_execution_started_falls_back_to_per_pid_when_host_cgroup_unresolvable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """When /proc cannot yield a host cgroup for the launcher pid, the scope
+    degrades to per-PID process-tree attribution (still attributed, not lost)."""
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=tmp_path / "traces",
+            sandbox_container_id="b" * 64,
+            tool_resource_stage2_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
+    monkeypatch.setattr(app_module, "_resolve_host_pid", lambda *_args, **_kwargs: 4242)
+    monkeypatch.setattr(app_module, "_host_cgroup_path_for_pid", lambda _pid: None)
+    monkeypatch.setattr(app_module, "_pid_starttime_ticks", lambda _pid: 99)
+    monkeypatch.setattr(app_module, "_pid_namespace_inode", lambda _pid: 123)
+
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-host-cgroup-fallback",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"enable_cgroup": True},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": 100,
+        },
+    ).json()
+    started = client.post(
+        "/v2/executions/call-exec/started",
+        json={
+            "update_token": claim["update_token"],
+            "launcher_pid": 100,
+            "child_pid": 7,
+            "process_starttime_ticks": 99,
+            "cgroup_path": "/claw-executions/call-exec",
+            "pid_namespace_inode": 123,
+            "container_id": "b" * 64,
+            "host_cgroup_gate": False,
+        },
+    )
+
+    assert started.status_code == 200
+    scope = client.get("/v2/executions/call-exec/scope").json()["execution_scope"]
+    assert scope["kind"] == "pid"
+    assert scope["cgroup_path"] is None
+    assert scope["attribution_source"] == "trusted-execution-root-pid"
+    assert scope["root_pid"] == 4242
+
+
 def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(
     tmp_path: Path,
     monkeypatch,
