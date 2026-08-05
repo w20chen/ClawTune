@@ -28,6 +28,9 @@ import threading
 from typing import Any, Iterable
 
 _BPF_SOURCE = r"""
+#include <linux/nsproxy.h>
+#include <linux/pid_namespace.h>
+#include <linux/sched.h>
 #include <uapi/linux/ptrace.h>
 
 struct claw_net_key_t {
@@ -43,12 +46,15 @@ static int claw_net_wanted(void) {
     struct nsproxy *nsproxy = 0;
     struct pid_namespace *pid_ns = 0;
     u32 inum = 0;
+    u64 inum_key = 0;
     bpf_probe_read_kernel(&nsproxy, sizeof(nsproxy), &task->nsproxy);
     if (!nsproxy) return 0;
     bpf_probe_read_kernel(&pid_ns, sizeof(pid_ns), &nsproxy->pid_ns_for_children);
     if (!pid_ns) return 0;
     bpf_probe_read_kernel(&inum, sizeof(inum), &pid_ns->ns.inum);
-    return inum && claw_allowed_pid_namespaces.lookup(&inum) != 0;
+    if (!inum) return 0;
+    inum_key = (u64)inum;
+    return claw_allowed_pid_namespaces.lookup(&inum_key) != 0;
 }
 
 static void claw_net_add_rx(u32 tgid, u64 bytes) {
