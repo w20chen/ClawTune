@@ -117,6 +117,7 @@ def build_state(config: SchedulerConfig | None = None) -> AppState:
             docker_socket=cfg.docker_socket,
             container_id=cfg.sandbox_container_id,
             container_prefix=cfg.docker_exec_container_prefix,
+            cgroup_path=cfg.sandbox_cgroup_path,
             on_scope=tool_monitor.bind_scope,
         )
         if cfg.docker_exec_observer_enabled

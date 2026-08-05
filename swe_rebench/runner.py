@@ -295,7 +295,10 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                 if resources.get("scope") == "process_tree":
                     report["process_tree_tool_span_ends"] += 1
                 if (
-                    _nested_get(record, ("execution", "source")) == "docker-events"
+                    _nested_get(record, ("execution", "source")) in {
+                        "docker-events",
+                        "docker-cgroup-diff",
+                    }
                     and resources.get("scope") == "process_tree"
                     and resources.get("attribution_source") == "docker-exec-pid"
                 ):
@@ -1184,6 +1187,23 @@ def _launcher_cgroup_failure_detail(result: dict[str, Any]) -> str:
     )
     if not scope_discovered and discovery_error:
         parts.append(f"sandbox-scope discovery last error: {discovery_error}")
+    # Sidecar-side per-execution cgroup provisioning diagnostics (written by
+    # execution_started when _prepare_host_execution_cgroup fails) explain the
+    # exact candidate root / step that failed, e.g. whether the launcher host
+    # pid resolved, which root lacked controller delegation, or which
+    # cgroup.procs move was rejected.
+    cgroup_provision_error: str | None = None
+    if trace_dir and isinstance(trace_dir, str):
+        cgroup_provision_path = Path(trace_dir) / "host_cgroup_provision_last_error.txt"
+        if cgroup_provision_path.is_file():
+            try:
+                cgroup_provision_error = cgroup_provision_path.read_text(
+                    encoding="utf-8"
+                ).strip()
+            except OSError:
+                cgroup_provision_error = None
+    if cgroup_provision_error:
+        parts.append(f"host cgroup provisioning last error: {cgroup_provision_error}")
     return "; ".join(parts)
 
 

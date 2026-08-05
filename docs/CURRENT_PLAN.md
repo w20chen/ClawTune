@@ -2909,4 +2909,73 @@ Validation commands that cannot run in this Windows workspace:
   benchmark --sample 1` and confirm per-PID net bytes in the trace (BCC per-tgid
   instead of the namespace `/proc/net/dev` fallback).
 
+## (a) host per-exec cgroup hardening + (b) read/edit per-PID fallback (2026-08-06)
+
+Goal on the Kunpeng host: make exec use a real per-execution cgroup (a second,
+exact data source alongside eBPF) and make read/edit per-PID instead of the
+whole `shared-sandbox-container`.
+
+(a) `services/scheduler/src/agent_scheduler/api/app.py`
+`_prepare_host_execution_cgroup`:
+
+- `_host_execution_cgroup_roots` now tries the **sandbox container's own
+  subtree** (`<container-cgroup>/claw-executions`) FIRST: a child of the
+  payload's current cgroup inherits the same controllers, so moving the tree
+  in is the canonical cgroup-v2 move and works even when the host rejects
+  cross-controller-boundary moves to a sibling `/sys/fs/cgroup/claw`.
+- `_move_pid_tree_into_cgroup` moves the **whole pid tree** (root + psutil
+  recursive descendants) in one newline-separated `cgroup.procs` write (a
+  per-pid loop would overwrite earlier members), with a short retry for fork
+  races; accepts once the root pid is a member (best-effort).
+- Per-root failure reasons are collected into a `diagnostics` list and, on
+  failure, `execution_started` writes `trace_dir/host_cgroup_provision_last_error.txt`
+  so the operator sees exactly which root/step failed (host-pid resolution /
+  mkdir / controller delegation / cgroup.procs move).
+
+(b) `monitoring/docker_exec.py` `DockerExecObserver`:
+
+- New **cgroup.procs diff fallback**: when no docker-exec event matches a
+  tool, pids that newly appeared in the sandbox container `cgroup.procs`
+  during the tool window are the tool's own, and `infer_scope` returns a
+  per-PID `process_tree` scope (`source="docker-cgroup-diff"`,
+  `attribution_source="docker-exec-pid"`) instead of falling back to the whole
+  container. A `_cgroup_thread` polls `cgroup.procs` every ~20ms (captures
+  short-lived read/edit processes). The cgroup path is wired from
+  `cfg.sandbox_cgroup_path` and updated on sandbox-scope discovery
+  (`store_sandbox_scope` -> `update_cgroup`).
+- `docker_exec_observer_diagnostics.json` is written to `trace_dir` at sidecar
+  shutdown (events seen / matched / inspected / cgroup-diff captures).
+- runner `_inspect_trace` counts `docker-cgroup-diff` spans as
+  `docker_exec_pid_tool_span_ends`.
+
+Validation completed in this workspace:
+
+- Scheduler suite `285 passed, 2 skipped` (new:
+  `test_docker_exec_observer_cgroup_diff_fallback_captures_pid`,
+  `test_prepare_host_execution_cgroup_moves_pid_tree_and_records_diagnostics`;
+  updated the roots-priority assertion for the container-subtree-first order
+  and the `cgroup.procs` newline format).
+- Root suite `192 passed, 2 skipped`.
+- Mirrored into `swe_rebench/bundle/scheduler/src/...` (app.py + docker_exec.py
+  verified byte-identical via `git diff --no-index`; dependencies.py has a
+  pre-existing unrelated staleness: the bundle lacks the predictor's
+  `ttl_by_bucket_s`/`miss_penalty_s` params, which the runtime bundle gets from
+  src on `prepare`).
+- Runtime bundle regenerated via `python -m swe_rebench.runner prepare`.
+
+Validation commands that cannot run in this Windows workspace:
+
+- On the Kunpeng host: `git pull`, then re-run
+  `python3 scripts/clawtune.py benchmark --sample 1`. Confirm from
+  `trace_dir/`:
+  - `host_cgroup_provision_last_error.txt` absent (or a "root ... OK - ... owns
+    launcher pid tree" line) => exec got `exclusive-execution-cgroup` and the
+    resource sampler shows `monitor_source=cgroup-v2` with `cgroup_cpu_time_s`
+    populated; if it still fails, that file names the exact failing step.
+  - `docker_exec_observer_diagnostics.json` shows `cgroup_diff_captures` > 0
+    => read/edit are `process_tree`/`docker-exec-pid` (per-PID) instead of
+    `shared-sandbox-container`; the trace `docker_exec_pid_tool_span_ends` goes
+    from 0 to > 0.
+
+
 

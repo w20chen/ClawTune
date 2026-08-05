@@ -84,17 +84,147 @@ def test_host_execution_cgroup_roots_are_permission_aware(monkeypatch) -> None:
         "/cfg/claw"
     ]
 
-    # Root (euid 0): the root-managed claw cgroup is the first candidate.
-    # ``os`` is a frozen module on Windows, so patch the module reference with
-    # a stand-in that only carries ``geteuid``.
+    # Root (euid 0): the sandbox container subtree is tried FIRST (a child of
+    # the payload's cgroup inherits the same controllers, so the move is the
+    # most reliable), then the root-managed claw cgroup.
     import types
 
     monkeypatch.setattr(
         app_module, "os", types.SimpleNamespace(geteuid=lambda: 0)
     )
     roots_root = app_module._host_execution_cgroup_roots(fallback, None)
-    assert roots_root[0].replace("\\", "/") == "/sys/fs/cgroup/claw"
-    assert "/sys/fs/cgroup/system.slice/docker-x.scope/claw-executions" in roots_root
+    assert roots_root[0].replace("\\", "/") == (
+        "/sys/fs/cgroup/system.slice/docker-x.scope/claw-executions"
+    )
+    assert any(
+        root.replace("\\", "/") == "/sys/fs/cgroup/claw"
+        for root in roots_root
+    )
+
+
+def test_docker_exec_observer_cgroup_diff_fallback_captures_pid(tmp_path: Path) -> None:
+    from agent_scheduler.contracts.models import ToolCompletedEvent
+
+    cgroup = tmp_path / "sandbox-cgroup"
+    cgroup.mkdir()
+    (cgroup / "cgroup.procs").write_text("100\n", encoding="utf-8")
+    request = ToolBeforeRequest(
+        schema_version="scheduler.v1",
+        event_id="evt-read-start",
+        occurred_at="2026-07-16T03:23:00Z",
+        plugin_version="0.1.0",
+        run_id="run-diff",
+        session_id="session-diff",
+        session_key=None,
+        agent_id=None,
+        tool_call_id="call-read",
+        tool_name="read",
+        tool_kind="file",
+        tool_input_kind="json",
+        operation_hint=None,
+        derived_paths=[],
+        params_digest="sha256:" + "a" * 64,
+        param_features=ParamFeatures(
+            serialized_size_bytes=10,
+            string_length=5,
+            list_item_count=0,
+            path_count=1,
+            has_command_like_field=False,
+        ),
+        raw_params={"path": "README.md"},
+        resource_scope=ResourceScope(
+            kind="cgroup-v2",
+            cgroup_path=str(cgroup),
+            container_id="sandbox-1",
+            include_children=True,
+            source="openclaw-sandbox",
+            attribution_source="shared-sandbox-container",
+        ),
+    )
+    observer = DockerExecObserver(
+        enabled=True, cgroup_path=str(cgroup), autostart=False
+    )
+    observer.begin_tool(request)
+    # A new pid (the read docker exec) appears in the container cgroup during
+    # the tool window; the docker-events path finds nothing.
+    (cgroup / "cgroup.procs").write_text("100\n12345\n", encoding="utf-8")
+    observer._poll_cgroup_once()
+    event = ToolCompletedEvent(
+        schema_version="scheduler.v1",
+        event_id="evt-read-end",
+        occurred_at="2026-07-16T03:23:01Z",
+        plugin_version="0.1.0",
+        run_id="run-diff",
+        session_id="session-diff",
+        session_key=None,
+        agent_id=None,
+        tool_call_id="call-read",
+        decision_id="decision-1",
+        lease_id="lease-1",
+        execution_id=None,
+        tool_name="read",
+        duration_ms=100,
+        succeeded=True,
+        error_type=None,
+        error_digest=None,
+        result_size_bytes=4,
+        raw_result="data",
+        resource_scope=None,
+    )
+    scope = observer.infer_scope(event)
+    assert scope is not None
+    assert scope.kind == "pid"
+    assert scope.root_pid == 12345
+    assert scope.attribution_source == "docker-exec-pid"
+    assert scope.source == "docker-cgroup-diff"
+    diag = observer.diagnostics()
+    assert diag["cgroup_diff_captures"] == 1
+
+
+def test_prepare_host_execution_cgroup_moves_pid_tree_and_records_diagnostics(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    cgroup_root = tmp_path / "cgroup"
+    cgroup_root.mkdir()
+    (cgroup_root / "cgroup.controllers").write_text(
+        "cpu memory\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(app_module, "_CGROUP_V2_ROOT", cgroup_root)
+    monkeypatch.setattr(app_module, "_resolve_host_pid", lambda *_args, **_kwargs: 4242)
+    # The payload has already forked a child; both must be moved into the
+    # per-execution cgroup so the cgroup captures the whole tool's CPU.
+    monkeypatch.setattr(
+        app_module, "_process_tree_pids", lambda _pid: [4242, 9999]
+    )
+    request = SimpleNamespace(
+        child_pid=7,
+        pid_namespace_inode=123,
+        process_starttime_ticks=456,
+        container_id=None,
+    )
+    diagnostics: list[str] = []
+
+    scope = app_module._prepare_host_execution_cgroup(
+        "exec-1",
+        request,
+        None,
+        None,
+        diagnostics=diagnostics,
+    )
+
+    assert scope is not None
+    assert scope.kind == "cgroup-v2"
+    assert scope.cgroup_path == str(cgroup_root / "claw" / "exec-1")
+    assert scope.attribution_source == "exclusive-execution-cgroup"
+    procs = (cgroup_root / "claw" / "exec-1" / "cgroup.procs").read_text(
+        encoding="utf-8"
+    ).split()
+    assert "4242" in procs
+    assert "9999" in procs
+    joined = "\n".join(diagnostics)
+    assert "resolved launcher host pid 4242" in joined
+    assert "owns launcher pid tree" in joined
 
 
 def test_cgroup_accounting_usable_reads_subtree_control(tmp_path) -> None:
@@ -263,9 +393,9 @@ def test_host_cgroup_gate_uses_standard_v2_root_when_unconfigured(
 
     assert scope is not None
     assert scope.cgroup_path == str(cgroup_root / "claw" / "exec-1")
-    assert (cgroup_root / "claw" / "exec-1" / "cgroup.procs").read_text(
-        encoding="utf-8"
-    ) == "4242"
+    assert (
+        cgroup_root / "claw" / "exec-1" / "cgroup.procs"
+    ).read_text(encoding="utf-8").strip() == "4242"
 
 
 def test_verified_host_scope_falls_back_to_authenticated_pid_lineage(
@@ -1606,7 +1736,7 @@ def test_execution_started_host_cgroup_gate_creates_exact_scope(
     exact = tmp_path / "exact-root" / "call-exec"
     assert started.status_code == 200
     assert started.json() == {"stored": True, "cgroup_path": str(exact)}
-    assert (exact / "cgroup.procs").read_text(encoding="utf-8") == "4242"
+    assert (exact / "cgroup.procs").read_text(encoding="utf-8").strip() == "4242"
     scope = client.get("/v2/executions/call-exec/scope").json()["execution_scope"]
     assert scope["cgroup_path"] == str(exact)
     assert scope["pid"] == 4242

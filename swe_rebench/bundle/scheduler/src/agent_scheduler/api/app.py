@@ -380,25 +380,37 @@ def _host_execution_cgroup_roots(
     """Candidate per-execution cgroup roots, in priority order.
 
     The sidecar runs on the host and needs a writable cgroup-v2 subtree to
-    create per-execution cgroups.  Ordering is permission-aware:
-      - root (euid 0): /sys/fs/cgroup/claw first (root-managed, controllers
-        can be delegated there), then the container subtree.
-      - non-root: the systemd user slice first (pre-delegated via PAM/logind
-        and writable by the unprivileged sidecar), then /sys/fs/cgroup/claw,
-        then the container subtree.
+    create per-execution cgroups.  Priority:
+
+      1. the sandbox container's own subtree
+         (``<container-cgroup>/claw-executions``): a child of the payload's
+         current cgroup inherits the same controller set, so moving the
+         process tree into it is the canonical cgroup-v2 move and succeeds
+         even when the host cannot delegate a *sibling* subtree (some
+         systemd/openEuler hosts reject moves across controller boundaries).
+      2. root (euid 0): /sys/fs/cgroup/claw (root-managed).
+      3. non-root: the systemd user slice (pre-delegated via PAM/logind),
+         then /sys/fs/cgroup/claw.
     An explicit ``configured_root`` short-circuits the search.
     """
     roots: list[str] = []
     if configured_root:
         return [configured_root]
     claw_root = _CGROUP_V2_ROOT / "claw"
+    if fallback_scope is not None and fallback_scope.cgroup_path:
+        # Same-subtree child of the sandbox container cgroup: controllers are
+        # already delegated there (the container cgroup yields cpu/mem) and
+        # the payload does not cross a controller boundary when moved in.
+        roots.append(
+            f"{fallback_scope.cgroup_path.rstrip('/')}/claw-executions"
+        )
     try:
         euid = os.geteuid()
     except (AttributeError, OSError):
         euid = -1
     if euid == 0:
-        # Privileged service: root-managed claw cgroup is the natural target.
-        roots.append(str(_CGROUP_V2_ROOT / "claw"))
+        # Privileged service: root-managed claw cgroup is a natural target.
+        roots.append(str(claw_root))
     else:
         # Unprivileged service: systemd user manager slice is pre-delegated.
         if euid > 0:
@@ -408,15 +420,11 @@ def _host_execution_cgroup_roots(
             )
         if claw_root.exists():
             roots.append(str(claw_root))
-    if fallback_scope is not None and fallback_scope.cgroup_path:
-        roots.append(
-            f"{fallback_scope.cgroup_path.rstrip('/')}/claw-executions"
-        )
     # When the v2 root is available (cgroup.controllers exists), the claw
     # cgroup is a valid candidate for both root and unprivileged services
     # (root creates it; a delegated claw is writable by the sidecar).
     if (_CGROUP_V2_ROOT / "cgroup.controllers").is_file():
-        claw = str(_CGROUP_V2_ROOT / "claw")
+        claw = str(claw_root)
         if claw not in roots:
             roots.append(claw)
     # Deduplicate while preserving order.
@@ -489,11 +497,104 @@ def _cgroup_accounting_usable(root_path: Path) -> bool:
     return any(name in available for name in ("cpu", "memory"))
 
 
+def _record_cgroup_diag(diagnostics: list[str] | None, message: str) -> None:
+    if diagnostics is not None:
+        diagnostics.append(message)
+
+
+def _write_trace_dir_diag(s: AppState, filename: str, lines: list[str]) -> None:
+    """Best-effort write of a diagnostics file under the sidecar trace dir."""
+    trace_dir = getattr(s.config, "trace_dir", None)
+    if not trace_dir:
+        return
+    try:
+        path = Path(trace_dir) / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _write_trace_dir_json(
+    s: AppState,
+    filename: str,
+    payload: dict[str, Any],
+) -> None:
+    """Best-effort write of a JSON diagnostics file under the sidecar trace dir."""
+    trace_dir = getattr(s.config, "trace_dir", None)
+    if not trace_dir:
+        return
+    try:
+        import json as _json
+
+        path = Path(trace_dir) / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            _json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _process_tree_pids(host_pid: int) -> list[int]:
+    """Return host_pid plus its recursive descendant pids (best-effort)."""
+    pids = [host_pid]
+    try:
+        import psutil
+    except ImportError:
+        return pids
+    try:
+        for child in psutil.Process(host_pid).children(recursive=True):
+            pid = child.pid
+            if pid and pid != host_pid:
+                pids.append(pid)
+    except Exception:
+        pass
+    return pids
+
+
+def _move_pid_tree_into_cgroup(
+    host_pid: int,
+    cgroup_path: Path,
+    *,
+    diagnostics: list[str] | None = None,
+) -> bool:
+    """Move host_pid and its descendants into *cgroup_path* (best-effort).
+
+    The launcher payload forks children before /started; moving only the
+    parent would capture just its own future CPU.  Writing each pid to
+    ``cgroup.procs`` moves it (children inherit the cgroup at fork), with a
+    short retry to absorb fork races.  The cgroup is accepted as soon as the
+    root pid is a member.
+    """
+    procs_file = cgroup_path / "cgroup.procs"
+    for attempt in range(3):
+        pids = _process_tree_pids(host_pid)
+        # Write all pids in one write: cgroup.procs accepts newline-separated
+        # pids, and successive writes would overwrite earlier members.
+        try:
+            procs_file.write_text(
+                "".join(f"{pid}\n" for pid in pids if pid > 0),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            _record_cgroup_diag(
+                diagnostics,
+                f"cgroup.procs move pid tree failed: {exc}",
+            )
+        if _host_pid_in_cgroup(host_pid, cgroup_path):
+            return True
+        time.sleep(0.02)
+    return False
+
+
 def _prepare_host_execution_cgroup(
     execution_id: str,
     request: ExecutionStartedRequest,
     fallback_scope: ResourceScope | None,
     configured_root: str | None,
+    diagnostics: list[str] | None = None,
 ) -> ResourceScope | None:
     host_pid = _resolve_host_pid(
         request.child_pid,
@@ -501,7 +602,12 @@ def _prepare_host_execution_cgroup(
         starttime_ticks=request.process_starttime_ticks,
     )
     if host_pid is None:
+        _record_cgroup_diag(
+            diagnostics,
+            "launcher host pid could not be resolved from child_pid/namespace/starttime",
+        )
         return None
+    _record_cgroup_diag(diagnostics, f"resolved launcher host pid {host_pid}")
     for root in _host_execution_cgroup_roots(fallback_scope, configured_root):
         root_path = Path(root)
         cgroup_path = root_path / _safe_cgroup_name(execution_id)
@@ -513,20 +619,27 @@ def _prepare_host_execution_cgroup(
                 # would yield empty cpu/mem.  Try the next candidate.
                 raise PermissionError(f"no accounting controller at {root}")
             cgroup_path.mkdir(mode=0o700, exist_ok=True)
-            (cgroup_path / "cgroup.procs").write_text(
-                str(host_pid), encoding="utf-8"
-            )
+            _record_cgroup_diag(diagnostics, f"created per-exec cgroup {cgroup_path}")
         except OSError as exc:
-            # Unusable root (read-only / no delegation / no permission);
-            # try the next one.
+            _record_cgroup_diag(diagnostics, f"root {root}: setup failed: {exc}")
             try:
                 cgroup_path.rmdir()
             except OSError:
                 pass
             continue
-        if not _host_pid_in_cgroup(host_pid, cgroup_path):
+        if not _move_pid_tree_into_cgroup(
+            host_pid, cgroup_path, diagnostics=diagnostics
+        ):
+            _record_cgroup_diag(
+                diagnostics,
+                f"root {root}: could not move pid {host_pid} tree into {cgroup_path}",
+            )
             _cleanup_owned_cgroup(str(cgroup_path))
             continue
+        _record_cgroup_diag(
+            diagnostics,
+            f"root {root}: OK - {cgroup_path} owns launcher pid tree",
+        )
         return ResourceScope(
             kind="cgroup-v2",
             execution_id=execution_id,
@@ -542,6 +655,10 @@ def _prepare_host_execution_cgroup(
             source="claw-sidecar-host-cgroup",
             attribution_source="exclusive-execution-cgroup",
         )
+    _record_cgroup_diag(
+        diagnostics,
+        "no writable per-execution cgroup root succeeded",
+    )
     return None
 
 
@@ -580,6 +697,11 @@ def create_app(state: AppState | None = None) -> FastAPI:
         app_state.tool_monitor.stop()
         if app_state.docker_exec_observer is not None:
             app_state.docker_exec_observer.stop()
+            _write_trace_dir_json(
+                app_state,
+                "docker_exec_observer_diagnostics.json",
+                app_state.docker_exec_observer.diagnostics(),
+            )
         if app_state.trace_writer is not None:
             await asyncio.to_thread(app_state.trace_writer.close)
         close_predictor = getattr(app_state.predictor, "close", None)
@@ -900,6 +1022,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 s.docker_exec_observer.update_container(
                     container_id=scope.container_id,
                 )
+                s.docker_exec_observer.update_cgroup(
+                    cgroup_path=scope.cgroup_path,
+                )
         else:
             s._sandbox_scopes_by_owner[(gateway_id, runtime_id)] = scope
             if s.docker_exec_observer is not None:
@@ -912,6 +1037,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
                         run_id=None,
                     ),
                     scope,
+                )
+                s.docker_exec_observer.update_cgroup(
+                    cgroup_path=scope.cgroup_path,
                 )
 
         stage2_start_failed = False
@@ -1607,11 +1735,13 @@ def create_app(state: AppState | None = None) -> FastAPI:
             s.executions.bind_trusted_root(execution_id, trusted_root_pid)
         host_cgroup_gate_failed = False
         if record is not None and request.host_cgroup_gate:
+            cgroup_diagnostics: list[str] = []
             host_scope = _prepare_host_execution_cgroup(
                 execution_id,
                 request,
                 fallback_scope,
                 s.config.execution_cgroup_root,
+                diagnostics=cgroup_diagnostics,
             )
             if host_scope is not None:
                 s.executions.update_scope(
@@ -1631,6 +1761,14 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 # its sidecar-derived current cgroup. Telemetry then isolates
                 # only that PID's fork/exec descendants rather than treating
                 # the shared session cgroup as an identity boundary.
+                # Surface exactly which candidate root/step failed so the
+                # operator can distinguish "no delegation" from a code issue.
+                if cgroup_diagnostics:
+                    _write_trace_dir_diag(
+                        s,
+                        "host_cgroup_provision_last_error.txt",
+                        cgroup_diagnostics,
+                    )
                 host_scope = (
                     _verified_host_execution_scope(
                         execution_id,

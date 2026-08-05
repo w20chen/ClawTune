@@ -53,6 +53,7 @@ class DockerExecObserver:
         docker_bin: str | None = None,
         container_id: str | None = None,
         container_prefix: str | None = None,
+        cgroup_path: str | None = None,
         match_window_s: float = 1.0,
         max_records: int = 2_000,
         on_scope: Callable[..., bool | None] | None = None,
@@ -63,6 +64,7 @@ class DockerExecObserver:
         self.docker_bin = docker_bin or shutil.which("docker")
         self.container_id = _short_container_id(container_id)
         self.container_prefix = container_prefix
+        self.cgroup_path = cgroup_path.rstrip("/") if cgroup_path else None
         self.match_window_s = match_window_s
         self.max_records = max_records
         self.on_scope = on_scope
@@ -72,21 +74,58 @@ class DockerExecObserver:
         self._matched: dict[tuple[str | None, ...], DockerExecRecord] = {}
         self._records: list[DockerExecRecord] = []
         self._consumed_exec_ids: set[str] = set()
+        self._cgroup_baseline: dict[tuple[str | None, ...], set[int]] = {}
+        self._cgroup_seen: dict[tuple[str | None, ...], set[int]] = {}
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        if self.enabled and autostart and self.docker_bin is not None:
+        self._cgroup_thread: threading.Thread | None = None
+        self._diag: dict[str, Any] = {
+            "enabled": enabled,
+            "docker_bin_present": self.docker_bin is not None,
+            "cgroup_path": self.cgroup_path,
+            "events_loop_started": False,
+            "event_lines_seen": 0,
+            "exec_events_matched_container": 0,
+            "inspections_ok": 0,
+            "docker_exec_matches": 0,
+            "cgroup_diff_baselines": 0,
+            "cgroup_diff_captures": 0,
+            "last_error": None,
+        }
+        if self.enabled and autostart and (
+            self.docker_bin is not None or self.cgroup_path
+        ):
             self.start()
 
     def start(self) -> None:
         with self._lock:
-            if self._thread is not None:
-                return
-            self._thread = threading.Thread(target=self._run_events_loop, daemon=True)
-            self._thread.start()
+            if self._thread is None and self.docker_bin is not None:
+                self._thread = threading.Thread(
+                    target=self._run_events_loop, daemon=True
+                )
+                self._thread.start()
+                self._diag["events_loop_started"] = True
+            if self._cgroup_thread is None and self.cgroup_path:
+                self._cgroup_thread = threading.Thread(
+                    target=self._run_cgroup_poll_loop, daemon=True
+                )
+                self._cgroup_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
+
+    def update_cgroup(self, *, cgroup_path: str | None) -> None:
+        """Bind a late-discovered sandbox container cgroup for the diff fallback."""
+        with self._lock:
+            if cgroup_path:
+                self.cgroup_path = cgroup_path.rstrip("/")
+                self._diag["cgroup_path"] = self.cgroup_path
+            if self.enabled and self._cgroup_thread is None and self.cgroup_path:
+                self._cgroup_thread = threading.Thread(
+                    target=self._run_cgroup_poll_loop, daemon=True
+                )
+                self._cgroup_thread.start()
 
     def update_container(self, *, container_id: str | None, container_name: str | None = None) -> None:
         with self._lock:
@@ -126,6 +165,11 @@ class DockerExecObserver:
                 started_wall_s=time.time(),
             )
             self._active[key] = active
+            if self.cgroup_path:
+                baseline = _read_cgroup_procs(self.cgroup_path)
+                if baseline is not None:
+                    self._cgroup_baseline[key] = baseline
+                    self._diag["cgroup_diff_baselines"] += 1
             record = self._match_record(active, None)
             if record is not None:
                 self._matched[key] = record
@@ -158,10 +202,20 @@ class DockerExecObserver:
             record = self._matched.pop(matched_key, None)
             if record is None:
                 record = self._match_record(active, event)
-            if record is None:
-                return None
-            self._consumed_exec_ids.add(record.exec_id)
-        return _scope_for_record(record)
+            if record is not None:
+                self._consumed_exec_ids.add(record.exec_id)
+                self._diag["docker_exec_matches"] += 1
+                return _scope_for_record(record)
+            # Docker exec events were not observable on this host (OpenClaw may
+            # not run each native tool as a separate ``docker exec``, or the
+            # events/socket are unavailable).  Fall back to the sandbox
+            # container cgroup: pids that newly appeared in its ``cgroup.procs``
+            # during the tool window are this tool's own processes, so read/
+            # edit get per-PID attribution instead of the whole container.
+            scope = self._scope_from_cgroup_diff(matched_key, active)
+            if scope is not None:
+                self._diag["cgroup_diff_captures"] += 1
+            return scope
 
     def record_exec_start(
         self,
@@ -353,6 +407,60 @@ class DockerExecObserver:
         self._active.pop(key, None)
         return active
 
+    def _scope_from_cgroup_diff(
+        self,
+        key: tuple[str | None, ...],
+        active: _ActiveTool,
+    ) -> ResourceScope | None:
+        """Per-PID scope from pids newly seen in the sandbox cgroup window."""
+        baseline = self._cgroup_baseline.pop(key, None)
+        seen = self._cgroup_seen.pop(key, None)
+        if not seen:
+            return None
+        root_pid = min(seen)
+        container_id = None
+        scope = active.request.resource_scope
+        if scope is not None and scope.container_id:
+            container_id = scope.container_id
+        return ResourceScope(
+            kind="pid",
+            execution_id=None,
+            pid=root_pid,
+            root_pid=root_pid,
+            root_starttime_ticks=_read_pid_starttime_ticks(root_pid),
+            cgroup_path=None,
+            container_id=container_id,
+            include_children=True,
+            source="docker-cgroup-diff",
+            attribution_source="docker-exec-pid",
+        )
+
+    def _run_cgroup_poll_loop(self) -> None:
+        """Sample the sandbox container cgroup and record newly-appeared pids
+        for each active tool (captures short-lived read/edit processes)."""
+        while not self._stop.is_set():
+            self._poll_cgroup_once()
+            self._stop.wait(0.02)
+
+    def _poll_cgroup_once(self) -> None:
+        """One cgroup.procs sample: union newly-appeared pids for active tools."""
+        path = self.cgroup_path
+        if not path:
+            return
+        procs = _read_cgroup_procs(path)
+        if procs is None:
+            return
+        with self._lock:
+            for key, baseline in list(self._cgroup_baseline.items()):
+                seen = self._cgroup_seen.setdefault(key, set())
+                for pid in procs:
+                    if pid not in baseline:
+                        seen.add(pid)
+
+    def diagnostics(self) -> dict[str, Any]:
+        with self._lock:
+            return {"docker_bin": self.docker_bin, "cgroup_path": self.cgroup_path, **self._diag}
+
     def _run_events_loop(self) -> None:
         if self.docker_bin is None:
             return
@@ -533,6 +641,23 @@ def _tool_command_rank(tool_name: str):
         return 5
 
     return rank
+
+
+def _read_cgroup_procs(cgroup_path: str) -> set[int] | None:
+    """Read a cgroup-v2 ``cgroup.procs`` into a set of host pids."""
+    try:
+        text = Path(cgroup_path, "cgroup.procs").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    pids: set[int] = set()
+    for raw in text.split():
+        try:
+            pid = int(raw)
+        except ValueError:
+            continue
+        if pid > 0:
+            pids.add(pid)
+    return pids
 
 
 def _read_host_cgroup_path(pid: int) -> str | None:
