@@ -198,6 +198,25 @@ from independent task runtimes sharing the batch Sidecar. It is separate from
 the ordinary one-user Gateway topology and is not a reason to run many
 Gateways or many interactive sessions.
 
+### 5. Run a Deep Research Bench benchmark
+
+Deep Research Bench runs PhD-level research questions through OpenClaw while
+ClawTune records the same model/tool/resource telemetry. There is no per-task
+image: the agent's tools run in a very basic Docker sandbox
+(`python:3.11-slim` by default). Each task's v6 trace, prompt, manifest, and
+the record-only reference answer are kept under `deep_research_bench/.runtime/`.
+
+```bash
+# One smoke task from the bundled deep_research_bench/tasks.json
+python3 scripts/clawtune.py drb --sample 1 --parallelism 1
+
+# A real task source downloaded from HuggingFace
+python3 -m deep_research_bench.discover --sample 32 --out deep_research_bench/tasks-32.json
+python3 scripts/clawtune.py drb --dataset deep_research_bench/tasks-32.json --sample 32
+```
+
+See [Deep Research Bench usage](deep_research_bench/README.md).
+
 ## Documentation
 
 - [Complete installation and first run](docs/getting-started.md)

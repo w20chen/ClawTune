@@ -284,6 +284,7 @@ def copy_defaults() -> None:
     for source, target in (
         (ROOT / ".env.example", ROOT / ".env"),
         (ROOT / "swe_rebench" / "config.example.yaml", ROOT / "swe_rebench" / "config.yaml"),
+        (ROOT / "deep_research_bench" / "config.example.yaml", ROOT / "deep_research_bench" / "config.yaml"),
     ):
         if not target.exists():
             shutil.copy2(source, target)
@@ -750,6 +751,7 @@ def setup(args: argparse.Namespace) -> None:
     log("For normal CLI use: run `openclaw gateway run`, then `openclaw tui --session main`.")
     log("For a one-shot smoke turn: openclaw agent --local <options>")
     log("Run a benchmark: python3 scripts/clawtune.py benchmark --sample 1")
+    log("Run Deep Research Bench: python3 scripts/clawtune.py drb --sample 1")
 
 
 def sidecar() -> None:
@@ -910,6 +912,39 @@ def benchmark(extra: Sequence[str]) -> None:
     run(command)
 
 
+def drb(extra: Sequence[str]) -> None:
+    """Run Deep Research Bench; remaining options go to the runner."""
+    require_linux()
+    if not (VENV / "bin" / "python").exists():
+        raise SetupError(".venv is missing; run setup first.")
+    config = ROOT / "deep_research_bench" / "config.yaml"
+    if not config.exists():
+        raise SetupError(
+            "deep_research_bench/config.yaml is missing; run setup first."
+        )
+    # The basic sandbox image (python:3.11-slim) is multi-arch, so no
+    # linux/amd64 default is forced on ARM; SWE_REBENCH_DOCKER_PLATFORM still
+    # wins when the configured image needs it.
+    command = privileged_command(
+        [
+            VENV / "bin" / "python",
+            "-m",
+            "deep_research_bench.runner",
+            "run",
+            "--config",
+            config,
+            "--prepare",
+            "--export",
+            *extra,
+        ],
+        preserve_env=(
+            *BENCHMARK_PRESERVE_ENV,
+            *(name for name in os.environ if name.startswith("LC_")),
+        ),
+    )
+    run(command)
+
+
 def replay(extra: Sequence[str]) -> None:
     """Run a SWE-Rebench v6 trace through the host sandbox replay path."""
     require_linux()
@@ -973,12 +1008,13 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("agent", help="Start eBPF sidecar, run OpenClaw agent, then clean up")
     sub.add_parser("benchmark", help="Run SWE-Rebench; remaining options go to the runner")
     sub.add_parser("replay", help="Replay one SWE-Rebench v6 trace; remaining options go to the runner")
+    sub.add_parser("drb", help="Run Deep Research Bench; remaining options go to the runner")
     return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args, extra = parser().parse_known_args(argv)
-    if extra and args.command not in {"agent", "benchmark"}:
+    if extra and args.command not in {"agent", "benchmark", "drb"}:
         raise SetupError("Unrecognized arguments: " + " ".join(extra))
     try:
         if args.command == "setup":
@@ -995,6 +1031,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             benchmark(extra)
         elif args.command == "replay":
             replay(extra)
+        elif args.command == "drb":
+            drb(extra)
     except (SetupError, subprocess.CalledProcessError) as exc:
         log(f"Failed: {exc}")
         return 1

@@ -24,8 +24,21 @@ Linux.
   source of truth.
 - The benchmark runner (`benchmark`/`replay`) requires valid eBPF telemetry;
   a task stops before agent work if the collector cannot produce it.
+- **Deep Research Bench** (`drb`) is a second benchmark journey: research
+  questions run through OpenClaw with no per-task image.  The agent's tools
+  execute in one very basic Docker sandbox (`python:3.11-slim` default), so
+  telemetry is the read/edit/web-tool style (sandbox-container / per-PID
+  docker-exec).  The relaxed gate (`runtime.gate_required`) requires an LLM
+  span and a resource-sampled tool span per task, never Stage-2 exec clauses.
 
 ## Known Limitations
+
+- **Deep Research Bench tools are not Stage-2 clauses.** Research tools
+  (web/fetch/read/edit) are measured with the sandbox-container / per-PID
+  scope like read/edit in SWE-Rebench; there are no exec clause artifacts to
+  cross-validate.  The DRB gate is intentionally relaxed and the report notes
+  the attribution mode.  Web-search availability depends on the OpenClaw
+  binary's built-in web tools and the sandbox image's network.
 
 - **read/edit CPU is container-cgroup level, not per-PID.** Attribution is
   per-PID, but the CPU figure comes from the shared sandbox container cgroup
@@ -62,6 +75,23 @@ python3 scripts/clawtune.py setup
 python3 scripts/clawtune.py check
 python3 scripts/clawtune.py benchmark --sample 1 --parallelism 1
 ```
+
+Deep Research Bench acceptance (basic sandbox, no Stage-2 requirement):
+
+```bash
+python3 scripts/clawtune.py drb --sample 1 --parallelism 1
+```
+
+Acceptance checks on the resulting `deep_research_bench/.runtime/traces/<task-id>/`:
+
+1. `agent_prompt.txt` contains the rendered research prompt; `task_manifest.json`
+   records the task id, model, sandbox image, and reference-answer bytes.
+2. The v6 trace has at least one LLM span and at least one resource-sampled
+   tool span (sandbox-container / per-PID docker-exec attribution).
+3. The DRB relaxed telemetry gate passes (task exits 0, `telemetry_audit.status`
+   is `passed` with `mode: relaxed`).
+4. The basic sandbox image (`python:3.11-slim`) is pulled; no per-task image is
+   required.
 
 Acceptance checks on the resulting `swe_rebench/.runtime/traces/<task-id>/`:
 

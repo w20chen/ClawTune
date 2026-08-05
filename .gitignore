@@ -21,6 +21,8 @@ build/
 .env
 swe_rebench/llm_api_key.txt
 swe_rebench/.runtime/
+deep_research_bench/llm_api_key.txt
+deep_research_bench/.runtime/
 .DS_Store
 .gateway-run.*.log
 /services/scheduler/traces/tool-resource/

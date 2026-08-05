@@ -1,0 +1,29 @@
+[
+  {
+    "instance_id": "drb-smoke-1",
+    "problem_statement": "Compare the physical principles and practical trade-offs of adiabatic quantum computing versus gate-model quantum computing for combinatorial optimization problems. Discuss which algorithmic families are known to benefit, the role of error correction and noise, and the current experimental status as of 2025.",
+    "reference_answer": "",
+    "topic": "quantum computing",
+    "difficulty": "phd",
+    "domain": "science-technology",
+    "reference_kind": "generated_report"
+  },
+  {
+    "instance_id": "drb-smoke-2",
+    "problem_statement": "Analyze how central bank digital currency (CBDC) design choices affect financial stability and monetary policy transmission. Compare retail vs wholesale CBDC architectures, the implications of programmability and interest-bearing designs, and evidence from live pilots (e.g. China, Sweden, Nigeria) as of 2025.",
+    "reference_answer": "",
+    "topic": "central bank digital currency",
+    "difficulty": "phd",
+    "domain": "finance-business",
+    "reference_kind": "generated_report"
+  },
+  {
+    "instance_id": "drb-smoke-3",
+    "problem_statement": "Evaluate the state of the art in retrieval-augmented generation (RAG) for long-horizon multi-hop question answering. Compare dense retrieval, graph-based retrieval, and agentic retrieval strategies; identify the main failure modes (lost in the middle, citation grounding, context budget) and summarize 2024-2025 empirical results.",
+    "reference_answer": "",
+    "topic": "retrieval-augmented generation",
+    "difficulty": "phd",
+    "domain": "software-internet",
+    "reference_kind": "generated_report"
+  }
+]

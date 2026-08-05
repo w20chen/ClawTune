@@ -1,0 +1,119 @@
+# Deep Research Bench Integration Configuration
+# ==============================================
+# Runs DeepResearchBench research tasks through OpenClaw while ClawTune's
+# sidecar records model calls, tool calls, process lifecycle, CPU, and memory.
+# The agent's tools execute in a very basic Docker sandbox image (no per-task
+# SWE-Bench image, no /testbed export).
+
+# ── Runtime ──────────────────────────────────────────────────────
+runtime:
+  # OpenClaw, the plugin, and the sidecar run on the host; the agent's tools
+  # execute in the basic Docker sandbox image below.
+  mode: "host-openclaw-sandbox"
+
+  # Research tools (read/edit/web) never produce Stage-2 eBPF exec clause
+  # telemetry, so the sidecar must not demand it.
+  stage2_required: false
+
+  # Relaxed required-telemetry gate: a task fails if its v6 trace lacks an
+  # LLM span or a resource-sampled tool span.  Set false for a best-effort
+  # run that never fails on telemetry.
+  gate_required: true
+
+llm:
+  # API key for the upstream LLM provider (required)
+  # The sidecar proxies requests and records them, then forwards here.
+  # Resolution order:
+  #   1. api_key / ${LLM_API_KEY}
+  #   2. api_key_file (defaults to ./deep_research_bench/llm_api_key.txt)
+  #   3. repo .env line: LLM_API_KEY=...
+  api_key: "${LLM_API_KEY}"
+  api_key_file: "./deep_research_bench/llm_api_key.txt"
+
+  # Upstream base URL.  Default: DeepSeek.
+  upstream_base_url: "https://api.deepseek.com"
+
+  # Model ID as known to the upstream provider.
+  model: "deepseek-v4-flash"
+
+  # How OpenClaw refers to the model internally (vllm/<model>).
+  openclaw_model_ref: "vllm/deepseek-v4-flash"
+
+# ── Docker ───────────────────────────────────────────────────────
+docker:
+  # Docker daemon socket or host.
+  host: "unix:///var/run/docker.sock"
+  # On ARM/Kunpeng hosts, set this to "linux/amd64" if the sandbox image is
+  # x86_64-only and QEMU is enabled (SWE_REBENCH_DOCKER_PLATFORM overrides).
+  platform: ""
+
+  # Pull policy: "always", "missing" (default), "never".
+  pull_policy: "missing"
+
+# ── Sandbox (the "very basic" tool container) ────────────────────
+sandbox:
+  # A small image that can run OpenClaw's sandbox tools (read/edit/exec) and
+  # provides a Python >= 3.10 interpreter for the claw-launch wrapper.
+  image: "python:3.11-slim"
+  workdir: "/workspace"
+
+# ── Dataset ──────────────────────────────────────────────────────
+# Mirrors agent-test-bench configs/benchmarks/deep-research-bench.yaml.
+dataset:
+  harness_dataset: "muset-ai/DeepResearch-Bench-Dataset"
+  harness_split: "test"
+  data_files: "generated_reports/openai-deepresearch.jsonl"
+  id_field: "id"
+  question_field: "prompt"
+  answer_field: "article"
+  topic_field: ""
+  difficulty_field: ""
+  domain_field: ""
+  reference_kind: "generated_report"
+  selection_n: 32
+  selection_seed: 42
+  prompt_template: "default"
+  default_max_iterations: 100
+
+# ── Batch Execution ──────────────────────────────────────────────
+batch:
+  # Whole-task wall-clock budget in seconds. 0 = no limit.
+  task_timeout_seconds: 1800
+
+  # Optional additional limit for only the OpenClaw agent phase. 0 = none.
+  agent_timeout_seconds: 0
+
+  # Number of tasks to run concurrently (each task owns a private sidecar).
+  parallelism: 1
+
+  # Retry failed tasks up to this many times.
+  retry_failed: 0
+
+  # Continue running remaining tasks when one fails.
+  continue_on_error: true
+
+# ── Output ───────────────────────────────────────────────────────
+output:
+  # Root directory for per-task trace output.
+  trace_root: "./deep_research_bench/.runtime/traces"
+
+  # Summary report written after the batch completes.
+  report_path: "./deep_research_bench/.runtime/report.json"
+
+  # Also copy the final trace JSONL files to a flat directory keyed by task.
+  # Set to empty string to disable.
+  flat_export_dir: "./deep_research_bench/.runtime/export"
+
+# ── Runtime Bundle ───────────────────────────────────────────────
+bundle:
+  # Source directories (relative to repo root).
+  plugin_source: "packages/openclaw-plugin"
+  scheduler_source: "services/scheduler"
+
+  # Generated runtime files stay outside the Git-tracked bundle template.
+  output_dir: "deep_research_bench/.runtime/bundle"
+
+# ── Agent ────────────────────────────────────────────────────────
+agent:
+  # Extra arguments passed to `openclaw agent`.
+  extra_args: []
