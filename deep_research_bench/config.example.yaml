@@ -75,6 +75,20 @@ dataset:
   prompt_template: "default"
   default_max_iterations: 100
 
+# ── Web Search ──────────────────────────────────────────────────
+# OpenClaw's built-in `web_search` tool runs on the host (not in the sandbox).
+# Tavily is the default provider. Key resolution order:
+#   1. TAVILY_API_KEY env (passes through the sudo allow-list)
+#   2. web_search.api_key (${TAVILY_API_KEY} resolves from the env)
+#   3. web_search.api_key_file (defaults to ./deep_research_bench/tavily_api_key.txt)
+#   4. root .env line: TAVILY_API_KEY=...
+# Set provider to "auto" to let OpenClaw auto-detect (Brave has priority).
+web_search:
+  enabled: true
+  provider: "tavily"
+  api_key: "${TAVILY_API_KEY}"
+  api_key_file: "./deep_research_bench/tavily_api_key.txt"
+
 # ── Batch Execution ──────────────────────────────────────────────
 batch:
   # Whole-task wall-clock budget in seconds. 0 = no limit.

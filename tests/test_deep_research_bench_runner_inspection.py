@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from swe_rebench.docker import ContainerResult
 
 from deep_research_bench.config import DRBConfig
-from deep_research_bench.host_runner import _write_drb_task_inputs
+from deep_research_bench.host_runner import (
+    _apply_web_search_key,
+    _web_search_config_patch,
+    _write_drb_task_inputs,
+)
 from deep_research_bench.runner import (
     _drb_agent_diagnostics,
     _drb_required_telemetry_error,
@@ -177,3 +182,55 @@ def test_write_drb_task_inputs_skips_empty_reference(tmp_path) -> None:
     task = DRBTask(instance_id="8", problem_statement="q", reference_answer="")
     _write_drb_task_inputs(tmp_path, task, _config(), tmp_path / "workspace")
     assert not (tmp_path / "reference_answer.txt").exists()
+
+
+def test_apply_web_search_key_injects_env(monkeypatch) -> None:
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    config = _config()
+    config.web_search.enabled = True
+    config.web_search.api_key = "tvly-key"
+    _apply_web_search_key(config)
+    assert os.environ.get("TAVILY_API_KEY") == "tvly-key"
+    # _apply_web_search_key mutates the global env directly; restore the
+    # pre-test state so later tests do not see the leaked key.
+    os.environ.pop("TAVILY_API_KEY", None)
+
+
+def test_apply_web_search_key_skips_when_disabled(monkeypatch) -> None:
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    config = _config()
+    config.web_search.enabled = False
+    config.web_search.api_key = "tvly-key"
+    _apply_web_search_key(config)
+    assert "TAVILY_API_KEY" not in os.environ
+
+
+def test_apply_web_search_key_keeps_existing_env(monkeypatch) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "existing")
+    config = _config()
+    config.web_search.api_key = "tvly-key"
+    _apply_web_search_key(config)
+    assert os.environ.get("TAVILY_API_KEY") == "existing"
+
+
+def test_web_search_config_patch_pins_tavily() -> None:
+    config = _config()
+    config.web_search.enabled = True
+    config.web_search.provider = "tavily"
+    assert _web_search_config_patch(config) == {
+        "tools": {"web": {"search": {"enabled": True, "provider": "tavily"}}}
+    }
+
+
+def test_web_search_config_patch_none_when_disabled() -> None:
+    config = _config()
+    config.web_search.enabled = False
+    assert _web_search_config_patch(config) is None
+
+
+def test_web_search_config_patch_auto_keeps_detection() -> None:
+    config = _config()
+    config.web_search.provider = "auto"
+    assert _web_search_config_patch(config) == {
+        "tools": {"web": {"search": {"enabled": True}}}
+    }

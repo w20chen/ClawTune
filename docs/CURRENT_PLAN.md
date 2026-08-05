@@ -37,8 +37,9 @@ Linux.
   (web/fetch/read/edit) are measured with the sandbox-container / per-PID
   scope like read/edit in SWE-Rebench; there are no exec clause artifacts to
   cross-validate.  The DRB gate is intentionally relaxed and the report notes
-  the attribution mode.  Web-search availability depends on the OpenClaw
-  binary's built-in web tools and the sandbox image's network.
+  the attribution mode.  Web search defaults to **Tavily** and runs on the
+  host (not the sandbox); availability depends on `TAVILY_API_KEY` reaching
+  the `openclaw agent` process and the OpenClaw binary's built-in web tools.
 
 - **read/edit CPU is container-cgroup level, not per-PID.** Attribution is
   per-PID, but the CPU figure comes from the shared sandbox container cgroup
@@ -79,6 +80,8 @@ python3 scripts/clawtune.py benchmark --sample 1 --parallelism 1
 Deep Research Bench acceptance (basic sandbox, no Stage-2 requirement):
 
 ```bash
+# Optional: Tavily web search key (wrapper allows it through sudo)
+export TAVILY_API_KEY="<tavily-api-key>"
 python3 scripts/clawtune.py drb --sample 1 --parallelism 1
 ```
 
@@ -92,6 +95,8 @@ Acceptance checks on the resulting `deep_research_bench/.runtime/traces/<task-id
    is `passed` with `mode: relaxed`).
 4. The basic sandbox image (`python:3.11-slim`) is pulled; no per-task image is
    required.
+5. With `TAVILY_API_KEY` set, `web_search-config.log` shows the provider pinned
+   to `tavily` (`tools.web.search.provider`) and the agent emits web tool spans.
 
 Acceptance checks on the resulting `swe_rebench/.runtime/traces/<task-id>/`:
 

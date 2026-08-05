@@ -79,6 +79,23 @@ amd64 task images through QEMU; x86 uses native images.
 `SWE_REBENCH_DOCKER_PLATFORM` is the explicit override for either host. See
 [SWE-Rebench usage](../swe_rebench/README.md).
 
+## Deep Research Bench Deployment
+
+Run the Deep Research Bench wrapper the same way:
+
+```bash
+python3 scripts/clawtune.py drb --sample 1
+```
+
+It prepares the same runtime bundle and starts one host Sidecar. There is no
+per-task image: the agent's tools run in one very basic Docker sandbox image
+(`sandbox.image`, default `python:3.11-slim`) that is pulled once per batch.
+Because that image is multi-arch, `drb` does not default the Docker platform to
+`linux/amd64` on Kunpeng; export `SWE_REBENCH_DOCKER_PLATFORM` explicitly only
+when the configured image needs it. Outputs live under
+`deep_research_bench/.runtime/`. See
+[Deep Research Bench usage](../deep_research_bench/README.md).
+
 ## Container-Only Development
 
 `docker compose up --build scheduler` is useful for API development. It is not

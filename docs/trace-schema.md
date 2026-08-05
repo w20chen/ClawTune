@@ -30,6 +30,16 @@ SWE-Rebench traces are written under:
 swe_rebench/traces/<task_id>/*.jsonl
 ```
 
+Deep Research Bench traces are written under the same schema under:
+
+```text
+deep_research_bench/.runtime/traces/<task_id>/*.jsonl
+```
+
+Deep Research Bench uses the sandbox-container / per-PID scope for its
+read/edit/web tools and does not require Stage-2 exec clause artifacts; the
+v6 records themselves are identical.
+
 Inspect traces:
 
 ```bash

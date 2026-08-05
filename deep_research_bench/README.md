@@ -29,6 +29,41 @@ llm:
   openclaw_model_ref: "vllm/your-model-name"
 ```
 
+## Web Search (Tavily)
+
+DeepResearchBench tasks are answered with OpenClaw's built-in `web_search`
+tool, which runs on the host (not inside the sandbox).  DRB defaults web
+search to **Tavily**.  Configure the key the same way as the model key:
+
+```bash
+export TAVILY_API_KEY="<tavily-api-key>"
+```
+
+The wrapper preserves `TAVILY_API_KEY` (and `TAVILY_API_KEY_FILE`) through
+`sudo` by name.  Persistent alternatives: put the key on one line in the
+Git-ignored `deep_research_bench/tavily_api_key.txt`, or add a
+`TAVILY_API_KEY=...` line to the root `.env`.  Resolution order:
+`TAVILY_API_KEY` env, `web_search.api_key` (`${TAVILY_API_KEY}`),
+`web_search.api_key_file`, then the root `.env`.
+
+The `web_search` section of `deep_research_bench/config.yaml` controls the
+provider:
+
+```yaml
+web_search:
+  enabled: true
+  provider: "tavily"   # set to "auto" to let OpenClaw auto-detect
+  api_key: "${TAVILY_API_KEY}"
+  api_key_file: "./deep_research_bench/tavily_api_key.txt"
+```
+
+Each task pins `tools.web.search.provider` into its isolated OpenClaw config
+(OpenClaw auto-detection would otherwise prefer Brave over Tavily) and injects
+`TAVILY_API_KEY` into the `openclaw agent` process.  No key is required: web
+search is best-effort.  Without a key the agent answers from model knowledge
+and the trace still records LLM spans; use `--no-gate-required` if such a run
+should pass without any tool span.
+
 ## Select Tasks
 
 The runner uses this order (like SWE-Rebench):

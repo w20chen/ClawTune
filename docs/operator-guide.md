@@ -125,6 +125,22 @@ listening; setup/check prove kernel collection.
 See [configuration](configuration.md) for settings and
 [troubleshooting](troubleshooting.md) for symptom-based recovery.
 
+## Run a Benchmark
+
+The two benchmark journeys are batch workflows that run the OpenClaw agent
+against many tasks and export traces:
+
+- SWE-Rebench: `python3 scripts/clawtune.py benchmark --sample 1` — each task
+  is a repository fix executed in its own task container with Stage-2 eBPF
+  clause telemetry. See [SWE-Rebench usage](../swe_rebench/README.md).
+- Deep Research Bench: `python3 scripts/clawtune.py drb --sample 1` — each
+  task is a research question answered with web-style tools in one very basic
+  Docker sandbox; its relaxed telemetry gate requires only LLM +
+  resource-sampled tool spans. See
+  [Deep Research Bench usage](../deep_research_bench/README.md).
+
+Full walkthroughs are in [getting-started.md](getting-started.md).
+
 ## Replay SWE-Rebench Tool Workloads
 
 Replay is a benchmark-analysis workflow, not an interactive OpenClaw mode.

@@ -63,6 +63,50 @@ The runner always writes the full batch report to `output.report_path`. It
 prints only compact progress by default; pass `--json` to also emit the full
 report on stdout.
 
+### Deep Research Bench
+
+Setup also copies `deep_research_bench/config.example.yaml`. The Deep Research
+Bench config keeps the same `llm`, `batch`, `output`, and `bundle` sections,
+but differs from SWE-Rebench in a few ways:
+
+- `runtime.stage2_required` defaults to `false`. Research tools
+  (web/fetch/read/edit) never produce Stage-2 eBPF exec clause telemetry.
+- `runtime.gate_required` (default `true`) is a **relaxed** required-telemetry
+  gate: a task fails only when its v6 trace has no LLM span or no
+  resource-sampled tool span. Set it `false` for a best-effort run.
+- `sandbox.image` names the one very basic tool container (default
+  `python:3.11-slim`); `dataset` mirrors
+  `configs/benchmarks/deep-research-bench.yaml` from agent-test-bench
+  (`harness_dataset`, `harness_split`, `data_files`, `id_field`,
+  `question_field`, `answer_field`, `prompt_template`).
+- `web_search` configures OpenClaw's built-in `web_search` tool. DRB defaults
+  the provider to **Tavily** and pins `tools.web.search.provider` into each
+  task's isolated OpenClaw config (auto-detection would prefer Brave). The key
+  resolves from `TAVILY_API_KEY` env (allowed through `sudo`), `api_key` /
+  `${TAVILY_API_KEY}`, `api_key_file`
+  (`deep_research_bench/tavily_api_key.txt`), then the root `.env`. Web search
+  runs on the host, so the key does not need to reach the sandbox.
+
+```yaml
+runtime:
+  stage2_required: false
+  gate_required: true
+sandbox:
+  image: "python:3.11-slim"
+dataset:
+  harness_dataset: "muset-ai/DeepResearch-Bench-Dataset"
+  harness_split: "test"
+  data_files: "generated_reports/openai-deepresearch.jsonl"
+web_search:
+  enabled: true
+  provider: "tavily"
+  api_key: "${TAVILY_API_KEY}"
+  api_key_file: "./deep_research_bench/tavily_api_key.txt"
+```
+
+The knowledge bases below apply to SWE-Rebench exec clauses; Deep Research
+Bench does not update them.
+
 ### Benchmark Knowledge Bases
 
 Each benchmark task uses three JSON knowledge bases under `tool-resource/`:

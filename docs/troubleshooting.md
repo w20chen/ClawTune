@@ -326,7 +326,8 @@ python3 scripts/clawtune.py benchmark --sample 1
 The wrapper narrowly preserves `LLM_API_KEY` across its privileged boundary;
 do not replace it with `sudo -E`. If site policy forbids preserving that
 variable, put the key on one line in the Git-ignored
-`swe_rebench/llm_api_key.txt`, or export `LLM_API_KEY_FILE` with the path to a
+`swe_rebench/llm_api_key.txt` (or `deep_research_bench/llm_api_key.txt` for
+Deep Research Bench), or export `LLM_API_KEY_FILE` with the path to a
 site-managed secret file.
 
 ## 16. OpenClaw rejects `agents.defaults.sandbox.docker.platform`
@@ -438,6 +439,18 @@ Look in the task directory under `swe_rebench/.runtime/traces/<task-id>/`:
 
 Start with one task. On Kunpeng, increase `batch.task_timeout_seconds` only if
 QEMU execution genuinely reaches the current limit.
+
+For Deep Research Bench, the task directory is
+`deep_research_bench/.runtime/traces/<task-id>/` and the batch report is
+`deep_research_bench/.runtime/report.json`. If the relaxed telemetry gate fails
+with `required resource telemetry found no tool spans`, the agent answered
+without calling any instrumented tool. For Tavily web search, confirm
+`TAVILY_API_KEY` (or `deep_research_bench/tavily_api_key.txt`) is configured
+and reaches the runner through the `sudo` allow-list — `web_search` runs on the
+host, so the key does not need to reach the sandbox image. Otherwise check the
+sandbox image's network and the OpenClaw binary's built-in web tools, or use
+`--no-gate-required` for a best-effort run. If the basic sandbox image cannot
+be pulled, check `pull_policy` and registry access for `sandbox.image`.
 
 ## 20. A trace reports `mvdan adapter is missing` or repeated `analysis_failure`
 

@@ -81,8 +81,10 @@ export LLM_API_KEY="<provider-api-key>"
 The benchmark wrapper preserves only an explicit allow-list through `sudo`, so
 the key reaches the runner without `sudo -E` and without being copied into a
 command-line argument. As a persistent alternative, put the key on one line in
-the ignored file `swe_rebench/llm_api_key.txt`. Then edit the model values in
-`swe_rebench/config.yaml`:
+the ignored file `swe_rebench/llm_api_key.txt` (or
+`deep_research_bench/llm_api_key.txt` for Deep Research Bench). Then edit the
+model values in `swe_rebench/config.yaml` (or
+`deep_research_bench/config.yaml` for Deep Research Bench):
 
 ```yaml
 llm:
@@ -92,7 +94,7 @@ llm:
 ```
 
 Secrets are ignored by Git. Do not commit `.env`, OpenClaw credentials, or
-`swe_rebench/llm_api_key.txt`.
+the `llm_api_key.txt` files.
 
 ### 3. Run ClawTune with OpenClaw
 
@@ -225,6 +227,7 @@ See [Deep Research Bench usage](deep_research_bench/README.md).
 - [Troubleshooting](docs/troubleshooting.md)
 - [SWE-Rebench usage](swe_rebench/README.md)
 - [SWE-Rebench trace replay](swe_rebench/README.md#replay-a-case)
+- [Deep Research Bench usage](deep_research_bench/README.md)
 - [Architecture and developer references](docs/architecture.md)
 
 ## Development Checks

@@ -76,14 +76,17 @@ export LLM_API_KEY="<provider-api-key>"
 The wrapper passes this value through `sudo` with a narrow environment
 allow-list; it does not use broad `sudo -E`. For a persistent local setup, put
 the raw key on one line in the Git-ignored file
-`swe_rebench/llm_api_key.txt` instead. `LLM_API_KEY_FILE` can point to another
+`swe_rebench/llm_api_key.txt` (or `deep_research_bench/llm_api_key.txt` for
+Deep Research Bench) instead. `LLM_API_KEY_FILE` can point to another
 file when a site already manages secrets that way.
 
-Edit `swe_rebench/config.yaml` and set the upstream URL and model names. Most
+Edit `swe_rebench/config.yaml` (or `deep_research_bench/config.yaml` for Deep
+Research Bench) and set the upstream URL and model names. Most
 users do not need to change the runtime, Docker privilege, cgroup, bundle, or
-output sections. On arm64, the wrapper defaults the Docker platform to
-`linux/amd64`. An explicitly exported `SWE_REBENCH_DOCKER_PLATFORM` takes
-priority; x86 stays native by default.
+output sections. On arm64, the SWE-Rebench wrapper defaults the Docker platform
+to `linux/amd64`. An explicitly exported `SWE_REBENCH_DOCKER_PLATFORM` takes
+priority; x86 stays native by default. Deep Research Bench uses a multi-arch
+basic sandbox image, so `drb` does not force a platform.
 
 ### Normal OpenClaw Runs
 
@@ -191,6 +194,44 @@ controls selected cases; `--parallelism` controls simultaneous cases. The
 default parallelism is `1`. Choose a higher value based on CPU, memory,
 Docker/QEMU throughput, and provider quota. Running 128 selected cases with
 parallelism 128 is for a host validated at that load, not a universal default.
+
+## Run Deep Research Bench
+
+Deep Research Bench runs PhD-level research questions through OpenClaw while
+ClawTune records the same model/tool/resource telemetry. There is no per-task
+image and no `/testbed` repository: the agent's tools execute in one very basic
+Docker sandbox image (default `python:3.11-slim`, configurable in
+`deep_research_bench/config.yaml` under `sandbox.image`).
+
+A bundled three-task smoke source is used when no dataset is named:
+
+```bash
+python3 scripts/clawtune.py drb --sample 1 --parallelism 1
+```
+
+Build a larger task source from the HuggingFace dataset
+(`muset-ai/DeepResearch-Bench-Dataset`, `generated_reports/openai-deepresearch.jsonl`):
+
+```bash
+python3 -m deep_research_bench.discover --sample 32 --out deep_research_bench/tasks-32.json
+python3 scripts/clawtune.py drb --dataset deep_research_bench/tasks-32.json --sample 32
+```
+
+Per-task output lands under `deep_research_bench/.runtime/traces/<task-id>/`
+(v6 trace, `agent_prompt.txt`, `task_manifest.json`, record-only
+`reference_answer.txt`, `result_summary.json`); the batch report is written to
+`deep_research_bench/.runtime/report.json`. Research tools are measured with the
+sandbox-container / per-PID scope, so the relaxed telemetry gate
+(`runtime.gate_required`, default `true`) requires only an LLM span and a
+resource-sampled tool span per task — never Stage-2 exec clauses. See
+[Deep Research Bench usage](../deep_research_bench/README.md).
+
+The agent answers with OpenClaw's built-in `web_search` tool (Tavily by
+default). Export `TAVILY_API_KEY` in the launch shell (the wrapper allows it
+through `sudo`), or put it on one line in
+`deep_research_bench/tavily_api_key.txt`. Web search runs on the host, so the
+key does not need to reach the sandbox. See
+[Web Search (Tavily)](../deep_research_bench/README.md#web-search-tavily).
 
 ## Updating the Checkout
 

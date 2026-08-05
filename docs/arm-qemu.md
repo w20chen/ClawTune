@@ -22,6 +22,11 @@ remains native when it is unset. The selected platform is passed to Docker and
 the OpenClaw child environment, not written as the unsupported
 `agents.defaults.sandbox.docker.platform` configuration key.
 
+Deep Research Bench (`clawtune.py drb`) is the exception: its basic sandbox
+image (default `python:3.11-slim`) is multi-arch, so `drb` does **not** force
+`linux/amd64` on arm64. Export `SWE_REBENCH_DOCKER_PLATFORM` explicitly only
+when the configured `sandbox.image` is amd64-only.
+
 Do not run the eBPF sidecar in an amd64 emulation container—the collector must
 match the native host kernel.
 

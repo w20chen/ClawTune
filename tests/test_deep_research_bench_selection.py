@@ -166,3 +166,60 @@ def test_bundled_smoke_tasks_are_loadable() -> None:
     tasks = load_tasks_from_drb_dataset(bundled)
     assert len(tasks) >= 3
     assert all(task.problem_statement for task in tasks)
+
+
+def test_web_search_config_defaults(tmp_path) -> None:
+    config = _write_config(tmp_path)
+    assert config.web_search.enabled is True
+    assert config.web_search.provider == "tavily"
+    assert config.web_search.api_key == ""
+    assert config.web_search.api_key_file is not None
+    assert config.web_search.api_key_file.name == "tavily_api_key.txt"
+
+
+def test_web_search_config_key_from_file(tmp_path) -> None:
+    key_file = tmp_path / "tavily_key.txt"
+    key_file.write_text("tvly-file-key\n", encoding="utf-8")
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        "runtime:\n"
+        '  mode: "host-openclaw-sandbox"\n'
+        "llm:\n"
+        '  api_key: "k"\n'
+        "web_search:\n"
+        '  provider: "tavily"\n'
+        f'  api_key_file: "{key_file.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    config = DRBConfig.from_yaml(config_file, repo_root=tmp_path)
+    assert config.web_search.api_key == "tvly-file-key"
+
+
+def test_web_search_config_env_override(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-env-key")
+    config = _write_config(tmp_path)
+    assert config.web_search.api_key == "tvly-env-key"
+
+
+def test_web_search_config_template_resolves_from_env(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-env-key")
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        "runtime:\n"
+        '  mode: "host-openclaw-sandbox"\n'
+        "llm:\n"
+        '  api_key: "k"\n'
+        "web_search:\n"
+        '  api_key: "${TAVILY_API_KEY}"\n',
+        encoding="utf-8",
+    )
+    config = DRBConfig.from_yaml(config_file, repo_root=tmp_path)
+    assert config.web_search.api_key == "tvly-env-key"
+
+
+def test_web_search_config_dotenv_fallback(tmp_path) -> None:
+    (tmp_path / ".env").write_text(
+        'TAVILY_API_KEY="tvly-dotenv-key"\n', encoding="utf-8"
+    )
+    config = _write_config(tmp_path)
+    assert config.web_search.api_key == "tvly-dotenv-key"

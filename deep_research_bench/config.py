@@ -16,7 +16,8 @@ defaults to ``false``; the separate ``runtime.gate_required`` flag (default
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,7 @@ from swe_rebench.config import (
     RuntimeConfig,
     RunnerConfig,
     _as_bool,
+    _env_subst,
     _load_yaml_safe,
 )
 
@@ -99,6 +101,76 @@ class SandboxConfig:
 
 
 @dataclass
+class WebSearchConfig:
+    """Web-search (Tavily) configuration for OpenClaw's built-in ``web_search``.
+
+    ``web_search`` runs in the agent runtime on the host, not inside the
+    sandbox, so the provider key must be present in the ``openclaw agent``
+    process environment.  Tavily is the default provider and reads the
+    ``TAVILY_API_KEY`` environment variable; ``provider`` is pinned into the
+    run-scoped OpenClaw config so web search is deterministic even when other
+    API-backed provider keys (e.g. Brave) are configured on the host.
+    """
+
+    enabled: bool = True
+    provider: str = "tavily"
+    api_key: str = ""
+    api_key_file: Path | None = None
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any], repo_root: Path) -> "WebSearchConfig":
+        api_key_file = _resolve_web_search_key_file(d.get("api_key_file"), repo_root)
+        return cls(
+            enabled=_as_bool(d.get("enabled", True)),
+            provider=str(d.get("provider", "tavily")).strip() or "tavily",
+            api_key=_resolve_web_search_api_key(d, repo_root, api_key_file),
+            api_key_file=api_key_file,
+        )
+
+
+def _resolve_web_search_key_file(value: Any, repo_root: Path) -> Path | None:
+    raw = os.getenv("TAVILY_API_KEY_FILE") or str(
+        value or "deep_research_bench/tavily_api_key.txt"
+    )
+    if not raw:
+        return None
+    path = Path(_env_subst(raw)).expanduser()
+    return path if path.is_absolute() else repo_root / path
+
+
+def _resolve_web_search_api_key(
+    d: dict[str, Any],
+    repo_root: Path,
+    api_key_file: Path | None,
+) -> str:
+    """Resolve the web-search key: TAVILY_API_KEY env, api_key / ${TAVILY_API_KEY},
+    then the key file, then a ``TAVILY_API_KEY=`` line in the root ``.env``."""
+    env_key = os.environ.get("TAVILY_API_KEY")
+    if env_key:
+        return env_key
+    configured = _env_subst(str(d.get("api_key", ""))).strip()
+    if configured:
+        return configured
+    if api_key_file is not None and api_key_file.exists():
+        for line in api_key_file.read_text(encoding="utf-8").splitlines():
+            value = line.strip()
+            if value and not value.startswith("#"):
+                return value
+    env_path = repo_root / ".env"
+    if env_path.exists():
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
+            key, sep, value = line.partition("=")
+            if sep == "=" and key.strip() == "TAVILY_API_KEY":
+                return value.strip().strip('"').strip("'")
+    return ""
+
+
+@dataclass
 class DRBConfig:
     runtime: RuntimeConfig
     llm: LLMConfig
@@ -109,6 +181,7 @@ class DRBConfig:
     bundle: BundleConfig
     agent: AgentConfig
     dataset: DatasetConfig
+    web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
     gate_required: bool = True
     repo_root: Path = Path(".")
     config_path: Path | None = None
@@ -143,6 +216,7 @@ class DRBConfig:
             bundle=BundleConfig.from_dict(raw.get("bundle", {})),
             agent=AgentConfig.from_dict(raw.get("agent", {})),
             dataset=DatasetConfig.from_dict(raw.get("dataset", {})),
+            web_search=WebSearchConfig.from_dict(raw.get("web_search", {}), repo_root),
             gate_required=gate_required,
             repo_root=repo_root,
             config_path=path.resolve(),

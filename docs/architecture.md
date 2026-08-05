@@ -45,6 +45,21 @@ swe_rebench.runner
   -> swe_rebench/traces/<task_id>/*.jsonl
 ```
 
+Deep Research Bench path:
+
+```text
+deep_research_bench.runner
+  -> runtime bundle (plugin + scheduler + claw-launch)
+  -> one very basic Docker sandbox image (python:3.11-slim by default)
+  -> host sidecar + plugin + openclaw agent --local
+  -> deep_research_bench/.runtime/traces/<task_id>/*.jsonl
+```
+
+Deep Research Bench has no per-task image or `/testbed` repository: the agent
+answers a research question and its tools are measured with the
+sandbox-container / per-PID scope, so its required-telemetry gate is relaxed
+(LLM + resource-sampled tool spans, no Stage-2 exec clauses).
+
 User guides:
 
 - Getting started: [getting-started.md](getting-started.md)
@@ -54,6 +69,7 @@ User guides:
 - Deployment: [deployment.md](deployment.md)
 - ARM/QEMU: [arm-qemu.md](arm-qemu.md)
 - SWE-Rebench: [../swe_rebench/README.md](../swe_rebench/README.md)
+- Deep Research Bench: [../deep_research_bench/README.md](../deep_research_bench/README.md)
 
 Developer references:
 

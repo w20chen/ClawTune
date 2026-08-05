@@ -17,9 +17,12 @@ provides).
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import time
 import traceback
 from pathlib import Path
+from typing import Any
 
 from swe_rebench.config import RunnerConfig
 from swe_rebench.docker import (
@@ -34,12 +37,15 @@ from swe_rebench.host_sandbox import (
     _free_port,
     _install_sandbox_launcher,
     _make_sandbox_workspace_writable,
+    _openclaw_env,
     _read_json_object,
     _remaining_task_seconds,
+    _require_executable,
     _reset_directory,
     _run_openclaw_agent,
     _start_sidecar,
     _stop_process,
+    _tail_text,
     _task_deadline,
     _write_result_summary,
     _write_text,
@@ -80,6 +86,7 @@ def run_drb_task(
         # container; install the launcher runtime into the host workspace.
         _install_sandbox_launcher(workspace, bundle_dir)
         _write_drb_task_inputs(trace_dir, task, config, workspace)
+        _apply_web_search_key(config)
         _ensure_basic_image(config, swe_cfg)
         _remaining_task_seconds(deadline, phase="agent setup")
         sidecar_port = sidecar_port or _free_port()
@@ -99,6 +106,14 @@ def run_drb_task(
             sandbox_image=config.sandbox.image,
             config=swe_cfg,
             deadline=deadline,
+        )
+        _pin_web_search_provider(
+            trace_dir=trace_dir,
+            openclaw_home=openclaw_home,
+            sidecar_port=sidecar_port,
+            config=config,
+            swe_cfg=swe_cfg,
+            workspace=workspace,
         )
         _remaining_task_seconds(deadline, phase="agent execution")
         swe_task = task_to_swe_taskdef(task, config.sandbox.image)
@@ -155,6 +170,74 @@ def run_drb_task(
 def _drb_workspace(config: DRBConfig, task: DRBTask) -> Path:
     safe_id = task.instance_id.replace("/", "_").replace(":", "_")
     return config.output.trace_root.parent / "workspaces" / safe_id
+
+
+def _apply_web_search_key(config: DRBConfig) -> None:
+    """Expose the configured web-search key to the ``openclaw agent`` process.
+
+    OpenClaw's built-in ``web_search`` runs in the agent runtime on the host,
+    not inside the sandbox.  ``_openclaw_env`` copies ``os.environ`` when the
+    agent is spawned, so setting ``TAVILY_API_KEY`` here (when one is
+    configured and not already present) is sufficient.
+    """
+    if not config.web_search.enabled or not config.web_search.api_key:
+        return
+    if not os.environ.get("TAVILY_API_KEY"):
+        os.environ["TAVILY_API_KEY"] = config.web_search.api_key
+
+
+def _web_search_config_patch(config: DRBConfig) -> dict[str, Any] | None:
+    """Return the ``tools.web.search`` config patch for this run, or ``None``.
+
+    ``None`` (web search disabled) leaves OpenClaw's config untouched.  A
+    ``provider`` of ``""`` or ``"auto"`` enables search but keeps
+    auto-detection.
+    """
+    if not config.web_search.enabled:
+        return None
+    search: dict[str, Any] = {"enabled": True}
+    if config.web_search.provider and config.web_search.provider != "auto":
+        search["provider"] = config.web_search.provider
+    return {"tools": {"web": {"search": search}}}
+
+
+def _pin_web_search_provider(
+    *,
+    trace_dir: Path,
+    openclaw_home: Path,
+    sidecar_port: int,
+    config: DRBConfig,
+    swe_cfg: RunnerConfig,
+    workspace: Path,
+) -> None:
+    """Pin the run-scoped OpenClaw config to the configured web provider.
+
+    OpenClaw auto-detects the first *API-backed* provider with a credential
+    (Brave has priority over Tavily), so to make Tavily the default for DRB we
+    patch ``tools.web.search.provider`` into this task's isolated OpenClaw
+    config.
+    """
+    patch = _web_search_config_patch(config)
+    if patch is None:
+        return
+    env = _openclaw_env(openclaw_home, sidecar_port, swe_cfg, workspace)
+    openclaw = _require_executable("openclaw")
+    log_path = trace_dir / "web-search-config.log"
+    with log_path.open("w", encoding="utf-8") as log:
+        result = subprocess.run(
+            [openclaw, "config", "patch", "--stdin"],
+            input=json.dumps(patch),
+            stdout=log,
+            stderr=log,
+            text=True,
+            env=env,
+            timeout=60,
+        )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"openclaw_web_search_config_patch_failed exit={result.returncode}: "
+            f"{_tail_text(log_path, 2000)}"
+        )
 
 
 def _ensure_basic_image(config: DRBConfig, swe_cfg: RunnerConfig) -> str:
