@@ -2989,6 +2989,24 @@ def _run_logged(
         raise RuntimeError(f"{label}_failed exit={result.returncode}")
 
 
+def _wait_process_exit(
+    process: subprocess.Popen[str], *, timeout: float | None = None
+) -> bool:
+    """Wait for *process* to exit, tolerating :class:`KeyboardInterrupt`.
+
+    Returns ``True`` when the process has exited, ``False`` when it is
+    still running (including after a :class:`KeyboardInterrupt` or
+    :class:`~subprocess.TimeoutExpired`).
+    """
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False
+    except KeyboardInterrupt:
+        return False
+    return process.poll() is not None
+
+
 def _join_thread_safe(thread: threading.Thread, *, timeout: float | None = None) -> None:
     """Join a thread, ignoring KeyboardInterrupt so cleanup is never abandoned."""
     try:
