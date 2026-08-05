@@ -211,6 +211,65 @@ Validation commands that cannot run in this Windows workspace:
   the bundled plugin intentionally has no local `node_modules`; the identical
   source suite was run from `packages/openclaw-plugin` instead.
 
+## LLM proxy capture dropped by gateway_id correlation (2026-08-05)
+
+A downloaded SWE-Rebench v6 trace (`12rambau__sepal_ui-411`) had every LLM
+`span_start.input.messages` and `span_end.output.content` set to `null` while
+tool spans were fully populated. Root cause: the sidecar's
+`AgentTestBenchTraceWriter._pop_recent_proxy_call` required the proxy capture
+record's `gateway_id` to equal the model event's `gateway_id`, but proxy
+records never carry a `gateway_id` (the LLM proxy only sees the runtime
+credential, `_runtime_id_from_request`). Since swe-rebench model events always
+carry `gateway_id="swe-rebench"`, the equality check `None != "swe-rebench"`
+was always true and every proxy capture was silently discarded, so
+`input.messages`/`output.content` stayed `null` even though the proxy had
+captured the full request/response. OpenClaw's `model_call_started/ended` hook
+events only carry call metadata (no message bodies), so the proxy is the sole
+source of LLM payloads; the existing unit test passed only because its model
+events omitted `gateway_id`, bypassing the check.
+
+Fix (in `services/scheduler/src/agent_scheduler/trace.py`, mirrored into the
+committed `swe_rebench/bundle/scheduler/src/.../trace.py`): make the gateway
+check tolerant, matching the codebase convention already used by
+`belongs_to_runtime` (identity.py) and `executions.py` — reject only when
+BOTH the event and the proxy record carry a non-null `gateway_id` and they
+differ. This fixes swe-rebench, keeps plain OpenClaw (no gateway id) working,
+and preserves strict multi-gateway isolation whenever a capture does carry an
+explicit `gateway_id` (future benchmarks).
+
+Validation completed in the Windows development workspace:
+
+- `$env:PYTHONPATH='services/scheduler/src'; python -m pytest
+  services/scheduler/tests -q --basetemp .pytest-tmp`:
+  `262 passed, 2 skipped`.
+- Focused regression suite (`proxy`, `model_proxy`, `gateway`):
+  `python -m pytest services/scheduler/tests/test_sidecar.py -k "proxy or
+  model_proxy or gateway" -q --basetemp .pytest-tmp`: `14 passed`.
+  New tests: `test_model_proxy_capture_correlates_when_events_carry_gateway_id`
+  (swe-rebench case), `test_model_proxy_capture_correlates_without_gateway_id`
+  (plain OpenClaw case), and
+  `test_proxy_capture_rejected_when_explicit_gateway_differs` (isolation kept).
+- `$env:PYTHONPATH='services/scheduler/src'; python -m pytest tests -q
+  --basetemp .pytest-tmp-root`: `188 passed, 2 skipped`.
+- Runtime bundle rebuilt and validated against the bundled copy:
+  `python -m swe_rebench.runner prepare --config swe_rebench/config.yaml`
+  followed by `python -m pytest
+  swe_rebench/.runtime/bundle/scheduler/tests/test_sidecar.py
+  swe_rebench/.runtime/bundle/scheduler/tests/test_multi_runtime_isolation.py
+  --basetemp .pytest-tmp-bundle` (with
+  `PYTHONPATH=swe_rebench/.runtime/bundle/scheduler/src`): `53 passed`.
+- `git diff --check`: passed.
+
+Validation commands that cannot run in this Windows workspace:
+
+- A live SWE-Rebench batch (`python3 scripts/clawtune.py benchmark --sample 1`)
+  on the Linux host to confirm LLM spans now carry `input.messages` and
+  `output.content` in the produced traces; the bundle refresh happens
+  automatically via `bundle_needs_rebuild` because `trace.py` changed.
+- A plain interactive OpenClaw run with the sidecar LLM proxy in the request
+  path (no swe-rebench harness) to confirm LLM payloads are captured when no
+  `gateway_id` is set.
+
 ## Shared-sidecar Stage-2 artifact collection (2026-08-04)
 
 A `host-openclaw-sandbox` batch run can fail every task with

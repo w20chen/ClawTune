@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from threading import Event
 from types import SimpleNamespace
 from datetime import datetime, timezone
@@ -2318,6 +2319,217 @@ def test_model_hook_record_is_enriched_from_proxy_capture(tmp_path: Path, monkey
     llm_ends = [r for r in records if r.get("record_type") == "span_end" and r.get("kind") == "llm"]
     assert llm_ends[0]["output"]["content"]["content"] == "world"
     assert llm_ends[0]["output"]["content"]["tool_calls"][0]["id"] == "call-proxy-tool"
+
+
+def _drive_proxy_and_model_events(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    gateway_id: str | None,
+    runtime_id: str | None,
+) -> None:
+    """Send a proxied chat completion plus model start/end events.
+
+    Mirrors a live agent turn: OpenClaw POSTs to the sidecar LLM proxy (which
+    records ``messages_in``/``content`` keyed by the runtime credential) and the
+    plugin separately reports ``model_call_started`` / ``model_call_ended``.
+    The sidecar must correlate the proxy capture with the model span.
+    """
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url, headers=None, content=None):
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "model": "test-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": "world",
+                                "tool_calls": [
+                                    {
+                                        "id": "call-proxy-tool",
+                                        "type": "function",
+                                        "function": {"name": "exec", "arguments": '{"command":"pwd"}'},
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                },
+            )
+
+    monkeypatch.setattr("agent_scheduler.llm_proxy.httpx.AsyncClient", FakeAsyncClient)
+
+    headers = {}
+    if runtime_id is not None:
+        headers["x-claw-runtime-id"] = runtime_id
+    assert client.post(
+        "/v1/chat/completions",
+        json={"model": "test-model", "messages": [{"role": "user", "content": "hello"}]},
+        headers=headers,
+    ).status_code == 200
+
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    started = {
+        "schema_version": "scheduler.v1",
+        "event_id": "evt-model-start-proxy",
+        "occurred_at": now,
+        "plugin_version": "0.1.0",
+        "run_id": "run-proxy",
+        "session_id": "session-proxy",
+        "session_key": "agent:main:main",
+        "agent_id": None,
+        "gateway_id": gateway_id,
+        "runtime_id": runtime_id,
+        "event_type": "model_call_started",
+        "call_id": "run-proxy:model:1",
+        "provider": "vllm",
+        "model": "test-model",
+        "duration_ms": None,
+        "outcome": None,
+        "context_token_budget": 8192,
+        "raw_input": None,
+        "raw_output": None,
+        "raw_event": {"runId": "run-proxy", "sessionId": "session-proxy"},
+    }
+    ended = started | {
+        "event_id": "evt-model-end-proxy",
+        "occurred_at": now,
+        "event_type": "model_call_ended",
+        "duration_ms": 2000,
+        "outcome": "completed",
+        "raw_event": {"runId": "run-proxy", "sessionId": "session-proxy"},
+    }
+    assert client.post("/v1/events/model", json=started).json() == {"stored": True}
+    assert client.post("/v1/events/model", json=ended).json() == {"stored": True}
+
+
+def test_model_proxy_capture_correlates_when_events_carry_gateway_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """swe-rebench scenario: model events carry gateway_id="swe-rebench" and a
+    runtime id, while proxy captures only carry the runtime credential. The
+    proxy messages must still be attached to the LLM span."""
+    client, trace_dir = _trace_proxy_client(tmp_path)
+    _drive_proxy_and_model_events(
+        client,
+        monkeypatch,
+        gateway_id="swe-rebench",
+        runtime_id="claw-srb-996de1b4ee38",
+    )
+
+    records = _read_trace_records(trace_dir)
+    llm_starts = [
+        r for r in records if r.get("record_type") == "span_start" and r.get("kind") == "llm"
+    ]
+    assert len(llm_starts) == 1
+    assert llm_starts[0]["gateway_id"] == "swe-rebench"
+    assert llm_starts[0]["runtime_id"] == "claw-srb-996de1b4ee38"
+    assert llm_starts[0]["input"]["messages"] == [{"role": "user", "content": "hello"}]
+    llm_ends = [
+        r for r in records if r.get("record_type") == "span_end" and r.get("kind") == "llm"
+    ]
+    assert llm_ends[0]["output"]["content"]["content"] == "world"
+    assert llm_ends[0]["output"]["content"]["tool_calls"][0]["id"] == "call-proxy-tool"
+
+
+def test_model_proxy_capture_correlates_without_gateway_id(tmp_path: Path, monkeypatch) -> None:
+    """Plain OpenClaw / legacy scenario: no gateway_id anywhere. Correlation
+    still works on runtime_id + model + time alone."""
+    client, trace_dir = _trace_proxy_client(tmp_path)
+    _drive_proxy_and_model_events(client, monkeypatch, gateway_id=None, runtime_id=None)
+
+    records = _read_trace_records(trace_dir)
+    llm_starts = [
+        r for r in records if r.get("record_type") == "span_start" and r.get("kind") == "llm"
+    ]
+    assert len(llm_starts) == 1
+    assert llm_starts[0]["gateway_id"] is None
+    assert llm_starts[0]["input"]["messages"] == [{"role": "user", "content": "hello"}]
+    llm_ends = [
+        r for r in records if r.get("record_type") == "span_end" and r.get("kind") == "llm"
+    ]
+    assert llm_ends[0]["output"]["content"]["content"] == "world"
+
+
+def test_proxy_capture_rejected_when_explicit_gateway_differs(tmp_path: Path) -> None:
+    """Isolation intent is preserved: when a proxy capture DOES carry an explicit
+    gateway_id, a model event from a different gateway must not consume it."""
+    from agent_scheduler.contracts.models import ModelEvent
+    from agent_scheduler.trace import AgentTestBenchTraceWriter
+
+    writer = AgentTestBenchTraceWriter(tmp_path / "traces")
+    ts = time.time()
+    event_kwargs = dict(
+        schema_version="scheduler.v1",
+        event_id="evt-1",
+        occurred_at=time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(ts)),
+        plugin_version="0.1.0",
+        run_id="run-1",
+        session_id="session-1",
+        session_key="agent:main:main",
+        agent_id=None,
+        event_type="model_call_ended",
+        call_id="c1",
+        provider="vllm",
+        model="test-model",
+        duration_ms=1000,
+        outcome="completed",
+        context_token_budget=8192,
+        raw_input=None,
+        raw_output=None,
+        raw_event=None,
+        runtime_id="runtime-a",
+        repo="owner/repo",
+    )
+
+    def _record_with_gateway(gateway_id: str) -> None:
+        writer.record_llm_proxy_call(
+            runtime_id="runtime-a",
+            action_id=f"llm-proxy-{gateway_id}",
+            provider="llm-proxy",
+            model="test-model",
+            messages_in=[{"role": "user", "content": "hello"}],
+            content="world",
+            raw_request=None,
+            raw_response=None,
+            ts_start=ts - 1.0,
+            ts_end=ts,
+            status_code=200,
+            stream=False,
+            error=None,
+        )
+        # The proxy does not emit a gateway_id today, but if a future capture
+        # does, the strict isolation rule must still reject foreign gateways.
+        writer._recent_proxy_calls[-1]["gateway_id"] = gateway_id
+
+    _record_with_gateway("gateway-a")
+    different = ModelEvent(**{**event_kwargs, "gateway_id": "gateway-b"})
+    assert writer._pop_recent_proxy_call(different) is None
+    # The rejected capture was not consumed; drop it so the next scenario starts
+    # with a single unambiguous candidate.
+    writer._recent_proxy_calls.clear()
+
+    _record_with_gateway("gateway-a")
+    same = ModelEvent(**{**event_kwargs, "gateway_id": "gateway-a"})
+    matched = writer._pop_recent_proxy_call(same)
+    assert matched is not None
+    assert matched["data"]["messages_in"] == [{"role": "user", "content": "hello"}]
 
 
 def test_llm_proxy_reconstructs_streaming_tool_calls(tmp_path: Path, monkeypatch) -> None:

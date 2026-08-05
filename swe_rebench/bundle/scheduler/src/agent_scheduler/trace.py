@@ -713,9 +713,19 @@ class AgentTestBenchTraceWriter:
         for index, record in enumerate(self._recent_proxy_calls):
             if record.get("runtime_id") != event.runtime_id:
                 continue
+            # Tolerant gateway check, matching the convention used by
+            # `belongs_to_runtime` (identity.py) and `executions.py`: a
+            # mismatch is only a hard rejection when BOTH sides carry a
+            # non-null gateway_id and they differ.  Proxy captures recorded
+            # by the LLM proxy never carry a gateway_id (the proxy only sees
+            # the runtime credential), so enforcing an equality here would
+            # silently discard every proxy capture whenever the model event
+            # has a gateway_id set (swe-rebench always sets "swe-rebench").
+            record_gateway_id = record.get("gateway_id")
             if (
                 event.gateway_id is not None
-                and record.get("gateway_id") != event.gateway_id
+                and record_gateway_id is not None
+                and record_gateway_id != event.gateway_id
             ):
                 continue
             data = record.get("data") if isinstance(record.get("data"), dict) else {}
