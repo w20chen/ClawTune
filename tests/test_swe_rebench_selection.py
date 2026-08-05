@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from swe_rebench.config import RunnerConfig, _load_yaml_safe
+from swe_rebench.config import AgentConfig, RunnerConfig, _as_str_list, _load_yaml_safe
 from swe_rebench.docker import (
     ContainerCleanupError,
     ContainerResult,
@@ -3187,6 +3187,75 @@ docker:
     assert raw["docker"]["privileged"] == "true"
     assert raw["docker"]["cgroupns_mode"] == "host"
     assert raw["docker"]["cgroup_mount_rw"] == "true"
+
+
+def test_minimal_yaml_fallback_keeps_extra_args_as_empty_list(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Regression: with PyYAML unavailable the fallback parser must keep
+    # `extra_args: []` an empty list.  Previously it stored the literal
+    # string "[]" and `list("[]")` unpacked it to ['[', ']'], which were
+    # appended to the `openclaw agent` argv as stray positionals and caused
+    # "Too many arguments for this command."
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+agent:
+  extra_args: []
+""",
+        encoding="utf-8",
+    )
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "yaml":
+            raise ImportError("yaml intentionally unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+
+    assert config.agent.extra_args == []
+
+
+def test_minimal_yaml_fallback_parses_nonempty_extra_args(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+agent:
+  extra_args: ["--verbose", "on"]
+""",
+        encoding="utf-8",
+    )
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "yaml":
+            raise ImportError("yaml intentionally unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+
+    assert config.agent.extra_args == ["--verbose", "on"]
+
+
+def test_agent_extra_args_coerces_string_bracket_form() -> None:
+    # Defensive layer: even if a loader hands us the literal string "[]",
+    # AgentConfig must not unpack it into bracket characters.
+    assert AgentConfig.from_dict({"extra_args": "[]"}).extra_args == []
+    assert AgentConfig.from_dict({"extra_args": ["--verbose", "on"]}).extra_args == [
+        "--verbose",
+        "on",
+    ]
+    assert _as_str_list("[]") == []
+    assert _as_str_list("['--verbose', 'on']") == ["--verbose", "on"]
+    assert _as_str_list(None) == []
+    assert _as_str_list("") == []
 
 
 def test_runner_config_reads_docker_platform_from_env(tmp_path: Path, monkeypatch) -> None:

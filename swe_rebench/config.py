@@ -31,6 +31,30 @@ def _as_bool(value: Any) -> bool:
     return bool(value)
 
 
+def _as_str_list(value: Any) -> list[str]:
+    """Coerce a config value to a list of strings.
+
+    PyYAML returns native lists, but the minimal fallback parser stores flat
+    ``[...]`` scalars as strings.  Without this coercion ``list("[]")`` would
+    unpack into ``['[', ']']``, and those two bracket characters would become
+    stray positional arguments on the ``openclaw agent`` argv (the
+    "Too many arguments for this command." failure).
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        v = value.strip()
+        if v.startswith("[") and v.endswith("]"):
+            inner = v[1:-1].strip()
+            if not inner:
+                return []
+            return [item.strip().strip('"').strip("'") for item in inner.split(",")]
+        return [v] if v else []
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
 def normalize_runtime_mode(value: str) -> str:
     # "host-openclaw-container" describes the same topology in user-facing
     # terms: OpenClaw/sidecar on the host, tool execution in its Docker
@@ -105,9 +129,9 @@ class DockerConfig:
             memory_limit=str(d.get("memory_limit", "8g")),
             cpus=int(d.get("cpus", 4)),
             network_mode=str(d.get("network_mode", "bridge")),
-            dns_servers=list(d.get("dns_servers", [])),
+            dns_servers=_as_str_list(d.get("dns_servers", [])),
             pull_policy=str(d.get("pull_policy", "missing")),
-            cap_add=list(d.get("cap_add", [])),
+            cap_add=_as_str_list(d.get("cap_add", [])),
             privileged=_as_bool(d.get("privileged", False)),
             cgroupns_mode=str(d.get("cgroupns_mode", "")),
             cgroup_mount_rw=_as_bool(d.get("cgroup_mount_rw", False)),
@@ -180,7 +204,7 @@ class AgentConfig:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "AgentConfig":
         return cls(
-            extra_args=list(d.get("extra_args", [])),
+            extra_args=_as_str_list(d.get("extra_args", [])),
         )
 
 
@@ -221,6 +245,37 @@ class RunnerConfig:
         )
 
 
+def _parse_yaml_scalar(value: str) -> Any:
+    """Parse one flat YAML scalar for the minimal fallback parser."""
+    v = value.strip()
+    if v.startswith("[") and v.endswith("]"):
+        inner = v[1:-1].strip()
+        if not inner:
+            return []
+        return [item.strip().strip('"').strip("'") for item in inner.split(",")]
+    return v.strip('"').strip("'")
+
+
+def _parse_yaml_fallback(path: Path) -> dict[str, Any]:
+    """Minimal flat-subset YAML parser used when PyYAML is unavailable."""
+    result: dict[str, Any] = {}
+    current_section: dict[str, Any] | None = None
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.endswith(":"):
+            current_section = {}
+            result[stripped[:-1].strip()] = current_section
+            continue
+        if not raw.startswith((" ", "\t")):
+            current_section = None
+        if current_section is not None and ":" in stripped:
+            k, _, v = stripped.partition(":")
+            current_section[k.strip()] = _parse_yaml_scalar(v)
+    return result
+
+
 def _load_yaml_safe(path: Path) -> dict[str, Any]:
     """Load YAML with PyYAML if available, else a minimal parser."""
     try:
@@ -230,27 +285,7 @@ def _load_yaml_safe(path: Path) -> dict[str, Any]:
         return result if isinstance(result, dict) else {}
     except ImportError:
         pass
-    # Minimal fallback ── only handles the flat subset used by our config.
-    result: dict[str, Any] = {}
-    current_section: dict[str, Any] | None = None
-    current_key = ""
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        stripped = raw.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if stripped.endswith(":"):
-            current_key = stripped[:-1].strip()
-            current_section = {}
-            result[current_key] = current_section
-            continue
-        if not raw.startswith((" ", "\t")):
-            current_section = None
-        if current_section is not None and ":" in stripped:
-            k, _, v = stripped.partition(":")
-            k = k.strip()
-            v = v.strip().strip('"').strip("'")
-            current_section[k] = v
-    return result
+    return _parse_yaml_fallback(path)
 
 
 def _resolve_api_key_file(value: Any, repo_root: Path) -> Path | None:
