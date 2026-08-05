@@ -2054,6 +2054,113 @@ The next Kunpeng compile caught an arm64 kernel macro collision: Linux defines
 source-level regression assertion. Focused telemetry/SWE-Rebench tests passed
 (`116 passed, 2 skipped`) and the tracked bundle was regenerated. The actual
 BCC compile/attach must be repeated by rerunning setup on the Kunpeng host.
+
+## Precise tool-time split: plugin_window/tool_body/scheduler_overhead (2026-08-05)
+
+The recorded `duration_ns`/`action_duration_ns` is the duration OpenClaw
+reports for the actual tool action (wall clock, includes tool-internal
+startup/blocked time; scheduler round-trips are outside it). To separate
+"pure work" from harness overhead:
+
+- `scripts/analyze_span_overhead.py` now reports `cpu_time_s` as the
+  pure-work proxy alongside `action`, coverage, and attribution, so the gap
+  (blocked/startup time inside the action) is visible per span and per tool.
+- The plugin now records three optional fields on `span_end.resources`
+  (threaded through the completed-event contract and mirrored into
+  `swe_rebench/bundle`):
+  - `plugin_window_ns`: full before->after tool hook window (includes
+    scheduler/plugin round-trips).
+  - `tool_body_ns`: OpenClaw-reported tool action duration.
+  - `scheduler_overhead_ns`: `max(0, plugin_window_ns - tool_body_ns)`.
+  All are optional ns strings; absent when OpenClaw reports no `duration_ms`.
+
+Validation completed in the Windows development workspace:
+
+- Plugin build: `node node_modules\typescript\bin\tsc -p tsconfig.json`: exit 0.
+- Plugin tests: `cd packages/openclaw-plugin && node --test test\*.test.mjs`:
+  `80 passed`.
+- Scheduler suite (with `PYTHONPATH=services/scheduler/src`):
+  `python -m pytest services/scheduler/tests -q --basetemp .pytest-tmp`:
+  `263 passed, 2 skipped`.
+- `python tools/validate_contracts.py`: all contract examples validated.
+- End-to-end writer check: a `ToolCompletedEvent` carrying the new fields was
+  written through `AgentTestBenchTraceWriter` and the emitted `span_end`
+  resources contained `plugin_window_ns`/`tool_body_ns`/`scheduler_overhead_ns`.
+- `git diff --check`: passed.
+
+Validation commands that cannot run in this Windows workspace:
+
+- A live SWE-Rebench run to see the new fields populated on real read/edit
+  spans (and to confirm `scheduler_overhead_ns` ≈ the observed non-CPU gap)
+  requires the Linux host, Docker, cgroup v2, BCC/eBPF, OpenClaw, and an
+  upstream model.
+
+## eBPF resource completion + independent cgroup artifact + fork-exec cgroup fix (2026-08-05)
+
+Goal: complete the resource monitoring results in the trace, fix the coarse
+`shared-sandbox-container` cgroup attribution, and ship an independent
+cgroup-based resource artifact covering cpu/memory/network/disk.
+
+Scope decision (user): stay conservative on eBPF — record only what the current
+Stage-2 eBPF collector already supports, do NOT add new in-kernel network
+counters.  Current eBPF (`tool_resource/telemetry.py` `BPF_PROGRAM` `event_t`)
+monitors: per-clause **latency** (`ts_start`/`ts_end`/`latency_ms`), **CPU**
+(`cpu_ns` per-task utime+stime → `cpu_ns_cumulative`/`peak_cpu_cores`), **memory**
+RSS (`rss_pages`/`hiwater_pages` → `sampled_peak_rss_mb`), and **disk** I/O
+(`ioac` read/write bytes).  It does **not** monitor network (no counters), so
+the eBPF clause result keeps network fields null/unavailable.
+
+Implemented:
+
+- `contracts/clause-telemetry.schema.json`: `clause` now declares the
+  eBPF-supported resource fields (`cumulative_cpu_s`, `peak_cpu_cores`,
+  `peak_memory_mb`, `disk_read_bytes`, `disk_write_bytes`, and null-only
+  `network_rx_bytes`/`network_tx_bytes` plus `availability`).
+- `predictors/tool_resource.py` `_compact_clauses`: the trace's
+  `call_telemetry.clauses[]` now also exposes `disk_read_bytes`/
+  `disk_write_bytes` (with `disk_*_total` fallback) and the null network
+  fields, so consumers can distinguish "unavailable" from a measurement.
+- New `telemetry/cgroup_resource.py`: an **independent** per-execution cgroup
+  artifact `tool-resource/cgroup-resource-<execution_id>.json` serializing the
+  cgroup v2 + procfs sampler view (cpu, memory, disk, network) — independent
+  of eBPF; `span_end.resources.cgroup_artifact_path` references it.  cgroup v2
+  has no native network counter, so network here comes from the sampler's
+  procfs-based per-scope delta (documented in the artifact).
+- `launcher.py` `_run_forkexec`: creates a per-execution cgroup (reusing
+  `_prepare_cgroup`), moves the forked child into it **before** the exec gate
+  opens, and reports the real `cgroup_path` in `/started`, so the claw-launch
+  scope becomes a usable cgroup-v2 scope instead of the sandbox-container
+  fallback.  Degrades to `cgroup_path=None` (unchanged behavior) when cgroupfs
+  is read-only (Docker sandbox / remote sidecar).  Mirrored into
+  `swe_rebench/bundle`.
+
+Validation completed in the Windows development workspace:
+
+- New `services/scheduler/tests/test_cgroup_resource.py`: `4 passed`
+  (artifact content cpu/mem/disk/net, skip rules, trace `cgroup_artifact_path`
+  emission, `_compact_clauses` disk/network exposure).
+- Affected suites: `test_cgroup_resource.py test_sidecar.py
+  test_tool_resource_predictor.py`: `108 passed`.
+- `python tools/validate_contracts.py`: all contract examples validated.
+- Plugin build (`tsc -p tsconfig.json`): exit 0; plugin tests: pass (fail 0).
+- `git diff --check`: passed.
+
+Validation commands that cannot run in this Windows workspace:
+
+- Compiling/attaching the modified `launcher.py` fork-exec path on a real
+  payload, confirming the per-execution cgroup is created and the child is
+  moved before exec, and that the eBPF collector still captures the exec
+  (filtering by the per-execution cgroup) — requires Linux host with writable
+  cgroupfs.
+- Confirming `call_telemetry.clauses[]` `peak_cpu_cores`/`peak_memory_mb`/
+  `cumulative_cpu_s` populate from live Stage-2 eBPF sampling (short clauses
+  are ineligible for peak by design: `clause_shorter_than_1s_ineligible_for_peak`)
+  and that the independent cgroup artifact roughly matches the eBPF numbers.
+- The durable host-openclaw-sandbox cgroup fix (sidecar creates/moves a host
+  cgroup for the launcher-reported container child pid) remains a follow-up
+  requiring host cgroup access and pid-namespace mapping; the launcher-side
+  change only takes effect where cgroupfs is writable.
+
 ## 2026-08-02 container cached-image pull regression
 
 A Kunpeng `container-openclaw` run had the requested linux/amd64 task image in

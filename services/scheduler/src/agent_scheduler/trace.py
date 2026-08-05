@@ -24,6 +24,7 @@ from agent_scheduler.identity import (
     owner_prefix_matches,
     owners_compatible,
 )
+from agent_scheduler.telemetry.cgroup_resource import write_cgroup_resource
 
 
 def _safe_filename(segment: str | None) -> str:
@@ -291,6 +292,17 @@ class AgentTestBenchTraceWriter:
             shared_sandbox_container=shared_sandbox,
         )
 
+        # Independent per-execution cgroup artifact (cpu/mem/disk/network),
+        # written next to the trace and referenced from the span resources.
+        _cgroup_artifact_path = write_cgroup_resource(
+            self.trace_dir,
+            sample,
+            execution_id=event.execution_id,
+            tool_call_id=event.tool_call_id,
+            tool_name=event.tool_name,
+            attribution_source=scope.attribution_source if scope is not None else None,
+        )
+
         # span_end
         self._append(filepath, {
             "schema_version": 6,
@@ -334,6 +346,10 @@ class AgentTestBenchTraceWriter:
                 "monitor_duration_ns": str(sample.monitor_duration_ms * 1_000_000),
                 "coverage_duration_ns": str(_cov_dur_ns) if _cov_dur_ns is not None else None,
                 "action_duration_ns": duration_ns,
+                "plugin_window_ns": event.plugin_window_ns,
+                "tool_body_ns": event.tool_body_ns,
+                "scheduler_overhead_ns": event.scheduler_overhead_ns,
+                "cgroup_artifact_path": _cgroup_artifact_path,
                 "coverage_ratio": _cov_ratio,
                 "coverage_reason": _cov_reason,
                 "cpu_time_s": sample.cpu_time_delta_s,

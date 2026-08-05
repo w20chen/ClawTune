@@ -163,6 +163,22 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
 
     # ── Parent: register trusted root, then release child ──────────
     os.close(read_fd)
+    # Give the forked payload a per-execution cgroup when one can be created
+    # (writable cgroupfs).  The child is moved into it *before* the exec gate
+    # opens, so its exec and the whole clause run inside the dedicated cgroup
+    # and the sidecar gets a usable cgroup-v2 claw-launch scope instead of the
+    # coarse shared-sandbox-container fallback.  When cgroupfs is read-only
+    # (Docker sandbox, remote sidecar) _prepare_cgroup returns None and the
+    # behaviour is unchanged: started reports cgroup_path=None.
+    placement = claim.get("placement")
+    profiling = claim.get("profiling")
+    cpu_set = _extract_cpu_set(placement)
+    mems = _extract_mems(placement)
+    cgroup_path = _prepare_cgroup(execution_id, cpu_set, mems, profiling)
+    if cgroup_path is not None and not _join_child_cgroup(pid, cgroup_path):
+        # Moving the child failed; never report a cgroup we do not own, or the
+        # sampler would misattribute the container cgroup as per-execution.
+        cgroup_path = None
     try:
         started_response = _post_started(
             endpoint,
@@ -170,7 +186,7 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
             update_token=update_token,
             launcher_pid=launcher_pid,
             child_pid=pid,
-            cgroup_path=None,
+            cgroup_path=cgroup_path,
             host_cgroup_gate=False,
         )
         if started_response.get("stored") is not True:

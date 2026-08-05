@@ -1748,9 +1748,18 @@ def _compact_clauses(clauses: Any) -> list[dict[str, Any]]:
                 "ts_start": row.get("ts_start"),
                 "ts_end": row.get("ts_end"),
                 "latency_ms": row.get("latency_ms"),
+                "cumulative_cpu_s": row.get("cumulative_cpu_s"),
                 "peak_cpu_cores": row.get("peak_cpu_cores"),
                 "peak_memory_mb": row.get("peak_memory_mb"),
-                "cumulative_cpu_s": row.get("cumulative_cpu_s"),
+                "disk_read_bytes": row.get("disk_read_bytes")
+                or row.get("disk_read_bytes_total"),
+                "disk_write_bytes": row.get("disk_write_bytes")
+                or row.get("disk_write_bytes_total"),
+                # The Stage-2 eBPF collector does not monitor network today;
+                # these stay null so consumers can distinguish "unavailable"
+                # from a real measurement.
+                "network_rx_bytes": row.get("network_rx_bytes"),
+                "network_tx_bytes": row.get("network_tx_bytes"),
             }
         )
     return compact

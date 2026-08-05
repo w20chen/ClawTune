@@ -756,6 +756,23 @@ export default definePluginEntry({
         logger.warn("Agent Scheduler execution scope lookup failed", classifyError(error));
       }
     }
+    // Precise tool-time split: separate the OpenClaw-reported tool action
+    // from the plugin/scheduler round-trip overhead around it.
+    //   durNs (before->after hook window) = scheduler RTTs + tool action + bookkeeping
+    //   completion.duration_ms           = OpenClaw-reported tool action duration
+    //   scheduler_overhead_ns            = max(0, durNs - tool action)
+    // Assign before reportCompletion so the sidecar/scheduler trace records
+    // the split (the payload is serialized at report time).
+    const openclawActionNs =
+      completion.duration_ms > 0
+        ? BigInt(Math.trunc(completion.duration_ms)) * 1_000_000n
+        : null;
+    const schedulerOverheadNs =
+      openclawActionNs === null ? null : (durNs > openclawActionNs ? durNs - openclawActionNs : 0n);
+    completion.plugin_window_ns = durNs.toString();
+    completion.tool_body_ns = openclawActionNs === null ? null : openclawActionNs.toString();
+    completion.scheduler_overhead_ns =
+      schedulerOverheadNs === null ? null : schedulerOverheadNs.toString();
     let toolResourceTelemetry: unknown | null = null;
     try {
       await client.reportCompletion(completion);
@@ -869,6 +886,9 @@ export default definePluginEntry({
       monitor_end_monotonic_ns: null,
       coverage_duration_ns: null,
       action_duration_ns: durNs.toString(),
+      plugin_window_ns: durNs.toString(),
+      tool_body_ns: completion.tool_body_ns ?? null,
+      scheduler_overhead_ns: completion.scheduler_overhead_ns ?? null,
       coverage_ratio: null,
       coverage_reason: coverageReason,
       cpu_time_s: null,

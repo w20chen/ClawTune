@@ -61,7 +61,18 @@
         "ts_start": {"type": "number"},
         "ts_end": {"type": "number"},
         "latency_ms": {"type": ["number", "null"], "minimum": 0},
-        "status": {"$ref": "#/$defs/clauseStatus"}
+        "status": {"$ref": "#/$defs/clauseStatus"},
+        "cumulative_cpu_s": {"type": ["number", "null"], "minimum": 0},
+        "peak_cpu_cores": {"type": ["number", "null"], "minimum": 0},
+        "peak_memory_mb": {"type": ["number", "null"], "minimum": 0},
+        "disk_read_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "disk_write_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "network_rx_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "network_tx_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "availability": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        }
       },
       "additionalProperties": true
     },

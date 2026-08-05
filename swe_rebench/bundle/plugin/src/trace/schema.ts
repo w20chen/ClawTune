@@ -176,6 +176,15 @@ export interface SpanEndResources {
   action_duration_ns: string;
   coverage_ratio: number | null;
 
+  /** Plugin-observed full before->after tool hook window (ns). */
+  plugin_window_ns?: string | null;
+  /** OpenClaw-reported tool action duration (ns). */
+  tool_body_ns?: string | null;
+  /** Plugin-measured scheduler/plugin round-trip overhead (ns), outside the action. */
+  scheduler_overhead_ns?: string | null;
+  /** Trace-relative path of the independent cgroup resource artifact. */
+  cgroup_artifact_path?: string | null;
+
   coverage_reason: CoverageReason | string | null;
 
   cpu_time_s?: number | null;
