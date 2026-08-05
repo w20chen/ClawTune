@@ -260,9 +260,9 @@ def create_venv(system_python: Path) -> None:
             venv_python,
             "-c",
             (
-                "from importlib.metadata import version; "
+                "from importlib.metadata import version\n"
                 "import agent_scheduler, fastapi, httpx, numpy, pydantic, "
-                "prometheus_client, psutil, typing_extensions, uvicorn; "
+                "prometheus_client, psutil, typing_extensions, uvicorn\n"
                 "try: pkg_ver = version('clawtune-sidecar')\n"
                 "except: pkg_ver = version('agent-scheduler')\n"
                 "assert pkg_ver == '0.2.0'"
