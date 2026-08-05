@@ -1987,6 +1987,64 @@ def test_agent_test_bench_trace_jsonl_records_tool_and_model_events(tmp_path: Pa
     model_ends = [r for r in records if r.get("record_type") == "span_end" and r.get("kind") == "llm"]
     assert len(model_ends) == 1
     assert model_ends[0]["output"]["content"] == "done"
+    # LLM spans must satisfy the same monotonic invariant as tool spans
+    # (mono_end - mono_start == duration_ns). Regression for the collapsed
+    # monotonic-stamp bug in _record_model_v6.
+    assert model_ends[0]["duration_ns"] == str(2000 * 1_000_000)
+    assert (
+        int(model_ends[0]["monotonic_time_ns"]) - int(model_starts[0]["monotonic_time_ns"])
+        == int(model_ends[0]["duration_ns"])
+    )
+
+
+def test_llm_span_monotonic_invariant_holds_when_duration_absent(tmp_path: Path) -> None:
+    client, trace_dir = _trace_client(tmp_path)
+    started = {
+        "schema_version": "scheduler.v1",
+        "event_id": "evt-model-zero-start",
+        "occurred_at": "2026-07-16T03:23:03Z",
+        "plugin_version": "0.1.0",
+        "run_id": "run-zero",
+        "session_id": "session-zero",
+        "session_key": None,
+        "agent_id": "agent-zero",
+        "event_type": "model_call_started",
+        "call_id": "llm-zero",
+        "provider": "test-provider",
+        "model": "test-model",
+        "duration_ms": None,
+        "outcome": None,
+        "context_token_budget": 8192,
+        "raw_input": [{"role": "user", "content": "hi"}],
+        "raw_output": None,
+        "raw_event": {"messages": [{"role": "user", "content": "hi"}]},
+    }
+    ended = started | {
+        "event_id": "evt-model-zero-end",
+        "occurred_at": "2026-07-16T03:23:04Z",
+        "event_type": "model_call_ended",
+        "duration_ms": None,  # no reported duration
+        "outcome": "success",
+        "raw_input": None,
+        "raw_output": "ok",
+        "raw_event": {"content": "ok"},
+    }
+    assert client.post("/v1/events/model", json=started).json() == {"stored": True}
+    assert client.post("/v1/events/model", json=ended).json() == {"stored": True}
+
+    records = _read_trace_records(trace_dir)
+    llm_starts = [r for r in records if r.get("record_type") == "span_start" and r.get("kind") == "llm"]
+    llm_ends = [r for r in records if r.get("record_type") == "span_end" and r.get("kind") == "llm"]
+    assert len(llm_starts) == 1
+    assert len(llm_ends) == 1
+    # No reported duration -> duration_ns is 0 and the monotonic span is
+    # zero-width; the invariant mono_end - mono_start == duration_ns holds.
+    assert llm_ends[0]["duration_ns"] == "0"
+    assert (
+        int(llm_ends[0]["monotonic_time_ns"]) - int(llm_starts[0]["monotonic_time_ns"])
+        == int(llm_ends[0]["duration_ns"])
+    )
+    assert llm_ends[0]["resources"]["action_duration_ns"] == "0"
 
 
 def test_trace_marks_raw_exec_exit_code_failure(tmp_path: Path) -> None:

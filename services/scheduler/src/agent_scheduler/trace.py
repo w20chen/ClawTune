@@ -396,10 +396,16 @@ class AgentTestBenchTraceWriter:
 
         wall_start_ns = str(int(ts_start * 1_000_000_000))
         wall_end_ns = str(int(ts_end * 1_000_000_000))
-        # Use monotonic clock for durations — see _record_tool_v6 for rationale.
-        mono_start_ns = str(time.monotonic_ns())
-        mono_end_ns = str(time.monotonic_ns())
-        duration_ns = str(int(max(0, event.duration_ms or 0) * 1_000_000))
+        # Use monotonic clock for durations so they are immune to wall-clock
+        # adjustments (NTP, leap seconds). Wall-clock is preserved separately.
+        # Derive the monotonic start from end minus duration so the span
+        # invariant (mono_end - mono_start == duration_ns) holds, matching
+        # _record_tool_v6.
+        duration_ns_value = int(max(0, event.duration_ms or 0) * 1_000_000)
+        mono_end_ns_value = time.monotonic_ns()
+        mono_start_ns = str(max(0, mono_end_ns_value - duration_ns_value))
+        mono_end_ns = str(mono_end_ns_value)
+        duration_ns = str(duration_ns_value)
 
         status_code = "ok" if event.outcome in ("completed", "ok", "success") else ("error" if event.outcome == "error" else "unknown")
 
