@@ -1524,6 +1524,11 @@ def _openclaw_uses_agent_flag(openclaw: str) -> bool:
     contains the literal text "agent main", the probe must not trust stderr;
     only the exact stdout usage line with exit 0 proves the positional form.
     """
+    _log(
+        f"[openclaw-syntax] probe openclaw={openclaw} "
+        f"HOME={os.environ.get('HOME')!r} "
+        f"OPENCLAW_HOME={os.environ.get('OPENCLAW_HOME')!r}"
+    )
     try:
         probe = subprocess.run(
             [openclaw, "agent", "main", "--help"],
@@ -1536,9 +1541,16 @@ def _openclaw_uses_agent_flag(openclaw: str) -> bool:
         # Popen stand-in without a context manager in tests) falls back to
         # the long-documented flag form.
         return True
-    if probe.returncode == 0 and "Usage: openclaw agent main" in (probe.stdout or ""):
-        return False
-    return True
+    positional = (
+        probe.returncode == 0
+        and "Usage: openclaw agent main" in (probe.stdout or "")
+    )
+    _log(
+        f"[openclaw-syntax] probe rc={probe.returncode} "
+        f"stdout={probe.stdout[:160]!r} stderr={probe.stderr[:160]!r} "
+        f"=> {'positional' if positional else 'flag'}"
+    )
+    return not positional
 
 
 def _openclaw_agent_argv(
@@ -1550,7 +1562,7 @@ def _openclaw_agent_argv(
 ) -> list[str]:
     """Build the ``openclaw agent`` argv for the installed CLI syntax."""
     if _openclaw_uses_agent_flag(openclaw):
-        return [
+        argv = [
             openclaw,
             "agent",
             "--local",
@@ -1562,17 +1574,20 @@ def _openclaw_agent_argv(
             str(prompt_path),
             *extra_args,
         ]
-    return [
-        openclaw,
-        "agent",
-        "main",
-        "--local",
-        "--model",
-        model_ref,
-        "--message-file",
-        str(prompt_path),
-        *extra_args,
-    ]
+    else:
+        argv = [
+            openclaw,
+            "agent",
+            "main",
+            "--local",
+            "--model",
+            model_ref,
+            "--message-file",
+            str(prompt_path),
+            *extra_args,
+        ]
+    _log(f"[openclaw-syntax] agent argv={' '.join(map(str, argv))}")
+    return argv
 
 
 def _run_openclaw_agent(
