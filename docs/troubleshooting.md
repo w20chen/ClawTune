@@ -363,17 +363,62 @@ Other plugin paths are preserved. If an older checkout does not yet contain
 this recovery, remove the missing path from `plugins.load.paths` manually,
 run `openclaw doctor --fix`, and then rerun setup.
 
-## 18. Kunpeng cannot run an amd64 image
+## 18. Kunpeng/ARM cannot run an amd64 image
 
-Rerun setup; it installs and tests the binfmt handler on arm64. For a focused
-test:
+### Symptom
+
+Benchmark tasks fail immediately with errors like:
+
+```
+exec /bin/sh: exec format error
+libcontainer: container start initialization failed
+```
+
+or:
+
+```
+sandbox_launcher_preflight_failed: the mounted claw-launch must be readable
+and select a supported fork-exec runtime in the sandbox
+```
+
+When you check with the smoke test:
 
 ```bash
 sudo bash scripts/setup/arm_qemu_setup.sh check
 ```
 
-If Docker cannot pull `tonistiigi/binfmt` or the smoke image, fix registry,
-proxy, or DNS access first. See [Kunpeng and arm64](arm-qemu.md).
+it reports that binfmt_misc is not registered for x86_64 binaries.
+
+### Explanation
+
+ARM (aarch64 / Kunpeng) hosts run SWE-Rebench x86_64 Docker images through
+QEMU user-mode emulation.  This requires the Linux kernel's `binfmt_misc`
+mechanism to register a handler that transparently runs x86_64 binaries via
+`qemu-x86_64-static`.
+
+The `clawtune.py setup` command runs this registration automatically on ARM
+hosts via `scripts/setup/arm_qemu_setup.sh install`.  However, **binfmt_misc
+registrations do not survive a reboot.**  After the host restarts, Docker
+cannot execute x86_64 container binaries, producing `exec format error`.
+
+### Fix
+
+Re-register the QEMU binfmt handler (no need to re-run the full setup):
+
+```bash
+sudo bash scripts/setup/arm_qemu_setup.sh install
+```
+
+Verify it works:
+
+```bash
+sudo bash scripts/setup/arm_qemu_setup.sh check
+```
+
+The check output should show `binfmt_misc` registered and an amd64 smoke
+container running successfully.  If Docker cannot pull `tonistiigi/binfmt` or
+the smoke image, fix registry, proxy, or DNS access first.
+See [Kunpeng and arm64](arm-qemu.md).
 
 For benchmark task images, `pull_policy: missing` first checks the local image
 and verifies its requested OS/architecture. A matching cached amd64 image is
