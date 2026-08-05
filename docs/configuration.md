@@ -91,11 +91,6 @@ repository feature coexist and are available to all three algorithms. Files
 named `call_*.json` are per-call eBPF telemetry evidence used to update the
 KBs; they are not additional knowledge bases.
 
-The lattice snapshot retains observation multiplicity. When Stage-2 history is
-replayed at startup, multiset merging removes only occurrences already present
-in the snapshot; genuinely repeated executions remain separate samples even
-for legacy artifacts whose fallback timestamps are identical.
-
 Keep the host-sandbox runtime, eBPF requirement, privileged cgroup access, and
 bundle paths at their defaults. The unified benchmark command defaults to
 `linux/amd64` on Kunpeng and leaves the platform native on x86. Export

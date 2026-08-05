@@ -285,21 +285,21 @@ grant the OpenClaw hook permission.
 
 ## 13. Tool output contains `Failed to connect to bus: No medium found`
 
-This came from an older launcher trying `systemd-run --user` in an SSH session
-without a systemd user manager. The current launcher probes that interface
-quietly first. If it is unavailable, it keeps the gated payload, removes the
-unused cgroup, and reports no false cgroup path to the eBPF sidecar. Update the
-checkout and rerun setup so OpenClaw uses the rebuilt launcher:
+The launcher probes the systemd user manager quietly before using it. When no
+systemd user manager is available (for example in an SSH session), it keeps the
+gated payload, removes the unused cgroup, and reports no false cgroup path to
+the eBPF sidecar. If the message persists, update the checkout and rerun setup
+so OpenClaw uses the rebuilt launcher:
 
 ```bash
 python3 scripts/clawtune.py setup --skip-qemu
 ```
 
-If an older build reports `collector attach failed` because
-`/sys/fs/cgroup/.../cpu.max` does not exist, update ClawTune and rerun setup.
-The CPU controller is optional for eBPF collection; current builds interpret a
-missing quota file as unconstrained host capacity instead of rejecting shell
-execution. You do not need to modify `cgroup.subtree_control` manually.
+If `collector attach failed` mentions a missing `/sys/fs/cgroup/.../cpu.max`,
+update ClawTune and rerun setup. The CPU controller is optional for eBPF
+collection; a missing quota file is interpreted as unconstrained host capacity
+instead of a shell-execution failure. You do not need to modify
+`cgroup.subtree_control` manually.
 
 ## 14. OpenClaw runs but model or tool traces are empty
 
@@ -346,23 +346,23 @@ On x86 the default is native.
 
 ## 17. OpenClaw reports `plugins.load.paths: plugin path not found`
 
-The OpenClaw config contains a linked plugin path from an older checkout, for
+The OpenClaw config contains a linked plugin path that no longer exists, for
 example `/home/user/claw/...` after the repository moved to
-`/home/user/ClawTune/...`. Current setup recognizes a missing ClawTune plugin
-link, backs up the config, and removes the missing `openclaw-plugin` entry
-from `plugins.load.paths`.  If the stale reference lives in OpenClaw's
-internal plugin state rather than in `plugins.load.paths`, setup falls back
-to `openclaw doctor --fix` to reconcile the internal registry, then removes
-any restored stale paths before installing the link from the current checkout:
+`/home/user/ClawTune/...`. Setup recognizes the missing ClawTune plugin link,
+backs up the config, and removes the missing `openclaw-plugin` entry from
+`plugins.load.paths`. If the stale reference lives in OpenClaw's internal
+plugin state rather than in `plugins.load.paths`, setup falls back to
+`openclaw doctor --fix` to reconcile the internal registry, then removes any
+restored stale paths before installing the link from the current checkout:
 
 ```bash
 python3 scripts/clawtune.py setup
 ```
 
 The backup is written next to `~/.openclaw/openclaw.json` with a timestamp.
-Other plugin paths are preserved. If an older checkout does not yet contain
-this recovery, remove the missing path from `plugins.load.paths` manually,
-run `openclaw doctor --fix`, and then rerun setup.
+Other plugin paths are preserved. If setup cannot remove a stale reference,
+remove the missing path from `plugins.load.paths` manually, run
+`openclaw doctor --fix`, and then rerun setup.
 
 ## 18. Kunpeng/ARM cannot run an amd64 image
 
@@ -441,11 +441,11 @@ QEMU execution genuinely reaches the current limit.
 
 ## 20. A trace reports `mvdan adapter is missing` or repeated `analysis_failure`
 
-This was a regression in older revisions: setup prepared a user/container
-cache while the privileged ARM64 host sidecar read root's architecture-specific
-cache. Current setup prepares the adapter as the actual sidecar identity, and
-benchmark preflight verifies it before starting an agent. Update the checkout
-and run the normal setup command once; do not copy binaries between users or
+The shell-clause parser adapter is built per user and per architecture. If a
+trace reports `mvdan adapter is missing`, the adapter cache was prepared under
+a different user or architecture than the sidecar uses. Rerun setup so it
+prepares the adapter as the actual sidecar identity; benchmark preflight
+verifies it before starting an agent. Do not copy binaries between users or
 architectures:
 
 ```bash

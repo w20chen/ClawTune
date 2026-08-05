@@ -59,4 +59,4 @@ Developer references:
 
 - Public JSON Schemas: [`contracts/`](../contracts/)
 - Event format implementation notes: [trace-schema.md](trace-schema.md)
-- Current engineering plan and validation history: [CURRENT_PLAN.md](CURRENT_PLAN.md)
+- Current plan and validation: [CURRENT_PLAN.md](CURRENT_PLAN.md)

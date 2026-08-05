@@ -79,17 +79,11 @@ the existing clause predictor. Results are exposed at
 exec-producing static clause and all three algorithm outcomes under that entry.
 Compound shell commands retain independent clause predictions: pipeline,
 conditional, and sequential clause times are never combined into a synthetic
-command duration.
-
-The sidecar prebuilds lattice nodes during cold start and prepares the next
-causally visible node state when a clause completes. Node generation retains
-the latt default bound of six optional features when the corpus is small, then
-reduces that bound deterministically to keep at most 4,096 generated nodes per
-signature and target a 20,000-node-occurrence rebuild budget while always
-retaining exact nodes. A non-exact shrinkage query
-with more than 512 matching nodes reports `lattice_candidate_limit_exceeded`;
-LOSO and max-cardinality remain available because they do not run the
-quadratic dominance pass.
+command duration. The lattice is prebuilt during cold start and updated as
+clauses complete; large corpora are bounded deterministically, and a query
+that exceeds the candidate limit reports
+`lattice_candidate_limit_exceeded` (the other two algorithms remain
+available).
 
 ## Collection Boundaries
 
