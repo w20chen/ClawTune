@@ -2820,3 +2820,51 @@ Validation commands that cannot run in this Windows workspace:
   requires a live host-openclaw-sandbox run to confirm per-tool net bytes and
   that `perf`-style losses stay zero.  Run `python -m swe_rebench.runner
   prepare --config swe_rebench/config.yaml` on the host before the next run.
+
+## Launcher cgroup-v2 gate accepts per-PID fallback (2026-08-05, live host)
+
+A live Kunpeng/aarch64 `benchmark --sample 1` run failed the required-telemetry
+gate: `required launcher cgroup-v2 telemetry is incomplete: sampled 0/17
+launcher tool spans; launcher scope breakdown: cgroup=0, attributed=17,
+unattributed=0; sandbox scope: discovered`.
+
+Trace audit (3 local `claw-srb-*.jsonl` exports) showed the launcher spans were
+consistently per-PID process-tree (`scope=process_tree`,
+`attribution_source=trusted-execution-root-pid`, `monitor_source=psutil-process-tree`,
+`execution.cgroup_path=None`) while read/edit were `shared-sandbox-container`
+cgroup. Root cause: in `host-openclaw-sandbox` mode the runner's
+`cgroup_mount_rw`/`cgroupns_mode`/`cgroup_required` (`swe_rebench/docker.py`)
+do NOT apply — OpenClaw creates the sandbox with read-only cgroupfs, so the
+launcher reports `cgroup_path=None` and sends `host_cgroup_gate=True`; on this
+host the sidecar's `_prepare_host_execution_cgroup` could not create/move a
+per-execution cgroup and `_verified_host_execution_scope` could not resolve a
+usable host cgroup, so `execution_started` degraded to the documented
+`_verified_host_pid_scope` per-PID fallback. The one passing earlier trace
+(`shared-sandbox-container`) was the race where `trusted_root_pid` was not yet
+resolved, so the completion fallback kept the sandbox cgroup.
+
+Fix (`swe_rebench/runner.py`): the launcher required-telemetry gate now accepts
+fully-attributed per-PID launcher spans as the documented fallback, and only
+fails when launcher spans are unattributed or not all launcher spans are
+attributed. `handle_result` logs a `note:` line and records a
+`telemetry_audit.warning` when the launcher used per-PID instead of cgroup-v2,
+so operators still see the `cgroup=.., attributed=.., unattributed=..` picture
+(the full breakdown stays in `resource_summary`). cgroup-v2 remains preferred
+and `cgroup_coverage_ratio`/`launcher_attribution_ratio` still quantify it.
+
+Validation completed in this workspace:
+
+- New/updated tests in `tests/test_swe_rebench_runner_inspection.py`:
+  `test_launcher_per_pid_attribution_passes_gate`,
+  `test_launcher_unattributed_spans_fail_gate_with_diagnostics`.
+- Scheduler suite `283 passed, 2 skipped`; root suite `192 passed, 2 skipped`.
+- No bundle change needed: `swe_rebench/runner.py` is the host harness and is
+  not copied into `swe_rebench/bundle` or the runtime bundle.
+
+Validation commands that cannot run in this Windows workspace:
+
+- Re-running `python3 scripts/clawtune.py benchmark --sample 1` on the
+  Kunpeng/aarch64 host to confirm the task now passes the required-telemetry
+  gate with per-PID launcher attribution, and that the `note:` line appears in
+  the batch log alongside the `telemetry_audit.warning` in report.json.
+

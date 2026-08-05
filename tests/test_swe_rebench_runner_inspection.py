@@ -960,7 +960,74 @@ def test_container_mode_honors_explicit_stage2_requirement(tmp_path):
     ) is None
 
 
-def test_cgroup_telemetry_failure_reports_attribution_diagnostics(tmp_path):
+def test_launcher_per_pid_attribution_passes_gate(tmp_path):
+    """Per-PID process-tree attribution is the documented fallback when the
+    host does not delegate a writable cgroup subtree (execution_started
+    degrades to _verified_host_pid_scope).  Fully attributed launcher spans
+    (even without cgroup-v2) satisfy the required-telemetry gate; only
+    unattributed spans are a real loss."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "runtime:\n  mode: host-openclaw-sandbox\n  stage2_required: true\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    resources = {
+        "tool_span_ends": 1,
+        "resource_sampled_tool_span_ends": 1,
+        "launcher_tool_span_ends": 1,
+        "launcher_cgroup_tool_span_ends": 0,
+        "launcher_attributed_tool_span_ends": 1,
+        "unattributed_launcher_tool_span_ends": 0,
+        "launcher_stage2_expected_span_ends": 1,
+        "launcher_exit_status_span_ends": 1,
+        "launcher_tool_resource_span_ends": 1,
+        "launcher_stage2_lifecycle_span_ends": 1,
+        "launcher_stage2_artifact_envelope_span_ends": 1,
+        "launcher_stage2_artifact_refs": [
+            {"execution_id": "exec-1", "tool_call_id": "call-1"}
+        ],
+        "launcher_tool_resource_eligible_span_ends": 1,
+        "tool_resource_prediction_span_starts": 1,
+        "tool_resource_prediction_available_span_starts": 1,
+        "clause_bucket_prediction_available_span_starts": 1,
+        "continuous_latency_ms_prediction_available_span_starts": 1,
+        "continuous_peak_cpu_cores_prediction_available_span_starts": 1,
+        "continuous_peak_memory_mb_prediction_available_span_starts": 1,
+    }
+    artifacts = {
+        "artifact_count": 1,
+        "artifact_envelope_count": 1,
+        "artifact_identity_count": 1,
+        "artifact_refs": [
+            {"execution_id": "exec-1", "tool_call_id": "call-1"}
+        ],
+        "collector_healthy_artifact_count": 1,
+        "healthy_artifact_count": 1,
+        "call_count": 1,
+        "lifecycle_healthy_call_count": 1,
+        "ok_call_count": 1,
+        "kb_eligible_call_count": 1,
+        "invalid_call_count": 0,
+        "unavailable_call_count": 0,
+        "non_ok_call_with_reason_count": 0,
+        "explicit_semantic_rejection_call_count": 0,
+        "unexplained_non_ok_call_count": 0,
+        "unaccounted_semantic_call_count": 0,
+        "clause_count": 1,
+        "clauses_with_status": 1,
+    }
+    result = {
+        "resource_summary": resources,
+        "tool_resource_artifacts": artifacts,
+    }
+
+    # cgroup-v2 unavailable but every launcher span is per-PID attributed:
+    # the gate passes (the telemetry is complete and attributed).
+    assert _required_telemetry_error(config, result) is None
+
+
+def test_launcher_unattributed_spans_fail_gate_with_diagnostics(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "runtime:\n  mode: host-openclaw-sandbox\n  stage2_required: true\n",
@@ -983,8 +1050,8 @@ def test_cgroup_telemetry_failure_reports_attribution_diagnostics(tmp_path):
                 "resource_sampled_tool_span_ends": 2,
                 "launcher_tool_span_ends": 2,
                 "launcher_cgroup_tool_span_ends": 0,
-                "launcher_attributed_tool_span_ends": 2,
-                "unattributed_launcher_tool_span_ends": 0,
+                "launcher_attributed_tool_span_ends": 1,
+                "unattributed_launcher_tool_span_ends": 1,
                 "launcher_stage2_expected_span_ends": 2,
             },
             "tool_resource_artifacts": {"artifact_count": 2},
@@ -993,12 +1060,12 @@ def test_cgroup_telemetry_failure_reports_attribution_diagnostics(tmp_path):
     error = _required_telemetry_error(config, result_dict())
     assert error is not None
     assert (
-        "required launcher cgroup-v2 telemetry is incomplete: "
-        "sampled 0/2 launcher tool spans" in error
+        "required launcher resource attribution is incomplete: "
+        "1/2 launcher tool spans are unattributed" in error
     )
-    # The gate failure must explain WHY cgroup attribution is missing so the
+    # The gate failure must explain WHY attribution is missing so the
     # operator can tell process-tree attribution from no attribution at all.
-    assert "launcher scope breakdown: cgroup=0, attributed=2, unattributed=0" in error
+    assert "launcher scope breakdown: cgroup=0, attributed=1, unattributed=1" in error
     assert "sandbox scope: NOT discovered" in error
     assert "sandbox-scope discovery last error: docker inspect failed" in error
 

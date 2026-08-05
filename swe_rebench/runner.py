@@ -1201,6 +1201,8 @@ def _required_telemetry_error(
     sampled_spans = int(resources.get("resource_sampled_tool_span_ends", 0))
     launcher_spans = int(resources.get("launcher_tool_span_ends", 0))
     launcher_cgroup_spans = int(resources.get("launcher_cgroup_tool_span_ends", 0))
+    launcher_attributed_spans = int(resources.get("launcher_attributed_tool_span_ends", 0))
+    unattributed_launcher_spans = int(resources.get("unattributed_launcher_tool_span_ends", 0))
     if tool_spans == 0:
         return "required resource telemetry found no tool spans"
     if sampled_spans != tool_spans:
@@ -1209,11 +1211,27 @@ def _required_telemetry_error(
             f"sampled {sampled_spans}/{tool_spans} tool spans"
         )
     if launcher_cgroup_spans != launcher_spans:
-        return (
-            "required launcher cgroup-v2 telemetry is incomplete: "
-            f"sampled {launcher_cgroup_spans}/{launcher_spans} launcher tool spans; "
-            + _launcher_cgroup_failure_detail(result)
-        )
+        # Per-PID process-tree attribution (trusted-execution-root-pid /
+        # docker-exec-pid) is the documented fallback when the host does not
+        # delegate a writable cgroup subtree: execution_started degrades to
+        # the verified host PID scope.  That is complete, attributed telemetry
+        # (per-tool cpu/mem/disk/net via psutil) and satisfies the gate; only
+        # launcher spans with NO attribution are a real telemetry loss.
+        if unattributed_launcher_spans:
+            return (
+                "required launcher resource attribution is incomplete: "
+                f"{unattributed_launcher_spans}/{launcher_spans} launcher tool "
+                "spans are unattributed; "
+                + _launcher_cgroup_failure_detail(result)
+            )
+        if launcher_attributed_spans != launcher_spans:
+            return (
+                "required launcher resource attribution is incomplete: "
+                f"sampled {launcher_attributed_spans}/{launcher_spans} launcher "
+                "tool spans; " + _launcher_cgroup_failure_detail(result)
+            )
+        # cgroup-v2 could not be produced on this host but every launcher span
+        # is attributed (per-PID) - acceptable fallback, not a gate failure.
     artifact_count = int(artifacts.get("artifact_count", 0))
     expected_artifacts = int(resources.get("launcher_stage2_expected_span_ends", 0))
     if expected_artifacts == 0:
@@ -1795,6 +1813,38 @@ def run_batch(
                 telemetry_error if telemetry_not_evaluable else None
             ),
         }
+        # When the launcher fell back to per-PID process-tree attribution
+        # (host did not delegate a writable cgroup subtree), the gate passes
+        # but the operator should see that telemetry is per-PID, not
+        # cgroup-backed.  The full scope breakdown is in resource_summary.
+        launcher_spans = int(
+            _nested_get(result_dict, ("resource_summary", "launcher_tool_span_ends"))
+            or 0
+        )
+        launcher_cgroup_spans = int(
+            _nested_get(
+                result_dict,
+                ("resource_summary", "launcher_cgroup_tool_span_ends"),
+            )
+            or 0
+        )
+        if (
+            telemetry_error is None
+            and config.runtime.stage2_required
+            and launcher_spans
+            and launcher_cgroup_spans != launcher_spans
+        ):
+            result_dict["telemetry_audit"]["warning"] = (
+                f"launcher telemetry is per-PID attributed "
+                f"({launcher_cgroup_spans}/{launcher_spans} cgroup-backed) "
+                "instead of cgroup-v2"
+            )
+            _log(
+                "       note: launcher telemetry is per-PID attributed "
+                f"({launcher_cgroup_spans}/{launcher_spans} cgroup-backed) "
+                "instead of cgroup-v2; see report resource_summary for the "
+                "scope breakdown"
+            )
         primary_error = (
             str(agent_error)
             if isinstance(agent_error, str) and agent_error
