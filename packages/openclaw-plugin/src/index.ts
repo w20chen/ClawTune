@@ -262,6 +262,9 @@ export default definePluginEntry({
   const CONSOLE_PREFIX = "[openclaw]";
   let turnCounter = 0;
   const pendingToolNames = new Map<string, string>(); // toolCallId -> toolName
+  // Per-correlation scheduler/plugin sidecar round-trip timing (ns), measured
+  // in before_tool_call and consumed in after_tool_call.
+  const pendingToolOverhead = new Map<string, {decisionNs: bigint}>();
 
   function consoleVerbose(msg: string): void {
     if (config.consoleMode !== "verbose") return;
@@ -706,8 +709,11 @@ export default definePluginEntry({
     // Original sidecar logic
     const payload = buildToolBefore(event, context, config, runtimeId, gatewayId, runtimeRepo);
     payload.resource_scope = buildTrustedResourceScope(event, context) ?? buildRuntimeResourceScope(toolName);
+    let decisionOverheadNs = 0n;
     try {
+      const tDecide = monotonicNowNs();
       const decision = await client.decide(payload);
+      decisionOverheadNs += monotonicNowNs() - tDecide;
       consoleVerbose(summarizePrediction(decision));
       if (config.mode === "enforce" && decision.action === "block") {
         return {
@@ -715,7 +721,12 @@ export default definePluginEntry({
           blockReason: decision.reason
         };
       }
+      const tInst = monotonicNowNs();
       const instrumentation = await instrumentExecParams(event, context, payload, decision, client, config);
+      decisionOverheadNs += monotonicNowNs() - tInst;
+      if (toolCallId) {
+        pendingToolOverhead.set(correlationId, {decisionNs: decisionOverheadNs});
+      }
       correlation.set(
         correlationId,
         decision.decision_id,
@@ -756,9 +767,14 @@ export default definePluginEntry({
       // on every decision failure.
       if (config.executionBackend !== "hook-only") {
         try {
+          const tInst = monotonicNowNs();
           const instrumentation = await instrumentExecParams(
             event, context, payload, /* decision */ null, client, config,
           );
+          decisionOverheadNs += monotonicNowNs() - tInst;
+          if (toolCallId) {
+            pendingToolOverhead.set(correlationId, {decisionNs: decisionOverheadNs});
+          }
           if (instrumentation.executionId !== null) {
             correlation.set(
               correlationId,
@@ -830,6 +846,9 @@ export default definePluginEntry({
     }
     // Clean up pending tool name mapping
     if (toolCallId) pendingToolNames.delete(correlationId);
+    const pendingOverhead = toolCallId ? pendingToolOverhead.get(correlationId) : undefined;
+    if (toolCallId) pendingToolOverhead.delete(correlationId);
+    const decisionOverheadNs = pendingOverhead?.decisionNs ?? 0n;
 
     const startMono = activeSpan?.startMonotonicTimeNs ?? endMono;
     const startWall = activeSpan?.startWallTimeNs ?? endWall;
@@ -855,35 +874,44 @@ export default definePluginEntry({
       }
     }
     // Precise tool-time split: separate the OpenClaw-reported tool action
-    // from the plugin/scheduler round-trip overhead around it.
-    //   durNs (before->after hook window) = scheduler RTTs + tool action + bookkeeping
-    //   completion.duration_ms           = OpenClaw-reported tool action duration
-    //   scheduler_overhead_ns            = max(0, durNs - tool action)
-    // Assign before reportCompletion so the sidecar/scheduler trace records
-    // the split (the payload is serialized at report time).
+    // from the plugin's own scheduler/plugin round-trip overhead.
+    //   completion.duration_ms        = OpenClaw-reported tool action duration
+    //   decisionOverheadNs            = before-hook sidecar RTT (decide + instrument)
+    //   completionOverheadNs          = after-hook sidecar RTT (report + telemetry)
+    // Fields set before reportCompletion reach the scheduler trace.  The
+    // completion RTT is only known after the report is sent, so
+    // scheduler_overhead_ns (what the sidecar records) is the before-hook
+    // harness overhead; completion_duration_ns is recorded in the plugin's
+    // own trace resources.
     const openclawActionNs =
       completion.duration_ms > 0
         ? BigInt(Math.trunc(completion.duration_ms)) * 1_000_000n
         : null;
-    const schedulerOverheadNs =
-      openclawActionNs === null ? null : (durNs > openclawActionNs ? durNs - openclawActionNs : 0n);
+    // Assign before reportCompletion so the sidecar/scheduler trace records
+    // the split (the payload is serialized at report time).
     completion.plugin_window_ns = durNs.toString();
     completion.tool_body_ns = openclawActionNs === null ? null : openclawActionNs.toString();
-    completion.scheduler_overhead_ns =
-      schedulerOverheadNs === null ? null : schedulerOverheadNs.toString();
+    completion.decision_duration_ns = decisionOverheadNs.toString();
+    completion.scheduler_overhead_ns = decisionOverheadNs.toString();
+    let completionOverheadNs = 0n;
     let toolResourceTelemetry: unknown | null = null;
     try {
+      const tReport = monotonicNowNs();
       await client.reportCompletion(completion);
+      completionOverheadNs += monotonicNowNs() - tReport;
     } catch (error) {
       logger.warn("Agent Scheduler completion report failed", classifyError(error));
     }
     if (completion.execution_id !== null) {
       try {
+        const tTel = monotonicNowNs();
         toolResourceTelemetry = await client.getExecutionTelemetry(completion.execution_id);
+        completionOverheadNs += monotonicNowNs() - tTel;
       } catch (error) {
         logger.warn("Agent Scheduler execution telemetry lookup failed", classifyError(error));
       }
     }
+    completion.completion_duration_ns = completionOverheadNs.toString();
 
     // Determine status code
     const toolExitCode = extractToolExitCode(completion.raw_result, completion.tool_name);
@@ -986,6 +1014,8 @@ export default definePluginEntry({
       action_duration_ns: durNs.toString(),
       plugin_window_ns: durNs.toString(),
       tool_body_ns: completion.tool_body_ns ?? null,
+      decision_duration_ns: completion.decision_duration_ns ?? null,
+      completion_duration_ns: completion.completion_duration_ns ?? null,
       scheduler_overhead_ns: completion.scheduler_overhead_ns ?? null,
       coverage_ratio: null,
       coverage_reason: coverageReason,

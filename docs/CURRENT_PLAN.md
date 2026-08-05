@@ -2511,3 +2511,51 @@ Validation unavailable in this Windows workspace:
   the Gateway, and verify
   `openclaw config get plugins.entries.agent-scheduler.hooks` shows
   `allowConversationAccess: true`.
+
+## eBPF/cgroup resource fixes follow-up (2026-08-05)
+
+Two defects surfaced when validating a fresh SWE-Rebench trace
+(`claw-srb-bcaea58472bd-...jsonl`):
+
+1. `scheduler_overhead_ns` was always `0`. The plugin had derived it as
+   `max(0, plugin_window_ns - tool_body_ns)`, but the before->after hook window
+   is a strict subset of OpenClaw's reported `duration_ms` (window is ~2-49ms
+   smaller), so the subtraction clamped to zero and told us nothing.
+   Fix: the plugin now measures the real sidecar round-trips — `decide` +
+   `instrumentExecParams` in `before_tool_call` (accumulated per correlation
+   via a pending map) and `reportCompletion` + `getExecutionTelemetry` in
+   `after_tool_call`. Because the completion payload is serialized at
+   `reportCompletion` time, the fields that reach the scheduler trace are
+   `plugin_window_ns`, `tool_body_ns`, `decision_duration_ns`, and
+   `scheduler_overhead_ns` (= the before-hook sidecar RTT, a genuine harness
+   cost). `completion_duration_ns` (the after-hook RTT) is only known after
+   the report is sent, so it is recorded in the plugin's own trace resources
+   and is null in the scheduler-written trace.
+
+2. eBPF clause resources stayed null because `_compact_clauses` read the wrong
+   keys. The Stage-2 artifact rows carry `cpu_ns_cumulative`,
+   `sampled_peak_rss_mb`, and a nested `disk_io.{read,write}_bytes_total`, but
+   the trace compaction read `cumulative_cpu_s`, `peak_memory_mb`, and a
+   top-level `disk_*_total`. Fix: `_compact_clauses` now maps
+   `cumulative_cpu_s` from `cpu_ns_cumulative` (ns -> s),
+   `peak_memory_mb` from `sampled_peak_rss_mb`, and `disk_*` from the nested
+   `disk_io` object. `peak_cpu_cores`/`peak_memory_mb` remain null for
+   sub-second clauses by design (`clause_shorter_than_1s_ineligible_for_peak`);
+   `network_*` stays null (the eBPF collector does not monitor network).
+
+Validation completed in the Windows development workspace:
+
+- Plugin build (`tsc -p tsconfig.json`): exit 0; plugin tests: pass.
+- Scheduler affected suites (`test_cgroup_resource`, `test_sidecar`,
+  `test_tool_resource_predictor`): `108 passed`, including the updated
+  artifact-key mapping test (`cpu_ns_cumulative` -> `cumulative_cpu_s`,
+  `sampled_peak_rss_mb` -> `peak_memory_mb`, nested `disk_io` -> disk fields).
+- `python tools/validate_contracts.py`: all contract examples validated.
+- `git diff --check`: passed.
+
+Validation commands that cannot run in this Windows workspace:
+
+- Confirming the new `decision_duration_ns`/`scheduler_overhead_ns` values are
+  nonzero and plausible on a live run, and that `cumulative_cpu_s`/disk now
+  populate in `call_telemetry.clauses[]` from real Stage-2 eBPF sampling —
+  requires the Linux host with Docker, cgroup v2, and BCC/eBPF.

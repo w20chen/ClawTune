@@ -200,7 +200,7 @@ def test_trace_writer_emits_cgroup_artifact_path(tmp_path: Path) -> None:
     assert artifact.exists()
 
 
-def test_compact_clauses_exposes_disk_and_network(tmp_path: Path) -> None:
+def test_compact_clauses_maps_artifact_resource_keys(tmp_path: Path) -> None:
     # exercised through the public predictor helper (pure function)
     from agent_scheduler.predictors.tool_resource import _compact_clauses
 
@@ -209,15 +209,25 @@ def test_compact_clauses_exposes_disk_and_network(tmp_path: Path) -> None:
             "bin": "python",
             "argv": ["python", "x.py"],
             "status": {"state": "exited", "exit_code": 0},
-            "availability": {"latency": "ok"},
+            "availability": {
+                "latency": "ok",
+                "cpu": "ok",
+                "memory": "ok",
+                "disk_io": "ok",
+                "status": "ok",
+            },
             "ts_start": 1.0,
             "ts_end": 2.0,
             "latency_ms": 1000.0,
-            "cumulative_cpu_s": 0.5,
+            # the Stage-2 artifact row keys:
+            "cpu_ns_cumulative": 500_000_000,  # 0.5 s
             "peak_cpu_cores": 1.2,
-            "peak_memory_mb": 64.0,
-            "disk_read_bytes_total": 4096,
-            "disk_write_bytes_total": 8192,
+            "sampled_peak_rss_mb": 64.0,
+            "disk_io": {
+                "read_bytes_total": 4096,
+                "write_bytes_total": 8192,
+                "availability": "ok",
+            },
             "network_rx_bytes": None,
             "network_tx_bytes": None,
         }
@@ -225,9 +235,10 @@ def test_compact_clauses_exposes_disk_and_network(tmp_path: Path) -> None:
     compact = _compact_clauses(rows)
     assert len(compact) == 1
     c = compact[0]
+    assert c["cumulative_cpu_s"] == 0.5
+    assert c["peak_cpu_cores"] == 1.2
+    assert c["peak_memory_mb"] == 64.0
     assert c["disk_read_bytes"] == 4096
     assert c["disk_write_bytes"] == 8192
     assert c["network_rx_bytes"] is None
     assert c["network_tx_bytes"] is None
-    assert c["peak_cpu_cores"] == 1.2
-    assert c["peak_memory_mb"] == 64.0

@@ -255,6 +255,10 @@ export type ToolCompletedEvent = CommonEvent & {
   plugin_window_ns?: string | null;
   /** OpenClaw-reported tool action duration (ns). */
   tool_body_ns?: string | null;
+  /** Plugin-measured before-hook sidecar round-trip overhead (ns). */
+  decision_duration_ns?: string | null;
+  /** Plugin-measured after-hook sidecar round-trip overhead (ns). */
+  completion_duration_ns?: string | null;
   /** Plugin-measured scheduler/plugin round-trip overhead (ns), outside the action. */
   scheduler_overhead_ns?: string | null;
   succeeded: boolean;

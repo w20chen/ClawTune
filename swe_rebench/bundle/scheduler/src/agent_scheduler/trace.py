@@ -348,6 +348,8 @@ class AgentTestBenchTraceWriter:
                 "action_duration_ns": duration_ns,
                 "plugin_window_ns": event.plugin_window_ns,
                 "tool_body_ns": event.tool_body_ns,
+                "decision_duration_ns": event.decision_duration_ns,
+                "completion_duration_ns": event.completion_duration_ns,
                 "scheduler_overhead_ns": event.scheduler_overhead_ns,
                 "cgroup_artifact_path": _cgroup_artifact_path,
                 "coverage_ratio": _cov_ratio,

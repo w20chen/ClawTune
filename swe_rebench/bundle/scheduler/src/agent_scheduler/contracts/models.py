@@ -108,6 +108,8 @@ class ToolCompletedEvent(CommonEvent):
     duration_ms: int = Field(ge=0)
     plugin_window_ns: str | None = Field(default=None, pattern=r"^[0-9]+$")
     tool_body_ns: str | None = Field(default=None, pattern=r"^[0-9]+$")
+    decision_duration_ns: str | None = Field(default=None, pattern=r"^[0-9]+$")
+    completion_duration_ns: str | None = Field(default=None, pattern=r"^[0-9]+$")
     scheduler_overhead_ns: str | None = Field(default=None, pattern=r"^[0-9]+$")
     succeeded: bool
     error_type: str | None

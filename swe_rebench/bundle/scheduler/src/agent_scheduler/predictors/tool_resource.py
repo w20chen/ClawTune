@@ -1732,6 +1732,31 @@ def _compact_artifact_summary(artifact: Any) -> dict[str, Any] | None:
     }
 
 
+def _first_value(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _cpu_ns_to_s(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value) / 1e9
+    except (TypeError, ValueError):
+        return None
+
+
+def _nested(row: Mapping[str, Any], path: tuple[str, ...]) -> Any:
+    cur: Any = row
+    for key in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
 def _compact_clauses(clauses: Any) -> list[dict[str, Any]]:
     if not isinstance(clauses, list):
         return []
@@ -1748,13 +1773,24 @@ def _compact_clauses(clauses: Any) -> list[dict[str, Any]]:
                 "ts_start": row.get("ts_start"),
                 "ts_end": row.get("ts_end"),
                 "latency_ms": row.get("latency_ms"),
-                "cumulative_cpu_s": row.get("cumulative_cpu_s"),
+                # Map from the Stage-2 artifact's actual keys: the clause row
+                # carries cpu_ns_cumulative, sampled_peak_rss_mb and a nested
+                # disk_io object (the eBPF collector does not monitor network).
+                "cumulative_cpu_s": _cpu_ns_to_s(
+                    _first_value(row.get("cumulative_cpu_s"), row.get("cpu_ns_cumulative"))
+                ),
                 "peak_cpu_cores": row.get("peak_cpu_cores"),
-                "peak_memory_mb": row.get("peak_memory_mb"),
-                "disk_read_bytes": row.get("disk_read_bytes")
-                or row.get("disk_read_bytes_total"),
-                "disk_write_bytes": row.get("disk_write_bytes")
-                or row.get("disk_write_bytes_total"),
+                "peak_memory_mb": _first_value(
+                    row.get("peak_memory_mb"), row.get("sampled_peak_rss_mb")
+                ),
+                "disk_read_bytes": _first_value(
+                    row.get("disk_read_bytes"),
+                    _nested(row, ("disk_io", "read_bytes_total")),
+                ),
+                "disk_write_bytes": _first_value(
+                    row.get("disk_write_bytes"),
+                    _nested(row, ("disk_io", "write_bytes_total")),
+                ),
                 # The Stage-2 eBPF collector does not monitor network today;
                 # these stay null so consumers can distinguish "unavailable"
                 # from a real measurement.

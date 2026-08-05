@@ -75,6 +75,8 @@ def main(path):
                 "attrib_src": res.get("attribution_source"),
                 "tool_body_s": _opt_s(res.get("tool_body_ns")),
                 "sched_overhead_s": _opt_s(res.get("scheduler_overhead_ns")),
+                "decision_s": _opt_s(res.get("decision_duration_ns")),
+                "completion_s": _opt_s(res.get("completion_duration_ns")),
                 "plugin_window_s": _opt_s(res.get("plugin_window_ns")),
             }
         )
@@ -82,7 +84,7 @@ def main(path):
     print("== Per tool span ==")
     print(
         f"{'tool':<8}{'action_s':>9}{'cpu_s':>8}{'gap_s':>8}{'cov%':>7}"
-        f"{'tool_body':>10}{'sched_oh':>10}  attrib / source"
+        f"{'tool_body':>10}{'sched_oh':>10}{'decision':>9}  attrib / source"
     )
     print("-" * 104)
     for r in sorted([x for x in rows if x["kind"] == "tool"], key=lambda x: -x["action_s"]):
@@ -90,9 +92,10 @@ def main(path):
         covpct = 100.0 * (r["cov_ratio"] or 0)
         tb = f"{r['tool_body_s']:.3f}" if r["tool_body_s"] is not None else "-"
         so = f"{r['sched_overhead_s']:.3f}" if r["sched_overhead_s"] is not None else "-"
+        dc = f"{r['decision_s']:.3f}" if r["decision_s"] is not None else "-"
         print(
             f"{r['name']:<8}{r['action_s']:>9.3f}{(r['cpu_s'] or 0):>8.3f}{gap:>8.3f}"
-            f"{covpct:>7.1f}{tb:>10}{so:>10}  {r['qual']} / {r['attrib']} ({r['attrib_src']})"
+            f"{covpct:>7.1f}{tb:>10}{so:>10}{dc:>9}  {r['qual']} / {r['attrib']} ({r['attrib_src']})"
         )
 
     print("\n== Per tool-name summary ==")
