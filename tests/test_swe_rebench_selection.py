@@ -2448,6 +2448,45 @@ def test_openclaw_uses_agent_flag_detects_flag_syntax(monkeypatch) -> None:
     assert calls == [["/usr/bin/openclaw", "agent", "main", "--help"]]
 
 
+def test_openclaw_uses_agent_flag_ignores_error_hint_on_stderr(monkeypatch) -> None:
+    class FakeResult:
+        # Regression: a flag-style build answers `agent main --help` with the
+        # parent `agent` usage on stdout AND the "Too many arguments ... Try:
+        # openclaw agent main --help" hint on stderr.  The stderr hint contains
+        # the literal text "agent main", which the old substring check misread
+        # as a positional build, then invoked `openclaw agent main ...` and
+        # reproduced the very error it was trying to avoid.
+        stdout = "Usage: openclaw agent [options]\n  --agent <id>  Agent id\n"
+        stderr = (
+            "Too many arguments for this command.\n"
+            "Try: openclaw agent main --help\n"
+        )
+        returncode = 1
+
+    def fake_run(cmd, **kwargs):
+        return FakeResult()
+
+    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+
+    assert _openclaw_uses_agent_flag("/usr/bin/openclaw") is True
+
+
+def test_openclaw_uses_agent_flag_requires_usage_line_on_stdout(monkeypatch) -> None:
+    class FakeResult:
+        # Even a flag build that (confusingly) exits 0 must not be treated as
+        # positional unless the real subcommand usage line appears on stdout.
+        stdout = "Usage: openclaw agent [options]\n  --agent <id>  Agent id\n"
+        stderr = "Try: openclaw agent main --help\n"
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        return FakeResult()
+
+    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+
+    assert _openclaw_uses_agent_flag("/usr/bin/openclaw") is True
+
+
 def test_openclaw_uses_agent_flag_detects_positional_syntax(monkeypatch) -> None:
     class FakeResult:
         # Positional build: `agent main --help` answers with the subcommand's

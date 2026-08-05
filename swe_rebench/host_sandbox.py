@@ -1517,9 +1517,12 @@ def _openclaw_uses_agent_flag(openclaw: str) -> bool:
     to a positional subcommand (``openclaw agent main ...``) and reject the
     flag, surfacing as a "Too many arguments" CLI error like the one seen on
     this branch's benchmark runs.  Probe ``agent main --help``: a positional
-    build answers with a ``Usage: openclaw agent main ...`` line, while a
-    flag build answers with the parent ``agent`` usage (or an
-    unknown-command error), which does not mention ``agent main``.
+    build answers with exit 0 and a real subcommand usage line
+    (``Usage: openclaw agent main ...``) on stdout, while a flag build
+    answers with the parent ``agent`` usage or the "Too many arguments ...
+    Try: openclaw agent main --help" error.  Because that error hint itself
+    contains the literal text "agent main", the probe must not trust stderr;
+    only the exact stdout usage line with exit 0 proves the positional form.
     """
     try:
         probe = subprocess.run(
@@ -1533,8 +1536,9 @@ def _openclaw_uses_agent_flag(openclaw: str) -> bool:
         # Popen stand-in without a context manager in tests) falls back to
         # the long-documented flag form.
         return True
-    help_text = f"{probe.stdout or ''}\n{probe.stderr or ''}"
-    return "agent main" not in help_text
+    if probe.returncode == 0 and "Usage: openclaw agent main" in (probe.stdout or ""):
+        return False
+    return True
 
 
 def _openclaw_agent_argv(

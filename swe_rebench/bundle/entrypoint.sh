@@ -512,8 +512,12 @@ EOF_PROMPT
         cd "$AGENT_CWD"
         # OpenClaw 2026.7.x uses `--agent main`; newer builds moved the agent
         # id to a positional subcommand (`openclaw agent main ...`).  Match the
-        # installed binary so the CLI does not reject the invocation.
-        if openclaw agent main --help 2>&1 | grep -q 'agent main'; then
+        # installed binary so the CLI does not reject the invocation.  A flag
+        # build answers `agent main --help` with the parent usage or the "Too
+        # many arguments ... Try: openclaw agent main --help" hint (which also
+        # contains "agent main"), so only the real subcommand usage line on
+        # stdout proves a positional build.
+        if openclaw agent main --help 2>/dev/null | grep -q 'Usage: openclaw agent main'; then
             openclaw agent main --local \
                 --model "$OPENCLAW_MODEL_REF" \
                 --message-file /tmp/problem_statement.txt
