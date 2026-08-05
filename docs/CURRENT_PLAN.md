@@ -2868,3 +2868,45 @@ Validation commands that cannot run in this Windows workspace:
   gate with per-PID launcher attribution, and that the `note:` line appears in
   the batch log alongside the `telemetry_audit.warning` in report.json.
 
+## net_accounting BCC BPF compile fix (2026-08-06, live host probe)
+
+Host probe (`ProcessNetAccounting([...]).available`) returned `False` with a
+BPF compile failure: `incomplete definition of type 'struct task_struct' /
+'nsproxy' / 'pid_namespace'` plus a `u32*` vs `u64*` warning on
+`claw_allowed_pid_namespaces.lookup(&inum)`. ROOT CAUSE (two independent bugs
+in `services/scheduler/src/agent_scheduler/monitoring/net_accounting.py`
+`_BPF_SOURCE`):
+
+1. The program reads `task->nsproxy->pid_ns_for_children->ns.inum` via
+   `bpf_get_current_task()` but never `#include`s the kernel headers, so the
+   structs stay forward-declared (BCC's `helpers.h` only forward-declares
+   `struct task_struct`). The already-working clause tracer
+   (`tool_resource/telemetry.py`, `BPF_PROGRAM`) uses the identical field
+   reads and compiles because it includes `<linux/sched.h>`,
+   `<linux/nsproxy.h>`, `<linux/pid_namespace.h>`.
+2. `claw_allowed_pid_namespaces` is `BPF_HASH(..., u64, u8)` but the lookup
+   passed `&inum` (a `u32`) - wrong pointer type for the `u64` key.
+
+FIX: mirror telemetry.py's includes (`linux/nsproxy.h`, `linux/pid_namespace.h`,
+`linux/sched.h`) and look up with a `u64 inum_key = (u64)inum`. Mirrored into
+`swe_rebench/bundle/scheduler/src/.../net_accounting.py` AND regenerated the
+runtime bundle (`python -m swe_rebench.runner prepare --config
+swe_rebench/config.yaml`). Committed as `122fef5`.
+
+Validation completed in this workspace:
+
+- Scheduler suite `283 passed, 2 skipped` (BPF source is a string on Windows;
+  `test_process_net_accounting_api_is_safe` still exercises the fail-soft API).
+- `git diff --no-index` confirms bundle == src.
+
+Validation commands that cannot run in this Windows workspace:
+
+- Re-running the BCC probe on the Kunpeng/aarch64 host (must pass
+  `BCC_KERNEL_SOURCE=/usr/src/kernels/6.6.0-72.0.0.76.oe2403sp1.aarch64`, same
+  env the sidecar/runner uses; without it BCC cannot resolve `<linux/sched.h>`):
+  `cd /home/weitianc/ClawTune && BCC_KERNEL_SOURCE=/usr/src/kernels/6.6.0-72.0.0.76.oe2403sp1.aarch64 .venv/bin/python -c "import os; from agent_scheduler.monitoring.net_accounting import ProcessNetAccounting as A; a=A([os.stat('/proc/self/ns/net').st_ino]); print('net available =', a.available); print(a._attach_error)"`
+  Expect `net available = True`. Then re-run `python3 scripts/clawtune.py
+  benchmark --sample 1` and confirm per-PID net bytes in the trace (BCC per-tgid
+  instead of the namespace `/proc/net/dev` fallback).
+
+
