@@ -61,12 +61,26 @@ You can also pass a JSON/JSONL dataset directly. To create a smaller task list
 with the discovery helper:
 
 ```bash
-./.venv/bin/python -m swe_rebench.discover \
+python3 -m swe_rebench.discover \
   --sample 20 --out swe_rebench/tasks.json
 ```
 
 Discovery prefers a local agent-test-bench task file and can fall back to its
 configured remote dataset source.
+
+Example: generate a 128-task source first, then run it (don't overwrite the
+bundled 4-task smoke-test fallback — write to a separate file):
+
+```bash
+# 1) Generate the task source (agent-test-bench checkout, else HuggingFace)
+python3 -m swe_rebench.discover \
+  --sample 128 --out swe_rebench/tasks-128.json
+
+# 2) Run the benchmark against it
+python3 scripts/clawtune.py benchmark \
+  --dataset swe_rebench/tasks-128.json \
+  --sample 128 --parallelism 8
+```
 
 ## Run
 
