@@ -38,5 +38,1245 @@
     "base_commit": "9c319b0c21b8b1ba75173f3f85fd184747c398de",
     "hint_text": "",
     "environment": {}
+  },
+  {
+    "instance_id": "12rambau__sepal_ui-518",
+    "image": "swerebench/sweb.eval.x86_64.12rambau_1776_sepal_ui-518",
+    "docker_image": "swerebench/sweb.eval.x86_64.12rambau_1776_sepal_ui-518",
+    "problem_statement": "add posibility to add text in the map_btn \nThe current implementation of the map_btn only authorize to use logos. It would be nice to let the opportunity to use letters as in the SEPAL main framework (3 letters only in capital)",
+    "repo": "12rambau/sepal_ui",
+    "base_commit": "698d446e33062934d49f9edb91cbe303b73e786f",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "12rambau__sepal_ui-574",
+    "image": "swerebench/sweb.eval.x86_64.12rambau_1776_sepal_ui-574",
+    "docker_image": "swerebench/sweb.eval.x86_64.12rambau_1776_sepal_ui-574",
+    "problem_statement": "_protected_keys are not raising error when used in translator\n`protected_keys` are not raising errors when used in a json translation file. It is also happening with the \"`FORBIDDEN_KEYS`\" when are used in nested levels.\r\n\r\nTo reproduce...\r\n\r\n```Python\r\n# set up the appropriate keys for each language\r\nkeys = {\r\n    \"en\": {\r\n        \"find_target\": \"A key\", \r\n        \"test_key\": \"Test key\", \r\n        \"nested\" : {\r\n            \"items\" : {\r\n                \"_target\" : \"value\"\r\n            },\r\n        },\r\n        \"merge_dict\" : \"value\"\r\n    },\r\n    \"fr\": {\r\n        \"a_key\": \"Une clef\", \r\n        \"test_key\": \"Clef de test\"\r\n    },\r\n    \"fr-FR\": {\r\n        \"a_key\": \"Une clef\", \r\n        \"test_key\": \"Clef de test\"\r\n    },\r\n    \"es\": {\r\n        \"a_key\": \"Una llave\"\r\n    },\r\n}\r\n\r\n# generate the tmp_dir in the test directory\r\ntmp_dir = Path(\".\").parent / \"data\" / \"messages\"\r\ntmp_dir.mkdir(exist_ok=True, parents=True)\r\n\r\n# create the translation files\r\nfor lan, d in keys.items():\r\n    folder = tmp_dir / lan\r\n    folder.mkdir(exist_ok=True)\r\n    (folder / \"locale.json\").write_text(json.dumps(d, indent=2))\r\n\r\n```\r\nWhen the object is being instantiated, there's not any error to alert that the nested key \"`_target`\" cannot be used, nor the \"`find_target`\" in the first level.\r\n\r\n```Python\r\ntranslator = Translator(tmp_dir, \"en\")\r\n```",
+    "repo": "12rambau/sepal_ui",
+    "base_commit": "412e02ef08df68c256f384081d2c7eaecc09428e",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "12rambau__sepal_ui-646",
+    "image": "swerebench/sweb.eval.x86_64.12rambau_1776_sepal_ui-646",
+    "docker_image": "swerebench/sweb.eval.x86_64.12rambau_1776_sepal_ui-646",
+    "problem_statement": "allow other values for progress\nNow that we are supporting tqdm it should be possible to support progress values that are not between 0 and 1. https://github.com/12rambau/sepal_ui/blob/c15a83dc6c92d076e6932afab4e4b2987585894b/sepal_ui/sepalwidgets/alert.py#L98",
+    "repo": "12rambau/sepal_ui",
+    "base_commit": "8a8196e3c7893b7a0aebdb4910e83054f59e0374",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "12rambau__sepal_ui-747",
+    "image": "swerebench/sweb.eval.x86_64.12rambau_1776_sepal_ui-747",
+    "docker_image": "swerebench/sweb.eval.x86_64.12rambau_1776_sepal_ui-747",
+    "problem_statement": "make get_children recursively again\nprevious implementation used recursion to find all children within the widget that matches with the query, now it returns only first level of matching children, could we make it reclusively again?",
+    "repo": "12rambau/sepal_ui",
+    "base_commit": "a683a7665a9710acd5ca939308e18539e92014b7",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "12rambau__sepal_ui-774",
+    "image": "swerebench/sweb.eval.x86_64.12rambau_1776_sepal_ui-774",
+    "docker_image": "swerebench/sweb.eval.x86_64.12rambau_1776_sepal_ui-774",
+    "problem_statement": "Restrict maximum parent level from InputFile\nI have some apps where I’m interested on only search up to certain level, i.e., module_downloads, and I think that in the most of them, the user doesn’t need to go upper from sepal_user, once they start clicking, they could easily get lost over multiple folders.\r\n\r\nwhat if we implement a parameter called: max_depth? We could use int values to this parameter, what do you think?",
+    "repo": "12rambau/sepal_ui",
+    "base_commit": "2576446debe3544f3edeb208c76f671ffc0c8650",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "12rambau__sepal_ui-814",
+    "image": "swerebench/sweb.eval.x86_64.12rambau_1776_sepal_ui-814",
+    "docker_image": "swerebench/sweb.eval.x86_64.12rambau_1776_sepal_ui-814",
+    "problem_statement": "avoid to force developer to set total each time\nI should be able to init the progress of an Alert first and then simply update the progress. \r\n\r\nas in:\r\n\r\n```python \r\nfrom sepal_ui import sepalwidgets as sw \r\n\r\nalert = sw.Alert()\r\n\r\n# init \r\nalert.update_progress(0, \"toto\", total=10)\r\n\r\n# loop\r\nfor i in range(10):\r\n    alert.update_progress(i)\r\n```\r\n\r\nin the current implemetnation, total need to be set in every calls",
+    "repo": "12rambau/sepal_ui",
+    "base_commit": "6d825ae167f96ad2e7b76b96ca07de562f74dcf0",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "15five__scim2-filter-parser-13",
+    "image": "swerebench/sweb.eval.x86_64.15five_1776_scim2-filter-parser-13",
+    "docker_image": "swerebench/sweb.eval.x86_64.15five_1776_scim2-filter-parser-13",
+    "problem_statement": "Return NamedTuple rather than tuple.\nIt would be nice to return a NamedTuple instead of a tuple here: \r\n\r\nhttps://github.com/15five/scim2-filter-parser/blob/7ddc216f8c3dd1cdb2152944187e8f7f5ee07be2/src/scim2_filter_parser/transpilers/sql.py#L148\r\n\r\nThis way parts of each path could be accessed by name rather than by index in the tuple.",
+    "repo": "15five/scim2-filter-parser",
+    "base_commit": "3ed1858b492542d0bc9b9e9ab9547641595e28c1",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "15five__scim2-filter-parser-20",
+    "image": "swerebench/sweb.eval.x86_64.15five_1776_scim2-filter-parser-20",
+    "docker_image": "swerebench/sweb.eval.x86_64.15five_1776_scim2-filter-parser-20",
+    "problem_statement": "Issue when using multiple \"or\" or \"and\"\nHi,\r\n\r\nI am facing an issue, where the query having two or more \"and\" or more than two \"or\" is failing.\r\nHave a look at examples below: - \r\n\r\n1)```\"displayName co \\\"username\\\" or nickName co \\\"username\\\" or userName co \\\"username\\\"\"```\r\n   ```\"displayName co \\\"username\\\" and nickName co \\\"username\\\" and userName co \\\"username\\\"\"```\r\n\r\nthe two queries fails giving ,\r\n```scim2_filter_parser.parser.SCIMParserError: Parsing error at: Token(type='OR', value='or', lineno=1, index=52)```\r\n \r\nnotice above queries are having either only \"or\" or \"and\".\r\n\r\n2)```\"displayName co \\\"username\\\" and nickName co \\\"username\\\" or userName co \\\"username\\\"\"```\r\nbut this query works.\r\n",
+    "repo": "15five/scim2-filter-parser",
+    "base_commit": "08de23c5626556a37beced764a22a2fa7021989b",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "20c__ctl-3",
+    "image": "swerebench/sweb.eval.x86_64.20c_1776_ctl-3",
+    "docker_image": "swerebench/sweb.eval.x86_64.20c_1776_ctl-3",
+    "problem_statement": "PyPI plugin: `target` config attribute should be `repository`\nThis is so it's in line with the version plugin, which currently uses `repository` to specify the target repository\r\n\r\nThe pypi plugin currently uses `repository` to specify which PyPI repository to use, this should change to `pypi_repository` as well.\r\n\r\nShould do this before tagging 1.0.0 since it's a config schema change",
+    "repo": "20c/ctl",
+    "base_commit": "879af37647e61767a1ede59ffd353e4cfd27cd6f",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "3YOURMIND__django-migration-linter-113",
+    "image": "swerebench/sweb.eval.x86_64.3yourmind_1776_django-migration-linter-113",
+    "docker_image": "swerebench/sweb.eval.x86_64.3yourmind_1776_django-migration-linter-113",
+    "problem_statement": "Bug: --include-migrations-from argument being ignored\nIn version 2.2.2, using the `--include-migration-from` argument and specifying a migration .py file will not work and `lintmigrations` will run on all migration files.\r\n\r\nOn [line 299](https://github.com/3YOURMIND/django-migration-linter/blob/799957a5564e8ca1ea20d7cf643abbc21db4e40f/django_migration_linter/migration_linter.py#L299) of `migration_linter.py` the method `is_migration_file` is being called with every line of the `migrations_file_path` file instead of the filename `migrations_file_path`",
+    "repo": "3YOURMIND/django-migration-linter",
+    "base_commit": "799957a5564e8ca1ea20d7cf643abbc21db4e40f",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "3YOURMIND__django-migration-linter-258",
+    "image": "swerebench/sweb.eval.x86_64.3yourmind_1776_django-migration-linter-258",
+    "docker_image": "swerebench/sweb.eval.x86_64.3yourmind_1776_django-migration-linter-258",
+    "problem_statement": "Adding an index with a NOT NULL condition incorrectly triggers NOT_NULL rule\nAdding an index with a `WHERE` clause including `NOT NULL` gets flagged as a `NOT NULL constraint on columns` error.\r\n\r\n## Steps to reproduce\r\n\r\nThe follow migration operation:\r\n\r\n```python\r\nAddIndexConcurrently(\r\n    model_name=\"prediction\",\r\n    index=models.Index(\r\n        condition=models.Q(\r\n            (\"data_deleted_at__isnull\", True),\r\n            (\"delete_data_after__isnull\", False),\r\n        ),\r\n        fields=[\"delete_data_after\"],\r\n        name=\"delete_data_after_idx\",\r\n    ),\r\n),\r\n```\r\n\r\nGenerates the following SQL:\r\n\r\n```sql\r\nCREATE INDEX CONCURRENTLY \"delete_data_after_idx\" ON \"models_prediction\" (\"delete_data_after\") WHERE (\"data_deleted_at\" IS NULL AND \"delete_data_after\" IS NOT NULL);\r\n```\r\n\r\nWhen linted this is flagged as an error because of the `NOT NULL`, when it ought to be a safe operation.\r\n\r\n## Investigation\r\n\r\nLooking at the condition used for this rule, I think it might just need to permit `CREATE INDEX` requests:\r\n\r\n```python\r\nre.search(\"(?<!DROP )NOT NULL\", sql) and not sql.startswith(\"CREATE TABLE\") and not sql.startswith(\"CREATE INDEX\") \r\n```\r\n\r\nhttps://github.com/3YOURMIND/django-migration-linter/blob/202a6d9d5dea83528cb52fd7481a5a0565cc6f83/django_migration_linter/sql_analyser/base.py#L43",
+    "repo": "3YOURMIND/django-migration-linter",
+    "base_commit": "366d16b01a72d0baa54fef55761d846b0f05b8dd",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "4degrees__clique-26",
+    "image": "swerebench/sweb.eval.x86_64.4degrees_1776_clique-26",
+    "docker_image": "swerebench/sweb.eval.x86_64.4degrees_1776_clique-26",
+    "problem_statement": "collection.format hits maximum recursion depth for collections with lots of holes.\nThe following code gives an example.\r\n\r\n```python\r\npaths = [\"name.{0:04d}.jpg\".format(x) for x in range(2000)[::2]]\r\ncollection = clique.assemble(paths)[0][0]\r\ncollection.format(\"{head}####{tail}\")\r\n```",
+    "repo": "4degrees/clique",
+    "base_commit": "a89507304acce5931f940c34025a6547fa8227b5",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "AI4S2S__lilio-49",
+    "image": "swerebench/sweb.eval.x86_64.ai4s2s_1776_lilio-49",
+    "docker_image": "swerebench/sweb.eval.x86_64.ai4s2s_1776_lilio-49",
+    "problem_statement": "Add (more) attributes to xarray `resample` output\nAs xarray uses the structure of netCDF files, there is quite a lot of space to add extra information, in the form of \"attributes\".\r\n\r\nFor provenance and traceability, we can make use of this in Lilio. This can consist of, but is not limited to:\r\n\r\n- Adding attributes to all coordinates to explain what they are (e.g. anchor_year). [left_bound and right_bound currently do have a description in the attrs](https://github.com/AI4S2S/lilio/blob/d0923997b4fd8cdb7ea41712006f6055ae7deb0d/lilio/utils.py#L167-L174). \r\n- Adding the calendar itself to the xr.Dataset/xr.DataArray main attrs.\r\n",
+    "repo": "AI4S2S/lilio",
+    "base_commit": "329a736d26915944744a4235c11497718e0d7832",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "AI4S2S__lilio-58",
+    "image": "swerebench/sweb.eval.x86_64.ai4s2s_1776_lilio-58",
+    "docker_image": "swerebench/sweb.eval.x86_64.ai4s2s_1776_lilio-58",
+    "problem_statement": "Unclear error message when an empty calendar is passed to `resample` function.\nWhen executing the following code:\r\n```py\r\nimport lilio\r\nfrom lilio import Calendar\r\nimport xarray as xr\r\n\r\nds = xr.load_dataset(path_to_data) # just some sample data\r\ncal = Calendar(\"12-25\") \r\n# note that no intervals are added to the calendar\r\n# cal.add_intervals(\"target\", length=\"7d\")\r\n# cal.add_intervals(\"precursor\", length=\"7d\")\r\ncal.map_to_data(ds)\r\ndata_resampled = lilio.resample(cal, ds)\r\n```\r\n\r\nThis will trigger the following `ValueError`\r\n\r\n```py\r\nFile [~/AI4S2S/lilio/lilio/resampling.py:342](https://vscode-remote+wsl-002bubuntu-002d20-002e04.vscode-resource.vscode-cdn.net/home/yangliu/AI4S2S/lilio/docs/notebooks/~/AI4S2S/lilio/lilio/resampling.py:342), in resample(calendar, input_data, how)\r\n    340     _check_valid_resampling_methods(how)\r\n    341 utils.check_timeseries(input_data)\r\n--> 342 utils.check_input_frequency(calendar, input_data)\r\n    343 utils.check_reserved_names(input_data)\r\n    345 if isinstance(input_data, (pd.Series, pd.DataFrame)):\r\n\r\nFile [~/AI4S2S/lilio/lilio/utils.py:158](https://vscode-remote+wsl-002bubuntu-002d20-002e04.vscode-resource.vscode-cdn.net/home/yangliu/AI4S2S/lilio/docs/notebooks/~/AI4S2S/lilio/lilio/utils.py:158), in check_input_frequency(calendar, data)\r\n    151 \"\"\"Compare the frequency of (input) data to the frequency of the calendar.\r\n    152 \r\n    153 Note: Pandas and xarray have the builtin function `infer_freq`, but this function is\r\n    154 not robust enough for our purpose, so we have to manually infer the frequency if the\r\n    155 builtin one fails.\r\n    156 \"\"\"\r\n    157 data_freq = infer_input_data_freq(data)\r\n--> 158 calendar_freq = get_smallest_calendar_freq(calendar)\r\n    160 if calendar_freq < data_freq:\r\n    161     raise ValueError(\r\n    162         \"The data is of a lower time resolution than the calendar. \"\r\n    163         \"This would lead to incorrect data and/or NaN values in the resampled data.\"\r\n   (...)\r\n    167         f\"{str(calendar_freq)}\"\r\n    168     )\r\n\r\nFile [~/AI4S2S/lilio/lilio/utils.py:145](https://vscode-remote+wsl-002bubuntu-002d20-002e04.vscode-resource.vscode-cdn.net/home/yangliu/AI4S2S/lilio/docs/notebooks/~/AI4S2S/lilio/lilio/utils.py:145), in get_smallest_calendar_freq(calendar)\r\n    143 lengthstr = [replace_month_length(ln) if ln[-1] == \"M\" else ln for ln in lengthstr]\r\n    144 lengths = [pd.Timedelta(ln) for ln in lengthstr]\r\n--> 145 return min(lengths)\r\n\r\nValueError: min() arg is an empty sequence\r\n```\r\n\r\nThe error message is not informative. It should remind the user to add intervals to the calendar. This needs to be fixed in the check for `resample` function, in `utils` module.",
+    "repo": "AI4S2S/lilio",
+    "base_commit": "416ea560d41b57502cf204fbf4e65e79c21373bf",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ARMmbed__greentea-263",
+    "image": "swerebench/sweb.eval.x86_64.armmbed_1776_greentea-263",
+    "docker_image": "swerebench/sweb.eval.x86_64.armmbed_1776_greentea-263",
+    "problem_statement": "Test names are not correctly globbed\nTest names only respect a wildcard that is placed at the end of the string. Ex. \"mbed-os-*\".\r\n\r\nHowever, it does not respect the wildcard anywhere else. Ex. \"*-timer\"\r\n\r\nThe build tools accept these wildcards, so greentea should as well. This is the line responsible: https://github.com/ARMmbed/greentea/blob/32b95b44be653c3db527c02e1c5e1ffdc7d37f6f/mbed_greentea/mbed_greentea_cli.py#L146\r\n\r\nShould be switched to `fnmatch`.\r\n\r\n(This is mostly a note to myself to fix it)",
+    "repo": "ARMmbed/greentea",
+    "base_commit": "68508c5f4d7cf0635c75399d0ff7cfa896fdf2cc",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ARMmbed__mbed-tools-138",
+    "image": "swerebench/sweb.eval.x86_64.armmbed_1776_mbed-tools-138",
+    "docker_image": "swerebench/sweb.eval.x86_64.armmbed_1776_mbed-tools-138",
+    "problem_statement": "mbed-tools fails to handle config options that contain quotes\n### Description\r\n\r\nFrom @rajkan01:\r\n\r\nFor the below mbed_lib.json config\r\n\r\n```\r\n\"iotc-mqtt-host\": { \t \r\n    \"help\": \"IOTC MQTT host configuration. Defaults to mqtt.2030.ltsapis.goog host and port number 8883 if undefined\", \t \r\n    \"value\": \"{\\\"mqtt.2030.ltsapis.goog\\\", IOTC_MQTT_PORT}\", \t \r\n    \"macro_name\": \"IOTC_MQTT_HOST\" \t \r\n }\r\n```\r\n\r\nMbedtools is generating `\"-DIOTC_MQTT_HOST={\"mqtt.2030.ltsapis.goog\", IOTC_MQTT_PORT}\"` config starts double-quotes from -D itself, and CMake prepossessing time this macro gets divided into multiple #define like below because of this define begin with double-quotes and also the value (\"mqtt.2030.ltsapis.goog\") with double-quote consider to be a string\r\n\r\n```\r\n#define IOTC_MQTT_HOST { \r\n#define mqtt .2030.ltsapis.goog, IOTC_MQTT_PORT} 1 \r\n```\r\n\r\nCould someone check this, why is the mbedtools generating macros starts with double-quotes which include `-D` and fix.\r\n\r\nI've attached `main.ii` and `mbed_config.cmake`\r\n[mbed_config.zip](https://github.com/ARMmbed/mbed-tools/files/5602300/mbed_config.zip)\r\n\r\n\r\n### Issue request type\r\n\r\n<!--\r\nPlease add only one `x` to one of the following types. Do not fill multiple types (split the issue otherwise).\r\n\r\n\r\nFor questions please use https://forums.mbed.com/\r\n-->\r\n\r\n- [ ] Enhancement\r\n- [X] Bug\r\n",
+    "repo": "ARMmbed/mbed-tools",
+    "base_commit": "94a3bd761d6ab3305c81da93517767aafff58d7e",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ARMmbed__mbed-tools-190",
+    "image": "swerebench/sweb.eval.x86_64.armmbed_1776_mbed-tools-190",
+    "docker_image": "swerebench/sweb.eval.x86_64.armmbed_1776_mbed-tools-190",
+    "problem_statement": "mbed-tools import fails to import an example with ssh url\n### Description\r\n\r\n<!--\r\nA detailed description of what is being reported. Please include steps to reproduce the problem.\r\n\r\nThings to consider sharing:\r\n- What version of the package is being used (pip show mbed-tools)?\r\n- What is the host platform and version (e.g. macOS 10.15.2, Windows 10, Ubuntu 18.04 LTS)?\r\n-->\r\n\r\nmbed-tools version: **5.0.0**\r\n\r\nCommand:\r\n\r\n`mbed-tools -vv import git@github.com:ARMmbed/mbed-os-example-blinky.git`\r\n\r\nExpected:\r\n\r\nmbed-os-example-blinky example cloned onto a local machine.\r\n\r\n \r\n\r\nOutput:\r\n\r\n```\r\n\r\nCloning Mbed program 'git@github.com:ARMmbed/mbed-os-example-blinky.git'\r\nResolving program library dependencies.\r\nERROR: Cloning git repository from url 'https://github.com/armmbed/git@github.com:ARMmbed/mbed-os-example-blinky.git' failed. Error from VCS: Cmd('git') failed due to: exit code(128)\r\ncmdline: git clone --progress -v https://github.com/armmbed/git@github.com:ARMmbed/mbed-os-example-blinky.git mbed-os-example-blinky.git\r\n\r\nMore information may be available by using the command line option '-vvv'.\r\n\r\n```\r\n\r\n\r\n### Issue request type\r\n\r\n<!--\r\nPlease add only one `x` to one of the following types. Do not fill multiple types (split the issue otherwise).\r\n\r\n\r\nFor questions please use https://forums.mbed.com/\r\n-->\r\n\r\n- [ ] Enhancement\r\n- [x] Bug\r\n",
+    "repo": "ARMmbed/mbed-tools",
+    "base_commit": "d4dd48ce58952851f9cb2a9e98b0f788a61a23a3",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ARMmbed__mbed-tools-207",
+    "image": "swerebench/sweb.eval.x86_64.armmbed_1776_mbed-tools-207",
+    "docker_image": "swerebench/sweb.eval.x86_64.armmbed_1776_mbed-tools-207",
+    "problem_statement": "Mbed OS path not searched when processing config\n### Description\r\nWhen we added the `--mbed-os-path` option to `configure` and `compile` we didn't add it to the list of search paths for the config processing tool. Currently, the tool always searches for config files from the project root down, and `mbed-os-path` could be outside of the project root.\r\n\r\nThis causes issues with Greentea tests, as the Greentea test \"project root\" is a subdirectory of `mbed-os`, so the tool fails to find any `mbed_lib.json` files as it's only searching from the \"project root\" down.\r\n\r\nWe should pass this `mbed-os-path` argument to the config processing tool so it can search mbed-os for config files even when mbed-os is outside of the \"project root\".\r\n<!--\r\nA detailed description of what is being reported. Please include steps to reproduce the problem.\r\n\r\nThings to consider sharing:\r\n- What version of the package is being used (pip show mbed-tools)?\r\n- What is the host platform and version (e.g. macOS 10.15.2, Windows 10, Ubuntu 18.04 LTS)?\r\n-->\r\n\r\n\r\n\r\n### Issue request type\r\n\r\n<!--\r\nPlease add only one `x` to one of the following types. Do not fill multiple types (split the issue otherwise).\r\n\r\n\r\nFor questions please use https://forums.mbed.com/\r\n-->\r\n\r\n- [ ] Enhancement\r\n- [x] Bug\r\n",
+    "repo": "ARMmbed/mbed-tools",
+    "base_commit": "e9710eabb27a4f65e7c0e799224c3f8bcd2b4881",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ARMmbed__mbed-tools-208",
+    "image": "swerebench/sweb.eval.x86_64.armmbed_1776_mbed-tools-208",
+    "docker_image": "swerebench/sweb.eval.x86_64.armmbed_1776_mbed-tools-208",
+    "problem_statement": "Obtuse error message when board is not found locally or remotely\n### Description\r\n\r\nWhen a board is being looked for, and it isn't found in the offline database, and no network connectivity is available (say, perhaps [when a proxy is required to access the net](https://github.com/ARMmbed/mbed-tools/issues/200), the error message we receive is as follows:\r\n\r\n```\r\n$ mbedtools detect -a\r\nERROR: A problem occurred when looking up board data for connected devices.\r\n\r\nMore information may be available by using the command line option '-v'.\r\n```\r\n\r\nUsing verbose output isn't too much better.\r\n\r\n```\r\n$ mbedtools -vvv detect -a\r\nDEBUG: Failed getting an attribute value: <unknown>.AdditionalAvailability\r\nDEBUG: Failed getting an attribute value: <unknown>.IdentifyingDescriptions\r\nDEBUG: Failed getting an attribute value: <unknown>.MaxQuiesceTime\r\nDEBUG: Failed getting an attribute value: <unknown>.OtherIdentifyingInfo\r\nDEBUG: Failed getting an attribute value: <unknown>.PowerOnHours\r\nDEBUG: Failed getting an attribute value: <unknown>.TotalPowerOnHours\r\nDEBUG: Failed getting an attribute value: <unknown>.AdditionalAvailability\r\nDEBUG: Failed getting an attribute value: <unknown>.IdentifyingDescriptions\r\nDEBUG: Failed getting an attribute value: <unknown>.MaxQuiesceTime\r\nDEBUG: Failed getting an attribute value: <unknown>.OtherIdentifyingInfo\r\nDEBUG: Failed getting an attribute value: <unknown>.PowerOnHours\r\nDEBUG: Failed getting an attribute value: <unknown>.TotalPowerOnHours\r\nDEBUG: Failed getting an attribute value: <unknown>.AdditionalAvailability\r\nDEBUG: Failed getting an attribute value: <unknown>.IdentifyingDescriptions\r\nDEBUG: Failed getting an attribute value: <unknown>.MaxQuiesceTime\r\nDEBUG: Failed getting an attribute value: <unknown>.OtherIdentifyingInfo\r\nDEBUG: Failed getting an attribute value: <unknown>.PowerOnHours\r\nDEBUG: Failed getting an attribute value: <unknown>.TotalPowerOnHours\r\nDEBUG: Failed getting an attribute value: <unknown>.AdditionalAvailability\r\nDEBUG: Failed getting an attribute value: <unknown>.IdentifyingDescriptions\r\nDEBUG: Failed getting an attribute value: <unknown>.MaxQuiesceTime\r\nDEBUG: Failed getting an attribute value: <unknown>.OtherIdentifyingInfo\r\nDEBUG: Failed getting an attribute value: <unknown>.PowerOnHours\r\nDEBUG: Failed getting an attribute value: <unknown>.TotalPowerOnHours\r\nDEBUG: Failed getting an attribute value: <unknown>.AdditionalAvailability\r\nDEBUG: Failed getting an attribute value: <unknown>.IdentifyingDescriptions\r\nDEBUG: Failed getting an attribute value: <unknown>.MaxQuiesceTime\r\nDEBUG: Failed getting an attribute value: <unknown>.OtherIdentifyingInfo\r\nDEBUG: Failed getting an attribute value: <unknown>.PowerOnHours\r\nDEBUG: Failed getting an attribute value: <unknown>.TotalPowerOnHours\r\nDEBUG: Cannot retrieve the real name of volume Y:\\. Reason: (87, 'GetVolumeNameForVolumeMountPoint', 'The parameter is incorrect.')\r\nDEBUG: Attribute [DiskIndex] is undefined on this instance DiskPartition({}): 'DiskPartition' object has no attribute 'DiskIndex'\r\nDEBUG: Attribute [PNPDeviceID] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'PNPDeviceID'\r\nDEBUG: Attribute [SerialNumber] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'SerialNumber'\r\nDEBUG: Attribute [DeviceID] is undefined on this instance DiskPartition({}): 'DiskPartition' object has no attribute 'DeviceID'\r\nDEBUG: Attribute [Type] is undefined on this instance DiskPartition({}): 'DiskPartition' object has no attribute 'Type'\r\nDEBUG: Attribute [Caption] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'Caption'\r\nDEBUG: Attribute [DeviceID] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'DeviceID'\r\nDEBUG: Attribute [Model] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'Model'\r\nDEBUG: Attribute [InterfaceType] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'InterfaceType'\r\nDEBUG: Attribute [MediaType] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'MediaType'\r\nDEBUG: Attribute [Manufacturer] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'Manufacturer'\r\nDEBUG: Attribute [SerialNumber] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'SerialNumber'\r\nDEBUG: Attribute [Status] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'Status'\r\nDEBUG: Attribute [PNPDeviceID] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'PNPDeviceID'\r\nDEBUG: Cannot retrieve the real name of volume Y:\\. Reason: (87, 'GetVolumeNameForVolumeMountPoint', 'The parameter is incorrect.')\r\nDEBUG: Attribute [DiskIndex] is undefined on this instance DiskPartition({}): 'DiskPartition' object has no attribute 'DiskIndex'\r\nDEBUG: Attribute [PNPDeviceID] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'PNPDeviceID'\r\nDEBUG: Attribute [SerialNumber] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'SerialNumber'\r\nDEBUG: Attribute [DeviceID] is undefined on this instance DiskPartition({}): 'DiskPartition' object has no attribute 'DeviceID'\r\nDEBUG: Attribute [Type] is undefined on this instance DiskPartition({}): 'DiskPartition' object has no attribute 'Type'\r\nDEBUG: Attribute [Caption] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'Caption'\r\nDEBUG: Attribute [DeviceID] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'DeviceID'\r\nDEBUG: Attribute [Model] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'Model'\r\nDEBUG: Attribute [InterfaceType] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'InterfaceType'\r\nDEBUG: Attribute [MediaType] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'MediaType'\r\nDEBUG: Attribute [Manufacturer] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'Manufacturer'\r\nDEBUG: Attribute [SerialNumber] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'SerialNumber'\r\nDEBUG: Attribute [Status] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'Status'\r\nDEBUG: Attribute [PNPDeviceID] is undefined on this instance DiskDrive({}): 'DiskDrive' object has no attribute 'PNPDeviceID'\r\nINFO: Using the offline database to identify boards.\r\nINFO: Unable to identify a board using the offline database, trying the online database.\r\nDEBUG: Starting new HTTPS connection (1): os.mbed.com:443\r\nWARNING: There was an error connecting to the online database. Please check your internet connection.\r\nERROR: A problem occurred when looking up board data for connected devices.\r\n\r\nMore information may be available by using the command line option '--traceback'.\r\n```\r\n\r\nInstead of failing with an error when we can't access the online board database, we should accept the board is unknown and display a user-friendly message, explaining that the board is unknown in the local database and that we couldn't access the online database, so we have to consider the board as unknown.\r\n\r\nThis issue is a subset of the issues reported in https://github.com/ARMmbed/mbed-tools/issues/186\r\n\r\n\r\n### Issue request type\r\n\r\n<!--\r\nPlease add only one `x` to one of the following types. Do not fill multiple types (split the issue otherwise).\r\n\r\n\r\nFor questions please use https://forums.mbed.com/\r\n-->\r\n\r\n- [ ] Enhancement\r\n- [X] Bug\r\n",
+    "repo": "ARMmbed/mbed-tools",
+    "base_commit": "584a995d93b9562e9c95385268891dfdae9c55f1",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ARMmbed__mbed-tools-259",
+    "image": "swerebench/sweb.eval.x86_64.armmbed_1776_mbed-tools-259",
+    "docker_image": "swerebench/sweb.eval.x86_64.armmbed_1776_mbed-tools-259",
+    "problem_statement": "This introduces a big issue:\nThe PR to list the interface version https://github.com/ARMmbed/mbed-tools/pull/235, shipped with v7.6.0, has a big issue.\r\n\r\n````\r\n$ pip list | grep mbed-tools\r\nmbed-tools         7.6.0\r\n\r\n\r\n$ mbedtools detect\r\nTraceback (most recent call last):\r\n  File \"xxx\\appdata\\local\\programs\\python\\python37\\lib\\runpy.py\", line 193, in _run_module_as_main\r\n    \"__main__\", mod_spec)\r\n  File \"xxx\\appdata\\local\\programs\\python\\python37\\lib\\runpy.py\", line 85, in _run_code\r\n    exec(code, run_globals)\r\n  File \"xxx\\AppData\\Local\\Programs\\Python\\Python37\\Scripts\\mbedtools.exe\\__main__.py\", line 7, in <module>\r\n  File \"xxx\\appdata\\local\\programs\\python\\python37\\lib\\site-packages\\click\\core.py\", line 829, in __call__\r\n    return self.main(*args, **kwargs)\r\n  File \"xxx\\appdata\\local\\programs\\python\\python37\\lib\\site-packages\\click\\core.py\", line 782, in main\r\n    rv = self.invoke(ctx)\r\n  File \"xxx\\appdata\\local\\programs\\python\\python37\\lib\\site-packages\\mbed_tools\\cli\\main.py\", line 38, in invoke\r\n    super().invoke(context)\r\n  File \"xxx\\appdata\\local\\programs\\python\\python37\\lib\\site-packages\\click\\core.py\", line 1259, in invoke\r\n    return _process_result(sub_ctx.command.invoke(sub_ctx))\r\n  File \"xxx\\appdata\\local\\programs\\python\\python37\\lib\\site-packages\\click\\core.py\", line 1066, in invoke\r\n    return ctx.invoke(self.callback, **ctx.params)\r\n  File \"xxx\\appdata\\local\\programs\\python\\python37\\lib\\site-packages\\click\\core.py\", line 610, in invoke\r\n    return callback(*args, **kwargs)\r\n  File \"xxx\\appdata\\local\\programs\\python\\python37\\lib\\site-packages\\mbed_tools\\cli\\list_connected_devices.py\", line 29, in list_connected_devices\r\n    connected_devices = get_connected_devices()\r\n  File \"xxx\\appdata\\local\\programs\\python\\python37\\lib\\site-packages\\mbed_tools\\devices\\devices.py\", line 25, in get_connected_devices\r\n    device = Device.from_candidate(candidate_device)\r\n  File \"xxx\\appdata\\local\\programs\\python\\python37\\lib\\site-packages\\mbed_tools\\devices\\device.py\", line 48, in from_candidate\r\n    device_file_info = read_device_files(candidate.mount_points)\r\n  File \"xxx\\appdata\\local\\programs\\python\\python37\\lib\\site-packages\\mbed_tools\\devices\\_internal\\file_parser.py\", line 121, in read_device_files\r\n    details_txt_contents = _read_first_details_txt_contents(device_file_paths)\r\n  File \"xxx\\appdata\\local\\programs\\python\\python37\\lib\\site-packages\\mbed_tools\\devices\\_internal\\file_parser.py\", line 162, in _read_first_details_txt_contents\r\n    return _read_details_txt(contents)\r\n  File \"xxx\\appdata\\local\\programs\\python\\python37\\lib\\site-packages\\mbed_tools\\devices\\_internal\\file_parser.py\", line 180, in _read_details_txt\r\n    key, value = line.split(\":\", maxsplit=1)\r\nValueError: not enough values to unpack (expected 2, got 1)\r\n\r\n$ mbedls\r\n| platform_name | platform_name_unique | mount_point | serial_port | target_id                | interface_version |\r\n|---------------|----------------------|-------------|-------------|--------------------------|-------------------|\r\n| NUCLEO_F103RB | NUCLEO_F103RB[0]     | D:          | COM15       | 07000221283E5EF4177AC8C9 | V2J37M26          |\r\n\r\n\r\n````\r\n\r\n_Originally posted by @jeromecoutant in https://github.com/ARMmbed/mbed-tools/issues/235#issuecomment-811982174_",
+    "repo": "ARMmbed/mbed-tools",
+    "base_commit": "a9b0e1fa3e1d58f80eff5fcc4f82f5952acf8f96",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ARMmbed__mbed-tools-285",
+    "image": "swerebench/sweb.eval.x86_64.armmbed_1776_mbed-tools-285",
+    "docker_image": "swerebench/sweb.eval.x86_64.armmbed_1776_mbed-tools-285",
+    "problem_statement": "Does not compile with --mbed-os-path option\n**Describe the bug**\r\nAs in title.\r\n\r\n**To Reproduce**\r\nSteps to reproduce the behavior:\r\n1. Import an example project.\r\n1. mbed-tools compile -m K64F -t GCC_ARM --mbed-os-path mbed-os\r\n\r\nError:\r\n`ValueError: Setting storage_filesystem.rbp_internal_size already defined. You cannot duplicate config settings!`\r\n\r\nThe setting name changes every time the command is executed.\r\n\r\n**Expected behavior**\r\nShould work.\r\n\r\n**Screenshots**\r\nIf applicable, add screenshots to help explain your problem.\r\n\r\n**Desktop (please complete the following information):**\r\n - OS: Windows\r\n - Version: 10\r\n\r\n**Mbed (please complete the following information):**\r\n - Device: any\r\n - Mbed OS Version: 6.9.0\r\n - Mbed CLI 2 Version: 7.8.0\r\n\r\n**Additional context**\r\nI assume this has something to do with the dependencies. Here is my pipdeptree output:\r\n\r\n```\r\nmbed-tools==7.8.0\r\n  - Click [required: >=7.1,<8, installed: 7.1]\r\n  - GitPython [required: Any, installed: 3.1.14]\r\n    - gitdb [required: >=4.0.1,<5, installed: 4.0.5]\r\n      - smmap [required: >=3.0.1,<4, installed: 3.0.5]\r\n  - Jinja2 [required: Any, installed: 2.11.3]\r\n    - MarkupSafe [required: >=0.23, installed: 1.1.1]\r\n  - pdoc3 [required: Any, installed: 0.9.2]\r\n    - mako [required: Any, installed: 1.1.4]\r\n      - MarkupSafe [required: >=0.9.2, installed: 1.1.1]\r\n    - markdown [required: >=3.0, installed: 3.3.4]\r\n  - pyserial [required: Any, installed: 3.5]\r\n  - python-dotenv [required: Any, installed: 0.15.0]\r\n  - pywin32 [required: Any, installed: 300]\r\n  - requests [required: >=2.20, installed: 2.25.1]\r\n    - certifi [required: >=2017.4.17, installed: 2020.12.5]\r\n    - chardet [required: >=3.0.2,<5, installed: 4.0.0]\r\n    - idna [required: >=2.5,<3, installed: 2.10]\r\n    - urllib3 [required: >=1.21.1,<1.27, installed: 1.26.4]\r\n  - tabulate [required: Any, installed: 0.8.9]\r\n  - tqdm [required: Any, installed: 4.59.0]\r\n  - typing-extensions [required: Any, installed: 3.7.4.3]\r\n```",
+    "repo": "ARMmbed/mbed-tools",
+    "base_commit": "ff2da40abec773902b6fda86d36de154d83a7d9f",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ARMmbed__mbed-tools-292",
+    "image": "swerebench/sweb.eval.x86_64.armmbed_1776_mbed-tools-292",
+    "docker_image": "swerebench/sweb.eval.x86_64.armmbed_1776_mbed-tools-292",
+    "problem_statement": "Missing `--app-config` option\n**Describe the bug**\r\nMbed CLI 1 offers an `--app-config` option to let users specify the application configuration JSON instead of assuming `mbed_app.json`. This is not currently provided by mbed-tools, but useful when\r\n* one application provides multiple configurations for different use cases\r\n* different applications or tests share one common configuration (e.g. [experimental.json](https://github.com/ARMmbed/mbed-os/blob/master/TESTS/configs/experimental.json))\r\n\r\n**To Reproduce**\r\nTry to build an application (e.g. blinky) with `--app-config`, for example\r\n```\r\nmbed-tools compile -t GCC_ARM -m K64F --app-config mbed-os/TESTS/configs/experimental.json\r\n```\r\nand the error is\r\n```\r\nError: no such option: --app-config\r\n```\r\n\r\n**Expected behavior**\r\nAn option `--app-config` is available to both `mbed-tools configure` and `mbed-tools compile`. The specified JSON is used for generating `mbed_config.cmake`.\r\n\r\n**Screenshots**\r\nN/A\r\n\r\n**Desktop (please complete the following information):**\r\n - OS: Any\r\n - Version: Any\r\n\r\n**Mbed (please complete the following information):**\r\n - Device: Any\r\n - Mbed OS Version: 6.11.0\r\n - Mbed CLI 2 Version: 7.23.0\r\n\r\n**Additional context**\r\nN/A\r\n",
+    "repo": "ARMmbed/mbed-tools",
+    "base_commit": "f55d2eb5f6aec73e33a85331c82d0d3d71cc09b4",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ARMmbed__mbed-tools-293",
+    "image": "swerebench/sweb.eval.x86_64.armmbed_1776_mbed-tools-293",
+    "docker_image": "swerebench/sweb.eval.x86_64.armmbed_1776_mbed-tools-293",
+    "problem_statement": "`mbed-tools configure` generates `mbed_config.cmake` under `develop`, and doesn't have a `-b` option\nFrom the PR description and commit msg, it says that configs and builds should now live under `cmake_build/TARGET/PROFILE/TOOLCHAIN`, but this line makes `mbed-tools configure` always generate the `mbed_config.cmake` under `cmake_build/TARGET/develop/TOOLCHAIN`. Why is this?\r\n\r\n_Originally posted by @wmmc88 in https://github.com/ARMmbed/mbed-tools/pull/175#discussion_r606712097_",
+    "repo": "ARMmbed/mbed-tools",
+    "base_commit": "a97be74fef509c90c820c9a96961377e14412c92",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ARMmbed__mbed-tools-91",
+    "image": "swerebench/sweb.eval.x86_64.armmbed_1776_mbed-tools-91",
+    "docker_image": "swerebench/sweb.eval.x86_64.armmbed_1776_mbed-tools-91",
+    "problem_statement": "mbedtools clone <example> fails\n### Description\r\n\r\n<!--\r\nA detailed description of what is being reported. Please include steps to reproduce the problem.\r\n\r\nThings to consider sharing:\r\n- What version of the package is being used (pip show mbed-tools)?\r\n- What is the host platform and version (e.g. macOS 10.15.2, Windows 10, Ubuntu 18.04 LTS)?\r\n-->\r\nThe clone command `mbedtools clone https://github.com/ARMmbed/mbed-os-example-blinky` fails with following error:\r\n```\r\nCloning Mbed program 'https://github.com/ARMmbed/mbed-os-example-blinky'\r\nResolving program library dependencies.\r\nERROR: Cloning git repository from url 'https://github.com/ARMmbed/mbed-os/' failed. Error from VCS:\r\n\r\nMore information may be available by using the command line option '-v'.\r\n```\r\n\r\n### Issue request type\r\n\r\n<!--\r\nPlease add only one `x` to one of the following types. Do not fill multiple types (split the issue otherwise).\r\n\r\n\r\nFor questions please use https://forums.mbed.com/\r\n-->\r\n\r\n- [ ] Enhancement\r\n- [x] Bug\r\n",
+    "repo": "ARMmbed/mbed-tools",
+    "base_commit": "a188be5d23cdc1f5c7434b439e9afed50a75e8ad",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ARMmbed__yotta-804",
+    "image": "swerebench/sweb.eval.x86_64.armmbed_1776_yotta-804",
+    "docker_image": "swerebench/sweb.eval.x86_64.armmbed_1776_yotta-804",
+    "problem_statement": "Semver incompatibility\nHi,\r\n\r\nIt seems the recent version has broken semantic version for any previous version, which we heavily use in our project, [microbit-dal](https://github.com/lancaster-university/microbit-dal).\r\n\r\nWe have had two new users on v18 who have reported this breakage: https://github.com/lancaster-university/microbit-dal/issues/282\r\n\r\nAny help would be greatly appreciated :smile:",
+    "repo": "ARMmbed/yotta",
+    "base_commit": "4094b7a26c66dd64ff724d4f72da282d41ea9fca",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ASFHyP3__hyp3-sdk-53",
+    "image": "swerebench/sweb.eval.x86_64.asfhyp3_1776_hyp3-sdk-53",
+    "docker_image": "swerebench/sweb.eval.x86_64.asfhyp3_1776_hyp3-sdk-53",
+    "problem_statement": "Batch constructor should create an empty batch by default\nCurrently, calling `jobs = Batch()` raises `TypeError: __init__() missing 1 required positional argument: 'jobs'`.\r\n\r\nTo construct an empty batch, the user has to write `jobs = Batch([])`.  It would be more intuitive if this were the default behavior without having to explicitly provide an empty list.",
+    "repo": "ASFHyP3/hyp3-sdk",
+    "base_commit": "56cfb700341a0de44ee0f2f3548d5ed6c534d659",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ASFHyP3__hyp3-sdk-71",
+    "image": "swerebench/sweb.eval.x86_64.asfhyp3_1776_hyp3-sdk-71",
+    "docker_image": "swerebench/sweb.eval.x86_64.asfhyp3_1776_hyp3-sdk-71",
+    "problem_statement": "Batch should be iterable\nAttempting to iterate over a Batch object currently fails with `TypeError: 'Batch' object is not iterable`.\r\n\r\n```\r\n> import hyp3_sdk\r\n> api = hyp3_sdk.HyP3()\r\n> jobs = api.find_jobs(name='refactor')\r\n> sizes = [job['files'][0]['size'] for job in jobs]\r\nTraceback (most recent call last):\r\n  File \"<stdin>\", line 1, in <module>\r\nTypeError: 'Batch' object is not iterable\r\n```",
+    "repo": "ASFHyP3/hyp3-sdk",
+    "base_commit": "b8011c957ce5759bd64007c2116d202fdb5a6dae",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ASPP__pelita-696",
+    "image": "swerebench/sweb.eval.x86_64.aspp_1776_pelita-696",
+    "docker_image": "swerebench/sweb.eval.x86_64.aspp_1776_pelita-696",
+    "problem_statement": "layout_agnostic needs tests and fixes\nCurrently broken. https://github.com/ASPP/pelita/blob/2f17db5355b4dffae8a130ede549ab869b2f1ce2/pelita/layout.py#L548-L566\r\n",
+    "repo": "ASPP/pelita",
+    "base_commit": "557c3a757a24e0f1abe25f7edf5c4ffee83a077e",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ASPP__pelita-798",
+    "image": "swerebench/sweb.eval.x86_64.aspp_1776_pelita-798",
+    "docker_image": "swerebench/sweb.eval.x86_64.aspp_1776_pelita-798",
+    "problem_statement": "make the cumulative time counter available to clients\nThe `Bot` object should have an attribute `time` where the cumulative time for the team shown in the GUI is made available. This is useful for example when benchmarking different strategies. There's no way at the moment to programmatically access that value, as far as I could see.\r\nOf course the client could time itself, but this has its own pitfalls. So it's better to just make that value available, even if we all know it's not super precise...",
+    "repo": "ASPP/pelita",
+    "base_commit": "245a9ca445eccda07998cb58fbee340308d425a7",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ASPP__pelita-863",
+    "image": "swerebench/sweb.eval.x86_64.aspp_1776_pelita-863",
+    "docker_image": "swerebench/sweb.eval.x86_64.aspp_1776_pelita-863",
+    "problem_statement": "Better Bot repr\nFor reference, this is the current `repr(bot)`:\n\n    <pelita.team.Bot object at 0x102778b90>\n\nThis is `str(bot)`:\n\n```\nPlaying on red side. Current turn: 1. Bot: y. Round: 1, score: 0:0. timeouts: 0:0\n################################\n#.  . #.   .              . #.y#\n#     #  #### ###  .    #  . .x#\n#    .  ##..#     #########    #\n#.    #  #  #.### . ..  .. .#  #\n######## #. #     ####  #.### ##\n# .#     #. #     .#    .   #  #\n#    ## ##.    ##..#  # .#  # ##\n## #  #. #  #..##    .## ##    #\n#a #   .    #.     # .#     #. #\n##b###.#  ####     # .# ########\n#  #. ..  .. . ###.#  #  #    .#\n#    #########     #..##  .    #\n# . .  #    .  ### ####  #     #\n# .# .              .   .# .  .#\n################################\nBots: {'a': (1, 9), 'x': (30, 2), 'b': (2, 10), 'y': (30, 1)}\nNoisy: {'a': True, 'x': False, 'b': True, 'y': False}\nFood: [(30, 14), (21, 10), (24, 4), (20, 14), (26, 1), (24, 7), (27, 4), (29, 9), (18, 6), (21, 8), (20, 12), (21, 4), (25, 4), (27, 2), (18, 4), (24, 14), (17, 7), (18, 7), (29, 1), (20, 4), (27, 14), (21, 9), (21, 12), (18, 11), (24, 6), (25, 5), (29, 2), (19, 2), (26, 12), (30, 11), (11, 1), (10, 5), (10, 11), (13, 4), (12, 13), (2, 13), (7, 9), (10, 6), (6, 10), (10, 3), (4, 1), (13, 11), (11, 11), (2, 14), (13, 8), (14, 8), (7, 1), (4, 13), (6, 11), (5, 14), (1, 1), (11, 3), (10, 7), (1, 4), (13, 9), (2, 6), (5, 3), (4, 11), (7, 11), (7, 8)]\n```\n\nAt the least I think it should be something like:\n\n    <Bot: y (red), (30, 1), turn: 1, round: 1>\n\n",
+    "repo": "ASPP/pelita",
+    "base_commit": "ab9217f298fa4897b06e5e9e9e7fad7e29ba7114",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ASPP__pelita-875",
+    "image": "swerebench/sweb.eval.x86_64.aspp_1776_pelita-875",
+    "docker_image": "swerebench/sweb.eval.x86_64.aspp_1776_pelita-875",
+    "problem_statement": "run_background_game breaks when layout= is passed\n```\ndef test_run_background_game_with_layout():\n    test_layout = (\n    \"\"\" ##################\n        #a#.  .  # .     #\n        #b#####    #####x#\n        #     . #  .  .#y#\n        ################## \"\"\")\n    result = utils.run_background_game(blue_move=stopping_player, red_move=stopping_player, layout=test_layout)\n```\n\n```\n        if layout is None:\n            layout_dict = generate_maze(rng=rng)\n        else:\n>           layout_dict = parse_layout(layout, food=food, bots=bots)\nE           NameError: name 'food' is not defined\n\npelita/utils.py:104: NameError\n```\n",
+    "repo": "ASPP/pelita",
+    "base_commit": "68af15d8d4199882d32bb4ede363195e2c5b5a99",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Aarhus-Psychiatry-Research__timeseriesflattener-186",
+    "image": "swerebench/sweb.eval.x86_64.aarhus-psychiatry-research_1776_timeseriesflattener-186",
+    "docker_image": "swerebench/sweb.eval.x86_64.aarhus-psychiatry-research_1776_timeseriesflattener-186",
+    "problem_statement": "fix: change type hints in specs to allow for floats in interval_days\nCurrenty, float inputs to interval_days args in predictor and outcome specs are coerced into integers. Thus, it is not possible to generate predictors/outcomes with non-integer lookbehind/ahead windows. \r\n\r\n- [ ] Add test ",
+    "repo": "Aarhus-Psychiatry-Research/timeseriesflattener",
+    "base_commit": "bb6a7fffb2a520272fcb5d7129957ce22484ff77",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Abjad__abjad-ext-nauert-24",
+    "image": "swerebench/sweb.eval.x86_64.abjad_1776_abjad-ext-nauert-24",
+    "docker_image": "swerebench/sweb.eval.x86_64.abjad_1776_abjad-ext-nauert-24",
+    "problem_statement": "Check gracehandlers behaviors\nThere seem to be some odd behaviors in handling grace notes.\r\n\r\nThe first odd behavior results in a \"grace rest\" attaching to a pitched note, as shown below:\r\n```\r\nimport abjad\r\nfrom abjadext import nauert\r\n\r\nquantizer = nauert.Quantizer()\r\ndurations = [1000, 1, 999]\r\npitches = [0, None, 0]\r\nq_event_sequence = nauert.QEventSequence.from_millisecond_pitch_pairs(\r\n    tuple(zip(durations, pitches))\r\n)\r\nresult = quantizer(q_event_sequence)\r\nprint(abjad.lilypond(result))\r\n```\r\nwhich results in\r\n```\r\n\\new Voice\r\n{\r\n    {\r\n        \\tempo 4=60\r\n        %%% \\time 4/4 %%%\r\n        c'4\r\n        \\grace {\r\n            r16\r\n        }\r\n        c'4\r\n        r4\r\n        r4\r\n    }\r\n}\r\n```\r\n\r\nThe second one results in a grace note attaching to a rest.\r\nA snippet might be uploaded later (or not).",
+    "repo": "Abjad/abjad-ext-nauert",
+    "base_commit": "520f389f06e21ee0a094016b4f1e2b0cb58263c1",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Alexei-Kornienko__schematics_to_swagger-7",
+    "image": "swerebench/sweb.eval.x86_64.alexei-kornienko_1776_schematics_to_swagger-7",
+    "docker_image": "swerebench/sweb.eval.x86_64.alexei-kornienko_1776_schematics_to_swagger-7",
+    "problem_statement": "Hide private model fields in swagger doc",
+    "repo": "Alexei-Kornienko/schematics_to_swagger",
+    "base_commit": "3ddc537a8ed7682e9bb709ebd749b99d7ef09473",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Algebra8__pyopenapi3-80",
+    "image": "swerebench/sweb.eval.x86_64.algebra8_1776_pyopenapi3-80",
+    "docker_image": "swerebench/sweb.eval.x86_64.algebra8_1776_pyopenapi3-80",
+    "problem_statement": "Make parse_name_and_type_from_fmt_str return reference to components\n`pyopenapi3.utils.parse_name_and_type_from_fmt_str` should be able to accept the following format: `{name:Component}`.\r\n\r\nCurrently, it will only consider data types:\r\n\r\n```\r\n# In parse_name_and_type_from_fmt_str\r\nyield arg_name, getattr(pyopenapi3.data_types, _type_name)\r\n```\r\nTake the following example:\r\n\r\n```\r\n@open_bldr.path\r\nclass PetsWithId:\r\n\r\n    path = \"/pets/{pet_id:PetId}\"\r\n\r\n\r\n@open_bldr.component.parameter\r\nclass PetId:\r\n\r\n    name = \"pet_id\"\r\n    description = \"Pet's Unique Identifier\"\r\n    in_field = \"path\"\r\n    schema = create_schema(String, pattern=\"^[a-zA-Z0-9-]+$\")\r\n    required = True\r\n```\r\n\r\nHere, `PetId` is a parameter component, and should be referenced. In this scenario `parse_name_and_type_from_fmt_str` should yield `'pet_id', create_reference(\"PetId\")`\r\n",
+    "repo": "Algebra8/pyopenapi3",
+    "base_commit": "2237b16747c446adc2b67a080040f222c0493653",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Algebra8__pyopenapi3-83",
+    "image": "swerebench/sweb.eval.x86_64.algebra8_1776_pyopenapi3-83",
+    "docker_image": "swerebench/sweb.eval.x86_64.algebra8_1776_pyopenapi3-83",
+    "problem_statement": "Allow Free-Form Objects\nConsider the following example:\r\n\r\n```\r\ndefinitions:\r\n  Pet:\r\n    type: object\r\n    properties:\r\n      tags:\r\n        type: object\r\n        description: Custom tags\r\n```\r\n\r\nAccording to [Open API 3 specs on data types](https://swagger.io/docs/specification/data-models/data-types/#object), \"a free-form object (arbitrary property/value pairs) is defined as: `type: object`. This is equivalent to `type: object, additionalProperties: true` and `type: object, additionalProperties: {}`.\"\r\n\r\nFree form objects should be allowed.",
+    "repo": "Algebra8/pyopenapi3",
+    "base_commit": "2ef34c3213eb292703e0e5e6f2185b1e4725bbde",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Algebra8__pyopenapi3-91",
+    "image": "swerebench/sweb.eval.x86_64.algebra8_1776_pyopenapi3-91",
+    "docker_image": "swerebench/sweb.eval.x86_64.algebra8_1776_pyopenapi3-91",
+    "problem_statement": "Unresolvable pointer due to wrong reference\nConsider the following example:\r\n\r\n\r\n```\r\n@component.parameter\r\nclass PetId:\r\n\r\n    name = \"pet_id\"\r\n    description = \"Pet's Unique Identifier\"\r\n    in_field = \"path\"\r\n    schema = create_schema(String, pattern=\"^[a-zA-Z0-9-]+$\")\r\n    required = True\r\n\r\n\r\n@open_bldr.path\r\nclass PetsWithId:\r\n\r\n    path = \"/pets/{pet_id:PetId}\"\r\n```\r\n\r\nThe output of this build, in json (arbitrary), will be the following:\r\n\r\n```\r\n...\r\n      \"parameters\": [\r\n        {\r\n          \"name\": \"pet_id\",\r\n          \"in\": \"path\",\r\n          \"required\": true,\r\n          \"schema\": {\r\n            \"$ref\": \"#/components/schemas/PetId\"\r\n          }\r\n        }\r\n      ]\r\n...\r\n```\r\nHowever, its definition will not be in `components/schemas`, it will be in `components/parameters`:\r\n\r\n```\r\n\"components\":\r\n    ...\r\n    \"parameters\": {\r\n      \"PetId\": {\r\n        \"name\": \"pet_id\",\r\n        \"in\": \"path\",\r\n        \"description\": \"Pet's Unique Identifier\",\r\n        \"required\": true,\r\n        \"schema\": {\r\n          \"pattern\": \"^[a-zA-Z0-9-]+$\",\r\n          \"type\": \"string\"\r\n        }\r\n...\r\n```\r\n\r\nNeed to make this reference point to parameters.\r\n\r\n",
+    "repo": "Algebra8/pyopenapi3",
+    "base_commit": "1637ca6ab3186f73baaf37b09594f59a745f63bb",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Algebra8__pyopenapi3-92",
+    "image": "swerebench/sweb.eval.x86_64.algebra8_1776_pyopenapi3-92",
+    "docker_image": "swerebench/sweb.eval.x86_64.algebra8_1776_pyopenapi3-92",
+    "problem_statement": "Add connexion structure to /examples directory\nInclude everything that is required to make a simple connexion example work around #62, such as `app.py`.",
+    "repo": "Algebra8/pyopenapi3",
+    "base_commit": "2f282f7f121550c845f77b16076b2bdf9b0b379f",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "All-Hands-AI__openhands-aci-55",
+    "image": "swerebench/sweb.eval.x86_64.all-hands-ai_1776_openhands-aci-55",
+    "docker_image": "swerebench/sweb.eval.x86_64.all-hands-ai_1776_openhands-aci-55",
+    "problem_statement": "Add file/folder info in `view` command\nRelevant to https://github.com/All-Hands-AI/OpenHands/issues/5506\n\n![image](https://github.com/user-attachments/assets/041ea5ad-af89-4b72-9786-32a40a95afc1)\n\n> Very weird.. after merging this into one of my branch and running a full SWE-Bench verified (compared to our prev 53% run) -- it django actually got a lot of failed :(\n> \n> I suspect it is because \"view\" only go up-to two level depth. And at two level, it didn't show the agent which folder is expandable or not.\n> \n> I'd suggest we can probably show the type of file/folder in the output of `view` command:\n> \n> ```\n> /workspace/django__django__3.0/django/middleware # folder:\n> /workspace/django__django__3.0/django/shortcuts.py # file\n> /workspace/django__django__3.0/django/template/ # folder: X files under this directory\n> ```\n\n_Originally posted by @xingyaoww in https://github.com/All-Hands-AI/OpenHands/issues/5506#issuecomment-2608307032_\n            ",
+    "repo": "All-Hands-AI/openhands-aci",
+    "base_commit": "f9774a3ca86d2ec2430de5dbaef2cf657d48b826",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "All-Hands-AI__openhands-resolver-123",
+    "image": "swerebench/sweb.eval.x86_64.all-hands-ai_1776_openhands-resolver-123",
+    "docker_image": "swerebench/sweb.eval.x86_64.all-hands-ai_1776_openhands-resolver-123",
+    "problem_statement": "Better handling of when a branch already exists\nCurrently, in `github_resolver/send_pull_request.py`, when pushing to github for a particular issue, the branch name is fixed here:\r\nhttps://github.com/All-Hands-AI/openhands-resolver/blob/44aa2907d70852b7f98786c673304cc18b76d43e/openhands_resolver/send_pull_request.py#L162\r\n\r\nHowever, if the github resolver has already tried to solve the issue and failed, the branch may already exist. Because of this, it would be better to check if the branch already exists, and if it does, further append `-try2`, `-try3`, until it finds a branch that doesn't exist.",
+    "repo": "All-Hands-AI/openhands-resolver",
+    "base_commit": "84ccb9b29d786c3cb16f100b31ee456ddc622fd0",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "All-Hands-AI__openhands-resolver-137",
+    "image": "swerebench/sweb.eval.x86_64.all-hands-ai_1776_openhands-resolver-137",
+    "docker_image": "swerebench/sweb.eval.x86_64.all-hands-ai_1776_openhands-resolver-137",
+    "problem_statement": "\"Unterminated quoted string\"\nOn a run of the github action, the following error was encountered:\r\n\r\n```bash\r\nRun if [ \"true\" == \"true\" ]; then\r\nTraceback (most recent call last):\r\n  File \"<frozen runpy>\", line 198, in _run_module_as_main\r\n  File \"<frozen runpy>\", line 88, in _run_code\r\n  File \"/opt/hostedtoolcache/Python/3.11.10/x64/lib/python3.11/site-packages/openhands_resolver/send_pull_request.py\", line 388, in <module>\r\n    main()\r\n  File \"/opt/hostedtoolcache/Python/3.11.10/x64/lib/python3.11/site-packages/openhands_resolver/send_pull_request.py\", line 377, in main\r\n    process_single_issue(\r\n  File \"/opt/hostedtoolcache/Python/3.11.10/x64/lib/python3.11/site-packages/openhands_resolver/send_pull_request.py\", line 264, in process_single_issue\r\n    make_commit(patched_repo_dir, resolver_output.issue)\r\n  File \"/opt/hostedtoolcache/Python/3.11.10/x64/lib/python3.11/site-packages/openhands_resolver/send_pull_request.py\", line 139, in make_commit\r\n    raise RuntimeError(\"Failed to commit changes\")\r\nRuntimeError: Failed to commit changes\r\nCopied repository to output/patches/issue_20\r\nPatch applied successfully\r\nGit user configured as openhands\r\nError committing changes: /bin/sh: 1: Syntax error: Unterminated quoted string\r\n```\r\n\r\nThe reason seems to be because in `openhands_resolver/send_pull_request.py`, the line here:\r\nhttps://github.com/All-Hands-AI/openhands-resolver/blob/63dd2c9c905a375db53785c0a69e56951a279189/openhands_resolver/send_pull_request.py#L132\r\n\r\nthe `git commit` does not have `issue.title` properly escaped.\r\n\r\nOnce this is fixed, we should also bump the version to 0.1.6 and re-release.",
+    "repo": "All-Hands-AI/openhands-resolver",
+    "base_commit": "63dd2c9c905a375db53785c0a69e56951a279189",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ApptuitAI__apptuit-py-10",
+    "image": "swerebench/sweb.eval.x86_64.apptuitai_1776_apptuit-py-10",
+    "docker_image": "swerebench/sweb.eval.x86_64.apptuitai_1776_apptuit-py-10",
+    "problem_statement": "DataPoint should validate parameters\nRight now DataPoint does not validate if the \"value\" parameter is int/long or float. Eventual API call fails if the value is a string (even representation of int/float). \r\n\r\nDataPoint should perform client side validation of all input parameters (metricname, tags, values) without waiting for an error from the server.\r\n\r\nAs a bonus, if the value is a string representation of int/float, we could coerce it into a number instead of erroring out.",
+    "repo": "ApptuitAI/apptuit-py",
+    "base_commit": "65d256693243562917c4dfd0e8a753781b153b36",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ApptuitAI__apptuit-py-21",
+    "image": "swerebench/sweb.eval.x86_64.apptuitai_1776_apptuit-py-21",
+    "docker_image": "swerebench/sweb.eval.x86_64.apptuitai_1776_apptuit-py-21",
+    "problem_statement": "Global tags should not over-ride tags from the datapoint\nIf the same tag key-value pair is on the datapoint and in global tags of the reporter, current implementation prefers the global tag:\r\nhttps://github.com/ApptuitAI/apptuit-py/blob/9872766e4838fced1a580f4da3b44acf5fd3ea81/apptuit/pyformance/apptuit_reporter.py#L62\r\n\r\n\r\nWe should prefer the tag key-value of the data point over the global values",
+    "repo": "ApptuitAI/apptuit-py",
+    "base_commit": "2b12a363e0db4a39fc2fa786e064429df26884be",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "ArkEcosystem__python-crypto-116",
+    "image": "swerebench/sweb.eval.x86_64.arkecosystem_1776_python-crypto-116",
+    "docker_image": "swerebench/sweb.eval.x86_64.arkecosystem_1776_python-crypto-116",
+    "problem_statement": "feat: add amount to HTLC Lock constructor\nA HTLC lock transaction requires an amount, but the current constructor does not allow for passing an amount.",
+    "repo": "ArkEcosystem/python-crypto",
+    "base_commit": "1bd016f76b41eba9711be748c1caf20d8042f590",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "AspenWeb__pando.py-586",
+    "image": "swerebench/sweb.eval.x86_64.aspenweb_1776_pando.py-586",
+    "docker_image": "swerebench/sweb.eval.x86_64.aspenweb_1776_pando.py-586",
+    "problem_statement": "Requests for static files should return a 405 if method is unsafe\nReticketing from <https://github.com/AspenWeb/aspen.py/issues/50>.\r\n\r\nAny request for a static file with a method other than `GET` or `HEAD` should be rejected with a 405.",
+    "repo": "AspenWeb/pando.py",
+    "base_commit": "0e0bc40453df28bae014461822fa25daf8263ff8",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "AzureAD__azure-activedirectory-library-for-python-227",
+    "image": "swerebench/sweb.eval.x86_64.azuread_1776_azure-activedirectory-library-for-python-227",
+    "docker_image": "swerebench/sweb.eval.x86_64.azuread_1776_azure-activedirectory-library-for-python-227",
+    "problem_statement": "Replace \"login.windows.net\" with \"login.microsoftonline.com\" in the authority host list\nIn here: https://github.com/AzureAD/azure-activedirectory-library-for-python/blob/2a1c7ffabda0d79548533434db0cc9bbae6eefcf/adal/constants.py#L211\r\n\r\nADAL is still defaulting to \"login.windows.net\".\r\n\r\nMSAL has removed this endpoint long time ago, and is using \"login.microsoftonline.com\" as a default instead: https://github.com/AzureAD/microsoft-authentication-library-for-python/blob/6bade9faf7c832a47b13c8ac3eeba75f4084190f/msal/authority.py#L13\r\n\r\nCan we replace \"login.windows.net\" with \"login.microsoftonline.com\" in ADAL to be consistent with MSAL as well?\r\n\r\n",
+    "repo": "AzureAD/azure-activedirectory-library-for-python",
+    "base_commit": "b65cdce996c3e275bf82f1563638150c7ac97034",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "AzureAD__microsoft-authentication-library-for-python-186",
+    "image": "swerebench/sweb.eval.x86_64.azuread_1776_microsoft-authentication-library-for-python-186",
+    "docker_image": "swerebench/sweb.eval.x86_64.azuread_1776_microsoft-authentication-library-for-python-186",
+    "problem_statement": "Refresh token errors are discarded\n`acquire_token_silent_with_error` appears to be intended to return the last error response received from AAD, and the documentation implies it does so, but there are cases in which it does not.\r\n\r\nFor example, if AAD rejects a refresh token, its error response is discarded (`at` is the response):\r\nhttps://github.com/AzureAD/microsoft-authentication-library-for-python/blob/5c1f0f4ad18a61587393c290b1094b5f8fd014d4/msal/application.py#L601-L609\r\n\r\nWhen AAD rejected the token, that token was evicted from the cache:\r\nhttps://github.com/AzureAD/microsoft-authentication-library-for-python/blob/5c1f0f4ad18a61587393c290b1094b5f8fd014d4/msal/oauth2cli/oauth2.py#L449-L450\r\n\r\nSubsequent calls to `_acquire_token_silent_by_finding_specific_refresh_token` may now return `None` because no refresh token remains in the cache. In such a case, `acquire_token_silent_with_error` returns `None`.\r\n\r\nThis behavior arguably makes sense because the difference between \"no refresh token in the cache\" and \"only invalid refresh tokens in the cache\" may not be interesting. But the documentation on `acquire_token_silent_with_error` implies it will distinguish these cases, so I describe the inconsistency here for comment and clarification.",
+    "repo": "AzureAD/microsoft-authentication-library-for-python",
+    "base_commit": "c235d4e9dea9e4954cf0699bd46bb57ddce959be",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "AzureAD__microsoft-authentication-library-for-python-280",
+    "image": "swerebench/sweb.eval.x86_64.azuread_1776_microsoft-authentication-library-for-python-280",
+    "docker_image": "swerebench/sweb.eval.x86_64.azuread_1776_microsoft-authentication-library-for-python-280",
+    "problem_statement": "[Bug] Token cache incompatibility with MSAL.python\n**Which Version of MSAL are you using ?**\r\n4.21\r\n\r\nDetails in this PowerShell issue: \r\nhttps://github.com/Azure/azure-powershell/issues/13467\r\n\r\n## Repro\r\n\r\nStart with PWSH, then use Az CLI, the go back to PWSH. For example:\r\n\r\n0. Use Windows (probably the same on Mac and Linux, but repro steps are on Win)\r\n1. Delete the token cache file (C:\\Users\\<user>\\AppData\\Local\\.IdentityService\\msal.cache)\r\n2. `connect-azaccount` (this is a PWSH command, so **MSAL.NET**)\r\n3. `get-azsubscription` (again PWSH command, so **MSAL.NET**)\r\n4. `az group list` (az cli command, so **MSAL.PY**)\r\n5. disconnect-azaccount (PWSH comand, so **MSAL.NET**)\r\n\r\n**Actual**: serialization exception from MSAL.NET\r\n\r\n\r\n## Investigation\r\n\r\nI have snapshots of the cache after step2, step3 and step4 and can provide them on request (will send them via email to you @rayluo ). \r\n\r\nAt step 3, the refresh token section looks like this: \r\n\r\n```json\r\n \"RefreshToken\": {\r\n        \"6eeda3a1-c3b9-4e92-a94d-965a50c06de7.72f988bf-86f1-41af-91ab-2d7cd011db47-login.windows.net-refreshtoken-1--\": {\r\n            \"home_account_id\": \"6eeda3a1-c3b9-4e92-a94d-965a50c06de7.72f988bf-86f1-41af-91ab-2d7cd011db47\",\r\n            \"environment\": \"login.windows.net\",\r\n            \"client_info\": \"eyJ1aWQiOiI2ZWVkYTNhMS1jM2I5LTRlOTItYTk0ZC05NjVhNTBjMDZkZTciLCJ1dGlkIjoiNzJmOTg4YmYtODZmMS00MWFmLTkxYWItMmQ3Y2QwMTFkYjQ3In0\",\r\n            \"client_id\": \"1950a258-227b-4e31-a9cf-717495945fc2\",\r\n            \"secret\": \"secret\",\r\n            \"credential_type\": \"RefreshToken\",\r\n            \"family_id\": \"1\"\r\n        }\r\n    },\r\n```\r\n\r\nAt step4, it looks like this: \r\n\r\n```json\r\n\"RefreshToken\": {\r\n        \"6eeda3a1-c3b9-4e92-a94d-965a50c06de7.72f988bf-86f1-41af-91ab-2d7cd011db47-login.windows.net-refreshtoken-1--\": {\r\n            \"home_account_id\": \"6eeda3a1-c3b9-4e92-a94d-965a50c06de7.72f988bf-86f1-41af-91ab-2d7cd011db47\",\r\n            \"environment\": \"login.windows.net\",\r\n            \"client_info\": \"eyJ1aWQiOiI2ZWVkYTNhMS1jM2I5LTRlOTItYTk0ZC05NjVhNTBjMDZkZTciLCJ1dGlkIjoiNzJmOTg4YmYtODZmMS00MWFmLTkxYWItMmQ3Y2QwMTFkYjQ3In0\",\r\n            \"client_id\": \"1950a258-227b-4e31-a9cf-717495945fc2\",\r\n            \"secret\": \"secret\",\r\n            \"credential_type\": \"RefreshToken\",\r\n            \"family_id\": \"1\"\r\n        },\r\n        \"6eeda3a1-c3b9-4e92-a94d-965a50c06de7.72f988bf-86f1-41af-91ab-2d7cd011db47-login.windows.net-refreshtoken-1950a258-227b-4e31-a9cf-717495945fc2--\": {\r\n            \"secret\": \"secret\"\r\n        }\r\n    },\r\n```\r\n\r\nThe second entry here in step 4 is invalid. \r\n\r\nCC: @erich-wang ",
+    "repo": "AzureAD/microsoft-authentication-library-for-python",
+    "base_commit": "dfbbc66730a1f14cf8c27cb3562ecf9bd611a1a9",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "AzureAD__microsoft-authentication-library-for-python-315",
+    "image": "swerebench/sweb.eval.x86_64.azuread_1776_microsoft-authentication-library-for-python-315",
+    "docker_image": "swerebench/sweb.eval.x86_64.azuread_1776_microsoft-authentication-library-for-python-315",
+    "problem_statement": "MSAL shouldn't remove Refresh Token upon receiving invalid_grant\n**Describe the bug**\r\nMSAL shouldn't remove Refresh Token upon receiving `invalid_grant`.\r\n\r\n**To Reproduce**\r\nWhen \r\n\r\n1. ARM (`https://management.azure.com/.default`) doesn't require MFA\r\n2. VM SSH (`https://pas.windows.net/CheckMyAccess/Linux/.default`) requires MFA\r\n\r\nThis script will cause the RT of ARM to be removed, making subsequence ARM requests fail:\r\n\r\n```py\r\nimport msal\r\n\r\napp = msal.PublicClientApplication(\"04b07795-8ddb-461a-bbee-02f9e1bf7b46\",\r\n                                   authority=\"https://login.microsoftonline.com/organizations\")\r\nresult = app.acquire_token_interactive([\"https://management.azure.com/.default\"])\r\nprint(app.token_cache._cache['RefreshToken'])\r\n\r\naccount = app.get_accounts(result['id_token_claims']['preferred_username'])[0]\r\nresult = app.acquire_token_silent_with_error(['https://pas.windows.net/CheckMyAccess/Linux/.default'], account)\r\nprint(result)\r\nprint(app.token_cache._cache['RefreshToken'])\r\n```\r\n\r\n**Expected behavior**\r\nThe refresh token should be persisted so that ARM request can still work.\r\n\r\n**What you see instead**\r\nOutput (prettified):\r\n\r\n```json\r\n{\r\n    \"92bebeb6-c875-4f40-b2d2-f6324929f04a.54826b22-38d6-4fb2-bad9-b7b93a3e9c5a-login.microsoftonline.com-refreshtoken-04b07795-8ddb-461a-bbee-02f9e1bf7b46--https://management.azure.com/user_impersonation https://management.azure.com/.default\": {\r\n        \"credential_type\": \"RefreshToken\",\r\n        \"secret\": \"...\",\r\n        \"home_account_id\": \"92bebeb6-c875-4f40-b2d2-f6324929f04a.54826b22-38d6-4fb2-bad9-b7b93a3e9c5a\",\r\n        \"environment\": \"login.microsoftonline.com\",\r\n        \"client_id\": \"04b07795-8ddb-461a-bbee-02f9e1bf7b46\",\r\n        \"target\": \"https://management.azure.com/user_impersonation https://management.azure.com/.default\",\r\n        \"family_id\": \"1\"\r\n    }\r\n}\r\n\r\n{\r\n    \"error\": \"invalid_grant\",\r\n    \"error_description\": \"AADSTS50076: Due to a configuration change made by your administrator, or because you moved to a new location, you must use multi-factor authentication to access 'ce6ff14a-7fdc-4685-bbe0-f6afdfcfa8e0'.\\r\\nTrace ID: 3ddb15bc-d1d1-4d67-9b9f-77c0beb99000\\r\\nCorrelation ID: d8e4d35b-419e-4b25-8152-c833f497c38e\\r\\nTimestamp: 2021-03-01 11:21:13Z\",\r\n    \"error_codes\": [\r\n        50076\r\n    ],\r\n    \"timestamp\": \"2021-03-01 11:21:13Z\",\r\n    \"trace_id\": \"3ddb15bc-d1d1-4d67-9b9f-77c0beb99000\",\r\n    \"correlation_id\": \"d8e4d35b-419e-4b25-8152-c833f497c38e\",\r\n    \"error_uri\": \"https://login.microsoftonline.com/error?code=50076\",\r\n    \"suberror\": \"basic_action\",\r\n    \"classification\": \"basic_action\"\r\n}\r\n\r\n{}\r\n```\r\n\r\n**The MSAL Python version you are using**\r\n1.9.0\r\n\r\n**Additional context**\r\n`invalid_grant` in this case only means the RT is invalid for acquiring an AT for VM SSH, but doesn't necessarily mean it can't be used to acquire an AT for ARM.\r\n\r\nUse Conditional Access to configure MFA requirement for VM SSH:\r\n\r\n![image](https://user-images.githubusercontent.com/4003950/109492421-f1def980-7ac5-11eb-942f-0a5eaaf05f42.png)\r\n\r\n![image](https://user-images.githubusercontent.com/4003950/109492054-56e61f80-7ac5-11eb-886c-82aed88c65a0.png)\r\n",
+    "repo": "AzureAD/microsoft-authentication-library-for-python",
+    "base_commit": "78e9ccfab7c16154ba38c0de78c495ba2ee58849",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "AzureAD__microsoft-authentication-library-for-python-530",
+    "image": "swerebench/sweb.eval.x86_64.azuread_1776_microsoft-authentication-library-for-python-530",
+    "docker_image": "swerebench/sweb.eval.x86_64.azuread_1776_microsoft-authentication-library-for-python-530",
+    "problem_statement": "Cannot put client id into scopes, therefore cannot get access_token for Azure B2C\nAccording to [Azure B2C documentation](https://learn.microsoft.com/en-us/azure/active-directory-b2c/access-tokens#openid-connect-scopes), to get an access_token, client id must be added to scopes, i.e. `scopes=['openid', 'offline_access', '<CLIENT_ID>']`.\r\n> The OpenID Connect standard specifies several special scope values. The following scopes represent the permission to access the user's profile:\r\n> * openid - Requests an ID token.\r\n> * offline_access - Requests a refresh token using [Auth Code flows](https://learn.microsoft.com/en-us/azure/active-directory-b2c/authorization-code-flow).\r\n> * 00000000-0000-0000-0000-000000000000 - Using the client ID as the scope indicates that your app needs an access token that can be used against your own service or web API, represented by the same client ID.\r\n\r\nHowever, `_decorate_scope` will replace client id with `['openid', 'profile', 'offline_access']`, which does not generate access_token.\r\n\r\nhttps://github.com/AzureAD/microsoft-authentication-library-for-python/blob/545e856124985da4758530ab811d2c137fa8e333/msal/application.py#L591",
+    "repo": "AzureAD/microsoft-authentication-library-for-python",
+    "base_commit": "48954fcbc16272566cbedbaf48ffbae4acf7d5db",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "AzureAD__microsoft-authentication-library-for-python-723",
+    "image": "swerebench/sweb.eval.x86_64.azuread_1776_microsoft-authentication-library-for-python-723",
+    "docker_image": "swerebench/sweb.eval.x86_64.azuread_1776_microsoft-authentication-library-for-python-723",
+    "problem_statement": "[Feature Request] Expose `refresh_on` when retrieving token from cache\n### MSAL client type\n\nPublic, Confidential\n\n### Problem Statement\n\nSimilar to https://github.com/AzureAD/microsoft-authentication-library-for-java/issues/822, in our Azure SDKs for Python, one of the primary pipeline policies our SDK clients use is the [`BearerTokenCredentialPolicy`](https://github.com/Azure/azure-sdk-for-python/blob/main/sdk/core/azure-core/azure/core/pipeline/policies/_authentication.py#L80). This policy will save a token it retrieves using the passed-in credential and will keep  reusing that token until it's close to expiration. We recently added the ability for the policy to request a token sooner if a `refresh_on` value is set and has elapsed. We'd like to be able to set it if this value is available.\r\n\r\n**Request**: Expose `refresh_on` where possible. \r\n\r\n****\n\n### Proposed solution\n\n_No response_",
+    "repo": "AzureAD/microsoft-authentication-library-for-python",
+    "base_commit": "57dce47ae3495e546a0913c961c149734566da3a",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "AzureAD__microsoft-authentication-library-for-python-730",
+    "image": "swerebench/sweb.eval.x86_64.azuread_1776_microsoft-authentication-library-for-python-730",
+    "docker_image": "swerebench/sweb.eval.x86_64.azuread_1776_microsoft-authentication-library-for-python-730",
+    "problem_statement": "[Engineering task] Implement Claims API to Bypass Cache When Claims are Present in MSAL with Managed Identity\n### MSAL client type\r\n\r\nConfidential\r\n\r\n### Problem Statement\r\n\r\n**Task type**\r\nDevelopment\r\n\r\n**Description**\r\nCurrently, MSAL with Managed Identity does not expose any API claims API. With CAE (Continuous Access Evaluation) being enabled by default, we need to implement a mechanism to bypass the cache if claims are detected in the token request.\r\n\r\n**Steps to Reproduce:**\r\n- Enable CAE by default in MSAL with Managed Identity.\r\n- Make a token request with claims present.\r\n\r\nObserve that the cache is not bypassed, leading to potential stale token usage.\r\n\r\n**Expected Behavior:**\r\nWhen claims are present in the token request, the cache should be bypassed to ensure that the latest token is used, in line with CAE requirements.\r\n\r\n### Proposed solution\r\n\r\n- Expose the claims API in MSAL for MI\r\n- Expose Claims to MI Assertion Provider for FIC\r\n- By-pass cache when claims are present\r\n\r\nnote : msi v1 endpoint is unchanged so there is no need to pass any claims to the endpoint itself, this feature is done so MSAL will bypass the cache. \r\n",
+    "repo": "AzureAD/microsoft-authentication-library-for-python",
+    "base_commit": "fe8f7583a539f9a5c232df31c916368bc12057f7",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "AzureAD__microsoft-authentication-library-for-python-77",
+    "image": "swerebench/sweb.eval.x86_64.azuread_1776_microsoft-authentication-library-for-python-77",
+    "docker_image": "swerebench/sweb.eval.x86_64.azuread_1776_microsoft-authentication-library-for-python-77",
+    "problem_statement": "ADFS 2019 Compatability\n* See the task scope in [this MSAL .Net PR](https://github.com/AzureAD/microsoft-authentication-library-for-dotnet/pull/834). It seems touch almost every flow: Device Code, Username Password, Interactive flow (i.e. auth code flow), and Confidential Client.\r\n* This doc [OAuth2 in ADFS](https://docs.microsoft.com/en-us/windows-server/identity/ad-fs/overview/whats-new-active-directory-federation-services-windows-server) mentions some flows.\r\n\r\nWe will first get a hold of a test environment, and then test each flow and see how it works (or doesn't). And go from there.",
+    "repo": "AzureAD/microsoft-authentication-library-for-python",
+    "base_commit": "f4a0ba0b05d32d50bed3c2c8dbc188c7a4e5039f",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "AzureAD__microsoft-authentication-library-for-python-795",
+    "image": "swerebench/sweb.eval.x86_64.azuread_1776_microsoft-authentication-library-for-python-795",
+    "docker_image": "swerebench/sweb.eval.x86_64.azuread_1776_microsoft-authentication-library-for-python-795",
+    "problem_statement": "[Bug] Msal does not honor environment variable `AZURE_POD_IDENTITY_AUTHORITY_HOST` in IMDS\nWe used to honor environment variable `AZURE_POD_IDENTITY_AUTHORITY_HOST` in IMDS\n\nhttps://github.com/Azure/azure-sdk-for-python/blob/main/sdk/identity/azure-identity/azure/identity/_credentials/imds.py#L36\n\nSeems like MSAL changed the behavior which is a regression.",
+    "repo": "AzureAD/microsoft-authentication-library-for-python",
+    "base_commit": "fb3e21cf501587dccb71676a3d06f9ea24476102",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__autorest.python-475",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_autorest.python-475",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_autorest.python-475",
+    "problem_statement": "argument order syntax error \n\r\nUsing\r\n\r\n>  AutoRest code generation utility [cli version: 3.0.6187; node: v10.13.0, max-memory: 8192 gb]\r\n\r\nWith: Autorest for Python v5.0.0 - 20200228.1\r\n\r\nAnd Swagger:\r\n\r\nhttps://raw.githubusercontent.com/Azure/azure-rest-api-specs/master/specification/search/data-plane/Microsoft.Azure.Search.Data/stable/2019-05-06/searchindex.json\r\n\r\ngenerates this output:\r\n\r\n```\r\ndef __init__(\r\n        self,\r\n        search_service_name,  # type: str\r\n        search_dns_suffix=\"search.windows.net\",  # type: str\r\n        index_name,  # type: str\r\n        **kwargs  # type: Any\r\n    ):\r\n```\r\nWhich is\r\n\r\n> SyntaxError: non-default argument follows default argument",
+    "repo": "Azure/autorest.python",
+    "base_commit": "4793bd7b9ddc25a241cd54538b4c5750f915b3d2",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__autorest.python-545",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_autorest.python-545",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_autorest.python-545",
+    "problem_statement": "default value followed by non default value in operation signature\nif you change cost management service swagger like this\r\n<img width=\"770\" alt=\"Screen Shot 2020-04-03 at 10 40 18 AM\" src=\"https://user-images.githubusercontent.com/43154838/78372652-8760c900-7597-11ea-957f-8abf14e4582c.png\">\r\ncode gen generates:\r\n<img width=\"985\" alt=\"Screen Shot 2020-04-03 at 10 40 52 AM\" src=\"https://user-images.githubusercontent.com/43154838/78372709-9ba4c600-7597-11ea-9639-6828f881c775.png\">\r\n",
+    "repo": "Azure/autorest.python",
+    "base_commit": "3322ab3a1c793c8fdaf2dc7d391c3c1e2eca2852",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__azure-cli-1876",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-1876",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-1876",
+    "problem_statement": "\"@file support\": should handle the BOM on file loading\nOtherwise, using `@<parameter-file>` will return an invalid json string for the command to use. Since json file is the main file type, so the core layer should handle it.\r\nCLI already have [the logic](https://github.com/Azure/azure-cli/blob/master/src/azure-cli-core/azure/cli/core/_util.py#L91) to handle BOM, so we just need to incorporate the same mechanism to [here](https://github.com/Azure/azure-cli/blob/master/src/azure-cli-core/azure/cli/core/application.py#L244) \r\n",
+    "repo": "Azure/azure-cli",
+    "base_commit": "62dab24154f910ff7f3ef2b6b3783945b58e9098",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__azure-cli-2053",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-2053",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-2053",
+    "problem_statement": "VM Access: command renaming\nThis is polishing like change regarding 4 existing commands under `vm access`, including `delete-linux-user`, `reset-linux-ssh`, `reset-windows-admin`, `set-linux-user`. The naming oddness reflects the service function difference between windows and linux vm, particularly on windows vm, you will not be able to add/rename/delete users, even though the API invoke always succeeds but nothing really happens at vm side\r\nThe change details are:\r\n1. Rename category `vm access` to `vm user`\r\n2. Collapse into 3 commands\r\n    `delete`: delete a user from linux vm\r\n    `update`: for windows vm, you can only update the admin password, for linux vm, you can add, or change both username and password, also you can upload public ssh key\r\n    `reset-ssh`: reset linux vm’s SSH configurations\r\n\r\n",
+    "repo": "Azure/azure-cli",
+    "base_commit": "27816f4891c85592ad6f06bcc94008fa7d144b69",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__azure-cli-2214",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-2214",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-2214",
+    "problem_statement": "[DNS] Deleting a record requires a confirmation prompt\nDeleting a record set is a potentially catastrophic operation.\r\n\r\nFor this reason, in the Portal, PowerShell, and CLI1.0, the operation has a confirmation prompt.\r\n\r\nWe need to add a similar confirmation prompt in CLI2.0. This applies to both `az network dns record-set <type> delete` and `az network dns record-set <type> remove-record`.\r\n\r\nThe prompt should be suppressible for scripting purposes (e.g. via `--yes -y` same as `az network dns zone delete`)",
+    "repo": "Azure/azure-cli",
+    "base_commit": "01bbaf048c7669c024ece5e84c9360d829624574",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__azure-cli-2467",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-2467",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-2467",
+    "problem_statement": "az vmss get-instance-view returns model view when specifying all VMs\nIf you run the following to get the instance view for all VMs in a scale set:\r\n```\r\naz vmss get-instance-view -g rgname -n vmssname --instance-id \\*\r\n```\r\nCLI does:\r\n```\r\nrequests.packages.urllib3.connectionpool : https://management.azure.com:443 \"GET /subscriptions/<subid>/resourceGroups/rgname/providers/Microsoft.Compute/virtualMachineScaleSets/vmssname/virtualMachines?api-version=2016-04-30-preview”\r\n```\r\nwhich returns the model view for all VMs.\r\n\r\nIt should be doing:\r\n```\r\nrequests.packages.urllib3.connectionpool : https://management.azure.com:443 \"GET /subscriptions/<subid>/resourceGroups/rgname/providers/Microsoft.Compute/virtualMachineScaleSets/vmssname/virtualMachines?$expand=instanceView&$select=instanceView&api-version=2016-04-30-preview”\r\n```\r\nThe instance-view command works fine if you just query one VM.\r\n",
+    "repo": "Azure/azure-cli",
+    "base_commit": "d79710730933432d2c8ccd722d31fbbf75845ce0",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__azure-cli-2844",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-2844",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-2844",
+    "problem_statement": "traffic-manager command failed to update endpoint\n### Environment summary\r\n\r\n**Install Method:** How did you install the CLI? (e.g. pip, interactive script, apt-get, Docker, MSI, nightly)  \r\napt-get\r\n\r\n**CLI Version:** What version of the CLI and modules are installed? (Use `az --version`)  \r\nazure-cli (2.0.0)\r\nnetwork (2.0.0)\r\n\r\n**OS Version:** What OS and version are you using?  \r\nWindows 10\r\n\r\n**Shell Type:** What shell are you using? (e.g. bash, cmd.exe, Bash on Windows)  \r\nBash on Windows\r\n\r\n---\r\n\r\n### Description\r\nCannot update endpoint settings. '--type' parameter seems to be used setting resource rul as below\r\n```\r\n$ az network traffic-manager endpoint update -g DEMO-FTAPP --profile-name ilkimftapptm --name endpoint1 --priority 3 --type \"Microsoft.Network/trafficManagerProfiles/azureEndpoints\"\r\nOperation failed with status: 'Bad Request'. Details: 400 Client Error: Bad Request for url: https://management.azure.com/subscriptions/<subs>/resourceGroups/DEMO-FTAPP/providers/Microsoft.Network/trafficmanagerprofiles/ilkimftapptm/Microsoft.Network%2FtrafficManagerProfiles%2FazureEndpoints/endpoint1?api-version=2015-11-01\r\n```\r\n\r\nurl should be:\r\n\r\n```\r\nhttps://management.azure.com/subscriptions/<subs>/resourceGroups/DEMO-FTAPP/providers/Microsoft.Network/trafficmanagerprofiles/ilkimftapptm/azureEndpoints/endpoint1?api-version=2015-11-01\r\n```\r\n\r\nI tried below command and it didn't work too!\r\n\r\n```\r\n$ az network traffic-manager endpoint update -g DEMO-FTAPP --profile-name ilkimftapptm --name endpoint1 --priority 3 --type \"azureEndpoints\"\r\nThe value 'azureEndpoints' provided for field 'type' is invalid. Expected value is 'Microsoft.Network/trafficManagerProfiles/azureendpoints'.\r\n```\r\n",
+    "repo": "Azure/azure-cli",
+    "base_commit": "a8395ea70322dbf535d474d52ebf3d625a6cbdf0",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__azure-cli-2955",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-2955",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-2955",
+    "problem_statement": "RBAC: support AD group commands\n1. Author commands under `az ad group`, to be in parity with xplat's\r\n2. On `group list`, add `--display-name` filtering\r\n3. support group name when resolve `--assignee' on role creation",
+    "repo": "Azure/azure-cli",
+    "base_commit": "3079f47653297161fd877f994cfaa0bc202f039f",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__azure-cli-3354",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-3354",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-3354",
+    "problem_statement": "az vm open-port returns error but executes successfully\n### Description\r\naz vm open-port returns an error but executes successfully\r\n\r\nExample:\r\nPS C:\\Users\\larry> az vm open-port -g JUMPBOXRG -n jumpbox --port 80  --priority 500\r\nOperation failed with status: 'Not Found'. Details: 404 Client Error: Not Found for url: https://management.azure.com/subscriptions/5ba80c27-8c76-[***]/providers/Microsoft.Network/locations/eastus/operations/5c5fa1c7-3e4a-4dd3-[***]?api-version=2017-03-01\r\n\r\nError occurs on Windows & Linux\r\n---\r\n\r\n### Environment summary\r\n\r\n**Install Method:** How did you install the CLI? (e.g. pip, interactive script, apt-get, Docker, MSI, nightly)  \r\nWindows:  pip.  Linux: apt-get\r\n\r\n**CLI Version:** What version of the CLI and modules are installed? (Use `az --version`)  \r\n2.0.6\r\n\r\n**OS Version:** What OS and version are you using?  \r\nWindows 10, Ubuntu 17.04\r\n\r\n**Shell Type:** What shell are you using? (e.g. bash, cmd.exe, Bash on Windows)  \r\nPowershell, Bash\r\n",
+    "repo": "Azure/azure-cli",
+    "base_commit": "4417fb03c91b0caa5f88a72ca0372d5931c072d9",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__azure-cli-3643",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-3643",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-3643",
+    "problem_statement": "The error message for too short/long password for VM is spelled incorrectly (pssword)\nWe even have a test that verifies that it is incorrectly spelled :)\r\n",
+    "repo": "Azure/azure-cli",
+    "base_commit": "c024331912bbf467725d76d437557ebc6e4aba17",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__azure-cli-3743",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-3743",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-3743",
+    "problem_statement": "Parameters file values not being read during deployment create\n### Description\r\nWhen using `az group deployment create` with the newest version of the Azure CLI it no longer respects the `--parameters @<file>` contents and prompts me to type out each value in the command line. \r\n\r\nTested same template/parameters JSON files on another machine with an older version of Azure CLI without issue.\r\n\r\n---\r\n\r\n### Environment summary\r\n\r\n**Install Method:** How did you install the CLI? (e.g. pip, interactive script, apt-get, Docker, MSI, nightly)  \r\nAnswer here: Linux install using curl -L <url> | bash\r\n\r\n**CLI Version:** What version of the CLI and modules are installed? (Use `az --version`)  \r\nAnswer here:\r\n\r\nazure-cli (2.0.8)\r\n\r\nacr (2.0.6)\r\nacs (2.0.8)\r\nappservice (0.1.8)\r\nbatch (3.0.1)\r\nbilling (0.1.1)\r\ncdn (0.0.4)\r\ncloud (2.0.4)\r\ncognitiveservices (0.1.4)\r\ncommand-modules-nspkg (2.0.0)\r\ncomponent (2.0.5)\r\nconfigure (2.0.8)\r\nconsumption (0.1.1)\r\ncore (2.0.9)\r\ncosmosdb (0.1.8)\r\ndla (0.0.8)\r\ndls (0.0.8)\r\nfeedback (2.0.4)\r\nfind (0.2.4)\r\ninteractive (0.3.4)\r\niot (0.1.7)\r\nkeyvault (2.0.6)\r\nlab (0.0.6)\r\nmonitor (0.0.6)\r\nnetwork (2.0.8)\r\nnspkg (3.0.0)\r\nprofile (2.0.6)\r\nrdbms (0.0.3)\r\nredis (0.2.5)\r\nresource (2.0.8)\r\nrole (2.0.6)\r\nsf (1.0.3)\r\nsql (2.0.5)\r\nstorage (2.0.8)\r\nvm (2.0.8)\r\n\r\nPython (Linux) 2.7.5 (default, Feb 10 2017, 17:36:50)\r\n[GCC 4.9.2 20141101 (Red Hat 4.9.2-1)]\r\n\r\nPython location '/home/jayden/lib/azure-cli/bin/python'\r\n\r\n**OS Version:** What OS and version are you using?  \r\nAnswer here: Modified Fedora 18\r\n\r\n**Shell Type:** What shell are you using? (e.g. bash, cmd.exe, Bash on Windows)  \r\nAnswer here: bash\r\n\r\n",
+    "repo": "Azure/azure-cli",
+    "base_commit": "e80e204a01bf4f32c17d8f89a955c3dd49eaa7ec",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__azure-cli-4265",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-4265",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_azure-cli-4265",
+    "problem_statement": "vm/vmss create: don't throw when tries to retrieve image to extract the plan information\nThe context is some images are still being staged and not yet published, hence image API won't go through. Instead of fail (therefore block the create), the suggested change is to warn. I am fine with it, as using market place image with plan is a minority scenario.\r\nThe code to wrap inside a try-catch is [here](https://github.com/Azure/azure-cli/blob/master/src/command_modules/azure-cli-vm/azure/cli/command_modules/vm/_validators.py#L160-L185) ",
+    "repo": "Azure/azure-cli",
+    "base_commit": "85c0e4c8fb21e26a4984cad3b21a5e22a6a8b92b",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__azure-functions-durable-python-494",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_azure-functions-durable-python-494",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_azure-functions-durable-python-494",
+    "problem_statement": "`call_http` json serializes regular `str` content.\n<!-- \r\nPlease read.\r\n\r\nBefore posting, please be sure to review whether your issue matches the description of a known regression by using [this](https://github.com/Azure/azure-functions-durable-python/issues?q=is%3Aissue+is%3Aopen+label%3Aknown-regression) query.\r\n\r\nIf your issue corresponds to a known regression, please try the suggested workarounds listed in the issue before filing an issue. Thanks!\r\n-->\r\n🐛 **Describe the bug**\r\nThe `call_http` method of `DurableOrchestrationContext` json serializes regular `str` content.\r\n\r\n🤔 **Expected behavior**\r\nIt should NOT json serialize regular `str` content, as the code suggests\r\n\r\n☕ **Steps to reproduce**\r\n> What Durable Functions patterns are you using, if any?\r\n\r\nN/A\r\n\r\n> Any minimal reproducer we can use?\r\n\r\nSee: https://github.com/Azure/azure-functions-durable-python/blob/dev/azure/durable_functions/models/DurableOrchestrationContext.py#L239\r\n\r\nThe interesting block looks like:\r\n```python\r\n def call_http(self, method: str, uri: str, content: Optional[str] = None,\r\n...\r\n        if content and content is not isinstance(content, str):\r\n            json_content = json.dumps(content)\r\n        else:\r\n            json_content = content\r\n```\r\nand this does not seem to be quite right. If `content = \"foo\"` the conditions after the `if` will evaluate as follows:\r\n```\r\ncontent and (content (is not) isinstance(content, str))     # \"is not\" binds stronger than \"and\"\r\nTruthy (and \"foo\" (is not) True )\r\nTrue and (\"foo\" (is not) True)\r\nTrue and True\r\nTrue\r\n```\r\nI guess what you wanted was: \r\n```python\r\n        if content and not isinstance(content, str):\r\n            json_content = json.dumps(content)\r\n        else:\r\n            json_content = content\r\n```\r\nBut if `content = []` this will result in `json_content = []` (in oposition to `json_content = \"[]\"`), not sure if you would want that (at least I wouldnt). You might want to use something like this, instead:\r\n```python\r\n        if not isinstance(content, str):\r\n            try:\r\n                json_content = json.dumps(content)\r\n            except TypeError:\r\n                json_content = content\r\n```\r\nSince `None` and `[]` might be desirable to put in content and are all json serializable (as `null` and `[]` resp.).\r\n> Are you running this locally or on Azure? \r\n\r\nBoth\r\n\r\n⚡**If deployed to Azure**\r\n> We have access to a lot of telemetry that can help with investigations. Please provide as much of the following information as you can to help us investigate!\r\n\r\nN/A\r\n\r\n> DF Version\r\n\r\nv1.2.8\r\n\r\n",
+    "repo": "Azure/azure-functions-durable-python",
+    "base_commit": "354ace05d704ae63f9a6488bd6a228adb949e2b2",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__iotedgedev-173",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_iotedgedev-173",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_iotedgedev-173",
+    "problem_statement": "AZ IOT HUB apply-configuration needs hubname.\nIf user has old version of az cli iot extension installed they get this: \r\n\r\n`az iot hub apply-configuration: error: argument --hub-name/-n is required\r\n`\r\n\r\n- add the -n parameter to the apply-configuration call.  you can get it in IOTHUB_CONNECTION_INFO.HostName\r\n\r\napply-configuration might need ONLY hubname, but HostName has [name].azuredevices.net.\r\n\r\nTherefore, You might have to split the ConnectionString.HostName property and add a new property to that class called HubName.\r\n",
+    "repo": "Azure/iotedgedev",
+    "base_commit": "ce59bad1286bf650d442b2b7fbe16a3db676a497",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__iotedgedev-349",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_iotedgedev-349",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_iotedgedev-349",
+    "problem_statement": "Failed to push to local registry\n- iotedgedev Version: 1.0.0rc0\r\n- Python Version: Python2.7 Python3.6 Python3.7\r\n- Pip Version:18.1\r\n- Development machine OS Version: Windows10/Ubuntu18.04/Mac os high sierra 10.13.6\r\n- IoT Edge device OS Version: Windows10/Ubuntu18.04/Mac os high sierra 10.13.6\r\n\r\nSteps to Reproduce:\r\n1. iotedgedev new test_solution -m filtermodule -t csharp\r\n2. In .env file, update the CONTAINER_REGISTRY_SERVER with “localhost:5001”\r\n3. Make sure there is no local docker registry in your machine (docker rm -f registry)\r\n4. Run \"iotedgedev push\"\r\n5. It will throw below error message 1\r\n6. In .env file, update the CONTAINER_REGISTRY_SERVER with “localhost:5000”\r\n7. Run \"iotedgedev push\"\r\n8. It will throw below error message 2\r\n9. Run \"iotedgedev push\"\r\n10. It push successfully.\r\n\r\nerror message 1:\r\n```\r\nINITIALIZING CONTAINER REGISTRY\r\n\r\nREGISTRY: localhost:5001\r\nLooking for local 'registry' container\r\nLocal 'registry' container not found\r\nLooking for local 'registry' image\r\nLocal 'registry' image not found\r\nPulling 'registry' image\r\nRunning registry container\r\n\r\nPUSHING DOCKER IMAGE: localhost:5001/filtermodule:0.0.1-amd64\r\nThe push refers to repository [localhost:5001/filtermodule]\r\nERROR: Error: Get http://localhost:5001/v2/: read tcp 127.0.0.1:52290->127.0.0.1:5001: read: connection reset by peer\r\n(py36) v-cheye@ubuntu1804-test10:~/csharp/test_solution$\r\n```\r\n\r\nerror message 2:\r\n```\r\nINITIALIZING CONTAINER REGISTRY\r\n\r\nREGISTRY: localhost:5000\r\nLooking for local 'registry' container\r\nLocal 'registry' container not found\r\nLooking for local 'registry' image\r\nLocal 'registry' image not found\r\nPulling 'registry' image\r\nRunning registry container\r\n\r\nPUSHING DOCKER IMAGE: localhost:5000/filtermodule:0.0.1-amd64\r\nThe push refers to repository [localhost:5000/filtermodule]\r\nERROR: Error: Get http://localhost:5000/v2/: EOF\r\n(py36) v-cheye@ubuntu1804-test10:~/csharp/test_solution$\r\n```",
+    "repo": "Azure/iotedgedev",
+    "base_commit": "67c63047b53f7e1749d7d9c3985593deae566699",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__msrest-for-python-167",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_msrest-for-python-167",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_msrest-for-python-167",
+    "problem_statement": "Response content type json parser\nCurrently the deserializer only supports a list of content type values like \"application/json\" and \"text/json\".  Based on HTTP spec, \"application/<randomtext>+json\" is also json. So we should have a type parser to accept this syntax. ",
+    "repo": "Azure/msrest-for-python",
+    "base_commit": "c4086bfac4e45b11b6bd4267cff62aa302a51877",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__msrest-for-python-189",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_msrest-for-python-189",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_msrest-for-python-189",
+    "problem_statement": "Validation failed if string is valid integer, but minimum/maximum is used.\nExample from @derekbekoe \r\n```python\r\n>>> ExpressRouteCircuitPeering(peer_asn='10002').validate()\r\n[ValidationError(\"Parameter 'ExpressRouteCircuitPeering.peer_asn' failed to meet validation requirement.\",)]\r\n```\r\n\r\nI see no reason to refuse that, and should take a look",
+    "repo": "Azure/msrest-for-python",
+    "base_commit": "c2249d459e8af8912c5da4cd728c8201066b9304",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__msrest-for-python-224",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_msrest-for-python-224",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_msrest-for-python-224",
+    "problem_statement": "Serialization for non-standard types yields incorrect output\nHi,\r\n\r\nI am using the event grid client SDK in python to generate custom events. I have come across an issue I can't seem to solve without going away from the event grid SDK. \r\n\r\nThe problem is that the event grid model serializer does not give me the correct output for when including types that are not the basic types. A simple reproducible example:\r\n\r\n```\r\nfrom azure.eventgrid.models import EventGridEvent\r\nimport datetime\r\nimport uuid\r\n\r\nevent=EventGridEvent(\r\n            topic=\"test\",\r\n            id=uuid.uuid4(),\r\n            subject=\"testUpdated\",\r\n            data={\"time\":datetime.datetime.now().replace(tzinfo=datetime.timezone.utc)},\r\n            event_type=\"test.test\",\r\n            event_time=datetime.datetime.now().replace(tzinfo=datetime.timezone.utc),\r\n            data_version=2.0,\r\n)\r\n\r\nprint(event.serialize())\r\n```\r\n\r\nThis would return\r\n\r\n`\r\n{'id': '3e02a22c-f327-4f62-af25-b71e0865888b',\r\n 'topic': 'product',\r\n 'subject': 'ProductUpdated',\r\n 'data': {'time': '2020-09-07 10:37:08.348679+00:00'},\r\n 'eventType': 'supplychain.product',\r\n 'eventTime': '2020-09-07T10:37:08.348679Z',\r\n 'dataVersion': '2.0'}\r\n`\r\n\r\nthe serialize is not called by me in the code I actually use, but it looks like that is what is called behind the scenes when I send off the event. I want the datetime (the key \"time\" in the above example) to be serialized just as the parent-level \"event_time\". My problem is not only with datetime as in the current example, but also with decimals.\r\n\r\nI guess this fits in this repo and not in the EventGrid SDK repo, but feel free to redirect me there.\r\n\r\n\r\n\r\n\r\n",
+    "repo": "Azure/msrest-for-python",
+    "base_commit": "c16e5218fe99742c5bf93d73ce0bb71c9b1c0953",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__msrest-for-python-43",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_msrest-for-python-43",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_msrest-for-python-43",
+    "problem_statement": "Serialization issue if dict syntax and Duration used\n```python\r\nmsrest.exceptions.SerializationError: Unable to build a model: Unable to deserialize response data. Data: 3 years, 6 months, 4 days, 12:30:05, duration, TypeError: Expecting a string isodate.duration.Duration(4, 45005, 0, years=3, months=6), DeserializationError: Unable to deserialize response data. Data: 3 years, 6 months, 4 days, 12:30:05, duration, TypeError: Expecting a string isodate.duration.Duration(4, 45005, 0, years=3, months=6)\r\n```\r\n\r\nRegression introduced in 0.4.12\r\n",
+    "repo": "Azure/msrest-for-python",
+    "base_commit": "11f19f936f2d2d912782c7280f02f01ed89baf47",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__msrest-for-python-55",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_msrest-for-python-55",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_msrest-for-python-55",
+    "problem_statement": "Improve exception string if custom exception\nExample, with this:\r\nhttps://github.com/Azure/azure-sdk-for-python/blob/master/azure-mgmt-billing/azure/mgmt/billing/models/error_response.py\r\n\r\nAnd this answer:\r\n```python\r\n{\r\n\t\"error\": {\r\n\t\t\"code\": \"NotOptedIn\",\r\n\t\t\"message\": \"You are not allowed to download invoices. Please contact your account administrator (ptvsazure@outlook.com) to turn on access in the management portal for allowing to download invoices through the API.\"\r\n\t}\r\n}\r\n```\r\n\r\nWe should have something better than:\r\n```python\r\n\r\nD:\\VEnvs\\AzureCli\\Lib\\site-packages\\azure\\mgmt\\billing\\operations\\invoices_operations.py in internal_paging(next_link, raw)\r\n    110\r\n    111             if response.status_code not in [200]:\r\n--> 112                 raise models.ErrorResponseException(self._deserialize, response)\r\n    113\r\n    114             return response\r\n\r\nErrorResponseException: Operation returned an invalid status code 'Unauthorized'\r\n```\r\n\r\nWe loose the message",
+    "repo": "Azure/msrest-for-python",
+    "base_commit": "bb876c23427448d293c793e16d415971eb1753bc",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__msrestazure-for-python-107",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_msrestazure-for-python-107",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_msrestazure-for-python-107",
+    "problem_statement": "MSIAuthentication should set toekn on instance creation\nAll msrestazure instance set the token on instance creation, except MSIAuthentication.\r\n\r\nThis presents a few issues:\r\n- Unlike all other usages, authentication exception will be raised at usage, not at creation level\r\n- This creates weird bug in KeyVault which is doing some magic inside credentials:\r\nhttps://github.com/Azure/azure-sdk-for-python/issues/2852",
+    "repo": "Azure/msrestazure-for-python",
+    "base_commit": "bc59bae35d784f0aad8d1e26ebfd9c20897dca46",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__msrestazure-for-python-121",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_msrestazure-for-python-121",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_msrestazure-for-python-121",
+    "problem_statement": "If final GET on Location is empty, does not necessarily mean there is a problem\nIf Swagger explains to follow Location on final state, and there is not return type, it is expected that the final body is empty. However, msrestazure right now assume this final call must have a body.\r\n\r\nFix, update this code:\r\n```python\r\n        elif self._operation.should_do_final_get():\r\n            if self._operation.method == 'POST' and self._operation.location_url:\r\n                final_get_url = self._operation.location_url\r\n            else:\r\n                final_get_url = self._operation.initial_response.request.url\r\n            self._response = self.request_status(final_get_url)\r\n            self._operation.get_status_from_resource(self._response)\r\n```\r\nto NOT do a `get_status_from_resource` at the end (we don't care about the status, we know it's right) but something smarter that accept an empty body\r\n\r\nWill fix https://github.com/Azure/azure-cli/issues/7671",
+    "repo": "Azure/msrestazure-for-python",
+    "base_commit": "ca3dceee99aee5aa4e5a25ec20c1794440510011",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__pykusto-159",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_pykusto-159",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_pykusto-159",
+    "problem_statement": "Retry config causes an exception beacuse of bug in argumets order in client execute function\nIn `_src.client.py` the function `execute` is defined as follows:\r\n`def execute(self, query: KQL, retry_config: RetryConfig = None) -> KustoResponse:\r\n      return self.__database.execute(query, retry_config)`\r\n\r\nbut the `database.execute` function receives three arguments, without explicitly naming the argument as retry_config, it is used as the properties argument.\r\n\r\n`    def execute(self, query: KQL, properties: ClientRequestProperties = None, retry_config: RetryConfig = None) -> KustoResponse:\r\n        return self.__client.execute(self.__name, query, properties, retry_config)`",
+    "repo": "Azure/pykusto",
+    "base_commit": "68121cdd79cc9c1d6b8f71e5e80df566ac6842c7",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__pykusto-72",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_pykusto-72",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_pykusto-72",
+    "problem_statement": "Column names that are language keywords don't parse well\nif a column name is, for example, 'title', it should be parsed as \"['title']\", otherwise, Kusto throws an exception",
+    "repo": "Azure/pykusto",
+    "base_commit": "4232fc8aeea27d8d15c8cb1fd830493d50c8a3de",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Azure__pykusto-84",
+    "image": "swerebench/sweb.eval.x86_64.azure_1776_pykusto-84",
+    "docker_image": "swerebench/sweb.eval.x86_64.azure_1776_pykusto-84",
+    "problem_statement": "multiplying numbers and columns doesn't always work\nexamples:\r\nQuery().where(f.to_double(100 * t.numberField) > 0.2).render()\r\nreturns: TypeError: unsupported operand type(s) for *: 'int' and 'AnyTypeColumn'\r\n\r\nQuery().where(100 * f.to_double(t.numberField) > 0.2).render()\r\nreturns: TypeError: unsupported operand type(s) for *: 'int' and 'NumberExpression'\r\n\r\nQuery().where(col.of(100) * f.to_double(t.numberField) > 0.2).render()\r\nrenders as : \"| where (['100'] * (todouble(numberField))) > 0.2\" which doesn't compile.\r\n\r\nI didn't have any more ideas...",
+    "repo": "Azure/pykusto",
+    "base_commit": "39a825859c499d219cb2c55e57bc3d3f71568ff7",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BAMWelDX__weldx-363",
+    "image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-363",
+    "docker_image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-363",
+    "problem_statement": "add \"step\" interpolation to xr_interp_like\nFor simplicity and consistency we should implement the `\"step\"` interpolation from `TimeSeries` as an option to  `utility.xr_interp_like`",
+    "repo": "BAMWelDX/weldx",
+    "base_commit": "5aa82b1710fcc85d3bbc1d5d07775ac1828adff6",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BAMWelDX__weldx-377",
+    "image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-377",
+    "docker_image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-377",
+    "problem_statement": "Compare_nested doesn't take additional dict items of RHS into account\n~~~ python\r\nfrom weldx.util import compare_nested\r\n\r\nd1 = dict(a=1)\r\nd2 = dict(a=1, b=1)\r\n\r\nprint(compare_nested(d1, d2))\r\nprint(compare_nested(d2, d1))\r\n~~~\r\n\r\nreturns:\r\n\r\n~~~\r\nTrue\r\nFalse\r\n~~~\r\n\r\nSo the additional member `b` of `d2` is not considered when `d2` is the rhs operand. ",
+    "repo": "BAMWelDX/weldx",
+    "base_commit": "e19fbc491b5f92b87f18810cc71a9164e0a42abd",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BAMWelDX__weldx-384",
+    "image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-384",
+    "docker_image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-384",
+    "problem_statement": "DataArray attributes missing from Dataset ASDF serialization\nWhen serializing and reading back a `Dataset`, only the main Dataset attributes get restored. Attributes attached to the individual DataArrays are lost.\r\n\r\n```python\r\nda = xr.DataArray(np.arange(10),name=\"arr1\",attrs={\"name\":\"sample data\"})\r\nds = da.to_dataset()\r\nprint(ds.arr1.attrs)\r\nds2 = weldx.asdf.util.write_read_buffer({\"ds\":ds})[\"ds\"]\r\nprint(ds2.arr1.attrs)\r\n>> {'name': 'sample data'}\r\n>> {}\r\n```",
+    "repo": "BAMWelDX/weldx",
+    "base_commit": "1999c8dfc1e9346206680f55cd484381c6ef4121",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BAMWelDX__weldx-412",
+    "image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-412",
+    "docker_image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-412",
+    "problem_statement": "resolve custom schema files in WeldxFile\nwhen providing a string as `custom_schema` that does not resolve directly to a file in the directory we could try to find the schema file using our `get_schema_path` function\r\n\r\nthis would for example allow the following simplification:\r\n```python\r\nwx_file = WeldxFile(\"./single_pass_weld.weldx\", custom_schema=\"single_pass_weld-1.0.0.schema.yaml\")\r\n# instead of\r\nwx_file = WeldxFile(\"./single_pass_weld.weldx\", custom_schema=get_schema_path(\"single_pass_weld-1.0.0.schema.yaml\"))\r\n```\r\n\r\nwe would just have to try and resolve the schema file before passing it along to asdf here\r\nhttps://github.com/BAMWelDX/weldx/blob/d50e462cf4804cf17f1a371debaed04ca7e9e34f/weldx/asdf/file.py#L96-L98\r\n\r\nwhat do you think @vhirtham @marscher ?",
+    "repo": "BAMWelDX/weldx",
+    "base_commit": "0b0d4b770207a087f49aa0629a0ca87d69dafe29",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BAMWelDX__weldx-414",
+    "image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-414",
+    "docker_image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-414",
+    "problem_statement": "closed mesh generation for default geometries\nupdate the `util.triangulate_geometry` to (optionally) close the triangulation around all sides for default groove geometries",
+    "repo": "BAMWelDX/weldx",
+    "base_commit": "426ad3a281739b1bfb63930684d98645d36d7004",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BAMWelDX__weldx-429",
+    "image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-429",
+    "docker_image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-429",
+    "problem_statement": "TimeSeries __init__ should understand xarray structures\nAs the title says, a `TimeSeries` should be constructible from a xarray structure that matches the internal format. This is currently not possible but would make it much easier to convert the data from our lab.",
+    "repo": "BAMWelDX/weldx",
+    "base_commit": "d29a2de0c74264db977ffd21677c823690133663",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BAMWelDX__weldx-430",
+    "image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-430",
+    "docker_image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-430",
+    "problem_statement": "sort string list output in asdf tree\nin some places we store lists of strings in asdf files, most for the CSM and related functions notably here:\r\nhttps://github.com/BAMWelDX/weldx/blob/9ffdba4c3594fe9bd73f214005d2a6ab8314369d/weldx/asdf/tags/weldx/core/transformations/coordinate_system_hierarchy.py#L83-L92\r\n\r\nThe sorting of these list items seem to change randomly when (re)creating files.\r\nFor consistency and better diffs it would be nice to sort these kind of lists before writing them to asdf.\r\n\r\nNeed to check if the order might be relevant to the implementation but I guess not for most cases?",
+    "repo": "BAMWelDX/weldx",
+    "base_commit": "a142185148fd64648e0beca7d67c71853696fc79",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BAMWelDX__weldx-476",
+    "image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-476",
+    "docker_image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-476",
+    "problem_statement": "CSM interpolation outside of time range\nWhen interpolating between systems with any time dependency along the path, the result will always be time dependent even if the transformation is known to be static because no \"real\" time dependencies exist (or can exists) for the interpolation timeline.\r\n\r\nHere is an example:\r\n```python\r\nimport weldx\r\nfrom weldx import Q_, CoordinateSystemManager, LocalCoordinateSystem\r\n\r\ncsm = CoordinateSystemManager(\"base\")\r\n# add A as time dependent in base\r\ncsm.add_cs(\"A\",\"base\",lcs=LocalCoordinateSystem(coordinates=[[0,0,0],[1,1,1]],time=Q_([0,1],\"s\")))\r\n# add B as static in A\r\ncsm.add_cs(\"B\",\"A\",lcs=LocalCoordinateSystem())\r\n\r\n# this is always static because no time dependencies are between A and B\r\nprint(csm.get_cs(\"B\",\"A\",time=Q_([2,3,4],\"s\")).time)\r\n>>> None\r\n\r\n# this is time dependent even though the result is known to be static\r\nprint(csm.get_cs(\"B\",\"base\",time=Q_([2,3,4],\"s\")).time)\r\n>>> array([2000000000, 3000000000, 4000000000], dtype='timedelta64[ns]')\r\n\r\nprint(csm.get_cs(\"B\",\"base\",time=Q_([2,3,4],\"s\")).coordinates.data)\r\n>>> array([[1., 1., 1.],\r\n>>>        [1., 1., 1.],\r\n>>>        [1., 1., 1.]])\r\n```\r\n\r\nThis really only is an issue when considering large time interpolations.\r\nI guess we can check in a form similar to (not actual code)\r\n```python\r\nif np.all(time<=csm.time_union.min()) or np.all(time>=csm.time_union.max()):\r\n    # revert to single timestamp\r\n```",
+    "repo": "BAMWelDX/weldx",
+    "base_commit": "c31df4415105543858065f3835aa6e8ad0ce2000",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BAMWelDX__weldx-494",
+    "image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-494",
+    "docker_image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-494",
+    "problem_statement": "CSM merge does not consider assigned data\nAs discussed with @marscher last Friday, I tested if merging two CSMs transfers data to the child CSM to the parent CSM:\r\n\r\n~~~ python\r\nfrom weldx import CoordinateSystemManager\r\n\r\ncsm_1 = CoordinateSystemManager(\"r\")\r\ncsm_1.create_cs(\"a\", \"r\", coordinates=[1, 3, 4])\r\ncsm_1.create_cs(\"b\", \"r\", coordinates=[5, 5, 5])\r\n\r\ncsm_2 = CoordinateSystemManager(\"x\")\r\ncsm_2.create_cs(\"a\", \"x\", coordinates=[0, 3, 0])\r\ncsm_2.create_cs(\"y\", \"x\", coordinates=[5, 0, 0])\r\n\r\ncsm_2.assign_data([[1, 2, 3], [4, 5, 6]], \"data\", \"y\")\r\n\r\nprint(csm_2.data_names)\r\n\r\ncsm_1.merge(csm_2)\r\n\r\nprint(csm_1.data_names)\r\n\r\nunmerged = csm_1.unmerge()\r\nprint(unmerged[0].data_names)\r\n~~~\r\n\r\noutput:\r\n\r\n~~~\r\n['data']\r\n[]\r\n[]\r\n~~~\r\n\r\nAs you can see, this is not the case (unmerging fails too). As far as I remember, this should be a minor implementation issue. The data itself should be copied, but it isn't registered in the internal structure. I will check if unmerging is also affected.",
+    "repo": "BAMWelDX/weldx",
+    "base_commit": "a5bebcfe8b5f9aa01903e98d374af2909f885136",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BAMWelDX__weldx-648",
+    "image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-648",
+    "docker_image": "swerebench/sweb.eval.x86_64.bamweldx_1776_weldx-648",
+    "problem_statement": "CSM.__eq__ does not consider attached data\nThis is a really low priority issue since CSM comparison is mainly used in tests, but as the title says, attached data is not considered during the comparison.",
+    "repo": "BAMWelDX/weldx",
+    "base_commit": "37535aaed930a59f96db680c09f9b892d50e4c2d",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BQSKit__bqskit-134",
+    "image": "swerebench/sweb.eval.x86_64.bqskit_1776_bqskit-134",
+    "docker_image": "swerebench/sweb.eval.x86_64.bqskit_1776_bqskit-134",
+    "problem_statement": "Compiler ignores custom gate set when compiling a random 2-qubit circuit\nExample to reproduce:\r\n```\r\nimport bqskit\r\nfrom bqskit.ext import qiskit_to_bqskit\r\nimport qiskit as qs\r\nimport qutip as qt\r\nimport numpy as np\r\n\r\ncirc = qs.QuantumCircuit(2)\r\nu = qt.rand_unitary_haar(4)\r\nrandom_unitary = qs.quantum_info.operators.Operator(np.array(u))\r\ncirc.unitary(random_unitary, [0,1], label='random')\r\n\r\nmodel = bqskit.MachineModel(2, gate_set={bqskit.ir.gates.CZGate(2), bqskit.ir.gates.U3Gate(1)})\r\ncirc_bqskit = qiskit_to_bqskit(circ)\r\noutput_circuit = bqskit.compile(circ_bqskit, model=model)\r\nprint(output_circuit.gate_set)\r\n```\r\nThis will print `{U3Gate, CNOTGate}` instead of the desired `{U3Gate, CZGate}` (and the circuit `output_circuit` will consist of CNOTs and U3 gates instead of using the desired CZ operations). This appears to be the case for any non-CNOT 2-qubit gate.\r\n\r\nBehavior is correct when using `bqskit.compile(np.array(u), model=model)`, so it seems that the circuit object is causing the problem.\r\n\r\nBehavior is correct when specifying a 3-qubit gate instead of a 2-qubit gate, e.g. `gate_set={bqskit.ir.gates.Toffoli(3), bqskit.ir.gates.U3Gate(1)}` (if circuit size is extended to 3 qubits instead of 2).",
+    "repo": "BQSKit/bqskit",
+    "base_commit": "27e209149392231fdaccedfb39ae20b4173c844e",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BQSKit__bqskit-267",
+    "image": "swerebench/sweb.eval.x86_64.bqskit_1776_bqskit-267",
+    "docker_image": "swerebench/sweb.eval.x86_64.bqskit_1776_bqskit-267",
+    "problem_statement": "`circuit.dim` is 0 for large circuits\nIf you print `circuit.dim` for a large (e.g. 1024 qubit) circuit, you will get 0.  The 0 is coming from an integer overflow that numpy does not report.\r\n\r\nI don't expect the correct answer (2^1024 is absurdly large), but some feedback (an error or warning) would be nice.  Since numpy silently ignores the issue, BQSKit will have to detect the problem.\r\n\r\nSome ideas on where to detect the issue:\r\n- In the implementation of `dim` in `UnitaryMatrix`\r\n\r\nSome ideas on how to detect the issue:\r\n- check that `np.prod(self.radixes) >= self.radixes[0]`\r\n- find a way to make numpy raise an error or warning\r\n- do the product more manually than using `np.prod`",
+    "repo": "BQSKit/bqskit",
+    "base_commit": "200e79985cdfbca753dd833a3a50fa84f7afc5c4",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BaPSF__bapsflib-41",
+    "image": "swerebench/sweb.eval.x86_64.bapsf_1776_bapsflib-41",
+    "docker_image": "swerebench/sweb.eval.x86_64.bapsf_1776_bapsflib-41",
+    "problem_statement": "Function condition_shotnum() throws ValueError if conditioned shotnum is a single element ndarry\n[`condition_shotnum()`](https://github.com/BaPSF/bapsflib/blob/b25f05370c0fc601aa7f8e1dff4f17eeec1f8e45/bapsflib/_hdf/utils/helpers.py#L476) throws a `ValueError` at [line 568](https://github.com/BaPSF/bapsflib/blob/b25f05370c0fc601aa7f8e1dff4f17eeec1f8e45/bapsflib/_hdf/utils/helpers.py#L568) when a valid shot number is passed in as a single element `numpy` array.\r\n\r\nFor example, `_sn = condition_shotnum(np.array([5]), {}, {})` would throw the error.\r\n\r\nThis scenario will not be reached often since single shot numbers are typically passed as an `int`, but it does occur when `HDFReadData` is reading a single shot number and trying to mate control data with `HDFReadControl`.\r\n\r\nThe most probable culprit is [line 564](https://github.com/BaPSF/bapsflib/blob/b25f05370c0fc601aa7f8e1dff4f17eeec1f8e45/bapsflib/_hdf/utils/helpers.py#L564) squeezing the numpy array shape from `(1,)` to `()`.  This can be easily fixed with the if-statement\r\n\r\n```\r\nif shotnum.ndim != 1:\r\n    shotnum = shotnum.squeeze()\r\n```\r\n\r\nand needs to be covered by tests [here](https://github.com/BaPSF/bapsflib/blob/b25f05370c0fc601aa7f8e1dff4f17eeec1f8e45/bapsflib/_hdf/utils/tests/test_helpers.py#L646).",
+    "repo": "BaPSF/bapsflib",
+    "base_commit": "08a56b9001c607982778b16f15a30dd88ba3cf31",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Bachmann1234__diff_cover-210",
+    "image": "swerebench/sweb.eval.x86_64.bachmann1234_1776_diff_cover-210",
+    "docker_image": "swerebench/sweb.eval.x86_64.bachmann1234_1776_diff_cover-210",
+    "problem_statement": "why HTML&JSON reports are prohibited and why they cannot be generated at the same time\nWant to know why HTML&JSON reports are prohibited and why they cannot be generated at the same time\r\n\r\n`output_format = parser.add_mutually_exclusive_group()`",
+    "repo": "Bachmann1234/diff_cover",
+    "base_commit": "5f7aeea8b95441f8286a38524ce0234e1716e304",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Bachmann1234__diff_cover-277",
+    "image": "swerebench/sweb.eval.x86_64.bachmann1234_1776_diff_cover-277",
+    "docker_image": "swerebench/sweb.eval.x86_64.bachmann1234_1776_diff_cover-277",
+    "problem_statement": "diff-quality fails with ValueError: invalid literal for int() with base 10: '470]'\nWhen running `diff-quality` tool I have the following exception:\r\n\r\n```\r\nTraceback (most recent call last):\r\n  File \"/usr/local/bin/diff-quality\", line 8, in <module>\r\n    sys.exit(main())\r\n  File \"/home/jenkins/.local/lib/python3.8/site-packages/diff_cover/diff_quality_tool.py\", line 348, in main\r\n    percent_passing = generate_quality_report(\r\n  File \"/home/jenkins/.local/lib/python3.8/site-packages/diff_cover/diff_quality_tool.py\", line 261, in generate_quality_report\r\n    reporter.generate_report(output_file)\r\n  File \"/home/jenkins/.local/lib/python3.8/site-packages/diff_cover/report_generator.py\", line 265, in generate_report\r\n    report = template.render(self._context())\r\n  File \"/home/jenkins/.local/lib/python3.8/site-packages/diff_cover/report_generator.py\", line 314, in _context\r\n    context = super().report_dict()\r\n  File \"/home/jenkins/.local/lib/python3.8/site-packages/diff_cover/report_generator.py\", line 187, in report_dict\r\n    src_stats = {src: self._src_path_stats(src) for src in self.src_paths()}\r\n  File \"/home/jenkins/.local/lib/python3.8/site-packages/diff_cover/report_generator.py\", line 84, in src_paths\r\n    for src, summary in self._diff_violations().items()\r\n  File \"/home/jenkins/.local/lib/python3.8/site-packages/diff_cover/report_generator.py\", line 176, in _diff_violations\r\n    self._diff_violations_dict = {\r\n  File \"/home/jenkins/.local/lib/python3.8/site-packages/diff_cover/report_generator.py\", line 178, in <dictcomp>\r\n    self._violations.violations(src_path),\r\n  File \"/home/jenkins/.local/lib/python3.8/site-packages/diff_cover/violationsreporters/base.py\", line 159, in violations\r\n    self.violations_dict.update(self.driver.parse_reports([output]))\r\n  File \"/home/jenkins/.local/lib/python3.8/site-packages/diff_cover/violationsreporters/violations_reporter.py\", line 469, in parse_reports\r\n    violation = Violation(int(line_number), error_str)\r\nValueError: invalid literal for int() with base 10: '470]'\r\n```\r\n\r\nThe reason for this is the following: `violations_reporter` expects, that the output for duplicating lines looks like:\r\n```\r\nfile1.py:162: [R0801] Similar lines in 2 files\r\n==file1:162\r\n==student.views:4\r\n```\r\nbut it can look like:\r\n```\r\nfile1.py:162: [R0801] Similar lines in 2 files\r\n==file1:[162:165]\r\n==student.views:[4:7]\r\n```\r\nAnd the [`multi_line_violation_regex`](https://github.com/Bachmann1234/diff_cover/blob/61a0ae286a54e7fcbacf063d339ddace6fd84155/diff_cover/violationsreporters/violations_reporter.py#L405) regular expression `==(\\w|.+):(.*)` cannot parse it correctly.\r\n\r\nThe correct regular expression is `==((?:\\w|\\.)+?):\\[?(\\d+)`.",
+    "repo": "Bachmann1234/diff_cover",
+    "base_commit": "d9efc6c0e5f1c94a25d0772d149d08ecb2542aa1",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Bachmann1234__diff_cover-413",
+    "image": "swerebench/sweb.eval.x86_64.bachmann1234_1776_diff_cover-413",
+    "docker_image": "swerebench/sweb.eval.x86_64.bachmann1234_1776_diff_cover-413",
+    "problem_statement": "UnicodeDecodeError when an untracked binary file is present in the repository\n**Problem description**\r\nI have discovered a bug in the diff-cover library. When an untracked binary file is present in the repository, the library fails to read it and throws the following error:\r\n```\r\n  File \"/Users/user/PycharmProjects/some-project/.direnv/python-3.12.3/lib/python3.12/site-packages/diff_cover/diff_reporter.py\", line 172, in src_paths_changed\r\n    num_lines = len(file_handle.readlines())\r\n                    ^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"<frozen codecs>\", line 322, in decode\r\nUnicodeDecodeError: 'utf-8' codec can't decode byte 0xb3 in position 0: invalid start byte\r\n```\r\n\r\n**Steps to Reproduce:**\r\n1. Create a new repository or use an existing one.\r\n2. Add a binary file to the repository that is not tracked by the version control system (untracked file).\r\n3. Run diff-cover on this repository with `--include-untracked` flag\r\n\r\n**Environment:**\r\ndiff-cover version: 6.5.1, 9.1.0\r\nPython version: 3.12\r\nOperating System: mac os [Sonomna 14.5]\r\n\r\n**Additional Information:**\r\nThe problem is likely related to attempting to read all untracked.  It might be helpful to use the mechanism from \r\n```python\r\nself._git_diff()\r\n```\r\n that checks \r\n ```python\r\n self._is_path_excluded(src_path) \r\n ```\r\n and:\r\n ```python\r\n if (\r\n    not self._supported_extensions\r\n    or extension in self._supported_extensions\r\n):\r\n ```\r\n\r\nThis will ensure that only supported file types are read, preventing the UnicodeDecodeError when encountering binary files.",
+    "repo": "Bachmann1234/diff_cover",
+    "base_commit": "e235b209d55dcec1867f71b6d52ab2dd798912e5",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Becksteinlab__numkit-8",
+    "image": "swerebench/sweb.eval.x86_64.becksteinlab_1776_numkit-8",
+    "docker_image": "swerebench/sweb.eval.x86_64.becksteinlab_1776_numkit-8",
+    "problem_statement": "timeseries.smooth() fails in Python 3\nIn Py 3\r\n```\r\n>       return y[(window_len-1)/2:-(window_len-1)/2]  # take off repeats on ends\r\nE       TypeError: slice indices must be integers or None or have an __index__ method\r\n```",
+    "repo": "Becksteinlab/numkit",
+    "base_commit": "af05227af13f4bb56f867b026014048f0e3f0454",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Benardi__touvlo-34",
+    "image": "swerebench/sweb.eval.x86_64.benardi_1776_touvlo-34",
+    "docker_image": "swerebench/sweb.eval.x86_64.benardi_1776_touvlo-34",
+    "problem_statement": "Generalize the function utils.gradient_descent \nThe function `gradient_descent` should only be aware of the parameters  `X, y, grad, initial_theta,alpha, num_iters`. Any further parameter should be fed to the `grad` function with no impact in the signature of the function `gradient_descent`.\r\n\r\nTL; DR: Edit the function `gradient_descent` in the module `utils` to allow a gradient function (grad) of any signature.",
+    "repo": "Benardi/touvlo",
+    "base_commit": "0e1ee71ebec9a09370f928dd96d0ae11f3bba404",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "Blaizzy__mlx-vlm-179",
+    "image": "swerebench/sweb.eval.x86_64.blaizzy_1776_mlx-vlm-179",
+    "docker_image": "swerebench/sweb.eval.x86_64.blaizzy_1776_mlx-vlm-179",
+    "problem_statement": "LoRa fine-tuning is not working with Llama 3.2 vision model.\nAfter I pull the current main branch, lora fine-tuning of the Llama-3.2-11B-Vision-Instruct stopped working with the following error.\r\n\r\n```\r\npython3 -m mlx_vlm.lora --dataset /myspace/datasets --model-path /myspace/Llama-3.2-11B-Vision-Instruct --epochs 5\r\n\r\nINFO:__main__:Loading model from /myspace/Llama-3.2-11B-Vision-Instruct\r\nINFO:__main__:Loading dataset from /myspace/datasets\r\nINFO:__main__:Applying chat template to the dataset\r\nINFO:__main__:Setting up LoRA\r\n#trainable params: 32.768 M || all params: 9775.192064 M || trainable%: 0.335%\r\nINFO:__main__:Setting up optimizer\r\nINFO:__main__:Setting up trainer\r\nINFO:__main__:Training model\r\n  0%|                                                                                              | 0/11 [00:00<?, ?it/s]\r\nTraceback (most recent call last):\r\n  File \"<frozen runpy>\", line 198, in _run_module_as_main\r\n  File \"<frozen runpy>\", line 88, in _run_code\r\n  File \"/myspace/mlx-vlm/mlx_vlm/lora.py\", line 177, in <module>\r\n    main(args)\r\n  File \"/myspace/mlx-vlm/mlx_vlm/lora.py\", line 98, in main\r\n    dataset[i * args.batch_size : (i + 1) * args.batch_size]\r\n    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"/myspace/mlx-vlm/mlx_vlm/trainer/trainer.py\", line 91, in __getitem__\r\n    inputs = prepare_inputs(\r\n             ^^^^^^^^^^^^^^^\r\nTypeError: prepare_inputs() takes from 4 to 5 positional arguments but 6 were given \r\n```\r\n\r\nAfter I added the \"processor_image\" to prepare_inputs() as a parameter, I got the following.\r\n\r\n```\r\nTraceback (most recent call last):\r\n  File \"<frozen runpy>\", line 198, in _run_module_as_main\r\n  File \"<frozen runpy>\", line 88, in _run_code\r\n  File \"/myspace/mlx-vlm/mlx_vlm/lora.py\", line 177, in <module>\r\n    main(args)\r\n  File \"/myspace/mlx-vlm/mlx_vlm/lora.py\", line 98, in main\r\n    dataset[i * args.batch_size : (i + 1) * args.batch_size]\r\n    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"/myspace/trainer/trainer.py\", line 99, in __getitem__\r\n    input_ids, pixel_values, mask = inputs[:3]\r\n                                    ~~~~~~^^^^\r\n```",
+    "repo": "Blaizzy/mlx-vlm",
+    "base_commit": "1e4579ad0c99b41c71f7309a4cb59d0c4e49fca1",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BoboTiG__ebook-reader-dict-2054",
+    "image": "swerebench/sweb.eval.x86_64.bobotig_1776_ebook-reader-dict-2054",
+    "docker_image": "swerebench/sweb.eval.x86_64.bobotig_1776_ebook-reader-dict-2054",
+    "problem_statement": "Move etymology at the bottom\nAs per #1846 poll, move the etymology after definitions.\n\n<!-- POLAR PLEDGE BADGE START -->\n## Upvote & Fund\n\n- We're using [Polar.sh](https://polar.sh/tiger-222) so you can upvote and help fund this issue.\n- We receive the funding once the issue is completed & confirmed by you.\n- Thank you in advance for helping prioritize & fund our backlog.\n\n<a href=\"https://polar.sh/BoboTiG/ebook-reader-dict/issues/2009\">\n<picture>\n  <source media=\"(prefers-color-scheme: dark)\" srcset=\"https://polar.sh/api/github/BoboTiG/ebook-reader-dict/issues/2009/pledge.svg?darkmode=1\">\n  <img alt=\"Fund with Polar\" src=\"https://polar.sh/api/github/BoboTiG/ebook-reader-dict/issues/2009/pledge.svg\">\n</picture>\n</a>\n<!-- POLAR PLEDGE BADGE END -->\n",
+    "repo": "BoboTiG/ebook-reader-dict",
+    "base_commit": "d6cc6741d4712018610391f1bc229fb9e0d3210e",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BoboTiG__ebook-reader-dict-2101",
+    "image": "swerebench/sweb.eval.x86_64.bobotig_1776_ebook-reader-dict-2101",
+    "docker_image": "swerebench/sweb.eval.x86_64.bobotig_1776_ebook-reader-dict-2101",
+    "problem_statement": "[EN] Support \"taxfmt\" template\n- Wiktionary page: https://en.wiktionary.org/wiki/solidago\r\n- Model link: https://en.wiktionary.org/wiki/Template:taxfmt\n\n<!-- POLAR PLEDGE BADGE START -->\n## Upvote & Fund\n\n- We're using [Polar.sh](https://polar.sh/tiger-222) so you can upvote and help fund this issue.\n- We receive the funding once the issue is completed & confirmed by you.\n- Thank you in advance for helping prioritize & fund our backlog.\n\n<a href=\"https://polar.sh/BoboTiG/ebook-reader-dict/issues/2077\">\n<picture>\n  <source media=\"(prefers-color-scheme: dark)\" srcset=\"https://polar.sh/api/github/BoboTiG/ebook-reader-dict/issues/2077/pledge.svg?darkmode=1\">\n  <img alt=\"Fund with Polar\" src=\"https://polar.sh/api/github/BoboTiG/ebook-reader-dict/issues/2077/pledge.svg\">\n</picture>\n</a>\n<!-- POLAR PLEDGE BADGE END -->\n",
+    "repo": "BoboTiG/ebook-reader-dict",
+    "base_commit": "e9f5c48bfb63f049a10a28d11ecdb42c9e241122",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BoboTiG__ebook-reader-dict-2126",
+    "image": "swerebench/sweb.eval.x86_64.bobotig_1776_ebook-reader-dict-2126",
+    "docker_image": "swerebench/sweb.eval.x86_64.bobotig_1776_ebook-reader-dict-2126",
+    "problem_statement": "[DA] Support \"etyl\" template\n- Wiktionary page: https://da.wiktionary.org/wiki/torn\r\n- Model link: https://da.wiktionary.org/wiki/Skabelon:etyl\n\n<!-- POLAR PLEDGE BADGE START -->\n## Upvote & Fund\n\n- We're using [Polar.sh](https://polar.sh/tiger-222) so you can upvote and help fund this issue.\n- We receive the funding once the issue is completed & confirmed by you.\n- Thank you in advance for helping prioritize & fund our backlog.\n\n<a href=\"https://polar.sh/BoboTiG/ebook-reader-dict/issues/2087\">\n<picture>\n  <source media=\"(prefers-color-scheme: dark)\" srcset=\"https://polar.sh/api/github/BoboTiG/ebook-reader-dict/issues/2087/pledge.svg?darkmode=1\">\n  <img alt=\"Fund with Polar\" src=\"https://polar.sh/api/github/BoboTiG/ebook-reader-dict/issues/2087/pledge.svg\">\n</picture>\n</a>\n<!-- POLAR PLEDGE BADGE END -->\n",
+    "repo": "BoboTiG/ebook-reader-dict",
+    "base_commit": "1bc1c8b3985927f15918a6596ab47c015dfc59ad",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BoboTiG__ebook-reader-dict-2132",
+    "image": "swerebench/sweb.eval.x86_64.bobotig_1776_ebook-reader-dict-2132",
+    "docker_image": "swerebench/sweb.eval.x86_64.bobotig_1776_ebook-reader-dict-2132",
+    "problem_statement": "[EL] Support 'Ετυμ' template\n- Wiktionary page: https://el.wiktionary.org/wiki/%CE%BB%CE%B1%CE%BC%CE%B2%CE%AC%CE%BD%CF%89\r\n\r\nWikicode:\r\n```\r\n{ετυμ|ine-pro}}\r\n```\r\n\r\nOutput:\r\n```\r\n<i>(Ετυμ)</i>\r\n```\r\n\r\nExpected:\r\n```\r\nπρωτοϊνδοευρωπαϊκή\r\n```\r\n\r\n---\r\n\r\nModel link, if any: https://el.wiktionary.org/wiki/%CE%A0%CF%81%CF%8C%CF%84%CF%85%CF%80%CE%BF:%CE%B5%CF%84%CF%85%CE%BC\n\n<!-- POLAR PLEDGE BADGE START -->\n## Upvote & Fund\n\n- We're using [Polar.sh](https://polar.sh/tiger-222) so you can upvote and help fund this issue.\n- We receive the funding once the issue is completed & confirmed by you.\n- Thank you in advance for helping prioritize & fund our backlog.\n\n<a href=\"https://polar.sh/BoboTiG/ebook-reader-dict/issues/983\">\n<picture>\n  <source media=\"(prefers-color-scheme: dark)\" srcset=\"https://polar.sh/api/github/BoboTiG/ebook-reader-dict/issues/983/pledge.svg?darkmode=1\">\n  <img alt=\"Fund with Polar\" src=\"https://polar.sh/api/github/BoboTiG/ebook-reader-dict/issues/983/pledge.svg\">\n</picture>\n</a>\n<!-- POLAR PLEDGE BADGE END -->\n",
+    "repo": "BoboTiG/ebook-reader-dict",
+    "base_commit": "59b7c629ccee9198fe58b716dfcc642f61510f99",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BoboTiG__ebook-reader-dict-2133",
+    "image": "swerebench/sweb.eval.x86_64.bobotig_1776_ebook-reader-dict-2133",
+    "docker_image": "swerebench/sweb.eval.x86_64.bobotig_1776_ebook-reader-dict-2133",
+    "problem_statement": "[EL] Support \"ετικ\" and \"γρ\" templates\n- Wiktionary page: https://el.wiktionary.org/w/index.php?title=%CE%B1%CE%BC%CE%AD%CF%81%CE%B5%CF%85%CF%84%CE%BF%CF%82&action=edit\r\n- Model link: https://el.wiktionary.org/wiki/%CE%A0%CF%81%CF%8C%CF%84%CF%85%CF%80%CE%BF:%CE%B5%CF%84%CE%B9%CE%BA\r\n- https://el.wiktionary.org/wiki/%CE%A0%CF%81%CF%8C%CF%84%CF%85%CF%80%CE%BF:%CE%B3%CF%81\n\n<!-- POLAR PLEDGE BADGE START -->\n## Upvote & Fund\n\n- We're using [Polar.sh](https://polar.sh/tiger-222) so you can upvote and help fund this issue.\n- We receive the funding once the issue is completed & confirmed by you.\n- Thank you in advance for helping prioritize & fund our backlog.\n\n<a href=\"https://polar.sh/BoboTiG/ebook-reader-dict/issues/2001\">\n<picture>\n  <source media=\"(prefers-color-scheme: dark)\" srcset=\"https://polar.sh/api/github/BoboTiG/ebook-reader-dict/issues/2001/pledge.svg?darkmode=1\">\n  <img alt=\"Fund with Polar\" src=\"https://polar.sh/api/github/BoboTiG/ebook-reader-dict/issues/2001/pledge.svg\">\n</picture>\n</a>\n<!-- POLAR PLEDGE BADGE END -->\n",
+    "repo": "BoboTiG/ebook-reader-dict",
+    "base_commit": "2f4f7a072b95768039544d712d78831d46e5c700",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BoboTiG__ebook-reader-dict-2145",
+    "image": "swerebench/sweb.eval.x86_64.bobotig_1776_ebook-reader-dict-2145",
+    "docker_image": "swerebench/sweb.eval.x86_64.bobotig_1776_ebook-reader-dict-2145",
+    "problem_statement": "[EN] Add the `infl of` template to variants\n- Wiktionary page: https://en.wiktionary.org/wiki/clinging\r\n\r\nIt uses the `infl of` (inflection of) model. I think that should be treated as a variant.\r\n\r\nFor example, the full model is `{{infl of|en|cling||ing-form}}`, and I would see `cling` being part of the variants for that word.\n\n<!-- POLAR PLEDGE BADGE START -->\n## Upvote & Fund\n\n- We're using [Polar.sh](https://polar.sh/tiger-222) so you can upvote and help fund this issue.\n- We receive the funding once the issue is completed & confirmed by you.\n- Thank you in advance for helping prioritize & fund our backlog.\n\n<a href=\"https://polar.sh/BoboTiG/ebook-reader-dict/issues/1914\">\n<picture>\n  <source media=\"(prefers-color-scheme: dark)\" srcset=\"https://polar.sh/api/github/BoboTiG/ebook-reader-dict/issues/1914/pledge.svg?darkmode=1\">\n  <img alt=\"Fund with Polar\" src=\"https://polar.sh/api/github/BoboTiG/ebook-reader-dict/issues/1914/pledge.svg\">\n</picture>\n</a>\n<!-- POLAR PLEDGE BADGE END -->\n",
+    "repo": "BoboTiG/ebook-reader-dict",
+    "base_commit": "97e21da21bf90f44c75872bb5c7451c81b146ebd",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BoboTiG__ebook-reader-dict-2149",
+    "image": "swerebench/sweb.eval.x86_64.bobotig_1776_ebook-reader-dict-2149",
+    "docker_image": "swerebench/sweb.eval.x86_64.bobotig_1776_ebook-reader-dict-2149",
+    "problem_statement": "[EN] Parse gender string\nMany templates, including doublet and l have a \"g\" parameter containing a gender and number string.\r\nSee https://en.wiktionary.org/wiki/Module:gender_and_number\r\n\r\nWe need function to parse such a string and send back a meaningful string\n\n<!-- POLAR PLEDGE BADGE START -->\n## Upvote & Fund\n\n- We're using [Polar.sh](https://polar.sh/tiger-222) so you can upvote and help fund this issue.\n- We receive the funding once the issue is completed & confirmed by you.\n- Thank you in advance for helping prioritize & fund our backlog.\n\n<a href=\"https://polar.sh/BoboTiG/ebook-reader-dict/issues/377\">\n<picture>\n  <source media=\"(prefers-color-scheme: dark)\" srcset=\"https://polar.sh/api/github/BoboTiG/ebook-reader-dict/issues/377/pledge.svg?darkmode=1\">\n  <img alt=\"Fund with Polar\" src=\"https://polar.sh/api/github/BoboTiG/ebook-reader-dict/issues/377/pledge.svg\">\n</picture>\n</a>\n<!-- POLAR PLEDGE BADGE END -->\n",
+    "repo": "BoboTiG/ebook-reader-dict",
+    "base_commit": "e0c53a4884cfcf0ea6a5147b2a29b82cba5a7462",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BoboTiG__ebook-reader-dict-2151",
+    "image": "swerebench/sweb.eval.x86_64.bobotig_1776_ebook-reader-dict-2151",
+    "docker_image": "swerebench/sweb.eval.x86_64.bobotig_1776_ebook-reader-dict-2151",
+    "problem_statement": "[EN] Support  'mono' and 'monospace' templates\n- Wiktionary page: https://en.wiktionary.org/wiki/shebang\r\n\r\nWikicode:\r\n```\r\n{{monospace|#!}}\r\n```\r\n\r\nOutput:\r\n```\r\n(Monospace)\r\n```\r\n\r\nExpected:\r\n```\r\n<span style=\"font-family: monospace, monospace;\">#!</span>\r\n```\r\nTo be tested on actual device\r\n---\r\n\r\nModel link, if any: https://en.wiktionary.org/wiki/Template:mono\r\nAliases https://en.wiktionary.org/wiki/Special:WhatLinksHere?target=Template%3Amono&namespace=&hidetrans=1&hidelinks=1\n\n<!-- POLAR PLEDGE BADGE START -->\n## Upvote & Fund\n\n- We're using [Polar.sh](https://polar.sh/tiger-222) so you can upvote and help fund this issue.\n- We receive the funding once the issue is completed & confirmed by you.\n- Thank you in advance for helping prioritize & fund our backlog.\n\n<a href=\"https://polar.sh/BoboTiG/ebook-reader-dict/issues/1649\">\n<picture>\n  <source media=\"(prefers-color-scheme: dark)\" srcset=\"https://polar.sh/api/github/BoboTiG/ebook-reader-dict/issues/1649/pledge.svg?darkmode=1\">\n  <img alt=\"Fund with Polar\" src=\"https://polar.sh/api/github/BoboTiG/ebook-reader-dict/issues/1649/pledge.svg\">\n</picture>\n</a>\n<!-- POLAR PLEDGE BADGE END -->\n",
+    "repo": "BoboTiG/ebook-reader-dict",
+    "base_commit": "479c99fc5048432e708c595e59f393fefd41fe97",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BrandwatchLtd__api_sdk-62",
+    "image": "swerebench/sweb.eval.x86_64.brandwatchltd_1776_api_sdk-62",
+    "docker_image": "swerebench/sweb.eval.x86_64.brandwatchltd_1776_api_sdk-62",
+    "problem_statement": "username with capital letters\nI came across an issue when I use the token_path instead of the password to request my project:\r\nBWProject(username=YOUR_ACCOUNT, project=YOUR_PROJECT)\r\n\r\nWhen at the beginning I used  my username and password, the tokens.txt was generated with the username in lowercase (_read_auth_file). \r\nOn the other hand, my username contains capital letters, meaning my user´s json will be returned with these capital letters in the username field, so the _test_auth() method will fail in bwproject.py.\r\n\r\nI can think of ways to get around it by making it case sensitive, but I would appreciate some suggestions.\r\n\r\nMany thanks in advance!\r\n",
+    "repo": "BrandwatchLtd/api_sdk",
+    "base_commit": "0570363bdee1621b85f8290599e0c86c75bcf802",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "BurnzZ__scrapy-loader-upkeep-3",
+    "image": "swerebench/sweb.eval.x86_64.burnzz_1776_scrapy-loader-upkeep-3",
+    "docker_image": "swerebench/sweb.eval.x86_64.burnzz_1776_scrapy-loader-upkeep-3",
+    "problem_statement": "Allow paths to be named\nWhen having several amounts of xpaths for each field, is really difficult to determine which one was added firsts, specially when there are different workflows on the code.\r\n\r\nTo make easier the task to identify the paths on the stats, it would be great if we could name them. For example:\r\n\r\n```python\r\nloader.add_css('NAME', 'h1::text', name='Name from h1')\r\nloader.add_css('NAME', 'meta[value=\"title\"]::attr(content)', name=\"Name from meta tag\")\r\n```\r\n\r\n",
+    "repo": "BurnzZ/scrapy-loader-upkeep",
+    "base_commit": "0b36309d1c9ea814e097e06e9d7220cfef6e6f9e",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "CODAIT__exchange-metadata-converter-25",
+    "image": "swerebench/sweb.eval.x86_64.codait_1776_exchange-metadata-converter-25",
+    "docker_image": "swerebench/sweb.eval.x86_64.codait_1776_exchange-metadata-converter-25",
+    "problem_statement": "Support optional properties\nCurrently all `{{...}}` placeholders in https://github.com/CODAIT/exchange-metadata-converter/tree/main/templates are considered to be required and therefore each placeholder input file must define them. Annotations would solve this issue. Investigate what it takes to support something like this, where `@annotation_key` serves as a hint to the processing engine and doesn't invalidate the YAML file because it is specified as a comment.\r\n\r\n```\r\nproperty: '{{value}}'         #  just a comment\r\nanother:\r\n  property2: '{{value2}}'     # @optional and a comment\r\nthird_property:               #  comment only\r\nfourth_property:\r\nfifth_property: '{{value6}}'  # @annotation_only\r\n```",
+    "repo": "CODAIT/exchange-metadata-converter",
+    "base_commit": "a5432d877fe947a12c169d2d84c22e034d555289",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "CODAIT__exchange-metadata-converter-38",
+    "image": "swerebench/sweb.eval.x86_64.codait_1776_exchange-metadata-converter-38",
+    "docker_image": "swerebench/sweb.eval.x86_64.codait_1776_exchange-metadata-converter-38",
+    "problem_statement": "Non-compliant metadata.name in the generated DLF YAML\nThe `metadata.name` in the generated DLF YAML does not comply with the Kubernetes spec for DNS-1123 subdomain names.\r\n\r\n\r\n```JSON\r\n{\r\n  \"kind\": \"Status\",\r\n  \"apiVersion\": \"v1\",\r\n  \"metadata\": {},\r\n  \"status\": \"Failure\",\r\n  \"message\": \"Dataset.com.ie.ibm.hpsys \\\"Finance Proposition Bank\\\" is invalid: metadata.name: Invalid value: \\\"Finance Proposition Bank\\\": a DNS-1123 subdomain must consist of lower case alphanumeric characters, '-' or '.', and must start and end with an alphanumeric character (e.g. 'example.com', regex used for validation is '[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*')\",\r\n  \"reason\": \"Invalid\",\r\n  \"details\": {\r\n    \"name\": \"Finance Proposition Bank\",\r\n    \"group\": \"com.ie.ibm.hpsys\",\r\n    \"kind\": \"Dataset\",\r\n    \"causes\": [\r\n      {\r\n        \"reason\": \"FieldValueInvalid\",\r\n        \"message\": \"Invalid value: \\\"Finance Proposition Bank\\\": a DNS-1123 subdomain must consist of lower case alphanumeric characters, '-' or '.', and must start and end with an alphanumeric character (e.g. 'example.com', regex used for validation is '[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*')\",\r\n        \"field\": \"metadata.name\"\r\n      }\r\n    ]\r\n  },\r\n  \"code\": 422\r\n}\r\n```\r\n\r\n@ptitzler ",
+    "repo": "CODAIT/exchange-metadata-converter",
+    "base_commit": "c306552b0a2fc25f868cfc7daee7b26a1c99f31b",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "CORE-GATECH-GROUP__serpent-tools-24",
+    "image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-24",
+    "docker_image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-24",
+    "problem_statement": "Feature: Implement a messaging and exception framework\nImplement a overarching data logger that controls warnings, errors, and debug statements that allows the user to set the verbosity through the `rc` system. Maybe piggyback off of the [logging module](https://docs.python.org/3.6/library/logging.html)\r\n\r\nCreate a `SerpentToolsError` that is the base type for all critical errors thrown during operation.\r\n\r\n## Usage\r\n```from serpentTools.settings import rc\r\nrc['verbosity'] = 'debug'\r\n# print all status updates, errors, and debug statements\r\nrc['definitely not a setting'] = 'still not good'\r\n# raises SerpentToolsError or some subclass thereof\r\nrc['verbosity'] = 'quiet'\r\n# print only critical errors, same as `critical`\r\n```",
+    "repo": "CORE-GATECH-GROUP/serpent-tools",
+    "base_commit": "4b93cd86c6149b94960984892dad25de6fbbb41f",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "CORE-GATECH-GROUP__serpent-tools-243",
+    "image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-243",
+    "docker_image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-243",
+    "problem_statement": "[BUG] ResultsReader fails when only group constants are requested\n## Summary of issue\r\nWhen restricting the scope of the variables extracted from the results file to only group constants, the reader fails. \r\n\r\nIt is also worth noting that, when non-group constant data are requested as well, 'ABS_KEFF' and 'INF_FLX', for example, the reader will not fail, but the universes produced will not have group constant data\r\n\r\n## Code for reproducing the issue\r\n```\r\nimport serpentTools\r\nserpentTools.settings.rc['xs.variableExtras'] = ['INF_FLX', ] \r\nserpentTools.readDataFile('pwr_res.m')\r\n```\r\nAlternative case\r\n```\r\nimport serpentTools\r\nserpentTools.settings.rc['xs.variableExtras'] = ['INF_FLX', 'ABS_KEFF'] \r\nr = serpentTools.readDataFile('pwr_res.m')\r\nu = r.getUniv('0', index=1)\r\nu.infExp\r\n# returns {}\r\n```\r\n## Actual outcome including console output and error traceback if applicable\r\n```\r\nTraceback (most recent call last):\r\n  File \"<string>\", line 1, in <module>\r\n  File \"/home/ajohnson400/.local/lib/python3.6/site-packages/serpentTools-0.5.4-py3.6.egg/serpentTools/data/__init__.py\", line 70, in readDataFile\r\n    return read(filePath, **kwargs)\r\n  File \"/home/ajohnson400/.local/lib/python3.6/site-packages/serpentTools-0.5.4-py3.6.egg/serpentTools/parsers/__init__.py\", line 149, in read\r\n    returnedFromLoader.read()\r\n  File \"/home/ajohnson400/.local/lib/python3.6/site-packages/serpentTools-0.5.4-py3.6.egg/serpentTools/parsers/base.py\", line 49, in read\r\n    self._postcheck()\r\n  File \"/home/ajohnson400/.local/lib/python3.6/site-packages/serpentTools-0.5.4-py3.6.egg/serpentTools/parsers/results.py\", line 345, in _postcheck\r\n    self._inspectData()\r\n  File \"/home/ajohnson400/.local/lib/python3.6/site-packages/serpentTools-0.5.4-py3.6.egg/serpentTools/parsers/results.py\", line 342, in _inspectData\r\n    .format(self.filePath))\r\nserpentTools.messages.SerpentToolsException: metadata, resdata and universes are all empty from /home/ajohnson400/.local/lib/python3.6/site-packages/serpentTools-0.5.4-py3.6.egg/serpentTools/data/pwr_res.m and <results.expectGcu> is True\r\n```\r\n## Expected outcome\r\nThe parser should respect the settings passed, and properly store all the requested data on the homogenized universes\r\n## Versions\r\n\r\n* Version  from ``serpentTools.__version__`` `0.5.4`\r\n\r\n* Python version - ``python --version`` `3.6`",
+    "repo": "CORE-GATECH-GROUP/serpent-tools",
+    "base_commit": "67846baca60f959ac92bdf208e6f1c6744688890",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "CORE-GATECH-GROUP__serpent-tools-288",
+    "image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-288",
+    "docker_image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-288",
+    "problem_statement": "Universes in results reader are not zero-indexed\n## Summary of issue\r\nThe first index for universes is 1, likely taken directly from the result file burnup index. This misconstrues some of the style and pythonicness of the layout, as python arrays start at 0.\r\n\r\n## Code for reproducing the issue\r\nRead a result file with burnup and view the `universes` attribute\r\n\r\n## Expected outcome\r\nUniverse burnup indexes start at 0\r\n\r\n## Versions\r\n\r\n* Version  from ``serpentTools.__version__`` 0.6.1\r\n\r\n* Python version - ``python --version`` N/A",
+    "repo": "CORE-GATECH-GROUP/serpent-tools",
+    "base_commit": "1c730ef70c6f9ce98247e1d8b935d3bb98366e4a",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "CORE-GATECH-GROUP__serpent-tools-289",
+    "image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-289",
+    "docker_image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-289",
+    "problem_statement": "[API] Detector tallies of a single bin are difficult to work with\n## Summary of issue\r\nWhen using a detector w/ a single bin, e.g. one group flux, the bin data in the output file is a single bin. Rather than a proper array, these are floats cast into array form. Indexing doesn't work, but you can get the \"values\" by converting the arrays to `float`.\r\n\r\n## Code for reproducing the issue\r\n\r\n[tally_det0.txt](https://github.com/CORE-GATECH-GROUP/serpent-tools/files/2340714/tally_det0.txt)\r\n```\r\nimport serpentTools\r\nr = serpentTools.read('tally_det0.txt', 'det')\r\none = r['one']\r\none.tallies\r\n# array(8.19E17)\r\nr['two'].tallies\r\n# array([8.19E17, 7.18E17])\r\nr['two'].tallies[0]\r\n# 8.19E17\r\none.tallies[0]\r\n```\r\n## Actual outcome including console output and error traceback if applicable\r\nThis raises an `IndexError`\r\n\r\n## Expected outcome\r\nBetter way to index tally data of a single point.  Plotting also doesn't work for this as well, as the tally data has no shape, but is of size 1.\r\n\r\nConverting these to floats, or an array of a single float, e.g. array([tally]), would help with plotting and slicing down the road.\r\n\r\nLabeling as `API-Incompatible` because, depending on the implementation, this could require changes from the user. If this is the case, then this should be included with a release, like 0.6.0\r\n\r\n## Versions\r\n\r\n* Version  from ``serpentTools.__version__`` `0.5.3`",
+    "repo": "CORE-GATECH-GROUP/serpent-tools",
+    "base_commit": "85f47bd559fdc8b1bef3bdea7d64db4a1c5b6271",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "CORE-GATECH-GROUP__serpent-tools-306",
+    "image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-306",
+    "docker_image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-306",
+    "problem_statement": "BUG ADFs in results file fail in numeric conversion\n## Summary of issue\r\nWhen reading a file with assembly discontinuity factors (ADFs), there is a string that serpentTools attempts to convert to a vector. This causes a ValueError\r\n## Code for reproducing the issue\r\nAdd the following code to a section of a result file\r\n```\r\n% Assembly discontinuity factors (order: W-S-E-N / NW-NE-SE-SW):\r\n\r\nDF_SURFACE                (idx, [1:  3])  = 'ADF' ;\r\nDF_SYM                    (idx, 1)        = 1 ;\r\nDF_N_SURF                 (idx, 1)        = 4 ;\r\nDF_N_CORN                 (idx, 1)        = 4 ;\r\n```\r\n```\r\n$ python -c \"import serpentTools; serpentTools.read(\\\"adf_res.m\\\")\"\r\n```\r\n## Actual outcome including console output and error traceback if applicable\r\n```\r\nTraceback (most recent call last):\r\n  File \"<string>\", line 1, in <module>\r\n  File \"/home/ajohnson400/.local/lib/python3.7/site-packages/serpentTools/parsers/__init__.py\", line 155, in read\r\n    returnedFromLoader.read()\r\n  File \"/home/ajohnson400/.local/lib/python3.7/site-packages/serpentTools/parsers/base.py\", line 52, in read\r\n    self._read()\r\n  File \"/home/ajohnson400/.local/lib/python3.7/site-packages/serpentTools/parsers/results.py\", line 158, in _read\r\n    self._processResults(tline)\r\n  File \"/home/ajohnson400/.local/lib/python3.7/site-packages/serpentTools/parsers/results.py\", line 176, in _processResults\r\n    self._storeUnivData(varNameSer, varVals)\r\n  File \"/home/ajohnson400/.local/lib/python3.7/site-packages/serpentTools/parsers/results.py\", line 198, in _storeUnivData\r\n    values = str2vec(varVals)  # convert the string to float numbers\r\n  File \"/home/ajohnson400/.local/lib/python3.7/site-packages/serpentTools/utils/core.py\", line 59, in str2vec\r\n    return out([of(xx) for xx in vec])\r\n  File \"/home/ajohnson400/.local/lib/python3.7/site-packages/serpentTools/utils/core.py\", line 59, in <listcomp>\r\n    return out([of(xx) for xx in vec])\r\nValueError: could not convert string to float: 'ADF'\r\n```\r\n## Expected outcome\r\nDoesn't fail\r\n## Versions\r\n\r\n* Version  from ``serpentTools.__version__`` `0.7.0rc0`\r\n\r\n* Python version - ``python --version`` `3.7`",
+    "repo": "CORE-GATECH-GROUP/serpent-tools",
+    "base_commit": "fb197b44d97ef3ae24d95662dcbdeb1cd9e9694e",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "CORE-GATECH-GROUP__serpent-tools-315",
+    "image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-315",
+    "docker_image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-315",
+    "problem_statement": "Detectors with time binning \n## Summary of issue\r\n\r\nDetectors with [time binning](http://serpent.vtt.fi/mediawiki/index.php/Input_syntax_manual#det_di) have 13 columns in the detector output file (an additional column indicating the time bin between the normal 1st and 2nd column) and thus get mixed up with the Serpent 1 style detector output with the number of scores as the 13th column.\r\n\r\nThe Detector Reader reads the tally values from column 11 and error values from column 12 as usual. The problem is that in detectors with time binning, the tally values are actually at column 12 and error values at column 13.  \r\n\r\nI'm not sure what's the best approach for this at serpentTools side, but the best way to figure out whether the detector that has 13 columns has time binning is to check for the\r\n\r\n`DET<name>T`\r\n\r\narray that is printed in the detector file and gives the time binning associated with the detector.\r\n\r\n## Code for reproducing the issue\r\n\r\nSerpent input:\r\n\r\n    set title \"Homogeneous case\"\r\n\r\n    % --- Disable group constant calculation\r\n\r\n    set gcu -1\r\n\r\n    % --- Geometry is just a cube\r\n\r\n    surf 2 cuboid -100.0 100.0 -100.0 100.0 -100.0 100.0\r\n\r\n    % --- Cell definitions:\r\n\r\n    cell  3  0  fuel     -2\r\n    cell 99  0  outside   2     % Outside world\r\n\r\n    % --- Fuel material:\r\n\r\n    mat fuel   sum vol 8.0000E+06\r\n    8016.03c  0.316667\r\n    1001.03c  0.633333\r\n    92235.03c 0.0015\r\n    92238.03c 0.0485\r\n    5010.03c  0.000115797\r\n\r\n    % --- Reflective boundary conditions:\r\n\r\n    set bc 2 2 2\r\n\r\n    % --- Neutron population:\r\n\r\n    set pop 1000 10 10\r\n\r\n    % --- Normalization\r\n\r\n    set power 1.0\r\n\r\n    % --- Specify a time binnig (10 bins between 0 and 50 microseconds)\r\n\r\n    tme dettime 2 10 0 50e-6\r\n\r\n    % --- Detector with time binning\r\n\r\n    det FP dr -8 void di dettime\r\n\r\nProduced input_det0.m:\r\n\r\n\r\n    DETFP = [\r\n        1    1    1    1    1    1    1    1    1    1    1  8.68766E-01 0.00612 \r\n        2    2    1    1    1    1    1    1    1    1    1  1.14554E-01 0.03156 \r\n        3    3    1    1    1    1    1    1    1    1    1  1.49875E-02 0.10890 \r\n        4    4    1    1    1    1    1    1    1    1    1  1.51392E-03 0.28029 \r\n        5    5    1    1    1    1    1    1    1    1    1  1.60274E-04 1.00000 \r\n        6    6    1    1    1    1    1    1    1    1    1  1.89739E-05 1.00000 \r\n        7    7    1    1    1    1    1    1    1    1    1  0.00000E+00 0.00000 \r\n        8    8    1    1    1    1    1    1    1    1    1  0.00000E+00 0.00000 \r\n        9    9    1    1    1    1    1    1    1    1    1  0.00000E+00 0.00000 \r\n       10   10    1    1    1    1    1    1    1    1    1  0.00000E+00 0.00000 \r\n    ];\r\n\r\n\r\n    DETFPT = [\r\n     0.00000E+00  5.00000E-06  2.50000E-06\r\n     5.00000E-06  1.00000E-05  7.50000E-06\r\n     1.00000E-05  1.50000E-05  1.25000E-05\r\n     1.50000E-05  2.00000E-05  1.75000E-05\r\n     2.00000E-05  2.50000E-05  2.25000E-05\r\n     2.50000E-05  3.00000E-05  2.75000E-05\r\n     3.00000E-05  3.50000E-05  3.25000E-05\r\n     3.50000E-05  4.00000E-05  3.75000E-05\r\n     4.00000E-05  4.50000E-05  4.25000E-05\r\n     4.50000E-05  5.00000E-05  4.75000E-05\r\n    ];\r\n\r\nPostprocessing with serpentTools:\r\n\r\n    #!/usr/bin/env python\r\n    # -*- coding: utf-8 -*-\r\n\r\n    import serpentTools as sT\r\n\r\n    dr = sT.DetectorReader(\"./input_det0.m\")\r\n    dr.read()\r\n\r\n    det = dr.detectors[\"FP\"]\r\n\r\n    print(det.tallies)\r\n    print(det.errors)\r\n\r\n\r\n## Actual outcome including console output and error traceback if applicable\r\n\r\n    [1. 1. 1. 1. 1. 1. 1. 1. 1. 1.]\r\n    [8.68766e-01 1.14554e-01 1.49875e-02 1.51392e-03 1.60274e-04 1.89739e-05\r\n     0.00000e+00 0.00000e+00 0.00000e+00 0.00000e+00]\r\n\r\n## Expected outcome\r\n    [8.68766e-01 1.14554e-01 1.49875e-02 1.51392e-03 1.60274e-04 1.89739e-05\r\n     0.00000e+00 0.00000e+00 0.00000e+00 0.00000e+00]\r\n    [0.00612 0.03156 0.1089  0.28029 1.      1.      0.      0.      0.\r\n     0.     ]\r\n\r\n## Versions\r\n\r\n- Serpent 2.1.31\r\n- serpentTools 0.7.0+17.g7ae29a3.dirty\r\n- Python 3.6.7\r\n",
+    "repo": "CORE-GATECH-GROUP/serpent-tools",
+    "base_commit": "7ae29a333288609664c41979e8093923cbc95f50",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "CORE-GATECH-GROUP__serpent-tools-346",
+    "image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-346",
+    "docker_image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-346",
+    "problem_statement": "BUG Burnup and day values wrong for results with multiple gcu, no burnup\n## Summary of issue\r\nWhen reading a result file with multiple homogenized universes and no burnup, the homogenized universes have incorrect values of burnup and days. \r\n\r\n## Code for reproducing the issue\r\nReading a file with four homogenized universes, (50, 60, 70, 80) and no burnup\r\n```\r\n>>> r = serpentTools.read(\"core_res.m\")\r\n>>> r.universes.keys()\r\ndict_keys([\r\n    UnivTuple(universe='50', burnup=0, step=0, days=0), \r\n    UnivTuple(universe='60', burnup=1, step=0, days=1), \r\n    UnivTuple(universe='70', burnup=2, step=0, days=2), \r\n    UnivTuple(universe='80', burnup=3, step=0, days=3)])\r\n```\r\n## Expected outcome\r\nAll values of `burnup` and `days` should be zero. The bug exists on the develop branch and master branch [0.7.1] but the keys are plain tuples.\r\n\r\n## Versions\r\n\r\n* Version  from ``serpentTools.__version__`` `0.7.1-48-g09a5fea` and `0.7.1`\r\n* Python version - ``python --version`` 3.7.4",
+    "repo": "CORE-GATECH-GROUP/serpent-tools",
+    "base_commit": "09a5feab5b95f98aef4f7dc7b07edbf8e458f955",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "CORE-GATECH-GROUP__serpent-tools-377",
+    "image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-377",
+    "docker_image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-377",
+    "problem_statement": "BUG DetectorReader misses detectors that start with and contain identical names\n## Summary of issue\r\nA colleague has a detector file with the following energy dependent detectors: `spectrum`, `spectrumA`, and `spectrumB`. The DetectorReader fails to capture the later two detectors, and messes up the data stored on `spectrum`.\r\n\r\n## Code for reproducing the issue\r\nProcess a detector file with the above names. One has been created for reproducibility using the `bwr_det0.m` file and the following commands\r\n```sh\r\n$ sed \"s/spectrum/spectrumA/\" bwr_det0.m > a\r\n$ sed \"s/spectrum/spectrumB/\" bwr_det0.m > b\r\n$ cat bwr_det0.m a b > joined_det0.m\r\n```\r\nProcess with python\r\n```python\r\n>>> import serpentTools\r\n>>> det = serpentTools.read(\"joined_det0.m\")\r\n```\r\n## Actual outcome including console output and error traceback if applicable\r\n```python\r\n>>> det.detectors\r\n{'spectrum' : <serpentTools.detector.Detector object at ...>}\r\n>>> det[\"spectrum\"].grids.keys()\r\ndict_keys([\"E\", \"A\", \"AE\", \"B\", \"BE\"])\r\n```\r\n## Expected outcome\r\nAll three detectors are properly defined.\r\n\r\n## Versions\r\n\r\nPlease provide the following:\r\n\r\n* Version  from ``serpentTools.__version__`` `0.9.1`\r\n* Python version - ``python --version`` - `3.7`\r\n\r\n## Likely culprit\r\nhttps://github.com/CORE-GATECH-GROUP/serpent-tools/blob/2dc5a9d03bc510d358032f270575f0ab3120584f/serpentTools/parsers/detector.py#L63\r\n\r\n# Workaround\r\n\r\nIf the file has already been produced, then users can change the detector names to be more distinct, e.g.\r\n```sh\r\n$ sed -e \"s/spectrumA/Aspectrum/\" -e \"s/spectrumB/Bspectrum/\" joined_det0.m > mod_det0.m\r\n```\r\nthen serpentTools reveals that `spectrum`, `Aspectrum`, and `Bspectrum` detectors have been found.\r\n\r\nIf the detector names must be present in the file, users can put the longer names first, or break up the ordering with other detectors. This will \"confuse\" the matching. Putting `spectrum` last yields the correct detectors.\r\n",
+    "repo": "CORE-GATECH-GROUP/serpent-tools",
+    "base_commit": "3d11b98046c48eb8a1c625e1dd534bc3af0a7be6",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "CORE-GATECH-GROUP__serpent-tools-412",
+    "image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-412",
+    "docker_image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-412",
+    "problem_statement": "BUG ResultsReader drops last digit of scalar data\n## Summary of issue\r\nWhen reading a result file, we expect scalar data to have a space between the last digit and the colon due to\r\nhttps://github.com/CORE-GATECH-GROUP/serpent-tools/blob/dd886ff2b2cd19e8dc681245134cef8815d61f31/serpentTools/utils/core.py#L14 and https://github.com/CORE-GATECH-GROUP/serpent-tools/blob/dd886ff2b2cd19e8dc681245134cef8815d61f31/serpentTools/parsers/results.py#L280-L282\r\n\r\nThe `- 2` was done to remove the colon and the trailing space. However, there are some values that don't have this trailing space\r\nhttps://github.com/CORE-GATECH-GROUP/serpent-tools/blob/a69471eb211a18768aa55c695be906e006b4b4a6/data/pwr_res.m#L110-L118\r\n\r\n## Code for reproducing the issue\r\n```python\r\n>>> from serpentTools.data import readDataFile\r\n>>> res = readDataFile(\"pwr_res.m\")  # read the above data file\r\n>>> res.resdata[\"miscMemsize\"]\r\narray([[6.5], [6.5]])\r\n```\r\n\r\n## Actual outcome including console output and error traceback if applicable\r\nSee above\r\n## Expected outcome\r\nFor this value, we should see `miscMemsize` give us `[[6.59], [6.59]]`\r\n\r\n## Versions\r\n\r\nPlease provide the following:\r\n\r\n* Version  from ``serpentTools.__version__`` `0.10.0.dev0` and `0.9.3`\r\n* Python version - ``python --version`` `3.8`\r\n\r\n## Potential fix\r\nImproving the flexibility of the regular expressions. Possibly even using a match group to present the string / scalar / vector data in `match.groups()` rather than relying on `match.span`\r\n",
+    "repo": "CORE-GATECH-GROUP/serpent-tools",
+    "base_commit": "a69471eb211a18768aa55c695be906e006b4b4a6",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "CORE-GATECH-GROUP__serpent-tools-447",
+    "image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-447",
+    "docker_image": "swerebench/sweb.eval.x86_64.core-gatech-group_1776_serpent-tools-447",
+    "problem_statement": "ENH Support Serpent 2.1.32\n**Is your feature request related to a problem? Please describe.**\r\nWarning messages like\r\n```\r\nWARN SERPENT Serpent 2.1.32 found in godiva_res.m, but version 2.1.31 is defined in settings\r\n  Attemping to read anyway. Please report strange behaviors/failures to developers.\r\n```\r\n(also a typo) come through. But things seem to work fine. \r\n\r\n**Describe the solution you'd like**\r\nDetermine what new arguments exist in the result file that should be added to https://github.com/CORE-GATECH-GROUP/serpent-tools/blob/develop/serpentTools/variables.yaml even if we just do something like https://github.com/CORE-GATECH-GROUP/serpent-tools/blob/f61cd104bd997aa80429f1059bbc3669adc18654/serpentTools/variables.yaml#L133\r\n\r\nI thought I saw there are also new entries added to the depletion file but none seem to show up\r\n\r\n**Describe alternatives you've considered**\r\nCarry on regardless.\r\n\r\nPer https://github.com/CORE-GATECH-GROUP/serpent-tools/blob/f61cd104bd997aa80429f1059bbc3669adc18654/serpentTools/settings.py#L108-L116 should check if https://github.com/CORE-GATECH-GROUP/serpent-tools/blob/f61cd104bd997aa80429f1059bbc3669adc18654/serpentTools/parsers/results.py#L43-L55 needs updating or we can copy over\r\n",
+    "repo": "CORE-GATECH-GROUP/serpent-tools",
+    "base_commit": "f7eb3e1c843f7d2506fe7ffa378584d7602a3bb9",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "CS-SI__eodag-1262",
+    "image": "swerebench/sweb.eval.x86_64.cs-si_1776_eodag-1262",
+    "docker_image": "swerebench/sweb.eval.x86_64.cs-si_1776_eodag-1262",
+    "problem_statement": "USGS Search by ID lists many products instead of just the matching one\nWhen I try to use `eodag.search` method with setting the `id` parameter, it lists many (millions) of products instead of just the product matching the ID, and the only work around I found is to iterate through all the pages and look for the matching product manually, but it takes a lot of time to load all these results.\r\n\r\n**Code To Reproduce**\r\n```py\r\nfrom eodag import EODataAccessGateway\r\nfrom eodag.utils.logging import setup_logging\r\nsetup_logging(verbose=3)\r\ndag = EODataAccessGateway()\r\ndag.search(id=\"LC09_L2SP_016035_20240605_20240611_02_T1\", provider=\"usgs\", productType=\"LANDSAT_C2L2\")\r\n```\r\n\r\n**Output**\r\n```\r\n2024-07-08 22:46:20,166 eodag.config                     [DEBUG   ] (tid=140046769037376) Loading configuration from /home/hamed/Desktop/playground/env/lib/python3.11/site-packages/eodag/resources/providers.yml\r\n2024-07-08 22:46:21,432 eodag.config                     [INFO    ] (tid=140046769037376) Loading user configuration from: /home/hamed/.config/eodag/eodag.yml\r\n2024-07-08 22:46:21,452 eodag.core                       [INFO    ] (tid=140046769037376) aws_eos: provider needing auth for search has been pruned because no crendentials could be found\r\n2024-07-08 22:46:21,452 eodag.core                       [INFO    ] (tid=140046769037376) meteoblue: provider needing auth for search has been pruned because no crendentials could be found\r\n2024-07-08 22:46:21,452 eodag.core                       [INFO    ] (tid=140046769037376) hydroweb_next: provider needing auth for search has been pruned because no crendentials could be found\r\n2024-07-08 22:46:21,452 eodag.core                       [INFO    ] (tid=140046769037376) wekeo: provider needing auth for search has been pruned because no crendentials could be found\r\n2024-07-08 22:46:21,452 eodag.core                       [INFO    ] (tid=140046769037376) creodias_s3: provider needing auth for search has been pruned because no crendentials could be found\r\n2024-07-08 22:46:21,460 eodag.core                       [DEBUG   ] (tid=140046769037376) Opening product types index in /home/hamed/.config/eodag/.index\r\n2024-07-08 22:46:21,473 eodag.core                       [INFO    ] (tid=140046769037376) Locations configuration loaded from /home/hamed/.config/eodag/locations.yml\r\n2024-07-08 22:46:21,474 eodag.core                       [INFO    ] (tid=140046769037376) Searching product type 'LANDSAT_C2L2' on provider: usgs\r\n2024-07-08 22:46:21,474 eodag.core                       [INFO    ] (tid=140046769037376) Searching product with id 'LC09_L2SP_016035_20240605_20240611_02_T1' on provider: usgs\r\n2024-07-08 22:46:21,474 eodag.core                       [DEBUG   ] (tid=140046769037376) Using plugin class for search: UsgsApi\r\n2024-07-08 22:46:22,680 eodag.apis.usgs                  [INFO    ] (tid=140046769037376) Sending search request for landsat_ot_c2_l2 with {'start_date': None, 'end_date': None, 'll': None, 'ur': None, 'max_results': 2, 'starting_number': 1}\r\n2024-07-08 22:46:24,927 eodag.apis.usgs                  [DEBUG   ] (tid=140046769037376) Adapting 2 plugin results to eodag product representation\r\n2024-07-08 22:46:27,095 eodag.core                       [INFO    ] (tid=140046769037376) Found 3127730 result(s) on provider 'usgs'\r\n2024-07-08 22:46:27,095 eodag.core                       [INFO    ] (tid=140046769037376) Several products found for this id ([EOProduct(id=LC09_L2SP_016001_20240707_20240708_02_T1, provider=usgs), EOProduct(id=LC09_L2SP_016002_20240707_20240708_02_T1, provider=usgs)]). You may try searching using more selective criteria.\r\n```\r\n\r\n**Environment:**\r\n - Python version: `3.11.2`\r\n - EODAG version: `2.12.1`\r\n\r\n**Additional context**\r\nHere is the actual product that corresponds to the \"ID\" in the search:\r\nhttps://earthexplorer.usgs.gov/scene/metadata/full/5e83d14f2fc39685/LC90160352024157LGN00/\r\n",
+    "repo": "CS-SI/eodag",
+    "base_commit": "f7efdd09236091864c16b46822730cf1b97317c9",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "CS-SI__eodag-249",
+    "image": "swerebench/sweb.eval.x86_64.cs-si_1776_eodag-249",
+    "docker_image": "swerebench/sweb.eval.x86_64.cs-si_1776_eodag-249",
+    "problem_statement": "Default behaviour for extracting products\nI've just used `eodag-sentinelsat` and was surprised to see I had to set the `extract` parameter to a value (True or False). Before that, I never set this value and it seems to me that products were always extracted.\r\n\r\nCurrently in providers.yml:\r\n* usgs: true\r\n* aws_eos: (irrelevant as AWS download)\r\n* theia: true\r\n* peps: true\r\n* sobloo: true\r\n* creodias: true\r\n* mundi: true\r\n* (wekeo): broken now\r\n* onda: true\r\n* astraea_eod: (irrelevant as AWS download)\r\n* usgs_satapi_aws: (irrelevant as AWS download)\r\n* earth_search: (irrelevant as AWS download)\r\n* earth_search_cog: (irrelevant as COG)\r\n\r\nThe logic in `plugins.download.base.Download._finalize` is to set it to False if `extract` is not provided (either dynamically through kwargs or via configuration):\r\nhttps://github.com/CS-SI/eodag/blob/0632e4147f26119bea43e0672f6d06e75d216a20/eodag/plugins/download/base.py#L151-L161\r\n\r\nIt is called by `HttpDownload.download` and `UsgsApi.download` (and by `Download._prepare_download` to finalize extracting a product if it couldn't be achieved previously for some reason).\r\n\r\nThe template indicates:\r\n```\r\n            extract:  # whether to extract the downloaded products (true or false).\r\n```\r\n\r\nShould we:\r\n\r\n* Specify that the default behavior is to automatically extract products?\r\n* Update `_finalize` accordingly?\r\n* Indicate to plugin developers that they should extract automatically by default?\r\n* Update eodag-sentinelsat accordingly?",
+    "repo": "CS-SI/eodag",
+    "base_commit": "84aac9405cd346a366e7499d043e1e6959a66f30",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "CS-SI__eodag-380",
+    "image": "swerebench/sweb.eval.x86_64.cs-si_1776_eodag-380",
+    "docker_image": "swerebench/sweb.eval.x86_64.cs-si_1776_eodag-380",
+    "problem_statement": "prevent mixed results between earth_search and earth_search_cog\nSee #362 .\r\n\r\n@GriffinBabe pointed out that if we omit to specify the product type when searching on `earth_search_cog`, we get also results from `earth_search` that cannot be downloaded with the wrong download plugin:\r\n```py\r\nfrom eodag import EODataAccessGateway\r\n\r\ndag = EODataAccessGateway()\r\ndag.set_preferred_provider(\"earth_search_cog\")\r\n\r\n# Here I forget to specify which productType I am looking for\r\ncog_products, _ = dag.search()\r\npath = dag.download(cog_products[0])\r\n```\r\nRaises\r\n```\r\nrequests.exceptions.InvalidSchema: No connection adapters were found for 's3://sentinel-s2-l2a/tiles/42/F/UK/2021/11/23/0/qi/L2A_PVI.jp2'\r\n```\r\nTo prevent this, we'd have to:\r\n\r\n- [ ] only accept `S2_MSI_L2A_COG` product type with `earth_search_cog`\r\n- [ ] filter out `S2_MSI_L2A_COG` product type with `earth_search`\r\n",
+    "repo": "CS-SI/eodag",
+    "base_commit": "6e6e6890a52ac8ad4d0f989f41a726b35d9cf5d8",
+    "hint_text": "",
+    "environment": {}
+  },
+  {
+    "instance_id": "CS-SI__eodag-480",
+    "image": "swerebench/sweb.eval.x86_64.cs-si_1776_eodag-480",
+    "docker_image": "swerebench/sweb.eval.x86_64.cs-si_1776_eodag-480",
+    "problem_statement": "Earth Search: Missing ProductPath in some downloaded product\nBug linked to #423. \r\nSorry to reopen again this issue, but I have encountered new products where it fails 😅\r\nI am recreating a new issue to be more precise.\r\n\r\n**Describe the bug**\r\n\r\nSome products are missing a ProductPath in their properties, leading to failure to find the manifest file\r\n`FileNotFoundError: No manifest.safe could be found in D:\\_EODOWNLOAD\\OUTPUT\\GRAND_EST\\L2A\\S2B_MSIL2A_20211229T130249_N0301_R095_T24MUV_20211229T151639`\r\n![2022-03-16_09h17_21](https://user-images.githubusercontent.com/67311115/158546345-4ce55c5e-d57d-4c8e-afff-25029c837625.png)\r\n\r\nThis comes from the fact that the ProductPath is missing and its url is replaced by the product location in `get_bucket_name_and_prefix` (in `aws.py`). This leads to a wrong name and bucket:\r\n\r\n```python\r\nprint(\r\n    self.get_bucket_name_and_prefix(\r\n        product, product.properties[\"productPath\"]\r\n    )\r\n)\r\n    \r\n('v0', '/collections/sentinel-s2-l2a/items/S2A_32TLT_20211016_0_L2A')\r\n```\r\n\r\n**Code To Reproduce**\r\n```py\r\nimport os\r\nimport tempfile\r\n\r\nfrom eodag import EODataAccessGateway, setup_logging\r\nfrom eodag.config import override_config_from_file\r\n\r\nfrom eodownload import dir_utils\r\nfrom eodownload.dir_utils import get_data_directory\r\n\r\nOUTPUT = r\"D:\\\"\r\n\r\nos.environ[\"EODAG__EARTH_SEARCH__DOWNLOAD__EXTRACT\"] = \"false\"\r\nos.environ[\"EODAG__EARTH_SEARCH__DOWNLOAD__OUTPUTS_PREFIX\"] = OUTPUT\r\nos.environ[\"EODAG__EARTH_SEARCH__AUTH__CREDENTIALS__AWS_ACCESS_KEY_ID\"] = \"*****\"\r\nos.environ[\"EODAG__EARTH_SEARCH__AUTH__CREDENTIALS__AWS_SECRET_ACCESS_KEY\"] = \"*****\"\r\nos.environ[\"EODAG__EARTH_SEARCH__AUTH__CREDENTIALS__AWS_PROFILE\"] = \"*****\"\r\n\r\nif __name__ == \"__main__\":\r\n    setup_logging(2)  # DEBUG level\r\n\r\n    with tempfile.TemporaryDirectory() as tmp:\r\n        # Create gateway\r\n        dag = EODataAccessGateway()\r\n        dag.set_preferred_provider(\"earth_search\")\r\n\r\n        # Query all\r\n        products = dag.search_all(\r\n            start=\"2021-12-28\",\r\n            end=\"2021-12-30\",\r\n            **{\r\n                \"productType\": \"S2_MSI_L2A\",\r\n                \"geom\": \"POINT (-40.30881686219417 -5.018666560087038)\"\r\n            }\r\n        )\r\n\r\n        # Download all\r\n        dag.download_all(products)\r\n```\r\n\r\n```\r\n2022-06-30 15:46:48,821 eodag.config                     [INFO    ] Loading user configuration from: C:\\Users\\rbraun\\.config\\eodag\\eodag.yml\r\n2022-06-30 15:46:48,830 eodag.config                     [INFO    ] aws_s3_sentinel2_l1c: unknown provider found in user conf, trying to use provided configuration\r\n2022-06-30 15:46:48,830 eodag.config                     [WARNING ] aws_s3_sentinel2_l1c skipped: could not be loaded from user configuration\r\n2022-06-30 15:46:48,965 eodag.core                       [INFO    ] usgs: provider needing auth for search has been pruned because no crendentials could be found\r\n2022-06-30 15:46:48,965 eodag.core                       [INFO    ] aws_eos: provider needing auth for search has been pruned because no crendentials could be found\r\n2022-06-30 15:46:49,114 eodag.core                       [INFO    ] Locations configuration loaded from C:\\Users\\rbraun\\.config\\eodag\\locations.yml\r\n2022-06-30 15:46:49,763 eodag.core                       [INFO    ] Searching product type 'S2_MSI_L2A' on provider: earth_search\r\n2022-06-30 15:46:49,763 eodag.core                       [INFO    ] Iterate search over multiple pages: page #1\r\n2022-06-30 15:46:49,856 eodag.plugins.search.qssearch    [INFO    ] Sending search request: https://earth-search.aws.element84.com/v0/search\r\n2022-06-30 15:46:50,392 eodag.core                       [INFO    ] Found 1 result(s) on provider 'earth_search'\r\n2022-06-30 15:46:50,392 eodag.core                       [INFO    ] Downloading 1 products\r\nDownloaded products:   0%|          | 0/1 [00:00<?, ?product/s]\r\n0.00B [00:00, ?B/s]\r\nS2B_24MUV_20211229_1_L2A: 0.00B [00:00, ?B/s]2022-06-30 15:46:50,394 eodag.plugins.download.base      [INFO    ] Download url: https://earth-search.aws.element84.com/v0/collections/sentinel-s2-l2a/items/S2B_24MUV_20211229_1_L2A\r\n2022-06-30 15:46:50,394 eodag.plugins.download.aws       [ERROR   ] complementary_url_key productPath is missing in S2B_24MUV_20211229_1_L2A properties\r\nS2B_24MUV_20211229_1_L2A: 100%|██████████| 407M/407M [00:27<00:00, 8.57MB/s]2022-06-30 15:47:22,499 eodag.plugins.download.aws       \r\n[ERROR   ] Could not finalize SAFE product from downloaded data\r\nTraceback (most recent call last):\r\n  File \"C:\\Users\\rbraun\\Anaconda3\\envs\\eodownload\\lib\\site-packages\\eodag\\plugins\\download\\aws.py\", line 657, in finalize_s2_safe_product\r\n    f\"No manifest.safe could be found in {product_path}\"\r\nFileNotFoundError: No manifest.safe could be found in D:\\_EODOWNLOAD\\OUTPUT\\GRAND_EST\\L2A\\S2B_MSIL2A_20211229T130249_N0301_R095_T24MUV_20211229T151639\r\n2022-06-30 15:47:22,500 eodag.plugins.download.base      [WARNING ] A problem occurred during download of product: EOProduct(id=S2B_24MUV_20211229_1_L2A, provider=earth_search). Skipping it\r\nS2B_24MUV_20211229_1_L2A: 100%|██████████| 407M/407M [00:27<00:00, 14.6MB/s]\r\n2022-06-30 15:47:22,503 eodag.plugins.download.base      [INFO    ] [Retry #1, 0/1 D/L] Waiting 87s until next download try (retry every 2' for 20')\r\n```\r\n\r\n**Output**\r\nCompete output obtained with maximal verbosity.\r\n\r\n**Environment:**\r\n - Python version: Python 3.7.12\r\n - EODAG version: eodag (Earth Observation Data Access Gateway): version 2.5.1\r\n",
+    "repo": "CS-SI/eodag",
+    "base_commit": "54a51822ae350e54d2b7d353db377b6ff2886518",
+    "hint_text": "",
+    "environment": {}
   }
 ]
