@@ -64,6 +64,21 @@ search is best-effort.  Without a key the agent answers from model knowledge
 and the trace still records LLM spans; use `--no-gate-required` if such a run
 should pass without any tool span.
 
+If the host's OpenClaw does not have the pinned provider's plugin installed,
+`openclaw config patch` rejects `tools.web.search.provider` with "provider is
+not available" (e.g. `tavily`).  The runner then tries to link a globally
+installed plugin for that provider (found under
+`~/.openclaw/npm/projects/<package>-*`) into the task's isolated OpenClaw home
+so web search can actually use it; if that is not possible it degrades to
+OpenClaw auto-detection instead of failing the task.  The warning and the host
+fix are recorded in `web-search-config.log`.  To pin a provider
+deterministically, install/enable its plugin on the host first:
+
+```bash
+openclaw plugin install tavily   # or the provider you pinned
+openclaw doctor --fix
+```
+
 ## Select Tasks
 
 The runner uses this order (like SWE-Rebench):

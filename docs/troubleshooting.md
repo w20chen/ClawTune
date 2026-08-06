@@ -452,6 +452,24 @@ sandbox image's network and the OpenClaw binary's built-in web tools, or use
 `--no-gate-required` for a best-effort run. If the basic sandbox image cannot
 be pulled, check `pull_policy` and registry access for `sandbox.image`.
 
+If a DRB task fails during agent setup with
+`openclaw_web_search_config_patch_failed` and
+`tools.web.search.provider: ... provider is not available: tavily`, the host's
+OpenClaw does not have the `tavily` plugin visible in the task's isolated
+OpenClaw home. The runner first tries to link a globally installed `tavily`
+plugin (found under `~/.openclaw/npm/projects/openclaw-tavily-plugin-*`) into
+that home so web search can actually use it; if that is not possible it
+degrades to auto-detection instead of failing the whole task. To pin Tavily
+deterministically, install the plugin on the host:
+
+```bash
+openclaw plugin install tavily
+openclaw doctor --fix
+```
+
+The auto-link / degradation notes and this hint are recorded in
+`deep_research_bench/.runtime/traces/<task-id>/web-search-config.log`.
+
 ## 20. A trace reports `mvdan adapter is missing` or repeated `analysis_failure`
 
 The shell-clause parser adapter is built per user and per architecture. If a

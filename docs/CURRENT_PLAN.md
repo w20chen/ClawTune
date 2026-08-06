@@ -59,6 +59,11 @@ Linux.
   the attribution mode.  Web search defaults to **Tavily** and runs on the
   host (not the sandbox); availability depends on `TAVILY_API_KEY` reaching
   the `openclaw agent` process and the OpenClaw binary's built-in web tools.
+  Each task pins `tools.web.search.provider` into its isolated OpenClaw
+  config; if the host's OpenClaw lacks the provider plugin (e.g. `tavily`),
+  the runner first tries to link the globally installed plugin into the
+  isolated home, and only degrades to auto-detection if that is not possible
+  (the warning lands in `web-search-config.log`).
 
 - **read/edit CPU is container-cgroup level, not per-PID.** Attribution is
   per-PID, but the CPU figure comes from the shared sandbox container cgroup
@@ -113,6 +118,14 @@ Deep Research Bench acceptance (basic sandbox, no exec-clause requirement):
 # Optional: Tavily web search key (wrapper allows it through sudo)
 export TAVILY_API_KEY="<tavily-api-key>"
 python3 scripts/clawtune.py drb --sample 1 --parallelism 1
+```
+
+To pin web search deterministically to a provider, install the provider's
+plugin on the host (the runner links it into each task's isolated OpenClaw
+home automatically); otherwise the runner degrades to auto-detection:
+
+```bash
+openclaw plugin install tavily && openclaw doctor --fix
 ```
 
 Acceptance checks on the resulting `deep_research_bench/.runtime/traces/<task-id>/`:

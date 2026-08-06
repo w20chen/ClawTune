@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
+import pytest
 from swe_rebench.docker import ContainerResult
 
+import deep_research_bench.host_runner as host_runner
 from deep_research_bench.config import DRBConfig
 from deep_research_bench.host_runner import (
     _apply_web_search_key,
+    _pin_web_search_provider,
     _web_search_config_patch,
     _write_drb_task_inputs,
 )
@@ -234,3 +238,236 @@ def test_web_search_config_patch_auto_keeps_detection() -> None:
     assert _web_search_config_patch(config) == {
         "tools": {"web": {"search": {"enabled": True}}}
     }
+
+
+def _fake_result(returncode: int) -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(
+        args=[], returncode=returncode, stdout="", stderr=""
+    )
+
+
+def _pin_provider(config: DRBConfig, trace_dir: Path) -> None:
+    _pin_web_search_provider(
+        trace_dir=trace_dir,
+        openclaw_home=trace_dir / "home",
+        sidecar_port=12345,
+        config=config,
+        swe_cfg=config.to_swe_runner_config(),
+        workspace=trace_dir / "ws",
+    )
+
+
+def test_pin_web_search_provider_pins_when_available(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(host_runner, "_openclaw_env", lambda *a, **k: {})
+    monkeypatch.setattr(host_runner, "_require_executable", lambda name: "openclaw")
+    calls: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(kwargs["input"])
+        return _fake_result(0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    config = _config()
+    config.web_search.provider = "tavily"
+    _pin_provider(config, tmp_path)
+    assert len(calls) == 1
+    assert json.loads(calls[0]) == {
+        "tools": {"web": {"search": {"enabled": True, "provider": "tavily"}}}
+    }
+    log = (tmp_path / "web-search-config.log").read_text(encoding="utf-8")
+    assert "degrading to auto-detection" not in log
+
+
+def test_pin_web_search_provider_degrades_to_auto_when_provider_missing(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(host_runner, "_openclaw_env", lambda *a, **k: {})
+    monkeypatch.setattr(host_runner, "_require_executable", lambda name: "openclaw")
+    monkeypatch.setattr(
+        host_runner, "_discover_web_search_provider_plugin", lambda provider: None
+    )
+    calls: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(kwargs["input"])
+        return _fake_result(0 if len(calls) == 2 else 1)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    config = _config()
+    config.web_search.provider = "tavily"
+    _pin_provider(config, tmp_path)
+    assert len(calls) == 2
+    # First attempt pins tavily; the fallback retries with auto-detection.
+    assert json.loads(calls[0])["tools"]["web"]["search"]["provider"] == "tavily"
+    assert "provider" not in json.loads(calls[1])["tools"]["web"]["search"]
+    log = (tmp_path / "web-search-config.log").read_text(encoding="utf-8")
+    assert "degrading to auto-detection" in log
+    assert "openclaw doctor --fix" in log
+
+
+def test_pin_web_search_provider_raises_when_pin_and_fallback_fail(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(host_runner, "_openclaw_env", lambda *a, **k: {})
+    monkeypatch.setattr(host_runner, "_require_executable", lambda name: "openclaw")
+    monkeypatch.setattr(
+        host_runner, "_discover_web_search_provider_plugin", lambda provider: None
+    )
+    calls: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(kwargs["input"])
+        return _fake_result(1)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    config = _config()
+    config.web_search.provider = "tavily"
+    with pytest.raises(RuntimeError, match="openclaw_web_search_config_patch_failed"):
+        _pin_provider(config, tmp_path)
+    assert len(calls) == 2
+
+
+def test_pin_web_search_provider_raises_on_auto_failure(tmp_path, monkeypatch) -> None:
+    # With provider=auto there is no pinned provider to fall back from, so a
+    # patch failure is raised directly (one attempt only).
+    monkeypatch.setattr(host_runner, "_openclaw_env", lambda *a, **k: {})
+    monkeypatch.setattr(host_runner, "_require_executable", lambda name: "openclaw")
+    calls: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(kwargs["input"])
+        return _fake_result(1)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    config = _config()
+    config.web_search.provider = "auto"
+    with pytest.raises(RuntimeError, match="openclaw_web_search_config_patch_failed"):
+        _pin_provider(config, tmp_path)
+    assert len(calls) == 1
+
+
+def test_pin_web_search_provider_skips_when_disabled(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(host_runner, "_openclaw_env", lambda *a, **k: {})
+    monkeypatch.setattr(host_runner, "_require_executable", lambda name: "openclaw")
+    calls: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(kwargs["input"])
+        return _fake_result(0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    config = _config()
+    config.web_search.enabled = False
+    _pin_provider(config, tmp_path)
+    assert calls == []
+
+
+def test_discover_web_search_provider_plugin_finds_global_install(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("SUDO_USER", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    plugin_dir = (
+        tmp_path / ".openclaw" / "npm" / "projects" / "openclaw-tavily-plugin-8ad843922d"
+    )
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "package.json").write_text(
+        '{"name": "@openclaw/tavily-plugin"}', encoding="utf-8"
+    )
+    assert host_runner._discover_web_search_provider_plugin("tavily") == plugin_dir
+
+
+def test_discover_web_search_provider_plugin_none_when_missing(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("SUDO_USER", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert host_runner._discover_web_search_provider_plugin("tavily") is None
+
+
+def test_discover_web_search_provider_plugin_none_for_unknown_provider(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("SUDO_USER", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert host_runner._discover_web_search_provider_plugin("acme-search") is None
+
+
+def test_link_web_search_provider_plugin_links_and_enables(tmp_path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return _fake_result(0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    plugin_dir = tmp_path / "plugin"
+    ok = host_runner._link_web_search_provider_plugin(
+        openclaw="openclaw",
+        env={},
+        log_path=tmp_path / "web-search-config.log",
+        plugin_dir=plugin_dir,
+        plugin_id="tavily",
+    )
+    assert ok is True
+    assert calls == [
+        ["openclaw", "plugins", "install", "--link", str(plugin_dir)],
+        ["openclaw", "plugins", "enable", "tavily"],
+    ]
+
+
+def test_link_web_search_provider_plugin_fails_on_link_error(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _fake_result(1))
+    ok = host_runner._link_web_search_provider_plugin(
+        openclaw="openclaw",
+        env={},
+        log_path=tmp_path / "web-search-config.log",
+        plugin_dir=tmp_path / "plugin",
+        plugin_id="tavily",
+    )
+    assert ok is False
+
+
+def test_link_web_search_provider_plugin_fails_on_exception(tmp_path, monkeypatch) -> None:
+    def boom(*a, **k):
+        raise subprocess.TimeoutExpired(cmd=[], timeout=60)
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    ok = host_runner._link_web_search_provider_plugin(
+        openclaw="openclaw",
+        env={},
+        log_path=tmp_path / "web-search-config.log",
+        plugin_dir=tmp_path / "plugin",
+        plugin_id="tavily",
+    )
+    assert ok is False
+
+
+def test_pin_web_search_provider_links_global_plugin_then_retries(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(host_runner, "_openclaw_env", lambda *a, **k: {})
+    monkeypatch.setattr(host_runner, "_require_executable", lambda name: "openclaw")
+    monkeypatch.setattr(
+        host_runner,
+        "_discover_web_search_provider_plugin",
+        lambda provider: tmp_path / "plugin",
+    )
+    monkeypatch.setattr(host_runner, "_link_web_search_provider_plugin", lambda **k: True)
+    calls: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(kwargs["input"])
+        return _fake_result(0 if len(calls) == 2 else 1)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    config = _config()
+    config.web_search.provider = "tavily"
+    _pin_provider(config, tmp_path)
+    # First patch fails; the global plugin is linked; the retry pins tavily
+    # again and succeeds — no fallback to auto-detection.
+    assert len(calls) == 2
+    for payload in calls:
+        assert json.loads(payload)["tools"]["web"]["search"]["provider"] == "tavily"
+    log = (tmp_path / "web-search-config.log").read_text(encoding="utf-8")
+    assert "degrading to auto-detection" not in log

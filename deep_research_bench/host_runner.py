@@ -201,6 +201,134 @@ def _web_search_config_patch(config: DRBConfig) -> dict[str, Any] | None:
     return {"tools": {"web": {"search": search}}}
 
 
+# Official external web-search provider plugins that OpenClaw ships as
+# separate npm packages (``openclaw plugins install <package>``).  DRB runs the
+# agent in an isolated ``OPENCLAW_HOME`` that only contains the ClawTune
+# ``agent-scheduler`` plugin, so a globally installed provider plugin (e.g.
+# Tavily) is invisible there unless the runner links it in.
+_WEB_SEARCH_PROVIDER_PACKAGES: dict[str, str] = {
+    "tavily": "@openclaw/tavily-plugin",
+    "exa": "@openclaw/exa-plugin",
+    "firecrawl": "@openclaw/firecrawl-plugin",
+    "perplexity": "@openclaw/perplexity-plugin",
+    "searxng": "@openclaw/searxng-plugin",
+}
+
+
+def _candidate_openclaw_homes() -> list[Path]:
+    """Candidate user OpenClaw homes for discovering globally installed plugins.
+
+    The benchmark runner usually runs as root via ``sudo`` with an isolated
+    ``OPENCLAW_HOME``, so globally installed plugins live in the invoking
+    user's home (``SUDO_USER``) or, failing that, ``$HOME``.
+    """
+    homes: list[Path] = []
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user:
+        try:
+            homes.append(Path(os.path.expanduser(f"~{sudo_user}")))
+        except (KeyError, RuntimeError):
+            pass
+    home = os.environ.get("HOME")
+    if home:
+        homes.append(Path(home))
+    return homes
+
+
+def _discover_web_search_provider_plugin(provider: str) -> Path | None:
+    """Locate a globally installed plugin directory for ``provider``.
+
+    OpenClaw installs npm plugins under
+    ``<home>/.openclaw/npm/projects/<encoded-package>-<hash>`` (e.g.
+    ``openclaw-tavily-plugin-8ad843922d``).  Returns the first matching
+    directory that contains a plugin manifest, or ``None``.
+    """
+    package = _WEB_SEARCH_PROVIDER_PACKAGES.get(provider)
+    if not package:
+        return None
+    base = package.removeprefix("@").replace("/", "-")
+    for home in _candidate_openclaw_homes():
+        projects = home / ".openclaw" / "npm" / "projects"
+        if not projects.is_dir():
+            continue
+        for candidate in sorted(projects.glob(f"{base}*")):
+            if candidate.is_dir() and (
+                (candidate / "openclaw.plugin.json").exists()
+                or (candidate / "package.json").exists()
+            ):
+                return candidate
+    return None
+
+
+def _link_web_search_provider_plugin(
+    *,
+    openclaw: str,
+    env: dict[str, str],
+    log_path: Path,
+    plugin_dir: Path,
+    plugin_id: str,
+) -> bool:
+    """Link a locally installed web provider plugin into the isolated home.
+
+    Mirrors how ``_configure_openclaw`` links the ClawTune plugin (``plugins
+    install --link`` then ``plugins enable``).  Returns ``True`` on success.
+    This is best-effort: any failure is logged and reported as ``False`` so
+    the caller can fall back to auto-detection instead of failing the task.
+    """
+    try:
+        with log_path.open("a", encoding="utf-8") as log:
+            result = subprocess.run(
+                [openclaw, "plugins", "install", "--link", str(plugin_dir)],
+                stdout=log,
+                stderr=log,
+                text=True,
+                env=env,
+                timeout=60,
+            )
+            if result.returncode != 0:
+                log.write(
+                    f"[warn] link provider plugin failed (exit={result.returncode})\n"
+                )
+                return False
+            result = subprocess.run(
+                [openclaw, "plugins", "enable", plugin_id],
+                stdout=log,
+                stderr=log,
+                text=True,
+                env=env,
+                timeout=60,
+            )
+            if result.returncode != 0:
+                log.write(
+                    f"[warn] enable provider plugin failed (exit={result.returncode})\n"
+                )
+                return False
+            return True
+    except (OSError, subprocess.SubprocessError) as exc:
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(f"[warn] link provider plugin raised: {exc}\n")
+        return False
+
+
+def _run_web_search_config_patch(
+    openclaw: str,
+    patch: dict[str, Any],
+    env: dict[str, str],
+    log_path: Path,
+) -> subprocess.CompletedProcess:
+    """Run ``openclaw config patch --stdin`` once, appending to ``log_path``."""
+    with log_path.open("a", encoding="utf-8") as log:
+        return subprocess.run(
+            [openclaw, "config", "patch", "--stdin"],
+            input=json.dumps(patch),
+            stdout=log,
+            stderr=log,
+            text=True,
+            env=env,
+            timeout=60,
+        )
+
+
 def _pin_web_search_provider(
     *,
     trace_dir: Path,
@@ -216,6 +344,14 @@ def _pin_web_search_provider(
     (Brave has priority over Tavily), so to make Tavily the default for DRB we
     patch ``tools.web.search.provider`` into this task's isolated OpenClaw
     config.
+
+    Web search is best-effort, so a missing provider plugin must not fail the
+    whole task.  If the pinned provider is not available in this task's
+    isolated OpenClaw home (OpenClaw rejects ``tools.web.search.provider``
+    with "provider is not available"), we degrade to OpenClaw auto-detection
+    instead.  The warning and the host fix (``openclaw plugin install
+    <provider>`` or ``openclaw doctor --fix``) are recorded in
+    ``web-search-config.log``.
     """
     patch = _web_search_config_patch(config)
     if patch is None:
@@ -223,21 +359,44 @@ def _pin_web_search_provider(
     env = _openclaw_env(openclaw_home, sidecar_port, swe_cfg, workspace)
     openclaw = _require_executable("openclaw")
     log_path = trace_dir / "web-search-config.log"
-    with log_path.open("w", encoding="utf-8") as log:
-        result = subprocess.run(
-            [openclaw, "config", "patch", "--stdin"],
-            input=json.dumps(patch),
-            stdout=log,
-            stderr=log,
-            text=True,
+    log_path.write_text("", encoding="utf-8")
+    pinned_provider = config.web_search.provider
+    pinned = bool(pinned_provider and pinned_provider != "auto")
+    result = _run_web_search_config_patch(openclaw, patch, env, log_path)
+    if result.returncode == 0:
+        return
+    if pinned:
+        # The pinned provider (e.g. tavily) is not available in the isolated
+        # OpenClaw home.  First try to link a globally installed plugin for it
+        # so web search can actually use the provider; if that is not possible,
+        # keep web search best-effort by degrading to auto-detection.
+        plugin_dir = _discover_web_search_provider_plugin(pinned_provider)
+        if plugin_dir is not None and _link_web_search_provider_plugin(
+            openclaw=openclaw,
             env=env,
-            timeout=60,
-        )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"openclaw_web_search_config_patch_failed exit={result.returncode}: "
-            f"{_tail_text(log_path, 2000)}"
-        )
+            log_path=log_path,
+            plugin_dir=plugin_dir,
+            plugin_id=pinned_provider,
+        ):
+            result = _run_web_search_config_patch(openclaw, patch, env, log_path)
+            if result.returncode == 0:
+                return
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(
+                f"[warn] web search provider '{pinned_provider}' is not "
+                "available in this task's isolated OpenClaw home; degrading to "
+                "auto-detection. To pin it, install or enable its plugin (e.g. "
+                "`openclaw plugin install tavily`) or run `openclaw doctor "
+                "--fix`.\n"
+            )
+        fallback = {"tools": {"web": {"search": {"enabled": True}}}}
+        result = _run_web_search_config_patch(openclaw, fallback, env, log_path)
+        if result.returncode == 0:
+            return
+    raise RuntimeError(
+        f"openclaw_web_search_config_patch_failed exit={result.returncode}: "
+        f"{_tail_text(log_path, 2000)}"
+    )
 
 
 def _ensure_basic_image(config: DRBConfig, swe_cfg: RunnerConfig) -> str:
