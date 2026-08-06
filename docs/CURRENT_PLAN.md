@@ -30,6 +30,25 @@ Linux.
   telemetry is the read/edit/web-tool style (sandbox-container / per-PID
   docker-exec).  The relaxed gate (`runtime.gate_required`) requires an LLM
   span and a resource-sampled tool span per task, never exec-clause artifacts.
+- **Legacy offline evaluation** (`legacy_eval/`) is an independent evaluator
+  that runs ClawTune's prediction KBs (ClauseResourceKB / LatticeTimeKB /
+  RuntimeToolResourceKB) over an external "legacy" trace dataset without
+  re-running the harness.  It parses per-task Stage-2 `clause_telemetry.json`
+  artifacts (validated by the native loader — they are schema-identical) plus
+  `trace.jsonl`, splits tasks randomly 80/20, trains only on the 80%, replays
+  the 20% predict-only, and reports per-algorithm metrics.  It never modifies
+  `services/scheduler/src/tool_resource` or `tool_time`.
+- **The project cold-start seed is now the legacy-trained KB.** The 80-task
+  (seed-42) training KB was exported (via `legacy_eval --export-kb
+  traces/tool-resource --skip-eval`) to replace the previous tiny synthetic
+  seed under `traces/tool-resource/`:
+  `clause-resource-kb.json` (~30 public latency nodes incl. 29 bin priors),
+  `clause-lattice-time-kb.json` (3643 observations), `runtime-tool-resource-kb.json`
+  (23 latency / 9 CPU nodes, plus the previous `peak_memory_mb` global prior
+  preserved).  Export ships public-layer only (empty per-repo layer); memory
+  prior is merged from the previous seed because legacy traces have no
+  ambient-memory anchor.  The seed passes the runtime validator
+  (`_validate_kb_snapshot_pair`) and is loaded as cold start by the sidecar.
 
 ## Known Limitations
 
@@ -53,6 +72,12 @@ Linux.
   the launcher in `fork-exec` mode, which reports `host_cgroup_gate=false` by
   design. The sidecar derives the host cgroup from `/proc/<host_pid>/cgroup`
   instead, so launcher spans remain cgroup-backed.
+- **Legacy continuous metrics are limited by the source format.** Legacy
+  clause rows carry no `ts_start`/`ts_end` (causality unavailable; the static
+  protocol observes nothing during test), and `resources.json` has no memory
+  samples, so `peak_memory_mb` is not evaluated and `continuous_cpu_p90`
+  coverage is low (~12% on the seed-42 run) because short clauses are CPU
+  ineligible.
 
 ## Validation
 
@@ -63,6 +88,11 @@ python tools/validate_contracts.py
 python -m pytest tests -q --basetemp .pytest-tmp-root
 cd services/scheduler && python -m pytest tests -q --basetemp ../../.pytest-tmp-scheduler
 cd packages/openclaw-plugin && npm test && npm run typecheck
+
+# Legacy offline evaluation + cold-start export (independent module; no Docker/eBPF)
+python -m pytest tests/test_legacy_eval.py tests/test_legacy_eval_export.py -q --basetemp .pytest-tmp-root
+python -m legacy_eval --max-train-tasks 2 --max-test-tasks 1 --print-summary
+python -m legacy_eval --export-kb legacy_eval/.runtime/coldstart --skip-eval
 ```
 
 ### Host-only (cannot run in this Windows workspace)
