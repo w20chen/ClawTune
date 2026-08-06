@@ -15,6 +15,18 @@ The root `.env` controls the long-running sidecar. Useful settings are:
 | `AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL` | DeepSeek API | Use another OpenAI-compatible provider |
 | `AGENT_SCHEDULER_TOKEN` | unset | Require local sidecar authentication |
 
+For a provider other than the `.env` default, point the proxy at its upstream
+base URL in `.env` and restart the sidecar:
+
+```bash
+AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL=https://openrouter.ai/api/v1
+AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL=your-visible-model
+AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=provider/real-model
+```
+
+Only use the explicit upstream-key override when the proxy must intentionally
+use a different credential than OpenClaw. Do not commit keys.
+
 The eBPF collector is required by default. Do not disable it for a result that
 will be treated as a valid ClawTune measurement.
 
@@ -72,7 +84,7 @@ but differs from SWE-Rebench in a few ways:
 - `runtime.stage2_required` defaults to `false`. Research tools
   (web/fetch/read/edit) never produce Stage-2 eBPF exec clause telemetry.
 - `runtime.gate_required` (default `true`) is a **relaxed** required-telemetry
-  gate: a task fails only when its v6 trace has no LLM span or no
+  gate: a task fails only when its trace has no LLM span or no
   resource-sampled tool span. Set it `false` for a best-effort run.
 - `sandbox.image` names the one very basic tool container (default
   `python:3.11-slim`); `dataset` mirrors

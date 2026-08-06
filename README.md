@@ -24,7 +24,7 @@ existing installation.
 
 ## Quick Start
 
-Run these commands as a normal user from the repository root. An active Conda
+Run these commands as a user from the repository root. An active Conda
 environment is harmless: the setup program deliberately selects the system
 Python that owns the distribution's `bcc` or `bpfcc` binding.
 
@@ -109,10 +109,8 @@ openclaw gateway run
 openclaw tui --session main
 ```
 
-This is the recommended everyday topology for one user: one Gateway and a
-small number of active sessions. A session contains repeated turns; each turn
-is a run. ClawTune keeps the sidecar alive with the Gateway, finalizes trace
-state after each run, and releases session fallback state when a session ends.
+For a single‑user production environment, the recommended setup comprises one Gateway and a small number of active sessions. A session contains repeated turns. ClawTune keeps the sidecar alive with the Gateway, finalizes trace
+state after each turn, and releases session fallback state when a session ends.
 Docker is an execution/isolation boundary for sandboxed tools and benchmark
 tasks; it is not another conversation owner and does not imply one container
 per Gateway turn.
@@ -145,15 +143,11 @@ terminal. It is not the normal entry point for an ongoing CLI conversation.
 The plugin resolves the current checkout, `.venv`, matching kernel build tree,
 and privileged launch arguments at runtime. It does not persist a generated
 absolute sidecar command that would become stale after the checkout moves.
-
-Traces are written under `data/traces/`. A healthy API alone is not used as
-proof of eBPF readiness; `setup` and `check` both execute a real instrumented
-command.
+Traces are written under `data/traces/`.
 
 ### 4. Run a benchmark
 
-If the SWE-Rebench task dataset is in the usual sibling
-`../agent-test-bench` checkout, ClawTune finds it automatically:
+#### SWE-Rebench
 
 ```bash
 python3 scripts/clawtune.py benchmark --sample 1
@@ -185,27 +179,19 @@ machine-wide Sidecar; all concurrent OpenClaw runtimes reuse it and contribute
 to the same batch knowledge base:
 
 ```bash
-# Small acceptance run
 python3 scripts/clawtune.py benchmark --sample 8 --parallelism 4
-
-# Large-host example; size this to the actual machine
-python3 scripts/clawtune.py benchmark --sample 128 --parallelism 128
 ```
 
 `--sample` selects how many cases run; `--parallelism` limits simultaneous
 cases. Parallelism defaults to `1`, so an upgrade never starts a large batch
-implicitly. CPU capacity is derived from online CPUs, affinity, and cgroup
-limits; `128` is an example, not a hardcoded limit. Benchmark concurrency comes
-from independent task runtimes sharing the batch Sidecar. It is separate from
-the ordinary one-user Gateway topology and is not a reason to run many
-Gateways or many interactive sessions.
+implicitly.
 
-### 5. Run a Deep Research Bench benchmark
+#### Deep Research Bench
 
-Deep Research Bench runs PhD-level research questions through OpenClaw while
+Deep Research Bench runs research questions through OpenClaw while
 ClawTune records the same model/tool/resource telemetry. There is no per-task
 image: the agent's tools run in a very basic Docker sandbox
-(`python:3.11-slim` by default). Each task's v6 trace, prompt, manifest, and
+(`python:3.11-slim` by default). Each task's trace, prompt, manifest, and
 the record-only reference answer are kept under `deep_research_bench/.runtime/`.
 
 ```bash

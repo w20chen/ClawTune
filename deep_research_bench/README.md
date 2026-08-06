@@ -98,7 +98,7 @@ python3 scripts/clawtune.py drb --sample 1
 `clawtune.py drb` runs the `deep_research_bench.runner` under `sudo` (for the
 sidecar's privileged eBPF runtime), prepares the runtime bundle, and exports
 traces.  Per-task output lands under
-`deep_research_bench/.runtime/traces/<task-id>/`, including the v6 JSONL trace,
+`deep_research_bench/.runtime/traces/<task-id>/`, including the JSONL trace,
 `agent_prompt.txt`, `task_manifest.json`, `reference_answer.txt` (record-only),
 and `result_summary.json`.  A batch report is written to
 `deep_research_bench/.runtime/report.json`.
@@ -108,7 +108,7 @@ and `result_summary.json`.  A batch report is written to
 Research tasks use read/edit/web tools measured with the sandbox-container /
 per-PID scope, so the swe-rebench Stage-2 eBPF exec-clause gate does not apply.
 The relaxed gate (`runtime.gate_required`, default `true`) fails a task only
-when its v6 trace has no LLM span or no resource-sampled tool span.  Set
+when its trace has no LLM span or no resource-sampled tool span.  Set
 `runtime.gate_required: false` (or `--no-gate-required`) for a best-effort run.
 
 ## Direct runner usage

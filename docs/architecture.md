@@ -64,10 +64,9 @@ User guides:
 
 - Getting started: [getting-started.md](getting-started.md)
 - Configuration: [configuration.md](configuration.md)
-- OpenClaw: [operator-guide.md](operator-guide.md)
 - Sidecar: [sidecar.md](sidecar.md)
-- Deployment: [deployment.md](deployment.md)
 - ARM/QEMU: [arm-qemu.md](arm-qemu.md)
+- Troubleshooting: [troubleshooting.md](troubleshooting.md)
 - SWE-Rebench: [../swe_rebench/README.md](../swe_rebench/README.md)
 - Deep Research Bench: [../deep_research_bench/README.md](../deep_research_bench/README.md)
 

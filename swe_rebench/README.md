@@ -82,6 +82,31 @@ python3 scripts/clawtune.py benchmark \
   --sample 128 --parallelism 8
 ```
 
+Other useful selections:
+
+```bash
+# Exact instances
+python3 scripts/clawtune.py benchmark \
+  --dataset swe_rebench/tasks.json \
+  --instance-ids django__django-12345,sympy__sympy-67890
+
+# One repository
+python3 scripts/clawtune.py benchmark \
+  --dataset swe_rebench/tasks.json \
+  --repo django/django --sample 5
+
+# Show the selection without executing tasks
+python3 scripts/clawtune.py benchmark \
+  --dataset swe_rebench/tasks.json \
+  --sample 3 --dry-run
+```
+
+`--sample N` means the first `N` tasks in source order after any
+`--instance-ids`, `--repo`, and `--skip` filtering. It is not a random sample.
+The report preserves that selection order. Execution is serial by default and
+becomes concurrent only when `--parallelism` or `batch.parallelism` is greater
+than one.
+
 ## Run
 
 Always start with one task:
@@ -89,6 +114,34 @@ Always start with one task:
 ```bash
 python3 scripts/clawtune.py benchmark --sample 1
 ```
+
+## Timeouts
+
+Limit every task to ten minutes (the shorter `--timeout-seconds` alias is also
+accepted):
+
+```bash
+python3 scripts/clawtune.py benchmark --sample 32 --task-timeout-seconds 600
+```
+
+This is a hard wall-clock limit for one task, including all OpenClaw turns and
+tool calls, repository export, preflight, and normal result collection. The
+remaining budget, rather than the original value, is passed to the agent after
+setup. A timed-out task exits with status 124. Agent and sandbox termination
+then use a separate bounded cleanup grace, so safe cleanup is still attempted
+after the task deadline has expired.
+
+To impose an additional shorter limit on only the OpenClaw phase:
+
+```bash
+python3 scripts/clawtune.py benchmark --sample 32 \
+  --task-timeout-seconds 600 --agent-timeout-seconds 420
+```
+
+The effective agent limit is the smaller of the agent limit and the remaining
+whole-task budget. `0` disables the corresponding limit. OpenClaw's supported
+`agent` CLI does not expose a maximum-turn option, so the runner enforces time
+budgets at the process boundary.
 
 ## Replay a Case
 
@@ -156,13 +209,7 @@ LLM provider and does not reuse source-trace resource values.
 
 ### Outputs and verification
 
-Replay outputs are written below:
-
-```text
-swe_rebench/replays/<task-id>/
-```
-
-Check these files after a run:
+Check the replay directory after a run:
 
 ```bash
 find swe_rebench/replays/django__django-12345 -maxdepth 2 -type f | sort
@@ -171,83 +218,23 @@ python tools/inspect_trace.py \
   swe_rebench/replays/django__django-12345/*.jsonl --all --details
 ```
 
-The replay directory contains a new v6 JSONL trace, a new `tool-resource/`
-artifact directory, `replay_manifest.json`, and sidecar/sandbox logs. Compare
-the replay `resources` and `execution.tool_resource` fields with the source
-trace only as two separate measurements; do not overwrite or merge them.
+It contains a new v6 JSONL trace, a new `tool-resource/` artifact directory,
+`replay_manifest.json`, and sidecar/sandbox logs. Compare the replay
+`resources` and `execution.tool_resource` fields with the source trace only as
+two separate measurements; do not overwrite or merge them.
 
-Replay currently requires `runtime.mode=host-openclaw-sandbox`. It fails closed
-for unsupported runtime modes, old v5 traces, incomplete LLM spans, or tool
-arguments that were redacted/truncated. The first Linux acceptance run should
-use a harmless trace and verify the manifest, a new v6 JSONL file, and one
-Stage-2 artifact before replaying a real case.
+Replay fails closed for unsupported runtime modes, old v5 traces, incomplete
+LLM spans, or tool arguments that were redacted/truncated. The first Linux
+acceptance run should use a harmless trace and verify the manifest, a new v6
+JSONL file, and one Stage-2 artifact before replaying a real case.
 
 ### Safety and cleanup
 
 Replay executes commands recorded in the source trace. Review the trace before
 running it, use a disposable task workspace, and keep the normal sandbox and
 network policy enabled. Do not replay untrusted traces on a host with access
-to sensitive files or credentials. The source trace is never modified, and
-the replay workspace is separate from the original benchmark workspace.
-
-Limit every task to ten minutes (the shorter `--timeout-seconds` alias is also
-accepted):
-
-```bash
-python3 scripts/clawtune.py benchmark --sample 32 --task-timeout-seconds 600
-```
-
-This is a hard wall-clock limit for one task, including all OpenClaw turns and
-tool calls, repository export, preflight, and normal result collection. The
-remaining budget, rather than the original value, is passed to the agent after
-setup. A timed-out task exits with status 124. Agent and sandbox termination
-then use a separate bounded cleanup grace, so safe cleanup is still attempted
-after the task deadline has expired.
-
-To impose an additional shorter limit on only the OpenClaw phase:
-
-```bash
-python3 scripts/clawtune.py benchmark --sample 32 \
-  --task-timeout-seconds 600 --agent-timeout-seconds 420
-```
-
-The effective agent limit is the smaller of the agent limit and the remaining
-whole-task budget. `0` disables the corresponding limit. OpenClaw's supported
-`agent` CLI does not expose a maximum-turn option, so the runner enforces time
-budgets at the process boundary.
-
-With an explicit task source:
-
-```bash
-python3 scripts/clawtune.py benchmark \
-  --dataset swe_rebench/tasks.json \
-  --sample 5
-```
-
-Other useful selections:
-
-```bash
-# Exact instances
-python3 scripts/clawtune.py benchmark \
-  --dataset swe_rebench/tasks.json \
-  --instance-ids django__django-12345,sympy__sympy-67890
-
-# One repository
-python3 scripts/clawtune.py benchmark \
-  --dataset swe_rebench/tasks.json \
-  --repo django/django --sample 5
-
-# Show the selection without executing tasks
-python3 scripts/clawtune.py benchmark \
-  --dataset swe_rebench/tasks.json \
-  --sample 3 --dry-run
-```
-
-`--sample N` means the first `N` tasks in source order after any
-`--instance-ids`, `--repo`, and `--skip` filtering. It is not a random sample.
-The report preserves that selection order. Execution is serial by default and
-becomes concurrent only when `--parallelism` or `batch.parallelism` is greater
-than one.
+to sensitive files or credentials. The replay workspace is separate from the
+original benchmark workspace.
 
 ## Run Cases Concurrently
 

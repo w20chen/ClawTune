@@ -1,7 +1,8 @@
 # Trace & Protocol Reference
 
 For operational guides see
-[operator-guide.md](operator-guide.md) or
+[getting-started.md](getting-started.md),
+[configuration.md](configuration.md), or
 [../swe_rebench/README.md](../swe_rebench/README.md).
 
 Public protocol schemas live in `contracts/`. Stage-2 eBPF command artifacts are
@@ -16,7 +17,7 @@ Main event families:
 - `scheduler.v1` tool before/completed events
 - model start/end events
 - `scheduler.v2` managed execution registration and scope lookup
-- schema v6 trace records written as JSONL
+- schema trace records written as JSONL
 
 ## Trace Format
 
@@ -38,7 +39,7 @@ deep_research_bench/.runtime/traces/<task_id>/*.jsonl
 
 Deep Research Bench uses the sandbox-container / per-PID scope for its
 read/edit/web tools and does not require Stage-2 exec clause artifacts; the
-v6 records themselves are identical.
+records themselves are identical.
 
 Inspect traces:
 
@@ -46,6 +47,11 @@ Inspect traces:
 python tools/inspect_trace.py data/traces/<trace-file>.jsonl --all --details
 python tools/inspect_trace.py data/traces/<trace-file>.jsonl --all --timeline
 ```
+
+A successful instrumented run has a model span, a managed tool execution, an
+attached cgroup/process scope, a finalized eBPF command artifact with
+executable/argv data, and no collector loss. API health alone proves only that
+the process is listening; `setup`/`check` prove kernel collection.
 
 Expected record types:
 

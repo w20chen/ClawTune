@@ -56,7 +56,17 @@ therefore a port conflict and startup stops with an actionable error. The
 public response contract is `contracts/health.schema.json`.
 
 The health endpoints do not compile or attach probes on every request. Use
-`python3 scripts/clawtune.py check` for kernel collector readiness.
+`python3 scripts/clawtune.py check` after a kernel, BCC, or Clang update to
+verify the complete collector with a real process.
+
+Quick checks:
+
+```bash
+curl -fsS http://127.0.0.1:8765/health/live
+curl -fsS http://127.0.0.1:8765/health/ready
+curl -fsS http://127.0.0.1:8765/metrics
+curl -fsS "http://127.0.0.1:8765/v1/tools/recent?limit=5"
+```
 
 ## Resource Prediction
 
@@ -95,6 +105,29 @@ the shared attribution boundary.
 The collector is required by default. Disabling it is useful only to isolate an
 unrelated API/plugin problem; the resulting resource data is incomplete.
 
+ClawTune observes by default: scheduling/placement recommendations do not
+forcibly move work in the current release.
+
+## Service Manager Integration
+
+For a persistent machine, wrap the same `sidecar` command in the site's service
+manager and use the repository owner as the working user. There is no generic
+service unit in the repository because working directories, account names, and
+privilege policies are deployment-specific. The command itself invokes sudo,
+so unattended operation requires a tightly scoped local policy for the
+verified ClawTune launcher rather than a broad passwordless shell.
+
+Keep the service bound to `127.0.0.1` unless authentication, firewalling, and
+TLS termination have been designed for remote access. Provider credentials and
+raw traces can contain sensitive data.
+
+## Container-Only Development
+
+`docker compose up --build scheduler` is useful for API development. It is not
+the supported measurement deployment by itself: a container does not inherit
+the host's matching headers, tracefs mount, perf access, and cgroup boundaries
+simply because it is privileged.
+
 ## Configuration and Security
 
 See [configuration](configuration.md) for normal settings. The complete
@@ -105,3 +138,11 @@ for developers.
 - The proxy normally forwards OpenClaw's authorization header.
 - Treat a custom sidecar shell command as trusted administrator input.
 - Do not commit API keys or unredacted traces.
+- Setup applies the plugin's `securityBoundaryAccepted: true` because the
+  managed launcher rewrites shell execution.
+- Keep the sidecar local and use `AGENT_SCHEDULER_TOKEN` if another local user
+  must not call it.
+- Never commit `.env`, model provider credentials, raw benchmark workspaces, or
+  trace output.
+- eBPF-disabled diagnostic output is incomplete and must not be presented as a
+  successful ClawTune measurement.
