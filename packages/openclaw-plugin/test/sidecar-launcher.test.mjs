@@ -15,6 +15,23 @@ function shellArgument(value) {
   return `"${value.replaceAll('"', '\\"')}"`;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForAttempt(attemptsPath) {
+  const deadline = Date.now() + 2_500;
+  while (Date.now() < deadline) {
+    try {
+      if ((await readFile(attemptsPath, "utf8")) === "attempt\n") return;
+    } catch {
+      // The fixture has not written its attempt yet.
+    }
+    await sleep(10);
+  }
+  throw new Error("sidecar launch fixture did not run within 2.5s");
+}
+
 test("privileged sidecar launch resolves the checkout and preserves a narrow environment", async () => {
   const projectRoot = await mkdtemp(join(tmpdir(), "clawtune-sidecar-project-"));
   const kernelSource = join(projectRoot, "kernel-build");
@@ -105,10 +122,6 @@ test("sidecar auto-start is single-flight and tolerates another launcher winning
     error: (message) => messages.push(["error", message]),
   };
 
-  const healthyTimer = setTimeout(() => {
-    healthy = true;
-  }, 200);
-
   try {
     const opts = {
       endpoint,
@@ -117,10 +130,21 @@ test("sidecar auto-start is single-flight and tolerates another launcher winning
       healthTimeoutMs: 2_000,
       logger,
     };
-    const [first, second] = await Promise.all([
+    const launch = Promise.all([
       ensureSidecarRunning(opts),
       ensureSidecarRunning(opts),
     ]);
+
+    // The fixture appends "attempt\n" and then exits immediately. Only report
+    // the endpoint healthy once the fixture has actually run so the "another
+    // launcher won the startup race" path is deterministic: on a slow CI host
+    // the spawned child can otherwise still be alive when the endpoint flips
+    // healthy, and ensureSidecarRunning would hand back the live child instead
+    // of null.
+    await waitForAttempt(attemptsPath);
+    healthy = true;
+
+    const [first, second] = await launch;
 
     assert.notStrictEqual(first, second);
     assert.notStrictEqual(first.cleanup, second.cleanup);
@@ -139,7 +163,6 @@ test("sidecar auto-start is single-flight and tolerates another launcher winning
     first.cleanup();
     second.cleanup();
   } finally {
-    clearTimeout(healthyTimer);
     await new Promise((resolve) => server.close(resolve));
     await rm(workDir, {recursive: true, force: true});
   }
