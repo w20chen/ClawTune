@@ -153,6 +153,10 @@ cd /home/<user>/ClawTune && \
   BCC_KERNEL_SOURCE=/usr/src/kernels/$(uname -r) \
   .venv/bin/python -c "import os; from agent_scheduler.monitoring.net_accounting import ProcessNetAccounting as A; a=A([os.stat('/proc/self/ns/net').st_ino]); print('net available =', a.available); print(a._attach_error)"
 
+# NUMA-node CPU usage sampler (per-NUMA "total" utilization in each prediction)
+# Expect one node entry per hardware NUMA node, e.g. 4 entries on a 4-node box.
+.venv/bin/python -c "import time; from agent_scheduler.topology.linux import NumaCpuUsageSampler; s=NumaCpuUsageSampler(); time.sleep(1); print(s.sample())"
+
 # QEMU/binfmt on Kunpeng (amd64 benchmark images)
 sudo bash scripts/setup/arm_qemu_setup.sh install
 sudo bash scripts/setup/arm_qemu_setup.sh check

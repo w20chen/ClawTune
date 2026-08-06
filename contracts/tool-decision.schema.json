@@ -208,6 +208,36 @@
         "dropped_viewer_bins": {"type": "array", "items": {"type": "string"}}
       },
       "additionalProperties": false
+    },
+    "numaNodeUsage": {
+      "type": "object",
+      "description": "Aggregated CPU utilization for one hardware NUMA node over the sampling window. cpu_utilization_pct is the total busy share of the whole NUMA domain (0-100, where 100 means every CPU in the node was fully busy); busy_cores is the average number of fully busy cores over the window.",
+      "required": ["node", "cpulist", "online_cpus", "cpu_utilization_pct", "busy_cores"],
+      "properties": {
+        "node": {"type": "integer", "minimum": 0},
+        "cpulist": {"type": "string"},
+        "online_cpus": {"type": "integer", "minimum": 0},
+        "cpu_utilization_pct": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+        "busy_cores": {"type": ["number", "null"], "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "numaUsage": {
+      "type": "object",
+      "description": "Host-wide per-NUMA-node CPU usage snapshot captured at prediction time. One node entry is emitted per hardware NUMA node (e.g. four entries on a 4-node machine), reflecting each NUMA domain's busyness. available=false means the host exposes no /proc/stat or NUMA sysfs; sampled=false means this is the first sample so no window delta exists yet.",
+      "required": ["available", "sampled", "node_count", "window_s", "user_hz", "nodes"],
+      "properties": {
+        "available": {"type": "boolean"},
+        "sampled": {"type": "boolean"},
+        "node_count": {"type": "integer", "minimum": 0},
+        "window_s": {"type": ["number", "null"], "minimum": 0},
+        "user_hz": {"type": ["integer", "null"], "minimum": 1},
+        "nodes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/numaNodeUsage"}
+        }
+      },
+      "additionalProperties": false
     }
   },
   "required": ["decision_id", "action", "reason_code", "reason", "policy_name", "policy_version", "lease_id", "prediction", "placement_advice"],
@@ -318,6 +348,13 @@
                 {"type": "null"},
                 {"$ref": "#/$defs/kvTTLCost"}
               ]
+            },
+            "numa_usage": {
+              "anyOf": [
+                {"type": "null"},
+                {"$ref": "#/$defs/numaUsage"}
+              ],
+              "description": "Host-wide per-NUMA-node CPU usage snapshot taken at prediction time. Present only when the sidecar configures a NUMA usage sampler."
             },
             "composed": {
               "type": "boolean",

@@ -43,9 +43,34 @@ def _bucket_table(summary: dict[str, Any]) -> str:
             ("samples", str(summary["n"])),
             ("coverage", _pct(summary.get("coverage"))),
             ("top-1 bucket accuracy", _pct(summary.get("accuracy"))),
+            ("F1 (macro)", _num(summary.get("f1_macro"))),
+            ("F1 (weighted)", _num(summary.get("f1_weighted"))),
+            ("precision (macro)", _num(summary.get("precision_macro"))),
+            ("recall (macro)", _num(summary.get("recall_macro"))),
             ("Brier score", _num(summary.get("brier_score"), 4)),
         ]
     )
+
+
+def _confusion_matrix_markdown(summary: dict[str, Any]) -> str:
+    """Render a per-bucket confusion matrix (rows = actual, cols = predicted)."""
+
+    matrix = summary.get("confusion_matrix")
+    if not isinstance(matrix, list) or not matrix:
+        return ""
+    n_buckets = len(matrix)
+    header = "| actual \\ predicted | " + " | ".join(
+        f"b{index}" for index in range(n_buckets)
+    ) + " |"
+    separator = "| --- | " + " | ".join("---" for _ in range(n_buckets)) + " |"
+    lines = [header, separator]
+    per_class = summary.get("per_class", {})
+    for actual_index in range(n_buckets):
+        row = matrix[actual_index]
+        support = per_class.get(str(actual_index), {}).get("support", 0)
+        cells = " | ".join(str(int(value)) for value in row)
+        lines.append(f"| b{actual_index} (support {support}) | {cells} |")
+    return "\n".join(lines)
 
 
 def _lattice_table(summary: dict[str, Any]) -> str:
@@ -120,10 +145,16 @@ def render_markdown(result: EvalResult) -> str:
     )
     sections.append("## Data counts\n\n" + counts_table)
 
-    sections.append(
+    bucket_summary = result.summaries[BUCKET_TRACK]
+    bucket_section = (
         f"## `{BUCKET_TRACK}` (ClauseResourceKB, clause-level)\n\n"
-        + _bucket_table(result.summaries[BUCKET_TRACK])
+        + _bucket_table(bucket_summary)
     )
+    confusion = _confusion_matrix_markdown(bucket_summary)
+    if confusion:
+        bucket_section += "\n\nConfusion matrix (rows = actual, cols = predicted):\n\n" + confusion
+    sections.append(bucket_section)
+
     for track in LATTICE_TRACKS:
         sections.append(
             f"## `{track}` (LatticeTimeKB, clause-level point prediction)\n\n"
@@ -138,6 +169,8 @@ def render_markdown(result: EvalResult) -> str:
         f"## `{CONTINUOUS_CPU_TRACK}` "
         "(RuntimeToolResourceKB, call-level p90)\n\n"
         + _continuous_table(result.summaries[CONTINUOUS_CPU_TRACK])
+        + "\n\n"
+        + _resource_availability_block(result)
     )
 
     notes = result.meta.get("notes", {})
@@ -149,6 +182,22 @@ def render_markdown(result: EvalResult) -> str:
     sections.append("\n".join(note_lines))
 
     return "\n\n".join(sections) + "\n"
+
+
+def _resource_availability_block(result: EvalResult) -> str:
+    """Summarize which continuous resource targets the dataset supports."""
+
+    cpu = result.summaries[CONTINUOUS_CPU_TRACK]
+    latency = result.summaries[CONTINUOUS_LATENCY_TRACK]
+    return (
+        "Resource-target availability:\n\n"
+        f"- **latency**: evaluated, coverage {_pct(latency.get('coverage'))}.\n"
+        f"- **peak_cpu_cores**: evaluated, coverage {_pct(cpu.get('coverage'))} "
+        f"(short clauses <1s have no eligible peak-CPU, so coverage is partial).\n"
+        "- **peak_memory_mb**: NOT evaluated - the legacy format carries no "
+        "ambient-memory anchor, so the continuous KB honestly returns "
+        "`unavailable` for memory."
+    )
 
 
 def write_markdown_report(result: EvalResult, path: str | Path) -> Path:

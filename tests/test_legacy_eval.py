@@ -432,6 +432,21 @@ def test_summaries() -> None:
     assert bucket_summary["accuracy"] == 0.5
     assert bucket_summary["brier_score"] is not None
     assert "no_evidence" in bucket_summary["unavailable_reasons"]
+    # Classification report: actuals=[1,1], predictions=[1,2] over 3 buckets.
+    # class 1: tp=1, fp=0, fn=1 -> f1=2/3, support=2; class 2: tp=0 (its sample
+    # was actual 1), fp=1, actual support=0 -> f1=0.  Weighted F1 uses the
+    # actual-support weights (sklearn semantics), so class 2 contributes 0.
+    assert bucket_summary["f1_macro"] == pytest.approx((2 / 3 + 0.0) / 2)
+    assert bucket_summary["f1_weighted"] == pytest.approx((2 / 3 * 2 + 0.0) / 2)
+    assert bucket_summary["precision_macro"] == pytest.approx(0.5)
+    assert bucket_summary["recall_macro"] == pytest.approx(0.25)
+    assert bucket_summary["confusion_matrix"] == [
+        [0, 0, 0],
+        [0, 1, 1],
+        [0, 0, 0],
+    ]
+    assert bucket_summary["per_class"]["1"]["support"] == 2
+    assert bucket_summary["per_class"]["2"]["support"] == 0
 
     point_records = [
         {"actual_ms": 100.0, "predicted_ms": 110.0},

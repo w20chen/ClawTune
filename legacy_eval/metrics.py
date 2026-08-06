@@ -84,15 +84,107 @@ def summarize_bucket(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             )
         if scores:
             brier = sum(scores) / len(scores)
+
+    classification: dict[str, Any] | None = None
+    if predicted:
+        n_buckets = 0
+        for r in predicted:
+            probs = r.get("probability_by_bucket")
+            if isinstance(probs, (list, tuple)) and probs:
+                n_buckets = max(n_buckets, len(probs))
+        actuals = [int(r["actual_bucket"]) for r in predicted]
+        preds = [int(r["predicted_bucket"]) for r in predicted]
+        if not n_buckets:
+            n_buckets = max(set(actuals) | set(preds)) + 1
+        classification = _classification_metrics(actuals, preds, n_buckets)
+
     return {
         "n": total,
         "coverage": coverage,
         "accuracy": accuracy,
         "brier_score": brier,
+        "f1_macro": classification["f1_macro"] if classification else None,
+        "f1_weighted": classification["f1_weighted"] if classification else None,
+        "precision_macro": (
+            classification["precision_macro"] if classification else None
+        ),
+        "recall_macro": classification["recall_macro"] if classification else None,
+        "per_class": classification["per_class"] if classification else {},
+        "confusion_matrix": (
+            classification["confusion_matrix"] if classification else []
+        ),
         "unavailable_reasons": dict(_unavailable_counts(records, predicted_key="predicted_bucket")),
         "actual_bucket_distribution": dict(
             Counter(r.get("actual_bucket") for r in records)
         ),
+    }
+
+
+def _classification_metrics(
+    actuals: Sequence[int],
+    predictions: Sequence[int],
+    n_buckets: int,
+) -> dict[str, Any]:
+    """Per-class and macro/weighted F1 plus a confusion matrix.
+
+    Classes are the buckets observed in either the actual or predicted labels;
+    buckets with zero support on both sides are omitted from ``per_class`` but
+    still occupy rows/columns in the confusion matrix.
+    """
+
+    matrix = [[0] * n_buckets for _ in range(n_buckets)]
+    for actual, predicted in zip(actuals, predictions, strict=True):
+        if 0 <= actual < n_buckets and 0 <= predicted < n_buckets:
+            matrix[actual][predicted] += 1
+
+    classes = sorted(set(actuals) | set(predictions))
+    per_class: dict[str, dict[str, float]] = {}
+    for cls in classes:
+        tp = matrix[cls][cls]
+        fp = sum(matrix[row][cls] for row in range(n_buckets)) - tp
+        fn = sum(matrix[cls][col] for col in range(n_buckets)) - tp
+        support = sum(matrix[cls][col] for col in range(n_buckets))
+        precision = tp / (tp + fp) if (tp + fp) else 0.0
+        recall = tp / (tp + fn) if (tp + fn) else 0.0
+        f1 = (
+            2 * precision * recall / (precision + recall)
+            if (precision + recall)
+            else 0.0
+        )
+        per_class[str(cls)] = {
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+            "support": support,
+        }
+
+    if classes:
+        weights = [per_class[str(cls)]["support"] for cls in classes]
+        total_support = sum(weights) or 1.0
+        macro_f1 = sum(per_class[str(cls)]["f1"] for cls in classes) / len(classes)
+        weighted_f1 = (
+            sum(
+                per_class[str(cls)]["f1"] * weight
+                for cls, weight in zip(classes, weights, strict=True)
+            )
+            / total_support
+        )
+        macro_precision = sum(
+            per_class[str(cls)]["precision"] for cls in classes
+        ) / len(classes)
+        macro_recall = sum(
+            per_class[str(cls)]["recall"] for cls in classes
+        ) / len(classes)
+    else:
+        macro_f1 = weighted_f1 = macro_precision = macro_recall = None
+
+    return {
+        "confusion_matrix": matrix,
+        "per_class": per_class,
+        "f1_macro": macro_f1,
+        "f1_weighted": weighted_f1,
+        "precision_macro": macro_precision,
+        "recall_macro": macro_recall,
     }
 
 

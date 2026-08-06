@@ -686,6 +686,76 @@ def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) ->
     }
 
 
+class _FakeNumaSampler:
+    """Duck-typed stand-in for NumaCpuUsageSampler used in predictor tests."""
+
+    def sample(self) -> dict[str, object]:
+        return {
+            "available": True,
+            "sampled": True,
+            "node_count": 2,
+            "window_s": 1.0,
+            "user_hz": 100,
+            "nodes": [
+                {
+                    "node": 0,
+                    "cpulist": "0-1",
+                    "online_cpus": 2,
+                    "cpu_utilization_pct": 50.0,
+                    "busy_cores": 1.0,
+                },
+                {
+                    "node": 1,
+                    "cpulist": "2-3",
+                    "online_cpus": 2,
+                    "cpu_utilization_pct": 0.0,
+                    "busy_cores": 0.0,
+                },
+            ],
+        }
+
+
+def test_predict_includes_numa_usage_when_sampler_configured(tmp_path: Path) -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+        numa_usage_sampler=_FakeNumaSampler(),  # type: ignore[arg-type]
+    )
+
+    result = predictor.predict(
+        _tool_request("evt-1", "call-1", "python -m pytest tests -q")
+    )
+
+    assert result.tool_resource is not None
+    assert result.tool_resource["numa_usage"]["available"] is True
+    assert result.tool_resource["numa_usage"]["sampled"] is True
+    assert result.tool_resource["numa_usage"]["node_count"] == 2
+    assert result.tool_resource["numa_usage"]["nodes"][0]["node"] == 0
+    assert result.tool_resource["numa_usage"]["nodes"][0][
+        "cpu_utilization_pct"
+    ] == 50.0
+    assert result.tool_resource["numa_usage"]["nodes"][0]["busy_cores"] == 1.0
+    assert len(result.tool_resource["numa_usage"]["nodes"]) == 2
+
+
+def test_predict_omits_numa_usage_without_sampler(tmp_path: Path) -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(),
+        stage2_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+    )
+
+    result = predictor.predict(
+        _tool_request("evt-1", "call-1", "python -m pytest tests -q")
+    )
+
+    assert result.tool_resource is not None
+    assert "numa_usage" not in result.tool_resource
+
+
 def test_stage2_clause_identity_matches_online_prediction(tmp_path: Path, monkeypatch) -> None:
     def parse_command(command: str) -> dict:
         if command == "python -m pytest tests -q":

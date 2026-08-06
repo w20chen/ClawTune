@@ -25,6 +25,7 @@ from agent_scheduler.identity import (
     owners_compatible,
 )
 from agent_scheduler.monitoring.tool_runtime import ToolRuntimeSample
+from agent_scheduler.topology.linux import NumaCpuUsageSampler
 from agent_scheduler.tool_resource_commands import extract_command
 from tool_resource.features import (
     parse_command_clauses,
@@ -282,6 +283,7 @@ class ToolResourcePredictor:
         lattice_kb_snapshot_path: Path | None = None,
         ttl_by_bucket_s: tuple[float, ...] | None = None,
         miss_penalty_s: float | None = None,
+        numa_usage_sampler: NumaCpuUsageSampler | None = None,
     ) -> None:
         self.kb = kb
         self.continuous_kb = RuntimeToolResourceKB()
@@ -294,6 +296,7 @@ class ToolResourcePredictor:
         self.runtime_kb_snapshot_path = runtime_kb_snapshot_path
         self.lattice_kb = lattice_kb or LatticeTimeKB()
         self.lattice_kb_snapshot_path = lattice_kb_snapshot_path
+        self.numa_usage_sampler = numa_usage_sampler
         # KV-TTL cost proxy policy.  Bucket upper bounds are derived from the
         # configured latency edges (seconds); the per-bucket TTL defaults to
         # the bucket upper bound when no explicit policy is configured.
@@ -343,6 +346,7 @@ class ToolResourcePredictor:
         container_executable: str = "docker",
         ttl_by_bucket_s: tuple[float, ...] | None = None,
         miss_penalty_s: float | None = None,
+        numa_usage_sampler: NumaCpuUsageSampler | None = None,
     ) -> "ToolResourcePredictor":
         openclaw_paths = list(_expand_trace_paths(openclaw_trace_paths))
         stage2_paths = list(_expand_trace_paths(stage2_trace_paths))
@@ -446,6 +450,7 @@ class ToolResourcePredictor:
             lattice_kb_snapshot_path=lattice_snapshot_path,
             ttl_by_bucket_s=ttl_by_bucket_s,
             miss_penalty_s=miss_penalty_s,
+            numa_usage_sampler=numa_usage_sampler,
         )
         loaded_runtime_snapshot = _load_runtime_kb_snapshot(
             runtime_snapshot_path,
@@ -472,6 +477,7 @@ class ToolResourcePredictor:
         repo: str = "openclaw",
         ttl_by_bucket_s: tuple[float, ...] | None = None,
         miss_penalty_s: float | None = None,
+        numa_usage_sampler: NumaCpuUsageSampler | None = None,
     ) -> "ToolResourcePredictor":
         return cls.from_traces(
             openclaw_trace_paths=trace_paths,
@@ -480,6 +486,7 @@ class ToolResourcePredictor:
             repo=repo,
             ttl_by_bucket_s=ttl_by_bucket_s,
             miss_penalty_s=miss_penalty_s,
+            numa_usage_sampler=numa_usage_sampler,
         )
 
     def predict(
@@ -490,6 +497,9 @@ class ToolResourcePredictor:
     ) -> ToolPrediction:
         command = _command_for_request(request)
         repo = request.repo or self.repo
+        # Host NUMA busyness is captured once per prediction, before any KB
+        # work, so every output path reports the same snapshot.
+        numa_usage = self._numa_usage_snapshot()
         try:
             clauses, parse_failed = clauses_from_tool_request(
                 request.tool_name,
@@ -527,6 +537,7 @@ class ToolResourcePredictor:
                         continuous_predictions=continuous_predictions,
                         lattice_time_predictions=(),
                         kv_ttl_cost=None,
+                        numa_usage=numa_usage,
                     ),
                 )
 
@@ -580,6 +591,7 @@ class ToolResourcePredictor:
                         continuous_predictions=continuous_predictions,
                         lattice_time_predictions=lattice_time_predictions,
                         kv_ttl_cost=None,
+                        numa_usage=numa_usage,
                     ),
                 )
             continuous_predictions = self._continuous_predictions_for_request(
@@ -603,6 +615,7 @@ class ToolResourcePredictor:
                         continuous_predictions=continuous_predictions,
                         lattice_time_predictions=lattice_time_predictions,
                         kv_ttl_cost=None,
+                        numa_usage=numa_usage,
                     ),
                 )
 
@@ -657,6 +670,7 @@ class ToolResourcePredictor:
                         bucket_prediction,
                         reference_runtime_s=duration_p90_ms / 1000.0,
                     ),
+                    numa_usage=numa_usage,
                 ),
             )
 
@@ -1305,6 +1319,20 @@ class ToolResourcePredictor:
             max(0, int(round(ecdf_quantile(values, 0.5)))),
             max(0, int(round(ecdf_quantile(values, 0.9)))),
         )
+
+    def _numa_usage_snapshot(self) -> dict[str, Any] | None:
+        """Best-effort per-NUMA-node CPU usage snapshot for this prediction.
+
+        Returns ``None`` when no sampler is configured so existing deployments
+        and tests see no new payload key.  A sampler failure degrades to
+        ``None`` rather than failing the prediction.
+        """
+        if self.numa_usage_sampler is None:
+            return None
+        try:
+            return self.numa_usage_sampler.sample()
+        except Exception:
+            return None
 
     def _pop_start_by_tool_call_id(
         self,
@@ -2131,6 +2159,7 @@ def _tool_resource_prediction_payload(
     continuous_predictions: dict[str, Any] | None = None,
     lattice_time_predictions: Sequence[ClauseLatticeTimePredictions] = (),
     kv_ttl_cost: dict[str, Any] | None = None,
+    numa_usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     clause_prediction = prediction.prediction
     payload = {
@@ -2158,6 +2187,10 @@ def _tool_resource_prediction_payload(
         "kv_ttl_cost": kv_ttl_cost,
         "prediction_algorithms": _prediction_algorithms_payload(),
     }
+    # Host NUMA busyness is only present when a sampler is configured, so
+    # existing consumers (and deployments without the sampler) see no new key.
+    if numa_usage is not None:
+        payload["numa_usage"] = numa_usage
     # Derived compound composition: only present when the command-level
     # bucket was actually composed from per-clause medians. Kept out of the
     # payload otherwise so existing consumers see no new keys.

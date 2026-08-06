@@ -212,3 +212,132 @@ def test_build_state_applies_configured_capacity_overrides(
         "reserve_cores": 3,
         "cpu_budget_cores": 12.5,
     }
+
+
+def test_read_proc_stat_ticks_parses_per_cpu_lines(tmp_path: Path, monkeypatch) -> None:
+    proc_stat = tmp_path / "proc-stat"
+    proc_stat.write_text(
+        "cpu  100 0 200 300 0 0 0 0 0 0\n"
+        "cpu0 10 0 20 30 0 0 0 0 0 0\n"
+        "cpu1 15 0 25 40 0 0 0 0 0 0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(linux, "_PROC_STAT", proc_stat)
+
+    ticks = linux._read_proc_stat_ticks()
+
+    assert set(ticks) == {0, 1}
+    assert ticks[0].busy() == 30
+    assert ticks[0].total() == 60
+    assert ticks[1].busy() == 40
+    assert ticks[1].total() == 80
+
+
+def test_read_proc_stat_ticks_tolerates_missing_proc_stat(tmp_path: Path, monkeypatch) -> None:
+    missing = tmp_path / "no-proc-stat"
+    monkeypatch.setattr(linux, "_PROC_STAT", missing)
+
+    assert linux._read_proc_stat_ticks() == {}
+
+
+def test_aggregate_node_delta_ignores_cpus_missing_from_window(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    proc_stat = tmp_path / "proc-stat"
+    proc_stat.write_text(
+        "cpu0 0 0 0 100 0 0 0 0 0 0\ncpu1 0 0 0 100 0 0 0 0 0 0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(linux, "_PROC_STAT", proc_stat)
+    before = linux._read_proc_stat_ticks()
+    proc_stat.write_text(
+        "cpu0 50 0 0 150 0 0 0 0 0 0\n",
+        encoding="utf-8",
+    )
+    after = linux._read_proc_stat_ticks()
+
+    # cpu1 disappeared from the window: only cpu0 contributes.
+    assert linux._aggregate_node_delta([0, 1], before, after) == (50, 100, 1)
+    # A node whose CPUs are entirely absent yields no usable window.
+    assert linux._aggregate_node_delta([7, 8], before, after) is None
+
+
+def test_numa_cpu_usage_sampler_reports_per_node_total_utilization(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    node_root = tmp_path / "sys" / "node"
+    for node_id, cpulist in ((0, "0-1"), (1, "2-3")):
+        node_dir = node_root / f"node{node_id}"
+        node_dir.mkdir(parents=True)
+        (node_dir / "cpulist").write_text(cpulist, encoding="utf-8")
+    proc_stat = tmp_path / "proc-stat"
+
+    def write_stat(cpu_ticks: dict[int, tuple[int, int]]) -> None:
+        # cpu_ticks: cpu -> (user, idle); all other fields zero.
+        lines = ["cpu 0 0 0 0 0 0 0 0 0 0"]
+        for cpu, (user, idle) in sorted(cpu_ticks.items()):
+            lines.append(f"cpu{cpu} {user} 0 0 {idle} 0 0 0 0 0 0")
+        proc_stat.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(linux, "_PROC_STAT", proc_stat)
+    monkeypatch.setattr(linux, "_NODE_SYSFS_ROOT", node_root)
+    monkeypatch.setattr(linux, "_user_hz", lambda: 100)
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(linux.time, "monotonic", lambda: clock["now"])
+
+    # Baseline (t=1000): every CPU idle with total=100 ticks.
+    write_stat({0: (0, 100), 1: (0, 100), 2: (0, 100), 3: (0, 100)})
+    sampler = linux.NumaCpuUsageSampler()
+    assert sampler._nodes == [
+        {"node": 0, "cpulist": "0-1", "cpus": [0, 1]},
+        {"node": 1, "cpulist": "2-3", "cpus": [2, 3]},
+    ]
+
+    # 1s window: node0 CPUs run 50% busy (total grows to 200, 50 busy);
+    # node1 CPUs stay idle (total grows to 200, 0 busy).
+    clock["now"] = 1001.0
+    write_stat({0: (50, 150), 1: (50, 150), 2: (0, 200), 3: (0, 200)})
+
+    sample = sampler.sample()
+
+    assert sample["available"] is True
+    assert sample["sampled"] is True
+    assert sample["node_count"] == 2
+    assert sample["window_s"] == 1.0
+    assert sample["user_hz"] == 100
+    node0, node1 = sample["nodes"]
+    assert node0["node"] == 0
+    assert node0["cpulist"] == "0-1"
+    assert node0["online_cpus"] == 2
+    assert node0["cpu_utilization_pct"] == 50.0
+    # 100 busy jiffies / 100 Hz / 1s window = 1.0 average busy cores.
+    assert node0["busy_cores"] == 1.0
+    assert node1["node"] == 1
+    assert node1["cpu_utilization_pct"] == 0.0
+    assert node1["busy_cores"] == 0.0
+
+
+def test_numa_cpu_usage_sampler_reports_unavailable_without_proc_stat(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    node_root = tmp_path / "sys" / "node"
+    node_dir = node_root / "node0"
+    node_dir.mkdir(parents=True)
+    (node_dir / "cpulist").write_text("0-1", encoding="utf-8")
+    missing = tmp_path / "no-proc-stat"
+    monkeypatch.setattr(linux, "_PROC_STAT", missing)
+    monkeypatch.setattr(linux, "_NODE_SYSFS_ROOT", node_root)
+    monkeypatch.setattr(linux.time, "monotonic", lambda: 1000.0)
+
+    sampler = linux.NumaCpuUsageSampler()
+    sample = sampler.sample()
+
+    assert sample["available"] is False
+    assert sample["sampled"] is False
+    assert sample["node_count"] == 1
+    assert sample["nodes"][0]["node"] == 0
+    assert sample["nodes"][0]["cpu_utilization_pct"] is None
+    assert sample["nodes"][0]["busy_cores"] is None
