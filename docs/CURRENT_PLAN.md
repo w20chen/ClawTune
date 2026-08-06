@@ -65,6 +65,17 @@ Linux.
   isolated home, and only degrades to auto-detection if that is not possible
   (the warning lands in `web-search-config.log`).
 
+- **DRB reuses OpenClaw's per-workspace sandbox container.** OpenClaw scopes
+  Docker sandbox containers by workspace prefix and reuses a running one.
+  A stale container can carry a host workspace cwd that is outside the
+  container mount namespace, making every `exec`/`read`/`write` fail with
+  `current working directory is outside of container mount namespace root --
+  possible container breakout detected` and the run report `claw-launch was
+  not executable in the sandbox`.  `deep_research_bench.host_runner` now
+  preflights the launcher and removes stale sandbox containers before the
+  agent runs (the same cleanup SWE-Rebench already applies), so each task
+  provisions a fresh container.
+
 - **read/edit CPU is container-cgroup level, not per-PID.** Attribution is
   per-PID, but the CPU figure comes from the shared sandbox container cgroup
   because the short-lived tool process exits before the completion snapshot.
@@ -119,6 +130,13 @@ Deep Research Bench acceptance (basic sandbox, no exec-clause requirement):
 export TAVILY_API_KEY="<tavily-api-key>"
 python3 scripts/clawtune.py drb --sample 1 --parallelism 1
 ```
+
+Validating the stale-sandbox-container fix (host-only): a task that
+previously failed with the `possible container breakout detected` error must
+now complete its tools against a freshly provisioned sandbox container.  Run
+the same command twice in a row for the same task id; the second run (where a
+stale container from the first run exists) is the case that exercises the
+pre-agent cleanup in `deep_research_bench/host_runner.py`.
 
 To pin web search deterministically to a provider, install the provider's
 plugin on the host (the runner links it into each task's isolated OpenClaw

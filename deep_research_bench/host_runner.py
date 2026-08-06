@@ -33,6 +33,8 @@ from swe_rebench.docker import (
 )
 from swe_rebench.host_sandbox import (
     TaskDeadlineExceeded,
+    _TASK_CLEANUP_TIMEOUT_SECONDS,
+    _cleanup_openclaw_sandbox_containers,
     _configure_openclaw,
     _free_port,
     _install_sandbox_launcher,
@@ -47,6 +49,7 @@ from swe_rebench.host_sandbox import (
     _stop_process,
     _tail_text,
     _task_deadline,
+    _verify_sandbox_launcher,
     _write_result_summary,
     _write_text,
     _write_timeout_record,
@@ -88,6 +91,16 @@ def run_drb_task(
         _write_drb_task_inputs(trace_dir, task, config, workspace)
         _apply_web_search_key(config)
         _ensure_basic_image(config, swe_cfg)
+        # Managed-wrapper exec runs through claw-launch in the basic sandbox
+        # container.  Preflight it so a launcher that is unreadable or not
+        # executable in the sandbox fails fast with one clear error instead of
+        # surfacing as repeated docker-exec failures during agent execution.
+        _verify_sandbox_launcher(
+            trace_dir,
+            workspace,
+            sandbox_image=config.sandbox.image,
+            deadline=deadline,
+        )
         _remaining_task_seconds(deadline, phase="agent setup")
         sidecar_port = sidecar_port or _free_port()
         sidecar = _start_sidecar(
@@ -114,6 +127,27 @@ def run_drb_task(
             config=config,
             swe_cfg=swe_cfg,
             workspace=workspace,
+        )
+        # OpenClaw scopes Docker sandbox containers by workspace prefix and
+        # reuses a running container.  A stale container can carry a host
+        # workspace cwd that is outside the container mount namespace, which
+        # makes every docker exec fail with "current working directory is
+        # outside of container mount namespace root -- possible container
+        # breakout detected".  Remove stale containers so each task provisions
+        # a fresh sandbox container (the same fix SWE-Rebench applies before
+        # its agent runs).
+        cleanup_budget = _remaining_task_seconds(
+            deadline,
+            phase="pre-agent sandbox cleanup",
+        )
+        _cleanup_openclaw_sandbox_containers(
+            trace_dir,
+            workspace,
+            timeout_seconds=min(
+                _TASK_CLEANUP_TIMEOUT_SECONDS,
+                cleanup_budget or _TASK_CLEANUP_TIMEOUT_SECONDS,
+            ),
+            strict=True,
         )
         _remaining_task_seconds(deadline, phase="agent execution")
         swe_task = task_to_swe_taskdef(task, config.sandbox.image)
