@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -483,6 +484,77 @@ def test_link_web_search_provider_plugin_fails_on_exception(tmp_path, monkeypatc
         plugin_id="tavily",
     )
     assert ok is False
+
+
+def test_root_safe_link_target_non_root_returns_plugin_dir(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(host_runner, "_running_as_root", lambda: False)
+    plugin_dir = tmp_path / "plugin"
+    target = host_runner._root_safe_provider_plugin_link_target(
+        plugin_dir=plugin_dir,
+        plugin_id="tavily",
+        env={},
+        log_path=tmp_path / "web-search-config.log",
+    )
+    assert target == plugin_dir
+
+
+def test_root_safe_link_target_root_owned_links_in_place(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(host_runner, "_running_as_root", lambda: True)
+    monkeypatch.setattr(host_runner, "_plugin_is_root_owned", lambda path: True)
+    plugin_dir = tmp_path / "plugin"
+    target = host_runner._root_safe_provider_plugin_link_target(
+        plugin_dir=plugin_dir,
+        plugin_id="tavily",
+        env={},
+        log_path=tmp_path / "web-search-config.log",
+    )
+    assert target == plugin_dir
+
+
+def test_root_safe_link_target_copies_non_root_plugin_into_isolated_home(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(host_runner, "_running_as_root", lambda: True)
+    monkeypatch.setattr(host_runner, "_plugin_is_root_owned", lambda path: False)
+    project = tmp_path / ".openclaw" / "npm" / "projects" / "openclaw-tavily-plugin-abc123"
+    pkg = project / "node_modules" / "@openclaw" / "tavily-plugin"
+    pkg.mkdir(parents=True)
+    (pkg / "package.json").write_text(
+        '{"openclaw": {"extensions": ["./dist/index.js"]}}', encoding="utf-8"
+    )
+    (project / "package.json").write_text('{"name": "project"}', encoding="utf-8")
+
+    copied: list[tuple[Path, Path]] = []
+
+    def fake_copytree(src, dst):
+        copied.append((Path(src), Path(dst)))
+        # Emulate the copy so the link target exists afterwards.
+        (Path(dst) / "node_modules" / "@openclaw" / "tavily-plugin").mkdir(parents=True)
+        (Path(dst) / "node_modules" / "@openclaw" / "tavily-plugin" / "package.json").write_text(
+            "{}", encoding="utf-8"
+        )
+
+    monkeypatch.setattr(shutil, "copytree", fake_copytree)
+    monkeypatch.setattr(shutil, "rmtree", lambda p, **k: None)
+    env = {"OPENCLAW_HOME": str(tmp_path / "isolated-home")}
+    target = host_runner._root_safe_provider_plugin_link_target(
+        plugin_dir=pkg,
+        plugin_id="tavily",
+        env=env,
+        log_path=tmp_path / "web-search-config.log",
+    )
+    assert copied and copied[0][0] == project
+    assert target == (
+        tmp_path
+        / "isolated-home"
+        / "linked-provider-plugins"
+        / "openclaw-tavily-plugin-abc123"
+        / "node_modules"
+        / "@openclaw"
+        / "tavily-plugin"
+    )
 
 
 def test_pin_web_search_provider_links_global_plugin_then_retries(

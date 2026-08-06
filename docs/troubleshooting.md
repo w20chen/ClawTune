@@ -40,6 +40,7 @@ If it still fails, match the final error to a section below. Include the
 - [19. Benchmark fails or produces no final report](#19-benchmark-fails-or-produces-no-final-report)
 - [20. A trace reports `mvdan adapter is missing` or repeated `analysis_failure`](#20-a-trace-reports-mvdan-adapter-is-missing-or-repeated-analysis_failure)
 - [21. Replay failures](#21-replay-failures)
+- [22. Standalone `web_search` uses DuckDuckGo or fails instead of Tavily](#22-standalone-web_search-uses-duckduckgo-or-fails-instead-of-tavily)
 
 ## 1. `apt-get: command not found`
 
@@ -524,3 +525,35 @@ Replay uses a separate workspace and does not modify the source trace. If a
 replay command is unsafe or unexpected, stop the run and remove the replay
 workspace and `swe_rebench/replays/<task-id>/` artifacts after collecting the
 diagnostic logs.
+
+## 22. Standalone `web_search` uses DuckDuckGo or fails instead of Tavily
+
+The DRB harness pins `tools.web.search.provider: tavily` inside each task's
+isolated OpenClaw home automatically. Outside a benchmark (your own
+`openclaw agent` / `~/.openclaw`), `web_search` auto-detects the provider and
+can pick DuckDuckGo instead of Tavily. On restricted hosts DuckDuckGo is
+unreachable, so `web_search` fails with either:
+
+- `[fetch-timeout] fetch timeout after 20000ms ... url=https://html.duckduckgo.com/html`; or
+- `[security] blocked URL fetch ... reason=Blocked: resolves to private/internal/special-use IP address`.
+
+Pin Tavily and provide a key:
+
+```bash
+openclaw config set tools.web.search.provider tavily
+export TAVILY_API_KEY="<key>"   # or: openclaw config set plugins.entries.tavily.config.webSearch.apiKey "<key>"
+```
+
+Related standalone gotchas:
+
+- `openclaw agent --local` embeds its own gateway; do not run
+  `openclaw gateway restart` (no systemd service here — it is a no-op that can
+  leave stale pid state; see also sections 10-11 for the sidecar/port 8765
+  failure mode).
+- The agent-scheduler sidecar auto-start needs root. If it times out after 60s
+  with empty stderr, refresh sudo with `sudo -v` and re-run; the failure then
+  surfaces as `LLM request failed: network connection error` /
+  `ECONNREFUSED` on `127.0.0.1:8765`.
+- To confirm which provider `web_search` resolves to, check the run log for the
+  `url=` of the fetch operation (`html.duckduckgo.com` = DuckDuckGo,
+  `api.tavily.com` = Tavily).

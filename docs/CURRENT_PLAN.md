@@ -77,6 +77,19 @@ Linux.
   A missing `TAVILY_API_KEY` still leaves `web_search` unusable even after the
   provider is pinned, so the model falls back to `exec`-based fetching.
 
+- **Root-run benchmarks copy the provider plugin into the isolated home.**
+  OpenClaw running as root blocks plugins owned by a non-root user
+  (`suspicious ownership ... expected uid=0 or root`), which hits `sudo`
+  benchmarks because the global plugin is installed by the invoking user.
+  `_link_web_search_provider_plugin` now copies the whole npm project
+  (plugin package + hoisted `node_modules` so dependencies still resolve)
+  into a root-owned cache under the task's isolated `OPENCLAW_HOME`
+  (`linked-provider-plugins/<project>`) and links that copy when running as
+  root; non-root runs link the global package in place, and already
+  root-owned plugins are linked in place too.  Only the task-scoped isolated
+  home is written — the user's global `~/.openclaw` is never modified, so
+  standalone OpenClaw usage is unaffected.
+
 - **DRB reuses OpenClaw's per-workspace sandbox container.** OpenClaw scopes
   Docker sandbox containers by workspace prefix and reuses a running one.
   A stale container can carry a host workspace cwd that is outside the

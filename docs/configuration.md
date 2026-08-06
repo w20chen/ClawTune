@@ -116,6 +116,28 @@ web_search:
   api_key_file: "./deep_research_bench/tavily_api_key.txt"
 ```
 
+The harness pins `tavily` only inside each task's isolated OpenClaw home. For
+**standalone OpenClaw** (your own `openclaw agent`/`~/.openclaw`, not DRB),
+`web_search` auto-detects the provider and may pick DuckDuckGo instead of
+Tavily — on restricted hosts DuckDuckGo is unreachable (timeout /
+`resolves to private/internal/special-use IP`), so pin Tavily manually:
+
+```bash
+openclaw config set tools.web.search.provider tavily
+export TAVILY_API_KEY="<key>"   # or: openclaw config set plugins.entries.tavily.config.webSearch.apiKey "<key>"
+```
+
+Standalone gotchas:
+
+- `openclaw agent --local` embeds its own gateway; do **not** run
+  `openclaw gateway restart` (there is no systemd service — it is a no-op that
+  can leave stale pid state).
+- The agent-scheduler sidecar auto-start needs root: if it times out after 60s
+  with empty stderr, refresh sudo first with `sudo -v`, then re-run.
+- If the run fails with `LLM request failed: network connection error` /
+  `ECONNREFUSED` on `127.0.0.1:8765`, the sidecar never became healthy — check
+  `ps`/`ss` for stale sidecar/gateway processes and ports `8765`/`18789`.
+
 The knowledge bases below apply to SWE-Rebench exec clauses; Deep Research
 Bench does not update them.
 

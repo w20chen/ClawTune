@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 import traceback
@@ -323,11 +324,28 @@ def _link_web_search_provider_plugin(
     install --link`` then ``plugins enable``).  Returns ``True`` on success.
     This is best-effort: any failure is logged and reported as ``False`` so
     the caller can fall back to auto-detection instead of failing the task.
+
+    When the runner is root (``sudo`` benchmark), OpenClaw blocks plugins
+    whose files are owned by a non-root user ("suspicious ownership"); the
+    global plugin is usually installed by the invoking user, so the whole npm
+    project (plugin package + hoisted ``node_modules`` so dependencies still
+    resolve) is copied into a root-owned cache under the task's isolated
+    ``OPENCLAW_HOME`` and that copy is linked instead.  Only the task-scoped
+    isolated home is ever written; the user's global ``~/.openclaw`` is never
+    modified, so standalone OpenClaw usage is unaffected.
     """
     try:
+        link_target = _root_safe_provider_plugin_link_target(
+            plugin_dir=plugin_dir,
+            plugin_id=plugin_id,
+            env=env,
+            log_path=log_path,
+        )
+        if link_target is None:
+            return False
         with log_path.open("a", encoding="utf-8") as log:
             result = subprocess.run(
-                [openclaw, "plugins", "install", "--link", str(plugin_dir)],
+                [openclaw, "plugins", "install", "--link", str(link_target)],
                 stdout=log,
                 stderr=log,
                 text=True,
@@ -357,6 +375,73 @@ def _link_web_search_provider_plugin(
         with log_path.open("a", encoding="utf-8") as log:
             log.write(f"[warn] link provider plugin raised: {exc}\n")
         return False
+
+
+def _running_as_root() -> bool:
+    """Whether the benchmark process is running as root (Linux only)."""
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+def _plugin_is_root_owned(path: Path) -> bool:
+    """Whether ``path`` is owned by uid 0 (root)."""
+    try:
+        return path.stat().st_uid == 0
+    except OSError:
+        return False
+
+
+def _root_safe_provider_plugin_link_target(
+    *,
+    plugin_dir: Path,
+    plugin_id: str,
+    env: dict[str, str],
+    log_path: Path,
+) -> Path | None:
+    """Return the plugin path to ``--link``, accounting for root ownership.
+
+    Non-root: link the global plugin package directly (dependencies resolve
+    from its project's hoisted ``node_modules``).  Root: OpenClaw blocks
+    plugins owned by a non-root user, so copy the whole npm project under the
+    task's isolated ``OPENCLAW_HOME`` (root-owned) and link the copy's plugin
+    package so dependencies still resolve.  Returns ``None`` if a required
+    copy fails (caller then degrades to auto-detection).
+    """
+    if not _running_as_root():
+        return plugin_dir
+    if _plugin_is_root_owned(plugin_dir):
+        # Already root-owned: link in place, no copy needed.
+        return plugin_dir
+    package = _WEB_SEARCH_PROVIDER_PACKAGES.get(plugin_id)
+    openclaw_home = env.get("OPENCLAW_HOME")
+    if not package or not openclaw_home:
+        return plugin_dir
+    # plugin_dir = <project>/node_modules/<package>; recover <project>.
+    node_modules_dir = plugin_dir
+    while (
+        node_modules_dir.name != "node_modules"
+        and node_modules_dir != node_modules_dir.parent
+    ):
+        node_modules_dir = node_modules_dir.parent
+    project_dir = node_modules_dir.parent
+    if project_dir == node_modules_dir or not (project_dir / "package.json").exists():
+        return plugin_dir
+    cache_root = Path(openclaw_home) / "linked-provider-plugins"
+    dest_project = cache_root / project_dir.name
+    link_target = dest_project / "node_modules" / package
+    try:
+        if dest_project.exists():
+            shutil.rmtree(dest_project)
+        shutil.copytree(project_dir, dest_project)
+        if not link_target.exists():
+            raise OSError(f"copied plugin package missing: {link_target}")
+    except OSError as exc:
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(
+                f"[warn] copy provider plugin {plugin_id} into isolated home "
+                f"failed: {exc}\n"
+            )
+        return None
+    return link_target
 
 
 def _run_web_search_config_patch(
