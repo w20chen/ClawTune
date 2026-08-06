@@ -58,7 +58,7 @@ deep_research_bench.runner
 Deep Research Bench has no per-task image or `/testbed` repository: the agent
 answers a research question and its tools are measured with the
 sandbox-container / per-PID scope, so its required-telemetry gate is relaxed
-(LLM + resource-sampled tool spans, no Stage-2 exec clauses).
+(LLM + resource-sampled tool spans, no exec-clause artifacts).
 
 User guides:
 

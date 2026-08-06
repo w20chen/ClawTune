@@ -82,7 +82,7 @@ predictors: `shrinkage`, `loso`, and `max_cardinality`. These algorithms share
 one independent, flat lattice KB; common nodes and nodes carrying a repository
 feature live in the same node map rather than separate public/repo layers.
 
-The lattice learns only from eligible Stage-2 eBPF `ClauseObservation` values,
+The lattice learns only from eligible eBPF `ClauseObservation` values,
 reusing the same validated static-clause identity and measured `latency_ms` as
 the existing clause predictor. Results are exposed at
 `prediction.tool_resource.lattice_time_predictions`, with one entry per

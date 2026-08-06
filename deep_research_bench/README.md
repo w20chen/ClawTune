@@ -106,7 +106,7 @@ and `result_summary.json`.  A batch report is written to
 ### Telemetry gate
 
 Research tasks use read/edit/web tools measured with the sandbox-container /
-per-PID scope, so the swe-rebench Stage-2 eBPF exec-clause gate does not apply.
+per-PID scope, so the swe-rebench eBPF exec-clause gate does not apply.
 The relaxed gate (`runtime.gate_required`, default `true`) fails a task only
 when its trace has no LLM span or no resource-sampled tool span.  Set
 `runtime.gate_required: false` (or `--no-gate-required`) for a best-effort run.

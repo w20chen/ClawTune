@@ -145,16 +145,16 @@ budgets at the process boundary.
 
 ## Replay a Case
 
-Replay is currently supported for one v6 JSONL trace in the
+Replay is currently supported for one current-format JSONL trace in the
 `host-openclaw-sandbox` topology. It uses the same task image, `/testbed`
 export, OpenClaw Docker sandbox, task Python environment, launcher, sidecar,
-cgroup scope, and Stage-2 eBPF path as a normal benchmark case. Only the model
-provider is replaced by a local deterministic server: recorded LLM turns sleep
+cgroup scope, and eBPF exec-clause path as a normal benchmark case. Only the
+model provider is replaced by a local deterministic server: recorded LLM turns sleep
 for their recorded duration and return the recorded tool calls; `exec` tools
 then run normally on the task image's CPU environment.
 
 The source trace is never modified. Replay outputs are written below
-`swe_rebench/replays/<task-id>/`, including a new v6 trace, resource artifacts,
+`swe_rebench/replays/<task-id>/`, including a new JSONL trace, resource artifacts,
 `replay_manifest.json`, and logs. A source trace with redacted or missing tool
 arguments is rejected rather than executing an ambiguous command.
 
@@ -166,7 +166,7 @@ ensure the task dataset and source trace refer to the same SWE-Rebench case.
 The dataset is required because it supplies the task image; the trace alone
 does not contain the complete image filesystem or installed dependencies.
 
-The source trace must be a ClawTune v6 JSONL trace. Locate a completed case
+The source trace must be a ClawTune JSONL trace. Locate a completed case
 under the benchmark output directory, for example:
 
 ```text
@@ -218,15 +218,15 @@ python tools/inspect_trace.py \
   swe_rebench/replays/django__django-12345/*.jsonl --all --details
 ```
 
-It contains a new v6 JSONL trace, a new `tool-resource/` artifact directory,
+It contains a new JSONL trace, a new `tool-resource/` artifact directory,
 `replay_manifest.json`, and sidecar/sandbox logs. Compare the replay
 `resources` and `execution.tool_resource` fields with the source trace only as
 two separate measurements; do not overwrite or merge them.
 
-Replay fails closed for unsupported runtime modes, old v5 traces, incomplete
-LLM spans, or tool arguments that were redacted/truncated. The first Linux
-acceptance run should use a harmless trace and verify the manifest, a new v6
-JSONL file, and one Stage-2 artifact before replaying a real case.
+Replay fails closed for unsupported runtime modes, older-format traces,
+incomplete LLM spans, or tool arguments that were redacted/truncated. The first
+Linux acceptance run should use a harmless trace and verify the manifest, a new
+JSONL file, and one exec-clause artifact before replaying a real case.
 
 ### Safety and cleanup
 

@@ -82,7 +82,7 @@ Bench config keeps the same `llm`, `batch`, `output`, and `bundle` sections,
 but differs from SWE-Rebench in a few ways:
 
 - `runtime.stage2_required` defaults to `false`. Research tools
-  (web/fetch/read/edit) never produce Stage-2 eBPF exec clause telemetry.
+  (web/fetch/read/edit) never produce eBPF exec-clause telemetry.
 - `runtime.gate_required` (default `true`) is a **relaxed** required-telemetry
   gate: a task fails only when its trace has no LLM span or no
   resource-sampled tool span. Set it `false` for a best-effort run.

@@ -223,7 +223,7 @@ Per-task output lands under `deep_research_bench/.runtime/traces/<task-id>/`
 `deep_research_bench/.runtime/report.json`. Research tools are measured with the
 sandbox-container / per-PID scope, so the relaxed telemetry gate
 (`runtime.gate_required`, default `true`) requires only an LLM span and a
-resource-sampled tool span per task — never Stage-2 exec clauses. See
+resource-sampled tool span per task — never exec-clause artifacts. See
 [Deep Research Bench usage](../deep_research_bench/README.md).
 
 The agent answers with OpenClaw's built-in `web_search` tool (Tavily by

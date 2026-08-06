@@ -5,8 +5,8 @@ For operational guides see
 [configuration.md](configuration.md), or
 [../swe_rebench/README.md](../swe_rebench/README.md).
 
-Public protocol schemas live in `contracts/`. Stage-2 eBPF command artifacts are
-described by `contracts/clause-telemetry.schema.json`. Validate:
+Public protocol schemas live in `contracts/`. eBPF exec-clause command artifacts
+are described by `contracts/clause-telemetry.schema.json`. Validate:
 
 ```bash
 python tools/validate_contracts.py
@@ -38,7 +38,7 @@ deep_research_bench/.runtime/traces/<task_id>/*.jsonl
 ```
 
 Deep Research Bench uses the sandbox-container / per-PID scope for its
-read/edit/web tools and does not require Stage-2 exec clause artifacts; the
+read/edit/web tools and does not require exec-clause artifacts; the
 records themselves are identical.
 
 Inspect traces:
@@ -53,12 +53,13 @@ attached cgroup/process scope, a finalized eBPF command artifact with
 executable/argv data, and no collector loss. API health alone proves only that
 the process is listening; `setup`/`check` prove kernel collection.
 
-Expected record types:
+Expected record types (each record carries the current `schema_version` and
+`trace_format_version`):
 
 ```json
-{"schema_version":6,"record_type":"trace_metadata","trace_format_version":6}
-{"schema_version":6,"record_type":"span_start","kind":"llm","name":"..."}
-{"schema_version":6,"record_type":"span_end","kind":"tool","name":"exec"}
+{"record_type":"trace_metadata"}
+{"record_type":"span_start","kind":"llm","name":"..."}
+{"record_type":"span_end","kind":"tool","name":"exec"}
 ```
 
 Useful fields:
@@ -81,7 +82,7 @@ Useful fields:
   `shrinkage`, `loso`, and `max_cardinality` point estimates in milliseconds,
   together with selected-feature, evidence, risk, exact-match, fallback, or
   explicit unavailability metadata. All three algorithms read the same
-  independent, flat lattice KB, which is trained only from eligible Stage-2
+  independent, flat lattice KB, which is trained only from eligible
   eBPF `ClauseObservation` latency measurements. For compound commands these
   remain per-clause results; the sidecar does not synthesize a command-level
   duration across sequential, conditional, or pipeline clauses.

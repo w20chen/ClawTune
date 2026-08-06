@@ -468,13 +468,13 @@ python3 scripts/clawtune.py setup
 
 ## 21. Replay failures
 
-SWE-Rebench replay currently supports only a v6 JSONL trace and the
+SWE-Rebench replay currently supports only a current-format JSONL trace and the
 `host-openclaw-sandbox` runtime. It intentionally reuses the normal task-image
 export, OpenClaw sandbox, task environment, launcher, sidecar, cgroup, and
 eBPF path; it does not execute tools directly on the host.
 
-If replay rejects a trace, inspect `replay_error.txt`. Common causes are a v5
-`action` trace, an incomplete LLM span, or a tool span whose
+If replay rejects a trace, inspect `replay_error.txt`. Common causes are an
+older-format `action` trace, an incomplete LLM span, or a tool span whose
 `input.requested_args` was redacted or truncated. These cases are fail-closed
 because reconstructing a command from a prediction or launcher wrapper would
 be unsafe. If the replay has no resource artifact, inspect
@@ -492,12 +492,12 @@ Typical commands and their causes:
 
 - `task id ... was not found uniquely`: pass the dataset containing the exact
   `--task-id`, or use the correct instance ID from the trace directory.
-- `trace ... is not trace v6`: the source is an old v5/action trace; first
-  export or collect a ClawTune v6 trace.
+- `trace ... is not the current format`: the source is an older-format/action
+  trace; first export or collect a current ClawTune trace.
 - `has no replayable requested arguments`: raw tool arguments were disabled,
   redacted, or truncated. Replay does not infer commands from predictions or
   launcher wrappers.
-- no new JSONL or Stage-2 artifact: inspect `phase3.log`,
+- no new JSONL or exec-clause artifact: inspect `phase3.log`,
   `launcher-preflight.log`, `tool_resource_preflight_host.json`, and
   `sidecar-stderr.txt` in the replay directory. The replay needs the same
   Linux host privileges and eBPF readiness as a normal benchmark.
