@@ -274,8 +274,14 @@ def _discover_web_search_provider_plugin(provider: str) -> Path | None:
 
     OpenClaw installs npm plugins under
     ``<home>/.openclaw/npm/projects/<encoded-package>-<hash>`` (e.g.
-    ``openclaw-tavily-plugin-8ad843922d``).  Returns the first matching
-    directory that contains a plugin manifest, or ``None``.
+    ``openclaw-tavily-plugin-8ad843922d``).  The project directory's own
+    ``package.json`` is the npm workspace manifest and does NOT carry
+    ``openclaw.extensions``, which ``openclaw plugins install --link``
+    validates; the real plugin package lives at
+    ``<project>/node_modules/<package>`` and its ``package.json`` carries the
+    ``openclaw.extensions`` manifest.  Prefer that package directory so linking
+    succeeds, falling back to the project directory for legacy layouts.
+    Returns the first matching plugin directory, or ``None``.
     """
     package = _WEB_SEARCH_PROVIDER_PACKAGES.get(provider)
     if not package:
@@ -286,11 +292,20 @@ def _discover_web_search_provider_plugin(provider: str) -> Path | None:
         if not projects.is_dir():
             continue
         for candidate in sorted(projects.glob(f"{base}*")):
-            if candidate.is_dir() and (
+            if not candidate.is_dir():
+                continue
+            if not (
                 (candidate / "openclaw.plugin.json").exists()
                 or (candidate / "package.json").exists()
             ):
-                return candidate
+                continue
+            plugin_package = candidate / "node_modules" / package
+            if plugin_package.is_dir() and (
+                (plugin_package / "openclaw.plugin.json").exists()
+                or (plugin_package / "package.json").exists()
+            ):
+                return plugin_package
+            return candidate
     return None
 
 

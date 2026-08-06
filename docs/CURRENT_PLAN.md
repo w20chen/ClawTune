@@ -65,6 +65,18 @@ Linux.
   isolated home, and only degrades to auto-detection if that is not possible
   (the warning lands in `web-search-config.log`).
 
+- **Web-provider plugin linking targets the real plugin package.** OpenClaw
+  npm plugins live at
+  `<home>/.openclaw/npm/projects/<encoded-package>-<hash>`; the project dir's
+  own `package.json` is the workspace manifest and lacks `openclaw.extensions`,
+  so `openclaw plugins install --link <project-dir>` fails with
+  `package.json missing openclaw.extensions` even when the plugin is installed.
+  `_discover_web_search_provider_plugin` now prefers
+  `<project>/node_modules/<package>` (whose `package.json` carries
+  `openclaw.extensions`), falling back to the project dir for legacy layouts.
+  A missing `TAVILY_API_KEY` still leaves `web_search` unusable even after the
+  provider is pinned, so the model falls back to `exec`-based fetching.
+
 - **DRB reuses OpenClaw's per-workspace sandbox container.** OpenClaw scopes
   Docker sandbox containers by workspace prefix and reuses a running one.
   A stale container can carry a host workspace cwd that is outside the
@@ -75,6 +87,25 @@ Linux.
   preflights the launcher and removes stale sandbox containers before the
   agent runs (the same cleanup SWE-Rebench already applies), so each task
   provisions a fresh container.
+
+- **Stale per-task trace files can false-negative a successful DRB run.**
+  The task trace directory (`deep_research_bench/.runtime/traces/<task-id>/`)
+  was not reset between runs, and the sidecar writes trace files there keyed
+  by a run-stable runtime id.  Re-running the same task id after a broken run
+  left the previous run's `shell-not-executable` spans in place, so the
+  report summed them into `launcher_not_executable` and misclassified an
+  otherwise successful run as FAIL (`12 managed exec call(s) failed ...`).
+  `deep_research_bench.runner` now calls `_reset_task_trace_dir` before each
+  task (the same reset SWE-Rebench applies), so the inspection only ever sees
+  the current run's traces.
+
+- **The DRB telemetry gate ignores in-process tool spans.** Research runs
+  can legitimately call host-side in-process tools (e.g. OpenClaw's
+  `session_status`) that never execute in the sandbox and therefore carry no
+  sandbox resource sampling.  `_drb_required_telemetry_error` now requires
+  all launcher-mode (sandbox-executed) tool spans to be sampled instead of
+  demanding 100% of every tool span; it still fails on no tool spans, no
+  sampled spans, or unsampled launcher spans.
 
 - **read/edit CPU is container-cgroup level, not per-PID.** Attribution is
   per-PID, but the CPU figure comes from the shared sandbox container cgroup
@@ -138,6 +169,18 @@ the same command twice in a row for the same task id; the second run (where a
 stale container from the first run exists) is the case that exercises the
 pre-agent cleanup in `deep_research_bench/host_runner.py`.
 
+Validating the stale-trace / false-negative fix (host-only): run the same DRB
+task id twice.  The second run must report a clean trace dir
+(`deep_research_bench/.runtime/traces/<task-id>/` contains only the current
+run's `*.jsonl`), and a task whose agent completes normally must be reported
+as `OK` rather than `FAIL` with `N managed exec call(s) failed ...` even if
+the first (now fixed) run previously left broken spans behind.  A successful
+run may still contain a small number of legitimately failed tool spans
+(e.g. a first-exec `sidecar_http_503: tool_resource_stage2_start_failed:
+collector attach failed` when the BCC BPF module fails to compile on the
+host) — those count toward `failed_tool_span_ends` but must NOT drive the
+`launcher_not_executable` FAIL classification.
+
 To pin web search deterministically to a provider, install the provider's
 plugin on the host (the runner links it into each task's isolated OpenClaw
 home automatically); otherwise the runner degrades to auto-detection:
@@ -145,6 +188,20 @@ home automatically); otherwise the runner degrades to auto-detection:
 ```bash
 openclaw plugin install tavily && openclaw doctor --fix
 ```
+
+If the plugin was installed before but is now rejected with
+`package.json missing openclaw.extensions` or `plugin already exists ... delete
+it first`, the `~/.openclaw` plugin registry/state is stale: force-reinstall it
+(`openclaw plugins install tavily --force`), verify with `openclaw plugins
+list` that `tavily` is `enabled`, then confirm the actual plugin package carries
+the manifest:
+
+```bash
+python3 -c "import json; d=json.load(open('/home/<user>/.openclaw/npm/projects/openclaw-tavily-plugin-*/node_modules/@openclaw/tavily-plugin/package.json')); print(d.get('openclaw', {}).get('extensions'))"
+```
+
+A `TAVILY_API_KEY` is still required for the provider to answer; without it the
+agent falls back to `exec`-based web fetching even after pinning succeeds.
 
 Acceptance checks on the resulting `deep_research_bench/.runtime/traces/<task-id>/`:
 

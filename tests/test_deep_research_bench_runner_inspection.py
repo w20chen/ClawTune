@@ -36,12 +36,14 @@ def _result(
     *,
     tool_spans: int = 1,
     sampled: int = 1,
+    launcher: int = 1,
     has_llm: bool = True,
     sandbox_attributed: int = 0,
 ) -> dict:
     inspection = [
         {
             "tool_span_ends": tool_spans,
+            "launcher_tool_span_ends": launcher,
             "llm_span_ends": 1 if has_llm else 0,
             "has_llm_span": has_llm,
             "has_tool_span": tool_spans > 0,
@@ -54,6 +56,7 @@ def _result(
     return {
         "resource_summary": {
             "tool_span_ends": tool_spans,
+            "launcher_tool_span_ends": launcher,
             "resource_sampled_tool_span_ends": sampled,
             "shared_sandbox_tool_span_ends": sandbox_attributed,
             "docker_exec_pid_tool_span_ends": 0,
@@ -75,11 +78,24 @@ def test_gate_fails_on_no_tool_spans() -> None:
     assert "no tool spans" in error
 
 
-def test_gate_fails_on_incomplete_sampling() -> None:
+def test_gate_fails_on_incomplete_launcher_sampling() -> None:
     config = _config()
-    error = _drb_required_telemetry_error(config, _result(tool_spans=3, sampled=2))
+    error = _drb_required_telemetry_error(
+        config, _result(tool_spans=3, launcher=3, sampled=2)
+    )
     assert error is not None
-    assert "sampled 2/3 tool spans" in error
+    assert "sampled 2/3 launcher tool spans" in error
+
+
+def test_gate_ignores_unsampled_in_process_tool_spans() -> None:
+    """In-process (non-launcher) tool spans carry no sandbox resource sampling,
+    so an otherwise fully-sampled launcher population must not be penalized."""
+    config = _config()
+    # 3 tool spans total: 2 launcher (all sampled) + 1 in-process (unsampled).
+    error = _drb_required_telemetry_error(
+        config, _result(tool_spans=3, launcher=2, sampled=2)
+    )
+    assert error is None
 
 
 def test_gate_fails_on_no_llm_spans() -> None:
@@ -375,6 +391,32 @@ def test_discover_web_search_provider_plugin_finds_global_install(
         '{"name": "@openclaw/tavily-plugin"}', encoding="utf-8"
     )
     assert host_runner._discover_web_search_provider_plugin("tavily") == plugin_dir
+
+
+def test_discover_web_search_provider_plugin_prefers_plugin_package(
+    tmp_path, monkeypatch
+) -> None:
+    """Prefer the real plugin package under node_modules/<package>.
+
+    The npm project dir's own package.json (the workspace manifest) lacks
+    ``openclaw.extensions``, so ``openclaw plugins install --link`` rejects it.
+    The actual plugin package carries the manifest and must be returned.
+    """
+    monkeypatch.delenv("SUDO_USER", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    project_dir = (
+        tmp_path / ".openclaw" / "npm" / "projects" / "openclaw-tavily-plugin-8ad843922d"
+    )
+    project_dir.mkdir(parents=True)
+    (project_dir / "package.json").write_text('{"name": "project"}', encoding="utf-8")
+    plugin_package = project_dir / "node_modules" / "@openclaw" / "tavily-plugin"
+    plugin_package.mkdir(parents=True)
+    (plugin_package / "package.json").write_text(
+        '{"name": "@openclaw/tavily-plugin", '
+        '"openclaw": {"extensions": ["./dist/index.js"]}}',
+        encoding="utf-8",
+    )
+    assert host_runner._discover_web_search_provider_plugin("tavily") == plugin_package
 
 
 def test_discover_web_search_provider_plugin_none_when_missing(

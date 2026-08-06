@@ -43,6 +43,7 @@ from swe_rebench.runner import (
     _inspect_tool_resource_artifacts,
     _inspect_trace,
     _nested_get,
+    _reset_task_trace_dir,
     _resource_summary,
     _smoke_summary,
     _task_artifacts,
@@ -147,6 +148,12 @@ def _drb_required_telemetry_error(
     v6 trace.  Stage-2 eBPF exec clause telemetry is never required: research
     tools are read/edit/web style, measured via the sandbox-container /
     per-PID scope.
+
+    Sampling is required only for sandbox-executed (launcher-mode) tool spans.
+    Research runs can legitimately invoke host-side in-process tools (for
+    example OpenClaw's ``session_status``) that never enter the sandbox and
+    therefore carry no sandbox resource sampling; requiring 100% of every tool
+    span to be sampled would misclassify an otherwise healthy run as FAIL.
     """
     if not config.gate_required:
         return None
@@ -158,11 +165,14 @@ def _drb_required_telemetry_error(
     if tool_spans == 0:
         return "required resource telemetry found no tool spans"
     sampled_spans = int(resources.get("resource_sampled_tool_span_ends", 0))
-    if sampled_spans != tool_spans:
+    launcher_spans = int(resources.get("launcher_tool_span_ends", 0))
+    if launcher_spans and sampled_spans < launcher_spans:
         return (
             "required resource telemetry is incomplete: "
-            f"sampled {sampled_spans}/{tool_spans} tool spans"
+            f"sampled {sampled_spans}/{launcher_spans} launcher tool spans"
         )
+    if sampled_spans == 0:
+        return "required resource telemetry found no sampled tool spans"
     if not any(bool(item.get("has_llm_span")) for item in trace_inspection):
         return "required telemetry found no LLM spans"
     return None
@@ -216,6 +226,16 @@ def run_batch(
 
     def run_task(task: DRBTask) -> ContainerResult:
         trace_dir = _result_trace_dir(config, task)
+        # Remove stale per-task artifacts (including trace files left by a
+        # previous run of the same task id) before a fresh run.  Without this,
+        # a re-run can pick up old shell-not-executable spans from a prior
+        # broken run and misclassify an otherwise successful run as FAIL.
+        _reset_task_trace_dir(
+            config.output.trace_root,
+            trace_dir,
+            docker_cleanup_image=config.sandbox.image,
+            docker_platform=config.docker.platform,
+        )
         task_started = time.monotonic()
         try:
             return run_drb_task(
