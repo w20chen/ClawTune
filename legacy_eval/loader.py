@@ -42,6 +42,7 @@ ensure_paths()
 
 from agent_scheduler.tool_resource_commands import extract_command  # noqa: E402
 from tool_resource.sdk import _load_valid_artifact  # noqa: E402
+from tool_time._lattice_vendor.normalize import is_trivial_pipe_tool  # noqa: E402
 
 _TASK_NAME_RE = re.compile(r".*__.*-\d+$")
 _ATTEMPT_NAME_RE = re.compile(r"^attempt_\d+$")
@@ -77,6 +78,9 @@ class ToolCallEvent:
     tool_call_id: str | None
     iteration: int
     peak_cpu_cores: float | None = None
+    # The legacy format records no per-call memory (monitoring disabled), so
+    # this stays None; it exists so a future corpus can carry memory evidence.
+    peak_memory_mb: float | None = None
 
 
 @dataclass
@@ -157,6 +161,14 @@ def parse_clause_artifact(path: Path, repo: str) -> list[ClauseEvent]:
             if not isinstance(argv, list) or not all(
                 isinstance(arg, str) for arg in argv
             ):
+                continue
+            # Trivial pipe consumers (tail/head/wc/cat/tee/cut/tr) carry the
+            # producer's wall-clock in clause_telemetry (pipe concurrency), so
+            # their per-clause latency is not their own.  ``normalize``
+            # documents excluding them from training and prediction; mirror
+            # latt's filter here so neither the clause KB nor the lattice
+            # learns from or predicts these polluted labels.
+            if is_trivial_pipe_tool(bin_):
                 continue
             clause_eligible = clause.get("eligible_for_kb") is True
             events.append(

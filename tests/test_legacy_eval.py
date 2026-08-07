@@ -11,11 +11,15 @@ import json
 
 import pytest
 
-from tool_resource.runtime_kb import CompletedCall, ToolCallQuery
+from tool_resource.runtime_kb import CompletedCall, LatencyBuckets, ToolCallQuery
 from tool_time.lattice_kb import LATTICE_TIME_ALGORITHMS
 
 from legacy_eval.engine import (
     EvalConfig,
+    _bucketed_lattice_records,
+    _commit_repo_layers,
+    _partition_observations,
+    build_kbs,
     build_runtime_public,
     evaluate,
     to_clause_observation,
@@ -31,7 +35,12 @@ from legacy_eval.loader import (
     parse_trace,
 )
 from legacy_eval.metrics import summarize_bucket, summarize_point, summarize_quantile
-from legacy_eval.split import split_tasks
+from legacy_eval.split import (
+    repo_prefix,
+    split_observations_by_repo,
+    split_tasks,
+    split_tasks_by_repo,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +185,60 @@ def test_split_rejects_bad_fraction() -> None:
         split_tasks(["a"], train_frac=1.0)
 
 
+def test_repo_prefix() -> None:
+    assert repo_prefix("encode__starlette-2711") == "encode__starlette"
+    assert repo_prefix("tobymao__sqlglot-103") == "tobymao__sqlglot"
+    # No trailing PR number: unchanged.
+    assert repo_prefix("plain-repo") == "plain-repo"
+
+
+def test_split_tasks_by_repo_is_deterministic_and_per_repo() -> None:
+    ids = [
+        "r0__pkg-0", "r0__pkg-1", "r0__pkg-2", "r0__pkg-3",  # repo r0__pkg (4)
+        "r1__pkg-4", "r1__pkg-5", "r1__pkg-6",  # repo r1__pkg (3)
+        "r2__pkg-7",  # singleton repo (train only)
+    ]
+    train1, test1 = split_tasks_by_repo(ids, train_frac=0.8, seed=42)
+    train2, test2 = split_tasks_by_repo(ids, train_frac=0.8, seed=42)
+    assert train1 == train2 and test1 == test2
+    assert set(train1).isdisjoint(test1)
+    assert set(train1) | set(test1) == set(ids)
+    # Per-repo 80%: r0 -> 3 train / 1 test; r1 -> round(2.4)=2 train / 1 test;
+    # singleton r2 -> 1 train / 0 test.
+    assert len(train1) == 6 and len(test1) == 2
+    assert len([t for t in test1 if t.startswith("r0__")]) == 1
+    assert len([t for t in test1 if t.startswith("r1__")]) == 1
+    assert len([t for t in train1 if t.startswith("r2__")]) == 1
+
+
+def test_split_tasks_by_repo_different_seeds_differ() -> None:
+    ids = [f"r0__pkg-{i}" for i in range(4)]
+    _, test_a = split_tasks_by_repo(ids, seed=1)
+    _, test_b = split_tasks_by_repo(ids, seed=2)
+    assert test_a != test_b
+
+
+def test_split_observations_by_repo_latt_style() -> None:
+    # Repo A has 12 observations -> test = int(12 * 0.2) = 2.
+    # Repo B has 3 observations (<10) -> all train.
+    observations = [
+        ("repoA__pkg", f"repoA__pkg-{i}", f"c{i}") for i in range(12)
+    ] + [("repoB__pkg", f"repoB__pkg-{i}", f"c{i}") for i in range(3)]
+    train_keys, test_keys = split_observations_by_repo(
+        observations, train_frac=0.8, seed=42
+    )
+    assert len(test_keys) == 2
+    assert len(train_keys) == 13
+    assert train_keys.isdisjoint(test_keys)
+    assert len(train_keys | test_keys) == 15
+    # Repo B (too small) is entirely in training.
+    assert not any(task.startswith("repoB__") for task, _ in test_keys)
+    assert {f"repoB__pkg-{i}" for i in range(3)} <= {task for task, _ in train_keys}
+    # Deterministic for a fixed seed.
+    train2, test2 = split_observations_by_repo(observations, train_frac=0.8, seed=42)
+    assert train_keys == train2 and test_keys == test2
+
+
 # ---------------------------------------------------------------------------
 # Loader: clause artifact
 # ---------------------------------------------------------------------------
@@ -225,6 +288,28 @@ def test_parse_clause_artifact_filters(tmp_path) -> None:
     # call-level ineligible does not affect clause latency extraction.
     pytest_ev = next(ev for ev in events if ev.argv[0] == "python3")
     assert pytest_ev.eligible is False  # call.eligible_for_kb False
+
+
+def test_parse_clause_artifact_skips_trivial_pipe_tools(tmp_path) -> None:
+    # Trivial pipe consumers (tail/head/wc/...) carry the producer's wall-clock
+    # in clause_telemetry; the loader must exclude them from both training and
+    # prediction (mirrors latt and the normalize module's documented intent).
+    artifact = _artifact(
+        [
+            _call(
+                [
+                    _clause("grep", ["grep", "-rn", "x"], 50.0, eligible=True),
+                    _clause("tail", ["tail", "-30"], 556000.0, eligible=True),
+                    _clause("head", ["head", "-200"], 210000.0, eligible=True),
+                ],
+                tool_call_id="call_0_0",
+            )
+        ]
+    )
+    path = tmp_path / "clause_telemetry.json"
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+    events = parse_clause_artifact(path, "repo__x-1")
+    assert [tuple(ev.argv) for ev in events] == [("grep", "-rn", "x")]
 
 
 def test_parse_clause_artifact_rejects_invalid(tmp_path) -> None:
@@ -475,38 +560,60 @@ def test_summaries() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _synthetic_tasks(n_tasks: int = 6) -> dict[str, TaskArtifacts]:
+def _synthetic_tasks(
+    n_repos: int = 2,
+    tasks_per_repo: int = 5,
+    calls_per_task: int = 3,
+) -> dict[str, TaskArtifacts]:
+    """Synthetic corpus with repos large enough to hit latt's >=10-obs test rule."""
     tasks: dict[str, TaskArtifacts] = {}
-    for i in range(n_tasks):
-        tid = f"repo{i}__pkg-{i}"
-        clause_events = [
-            _clause_event(tid, "git", ["git", "log"], 50.0 + i, eligible=True, tool_call_id="c0", peak_cpu_cores=0.5),
-            _clause_event(tid, "python3", ["python3", "-m", "pytest"], 300.0 + i * 10, eligible=True, tool_call_id="c1", peak_cpu_cores=1.2),
-            _clause_event(tid, "git", ["git", "status"], 20.0, eligible=False, tool_call_id="c2"),
-        ]
-        tool_calls = [
-            _tool_call(tid, command="git log", duration_ms=55.0, ts_start=0.0, ts_end=0.055, tool_call_id="c0", peak_cpu_cores=0.5),
-            _tool_call(tid, command="python3 -m pytest", duration_ms=310.0, ts_start=0.1, ts_end=0.41, tool_call_id="c1", peak_cpu_cores=1.2),
-            _tool_call(tid, tool_name="read_file", command=None, duration_ms=15.0, ts_start=0.5, ts_end=0.515, tool_call_id="c2"),
-        ]
-        tasks[tid] = _task(tid, clause_events, tool_calls)
+    index = 0
+    for repo_index in range(n_repos):
+        for _ in range(tasks_per_repo):
+            tid = f"repo{repo_index}__pkg-{index}"
+            clause_events: list[ClauseEvent] = []
+            tool_calls: list[ToolCallEvent] = []
+            for call_index in range(calls_per_task):
+                call_id = f"c{index}_{call_index}"
+                latency = 50.0 + index * 10 + call_index
+                clause_events.append(
+                    _clause_event(
+                        tid,
+                        "git",
+                        ["git", "log"],
+                        latency,
+                        eligible=True,
+                        tool_call_id=call_id,
+                        peak_cpu_cores=0.5,
+                    )
+                )
+                tool_calls.append(
+                    _tool_call(
+                        tid,
+                        command="git log",
+                        duration_ms=latency + 5.0,
+                        ts_start=0.0,
+                        ts_end=(latency + 5.0) / 1000.0,
+                        tool_call_id=call_id,
+                        peak_cpu_cores=0.5,
+                    )
+                )
+            tasks[tid] = _task(tid, clause_events, tool_calls)
+            index += 1
     return tasks
 
 
 def test_evaluate_end_to_end() -> None:
-    tasks = _synthetic_tasks(6)
+    tasks = _synthetic_tasks(n_repos=2, tasks_per_repo=5, calls_per_task=3)
     result = evaluate(
         tasks,
         dataset_dir="fixture",
-        config=EvalConfig(train_frac=0.5, seed=1),
+        config=EvalConfig(train_frac=0.8, seed=1),
     )
-    assert set(result.train_ids) | set(result.test_ids) == set(result.all_task_ids)
-    assert set(result.train_ids).isdisjoint(result.test_ids)
-    assert len(result.train_ids) == 3
-    assert len(result.test_ids) == 3
-    assert result.counts["train_tasks"] == 3
-    assert result.counts["test_tasks"] == 3
+    assert result.counts["train_tool_calls_success"] > 0
+    assert result.counts["test_tool_calls"] > 0
     assert result.counts["train_clause_observations_eligible"] > 0
+    assert result.counts["test_clause_events"] > 0
     # Every track must have recorded at least one sample on the test split.
     for track, records in result.records.items():
         assert records, f"track {track} has no records"
@@ -515,11 +622,62 @@ def test_evaluate_end_to_end() -> None:
     for track in LATTICE_TIME_ALGORITHMS:
         assert result.summaries[track]["n"] > 0
         assert result.summaries[track]["coverage"] == 1.0
+        # Point predictions are bucketed into the same latency buckets so
+        # accuracy/F1 are reported for the lattice algorithms too.
+        bucketed = result.summaries[f"{track}_bucket"]
+        assert bucketed["n"] == result.summaries[track]["n"]
+        assert bucketed["accuracy"] is not None
+        assert bucketed["f1_macro"] is not None
+        assert bucketed["f1_weighted"] is not None
     assert result.summaries["continuous_latency_p90"]["n"] > 0
     # Serialization round-trip.
     obj = result.to_json_obj()
-    assert obj["train_ids"] == result.train_ids
+    assert len(obj["train_ids"]) > 0 and len(obj["test_ids"]) > 0
     assert "clause_latency_bucket" in obj["summaries"]
+
+
+def test_repo_layer_used_by_same_repo_test() -> None:
+    tasks = _synthetic_tasks(n_repos=2, tasks_per_repo=5, calls_per_task=3)
+    config = EvalConfig(train_frac=0.8, seed=1)
+    (
+        train_keys,
+        test_keys,
+        train_clause,
+        train_calls,
+        test_clause_events,
+        test_tool_calls,
+    ) = _partition_observations(tasks, config)
+    assert train_keys and test_keys
+    clause_kb, lattice_kb, runtime_kb, _ = build_kbs(train_clause, train_calls)
+    buckets = LatencyBuckets(config.bucket_edges_ms)
+    _commit_repo_layers(clause_kb, runtime_kb, buckets, train_clause, train_calls)
+    scopes: list[str] = []
+    for event in test_clause_events:
+        repo = repo_prefix(event.repo)
+        prediction = clause_kb.predict_clause_latency_bucket(
+            repo, event.bin, event.argv, buckets
+        )
+        scopes.append(prediction.scope)
+    assert scopes
+    assert "repo" in scopes  # same-repo training evidence is used by the test
+
+
+def test_bucketed_lattice_records() -> None:
+    buckets = LatencyBuckets((100.0, 500.0, 2000.0, 10000.0))
+    records = [
+        {"actual_ms": 150.0, "predicted_ms": 200.0, "evidence_count": 3},
+        {
+            "actual_ms": 3000.0,
+            "predicted_ms": None,
+            "unavailable_reason": "no_evidence",
+        },
+    ]
+    bucketed = _bucketed_lattice_records(records, buckets)
+    assert bucketed[0]["predicted_bucket"] == buckets.bucket_id(200.0)
+    assert bucketed[0]["actual_bucket"] == buckets.bucket_id(150.0)
+    assert bucketed[0]["probability_by_bucket"] is None
+    assert bucketed[1]["predicted_bucket"] is None
+    assert bucketed[1]["unavailable_reason"] == "no_evidence"
 
 
 def test_evaluate_empty_tasks() -> None:

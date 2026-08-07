@@ -54,7 +54,8 @@ def _tool_call(repo: str, command: str, duration_ms: float) -> ToolCallEvent:
 def _synthetic_tasks(n_tasks: int = 8) -> dict[str, TaskArtifacts]:
     tasks: dict[str, TaskArtifacts] = {}
     for i in range(n_tasks):
-        tid = f"repo{i}__pkg-{i}"
+        # Two tasks per repo so a per-repo 50% split gives 4 train / 4 test.
+        tid = f"repo{i // 2}__pkg-{i}"
         tasks[tid] = TaskArtifacts(
             task_id=tid,
             task_dir=None,  # type: ignore[arg-type]

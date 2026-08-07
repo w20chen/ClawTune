@@ -156,6 +156,7 @@ def _classification_metrics(
             "recall": recall,
             "f1": f1,
             "support": support,
+            "accuracy": (tp / support) if support else 0.0,
         }
 
     if classes:

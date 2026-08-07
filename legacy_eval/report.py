@@ -9,6 +9,7 @@ from legacy_eval.engine import (
     BUCKET_TRACK,
     CONTINUOUS_CPU_TRACK,
     CONTINUOUS_LATENCY_TRACK,
+    CONTINUOUS_MEMORY_TRACK,
     EvalResult,
     LATTICE_TRACKS,
     TRACKS,
@@ -50,6 +51,29 @@ def _bucket_table(summary: dict[str, Any]) -> str:
             ("Brier score", _num(summary.get("brier_score"), 4)),
         ]
     )
+
+
+def _bucket_breakdown_table(summary: dict[str, Any]) -> str:
+    """Render a per-bucket F1 / accuracy table (rows = buckets).
+
+    accuracy is the per-bucket BucketAccuracy (TP / actual support); F1,
+    precision, and recall come from the per-class classification report.
+    """
+
+    per_class = summary.get("per_class", {})
+    if not isinstance(per_class, dict) or not per_class:
+        return ""
+    header = "| bucket | count | accuracy | precision | recall | F1 |"
+    separator = "| --- | --- | --- | --- | --- | --- |"
+    rows: list[str] = []
+    for cls in sorted(per_class, key=lambda key: int(key)):
+        m = per_class[cls]
+        rows.append(
+            f"| b{cls} | {m.get('support', 0)} | {_pct(m.get('accuracy', 0.0))} "
+            f"| {_num(m.get('precision', 0.0))} | {_num(m.get('recall', 0.0))} "
+            f"| {_num(m.get('f1', 0.0))} |"
+        )
+    return "\n".join([header, separator, *rows])
 
 
 def _confusion_matrix_markdown(summary: dict[str, Any]) -> str:
@@ -116,8 +140,9 @@ def render_markdown(result: EvalResult) -> str:
         "",
         f"- dataset: `{result.dataset_dir}`",
         (
-            f"- split: {len(result.train_ids)} train / {len(result.test_ids)} test "
-            f"(train_frac={result.config.train_frac}, seed={result.config.seed})"
+            f"- split: {result.counts['train_tool_calls_success']} train / "
+            f"{result.counts['test_tool_calls']} tool calls "
+            f"(per-repo observation-level, seed={result.config.seed})"
         ),
         f"- bucket edges (ms): {list(result.config.bucket_edges_ms)}",
         f"- protocol: {result.meta.get('protocol')}",
@@ -128,8 +153,8 @@ def render_markdown(result: EvalResult) -> str:
     counts = result.counts
     counts_table = _table(
         [
-            ("train tasks", str(counts["train_tasks"])),
-            ("test tasks", str(counts["test_tasks"])),
+            ("train tasks (distinct)", str(counts["train_tasks"])),
+            ("test tasks (distinct)", str(counts["test_tasks"])),
             (
                 "train clause observations (all)",
                 str(counts["train_clause_observations"]),
@@ -150,16 +175,36 @@ def render_markdown(result: EvalResult) -> str:
         f"## `{BUCKET_TRACK}` (ClauseResourceKB, clause-level)\n\n"
         + _bucket_table(bucket_summary)
     )
+    breakdown = _bucket_breakdown_table(bucket_summary)
+    if breakdown:
+        bucket_section += "\n\nPer-bucket F1 / accuracy:\n\n" + breakdown
     confusion = _confusion_matrix_markdown(bucket_summary)
     if confusion:
         bucket_section += "\n\nConfusion matrix (rows = actual, cols = predicted):\n\n" + confusion
     sections.append(bucket_section)
 
     for track in LATTICE_TRACKS:
-        sections.append(
+        section = (
             f"## `{track}` (LatticeTimeKB, clause-level point prediction)\n\n"
             + _lattice_table(result.summaries[track])
         )
+        bucketed = result.summaries.get(f"{track}_bucket")
+        if bucketed:
+            section += (
+                "\n\nBucketed classification (predicted_ms/actual_ms into "
+                "latency buckets):\n\n"
+                + _bucket_table(bucketed)
+            )
+            breakdown = _bucket_breakdown_table(bucketed)
+            if breakdown:
+                section += "\n\nPer-bucket F1 / accuracy:\n\n" + breakdown
+            confusion = _confusion_matrix_markdown(bucketed)
+            if confusion:
+                section += (
+                    "\n\nConfusion matrix (rows = actual, cols = predicted):\n\n"
+                    + confusion
+                )
+        sections.append(section)
     sections.append(
         f"## `{CONTINUOUS_LATENCY_TRACK}` "
         "(RuntimeToolResourceKB, call-level p90)\n\n"
@@ -169,6 +214,11 @@ def render_markdown(result: EvalResult) -> str:
         f"## `{CONTINUOUS_CPU_TRACK}` "
         "(RuntimeToolResourceKB, call-level p90)\n\n"
         + _continuous_table(result.summaries[CONTINUOUS_CPU_TRACK])
+    )
+    sections.append(
+        f"## `{CONTINUOUS_MEMORY_TRACK}` "
+        "(RuntimeToolResourceKB, call-level p90)\n\n"
+        + _continuous_table(result.summaries[CONTINUOUS_MEMORY_TRACK])
         + "\n\n"
         + _resource_availability_block(result)
     )
@@ -189,14 +239,15 @@ def _resource_availability_block(result: EvalResult) -> str:
 
     cpu = result.summaries[CONTINUOUS_CPU_TRACK]
     latency = result.summaries[CONTINUOUS_LATENCY_TRACK]
+    memory = result.summaries[CONTINUOUS_MEMORY_TRACK]
     return (
         "Resource-target availability:\n\n"
         f"- **latency**: evaluated, coverage {_pct(latency.get('coverage'))}.\n"
         f"- **peak_cpu_cores**: evaluated, coverage {_pct(cpu.get('coverage'))} "
         f"(short clauses <1s have no eligible peak-CPU, so coverage is partial).\n"
-        "- **peak_memory_mb**: NOT evaluated - the legacy format carries no "
-        "ambient-memory anchor, so the continuous KB honestly returns "
-        "`unavailable` for memory."
+        f"- **peak_memory_mb**: evaluated as an absolute value (no ambient "
+        f"anchor); this dataset has no per-call memory samples (monitoring "
+        f"disabled), so coverage is {_pct(memory.get('coverage'))}."
     )
 
 

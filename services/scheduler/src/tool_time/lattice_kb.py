@@ -279,6 +279,11 @@ class LatticeTimeKB:
             gamma=0.0,
             delta=_DOMINANCE_DELTA,
             risk_method=algorithm,
+            # Explicit (shrinkage): return the exact node's median when the
+            # query's feature set exists in the lattice.  The vendored
+            # selector already auto-enables this for ``shrinkage``/``loso``;
+            # passing it here pins the intent against selector refactors.
+            exact_match_shortcut=(algorithm == "shrinkage"),
             context_sample_alpha=_CONTEXT_SAMPLE_ALPHA,
             estimator="median",
             shrinkage_kappa=_SHRINKAGE_KAPPA,
