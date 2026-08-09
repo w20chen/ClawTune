@@ -280,3 +280,8 @@ a Linux host.
 - `python -m ruff check ...` cannot run in the current Python environment
   because the `ruff` module is not installed. `git diff --check`, JSON parsing,
   and the full scheduler test suite are used as the available local checks.
+- The full test suite under `swe_rebench/bundle/scheduler` has five existing
+  repository-layout failures because its tests look for fixtures under
+  `swe_rebench/traces` and `swe_rebench/contracts` instead of the repository
+  root. CLI-specific bundle tests run independently with an external
+  `--basetemp` directory.

@@ -741,19 +741,51 @@ def _partition_observations(
     """
 
     observations: list[tuple[str, str, str]] = []
+    call_keys: set[tuple[str, str]] = set()
     for task_id in sorted(tasks):
         repo = repo_prefix(task_id)
         for call in tasks[task_id].tool_calls:
-            observations.append((repo, task_id, call.tool_call_id or _NO_CALL_ID))
+            if call.tool_call_id:
+                key = (task_id, call.tool_call_id)
+                call_keys.add(key)
+                observations.append((repo, *key))
     train_keys, test_keys = split_observations_by_repo(
         observations,
         train_frac=config.train_frac,
         seed=config.seed,
     )
+
+    # Missing call ids and clause ids that cannot be matched to a tool call
+    # are never safe held-out units.  Keep them on the training side, as the
+    # protocol documentation promises.  The sentinel is added only after the
+    # random split, so it cannot affect the threshold or enter the test set.
+    for task_id in sorted(tasks):
+        task = tasks[task_id]
+        if any(not call.tool_call_id for call in task.tool_calls):
+            train_keys.add((task_id, _NO_CALL_ID))
+        for event in task.clause_events:
+            if not event.tool_call_id:
+                train_keys.add((task_id, _NO_CALL_ID))
+            elif (task_id, event.tool_call_id) not in call_keys:
+                train_keys.add((task_id, event.tool_call_id))
+
+    def limit_to_tasks(
+        keys: set[tuple[str, str]], limit: int | None
+    ) -> set[tuple[str, str]]:
+        if limit is None:
+            return keys
+        if limit < 0:
+            raise ValueError("max task counts must be non-negative")
+        allowed = set(sorted({task_id for task_id, _ in keys})[:limit])
+        return {key for key in keys if key[0] in allowed}
+
     if config.max_train_tasks is not None:
-        train_keys = set(sorted(train_keys)[: config.max_train_tasks])
+        train_keys = limit_to_tasks(train_keys, config.max_train_tasks)
     if config.max_test_tasks is not None:
-        test_keys = set(sorted(test_keys)[: config.max_test_tasks])
+        test_keys = limit_to_tasks(test_keys, config.max_test_tasks)
+
+    if not train_keys.isdisjoint(test_keys):
+        raise AssertionError("train/test observation keys must be disjoint")
     train_clause: list[ClauseObservation] = []
     train_calls: list[CompletedCall] = []
     test_clause: list[ClauseEvent] = []
@@ -765,13 +797,13 @@ def _partition_observations(
             key = (task_id, event.tool_call_id or _NO_CALL_ID)
             if key in test_keys:
                 test_clause.append(event)
-            elif event.eligible:
+            elif key in train_keys and event.eligible:
                 train_clause.append(to_clause_observation(event, repo))
         for call in task.tool_calls:
             key = (task_id, call.tool_call_id or _NO_CALL_ID)
             if key in test_keys:
                 test_calls.append(call)
-            elif (
+            elif key in train_keys and (
                 call.success
                 and call.duration_ms is not None
                 and call.duration_ms >= 0.0

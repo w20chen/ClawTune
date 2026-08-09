@@ -134,7 +134,7 @@ def _tool_call(
     success: bool = True,
     ts_start: float = 0.0,
     ts_end: float = 0.12,
-    tool_call_id: str = "call_0_0",
+    tool_call_id: str | None = "call_0_0",
     peak_cpu_cores: float | None = None,
 ) -> ToolCallEvent:
     return ToolCallEvent(
@@ -237,6 +237,19 @@ def test_split_observations_by_repo_latt_style() -> None:
     # Deterministic for a fixed seed.
     train2, test2 = split_observations_by_repo(observations, train_frac=0.8, seed=42)
     assert train_keys == train2 and test_keys == test2
+
+
+def test_split_observations_deduplicates_logical_call_ids() -> None:
+    unique = [("repoA__pkg", "repoA__pkg-0", f"c{i}") for i in range(12)]
+    observations = unique + [unique[0]] * 8
+
+    train_keys, test_keys = split_observations_by_repo(
+        observations, train_frac=0.8, seed=42
+    )
+
+    assert train_keys.isdisjoint(test_keys)
+    assert len(train_keys | test_keys) == 12
+    assert len(test_keys) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -634,6 +647,69 @@ def test_evaluate_end_to_end() -> None:
     obj = result.to_json_obj()
     assert len(obj["train_ids"]) > 0 and len(obj["test_ids"]) > 0
     assert "clause_latency_bucket" in obj["summaries"]
+
+
+def test_partition_keeps_missing_and_unmatched_call_ids_in_training() -> None:
+    tasks = _synthetic_tasks(n_repos=1, tasks_per_repo=4, calls_per_task=3)
+    task = tasks[sorted(tasks)[0]]
+    task.tool_calls.append(
+        _tool_call(
+            task.task_id,
+            command="missing id",
+            tool_call_id=None,
+        )
+    )
+    task.clause_events.extend(
+        [
+            _clause_event(
+                task.task_id,
+                "missing-id-bin",
+                ["missing-id-bin"],
+                10.0,
+                tool_call_id=None,
+            ),
+            _clause_event(
+                task.task_id,
+                "unmatched-bin",
+                ["unmatched-bin"],
+                20.0,
+                tool_call_id="not-in-trace",
+            ),
+        ]
+    )
+
+    train_keys, test_keys, train_clause, train_calls, test_clause, test_calls = (
+        _partition_observations(tasks, EvalConfig(train_frac=0.8, seed=1))
+    )
+
+    assert train_keys.isdisjoint(test_keys)
+    assert not any(call.tool_call_id is None for call in test_calls)
+    assert not any(event.tool_call_id is None for event in test_clause)
+    assert any(call.command == "missing id" for call in train_calls)
+    assert {obs.bin for obs in train_clause} >= {"missing-id-bin", "unmatched-bin"}
+
+
+def test_partition_task_caps_limit_all_records_by_task() -> None:
+    tasks = _synthetic_tasks(n_repos=1, tasks_per_repo=5, calls_per_task=3)
+    train_keys, test_keys, train_clause, train_calls, test_clause, test_calls = (
+        _partition_observations(
+            tasks,
+            EvalConfig(
+                train_frac=0.8,
+                seed=1,
+                max_train_tasks=2,
+                max_test_tasks=1,
+            ),
+        )
+    )
+
+    assert len({task_id for task_id, _ in train_keys}) <= 2
+    assert len({task_id for task_id, _ in test_keys}) <= 1
+    assert len(train_keys) > 2  # the cap is tasks, not observation keys
+    assert len(train_clause) == len(train_keys)
+    assert len(train_calls) == len(train_keys)
+    assert len(test_clause) == len(test_keys)
+    assert len(test_calls) == len(test_keys)
 
 
 def test_repo_layer_used_by_same_repo_test() -> None:

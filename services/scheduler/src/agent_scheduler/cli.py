@@ -43,10 +43,11 @@ def _repo_root() -> Path | None:
     try:
         import agent_scheduler
 
-        pkg_path = Path(agent_scheduler.__file__).resolve().parents[2]
-        # If installed -e from services/scheduler/src, parent is services/scheduler
-        if (pkg_path / "scripts" / "clawtune.py").exists():
-            candidates.insert(0, pkg_path.parents[1])  # services/.. = repo root
+        package_file = Path(agent_scheduler.__file__).resolve()
+        for parent in package_file.parents:
+            if (parent / "scripts" / "clawtune.py").is_file():
+                candidates.insert(0, parent)
+                break
     except Exception:
         pass
 

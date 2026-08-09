@@ -213,9 +213,10 @@ python -m legacy_eval --dataset $dataset `
   --max-train-tasks 10 --max-test-tasks 5 --print-summary
 ```
 
-Note: the two `--max-*-tasks` flags above are historical naming. In the current
-observation-level protocol they actually limit the sorted observation keys and
-are only suitable for smoke tests.
+The two `--max-*-tasks` flags limit the number of distinct task directories
+represented on each side of the observation-level split. All selected
+observations from each retained task remain on that side. These flags are
+intended for smoke tests.
 
 `legacy_eval/.runtime/` is ignored by Git by default. When publishing results,
 record at least:

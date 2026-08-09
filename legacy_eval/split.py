@@ -99,8 +99,9 @@ def split_observations_by_repo(
 ) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
     """latt-style observation-level split.
 
-    Each observation is ``(repo, task_id, tool_call_id)``.  Observations are
-    grouped by repo; repos with at least ``min_repo_obs`` observations
+    Each observation is ``(repo, task_id, tool_call_id)``. Duplicate logical
+    calls are collapsed before splitting. Observations are grouped by repo;
+    repos with at least ``min_repo_obs`` unique observations
     contribute ``max(1, int(n * (1 - train_frac)))`` of their observations to
     the test set (seeded deterministic shuffle), the rest to training; smaller
     repos contribute everything to training.  This mirrors
@@ -110,9 +111,12 @@ def split_observations_by_repo(
 
     if not 0.0 < train_frac < 1.0:
         raise ValueError(f"train_frac must be in (0, 1), got {train_frac!r}")
-    by_repo: dict[str, list[tuple[str, str, str]]] = {}
+    # A call id is the split unit.  Multiple attempts can repeat the same
+    # ``(task_id, call_id)``; deduplicate before shuffling so one logical call
+    # cannot be assigned to both sides and cannot distort the repo threshold.
+    by_repo: dict[str, set[tuple[str, str, str]]] = {}
     for repo, task_id, call_id in observations:
-        by_repo.setdefault(repo or "unknown", []).append((repo, task_id, call_id))
+        by_repo.setdefault(repo or "unknown", set()).add((repo, task_id, call_id))
     rng = random.Random(seed)
     train_keys: set[tuple[str, str]] = set()
     test_keys: set[tuple[str, str]] = set()

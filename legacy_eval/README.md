@@ -49,8 +49,9 @@ The current protocol is `static_train_test_obs_per_repo`:
 This is an **observation-level split**, not a disjoint task-level split. One
 task directory can contain both training and test calls, so the report may show
 the same number of distinct train and test tasks. The historical CLI flag names
-`--max-train-tasks` and `--max-test-tasks` currently cap sorted observation
-keys and should be used only for smoke tests.
+`--max-train-tasks` and `--max-test-tasks` cap the number of distinct task
+directories represented on each side; all selected observations from each
+retained task stay on that side. These flags are intended for smoke tests.
 
 The split is deterministic for a fixed dataset, `train_frac`, seed, code
 revision, and dependency set. The published SWE277 runs use `train_frac=0.8`

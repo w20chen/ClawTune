@@ -199,8 +199,12 @@ def _write_summary_csv(payload: Mapping[str, Any], path: Path) -> None:
                     "algorithm": algorithm,
                     "n": payload["common_support_n"],
                     "total_n": payload["test_clause_rows"],
-                    "coverage": payload["common_support_n"]
-                    / payload["test_clause_rows"],
+                    "coverage": (
+                        payload["common_support_n"]
+                        / payload["test_clause_rows"]
+                        if payload["test_clause_rows"]
+                        else 0.0
+                    ),
                     **payload["common_support"][algorithm],
                 }
             )
