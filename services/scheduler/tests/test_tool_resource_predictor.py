@@ -2728,11 +2728,12 @@ def test_kv_ttl_cost_payload_with_derived_ttl() -> None:
     assert cost is not None
     # Derived TTL: buckets_s = [0.1, 0.5, 2.0] → ttl[1] = 0.5
     assert cost["buckets_s"] == [0.1, 0.5, 2.0]
-    assert cost["ttl_by_bucket_s"] == [0.1, 0.5, 2.0]
+    assert cost["ttl_by_bucket_s"] == [0.1, 0.5, 2.0, 0.0]
     assert cost["initial_bucket_index"] == 1
     assert cost["ttl_s"] == 0.5
+    assert cost["kv_eviction_time_s"] == 2.0
     assert cost["reference_runtime_s"] == 0.3
-    # 0.3 > 0.5? No → no miss, retention = min(0.3, 0.5) = 0.3
+    # 0.3 < dynamic eviction D = 2.0s → no miss, retention = min(0.3, 2.0) = 0.3
     assert cost["kv_retention_time_s"] == 0.3
     assert cost["kv_cache_miss"] is False
     assert cost["num_bucket_jumps"] == 0
@@ -2743,55 +2744,58 @@ def test_kv_ttl_cost_payload_with_derived_ttl() -> None:
 def test_kv_ttl_cost_payload_with_miss_penalty() -> None:
     predictor = _edge_predictor(miss_penalty_s=2.0)
     bp = _bucket_prediction(bucket_id=0)
-    # reference_runtime 0.6s → exceeds TTL 0.1s → miss
+    # reference_runtime 0.6s < dynamic eviction D = 2.0s → no miss,
+    # retention = min(0.6, 2.0) = 0.6
     cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=0.6)
 
     assert cost is not None
     assert cost["ttl_s"] == 0.1
-    assert cost["kv_retention_time_s"] == 0.1
-    assert cost["kv_cache_miss"] is True
-    assert cost["proxy_cost_s"] == 2.1  # 0.1 + 2.0 * 1
+    assert cost["kv_eviction_time_s"] == 2.0
+    assert cost["kv_retention_time_s"] == 0.6
+    assert cost["kv_cache_miss"] is False
+    assert cost["proxy_cost_s"] == 0.6
     assert cost["miss_penalty_s"] == 2.0
 
 
 def test_kv_ttl_cost_payload_jumps_multiple_buckets() -> None:
     predictor = _edge_predictor()
     bp = _bucket_prediction(bucket_id=0)
-    # p90 = 3.0s → jumps from bucket 0 through bucket 2
+    # p90 = 3.0s → advances through buckets 0..3 into the open tail (3 jumps)
     cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=3.0)
 
     assert cost is not None
     assert cost["initial_bucket_index"] == 0
-    assert cost["final_bucket_index"] == 2
-    assert cost["num_bucket_jumps"] == 2
+    assert cost["final_bucket_index"] == 3
+    assert cost["num_bucket_jumps"] == 3
     assert cost["bucket_exhausted"] is True
     # TTL from initial bucket 0 = 0.1s, actual 3.0s → miss
     assert cost["kv_cache_miss"] is True
-    assert cost["kv_retention_time_s"] == 0.1
+    assert cost["kv_eviction_time_s"] == 2.0
+    assert cost["kv_retention_time_s"] == 2.0
 
 
-def test_kv_ttl_cost_payload_last_bucket_out_of_range() -> None:
+def test_kv_ttl_cost_payload_supports_open_ended_last_bucket() -> None:
     predictor = _edge_predictor(edges_ms=(100.0, 500.0))
     bp = _bucket_prediction(bucket_id=2)
     cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=5.0)
 
     assert cost is not None
-    assert cost["unavailable_reason"] == "initial_bucket_out_of_range"
     assert cost["initial_bucket_index"] == 2
-    # No cost fields injected for out-of-range case
-    assert "ttl_s" not in cost
+    assert cost["ttl_s"] == 0.0
+    assert cost["kv_eviction_time_s"] == 0.0
+    assert cost["kv_cache_miss"] is True
 
 
 def test_kv_ttl_cost_payload_with_custom_ttl_by_bucket() -> None:
     predictor = _edge_predictor(
         edges_ms=(100.0, 500.0, 2_000.0),
-        ttl_by_bucket_s=(2.0, 1.0, 0.0),
+        ttl_by_bucket_s=(2.0, 1.0, 0.0, 0.0),
     )
     bp = _bucket_prediction(bucket_id=2)
     cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=0.5)
 
     assert cost is not None
-    assert cost["ttl_by_bucket_s"] == [2.0, 1.0, 0.0]
+    assert cost["ttl_by_bucket_s"] == [2.0, 1.0, 0.0, 0.0]
     # Initial bucket 2 → TTL = 0.0 (immediate evict)
     assert cost["ttl_s"] == 0.0
     assert cost["kv_cache_miss"] is True

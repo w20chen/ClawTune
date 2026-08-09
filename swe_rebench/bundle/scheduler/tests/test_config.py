@@ -114,3 +114,47 @@ def test_scheduler_config_accepts_user_facing_ebpf_trace_paths(
         tmp_path / "data" / "ebpf-a",
         tmp_path / "data" / "ebpf-b",
     )
+
+
+def test_ttl_by_bucket_s_defaults_to_none() -> None:
+    config = SchedulerConfig()
+    assert config.tool_resource_ttl_by_bucket_s is None
+    assert config.tool_resource_miss_penalty_s is None
+
+
+def test_ttl_by_bucket_s_env_parsing(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "AGENT_SCHEDULER_TOOL_RESOURCE_TTL_BY_BUCKET_S",
+        "0.5,2.0,5.0",
+    )
+    monkeypatch.setenv(
+        "AGENT_SCHEDULER_TOOL_RESOURCE_MISS_PENALTY_S",
+        "3.0",
+    )
+
+    config = SchedulerConfig.from_env()
+
+    assert config.tool_resource_ttl_by_bucket_s == (0.5, 2.0, 5.0)
+    assert config.tool_resource_miss_penalty_s == 3.0
+
+
+def test_ttl_by_bucket_s_env_empty_string(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "AGENT_SCHEDULER_TOOL_RESOURCE_TTL_BY_BUCKET_S",
+        "",
+    )
+
+    config = SchedulerConfig.from_env()
+
+    # Empty env var → None (not an empty tuple)
+    assert config.tool_resource_ttl_by_bucket_s is None
+
+
+def test_miss_penalty_s_rejects_negative(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "AGENT_SCHEDULER_TOOL_RESOURCE_MISS_PENALTY_S",
+        "-0.1",
+    )
+
+    with pytest.raises(ValueError, match="AGENT_SCHEDULER_TOOL_RESOURCE_MISS_PENALTY_S"):
+        SchedulerConfig.from_env()

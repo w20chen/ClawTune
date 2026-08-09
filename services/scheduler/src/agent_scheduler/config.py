@@ -28,9 +28,9 @@ class SchedulerConfig:
     tool_resource_latency_buckets_ms: tuple[float, ...] = (100.0, 500.0, 2_000.0, 10_000.0)
     # KV-TTL cost proxy policy for the tool-resource prediction output.
     # ``tool_resource_ttl_by_bucket_s`` holds one KV TTL (seconds) per latency
-    # bucket edge; when None, the TTL defaults to the bucket upper bound in
-    # seconds. ``tool_resource_miss_penalty_s`` is an optional non-negative
-    # miss penalty (seconds) added to the proxy cost on a KV cache miss.
+    # bucket, including the open-ended tail bucket. Legacy edge-count policies
+    # imply a zero TTL for that tail. ``tool_resource_miss_penalty_s`` is an
+    # optional non-negative miss penalty added to the compatibility proxy cost.
     tool_resource_ttl_by_bucket_s: tuple[float, ...] | None = None
     tool_resource_miss_penalty_s: float | None = None
     tool_resource_repo: str = "openclaw"

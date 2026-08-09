@@ -5,8 +5,8 @@ from setuptools import find_packages, setup
 # installs to setup.py develop. Keep this mirror aligned with pyproject.toml;
 # otherwise they silently create UNKNOWN 0.0.0 and skip all dependencies.
 setup(
-    name="agent-scheduler",
-    version="0.1.0",
+    name="clawtune-sidecar",
+    version="0.2.0",
     description="Hardware-aware scheduler sidecar for OpenClaw",
     python_requires=">=3.10",
     package_dir={"": "src"},
@@ -25,7 +25,13 @@ setup(
         "dev": ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "jsonschema>=4"],
     },
     entry_points={
-        "console_scripts": ["claw-launch=agent_scheduler.launcher:main"],
+        "console_scripts": [
+            "claw-launch=agent_scheduler.launcher:main",
+            "clawtune-sidecar=agent_scheduler.main:main",
+            "clawtune-setup=agent_scheduler.cli:setup_main",
+            "clawtune-doctor=agent_scheduler.cli:doctor_main",
+            "clawtune-check=agent_scheduler.cli:check_main",
+        ],
     },
     package_data={
         "tool_resource": ["_mvdan_adapter/*"],

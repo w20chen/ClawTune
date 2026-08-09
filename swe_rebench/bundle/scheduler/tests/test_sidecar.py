@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from threading import Event
 from types import SimpleNamespace
 from datetime import datetime, timezone
@@ -15,7 +16,7 @@ import agent_scheduler.api.app as app_module
 from agent_scheduler.api.app import create_app
 from agent_scheduler.api.dependencies import build_state
 from agent_scheduler.config import SchedulerConfig
-from agent_scheduler.contracts.models import ParamFeatures, ToolBeforeRequest
+from agent_scheduler.contracts.models import ParamFeatures, ResourceScope, ToolBeforeRequest
 from agent_scheduler.llm_proxy import (
     _forward_headers,
     _parse_sse_buffer,
@@ -45,6 +46,197 @@ def test_coverage_ratio_is_defensively_bounded() -> None:
     assert duration_ns == 100
     assert ratio == 1.0
     assert reason == "full_window"
+
+
+def test_v6_quality_is_honest_about_partial_sampling() -> None:
+    from agent_scheduler.trace import _v6_quality
+
+    # Full window coverage with healthy sampling is the only "complete".
+    assert _v6_quality("ok", "full_window") == "complete"
+    # Partial/low sampling must never be labelled complete even under full
+    # coverage (e.g. a rebased/mixed baseline that only sampled a late window).
+    assert _v6_quality("partial", "full_window") == "partial"
+    assert _v6_quality("low", "full_window") == "partial"
+    assert _v6_quality("partial", "pid_registered_late") == "partial"
+    assert _v6_quality("ok", "pid_registered_late") == "partial"
+    assert _v6_quality("unattributed", "full_window") == "unknown"
+    assert _v6_quality("unavailable", "full_window") == "unknown"
+
+
+def test_host_execution_cgroup_roots_are_permission_aware(monkeypatch) -> None:
+    from agent_scheduler.api import app as app_module
+
+    fallback = ResourceScope(
+        kind="cgroup-v2",
+        pid=1,
+        root_pid=1,
+        cgroup_path="/sys/fs/cgroup/system.slice/docker-x.scope",
+        source="openclaw-sandbox",
+        attribution_source="shared-sandbox-container",
+    )
+    # Non-root (no geteuid on this platform -> euid -1): only the fallback
+    # container subtree candidate is emitted.
+    roots = app_module._host_execution_cgroup_roots(fallback, None)
+    assert "/sys/fs/cgroup/system.slice/docker-x.scope/claw-executions" in roots
+
+    # A configured root short-circuits the search entirely.
+    assert app_module._host_execution_cgroup_roots(fallback, "/cfg/claw") == [
+        "/cfg/claw"
+    ]
+
+    # Root (euid 0): the sandbox container subtree is tried FIRST (a child of
+    # the payload's cgroup inherits the same controllers, so the move is the
+    # most reliable), then the root-managed claw cgroup.
+    import types
+
+    monkeypatch.setattr(
+        app_module, "os", types.SimpleNamespace(geteuid=lambda: 0)
+    )
+    roots_root = app_module._host_execution_cgroup_roots(fallback, None)
+    assert roots_root[0].replace("\\", "/") == (
+        "/sys/fs/cgroup/system.slice/docker-x.scope/claw-executions"
+    )
+    assert any(
+        root.replace("\\", "/") == "/sys/fs/cgroup/claw"
+        for root in roots_root
+    )
+
+
+def test_docker_exec_observer_cgroup_diff_fallback_captures_pid(tmp_path: Path) -> None:
+    from agent_scheduler.contracts.models import ToolCompletedEvent
+
+    cgroup = tmp_path / "sandbox-cgroup"
+    cgroup.mkdir()
+    (cgroup / "cgroup.procs").write_text("100\n", encoding="utf-8")
+    request = ToolBeforeRequest(
+        schema_version="scheduler.v1",
+        event_id="evt-read-start",
+        occurred_at="2026-07-16T03:23:00Z",
+        plugin_version="0.1.0",
+        run_id="run-diff",
+        session_id="session-diff",
+        session_key=None,
+        agent_id=None,
+        tool_call_id="call-read",
+        tool_name="read",
+        tool_kind="file",
+        tool_input_kind="json",
+        operation_hint=None,
+        derived_paths=[],
+        params_digest="sha256:" + "a" * 64,
+        param_features=ParamFeatures(
+            serialized_size_bytes=10,
+            string_length=5,
+            list_item_count=0,
+            path_count=1,
+            has_command_like_field=False,
+        ),
+        raw_params={"path": "README.md"},
+        resource_scope=ResourceScope(
+            kind="cgroup-v2",
+            cgroup_path=str(cgroup),
+            container_id="sandbox-1",
+            include_children=True,
+            source="openclaw-sandbox",
+            attribution_source="shared-sandbox-container",
+        ),
+    )
+    observer = DockerExecObserver(
+        enabled=True, cgroup_path=str(cgroup), autostart=False
+    )
+    observer.begin_tool(request)
+    # A new pid (the read docker exec) appears in the container cgroup during
+    # the tool window; the docker-events path finds nothing.
+    (cgroup / "cgroup.procs").write_text("100\n12345\n", encoding="utf-8")
+    observer._poll_cgroup_once()
+    event = ToolCompletedEvent(
+        schema_version="scheduler.v1",
+        event_id="evt-read-end",
+        occurred_at="2026-07-16T03:23:01Z",
+        plugin_version="0.1.0",
+        run_id="run-diff",
+        session_id="session-diff",
+        session_key=None,
+        agent_id=None,
+        tool_call_id="call-read",
+        decision_id="decision-1",
+        lease_id="lease-1",
+        execution_id=None,
+        tool_name="read",
+        duration_ms=100,
+        succeeded=True,
+        error_type=None,
+        error_digest=None,
+        result_size_bytes=4,
+        raw_result="data",
+        resource_scope=None,
+    )
+    scope = observer.infer_scope(event)
+    assert scope is not None
+    assert scope.kind == "pid"
+    assert scope.root_pid == 12345
+    assert scope.attribution_source == "docker-exec-pid"
+    assert scope.source == "docker-cgroup-diff"
+    diag = observer.diagnostics()
+    assert diag["cgroup_diff_captures"] == 1
+
+
+def test_prepare_host_execution_cgroup_moves_pid_tree_and_records_diagnostics(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    cgroup_root = tmp_path / "cgroup"
+    cgroup_root.mkdir()
+    (cgroup_root / "cgroup.controllers").write_text(
+        "cpu memory\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(app_module, "_CGROUP_V2_ROOT", cgroup_root)
+    monkeypatch.setattr(app_module, "_resolve_host_pid", lambda *_args, **_kwargs: 4242)
+    # The payload has already forked a child; both must be moved into the
+    # per-execution cgroup so the cgroup captures the whole tool's CPU.
+    monkeypatch.setattr(
+        app_module, "_process_tree_pids", lambda _pid: [4242, 9999]
+    )
+    request = SimpleNamespace(
+        child_pid=7,
+        pid_namespace_inode=123,
+        process_starttime_ticks=456,
+        container_id=None,
+    )
+    diagnostics: list[str] = []
+
+    scope = app_module._prepare_host_execution_cgroup(
+        "exec-1",
+        request,
+        None,
+        None,
+        diagnostics=diagnostics,
+    )
+
+    assert scope is not None
+    assert scope.kind == "cgroup-v2"
+    assert scope.cgroup_path == str(cgroup_root / "claw" / "exec-1")
+    assert scope.attribution_source == "exclusive-execution-cgroup"
+    procs = (cgroup_root / "claw" / "exec-1" / "cgroup.procs").read_text(
+        encoding="utf-8"
+    ).split()
+    assert "4242" in procs
+    assert "9999" in procs
+    joined = "\n".join(diagnostics)
+    assert "resolved launcher host pid 4242" in joined
+    assert "owns launcher pid tree" in joined
+
+
+def test_cgroup_accounting_usable_reads_subtree_control(tmp_path) -> None:
+    from agent_scheduler.api import app as app_module
+
+    parent = tmp_path / "cg"
+    parent.mkdir()
+    (parent / "cgroup.subtree_control").write_text("cpu memory", encoding="utf-8")
+    assert app_module._cgroup_accounting_usable(parent) is True
+
+    (parent / "cgroup.subtree_control").write_text("pids", encoding="utf-8")
+    assert app_module._cgroup_accounting_usable(parent) is False
 
 
 def _read_trace_records(trace_dir: Path) -> list[dict]:
@@ -97,17 +289,21 @@ def test_health_endpoints_publish_stable_clawtune_identity(tmp_path: Path) -> No
     ready = client.get("/health/ready")
 
     assert live.status_code == 200
-    assert live.json() == {
-        "schema_version": "scheduler.health.v1",
-        "service": "clawtune-scheduler",
-        "live": True,
-    }
+    live_payload = live.json()
+    assert live_payload["schema_version"] == "scheduler.health.v1"
+    assert live_payload["service"] == "clawtune-scheduler"
+    assert live_payload["live"] is True
+    # Version-negotiation fields added in 0.2.0.
+    assert isinstance(live_payload.get("sidecar_version"), str)
+    assert isinstance(live_payload.get("protocol_versions"), list)
+
     assert ready.status_code == 200
-    assert ready.json() == {
-        "schema_version": "scheduler.health.v1",
-        "service": "clawtune-scheduler",
-        "ready": True,
-    }
+    ready_payload = ready.json()
+    assert ready_payload["schema_version"] == "scheduler.health.v1"
+    assert ready_payload["service"] == "clawtune-scheduler"
+    assert ready_payload["ready"] is True
+    assert isinstance(ready_payload.get("sidecar_version"), str)
+    assert isinstance(ready_payload.get("protocol_versions"), list)
 
 
 def _write_cgroup_fixture(path: Path, usage_usec: int = 100_000) -> None:
@@ -197,9 +393,9 @@ def test_host_cgroup_gate_uses_standard_v2_root_when_unconfigured(
 
     assert scope is not None
     assert scope.cgroup_path == str(cgroup_root / "claw" / "exec-1")
-    assert (cgroup_root / "claw" / "exec-1" / "cgroup.procs").read_text(
-        encoding="utf-8"
-    ) == "4242"
+    assert (
+        cgroup_root / "claw" / "exec-1" / "cgroup.procs"
+    ).read_text(encoding="utf-8").strip() == "4242"
 
 
 def test_verified_host_scope_falls_back_to_authenticated_pid_lineage(
@@ -699,6 +895,117 @@ def test_internal_tool_overrides_shared_runtime_scope_with_docker_exec(tmp_path:
     assert tool_end["resources"]["scope"] == "process_tree"
     assert tool_end["resources"]["attribution_source"] == "docker-exec-pid"
     assert tool_end["resources"]["coverage_reason"] != "shared_runtime_process"
+
+
+def test_host_sandbox_scoped_read_gets_docker_exec_pid(tmp_path: Path) -> None:
+    """host-openclaw-sandbox: read/edit run as docker execs with a per-tool PID.
+
+    ``with_sandbox_fallback`` gives the before-request an openclaw-sandbox
+    (shared-sandbox-container) scope, but the Docker observer must still
+    register the tool and override that whole-container scope with the
+    per-tool docker-exec PID captured from the sandbox's ``docker exec``.
+    """
+    sandbox_cgroup = tmp_path / "sandbox-cgroup"
+    _write_cgroup_fixture(sandbox_cgroup, usage_usec=100_000)
+    trace_dir = tmp_path / "traces"
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=trace_dir,
+            sandbox_cgroup_path=str(sandbox_cgroup),
+            sandbox_container_id="sandbox-1",
+        )
+    )
+    state.docker_exec_observer = DockerExecObserver(
+        enabled=True,
+        container_id="sandbox-1",
+        autostart=False,
+    )
+    client = TestClient(create_app(state))
+    sandbox_scope: dict[str, object] = {
+        "kind": "cgroup-v2",
+        "execution_id": None,
+        "pid": os.getpid(),
+        "root_pid": os.getpid(),
+        "process_start_time": None,
+        "root_starttime_ticks": None,
+        "cgroup_path": str(sandbox_cgroup),
+        "pid_namespace_inode": None,
+        "container_id": "sandbox-1",
+        "include_children": True,
+        "source": "openclaw-sandbox",
+        "attribution_source": "shared-sandbox-container",
+    }
+    request: dict[str, object] = {
+        "schema_version": "scheduler.v1",
+        "event_id": "evt-read-sandbox-start",
+        "occurred_at": "2026-07-16T03:23:00Z",
+        "plugin_version": "0.1.0",
+        "run_id": "run-docker-exec",
+        "session_id": "session-docker-exec",
+        "session_key": None,
+        "agent_id": None,
+        "tool_call_id": "call-read-sandbox",
+        "tool_name": "read",
+        "tool_kind": "file",
+        "tool_input_kind": "json",
+        "operation_hint": None,
+        "derived_paths": [],
+        "params_digest": "sha256:" + "a" * 64,
+        "param_features": {
+            "serialized_size_bytes": 10,
+            "string_length": 5,
+            "list_item_count": 0,
+            "path_count": 1,
+            "has_command_like_field": False,
+        },
+        "raw_params": {"path": "README.md"},
+        "resource_scope": sandbox_scope,
+    }
+    decision = client.post("/v1/decisions/tool", json=request).json()
+    state.docker_exec_observer.record_exec_start(
+        exec_id="exec-read-sandbox-1",
+        container_id="sandbox-1",
+        pid=os.getpid(),
+        command="openclaw-sandbox-fs read README.md",
+    )
+    completion: dict[str, object] = {
+        "schema_version": "scheduler.v1",
+        "event_id": "evt-read-sandbox-end",
+        "occurred_at": "2026-07-16T03:23:01Z",
+        "plugin_version": "0.1.0",
+        "run_id": "run-docker-exec",
+        "session_id": "session-docker-exec",
+        "session_key": None,
+        "agent_id": None,
+        "tool_call_id": "call-read-sandbox",
+        "decision_id": decision["decision_id"],
+        "lease_id": decision["lease_id"],
+        "execution_id": None,
+        "tool_name": "read",
+        "duration_ms": 100,
+        "succeeded": True,
+        "error_type": None,
+        "error_digest": None,
+        "result_size_bytes": 4,
+        "raw_result": "data",
+        "resource_scope": sandbox_scope,
+    }
+
+    assert client.post("/v1/events/tool-completed", json=completion).json() == {
+        "stored": True
+    }
+
+    tool_end = [
+        record
+        for record in _read_trace_records(trace_dir)
+        if record.get("record_type") == "span_end" and record.get("kind") == "tool"
+    ][0]
+    assert tool_end["execution"]["source"] == "docker-events"
+    assert tool_end["execution"]["payload_pid"] == os.getpid()
+    assert tool_end["resources"]["scope"] == "process_tree"
+    assert tool_end["resources"]["attribution_source"] == "docker-exec-pid"
+    assert tool_end["resources"]["attribution_status"] == "attributed"
+    assert tool_end["resources"]["coverage_reason"] != "shared_sandbox_container"
 
 
 def test_docker_exec_event_uses_exec_id_attribute_not_container_id() -> None:
@@ -1429,12 +1736,152 @@ def test_execution_started_host_cgroup_gate_creates_exact_scope(
     exact = tmp_path / "exact-root" / "call-exec"
     assert started.status_code == 200
     assert started.json() == {"stored": True, "cgroup_path": str(exact)}
-    assert (exact / "cgroup.procs").read_text(encoding="utf-8") == "4242"
+    assert (exact / "cgroup.procs").read_text(encoding="utf-8").strip() == "4242"
     scope = client.get("/v2/executions/call-exec/scope").json()["execution_scope"]
     assert scope["cgroup_path"] == str(exact)
     assert scope["pid"] == 4242
     assert scope["attribution_source"] == "exclusive-execution-cgroup"
     assert begin_calls[-1]["cgroup_path"] == str(exact)
+
+
+def test_execution_started_derives_host_cgroup_when_launcher_gate_off(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """host_cgroup_gate=False (the launcher created its own cgroup in the
+    container) must still derive the launcher's ACTUAL host cgroup from
+    /proc/<host_pid>/cgroup instead of jumping straight to per-PID psutil.
+    The launcher-supplied container-namespace path is not host-valid and must
+    not block the host derivation."""
+    host_cgroup = tmp_path / "host-cgroup"
+    _write_cgroup_fixture(host_cgroup)
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=tmp_path / "traces",
+            sandbox_cgroup_path=str(host_cgroup),
+            sandbox_container_id="b" * 64,
+            tool_resource_stage2_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
+    monkeypatch.setattr(app_module, "_resolve_host_pid", lambda *_args, **_kwargs: 4242)
+    monkeypatch.setattr(
+        app_module,
+        "_host_cgroup_path_for_pid",
+        lambda _pid: str(host_cgroup.resolve()),
+    )
+    monkeypatch.setattr(app_module, "_pid_starttime_ticks", lambda _pid: 99)
+    monkeypatch.setattr(app_module, "_pid_namespace_inode", lambda _pid: 123)
+
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-host-cgroup-derive",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"enable_cgroup": True},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": 100,
+        },
+    ).json()
+    started = client.post(
+        "/v2/executions/call-exec/started",
+        json={
+            "update_token": claim["update_token"],
+            "launcher_pid": 100,
+            "child_pid": 7,
+            "process_starttime_ticks": 99,
+            "cgroup_path": "/claw-executions/call-exec",
+            "pid_namespace_inode": 123,
+            "container_id": "b" * 64,
+            "host_cgroup_gate": False,
+        },
+    )
+
+    assert started.status_code == 200
+    scope = client.get("/v2/executions/call-exec/scope").json()["execution_scope"]
+    assert scope["kind"] == "cgroup-v2"
+    assert scope["cgroup_path"] == str(host_cgroup.resolve())
+    assert scope["attribution_source"] == "trusted-execution-root-pid"
+    assert scope["root_pid"] == 4242
+
+
+def test_execution_started_falls_back_to_per_pid_when_host_cgroup_unresolvable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """When /proc cannot yield a host cgroup for the launcher pid, the scope
+    degrades to per-PID process-tree attribution (still attributed, not lost)."""
+    state = build_state(
+        SchedulerConfig(
+            trace_dir=tmp_path / "traces",
+            sandbox_container_id="b" * 64,
+            tool_resource_stage2_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
+    monkeypatch.setattr(app_module, "_resolve_host_pid", lambda *_args, **_kwargs: 4242)
+    monkeypatch.setattr(app_module, "_host_cgroup_path_for_pid", lambda _pid: None)
+    monkeypatch.setattr(app_module, "_pid_starttime_ticks", lambda _pid: 99)
+    monkeypatch.setattr(app_module, "_pid_namespace_inode", lambda _pid: 123)
+
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-host-cgroup-fallback",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"enable_cgroup": True},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": 100,
+        },
+    ).json()
+    started = client.post(
+        "/v2/executions/call-exec/started",
+        json={
+            "update_token": claim["update_token"],
+            "launcher_pid": 100,
+            "child_pid": 7,
+            "process_starttime_ticks": 99,
+            "cgroup_path": "/claw-executions/call-exec",
+            "pid_namespace_inode": 123,
+            "container_id": "b" * 64,
+            "host_cgroup_gate": False,
+        },
+    )
+
+    assert started.status_code == 200
+    scope = client.get("/v2/executions/call-exec/scope").json()["execution_scope"]
+    assert scope["kind"] == "pid"
+    assert scope["cgroup_path"] is None
+    assert scope["attribution_source"] == "trusted-execution-root-pid"
+    assert scope["root_pid"] == 4242
 
 
 def test_stage2_execution_starts_when_sandbox_scope_arrives_after_started(
@@ -1982,6 +2429,64 @@ def test_agent_test_bench_trace_jsonl_records_tool_and_model_events(tmp_path: Pa
     model_ends = [r for r in records if r.get("record_type") == "span_end" and r.get("kind") == "llm"]
     assert len(model_ends) == 1
     assert model_ends[0]["output"]["content"] == "done"
+    # LLM spans must satisfy the same monotonic invariant as tool spans
+    # (mono_end - mono_start == duration_ns). Regression for the collapsed
+    # monotonic-stamp bug in _record_model_v6.
+    assert model_ends[0]["duration_ns"] == str(2000 * 1_000_000)
+    assert (
+        int(model_ends[0]["monotonic_time_ns"]) - int(model_starts[0]["monotonic_time_ns"])
+        == int(model_ends[0]["duration_ns"])
+    )
+
+
+def test_llm_span_monotonic_invariant_holds_when_duration_absent(tmp_path: Path) -> None:
+    client, trace_dir = _trace_client(tmp_path)
+    started = {
+        "schema_version": "scheduler.v1",
+        "event_id": "evt-model-zero-start",
+        "occurred_at": "2026-07-16T03:23:03Z",
+        "plugin_version": "0.1.0",
+        "run_id": "run-zero",
+        "session_id": "session-zero",
+        "session_key": None,
+        "agent_id": "agent-zero",
+        "event_type": "model_call_started",
+        "call_id": "llm-zero",
+        "provider": "test-provider",
+        "model": "test-model",
+        "duration_ms": None,
+        "outcome": None,
+        "context_token_budget": 8192,
+        "raw_input": [{"role": "user", "content": "hi"}],
+        "raw_output": None,
+        "raw_event": {"messages": [{"role": "user", "content": "hi"}]},
+    }
+    ended = started | {
+        "event_id": "evt-model-zero-end",
+        "occurred_at": "2026-07-16T03:23:04Z",
+        "event_type": "model_call_ended",
+        "duration_ms": None,  # no reported duration
+        "outcome": "success",
+        "raw_input": None,
+        "raw_output": "ok",
+        "raw_event": {"content": "ok"},
+    }
+    assert client.post("/v1/events/model", json=started).json() == {"stored": True}
+    assert client.post("/v1/events/model", json=ended).json() == {"stored": True}
+
+    records = _read_trace_records(trace_dir)
+    llm_starts = [r for r in records if r.get("record_type") == "span_start" and r.get("kind") == "llm"]
+    llm_ends = [r for r in records if r.get("record_type") == "span_end" and r.get("kind") == "llm"]
+    assert len(llm_starts) == 1
+    assert len(llm_ends) == 1
+    # No reported duration -> duration_ns is 0 and the monotonic span is
+    # zero-width; the invariant mono_end - mono_start == duration_ns holds.
+    assert llm_ends[0]["duration_ns"] == "0"
+    assert (
+        int(llm_ends[0]["monotonic_time_ns"]) - int(llm_starts[0]["monotonic_time_ns"])
+        == int(llm_ends[0]["duration_ns"])
+    )
+    assert llm_ends[0]["resources"]["action_duration_ns"] == "0"
 
 
 def test_trace_marks_raw_exec_exit_code_failure(tmp_path: Path) -> None:
@@ -2314,6 +2819,217 @@ def test_model_hook_record_is_enriched_from_proxy_capture(tmp_path: Path, monkey
     llm_ends = [r for r in records if r.get("record_type") == "span_end" and r.get("kind") == "llm"]
     assert llm_ends[0]["output"]["content"]["content"] == "world"
     assert llm_ends[0]["output"]["content"]["tool_calls"][0]["id"] == "call-proxy-tool"
+
+
+def _drive_proxy_and_model_events(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    gateway_id: str | None,
+    runtime_id: str | None,
+) -> None:
+    """Send a proxied chat completion plus model start/end events.
+
+    Mirrors a live agent turn: OpenClaw POSTs to the sidecar LLM proxy (which
+    records ``messages_in``/``content`` keyed by the runtime credential) and the
+    plugin separately reports ``model_call_started`` / ``model_call_ended``.
+    The sidecar must correlate the proxy capture with the model span.
+    """
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url, headers=None, content=None):
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "model": "test-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": "world",
+                                "tool_calls": [
+                                    {
+                                        "id": "call-proxy-tool",
+                                        "type": "function",
+                                        "function": {"name": "exec", "arguments": '{"command":"pwd"}'},
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                },
+            )
+
+    monkeypatch.setattr("agent_scheduler.llm_proxy.httpx.AsyncClient", FakeAsyncClient)
+
+    headers = {}
+    if runtime_id is not None:
+        headers["x-claw-runtime-id"] = runtime_id
+    assert client.post(
+        "/v1/chat/completions",
+        json={"model": "test-model", "messages": [{"role": "user", "content": "hello"}]},
+        headers=headers,
+    ).status_code == 200
+
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    started = {
+        "schema_version": "scheduler.v1",
+        "event_id": "evt-model-start-proxy",
+        "occurred_at": now,
+        "plugin_version": "0.1.0",
+        "run_id": "run-proxy",
+        "session_id": "session-proxy",
+        "session_key": "agent:main:main",
+        "agent_id": None,
+        "gateway_id": gateway_id,
+        "runtime_id": runtime_id,
+        "event_type": "model_call_started",
+        "call_id": "run-proxy:model:1",
+        "provider": "vllm",
+        "model": "test-model",
+        "duration_ms": None,
+        "outcome": None,
+        "context_token_budget": 8192,
+        "raw_input": None,
+        "raw_output": None,
+        "raw_event": {"runId": "run-proxy", "sessionId": "session-proxy"},
+    }
+    ended = started | {
+        "event_id": "evt-model-end-proxy",
+        "occurred_at": now,
+        "event_type": "model_call_ended",
+        "duration_ms": 2000,
+        "outcome": "completed",
+        "raw_event": {"runId": "run-proxy", "sessionId": "session-proxy"},
+    }
+    assert client.post("/v1/events/model", json=started).json() == {"stored": True}
+    assert client.post("/v1/events/model", json=ended).json() == {"stored": True}
+
+
+def test_model_proxy_capture_correlates_when_events_carry_gateway_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """swe-rebench scenario: model events carry gateway_id="swe-rebench" and a
+    runtime id, while proxy captures only carry the runtime credential. The
+    proxy messages must still be attached to the LLM span."""
+    client, trace_dir = _trace_proxy_client(tmp_path)
+    _drive_proxy_and_model_events(
+        client,
+        monkeypatch,
+        gateway_id="swe-rebench",
+        runtime_id="claw-srb-996de1b4ee38",
+    )
+
+    records = _read_trace_records(trace_dir)
+    llm_starts = [
+        r for r in records if r.get("record_type") == "span_start" and r.get("kind") == "llm"
+    ]
+    assert len(llm_starts) == 1
+    assert llm_starts[0]["gateway_id"] == "swe-rebench"
+    assert llm_starts[0]["runtime_id"] == "claw-srb-996de1b4ee38"
+    assert llm_starts[0]["input"]["messages"] == [{"role": "user", "content": "hello"}]
+    llm_ends = [
+        r for r in records if r.get("record_type") == "span_end" and r.get("kind") == "llm"
+    ]
+    assert llm_ends[0]["output"]["content"]["content"] == "world"
+    assert llm_ends[0]["output"]["content"]["tool_calls"][0]["id"] == "call-proxy-tool"
+
+
+def test_model_proxy_capture_correlates_without_gateway_id(tmp_path: Path, monkeypatch) -> None:
+    """Plain OpenClaw / legacy scenario: no gateway_id anywhere. Correlation
+    still works on runtime_id + model + time alone."""
+    client, trace_dir = _trace_proxy_client(tmp_path)
+    _drive_proxy_and_model_events(client, monkeypatch, gateway_id=None, runtime_id=None)
+
+    records = _read_trace_records(trace_dir)
+    llm_starts = [
+        r for r in records if r.get("record_type") == "span_start" and r.get("kind") == "llm"
+    ]
+    assert len(llm_starts) == 1
+    assert llm_starts[0]["gateway_id"] is None
+    assert llm_starts[0]["input"]["messages"] == [{"role": "user", "content": "hello"}]
+    llm_ends = [
+        r for r in records if r.get("record_type") == "span_end" and r.get("kind") == "llm"
+    ]
+    assert llm_ends[0]["output"]["content"]["content"] == "world"
+
+
+def test_proxy_capture_rejected_when_explicit_gateway_differs(tmp_path: Path) -> None:
+    """Isolation intent is preserved: when a proxy capture DOES carry an explicit
+    gateway_id, a model event from a different gateway must not consume it."""
+    from agent_scheduler.contracts.models import ModelEvent
+    from agent_scheduler.trace import AgentTestBenchTraceWriter
+
+    writer = AgentTestBenchTraceWriter(tmp_path / "traces")
+    ts = time.time()
+    event_kwargs = dict(
+        schema_version="scheduler.v1",
+        event_id="evt-1",
+        occurred_at=time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(ts)),
+        plugin_version="0.1.0",
+        run_id="run-1",
+        session_id="session-1",
+        session_key="agent:main:main",
+        agent_id=None,
+        event_type="model_call_ended",
+        call_id="c1",
+        provider="vllm",
+        model="test-model",
+        duration_ms=1000,
+        outcome="completed",
+        context_token_budget=8192,
+        raw_input=None,
+        raw_output=None,
+        raw_event=None,
+        runtime_id="runtime-a",
+        repo="owner/repo",
+    )
+
+    def _record_with_gateway(gateway_id: str) -> None:
+        writer.record_llm_proxy_call(
+            runtime_id="runtime-a",
+            action_id=f"llm-proxy-{gateway_id}",
+            provider="llm-proxy",
+            model="test-model",
+            messages_in=[{"role": "user", "content": "hello"}],
+            content="world",
+            raw_request=None,
+            raw_response=None,
+            ts_start=ts - 1.0,
+            ts_end=ts,
+            status_code=200,
+            stream=False,
+            error=None,
+        )
+        # The proxy does not emit a gateway_id today, but if a future capture
+        # does, the strict isolation rule must still reject foreign gateways.
+        writer._recent_proxy_calls[-1]["gateway_id"] = gateway_id
+
+    _record_with_gateway("gateway-a")
+    different = ModelEvent(**{**event_kwargs, "gateway_id": "gateway-b"})
+    assert writer._pop_recent_proxy_call(different) is None
+    # The rejected capture was not consumed; drop it so the next scenario starts
+    # with a single unambiguous candidate.
+    writer._recent_proxy_calls.clear()
+
+    _record_with_gateway("gateway-a")
+    same = ModelEvent(**{**event_kwargs, "gateway_id": "gateway-a"})
+    matched = writer._pop_recent_proxy_call(same)
+    assert matched is not None
+    assert matched["data"]["messages_in"] == [{"role": "user", "content": "hello"}]
 
 
 def test_llm_proxy_reconstructs_streaming_tool_calls(tmp_path: Path, monkeypatch) -> None:

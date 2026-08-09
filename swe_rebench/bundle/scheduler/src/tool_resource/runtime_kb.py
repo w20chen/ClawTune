@@ -559,7 +559,14 @@ class ClauseLatencyBucketOutcome:
 
 @dataclass(frozen=True)
 class CommandLatencyBucketPrediction:
-    """Command result with honest per-clause compound evidence."""
+    """Command result with honest per-clause compound evidence.
+
+    ``composed`` is True when the command-level ``prediction`` is a derived
+    total composed from per-clause median latencies (serial units sum,
+    pipeline units take the max, trailing pipe viewers are dropped). The raw
+    per-clause outcomes remain in ``clause_predictions`` so consumers can
+    always see the underlying evidence instead of only the derived value.
+    """
 
     repo: str
     command: str
@@ -568,6 +575,9 @@ class CommandLatencyBucketPrediction:
     prediction: ClauseLatencyBucketPrediction | None
     unavailable_reason: str | None = None
     clause_predictions: tuple[ClauseLatencyBucketOutcome, ...] = ()
+    composed: bool = False
+    composed_total_ms: float | None = None
+    composition: tuple[dict[str, Any], ...] = ()
 
 
 def _unavailable_clause_outcome(
@@ -631,6 +641,115 @@ def _clause_public_keys(bin_: str) -> list[NodeKey]:
     """Public clause keys: coarse bin prior then global."""
 
     return [("bin", bin_), ("global", "")]
+
+
+# Trailing pipeline stages that only consume/present the upstream result
+# (tail, head, wc, cat, ...). In a pipeline every stage runs concurrently and
+# the trailing consumer's wall clock tracks the producer — the producer
+# usually closes the pipe or is SIGPIPE'd first — so a viewer's own prediction
+# adds no independent time. Composition drops trailing viewers instead of
+# double-counting them. Heavy transformers (grep/sed/awk/sort/...) are
+# intentionally NOT listed: they can be the pipeline bottleneck, so dropping
+# them would under-estimate the total.
+_PIPE_VIEWER_BINS = frozenset(
+    {
+        "cat", "comm", "column", "cut", "fold", "head", "hexdump", "less",
+        "more", "nl", "od", "paste", "rev", "tac", "tail", "tee", "tr",
+        "ts", "uniq", "wc", "xxd",
+    }
+)
+
+
+def _clause_in_pipe(clause: Mapping[str, Any]) -> bool:
+    """Whether a parsed clause participates in a pipeline (``|``)."""
+    return bool(clause.get("in_pipe", False))
+
+
+def _clause_pipeline_position(clause: Mapping[str, Any]) -> int:
+    """Zero-based position of the clause inside its pipeline (``-1`` when none)."""
+    return int(clause.get("pipeline_position", -1))
+
+
+def _compose_compound_latency_ms(
+    clauses: Sequence[tuple[int, Mapping[str, Any]]],
+    medians: Mapping[int, float],
+) -> tuple[float, tuple[dict[str, Any], ...]] | None:
+    """Compose a compound command's total latency from per-clause medians.
+
+    ``clauses`` are ``(clause_index, clause)`` pairs for the exec-producing
+    clauses in source order; ``medians`` maps each clause index to its median
+    latency. Serial connections (``;``, ``&&``, ``||``, newline) run one after
+    another and sum; a pipeline (``|``) runs its stages concurrently and
+    contributes its slowest stage. Trailing pipeline stages whose bin is a
+    result-viewing consumer (``_PIPE_VIEWER_BINS``) are dropped first: they
+    run concurrently with the producer and their wall clock tracks it, so
+    their own prediction adds no independent time.
+
+    Returns ``(total_ms, units)`` where each unit is ``{"kind": "single" |
+    "pipeline", "bins": [...], "time_ms": float,
+    "dropped_viewer_bins": [...]}``. Returns ``None`` when no executable
+    clause carries a median latency.
+    """
+    groups: list[list[int]] = []
+    for position, (index, clause) in enumerate(clauses):
+        if position > 0:
+            _, previous_clause = clauses[position - 1]
+            connected = (
+                groups
+                and _clause_in_pipe(clause)
+                and _clause_in_pipe(previous_clause)
+                and _clause_pipeline_position(clause)
+                == _clause_pipeline_position(previous_clause) + 1
+            )
+        else:
+            connected = False
+        if connected:
+            groups[-1].append(index)
+        else:
+            groups.append([index])
+
+    clause_by_index = {index: clause for index, clause in clauses}
+    units: list[dict[str, Any]] = []
+    total_ms = 0.0
+    for group in groups:
+        if len(group) == 1:
+            index = group[0]
+            if index not in medians:
+                return None
+            units.append(
+                {
+                    "kind": "single",
+                    "bins": [str(clause_by_index[index]["bin"])],
+                    "time_ms": medians[index],
+                    "dropped_viewer_bins": [],
+                }
+            )
+            total_ms += medians[index]
+            continue
+        pipeline = list(group)
+        dropped_viewer_bins: list[str] = []
+        while (
+            len(pipeline) > 1
+            and str(clause_by_index[pipeline[-1]]["bin"]) in _PIPE_VIEWER_BINS
+        ):
+            dropped_viewer_bins.append(str(clause_by_index[pipeline[-1]]["bin"]))
+            pipeline.pop()
+        stage_times = [medians[index] for index in pipeline if index in medians]
+        if not stage_times:
+            return None
+        unit_ms = max(stage_times)
+        units.append(
+            {
+                "kind": "pipeline",
+                "bins": [str(clause_by_index[index]["bin"]) for index in pipeline],
+                "time_ms": unit_ms,
+                "dropped_viewer_bins": dropped_viewer_bins,
+            }
+        )
+        total_ms += unit_ms
+    if not units:
+        return None
+    return total_ms, tuple(units)
 
 
 class ClauseResourceKB:
@@ -715,6 +834,62 @@ class ClauseResourceKB:
                 return values, "public", key[0], tuple(path)
         return None
 
+    def _clause_median_latency_ms(
+        self, repo: str, bin_: str, argv: Sequence[str]
+    ) -> float | None:
+        """Median clause wall latency from the same evidence as the bucket."""
+        selected = self._select(repo, _LATENCY_MS, bin_, argv)
+        if selected is None:
+            return None
+        values, _, _, _ = selected
+        ordered = sorted(values)
+        if not ordered:
+            return None
+        midpoint = len(ordered) // 2
+        if len(ordered) % 2 == 1:
+            return ordered[midpoint]
+        return (ordered[midpoint - 1] + ordered[midpoint]) / 2.0
+
+    def _compose_command_prediction(
+        self,
+        repo: str,
+        executable: Sequence[tuple[int, Mapping[str, Any]]],
+        outcomes: Sequence[ClauseLatencyBucketOutcome],
+        buckets: LatencyBuckets,
+    ) -> tuple[ClauseLatencyBucketPrediction, float, tuple[dict[str, Any], ...]] | None:
+        """Compose a command-level latency bucket from per-clause medians.
+
+        Every exec-producing clause must already have a bucket prediction; the
+        composed total is a derived estimate (serial units sum, pipeline units
+        take the max, trailing pipe viewers are dropped) rather than a direct
+        observation. Returns ``(prediction, composed_total_ms, composition)``
+        or ``None`` when any clause lacks median latency evidence.
+        """
+        medians: dict[int, float] = {}
+        for item in outcomes:
+            if item.prediction is None:
+                return None
+            median = self._clause_median_latency_ms(repo, item.bin, item.argv)
+            if median is None:
+                return None
+            medians[item.clause_index] = median
+        composed = _compose_compound_latency_ms(executable, medians)
+        if composed is None:
+            return None
+        total_ms, units = composed
+        bucket_id = buckets.bucket_id(total_ms)
+        probabilities = [0.0] * buckets.bucket_count
+        probabilities[bucket_id] = 1.0
+        prediction = ClauseLatencyBucketPrediction(
+            bucket_id=bucket_id,
+            probability_by_bucket=tuple(probabilities),
+            scope="composed",
+            key_kind="compound_composed",
+            evidence_count=len(medians),
+            fallback_path=("composed",) + tuple(unit["kind"] for unit in units),
+        )
+        return prediction, total_ms, units
+
     def predict_clause_latency_bucket(
         self,
         repo: str,
@@ -767,11 +942,17 @@ class ClauseResourceKB:
             (index, clause)
             for index, clause in enumerate(effective)
             if not shell_command
-            or shell_bin_requires_exec_evidence(str(clause["bin"]))
+            or shell_bin_requires_exec_evidence(
+                str(clause["bin"]),
+                str(clause["argv"][0]) if clause.get("argv") else None,
+            )
         ]
         clause_predictions: tuple[ClauseLatencyBucketOutcome, ...] = ()
         reason: str | None = None
         prediction: ClauseLatencyBucketPrediction | None = None
+        composed = False
+        composed_total_ms: float | None = None
+        composition: tuple[dict[str, Any], ...] = ()
         if parse_failed:
             reason = "parse_failed"
             clause_predictions = tuple(
@@ -790,12 +971,25 @@ class ClauseResourceKB:
             if len(effective) == 1:
                 prediction = clause_predictions[0].prediction
                 reason = clause_predictions[0].unavailable_reason
+            elif not clause_predictions:
+                # Multi-clause command with no measurable exec-producing
+                # clause (e.g. ``cd /workspace && export MODE=test``).
+                reason = "no_executable_clauses"
+            elif any(item.prediction is None for item in clause_predictions):
+                reason = "compound_clause_evidence_incomplete"
             else:
-                reason = (
-                    "compound_clause_evidence_incomplete"
-                    if any(item.prediction is None for item in clause_predictions)
-                    else "compound_command_uncomposed"
+                composed_result = self._compose_command_prediction(
+                    repo,
+                    executable,
+                    clause_predictions,
+                    buckets,
                 )
+                if composed_result is None:
+                    reason = "compound_command_uncomposed"
+                else:
+                    prediction, composed_total_ms, composition = composed_result
+                    composed = True
+                    reason = None
         return CommandLatencyBucketPrediction(
             repo=repo,
             command=command,
@@ -804,6 +998,9 @@ class ClauseResourceKB:
             prediction=prediction,
             unavailable_reason=reason,
             clause_predictions=clause_predictions,
+            composed=composed,
+            composed_total_ms=composed_total_ms,
+            composition=composition,
         )
 
     def _predict_clause_outcome(

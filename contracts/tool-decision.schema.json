@@ -152,7 +152,7 @@
     },
     "kvTTLCost": {
       "type": "object",
-      "description": "Prediction-time KV-TTL cost proxy against the p90 bucket distribution estimate.",
+      "description": "Prediction-time dynamic KV-TTL evaluation against the p90 bucket distribution estimate. TTLs are absolute from tool start and change as right-open runtime buckets advance.",
       "anyOf": [
         {
           "type": "object",
@@ -163,6 +163,7 @@
             "num_bucket_jumps": {"type": "integer", "minimum": 0},
             "bucket_exhausted": {"type": "boolean"},
             "ttl_s": {"type": "number", "minimum": 0},
+            "kv_eviction_time_s": {"type": "number", "minimum": 0},
             "kv_retention_time_s": {"type": "number", "minimum": 0},
             "kv_cache_miss": {"type": "boolean"},
             "proxy_cost_s": {"type": ["number", "null"], "minimum": 0},
@@ -177,6 +178,7 @@
             "num_bucket_jumps",
             "bucket_exhausted",
             "ttl_s",
+            "kv_eviction_time_s",
             "kv_retention_time_s",
             "kv_cache_miss",
             "proxy_cost_s",

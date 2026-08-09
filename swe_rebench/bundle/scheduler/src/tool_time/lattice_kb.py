@@ -199,9 +199,11 @@ class LatticeTimeKB:
         outcomes: list[ClauseLatticeTimePredictions] = []
         for clause_index, clause in enumerate(clauses):
             bin_ = str(clause["bin"])
-            if shell_command and not shell_bin_requires_exec_evidence(bin_):
-                continue
             argv = tuple(str(value) for value in clause["argv"])
+            if shell_command and not shell_bin_requires_exec_evidence(
+                bin_, argv[0] if argv else None
+            ):
+                continue
             if not bin_ or not argv:
                 continue
             predictions = (
@@ -277,6 +279,11 @@ class LatticeTimeKB:
             gamma=0.0,
             delta=_DOMINANCE_DELTA,
             risk_method=algorithm,
+            # Explicit (shrinkage): return the exact node's median when the
+            # query's feature set exists in the lattice.  The vendored
+            # selector already auto-enables this for ``shrinkage``/``loso``;
+            # passing it here pins the intent against selector refactors.
+            exact_match_shortcut=(algorithm == "shrinkage"),
             context_sample_alpha=_CONTEXT_SAMPLE_ALPHA,
             estimator="median",
             shrinkage_kappa=_SHRINKAGE_KAPPA,

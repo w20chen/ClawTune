@@ -265,3 +265,18 @@ sudo bash scripts/setup/arm_qemu_setup.sh check
 
 This list is the authoritative record of validation commands that must run on
 a Linux host.
+
+## Local validation limitations
+
+- `python -m pytest services/scheduler/tests/test_kv_ttl.py services/scheduler/tests/test_tool_resource_predictor.py -q`
+  could not run cleanly with the repository's configured global pytest base
+  directory because pytest cannot remove stale entries under
+  `%USERPROFILE%\.pytest-tmp` (`PermissionError: [WinError 5]`). The affected
+  tests are rerun with a workspace-local `--basetemp` directory instead.
+- `python -m pytest services/scheduler/tests/test_contracts.py -q
+  --basetemp=.pytest-contract-validation` cannot run because that test module
+  does not exist. Contract validation is covered by
+  `test_sidecar_uses_tool_resource_predictor_when_configured` instead.
+- `python -m ruff check ...` cannot run in the current Python environment
+  because the `ruff` module is not installed. `git diff --check`, JSON parsing,
+  and the full scheduler test suite are used as the available local checks.

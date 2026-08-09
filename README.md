@@ -214,6 +214,7 @@ See [Deep Research Bench usage](deep_research_bench/README.md).
 - [SWE-Rebench usage](swe_rebench/README.md)
 - [SWE-Rebench trace replay](swe_rebench/README.md#replay-a-case)
 - [Deep Research Bench usage](deep_research_bench/README.md)
+- [Legacy offline evaluation](docs/legacy-eval.md)
 - [Architecture and developer references](docs/architecture.md)
 
 ## Development Checks

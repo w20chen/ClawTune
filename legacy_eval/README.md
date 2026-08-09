@@ -1,142 +1,209 @@
 # legacy_eval
 
-Independent offline evaluation of ClawTune's tool-resource prediction
-algorithms over external **legacy-format** trace datasets.
+`legacy_eval` is the independent offline evaluator for ClawTune's prediction
+algorithms on external legacy-format traces. It reads previously captured
+telemetry, builds the same knowledge bases used by the scheduler, and replays a
+static held-out split without modifying OpenClaw core or the prediction
+algorithms.
 
-The problem this solves: we do not have the time/resources to re-run a legacy
-trace dataset through the ClawTune harness, but we still want to measure how
-well ClawTune's prediction algorithms would perform on those traces.  This
-package adapts the external dataset format, trains the prediction KBs on a
-random 80% of tasks, and evaluates them on the held-out 20%.
+For an end-to-end reproduction guide, including the published SWE277
+commands, dynamic KV-TTL costs, and shrinkage-kappa sweeps, see
+[`docs/legacy-eval.md`](../docs/legacy-eval.md).
 
-It is deliberately **independent**: it never modifies the vendored algorithm
-code under `services/scheduler/src/tool_resource` / `tool_time`.  It only
-parses the legacy format, constructs the algorithm input objects
-(`ClauseObservation` / `CompletedCall`), and drives the public KB APIs.
+## Supported legacy layout
 
-## Algorithms evaluated
+```text
+<dataset-root>/
+  <org>__<repo>-<pr>/
+    attempt_1/
+      clause_telemetry.json
+      trace.jsonl
+      ...
+```
 
-| track | algorithm | source | granularity |
-| --- | --- | --- | --- |
-| `clause_latency_bucket` | empirical latency-bucket classifier | `ClauseResourceKB` | clause |
-| `lattice_shrinkage` | Bayesian-shrinkage point prediction | `LatticeTimeKB` | clause |
-| `lattice_loso` | leave-one-signature-out point prediction | `LatticeTimeKB` | clause |
-| `lattice_max_cardinality` | max-cardinality point prediction | `LatticeTimeKB` | clause |
-| `continuous_latency_p90` | conditional p90 latency | `RuntimeToolResourceKB` | tool call |
-| `continuous_cpu_p90` | conditional p90 CPU | `RuntimeToolResourceKB` | tool call |
+`clause_telemetry.json` supplies executable-clause latency and resource labels.
+`trace.jsonl` supplies the call-level tool name, command, duration, status,
+timestamps, and tool-call ID. The large top-level simulation JSONL is not read.
 
-The production sidecar additionally exposes `quantile_mlp`, which is disabled
-in production and not evaluated here.  `peak_memory_mb` is not evaluated: the
-legacy format has no ambient-memory anchor, so the honest result is
-"unavailable".
+Known limitations are preserved in the report:
+
+- legacy clause rows do not contain real clause start/end timestamps;
+- the corpus has no per-call ambient memory samples, so continuous memory
+  coverage is zero;
+- short clauses often have no eligible peak-CPU label, so CPU coverage is
+  partial.
 
 ## Evaluation protocol
 
-* **Split**: random 80% train / 20% test **by task** (one task = one
-  workspace/repo history, so no repo's commands leak between splits).
-  Deterministic for a given `--seed` (default 42).
-* **Static train/test**: the KBs are built **only** from the training split;
-  the test split is replayed predict-only and is never fed back into the KB.
-  This measures cross-task (cold-start) generalization.
+The current protocol is `static_train_test_obs_per_repo`:
 
-## Legacy format supported
+1. Tool calls are grouped by `<org>__<repo>`.
+2. Repositories with at least 10 calls contribute
+   `max(1, int(n * (1 - train_frac)))` seeded, shuffled calls to test; smaller
+   repositories remain training-only.
+3. Clause rows follow their `tool_call_id`. Missing or unmatched IDs remain on
+   the training side.
+4. Knowledge bases are built from training observations only.
+5. The test observations are replayed predict-only and never update the KB.
+
+This is an **observation-level split**, not a disjoint task-level split. One
+task directory can contain both training and test calls, so the report may show
+the same number of distinct train and test tasks. The historical CLI flag names
+`--max-train-tasks` and `--max-test-tasks` currently cap sorted observation
+keys and should be used only for smoke tests.
+
+The split is deterministic for a fixed dataset, `train_frac`, seed, code
+revision, and dependency set. The published SWE277 runs use `train_frac=0.8`
+and `seed=42`.
+
+## Prediction tracks
+
+| Report key | Algorithm | Granularity | Bucket result |
+| --- | --- | --- | --- |
+| `clause_latency_bucket` | empirical bucket classifier | executable clause | predicted directly |
+| `shrinkage` | Bayesian-shrinkage lattice selector | executable clause | point prediction mapped through the configured edges |
+| `loso` | leave-one-signature-out lattice selector | executable clause | point prediction mapped through the configured edges |
+| `max_cardinality` | most-specific matching lattice node | executable clause | point prediction mapped through the configured edges |
+| `continuous_latency_p90` | conditional p90 | tool call | not part of the four-algorithm bucket comparison |
+| `continuous_cpu_p90` | conditional p90 | tool call | not part of the four-algorithm bucket comparison |
+| `continuous_memory_p90` | conditional p90 | tool call | unavailable for this legacy corpus |
+
+## Reproduce the SWE277 bucket report
+
+Run from the repository root. `_bootstrap.py` adds
+`services/scheduler/src` to `sys.path`; no manual `PYTHONPATH` is required.
+
+PowerShell:
+
+```powershell
+$dataset = "<dataset-root>"
+$out = "legacy_eval\.runtime\bucket-swe277-b600-2000-10000-60000-seed42"
+
+python -m legacy_eval `
+  --dataset $dataset `
+  --train-frac 0.8 `
+  --seed 42 `
+  --bucket-edges "600,2000,10000,60000" `
+  --out "$out\report.json" `
+  --markdown "$out\report.md"
+```
+
+The five right-open buckets are `[0,0.6)`, `[0.6,2)`, `[2,10)`,
+`[10,60)`, and `[60,+inf)` seconds. The output contains point metrics,
+bucket accuracy/F1, per-bucket metrics, confusion matrices, coverage, and all
+per-sample records.
+
+Expected headline metrics for the specified SWE277 snapshot:
+
+| Algorithm | Coverage | Bucket accuracy | Macro F1 | Weighted F1 |
+| --- | ---: | ---: | ---: | ---: |
+| `clause_latency_bucket` | 100% | 80.04% | 0.5631 | 0.8014 |
+| `shrinkage` | 100% | 80.27% | 0.5721 | 0.7918 |
+| `loso` | 100% | 77.75% | 0.4574 | 0.7785 |
+| `max_cardinality` | 100% | 80.80% | 0.5834 | 0.8093 |
+
+## Dynamic KV-TTL costs
+
+The TTL evaluator uses the scheduler's pure dynamic policy implementation:
 
 ```text
-<dataset>/
-  <org>__<repo>-<pr>/
-    attempt_1/
-      clause_telemetry.json   # Stage-2 clause artifact (ClawTune-valid)
-      trace.jsonl             # action-level trace (llm_call + tool_exec)
-      ...                     # unused (resources.json etc.)
+k(t) = max(k0, bucket reached by elapsed time t)
+C_R  = min(T, D)
+C_M  = 1[T > D]
 ```
 
-`clause_telemetry.json` is structurally identical to ClawTune's own Stage-2
-clause telemetry and passes the native `tool_resource.sdk._load_valid_artifact`
-validation unchanged.  `trace.jsonl` supplies the call-level view (tool name,
-command, duration, success, timestamps) used by the continuous predictor.
+At an exact boundary the runtime advances to the new bucket before evaluating
+its TTL. Reproduce the published policy with boundaries
+`600,2000,10000,60000 ms` and TTLs `0.6,2,0,0,0 s`:
 
-Known format limitations (reported honestly in the output):
-
-* clause rows carry no `ts_start`/`ts_end` (causality is not available);
-* `resources.json` has no per-call memory samples (monitoring disabled), so
-  continuous memory predictions are unavailable.
-
-## Usage
-
-```bash
-# Full run (defaults: dataset=D:\swe100-full-5be74da-20260726, 80/20, seed=42)
-python -m legacy_eval
-
-# Explicit options
-python -m legacy_eval \
-  --dataset D:\swe100-full-5be74da-20260726 \
-  --train-frac 0.8 --seed 42 \
-  --bucket-edges 100,500,2000,10000 \
-  --out legacy_eval/.runtime/report.json --markdown legacy_eval/.runtime/report.md \
-  --print-summary
-
-# Smoke test (few tasks)
-python -m legacy_eval --max-train-tasks 4 --max-test-tasks 2 --print-summary
+```powershell
+python scripts/evaluate_legacy_ttl_cost.py `
+  --dataset $dataset `
+  --out-dir "legacy_eval\.runtime\ttl-cost-swe277-b600-2000-10000-60000-seed42" `
+  --train-frac 0.8 `
+  --seed 42 `
+  --bucket-edges-ms "600,2000,10000,60000" `
+  --ttl-by-bucket-s "0.6,2,0,0,0"
 ```
 
-Outputs a full JSON report (`report.json`, all per-call records) and a
-Markdown summary (`report.md`).  Results are written under
-`legacy_eval/.runtime/` (gitignored) by default.
+Outputs:
 
-## Cold-start KB export
+- `ttl_cost_summary.json`: machine-readable configuration and aggregates;
+- `ttl_cost_summary.csv`: compact comparison table;
+- `ttl_cost_report.md`: human-readable report;
+- `ttl_cost_records.jsonl`: one cost row per algorithm and test clause.
 
-The KBs trained on the training split can be serialized into the project's
-cold-start snapshot format (`traces/tool-resource/`) so the runtime sidecar
-loads them as its seed on the next benchmark run:
+The report provides both per-algorithm available support and the common support
+of all four algorithms. Always compare totals on common support if coverage
+differs.
 
-```bash
-# Export to the project cold-start seed (default training = 80 tasks, seed=42)
-python -m legacy_eval --export-kb traces/tool-resource --skip-eval
+## Shrinkage-kappa sweep
 
-# Stage elsewhere first, then review before replacing
-python -m legacy_eval --export-kb legacy_eval/.runtime/coldstart --skip-eval
+The production shrinkage strength is `kappa=5.0`. The offline sweep rebuilds
+all lattice node variances for every candidate while leaving the production
+constant unchanged:
+
+```powershell
+python scripts/tune_legacy_shrinkage_kappa.py `
+  --dataset $dataset `
+  --out-dir "legacy_eval\.runtime\shrinkage-kappa-small-swe277-b600-seed42" `
+  --kappas "0.5,1,2,3,5" `
+  --bucket-edges-ms "600,2000,10000,60000" `
+  --ttl-by-bucket-s "0.6,2,0,0,0" `
+  --train-frac 0.8 `
+  --seed 42
 ```
 
-The export writes the three snapshots the project validates and loads
-(`clause-resource-kb.json`, `clause-lattice-time-kb.json`,
-`runtime-tool-resource-kb.json`; schemas `runtime_clause_resource_kb_v4`,
-`clause_lattice_time_kb_v1`, `runtime_tool_resource_kb_v1`).
+This is exploratory tuning on the evaluation split. Select a candidate on an
+inner validation split or multiple seeds before changing the production
+default, then report the final test result only once.
 
-Design decisions (confirmed with the user):
+## Other CLI operations
 
-* **Source**: the 80 training tasks of the seed-42 split (the same KB the
-  evaluation measures).
-* **Public layer only**: the per-repo layer is left empty because the 80
-  legacy task repos are not the workspaces the project will run.
-* **Memory prior**: legacy traces carry no ambient-memory anchor, so the
-  export preserves the existing seed's `peak_memory_mb` global prior (merged
-  from `traces/tool-resource/runtime-tool-resource-kb.json`).
+Smoke test:
 
-Library use:
-
-```python
-from legacy_eval.export import export_cold_start_kb_dataset
-
-export = export_cold_start_kb_dataset(r"D:\swe100-full-5be74da-20260726",
-                                      out_dir="traces/tool-resource")
-print(export.to_json_obj())
+```powershell
+python -m legacy_eval --dataset $dataset `
+  --max-train-tasks 10 --max-test-tasks 5 --print-summary
 ```
 
-## Library use
+Restrict the corpus using a JSON list or `{ "tasks": [...] }` object:
 
-```python
-from legacy_eval.engine import EvalConfig, evaluate_dataset
-from legacy_eval.loader import load_all
-from legacy_eval.report import render_markdown
-
-result = evaluate_dataset(r"D:\swe100-full-5be74da-20260726",
-                          config=EvalConfig(seed=7))
-print(render_markdown(result))
+```powershell
+python -m legacy_eval --dataset $dataset --task-list tasks.json
 ```
 
-## Tests
+Export the training side as the three cold-start KB snapshots:
 
-```bash
-python -m pytest tests/test_legacy_eval.py tests/test_legacy_eval_export.py \
-  -q --basetemp .pytest-tmp-root
+```powershell
+python -m legacy_eval --dataset $dataset `
+  --export-kb "legacy_eval\.runtime\coldstart" --skip-eval
+```
+
+Review a staged export before copying it into `traces/tool-resource`. The
+export writes `clause-resource-kb.json`, `clause-lattice-time-kb.json`, and
+`runtime-tool-resource-kb.json`.
+
+## Output and validation
+
+`legacy_eval/.runtime/` is ignored by Git. Preserve the command, code revision,
+dataset path/snapshot, seed, split fraction, bucket boundaries, TTL policy, and
+any tuned hyperparameters alongside published numbers.
+
+Run the evaluator tests from the repository root:
+
+```powershell
+python -m pytest tests/test_legacy_eval.py tests/test_legacy_eval_export.py -q `
+  --basetemp .pytest-legacy-eval
+python -m pytest services/scheduler/tests/test_kv_ttl.py -q `
+  --basetemp .pytest-kv-ttl
+```
+
+Useful post-processing helpers for a generated `report.json`:
+
+```powershell
+python scripts/analyze_lattice_worst.py <report.json> loso
+python scripts/compare_lattice_segments.py <report.json>
+python scripts/lattice_head_to_head.py <report.json>
+python scripts/sweep_buckets.py <report.json>
 ```

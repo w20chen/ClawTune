@@ -297,19 +297,34 @@ class ToolResourcePredictor:
         self.lattice_kb = lattice_kb or LatticeTimeKB()
         self.lattice_kb_snapshot_path = lattice_kb_snapshot_path
         self.numa_usage_sampler = numa_usage_sampler
-        # KV-TTL cost proxy policy.  Bucket upper bounds are derived from the
-        # configured latency edges (seconds); the per-bucket TTL defaults to
-        # the bucket upper bound when no explicit policy is configured.
+        # KV-TTL policy.  Finite bucket boundaries are derived from the
+        # configured latency edges.  There is one TTL per resulting bucket,
+        # including the open-ended tail bucket.  Legacy configurations with
+        # one value per edge remain valid and imply immediate tail eviction.
         self.buckets_s = tuple(edge / 1000.0 for edge in buckets.edges_ms)
+        configured_ttls = (
+            ttl_by_bucket_s
+            if ttl_by_bucket_s is not None
+            else (*self.buckets_s, 0.0)
+        )
         self.ttl_by_bucket_s = (
-            ttl_by_bucket_s if ttl_by_bucket_s is not None else self.buckets_s
+            (*configured_ttls, 0.0)
+            if len(configured_ttls) == len(self.buckets_s)
+            else configured_ttls
         )
         self.miss_penalty_s = miss_penalty_s
-        if len(self.ttl_by_bucket_s) != len(self.buckets_s):
+        if self.miss_penalty_s is not None and (
+            not math.isfinite(self.miss_penalty_s) or self.miss_penalty_s < 0.0
+        ):
+            raise ValueError(
+                "tool_resource_miss_penalty_s must be finite and non-negative"
+            )
+        expected_ttl_count = len(self.buckets_s) + 1
+        if len(self.ttl_by_bucket_s) != expected_ttl_count:
             raise ValueError(
                 "tool_resource_ttl_by_bucket_s must have one entry per latency "
-                f"bucket edge (got {len(self.ttl_by_bucket_s)} entries for "
-                f"{len(self.buckets_s)} edges)"
+                f"bucket (got {len(self.ttl_by_bucket_s)} entries for "
+                f"{expected_ttl_count} buckets)"
             )
         self._kb_lock = threading.RLock()
         self._execution_lock = threading.RLock()
@@ -682,17 +697,13 @@ class ToolResourcePredictor:
     ) -> dict[str, Any] | None:
         """Prediction-time KV-TTL cost estimate against the predicted runtime.
 
-        The KV TTL is pinned by the predicted bucket (``bucket_id``).  The
-        reference runtime is the prediction's p90 duration, so this is a
-        planning estimate: it answers "given TTL fixed from the modal
-        prediction, what retention / miss / cost do we expect at p90?".
-
-        The final open-ended bucket has no TTL policy entry (the kv_ttl module
-        requires ``initial_bucket_index < len(buckets)``), so predictions that
-        land there report ``unavailable_reason`` instead of a fabricated value.
+        The reference runtime is the prediction's p90 duration, so this is a
+        planning estimate.  The pure evaluator advances through right-open
+        runtime buckets and applies each new bucket's absolute TTL.  The final
+        open-ended bucket has its own policy entry.
         """
 
-        if bucket_prediction.bucket_id >= len(self.buckets_s):
+        if bucket_prediction.bucket_id >= len(self.ttl_by_bucket_s):
             return {
                 "unavailable_reason": "initial_bucket_out_of_range",
                 "initial_bucket_index": bucket_prediction.bucket_id,
@@ -703,7 +714,6 @@ class ToolResourcePredictor:
                 initial_bucket_index=bucket_prediction.bucket_id,
                 buckets=list(self.buckets_s),
                 ttl_by_bucket=list(self.ttl_by_bucket_s),
-                miss_penalty_s=self.miss_penalty_s,
             )
         except ValueError as exc:
             return {"unavailable_reason": f"evaluation_error:{type(exc).__name__}"}
@@ -714,9 +724,17 @@ class ToolResourcePredictor:
             "num_bucket_jumps": evaluation.num_bucket_jumps,
             "bucket_exhausted": evaluation.bucket_exhausted,
             "ttl_s": evaluation.ttl_s,
+            "kv_eviction_time_s": evaluation.kv_eviction_time_s,
             "kv_retention_time_s": evaluation.kv_retention_time_s,
             "kv_cache_miss": evaluation.kv_cache_miss,
-            "proxy_cost_s": evaluation.proxy_cost_s,
+            # Compatibility-only aggregate kept outside the reusable TTL
+            # evaluator. Offline evaluation should report C_R and C_M directly.
+            "proxy_cost_s": (
+                None
+                if self.miss_penalty_s is None
+                else evaluation.kv_retention_time_s
+                + self.miss_penalty_s * float(evaluation.kv_cache_miss)
+            ),
             "buckets_s": list(self.buckets_s),
             "ttl_by_bucket_s": list(self.ttl_by_bucket_s),
             "miss_penalty_s": self.miss_penalty_s,

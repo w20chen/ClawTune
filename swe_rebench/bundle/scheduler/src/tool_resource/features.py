@@ -172,10 +172,21 @@ def repo_of(task_id: str) -> str:
     return _REPO_SUFFIX_RE.sub("", task_id)
 
 
-def shell_bin_requires_exec_evidence(bin_: str) -> bool:
-    """Whether a static shell clause head should create a new exec image."""
+def shell_bin_requires_exec_evidence(
+    bin_: str,
+    executable_head: str | None = None,
+) -> bool:
+    """Whether a static shell clause head should create a new exec image.
 
-    return bin_ not in NOEXEC_SHELL_BUILTINS
+    Mvdan deliberately normalizes ``bin`` to a basename, but ``argv[0]`` keeps
+    the original spelling.  A bare ``echo`` may be a shell builtin whereas an
+    explicit ``/bin/echo`` or ``./echo`` necessarily asks the shell to execute
+    an external file.  Preserve that distinction without changing the parser.
+    """
+
+    return bin_ not in NOEXEC_SHELL_BUILTINS or bool(
+        executable_head and "/" in executable_head
+    )
 
 
 def assign_repo_folds(

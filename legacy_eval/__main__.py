@@ -2,10 +2,10 @@
 
 Usage::
 
-    python -m legacy_eval --dataset D:\\swe100-full-5be74da-20260726
-    python -m legacy_eval --dataset D:\\swe100-full-5be74da-20260726 \\
+    python -m legacy_eval --dataset <dataset-root>
+    python -m legacy_eval --dataset <dataset-root> \\
         --train-frac 0.8 --seed 42 --out legacy_eval/.runtime/report.json
-    python -m legacy_eval --dataset ... --max-train-tasks 4 --max-test-tasks 2  # smoke
+    python -m legacy_eval --dataset <dataset-root> --max-train-tasks 4 --max-test-tasks 2  # smoke
 
 Run from anywhere; the scheduler source path is bootstrapped automatically.
 """
@@ -25,9 +25,6 @@ from legacy_eval.engine import EvalConfig, evaluate, write_json_report  # noqa: 
 from legacy_eval.loader import load_all  # noqa: E402
 from legacy_eval.report import write_markdown_report  # noqa: E402
 
-_DEFAULT_DATASET = r"D:\swe100-full-5be74da-20260726"
-
-
 def _parse_edges(text: str) -> tuple[float, ...]:
     parts = [part.strip() for part in text.split(",") if part.strip()]
     if not parts:
@@ -45,8 +42,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--dataset",
-        default=_DEFAULT_DATASET,
-        help=f"legacy dataset root (default: {_DEFAULT_DATASET})",
+        required=True,
+        help="legacy dataset root",
     )
     parser.add_argument(
         "--train-frac",

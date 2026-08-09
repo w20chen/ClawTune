@@ -7,7 +7,7 @@
 
 | Item | Value |
 | --- | --- |
-| Dataset | `D:\swe277-full-5be74da-20260726\swe277-full-5be74da-20260726` (277 tasks / 213 repos) |
+| Dataset | `<dataset-root>` (277 tasks / 213 repos) |
 | Protocol | static train/test, **latt-style observation-level split** (tool-call granularity) |
 | Split rule | group tool calls by `<org>__<repo>`; repos with ≥10 calls contribute `int(n×0.2)` (≥1) calls to test (seeded shuffle); smaller repos train-only |
 | Seed / split | `seed=42`, `train_frac=0.8` (deterministic, reproducible) |
@@ -96,7 +96,7 @@ Requirements: Python 3.12 + numpy; run from the repo root; `services/scheduler/s
 ```bash
 # Run the full evaluation (final configuration)
 $env:PYTHONPATH = "services/scheduler/src"          # PowerShell
-python -m legacy_eval --dataset "D:\swe277-full-5be74da-20260726\swe277-full-5be74da-20260726" \
+python -m legacy_eval --dataset "<dataset-root>" \
     --bucket-edges 600,2000,10000,60000
 
 # Unit tests

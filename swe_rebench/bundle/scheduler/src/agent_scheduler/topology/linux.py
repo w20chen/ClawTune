@@ -4,14 +4,18 @@ import math
 import os
 import platform
 import re
+import threading
+import time
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
 
 _CPU_SYSFS_ROOT = Path("/sys/devices/system/cpu")
 _NODE_SYSFS_ROOT = Path("/sys/devices/system/node")
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _PROC_SELF_CGROUP = Path("/proc/self/cgroup")
+_PROC_STAT = Path("/proc/stat")
 
 
 def read_topology(
@@ -320,3 +324,247 @@ def _read_llc_clusters(effective_cpus: set[int]) -> list[dict[str, Any]]:
             "cpus": sorted(shared),
         }
     return [clusters[key] for key in sorted(clusters)]
+
+
+@dataclass(frozen=True)
+class CpuTicks:
+    """Per-CPU tick counters from ``/proc/stat`` (USER_HZ jiffies).
+
+    Fields follow the ``cpu<N>`` line layout: user, nice, system, idle,
+    iowait, irq, softirq, steal, guest, guest_nice.  Missing trailing
+    counters (older kernels) default to zero.
+    """
+
+    user: int = 0
+    nice: int = 0
+    system: int = 0
+    idle: int = 0
+    iowait: int = 0
+    irq: int = 0
+    softirq: int = 0
+    steal: int = 0
+    guest: int = 0
+    guest_nice: int = 0
+
+    def total(self) -> int:
+        """All ticks attributed to this CPU, including idle and iowait."""
+        return (
+            self.user
+            + self.nice
+            + self.system
+            + self.idle
+            + self.iowait
+            + self.irq
+            + self.softirq
+            + self.steal
+        )
+
+    def busy(self) -> int:
+        """Ticks spent doing work.
+
+        guest/guest_nice are already folded into user/nice by the kernel, so
+        only idle and iowait are subtracted.
+        """
+        return self.total() - self.idle - self.iowait
+
+
+def _user_hz() -> int:
+    """Return the kernel USER_HZ clock tick rate used by ``/proc/stat``."""
+    try:
+        return int(os.sysconf("SC_CLK_TCK"))
+    except (AttributeError, OSError, ValueError):
+        return 100
+
+
+def _read_proc_stat_ticks() -> dict[int, CpuTicks]:
+    """Read per-CPU tick counters from ``/proc/stat``.
+
+    The aggregate ``cpu`` line is skipped; only ``cpu<N>`` lines are kept.
+    On non-Linux hosts (or read failures) an empty mapping is returned so
+    callers can report the sample as unavailable instead of raising.
+    """
+    ticks: dict[int, CpuTicks] = {}
+    try:
+        text = _PROC_STAT.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ticks
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 6 or not fields[0].startswith("cpu"):
+            continue
+        cpu_field = fields[0]
+        if cpu_field == "cpu":
+            continue
+        cpu_part = cpu_field[3:]
+        if not cpu_part.isdigit():
+            continue
+        try:
+            values = [int(value) for value in fields[1:11]]
+        except ValueError:
+            continue
+        if len(values) < 10:
+            values.extend([0] * (10 - len(values)))
+        ticks[int(cpu_part)] = CpuTicks(*values)
+    return ticks
+
+
+def _host_numa_nodes() -> list[dict[str, Any]]:
+    """Read all host NUMA nodes without intersecting the sidecar's cpuset.
+
+    NUMA-domain busyness is a host-level property: the sidecar's own affinity
+    mask must not hide CPUs that other tenants are using on the same node, so
+    ``sample()`` deliberately reports every node's full CPU membership.
+    """
+    nodes: list[dict[str, Any]] = []
+    if not _NODE_SYSFS_ROOT.exists():
+        return nodes
+    for node in sorted(_NODE_SYSFS_ROOT.glob("node*")):
+        match = re.fullmatch(r"node(\d+)", node.name)
+        if match is None or not node.is_dir():
+            continue
+        parsed = _parse_cpu_list(_read_text(node / "cpulist"))
+        cpus = [] if parsed is None else sorted(parsed)
+        nodes.append(
+            {
+                "node": int(match.group(1)),
+                "cpulist": _format_cpu_list(set(cpus)),
+                "cpus": cpus,
+            }
+        )
+    return nodes
+
+
+def _aggregate_node_delta(
+    cpus: Sequence[int],
+    prev_ticks: Mapping[int, CpuTicks],
+    ticks: Mapping[int, CpuTicks],
+) -> tuple[int, int, int] | None:
+    """Aggregate ``(busy_delta, total_delta, covered_cpus)`` across *cpus*.
+
+    Only CPUs present in both tick maps are counted; ``covered_cpus`` is the
+    number that actually contributed (i.e. the online count observed in the
+    window).  Returns ``None`` when no CPU contributed or the window saw no
+    ticks at all.
+    """
+    busy = 0
+    total = 0
+    covered = 0
+    for cpu in cpus:
+        before = prev_ticks.get(cpu)
+        after = ticks.get(cpu)
+        if before is None or after is None:
+            continue
+        covered += 1
+        busy += max(0, after.busy() - before.busy())
+        total += max(0, after.total() - before.total())
+    if covered == 0 or total <= 0:
+        return None
+    return busy, total, covered
+
+
+def _numa_node_usage_payload(
+    node: Mapping[str, Any],
+    *,
+    online_cpus: int,
+    busy_cores: float | None,
+    utilization_pct: float | None,
+) -> dict[str, Any]:
+    return {
+        "node": int(node["node"]),
+        "cpulist": node.get("cpulist"),
+        "online_cpus": online_cpus,
+        "cpu_utilization_pct": utilization_pct,
+        "busy_cores": busy_cores,
+    }
+
+
+class NumaCpuUsageSampler:
+    """Delta-based per-NUMA-node CPU utilization sampler.
+
+    Every :meth:`sample` reads per-CPU tick counters from ``/proc/stat`` and
+    aggregates the delta since the previous sample by each NUMA node's CPU
+    membership from sysfs.  The per-node ``cpu_utilization_pct`` is the total
+    busy share of the whole NUMA domain (0-100%, where 100% means every CPU in
+    the node was fully busy); ``busy_cores`` is the average number of fully
+    busy cores over the window.
+
+    The baseline is seeded at construction so the first prediction still
+    reports a window (from sidecar start).  Samples are cheap (one short
+    procfs read) and guarded by a lock because predictions can run on
+    concurrent worker threads.  One data point is emitted per hardware NUMA
+    node, so a 4-node machine yields exactly four entries.
+    """
+
+    def __init__(self, numa_nodes: Sequence[dict[str, Any]] | None = None) -> None:
+        self._nodes = list(numa_nodes) if numa_nodes is not None else _host_numa_nodes()
+        self._user_hz = _user_hz()
+        self._lock = threading.Lock()
+        self._prev_ticks: dict[int, CpuTicks] | None = _read_proc_stat_ticks()
+        self._prev_monotonic_s: float | None = time.monotonic()
+
+    def sample(self) -> dict[str, Any]:
+        with self._lock:
+            ticks = _read_proc_stat_ticks()
+            now = time.monotonic()
+            prev_ticks = self._prev_ticks
+            prev_monotonic = self._prev_monotonic_s
+            self._prev_ticks = ticks
+            self._prev_monotonic_s = now
+
+            if prev_ticks is None or not ticks or not self._nodes:
+                return {
+                    "available": bool(ticks) and bool(self._nodes),
+                    "sampled": False,
+                    "node_count": len(self._nodes),
+                    "window_s": None,
+                    "user_hz": self._user_hz,
+                    "nodes": [
+                        _numa_node_usage_payload(
+                            node,
+                            online_cpus=len(node.get("cpus", [])),
+                            busy_cores=None,
+                            utilization_pct=None,
+                        )
+                        for node in self._nodes
+                    ],
+                }
+
+            window_s = max(0.0, now - prev_monotonic)
+            nodes: list[dict[str, Any]] = []
+            for node in self._nodes:
+                cpus = [int(cpu) for cpu in node.get("cpus", [])]
+                delta = _aggregate_node_delta(cpus, prev_ticks, ticks)
+                if delta is None:
+                    nodes.append(
+                        _numa_node_usage_payload(
+                            node,
+                            online_cpus=len(cpus),
+                            busy_cores=None,
+                            utilization_pct=None,
+                        )
+                    )
+                    continue
+                busy_delta, total_delta, covered = delta
+                utilization_pct = busy_delta / total_delta * 100.0
+                busy_cores = (
+                    busy_delta / self._user_hz / window_s
+                    if window_s > 0 and self._user_hz > 0
+                    else None
+                )
+                nodes.append(
+                    _numa_node_usage_payload(
+                        node,
+                        online_cpus=covered,
+                        busy_cores=round(busy_cores, 2) if busy_cores is not None else None,
+                        utilization_pct=round(utilization_pct, 2),
+                    )
+                )
+
+            return {
+                "available": True,
+                "sampled": True,
+                "node_count": len(self._nodes),
+                "window_s": round(window_s, 3),
+                "user_hz": self._user_hz,
+                "nodes": nodes,
+            }
