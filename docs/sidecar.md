@@ -107,15 +107,19 @@ $C \subseteq Q$; each algorithm predicts the median of the node it selects.
 $C^* = \arg\max_{C \subseteq Q} |C|$; if none, fall back to the global median.
 
 **`loso`** (Leave-One-Signature-Out) — score each activated node by
+
 $$\mathrm{score}(C) = |C| - w\,R_C, \qquad w = 1.0,$$
+
 where $R_C$ is the LOSO error over the $m$ distinct command signatures of $C$,
 with $z_q = \log(1 + \mathrm{med}(q))$ for signature $q$:
+
 $$R_C = \frac{1}{m}\sum_q\Big(z_q - \frac{1}{m-1}\sum_{q'\ne q} z_{q'}\Big)^2 .$$
+
 Nodes with $m < m_{\min} = 2$ signatures are excluded (risk 999 for
 single-signature nodes), except the most specific activated node, which is
-rescued with $\mathrm{loo\_mse\_log}(C)$ (leave-one-out MSE of log-durations;
-the global variance if $m_C = 1$). Predict from $C^* = \arg\max_C
-\mathrm{score}(C)$.
+rescued with $\mathrm{\text{loo\_mse\_log}}(C)$ — the leave-one-out MSE of
+log-durations, or the global variance if $m_C = 1$. Predict from
+$C^* = \arg\max_C \mathrm{score}(C)$.
 
 **`shrinkage`** (Bayesian shrinkage + risk frontier) — shrink each node's
 variance toward its immediate parents $P \subset C$:
@@ -125,7 +129,9 @@ where $v_{\mathrm{par}}(C) = \mathrm{median}\{R_P\}$ over parents; $m_C = 1$
 collapses to $R_C = v_{\mathrm{par}}(C)$, and a top-level single-sample node is
 a cold start with $R_C = \sigma^2_{\mathrm{global}}$. If the exact node $Q$
 exists, return $\mathrm{med}_Q$ directly. Otherwise each activated node gets risk
+
 $$\rho_C = R_C + \frac{\alpha}{\sqrt{m_C}}, \qquad \alpha = 0.03,$$
+
 (doubled for cold starts). A dominance step drops $C$ when a more specific node
 $D$ satisfies $C \subset D$ and $\rho_D \le \rho_C + \delta$ ($\delta = 0.15$);
 from the surviving frontier, prefer the most specific node if its risk is within
