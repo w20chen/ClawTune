@@ -34,18 +34,6 @@ Python that owns the distribution's `bcc` or `bpfcc` binding.
 python3 scripts/clawtune.py setup
 ```
 
-This one command:
-
-- detects openEuler/RHEL (`dnf`) or Debian/Ubuntu (`apt`);
-- installs missing eBPF compiler, BCC, and matching kernel packages;
-- creates one reusable `.venv` that can see the system BCC binding;
-- installs, builds, and configures the OpenClaw plugin;
-- repairs a stale ClawTune plugin link after the repository has moved;
-- configures automatic privileged sidecar startup with a readiness gate;
-- builds and validates the parser adapter for the privileged host runtime;
-- enables and tests amd64 Docker images automatically on Kunpeng;
-- compiles, attaches, and exercises the real eBPF collector.
-
 A successful collector check prints `Setup and eBPF validation passed; the
 validation process has exited.` If the collector check fails, setup completes
 but reports that resource attribution is unavailable; fix the host and run
