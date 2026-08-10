@@ -3,6 +3,9 @@
 This guide expands the short path in the root README. It is written for a
 fresh Linux checkout and covers both Kunpeng/openEuler and x86_64 Linux.
 
+See [configuration.md](configuration.md) for the full option reference and
+[troubleshooting.md](troubleshooting.md) when a step fails.
+
 ## Before You Begin
 
 Use a normal login user with `sudo` access. Confirm that Docker, Node.js/npm,

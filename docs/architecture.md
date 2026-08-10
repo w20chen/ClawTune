@@ -69,6 +69,8 @@ User guides:
 - Troubleshooting: [troubleshooting.md](troubleshooting.md)
 - SWE-Rebench: [../swe_rebench/README.md](../swe_rebench/README.md)
 - Deep Research Bench: [../deep_research_bench/README.md](../deep_research_bench/README.md)
+- Offline evaluation: [legacy-eval.md](legacy-eval.md) ·
+  [legacy_eval_final_report.md](legacy_eval_final_report.md)
 
 Developer references:
 

@@ -106,3 +106,51 @@ plus a passed relaxed telemetry audit. Detailed output fields are defined in
   under `services/scheduler/tests` instead.
 - A stale `%USERPROFILE%\.pytest-tmp` is not removable by this account. Always
   give pytest a workspace-local `--basetemp` as shown above.
+
+## Two-sandbox Kubernetes delivery (2026-08-10)
+
+The sibling `claw-k8s` repository now has an additive
+`deploy/two-sandbox/` mode. Each validated tenant ID maps to one Runtime
+Deployment (OpenClaw, plugin, and loopback-local sidecar) and one Tool
+Deployment (non-root SSH executor). OpenClaw `2026.7.1-2` uses its built-in SSH
+sandbox backend. `exec`, `process`, `read`, `write`, `edit`, and `apply_patch`
+are allowed on that backend; browser and control-plane tools are denied.
+
+This topology deliberately runs the plugin with `executionBackend=hook-only`
+and disables cgroup, affinity, NUMA, eBPF, and Stage-2-required collection in
+the Runtime Pod. The sidecar cannot observe trustworthy Tool Pod PID/cgroup
+scope, so existing absent/unattributed scope and unavailable telemetry behavior
+is used. Tool lifecycle traces and advisory prediction remain active. No public
+contract fields and no code under `services/scheduler/src/tool_resource` were
+changed.
+
+Local checks completed:
+
+```bash
+python deploy/two-sandbox/test_render.py
+bash -n deploy/two-sandbox/cell.sh deploy/two-sandbox/smoke-test.sh scripts/two-sandbox/*.sh
+cd packages/openclaw-plugin && npm.cmd test
+OPENCLAW_CONFIG_PATH=<claw-k8s>/deploy/two-sandbox/openclaw-sandbox.example.json node <npm-openclaw>/openclaw.mjs config validate
+```
+
+The following validation commands could not run in this Windows workspace:
+
+```bash
+# kubectl is not installed and no Kubernetes context is available.
+kubectl apply --dry-run=server -f <(bash deploy/two-sandbox/cell.sh render ...)
+bash deploy/two-sandbox/smoke-test.sh --namespace agents --tenant tenant-a --other-tenant tenant-b
+
+# Docker/BuildKit is not installed, so image startup and non-root sshd require Linux CI/cluster validation.
+docker build -f docker/Dockerfile.runtime -t claw-runtime:test .
+docker build -f docker/Dockerfile.tool-sandbox -t claw-tool:test .
+
+# shellcheck is not installed; Git for Windows bash -n was used instead.
+shellcheck deploy/two-sandbox/*.sh scripts/two-sandbox/*.sh
+```
+
+On a real Linux cluster, run the deployment guide twice (tenant-a and tenant-b),
+then execute the smoke command above. Repeat once without RuntimeClass options
+and once with `--runtime-class kata-fc --tool-runtime-class kata-fc`. The smoke
+test verifies separate Pods/hostnames/PID namespaces/filesystems, remote tool
+output and file placement, Tool credential absence, no Docker socket,
+cross-tenant SSH denial, and optional managed-resource cleanup.

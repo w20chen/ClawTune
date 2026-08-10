@@ -141,6 +141,10 @@ Each benchmark task uses three JSON knowledge bases under `tool-resource/`:
   and pending causal updates shared by the `shrinkage`, `loso`, and
   `max_cardinality` clause-time predictors.
 
+The three lattice algorithms are specified in
+[sidecar.md](sidecar.md#lattice-time-prediction); their field-level trace
+format is documented in [trace-schema.md](trace-schema.md).
+
 `kb-batches/<batch-id>/` contains the batch's shared, evolving snapshot.
 Each `traces/<task-id>/tool-resource/` directory contains that task's working
 snapshot. How generations propagate across serial and concurrent tasks is

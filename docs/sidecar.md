@@ -3,6 +3,10 @@
 The sidecar receives OpenClaw lifecycle events, proxies model requests, owns
 the eBPF collector, records traces, and serves recent measurements/predictions.
 
+Related documents: [getting-started.md](getting-started.md),
+[configuration.md](configuration.md), [architecture.md](architecture.md),
+[trace-schema.md](trace-schema.md), and [legacy-eval.md](legacy-eval.md).
+
 ## Start the Sidecar
 
 Normally, do not start the sidecar separately. The plugin starts it on demand
@@ -89,6 +93,47 @@ command duration. The lattice is prebuilt during cold start and updated as
 clauses complete; large corpora are bounded deterministically. Field-level
 details (including the `lattice_candidate_limit_exceeded` outcome) are
 documented in [trace-schema.md](trace-schema.md).
+
+### Lattice Time Prediction
+
+Training normalizes each clause into a feature set $F$ (core `tool`/`target`
+plus optional `repo`, `cwd`, `env_id`, flags, heredoc imports) and creates the
+exact node $F$ plus every node $C = \mathrm{core} \cup S$ with $S$ any subset
+of ≤ 6 optional features. Each node aggregates $m_C$ samples, median
+$\mathrm{med}_C$, and log-variance $s_C^2$. A query $Q$ activates all nodes
+$C \subseteq Q$; each algorithm predicts the median of the node it selects.
+
+**`max_cardinality`** — select the most specific activated node
+$C^* = \arg\max_{C \subseteq Q} |C|$; if none, fall back to the global median.
+
+**`loso`** (Leave-One-Signature-Out) — score each activated node by
+$$\mathrm{score}(C) = |C| - w\,R_C, \qquad w = 1.0,$$
+where $R_C$ is the LOSO error over the $m$ distinct command signatures of $C$,
+with $z_q = \log(1 + \mathrm{med}(q))$ for signature $q$:
+$$R_C = \frac{1}{m}\sum_q\Big(z_q - \frac{1}{m-1}\sum_{q'\ne q} z_{q'}\Big)^2 .$$
+Nodes with $m < m_{\min} = 2$ signatures are excluded (risk 999 for
+single-signature nodes), except the most specific activated node, which is
+rescued with $\mathrm{loo\_mse\_log}(C)$ (leave-one-out MSE of log-durations;
+the global variance if $m_C = 1$). Predict from $C^* = \arg\max_C
+\mathrm{score}(C)$.
+
+**`shrinkage`** (Bayesian shrinkage + risk frontier) — shrink each node's
+variance toward its immediate parents $P \subset C$:
+$$R_C = \frac{(m_C - 1)\,s_C^2 + \kappa\, v_{\mathrm{par}}(C)}{(m_C - 1) + \kappa},
+\qquad \kappa = 5,$$
+where $v_{\mathrm{par}}(C) = \mathrm{median}\{R_P\}$ over parents; $m_C = 1$
+collapses to $R_C = v_{\mathrm{par}}(C)$, and a top-level single-sample node is
+a cold start with $R_C = \sigma^2_{\mathrm{global}}$. If the exact node $Q$
+exists, return $\mathrm{med}_Q$ directly. Otherwise each activated node gets risk
+$$\rho_C = R_C + \frac{\alpha}{\sqrt{m_C}}, \qquad \alpha = 0.03,$$
+(doubled for cold starts). A dominance step drops $C$ when a more specific node
+$D$ satisfies $C \subset D$ and $\rho_D \le \rho_C + \delta$ ($\delta = 0.15$);
+from the surviving frontier, prefer the most specific node if its risk is within
+$\tau = 0.5$ of the lowest-risk node, else take the lowest-risk node.
+
+Offline benchmark results for these algorithms are in
+[legacy_eval_final_report.md](legacy_eval_final_report.md) and are reproduced
+with [legacy-eval.md](legacy-eval.md).
 
 ## Collection Boundaries
 

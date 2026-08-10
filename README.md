@@ -188,12 +188,15 @@ See [Deep Research Bench usage](deep_research_bench/README.md).
 
 - [Complete installation and first run](docs/getting-started.md)
 - [Configuration](docs/configuration.md)
+- [Scheduler sidecar reference](docs/sidecar.md)
 - [Kunpeng and arm64](docs/arm-qemu.md)
 - [Troubleshooting](docs/troubleshooting.md)
+- [Trace & protocol reference](docs/trace-schema.md)
 - [SWE-Rebench usage](swe_rebench/README.md)
 - [SWE-Rebench trace replay](swe_rebench/README.md#replay-a-case)
 - [Deep Research Bench usage](deep_research_bench/README.md)
-- [Legacy offline evaluation](docs/legacy-eval.md)
+- [Offline dataset evaluation](docs/legacy-eval.md)
+- [Evaluation report](docs/legacy_eval_final_report.md)
 - [Architecture and developer references](docs/architecture.md)
 
 ## Development Checks
