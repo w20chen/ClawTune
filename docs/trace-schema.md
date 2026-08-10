@@ -22,7 +22,7 @@ Main event families:
 ## Trace Format
 
 ```text
-data/traces/*.jsonl
+traces/*.jsonl
 ```
 
 SWE-Rebench traces are written under:
@@ -44,8 +44,8 @@ records themselves are identical.
 Inspect traces:
 
 ```bash
-python tools/inspect_trace.py data/traces/<trace-file>.jsonl --all --details
-python tools/inspect_trace.py data/traces/<trace-file>.jsonl --all --timeline
+python tools/inspect_trace.py traces/<trace-file>.jsonl --all --details
+python tools/inspect_trace.py traces/<trace-file>.jsonl --all --timeline
 ```
 
 A successful instrumented run has a model span, a managed tool execution, an

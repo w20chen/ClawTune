@@ -9,8 +9,8 @@ python3 scripts/clawtune.py setup
 ```
 
 That is the supported setup path. It configures automatic privileged sidecar
-startup and waits before the first model request, so normal interactive use
-continues to run `openclaw agent ...` directly.
+startup and waits before the first model request, so OpenClaw can run directly
+through a Gateway/TUI or `openclaw agent --local`.
 
 ## Developer build
 
@@ -30,9 +30,10 @@ openclaw plugins install --link ./packages/openclaw-plugin
 openclaw plugins enable agent-scheduler
 ```
 
-The plugin configuration must use the local sidecar endpoint, an absolute
-`claw-launch` path, managed-wrapper execution, cgroup tracking, and explicit
-security-boundary acceptance. See
+The plugin configuration must use the local sidecar endpoint, managed-wrapper
+execution, cgroup tracking, and explicit security-boundary acceptance.
+`launcherPath` may be an absolute `claw-launch` path or empty for PATH lookup.
+See
 [`openclaw.plugin.json`](openclaw.plugin.json) for the schema and the root
 [configuration guide](../../docs/configuration.md) for normal settings.
 

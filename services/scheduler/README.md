@@ -2,7 +2,7 @@
 
 Strict Stage-2 eBPF is the supported default. For the complete host-package,
 system-Python, root preflight, and OpenClaw workflow, follow the repository
-[eBPF-first quick start](../../README.md#ebpf-first-quick-start).
+[quick start](../../README.md#quick-start).
 
 From this directory, install Scheduler dependencies into the selected
 system-Python virtual environment:
@@ -24,7 +24,6 @@ python -m pip install '.[dev]'
 
 Configuration uses environment variables:
 
-- `AGENT_SCHEDULER_DB_PATH`
 - `AGENT_SCHEDULER_POLICY`
 - `AGENT_SCHEDULER_MAX_GLOBAL_CONCURRENCY`
 - `AGENT_SCHEDULER_LEASE_TTL_MS`

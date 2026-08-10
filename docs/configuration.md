@@ -10,8 +10,7 @@ The root `.env` controls the long-running sidecar. Useful settings are:
 
 | Setting | Default | When to change it |
 | --- | --- | --- |
-| `AGENT_SCHEDULER_DB_PATH` | `data/openclaw-trace.sqlite3` | Move persistent scheduler state |
-| `AGENT_SCHEDULER_TRACE_DIR` | `data/traces` | Move OpenClaw trace output |
+| `AGENT_SCHEDULER_TRACE_DIR` | `traces` | Move OpenClaw trace output |
 | `AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL` | DeepSeek API | Use another OpenAI-compatible provider |
 | `AGENT_SCHEDULER_TOKEN` | unset | Require local sidecar authentication |
 
@@ -124,16 +123,8 @@ openclaw config set tools.web.search.provider tavily
 export TAVILY_API_KEY="<key>"   # or: openclaw config set plugins.entries.tavily.config.webSearch.apiKey "<key>"
 ```
 
-Standalone gotchas:
-
-- `openclaw agent --local` embeds its own gateway; do **not** run
-  `openclaw gateway restart` (there is no systemd service — it is a no-op that
-  can leave stale pid state).
-- The agent-scheduler sidecar auto-start needs root: if it times out after 60s
-  with empty stderr, refresh sudo first with `sudo -v`, then re-run.
-- If the run fails with `LLM request failed: network connection error` /
-  `ECONNREFUSED` on `127.0.0.1:8765`, the sidecar never became healthy — check
-  `ps`/`ss` for stale sidecar/gateway processes and ports `8765`/`18789`.
+Standalone launch and sidecar failures are covered in
+[troubleshooting.md](troubleshooting.md).
 
 The knowledge bases below apply to SWE-Rebench exec clauses; Deep Research
 Bench does not update them.

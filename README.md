@@ -46,11 +46,12 @@ This one command:
 - enables and tests amd64 Docker images automatically on Kunpeng;
 - compiles, attaches, and exercises the real eBPF collector.
 
-A successful run prints `Setup and eBPF validation passed; the validation
-process has exited.` This means the temporary validation process finished; the
-plugin starts the real sidecar when OpenClaw needs it. You can rerun setup after
-an update because it reuses healthy state. To see every detected path in one
-report, run:
+A successful collector check prints `Setup and eBPF validation passed; the
+validation process has exited.` If the collector check fails, setup completes
+but reports that resource attribution is unavailable; fix the host and run
+`python3 scripts/clawtune.py check` before treating a trace as valid. The plugin
+starts the real sidecar when OpenClaw needs it. You can rerun setup after an
+update because it reuses healthy state. To inspect detected paths, run:
 
 ```bash
 python3 scripts/clawtune.py doctor
@@ -143,23 +144,18 @@ terminal. It is not the normal entry point for an ongoing CLI conversation.
 The plugin resolves the current checkout, `.venv`, matching kernel build tree,
 and privileged launch arguments at runtime. It does not persist a generated
 absolute sidecar command that would become stale after the checkout moves.
-Traces are written under `data/traces/`.
+Traces are written under `traces/`.
 
 ### 4. Run a benchmark
 
 #### SWE-Rebench
 
-```bash
-python3 scripts/clawtune.py benchmark --sample 1
-```
-
-Note that this command uses the `host-openclaw-sandbox` mode by default. For `container-openclaw`, set `--runtime-mode container-openclaw`.
-
-You may instead provide a dataset explicitly:
+The default runtime is `host-openclaw-sandbox`; use `--runtime-mode
+container-openclaw` only when OpenClaw itself must run inside the task
+container. Start serially:
 
 ```bash
-python3 scripts/clawtune.py benchmark \
-  --dataset /path/to/tasks.json --sample 1
+python3 scripts/clawtune.py benchmark --sample 1 --parallelism 1
 ```
 
 On Kunpeng, the wrapper defaults benchmark containers to `linux/amd64`; on
@@ -168,14 +164,9 @@ x86_64 it uses the native platform. An explicit
 the selected platform to Docker without adding unsupported keys to OpenClaw's
 configuration. Results are kept in `swe_rebench/.runtime/`.
 
-Start serially to verify credentials, Docker, OpenClaw, and eBPF together:
-
-```bash
-python3 scripts/clawtune.py benchmark --sample 1 --parallelism 1
-```
-
-Then increase task concurrency explicitly. One benchmark invocation owns one
-machine-wide Sidecar; all concurrent OpenClaw runtimes reuse it and contribute
+Use `--dataset /path/to/tasks.json` to override the configured task source.
+After the first case passes, increase concurrency explicitly. One benchmark
+invocation owns one batch-local Sidecar; all concurrent OpenClaw runtimes reuse it and contribute
 to the same batch knowledge base:
 
 ```bash

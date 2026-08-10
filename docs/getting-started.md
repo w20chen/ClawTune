@@ -46,7 +46,7 @@ The reusable environment is always `.venv`. If that directory already exists
 but was created from the wrong Python, setup asks you to rename or remove that
 single directory rather than attempting to combine incompatible interpreters.
 
-At the end, setup runs a real validation: compile the complete BPF program,
+At the end, setup attempts a real validation: compile the complete BPF program,
 attach its probes, create a test cgroup, execute a process, and verify usable
 events. The report is saved at `data/ebpf-check.json`. Setup also runs
 `openclaw config validate` and builds the architecture-specific parser adapter
@@ -60,7 +60,10 @@ A successful setup includes:
 ```
 
 The process that exited is only the temporary validation. The plugin starts
-the long-running sidecar on demand.
+the long-running sidecar on demand. An eBPF validation failure is currently
+non-fatal to setup, but strict `exec` collection and benchmark runs will still
+fail closed. Correct the reported host issue and run
+`python3 scripts/clawtune.py check` before accepting measurements.
 
 ## Configure a Provider
 
@@ -215,8 +218,5 @@ paths are retained by OpenClaw.
 ## Replay a SWE-Rebench Trace
 
 Replay reproduces a recorded benchmark interaction without contacting the LLM
-provider. The command, timing options, and result locations are documented in
-the root README's
-[Replay a SWE-Rebench Trace](../README.md#replay-a-swe-rebench-trace) section.
-For all options and lower-level runner usage, see
+provider. Commands, timing options, and output locations are documented in
 [SWE-Rebench usage](../swe_rebench/README.md#replay-a-case).
