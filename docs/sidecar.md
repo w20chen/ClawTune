@@ -117,7 +117,7 @@ $$R_C = \frac{1}{m}\sum_q\Big(z_q - \frac{1}{m-1}\sum_{q'\ne q} z_{q'}\Big)^2 .$
 
 Nodes with $m < m_{\min} = 2$ signatures are excluded (risk 999 for
 single-signature nodes), except the most specific activated node, which is
-rescued with $\mathrm{loo\_mse\_log}(C)$ — the leave-one-out MSE of
+rescued with loo_mse_log(C) — the leave-one-out MSE of
 log-durations, or the global variance if $m_C = 1$. Predict from
 $C^* = \arg\max_C \mathrm{score}(C)$.
 
