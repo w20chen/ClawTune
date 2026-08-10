@@ -33,10 +33,11 @@ Linux.
 - **Legacy offline evaluation** (`legacy_eval/`) is an independent evaluator
   that runs ClawTune's prediction KBs (ClauseResourceKB / LatticeTimeKB /
   RuntimeToolResourceKB) over an external "legacy" trace dataset without
-  re-running the harness.  It parses per-task Stage-2 `clause_telemetry.json`
-  artifacts (validated by the native loader — they are schema-identical) plus
-  `trace.jsonl`, splits tasks randomly 80/20, trains only on the 80%, replays
-  the 20% predict-only, and reports per-algorithm metrics.  It never modifies
+  re-running the harness.  It parses per-task exec-clause
+  `clause_telemetry.json` artifacts (validated by the native loader — they are
+  schema-identical) plus `trace.jsonl`, splits observations per repository
+  (`static_train_test_obs_per_repo`), trains only on the train side, replays
+  the test side predict-only, and reports per-algorithm metrics.  It never modifies
   `services/scheduler/src/tool_resource` or `tool_time`.
 - **The project cold-start seed is now the legacy-trained KB.** The 80-task
   (seed-42) training KB was exported (via `legacy_eval --export-kb
@@ -65,30 +66,23 @@ Linux.
   isolated home, and only degrades to auto-detection if that is not possible
   (the warning lands in `web-search-config.log`).
 
-- **Web-provider plugin linking targets the real plugin package.** OpenClaw
-  npm plugins live at
-  `<home>/.openclaw/npm/projects/<encoded-package>-<hash>`; the project dir's
-  own `package.json` is the workspace manifest and lacks `openclaw.extensions`,
-  so `openclaw plugins install --link <project-dir>` fails with
-  `package.json missing openclaw.extensions` even when the plugin is installed.
-  `_discover_web_search_provider_plugin` now prefers
-  `<project>/node_modules/<package>` (whose `package.json` carries
-  `openclaw.extensions`), falling back to the project dir for legacy layouts.
-  A missing `TAVILY_API_KEY` still leaves `web_search` unusable even after the
-  provider is pinned, so the model falls back to `exec`-based fetching.
+- **Web-provider plugin linking targets the real plugin package.** When a
+  provider's plugin is installed globally, the runner links the actual plugin
+  package (the `node_modules/<package>` directory whose `package.json`
+  carries `openclaw.extensions`) into the task's isolated OpenClaw home; the
+  project workspace directory alone lacks the manifest OpenClaw requires, so
+  linking it fails. A missing `TAVILY_API_KEY` still leaves `web_search`
+  unusable even after the provider is pinned, so the model falls back to
+  `exec`-based fetching.
 
 - **Root-run benchmarks copy the provider plugin into the isolated home.**
-  OpenClaw running as root blocks plugins owned by a non-root user
-  (`suspicious ownership ... expected uid=0 or root`), which hits `sudo`
-  benchmarks because the global plugin is installed by the invoking user.
-  `_link_web_search_provider_plugin` now copies the whole npm project
-  (plugin package + hoisted `node_modules` so dependencies still resolve)
-  into a root-owned cache under the task's isolated `OPENCLAW_HOME`
-  (`linked-provider-plugins/<project>`) and links that copy when running as
-  root; non-root runs link the global package in place, and already
-  root-owned plugins are linked in place too.  Only the task-scoped isolated
-  home is written — the user's global `~/.openclaw` is never modified, so
-  standalone OpenClaw usage is unaffected.
+  OpenClaw running as root rejects plugins owned by the invoking non-root
+  user (`suspicious ownership ... expected uid=0 or root`). For sudo
+  benchmarks the runner therefore copies the plugin package (and its
+  dependencies) into a root-owned cache under the task's isolated OpenClaw
+  home and links that copy, while non-root runs link the global package in
+  place. Only the task-scoped isolated home is written — the user's global
+  `~/.openclaw` is never modified, so standalone OpenClaw usage is unaffected.
 
 - **DRB reuses OpenClaw's per-workspace sandbox container.** OpenClaw scopes
   Docker sandbox containers by workspace prefix and reuses a running one.
@@ -96,10 +90,9 @@ Linux.
   container mount namespace, making every `exec`/`read`/`write` fail with
   `current working directory is outside of container mount namespace root --
   possible container breakout detected` and the run report `claw-launch was
-  not executable in the sandbox`.  `deep_research_bench.host_runner` now
-  preflights the launcher and removes stale sandbox containers before the
-  agent runs (the same cleanup SWE-Rebench already applies), so each task
-  provisions a fresh container.
+  not executable in the sandbox`. The DRB runner preflights the launcher and
+  removes stale sandbox containers before the agent runs (the same cleanup
+  SWE-Rebench already applies), so each task provisions a fresh container.
 
 - **Stale per-task trace files can false-negative a successful DRB run.**
   The task trace directory (`deep_research_bench/.runtime/traces/<task-id>/`)
@@ -108,17 +101,17 @@ Linux.
   left the previous run's `shell-not-executable` spans in place, so the
   report summed them into `launcher_not_executable` and misclassified an
   otherwise successful run as FAIL (`12 managed exec call(s) failed ...`).
-  `deep_research_bench.runner` now calls `_reset_task_trace_dir` before each
-  task (the same reset SWE-Rebench applies), so the inspection only ever sees
-  the current run's traces.
+  The DRB runner now resets the task trace directory before each task (the
+  same reset SWE-Rebench applies), so inspection only ever sees the current
+  run's traces.
 
 - **The DRB telemetry gate ignores in-process tool spans.** Research runs
   can legitimately call host-side in-process tools (e.g. OpenClaw's
   `session_status`) that never execute in the sandbox and therefore carry no
-  sandbox resource sampling.  `_drb_required_telemetry_error` now requires
-  all launcher-mode (sandbox-executed) tool spans to be sampled instead of
-  demanding 100% of every tool span; it still fails on no tool spans, no
-  sampled spans, or unsampled launcher spans.
+  sandbox resource sampling. The gate therefore requires all launcher-mode
+  (sandbox-executed) tool spans to be sampled instead of demanding 100% of
+  every tool span; it still fails on no tool spans, no sampled spans, or
+  unsampled launcher spans.
 
 - **read/edit CPU is container-cgroup level, not per-PID.** Attribution is
   per-PID, but the CPU figure comes from the shared sandbox container cgroup

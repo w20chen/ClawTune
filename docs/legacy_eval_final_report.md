@@ -91,32 +91,9 @@ Notes: CPU coverage is partial because only clauses ≥1 s carry peak-CPU sample
 
 ## 5. Reproduction
 
-Requirements: Python 3.12 + numpy; run from the repo root; `services/scheduler/src` on `PYTHONPATH`.
-
-```bash
-# Run the full evaluation (final configuration)
-$env:PYTHONPATH = "services/scheduler/src"          # PowerShell
-python -m legacy_eval --dataset "<dataset-root>" \
-    --bucket-edges 600,2000,10000,60000
-
-# Unit tests
-python -m pytest tests/test_legacy_eval.py tests/test_legacy_eval_export.py -q
-
-# Analysis helpers
-python scripts/analyze_lattice_worst.py <report.json> loso
-python scripts/compare_lattice_segments.py <report.json>
-python scripts/lattice_head_to_head.py <report.json>
-python scripts/sweep_buckets.py <report.json>
-```
-
-Determinism: split uses `random.Random(f"{seed}:{repo}")` (string-seeded, stable across runs / `PYTHONHASHSEED`); same seed ⇒ identical train/test split and results. Full per-sample records and the split keys are stored in the run's `report.json`.
-
-### Code changes for this evaluation (all under `legacy_eval/`, plus two scripts)
-
-- `legacy_eval/split.py` — `repo_prefix`, `split_tasks_by_repo` (task-level, for export), `split_observations_by_repo` (latt-style tool-call split).
-- `legacy_eval/engine.py` — observation-level partition (`_partition_observations`), repo-layer commit, `continuous_memory_p90` track, per-bucket classification for lattice (`*_bucket` summaries), per-class accuracy.
-- `legacy_eval/loader.py` — trivial-pipe-tool exclusion in `parse_clause_artifact`.
-- `legacy_eval/metrics.py` — per-class (per-bucket) accuracy in `summarize_bucket`.
-- `legacy_eval/report.py` — per-bucket F1/accuracy tables, observation-split header.
-- `scripts/analyze_lattice_worst.py`, `scripts/compare_lattice_segments.py`, `scripts/lattice_head_to_head.py`, `scripts/sweep_buckets.py` — analysis helpers.
-- `services/scheduler/src/tool_time/lattice_kb.py` — explicit `exact_match_shortcut=True` for shrinkage (behavior already auto-enabled; pinned explicitly).
+Follow the canonical reproduction guide in
+[`docs/legacy-eval.md`](legacy-eval.md) and
+[`legacy_eval/README.md`](../legacy_eval/README.md) for the exact SWE277
+commands, split protocol, expected results, and validation. The split is
+deterministic for a fixed dataset, `train_frac`, and seed; full per-sample
+records and split keys are stored in the run's `report.json`.

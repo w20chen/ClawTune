@@ -82,18 +82,13 @@ predictors: `shrinkage`, `loso`, and `max_cardinality`. These algorithms share
 one independent, flat lattice KB; common nodes and nodes carrying a repository
 feature live in the same node map rather than separate public/repo layers.
 
-The lattice learns only from eligible eBPF `ClauseObservation` values,
-reusing the same validated static-clause identity and measured `latency_ms` as
-the existing clause predictor. Results are exposed at
-`prediction.tool_resource.lattice_time_predictions`, with one entry per
-exec-producing static clause and all three algorithm outcomes under that entry.
-Compound shell commands retain independent clause predictions: pipeline,
+The lattice learns only from eligible eBPF `ClauseObservation` values. Results
+keep one independent prediction per exec-producing static clause: pipeline,
 conditional, and sequential clause times are never combined into a synthetic
 command duration. The lattice is prebuilt during cold start and updated as
-clauses complete; large corpora are bounded deterministically, and a query
-that exceeds the candidate limit reports
-`lattice_candidate_limit_exceeded` (the other two algorithms remain
-available).
+clauses complete; large corpora are bounded deterministically. Field-level
+details (including the `lattice_candidate_limit_exceeded` outcome) are
+documented in [trace-schema.md](trace-schema.md).
 
 ## Collection Boundaries
 

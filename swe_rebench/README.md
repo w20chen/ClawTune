@@ -72,7 +72,7 @@ Example: generate a 128-task source first, then run it (don't overwrite the
 bundled 4-task smoke-test fallback — write to a separate file):
 
 ```bash
-# 1) Generate the task source (agent-test-bench checkout, else HuggingFace)
+# 1) Generate the task source
 python3 -m swe_rebench.discover \
   --sample 128 --out swe_rebench/tasks-128.json
 

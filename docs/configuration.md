@@ -87,10 +87,7 @@ but differs from SWE-Rebench in a few ways:
   gate: a task fails only when its trace has no LLM span or no
   resource-sampled tool span. Set it `false` for a best-effort run.
 - `sandbox.image` names the one very basic tool container (default
-  `python:3.11-slim`); `dataset` mirrors
-  `configs/benchmarks/deep-research-bench.yaml` from agent-test-bench
-  (`harness_dataset`, `harness_split`, `data_files`, `id_field`,
-  `question_field`, `answer_field`, `prompt_template`).
+  `python:3.11-slim`).
 - `web_search` configures OpenClaw's built-in `web_search` tool. DRB defaults
   the provider to **Tavily** and pins `tools.web.search.provider` into each
   task's isolated OpenClaw config (auto-detection would prefer Brave). The key
@@ -155,19 +152,16 @@ Each benchmark task uses three JSON knowledge bases under `tool-resource/`:
 
 `kb-batches/<batch-id>/` contains the batch's shared, evolving snapshot.
 Each `traces/<task-id>/tool-resource/` directory contains that task's working
-snapshot. KB updates use a single writer. In serial mode, a completed task's
-generation becomes the next task's input. In concurrent mode, overlapping
-tasks may begin from the same generation and their valid updates are merged at
-the synchronization barrier instead of replacing each other.
+snapshot. How generations propagate across serial and concurrent tasks is
+described in
+[SWE-Rebench usage](../swe_rebench/README.md#knowledge-sharing-within-a-batch).
 
 The runtime and clause-resource files contain a shared `public` namespace and
 repo-specific knowledge under `repo`, such as
 `repo["12rambau/sepal_ui"]`. The lattice-time file deliberately does not use
-that hierarchy. It stores one flat observation corpus, from which one node
-mapping is rebuilt; common context and context containing the optional
-repository feature coexist and are available to all three algorithms. Files
-named `call_*.json` are per-call eBPF telemetry evidence used to update the
-KBs; they are not additional knowledge bases.
+that hierarchy; it stores one flat observation corpus shared by all three
+algorithms. Files named `call_*.json` are per-call eBPF telemetry evidence
+used to update the KBs; they are not additional knowledge bases.
 
 Keep the host-sandbox runtime, eBPF requirement, privileged cgroup access, and
 bundle paths at their defaults. The unified benchmark command defaults to

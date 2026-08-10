@@ -164,74 +164,34 @@ python3 scripts/clawtune.py check
 
 ## Run SWE-Rebench
 
-With the usual sibling `agent-test-bench` task checkout:
+Start with one task:
 
 ```bash
 python3 scripts/clawtune.py benchmark --sample 1
 ```
 
-Or name a task source:
-
-```bash
-python3 scripts/clawtune.py benchmark \
-  --dataset /path/to/tasks.json \
-  --instance-ids django__django-12345
-```
-
-Start with one task. QEMU runs on Kunpeng are slower than native x86_64 runs,
-so increase `batch.task_timeout_seconds` in the benchmark config only when a
-real task reaches the default deadline.
-
-After that succeeds, increase concurrency explicitly:
-
-```bash
-python3 scripts/clawtune.py benchmark --sample 8 --parallelism 4
-```
-
-One batch uses one host Sidecar and one shared batch KB while keeping every
-task's runtime identity, worktree, trace output, and cgroup separate. `--sample`
-controls selected cases; `--parallelism` controls simultaneous cases. The
-default parallelism is `1`. Choose a higher value based on CPU, memory,
-Docker/QEMU throughput, and provider quota. Running 128 selected cases with
-parallelism 128 is for a host validated at that load, not a universal default.
+On Kunpeng, QEMU runs are slower than native x86_64, so raise
+`batch.task_timeout_seconds` only when a real task reaches the default
+deadline. Task selection, concurrency, and batch semantics are described in
+[SWE-Rebench usage](../swe_rebench/README.md) and the root README's
+[Run a benchmark](../README.md#4-run-a-benchmark) section.
 
 ## Run Deep Research Bench
 
-Deep Research Bench runs PhD-level research questions through OpenClaw while
-ClawTune records the same model/tool/resource telemetry. There is no per-task
-image and no `/testbed` repository: the agent's tools execute in one very basic
-Docker sandbox image (default `python:3.11-slim`, configurable in
-`deep_research_bench/config.yaml` under `sandbox.image`).
-
-A bundled three-task smoke source is used when no dataset is named:
+Deep Research Bench runs research questions through OpenClaw while ClawTune
+records the same model/tool/resource telemetry. There is no per-task image and
+no `/testbed` repository; the agent's tools run in one very basic Docker
+sandbox image (default `python:3.11-slim`). A bundled three-task smoke source
+is used when no dataset is named:
 
 ```bash
 python3 scripts/clawtune.py drb --sample 1 --parallelism 1
 ```
 
-Build a larger task source from the HuggingFace dataset
-(`muset-ai/DeepResearch-Bench-Dataset`, `generated_reports/openai-deepresearch.jsonl`):
-
-```bash
-python3 -m deep_research_bench.discover --sample 32 --out deep_research_bench/tasks-32.json
-python3 scripts/clawtune.py drb --dataset deep_research_bench/tasks-32.json --sample 32
-```
-
-Per-task output lands under `deep_research_bench/.runtime/traces/<task-id>/`
-(trace, `agent_prompt.txt`, `task_manifest.json`, record-only
-`reference_answer.txt`, `result_summary.json`); the batch report is written to
-`deep_research_bench/.runtime/report.json`. Research tools are measured with the
-sandbox-container / per-PID scope, so the relaxed telemetry gate
-(`runtime.gate_required`, default `true`) requires only an LLM span and a
-resource-sampled tool span per task — never exec-clause artifacts. See
-[Deep Research Bench usage](../deep_research_bench/README.md).
-
-The agent answers with OpenClaw's built-in `web_search` tool (Tavily by
-default). Export `TAVILY_API_KEY` in the launch shell (the wrapper allows it
-through `sudo`), or put it on one line in
-`deep_research_bench/tavily_api_key.txt`. Web search runs on the host, so the
-key does not need to reach the sandbox. See
-[Web Search (Tavily)](../deep_research_bench/README.md#web-search-tavily).
+Task selection, Tavily web-search configuration, output locations, and the
+relaxed telemetry gate are described in
+[Deep Research Bench usage](../deep_research_bench/README.md) and the root
+README's [Run a benchmark](../README.md#4-run-a-benchmark) section.
 
 ## Updating the Checkout
 
