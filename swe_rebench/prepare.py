@@ -301,7 +301,18 @@ def _latest_source_mtime(path: Path) -> float:
 def _copy_plugin(repo: Path, bundle_dir: Path, config: RunnerConfig) -> None:
     src = repo / config.bundle.plugin_source
     dst = bundle_dir / "plugin"
-    _copytree_selective(src, dst, skip={"node_modules", ".npm-cache", ".git", "__pycache__"})
+    _copytree_selective(
+        src,
+        dst,
+        skip={
+            "node_modules",
+            ".npm-cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".git",
+            "__pycache__",
+        },
+    )
     _log(f"  Copied plugin source ({_count_files(dst)} files)")
 
 

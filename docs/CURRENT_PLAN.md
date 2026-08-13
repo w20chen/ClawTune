@@ -117,6 +117,11 @@ plus a passed relaxed telemetry audit. Detailed output fields are defined in
   archive) and the stale `swe_rebench/.pytest-runner-tmp/` and
   `swe_rebench/.pytest-scheduler-tmp/` directories. These are generated or
   obsolete outputs, not runtime inputs; remove them from an elevated host shell.
+- `python -m swe_rebench.prepare` successfully generates the current runtime
+  scripts under `swe_rebench/.runtime/bundle/`, but Git for Windows Bash cannot
+  run `bash -n` in this account because its WSL service startup fails with
+  `Bash/Service/CreateInstance/E_ACCESSDENIED`. CI runs both syntax checks on
+  `ubuntu-latest` after generating the bundle.
 
 ## Two-sandbox Kubernetes delivery (2026-08-10)
 

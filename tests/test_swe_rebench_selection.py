@@ -59,6 +59,7 @@ from swe_rebench.prepare import (
     _write_entrypoint,
     _write_bundle_fingerprint,
     _write_plugin_config,
+    _write_setup_script,
     bundle_needs_rebuild,
 )
 from swe_rebench.sandbox import sandbox_container_prefix
@@ -724,16 +725,17 @@ def test_container_bcc_repair_scopes_system_libstdcxx_to_sidecar() -> None:
     assert "LD_PRELOAD" not in launcher
 
 
-def test_tracked_entrypoint_matches_generated_default(tmp_path: Path) -> None:
+def test_entrypoint_writer_renders_default_config(tmp_path: Path) -> None:
     config = RunnerConfig.from_yaml(
         Path(__file__).parents[1] / "swe_rebench" / "config.yaml"
     )
     _write_entrypoint(tmp_path, config)
-    entrypoint = (
-        Path(__file__).parents[1] / "swe_rebench" / "bundle" / "entrypoint.sh"
-    ).read_text(encoding="utf-8")
+    entrypoint_path = tmp_path / "entrypoint.sh"
+    entrypoint = entrypoint_path.read_text(encoding="utf-8")
 
-    assert entrypoint == (tmp_path / "entrypoint.sh").read_text(encoding="utf-8")
+    assert config.llm.openclaw_model_ref in entrypoint
+    assert "__MODEL_FULL__" not in entrypoint
+    assert os.access(entrypoint_path, os.X_OK)
 
 
 def test_setup_resolves_current_node_archive_for_detected_architecture() -> None:
@@ -745,12 +747,14 @@ def test_setup_resolves_current_node_archive_for_detected_architecture() -> None
     assert "no Node.js 24 archive for architecture $NODE_ARCH" in _SETUP_TEMPLATE
 
 
-def test_tracked_setup_script_matches_generated_template() -> None:
+def test_setup_writer_emits_template(tmp_path: Path) -> None:
     from swe_rebench.prepare import _SETUP_TEMPLATE
 
-    setup_script = Path(__file__).parents[1] / "swe_rebench" / "bundle" / "setup.sh"
+    _write_setup_script(tmp_path)
+    setup_script = tmp_path / "setup.sh"
 
     assert setup_script.read_text(encoding="utf-8") == _SETUP_TEMPLATE
+    assert os.access(setup_script, os.X_OK)
 
 
 def test_docker_runner_config_sets_sandbox_container_prefix_placeholder(tmp_path: Path) -> None:
@@ -774,13 +778,16 @@ def test_docker_runner_config_sets_sandbox_container_prefix_placeholder(tmp_path
     assert "openclaw config patch --stdin" in _ENTRYPOINT_TEMPLATE
 
 
-def test_tracked_openclaw_config_matches_generated_config(tmp_path: Path) -> None:
+def test_openclaw_config_writer_emits_expected_config(tmp_path: Path) -> None:
     _write_plugin_config(tmp_path)
 
-    tracked = Path(__file__).parents[1] / "swe_rebench" / "bundle" / "openclaw-config.json5"
-    assert tracked.read_text(encoding="utf-8") == (
-        tmp_path / "openclaw-config.json5"
-    ).read_text(encoding="utf-8")
+    generated = json.loads(
+        (tmp_path / "openclaw-config.json5").read_text(encoding="utf-8")
+    )
+    plugin = generated["plugins"]["entries"]["agent-scheduler"]
+
+    assert plugin["enabled"] is True
+    assert plugin["config"] == _PLUGIN_CONFIG
 
 
 def test_entrypoint_exports_container_runtime_identity_for_launcher() -> None:
