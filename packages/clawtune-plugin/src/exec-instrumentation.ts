@@ -264,6 +264,9 @@ function launcherEnv(): Record<string, string> {
     "CLAWTUNE_LAUNCH_DEBUG",
     "CLAWTUNE_TASK_PYTHON",
     "CLAWTUNE_ENDPOINT",
+    // The launcher makes authenticated claim/started/exited requests. It
+    // removes this bearer credential before execing the untrusted payload.
+    "CLAWTUNE_TOKEN",
     "CLAWTUNE_SANDBOX_CONTAINER_ID",
   ]) {
     const value = process.env[key];

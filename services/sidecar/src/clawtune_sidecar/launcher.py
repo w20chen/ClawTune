@@ -1474,7 +1474,6 @@ def _payload_environment() -> dict[str, str]:
     for key in (
         "CLAWTUNE_EXECUTION_TOKEN",
         "CLAWTUNE_TOKEN",
-        "CLAWTUNE_TOKEN",
     ):
         env.pop(key, None)
     launcher_pythonpath = env.pop("CLAWTUNE_LAUNCHER_PYTHONPATH", None)

@@ -169,8 +169,8 @@ test("exec instrumentation forwards launcher cgroup environment", async () => {
     "CLAWTUNE_LAUNCH_DEBUG",
     "CLAWTUNE_TASK_PYTHON",
     "CLAWTUNE_ENDPOINT",
+    "CLAWTUNE_TOKEN",
     "CLAWTUNE_SANDBOX_CONTAINER_ID",
-    "CLAWTUNE_SANDBOX_CONTAINER_ID"
   ];
   const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   process.env.CLAWTUNE_CGROUP_ROOT = "/sys/fs/cgroup/clawtune";
@@ -180,7 +180,7 @@ test("exec instrumentation forwards launcher cgroup environment", async () => {
   process.env.CLAWTUNE_LAUNCH_DEBUG = "1";
   process.env.CLAWTUNE_TASK_PYTHON = "/opt/conda/bin/python3";
   process.env.CLAWTUNE_ENDPOINT = "http://host.docker.internal:8765";
-  process.env.CLAWTUNE_SANDBOX_CONTAINER_ID = "5a423f3b2078";
+  process.env.CLAWTUNE_TOKEN = "sidecar-bearer";
   process.env.CLAWTUNE_SANDBOX_CONTAINER_ID = "5a423f3b2078";
   const client = {
     async registerExecution() {
@@ -199,7 +199,7 @@ test("exec instrumentation forwards launcher cgroup environment", async () => {
     assert.equal(result.params.env.CLAWTUNE_LAUNCH_DEBUG, "1");
     assert.equal(result.params.env.CLAWTUNE_TASK_PYTHON, "/opt/conda/bin/python3");
     assert.equal(result.params.env.CLAWTUNE_ENDPOINT, "http://host.docker.internal:8765");
-    assert.equal(result.params.env.CLAWTUNE_SANDBOX_CONTAINER_ID, "5a423f3b2078");
+    assert.equal(result.params.env.CLAWTUNE_TOKEN, "sidecar-bearer");
     assert.equal(result.params.env.CLAWTUNE_SANDBOX_CONTAINER_ID, "5a423f3b2078");
   } finally {
     for (const name of names) {

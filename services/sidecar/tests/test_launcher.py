@@ -1119,11 +1119,10 @@ def test_launcher_prefers_execution_token_env_and_removes_it(monkeypatch) -> Non
     }
 
 
-def test_payload_environment_removes_scheduler_credentials(monkeypatch) -> None:
+def test_payload_environment_removes_sidecar_credentials(monkeypatch) -> None:
     launcher_path = "/workspace/.clawtune/sidecar/src"
     original_path = "/task/pythonpath"
     monkeypatch.setenv("CLAWTUNE_EXECUTION_TOKEN", "claim-token")
-    monkeypatch.setenv("CLAWTUNE_TOKEN", "legacy-bearer")
     monkeypatch.setenv("CLAWTUNE_TOKEN", "bearer")
     monkeypatch.setenv("CLAWTUNE_LAUNCHER_PYTHONPATH", launcher_path)
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join((launcher_path, original_path)))
@@ -1136,7 +1135,6 @@ def test_payload_environment_removes_scheduler_credentials(monkeypatch) -> None:
 
     assert env["KEEP"] == "value"
     assert "CLAWTUNE_EXECUTION_TOKEN" not in env
-    assert "CLAWTUNE_TOKEN" not in env
     assert "CLAWTUNE_TOKEN" not in env
     assert "CLAWTUNE_LAUNCHER_PYTHONPATH" not in env
     assert env["PYTHONPATH"] == original_path
