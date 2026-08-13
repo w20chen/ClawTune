@@ -24,7 +24,7 @@ def test_importer_outputs_schema_shaped_events_and_profiles(tmp_path: Path) -> N
         cwd=root,
     )
     event = json.loads(events.read_text(encoding="utf-8").splitlines()[0])
-    assert event["schema_version"] == "scheduler.v1"
+    assert event["schema_version"] == "clawtune.v1"
     assert event["run_id"] == "bench_run_1"
     assert event["tool_name"] == "exec-pytest"
     assert event["duration_ms"] == 1500

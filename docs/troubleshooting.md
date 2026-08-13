@@ -81,7 +81,7 @@ pip / python       -> Conda environment
 Installing NumPy in Conda does not add it to `/usr/bin/python3`, and installing
 BCC for the system interpreter does not add it to Conda. ClawTune solves this
 by creating `.venv` from the system Python with access to system packages, then
-installing the Scheduler's Python dependencies into that same environment.
+installing the Sidecar's Python dependencies into that same environment.
 
 Run setup as your normal account, even if the prompt shows an active Conda
 environment. Do not create a local `bcc` symlink or compatibility
@@ -169,7 +169,7 @@ An older privileged prepare step may have created plugin output as root. Setup
 repairs this focused directory automatically. If a manual repair is needed:
 
 ```bash
-sudo chown -R "$(id -u):$(id -g)" packages/openclaw-plugin/dist
+sudo chown -R "$(id -u):$(id -g)" packages/clawtune-plugin/dist
 python3 scripts/clawtune.py setup
 ```
 
@@ -198,8 +198,8 @@ curl -v http://127.0.0.1:8765/health/live
 curl -v http://127.0.0.1:8765/health/ready
 ```
 
-The JSON must identify `service` as `clawtune-scheduler` and `schema_version`
-as `scheduler.health.v1`. A `200` response from an unrelated program is not
+The JSON must identify `service` as `clawtune-sidecar` and `schema_version`
+as `clawtune.health.v1`. A `200` response from an unrelated program is not
 accepted. Stop the conflicting process before rerunning ClawTune; port 8765 is
 the supported setup default.
 
@@ -250,22 +250,22 @@ before creating an allowlist:
 
 ```bash
 openclaw plugins list --enabled --verbose
-openclaw plugins inspect agent-scheduler --json
+openclaw plugins inspect clawtune --json
 openclaw plugins inspect deepseek --json
 openclaw plugins inspect feishu --json
 ```
 
-`plugins.allow` is exclusive. Include `agent-scheduler` and every other plugin
+`plugins.allow` is exclusive. Include `clawtune` and every other plugin
 that is both trusted and needed. For a host that uses only ClawTune with the
 built-in/custom `vllm` provider, for example:
 
 ```bash
-openclaw config set plugins.allow '["agent-scheduler"]' --strict-json
+openclaw config set plugins.allow '["clawtune"]' --strict-json
 openclaw config validate
 ```
 
 Add `deepseek`, `feishu`, or other inspected IDs only when those plugins are
-actually required. Omitting `agent-scheduler` would prevent ClawTune from
+actually required. Omitting `clawtune` would prevent ClawTune from
 loading.
 
 If OpenClaw instead reports that the external plugin cannot register the
@@ -275,7 +275,7 @@ restart the Gateway:
 
 ```bash
 python3 scripts/clawtune.py setup --skip-qemu
-openclaw config get plugins.entries.agent-scheduler.hooks
+openclaw config get plugins.entries.clawtune.hooks
 openclaw config validate
 openclaw gateway restart
 ```
@@ -349,9 +349,9 @@ On x86 the default is native.
 ## 17. OpenClaw reports `plugins.load.paths: plugin path not found`
 
 The OpenClaw config contains a linked plugin path that no longer exists, for
-example `/home/user/claw/...` after the repository moved to
+example `/home/user/clawtune/...` after the repository moved to
 `/home/user/ClawTune/...`. Setup recognizes the missing ClawTune plugin link,
-backs up the config, and removes the missing `openclaw-plugin` entry from
+backs up the config, and removes the missing `clawtune-plugin` entry from
 `plugins.load.paths`. If the stale reference lives in OpenClaw's internal
 plugin state rather than in `plugins.load.paths`, setup falls back to
 `openclaw doctor --fix` to reconcile the internal registry, then removes any
@@ -380,7 +380,7 @@ libcontainer: container start initialization failed
 or:
 
 ```
-sandbox_launcher_preflight_failed: the mounted claw-launch must be readable
+sandbox_launcher_preflight_failed: the mounted clawtune-launch must be readable
 and select a supported fork-exec runtime in the sandbox
 ```
 
@@ -488,7 +488,7 @@ python3 scripts/clawtune.py setup
 ## 21. Replay failures
 
 SWE-Rebench replay currently supports only a current-format JSONL trace and the
-`host-openclaw-sandbox` runtime. It intentionally reuses the normal task-image
+`host-openclaw` runtime. It intentionally reuses the normal task-image
 export, OpenClaw sandbox, task environment, launcher, sidecar, cgroup, and
 eBPF path; it does not execute tools directly on the host.
 
@@ -499,7 +499,7 @@ because reconstructing a command from a prediction or launcher wrapper would
 be unsafe. If the replay has no resource artifact, inspect
 `tool_resource_preflight_host.json`, `sidecar-stderr.txt`, and
   `replay_manifest.json`; the same Linux, Docker, cgroup v2, BCC/eBPF, and
-privilege requirements as a normal host-sandbox benchmark apply.
+privilege requirements as a normal host-openclaw benchmark apply.
 
 Before troubleshooting the runtime, verify that the task dataset and source
 trace identify the same case. The dataset supplies the Docker image and the
@@ -550,7 +550,7 @@ Related standalone gotchas:
   `openclaw gateway restart` (no systemd service here — it is a no-op that can
   leave stale pid state; see also sections 10-11 for the sidecar/port 8765
   failure mode).
-- The agent-scheduler sidecar auto-start needs root. If it times out after 60s
+- ClawTune Sidecar auto-start needs root. If it times out after 60s
   with empty stderr, refresh sudo with `sudo -v` and re-run; the failure then
   surfaces as `LLM request failed: network connection error` /
   `ECONNREFUSED` on `127.0.0.1:8765`.

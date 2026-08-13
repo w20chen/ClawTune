@@ -117,7 +117,7 @@ def to_clause_observation(
 ) -> ClauseObservation:
     """Build the exact object ``ClauseResourceKB``/``LatticeTimeKB`` consume.
 
-    Legacy clause rows carry no timestamps; ClawTune's own Stage-2 loader
+    Legacy clause rows carry no timestamps; ClawTune's own eBPF loader
     synthesises ``ts_start=0.0, ts_end=latency/1000`` for the same input, so
     we mirror that here (timestamps are irrelevant to public fitting).  The
     KB repo key is the ``<org>__<repo>`` prefix unless overridden.

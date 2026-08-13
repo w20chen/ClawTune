@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://openclaw.ai/schemas/scheduler/clause-telemetry.schema.json",
-  "title": "Stage-2 eBPF clause telemetry artifact",
+  "$id": "https://openclaw.ai/schemas/clawtune/clause-telemetry.schema.json",
+  "title": "eBPF eBPF clause telemetry artifact",
   "type": "object",
   "required": [
     "version",

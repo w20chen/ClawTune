@@ -7,7 +7,7 @@ trace collection inside Docker containers.
 
 Usage::
 
-    # 1. Prepare the runtime bundle (once)
+    # 1. Prepare the runtime assets (once)
     python -m swe_rebench.runner prepare
 
     # 2. Run tasks from a swe-bench dataset
@@ -48,7 +48,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from swe_rebench.config import RunnerConfig, normalize_runtime_mode
+from swe_rebench.config import (
+    CONTAINER_OPENCLAW_MODE,
+    HOST_OPENCLAW_MODE,
+    RunnerConfig,
+    normalize_runtime_mode,
+)
 from swe_rebench.docker import (
     ContainerResult,
     get_docker_client,
@@ -56,7 +61,7 @@ from swe_rebench.docker import (
     pull_image,
     run_container,
 )
-from swe_rebench.host_sandbox import (
+from swe_rebench.host_openclaw import (
     KnowledgeBaseSyncError,
     _chmod_and_retry,
     _prepare_batch_tool_resource_kb,
@@ -65,10 +70,10 @@ from swe_rebench.host_sandbox import (
     _seed_runtime_tool_resource_kb,
     _stop_process,
     _validate_kb_snapshot_pair,
-    run_host_sandbox_task,
-    run_host_sandbox_replay_task,
+    run_host_openclaw_task,
+    run_host_openclaw_replay_task,
 )
-from swe_rebench.prepare import build_bundle, bundle_needs_rebuild
+from swe_rebench.prepare import build_runtime_assets, runtime_assets_need_rebuild
 from swe_rebench.task_source import (
     TaskDef,
     create_single_task,
@@ -79,7 +84,7 @@ from swe_rebench.task_source import (
 )
 
 
-# ── Report helpers ────────────────────────────────────────────────
+# 鈹€鈹€ Report helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 @dataclass
 class BatchReport:
@@ -165,7 +170,7 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         "failed_llm_span_ends": 0,
         "tool_span_ends": 0,
         "launcher_tool_span_ends": 0,
-        "launcher_stage2_expected_span_ends": 0,
+        "launcher_ebpf_expected_span_ends": 0,
         "launcher_exit_status_span_ends": 0,
         "launcher_cgroup_tool_span_ends": 0,
         "launcher_attributed_tool_span_ends": 0,
@@ -186,9 +191,9 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         "launcher_tool_resource_available_span_ends": 0,
         "launcher_tool_resource_eligible_span_ends": 0,
         "launcher_tool_resource_unavailable_span_ends": 0,
-        "launcher_stage2_lifecycle_span_ends": 0,
-        "launcher_stage2_artifact_envelope_span_ends": 0,
-        "launcher_stage2_artifact_refs": [],
+        "launcher_ebpf_lifecycle_span_ends": 0,
+        "launcher_ebpf_artifact_envelope_span_ends": 0,
+        "launcher_ebpf_artifact_refs": [],
         "launcher_tool_resource_unavailable_reasons": {},
         "launcher_tool_resource_disabled_reasons": {},
         "tool_resource_prediction_span_starts": 0,
@@ -318,20 +323,20 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                     if _is_launcher_command_not_found(record):
                         report["launcher_command_not_found_span_ends"] += 1
                     if _nested_get(record, ("execution", "execution_id")):
-                        report["launcher_stage2_expected_span_ends"] += 1
+                        report["launcher_ebpf_expected_span_ends"] += 1
                         if output_exit_code is not None:
                             report["launcher_exit_status_span_ends"] += 1
                     tool_resource = _nested_get(record, ("execution", "tool_resource"))
                     if isinstance(tool_resource, dict):
                         report["launcher_tool_resource_span_ends"] += 1
-                        if _trace_stage2_lifecycle_complete(record, tool_resource):
-                            report["launcher_stage2_lifecycle_span_ends"] += 1
-                        if _trace_stage2_artifact_envelope_complete(
+                        if _trace_ebpf_lifecycle_complete(record, tool_resource):
+                            report["launcher_ebpf_lifecycle_span_ends"] += 1
+                        if _trace_ebpf_artifact_envelope_complete(
                             record,
                             tool_resource,
                         ):
-                            report["launcher_stage2_artifact_envelope_span_ends"] += 1
-                            report["launcher_stage2_artifact_refs"].append(
+                            report["launcher_ebpf_artifact_envelope_span_ends"] += 1
+                            report["launcher_ebpf_artifact_refs"].append(
                                 {
                                     "execution_id": _nested_get(
                                         record,
@@ -401,24 +406,24 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
     if report["launcher_command_not_found_span_ends"]:
         report["warnings"].append("launcher command was not invoked correctly inside the sandbox")
     if report["launcher_tool_span_ends"] and not report["launcher_tool_resource_span_ends"]:
-        report["warnings"].append("launcher tool spans have no Stage-2 tool-resource telemetry")
+        report["warnings"].append("launcher tool spans have no eBPF tool-resource telemetry")
     if report["launcher_tool_resource_unavailable_span_ends"]:
-        report["warnings"].append("Stage-2 tool-resource telemetry is unavailable for some launcher tool spans")
+        report["warnings"].append("eBPF tool-resource telemetry is unavailable for some launcher tool spans")
     if (
-        report["launcher_stage2_expected_span_ends"]
-        and report["launcher_stage2_lifecycle_span_ends"]
-        != report["launcher_stage2_expected_span_ends"]
+        report["launcher_ebpf_expected_span_ends"]
+        and report["launcher_ebpf_lifecycle_span_ends"]
+        != report["launcher_ebpf_expected_span_ends"]
     ):
         report["warnings"].append(
-            "some launcher tool spans have an incomplete Stage-2 lifecycle"
+            "some launcher tool spans have an incomplete eBPF lifecycle"
         )
     if (
-        report["launcher_stage2_expected_span_ends"]
-        and report["launcher_stage2_artifact_envelope_span_ends"]
-        != report["launcher_stage2_expected_span_ends"]
+        report["launcher_ebpf_expected_span_ends"]
+        and report["launcher_ebpf_artifact_envelope_span_ends"]
+        != report["launcher_ebpf_expected_span_ends"]
     ):
         report["warnings"].append(
-            "some launcher tool spans have an incomplete Stage-2 artifact envelope"
+            "some launcher tool spans have an incomplete eBPF artifact envelope"
         )
     if report["resource_sampled_tool_span_ends"] != report["tool_span_ends"]:
         report["warnings"].append("some tool spans have no complete cgroup/process resource samples")
@@ -427,7 +432,7 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
     return report
 
 
-def _trace_stage2_lifecycle_complete(
+def _trace_ebpf_lifecycle_complete(
     record: dict[str, Any],
     tool_resource: dict[str, Any],
 ) -> bool:
@@ -452,11 +457,11 @@ def _trace_stage2_lifecycle_complete(
     return True
 
 
-def _trace_stage2_artifact_envelope_complete(
+def _trace_ebpf_artifact_envelope_complete(
     record: dict[str, Any],
     tool_resource: dict[str, Any],
 ) -> bool:
-    if not _trace_stage2_lifecycle_complete(record, tool_resource):
+    if not _trace_ebpf_lifecycle_complete(record, tool_resource):
         return False
     artifact_path = tool_resource.get("artifact_path")
     artifact_summary = tool_resource.get("artifact_summary")
@@ -483,8 +488,8 @@ def _trace_stage2_artifact_envelope_complete(
 def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
     tool_span_ends = sum(int(item.get("tool_span_ends", 0)) for item in trace_inspection)
     launcher_tool_span_ends = sum(int(item.get("launcher_tool_span_ends", 0)) for item in trace_inspection)
-    launcher_stage2_expected_span_ends = sum(
-        int(item.get("launcher_stage2_expected_span_ends", 0))
+    launcher_ebpf_expected_span_ends = sum(
+        int(item.get("launcher_ebpf_expected_span_ends", 0))
         for item in trace_inspection
     )
     launcher_exit_status_span_ends = sum(
@@ -537,22 +542,22 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         int(item.get("launcher_tool_resource_unavailable_span_ends", 0))
         for item in trace_inspection
     )
-    launcher_stage2_lifecycle_span_ends = sum(
-        int(item.get("launcher_stage2_lifecycle_span_ends", 0))
+    launcher_ebpf_lifecycle_span_ends = sum(
+        int(item.get("launcher_ebpf_lifecycle_span_ends", 0))
         for item in trace_inspection
     )
-    launcher_stage2_artifact_envelope_span_ends = sum(
-        int(item.get("launcher_stage2_artifact_envelope_span_ends", 0))
+    launcher_ebpf_artifact_envelope_span_ends = sum(
+        int(item.get("launcher_ebpf_artifact_envelope_span_ends", 0))
         for item in trace_inspection
     )
-    launcher_stage2_artifact_refs = sorted(
+    launcher_ebpf_artifact_refs = sorted(
         (
             {
                 "execution_id": ref["execution_id"],
                 "tool_call_id": ref["tool_call_id"],
             }
             for item in trace_inspection
-            for ref in item.get("launcher_stage2_artifact_refs", [])
+            for ref in item.get("launcher_ebpf_artifact_refs", [])
             if isinstance(ref, dict)
             and isinstance(ref.get("execution_id"), str)
             and isinstance(ref.get("tool_call_id"), str)
@@ -617,7 +622,7 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "tool_span_ends": tool_span_ends,
         "launcher_tool_span_ends": launcher_tool_span_ends,
-        "launcher_stage2_expected_span_ends": launcher_stage2_expected_span_ends,
+        "launcher_ebpf_expected_span_ends": launcher_ebpf_expected_span_ends,
         "launcher_exit_status_span_ends": launcher_exit_status_span_ends,
         "launcher_attributed_tool_span_ends": launcher_attributed_tool_span_ends,
         "launcher_cgroup_tool_span_ends": launcher_cgroup_tool_span_ends,
@@ -625,11 +630,11 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         "launcher_tool_resource_available_span_ends": launcher_tool_resource_available_span_ends,
         "launcher_tool_resource_eligible_span_ends": launcher_tool_resource_eligible_span_ends,
         "launcher_tool_resource_unavailable_span_ends": launcher_tool_resource_unavailable_span_ends,
-        "launcher_stage2_lifecycle_span_ends": launcher_stage2_lifecycle_span_ends,
-        "launcher_stage2_artifact_envelope_span_ends": (
-            launcher_stage2_artifact_envelope_span_ends
+        "launcher_ebpf_lifecycle_span_ends": launcher_ebpf_lifecycle_span_ends,
+        "launcher_ebpf_artifact_envelope_span_ends": (
+            launcher_ebpf_artifact_envelope_span_ends
         ),
-        "launcher_stage2_artifact_refs": launcher_stage2_artifact_refs,
+        "launcher_ebpf_artifact_refs": launcher_ebpf_artifact_refs,
         "launcher_not_executable_span_ends": launcher_not_executable_span_ends,
         "launcher_command_not_found_span_ends": launcher_command_not_found_span_ends,
         "invalid_coverage_ratio_span_ends": invalid_coverage_ratio_span_ends,
@@ -693,7 +698,7 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _stage2_artifact_envelope_issues(artifact: dict[str, Any]) -> list[str]:
+def _ebpf_artifact_envelope_issues(artifact: dict[str, Any]) -> list[str]:
     issues: list[str] = []
     if artifact.get("schema") != "clause_telemetry_v2":
         issues.append("schema")
@@ -714,8 +719,8 @@ def _stage2_artifact_envelope_issues(artifact: dict[str, Any]) -> list[str]:
     return issues
 
 
-def _stage2_collector_issues(artifact: dict[str, Any]) -> list[str]:
-    issues = _stage2_artifact_envelope_issues(artifact)
+def _ebpf_collector_issues(artifact: dict[str, Any]) -> list[str]:
+    issues = _ebpf_artifact_envelope_issues(artifact)
     collector = artifact.get("collector")
     if not isinstance(collector, dict):
         issues.append("collector")
@@ -741,7 +746,7 @@ def _stage2_collector_issues(artifact: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(issues))
 
 
-def _stage2_call_lifecycle_complete(call: dict[str, Any]) -> bool:
+def _ebpf_call_lifecycle_complete(call: dict[str, Any]) -> bool:
     tool_call_id = call.get("tool_call_id")
     if not isinstance(tool_call_id, str) or not tool_call_id:
         return False
@@ -801,7 +806,7 @@ def _stage2_call_lifecycle_complete(call: dict[str, Any]) -> bool:
     )
 
 
-def _stage2_non_ok_reason_rows(call: dict[str, Any]) -> list[dict[str, str]]:
+def _ebpf_non_ok_reason_rows(call: dict[str, Any]) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     invalid_reasons = call.get("invalid_reasons")
     if isinstance(invalid_reasons, list):
@@ -826,7 +831,7 @@ def _stage2_non_ok_reason_rows(call: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
-    """Audit finalized Stage-2 files without conflating collection and semantics."""
+    """Audit finalized eBPF files without conflating collection and semantics."""
 
     report: dict[str, Any] = {
         "json_file_count": 0,
@@ -894,10 +899,10 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
             report["warnings"].append(f"{path.name}: not a clause telemetry artifact")
             continue
         report["artifact_count"] += 1
-        envelope_issues = _stage2_artifact_envelope_issues(artifact)
+        envelope_issues = _ebpf_artifact_envelope_issues(artifact)
         if not envelope_issues:
             report["artifact_envelope_count"] += 1
-        collector_issues = _stage2_collector_issues(artifact)
+        collector_issues = _ebpf_collector_issues(artifact)
         if not collector_issues:
             report["collector_healthy_artifact_count"] += 1
             report["healthy_artifact_count"] += 1
@@ -905,7 +910,7 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
             for issue in collector_issues:
                 _increment_count(report["collector_failure_reason_counts"], issue)
             report["warnings"].append(
-                f"{path.name}: Stage-2 collector/infrastructure is not healthy: "
+                f"{path.name}: eBPF collector/infrastructure is not healthy: "
                 f"{','.join(collector_issues)}"
             )
         calls = artifact.get("calls")
@@ -935,7 +940,7 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
                 report["warnings"].append(f"{path.name}: call is not an object")
                 continue
             report["call_count"] += 1
-            if _stage2_call_lifecycle_complete(call):
+            if _ebpf_call_lifecycle_complete(call):
                 report["lifecycle_healthy_call_count"] += 1
             quality = call.get("telemetry_quality")
             eligibility = call.get("eligible_for_kb")
@@ -952,7 +957,7 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
                 if not eligibility_contract_valid:
                     invalid_fields.append("eligible_for_kb")
                 report["warnings"].append(
-                    f"{path.name}: Stage-2 call has invalid semantic contract "
+                    f"{path.name}: eBPF call has invalid semantic contract "
                     f"fields: {','.join(invalid_fields)}"
                 )
             if eligible_for_kb:
@@ -963,7 +968,7 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
                 report["invalid_call_count"] += 1
             else:
                 report["unavailable_call_count"] += 1
-            reason_rows = _stage2_non_ok_reason_rows(call) if quality != "ok" else []
+            reason_rows = _ebpf_non_ok_reason_rows(call) if quality != "ok" else []
             for reason in reason_rows:
                 _increment_count(report["invalid_reason_counts"], reason["kind"])
             if quality != "ok":
@@ -990,7 +995,7 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
                         )
                         suffix = f": {reason['detail']}" if reason["detail"] else ""
                         report["analysis_failures"].append(
-                            f"{path.name}: Stage-2 analysis failed"
+                            f"{path.name}: eBPF analysis failed"
                             f"{suffix}"
                         )
                 elif explicit_semantic_rejection:
@@ -1010,7 +1015,7 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
                     report["unaccounted_semantic_call_count"] += 1
                     rendered = ",".join(sorted(reason_kinds)) or "missing_reason"
                     report["warnings"].append(
-                        f"{path.name}: non-ok Stage-2 call is missing a reason "
+                        f"{path.name}: non-ok eBPF call is missing a reason "
                         f"or is incorrectly KB-eligible: {rendered}"
                     )
             elif not eligible_for_kb:
@@ -1036,7 +1041,7 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
         report["warnings"].append("some mapped clauses have no explicit status")
     if report["lifecycle_healthy_call_count"] != report["call_count"]:
         report["warnings"].append(
-            "some Stage-2 calls lack a connected launcher-started trusted-root lifecycle"
+            "some eBPF calls lack a connected launcher-started trusted-root lifecycle"
         )
     report["artifact_refs"].sort(
         key=lambda ref: (ref["execution_id"], ref["tool_call_id"])
@@ -1108,14 +1113,14 @@ def _agent_diagnostics(
         failure_kind = "launcher_not_executable"
         failure = (
             f"{launcher_not_executable} managed exec call(s) failed before the "
-            "launcher could start because claw-launch was not executable in "
+            "launcher could start because clawtune-launch was not executable in "
             "the sandbox"
         )
     elif launcher_command_not_found:
         failure_kind = "launcher_invocation_command_not_found"
         failure = (
             f"{launcher_command_not_found} managed exec call(s) ran `run` as "
-            "the sandbox command instead of invoking claw-launch"
+            "the sandbox command instead of invoking clawtune-launch"
         )
     elif empty_response_detected:
         failure_kind = "empty_llm_response"
@@ -1211,7 +1216,7 @@ def _required_telemetry_error(
     config: RunnerConfig,
     result: dict[str, Any],
 ) -> str | None:
-    if not config.runtime.stage2_required:
+    if not config.runtime.ebpf_required:
         return None
     resources = result.get("resource_summary")
     artifacts = result.get("tool_resource_artifacts")
@@ -1253,16 +1258,16 @@ def _required_telemetry_error(
         # cgroup-v2 could not be produced on this host but every launcher span
         # is attributed (per-PID) - acceptable fallback, not a gate failure.
     artifact_count = int(artifacts.get("artifact_count", 0))
-    expected_artifacts = int(resources.get("launcher_stage2_expected_span_ends", 0))
+    expected_artifacts = int(resources.get("launcher_ebpf_expected_span_ends", 0))
     if expected_artifacts == 0:
-        return "required Stage-2 telemetry found no executed launcher commands"
+        return "required eBPF telemetry found no executed launcher commands"
     trace_envelopes = int(resources.get("launcher_tool_resource_span_ends", 0))
     if trace_envelopes != expected_artifacts:
         return (
-            "required Stage-2 trace envelope coverage is incomplete: "
+            "required eBPF trace envelope coverage is incomplete: "
             f"{trace_envelopes}/{expected_artifacts} launcher commands"
         )
-    if config.runtime.mode == "host-openclaw-sandbox":
+    if config.runtime.mode == HOST_OPENCLAW_MODE:
         launcher_exit_status_spans = int(
             resources.get("launcher_exit_status_span_ends", 0)
         )
@@ -1272,69 +1277,69 @@ def _required_telemetry_error(
                 f"{launcher_exit_status_spans}/{expected_artifacts} launcher commands"
             )
         lifecycle_spans = int(
-            resources.get("launcher_stage2_lifecycle_span_ends", 0)
+            resources.get("launcher_ebpf_lifecycle_span_ends", 0)
         )
         if lifecycle_spans != expected_artifacts:
             return (
-                "required Stage-2 launcher lifecycle coverage is incomplete: "
+                "required eBPF launcher lifecycle coverage is incomplete: "
                 f"{lifecycle_spans}/{expected_artifacts} launcher commands"
             )
         artifact_envelope_spans = int(
-            resources.get("launcher_stage2_artifact_envelope_span_ends", 0)
+            resources.get("launcher_ebpf_artifact_envelope_span_ends", 0)
         )
         if artifact_envelope_spans != expected_artifacts:
             return (
-                "required Stage-2 trace artifact envelopes are incomplete: "
+                "required eBPF trace artifact envelopes are incomplete: "
                 f"{artifact_envelope_spans}/{expected_artifacts} launcher commands"
             )
     if artifact_count == 0:
-        return "required Stage-2 telemetry produced no exec artifacts"
+        return "required eBPF telemetry produced no exec artifacts"
     if artifact_count != expected_artifacts:
         return (
-            "required Stage-2 artifact coverage is incomplete: "
+            "required eBPF artifact coverage is incomplete: "
             f"{artifact_count}/{expected_artifacts} executed launcher commands"
         )
     artifact_envelope_count = int(artifacts.get("artifact_envelope_count", 0))
     if artifact_envelope_count != artifact_count:
         return (
-            "required Stage-2 artifact envelopes are invalid: "
+            "required eBPF artifact envelopes are invalid: "
             f"{artifact_envelope_count}/{artifact_count} valid envelopes"
         )
-    if config.runtime.mode == "host-openclaw-sandbox":
+    if config.runtime.mode == HOST_OPENCLAW_MODE:
         artifact_identity_count = int(
             artifacts.get("artifact_identity_count", 0)
         )
         if artifact_identity_count != artifact_count:
             return (
-                "required Stage-2 artifact identities are incomplete: "
+                "required eBPF artifact identities are incomplete: "
                 f"{artifact_identity_count}/{artifact_count} artifacts"
             )
-        trace_refs = resources.get("launcher_stage2_artifact_refs")
+        trace_refs = resources.get("launcher_ebpf_artifact_refs")
         disk_refs = artifacts.get("artifact_refs")
         if not isinstance(trace_refs, list) or not isinstance(disk_refs, list):
-            return "required Stage-2 trace-to-artifact references are unavailable"
+            return "required eBPF trace-to-artifact references are unavailable"
         if trace_refs != disk_refs:
             return (
-                "required Stage-2 trace-to-artifact references are inconsistent: "
+                "required eBPF trace-to-artifact references are inconsistent: "
                 f"trace={trace_refs!r} disk={disk_refs!r}"
             )
     healthy_count = int(artifacts.get("collector_healthy_artifact_count", 0))
     if healthy_count != artifact_count:
         return (
-            "required Stage-2 collector/infrastructure health is incomplete: "
+            "required eBPF collector/infrastructure health is incomplete: "
             f"{healthy_count}/{artifact_count} healthy artifacts"
         )
     call_count = int(artifacts.get("call_count", 0))
     if call_count != expected_artifacts:
         return (
-            "required Stage-2 call envelope coverage is incomplete: "
+            "required eBPF call envelope coverage is incomplete: "
             f"{call_count}/{expected_artifacts} launcher commands"
         )
-    if config.runtime.mode == "host-openclaw-sandbox":
+    if config.runtime.mode == HOST_OPENCLAW_MODE:
         lifecycle_calls = int(artifacts.get("lifecycle_healthy_call_count", 0))
         if lifecycle_calls != call_count:
             return (
-                "required Stage-2 trusted-root lifecycle is incomplete: "
+                "required eBPF trusted-root lifecycle is incomplete: "
                 f"{lifecycle_calls}/{call_count} calls"
             )
     non_ok_calls = int(artifacts.get("invalid_call_count", 0)) + int(
@@ -1343,19 +1348,19 @@ def _required_telemetry_error(
     explained_non_ok = int(artifacts.get("non_ok_call_with_reason_count", 0))
     if explained_non_ok != non_ok_calls:
         return (
-            "required Stage-2 non-ok calls lack explicit reasons: "
+            "required eBPF non-ok calls lack explicit reasons: "
             f"{explained_non_ok}/{non_ok_calls} explained"
         )
     analysis_failures = int(artifacts.get("analysis_failure_call_count", 0))
     if analysis_failures:
         return (
-            "required Stage-2 analysis is incomplete: "
+            "required eBPF analysis is incomplete: "
             f"{analysis_failures}/{call_count} calls failed analysis"
         )
     unexplained_non_ok = int(artifacts.get("unexplained_non_ok_call_count", 0))
     if unexplained_non_ok:
         return (
-            "required Stage-2 non-ok calls violate the explicit-reason/KB-withheld "
+            "required eBPF non-ok calls violate the explicit-reason/KB-withheld "
             "contract: "
             f"{unexplained_non_ok}/{call_count} calls"
         )
@@ -1364,7 +1369,7 @@ def _required_telemetry_error(
     )
     if unaccounted_semantic:
         return (
-            "required Stage-2 semantic/KB eligibility accounting is incomplete: "
+            "required eBPF semantic/KB eligibility accounting is incomplete: "
             f"{unaccounted_semantic}/{call_count} calls"
         )
     eligible_calls = int(artifacts.get("kb_eligible_call_count", 0))
@@ -1373,7 +1378,7 @@ def _required_telemetry_error(
     )
     if eligible_calls + semantic_rejections != call_count:
         return (
-            "required Stage-2 semantic/KB eligibility accounting is incomplete: "
+            "required eBPF semantic/KB eligibility accounting is incomplete: "
             f"{eligible_calls} eligible + {semantic_rejections} explicitly rejected "
             f"!= {call_count} calls"
         )
@@ -1382,17 +1387,17 @@ def _required_telemetry_error(
     )
     if trace_kb_updates != eligible_calls:
         return (
-            "required Stage-2 Clause KB update accounting is inconsistent: "
+            "required eBPF Clause KB update accounting is inconsistent: "
             f"{trace_kb_updates} trace updates != {eligible_calls} eligible calls"
         )
     clause_count = int(artifacts.get("clause_count", 0))
     clauses_with_status = int(artifacts.get("clauses_with_status", 0))
     if clauses_with_status != clause_count:
         return (
-            "required Stage-2 clause status is incomplete: "
+            "required eBPF clause status is incomplete: "
             f"{clauses_with_status}/{clause_count} mapped clauses"
         )
-    if config.runtime.mode == "host-openclaw-sandbox":
+    if config.runtime.mode == HOST_OPENCLAW_MODE:
         prediction_spans = int(
             resources.get("tool_resource_prediction_span_starts", 0)
         )
@@ -1700,7 +1705,7 @@ def _smoke_summary(artifacts: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# ── Lock for thread-safe logging ──────────────────────────────────
+# 鈹€鈹€ Lock for thread-safe logging 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 _print_lock = threading.Lock()
 
@@ -1710,12 +1715,12 @@ def _log(msg: str) -> None:
         print(msg, file=sys.stderr, flush=True)
 
 
-# ── Core orchestration ────────────────────────────────────────────
+# 鈹€鈹€ Core orchestration 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def run_batch(
     config: RunnerConfig,
     tasks: list[TaskDef],
-    bundle_dir: Path,
+    runtime_assets_dir: Path,
     *,
     export_after: bool = False,
 ) -> BatchReport:
@@ -1755,7 +1760,7 @@ def run_batch(
     shared_sidecar = None
     shared_sidecar_trace_dir: Path | None = None
     defer_container_kb_merge = (
-        normalize_runtime_mode(config.runtime.mode) == "container-openclaw"
+        normalize_runtime_mode(config.runtime.mode) == CONTAINER_OPENCLAW_MODE
         and parallelism > 1
     )
 
@@ -1763,7 +1768,7 @@ def run_batch(
     # batch pre-pull. Host-sandbox mode exports each repository from its task
     # image; pull that image inside the per-task deadline instead of hiding a
     # potentially long registry wait before task accounting starts.
-    if normalize_runtime_mode(config.runtime.mode) == "container-openclaw":
+    if normalize_runtime_mode(config.runtime.mode) == CONTAINER_OPENCLAW_MODE:
         _pre_pull_images(
             client,
             tasks,
@@ -1774,8 +1779,8 @@ def run_batch(
     else:
         _log("Task images will be checked/pulled inside each task timeout")
 
-    if normalize_runtime_mode(config.runtime.mode) == "host-openclaw-sandbox":
-        from swe_rebench.host_sandbox import _free_port, _start_sidecar
+    if normalize_runtime_mode(config.runtime.mode) == HOST_OPENCLAW_MODE:
+        from swe_rebench.host_openclaw import _free_port, _start_sidecar
 
         shared_sidecar_port = _free_port()
         shared_sidecar_trace_dir = shared_kb_dir / "_sidecar"
@@ -1785,7 +1790,7 @@ def run_batch(
         # neither auto-start nor stop it when its short-lived process exits.
         # The shared sidecar's DockerExecObserver cannot use a single
         # container-name prefix to match all tasks because each task uses
-        # a per-workspace prefix (claw-srb-<hash>-) for correct cleanup
+        # a per-workspace prefix (clawtune-srb-<hash>-) for correct cleanup
         # isolation during parallel execution.  Scope discovery still works
         # through _discover_sandbox_scope_loop (post_sandbox_scope=True).
         shared_sidecar = _start_sidecar(
@@ -1811,7 +1816,7 @@ def run_batch(
         telemetry_error = _required_telemetry_error(config, result_dict)
         agent_error = _nested_get(result_dict, ("agent_diagnostics", "failure"))
         telemetry_not_evaluable = bool(
-            config.runtime.stage2_required
+            config.runtime.ebpf_required
             and isinstance(agent_error, str)
             and int(
                 _nested_get(result_dict, ("resource_summary", "tool_span_ends"))
@@ -1820,13 +1825,13 @@ def run_batch(
             == 0
         )
         result_dict["telemetry_audit"] = {
-            "required": config.runtime.stage2_required,
+            "required": config.runtime.ebpf_required,
             "status": (
                 "not_evaluable"
                 if telemetry_not_evaluable
                 else "failed"
                 if telemetry_error is not None
-                else ("passed" if config.runtime.stage2_required else "not_required")
+                else ("passed" if config.runtime.ebpf_required else "not_required")
             ),
             "error": None if telemetry_not_evaluable else telemetry_error,
             "not_evaluable_reason": (
@@ -1850,7 +1855,7 @@ def run_batch(
         )
         if (
             telemetry_error is None
-            and config.runtime.stage2_required
+            and config.runtime.ebpf_required
             and launcher_spans
             and launcher_cgroup_spans != launcher_spans
         ):
@@ -1903,7 +1908,7 @@ def run_batch(
             return _run_one(
                 client,
                 task,
-                bundle_dir,
+                runtime_assets_dir,
                 trace_dir,
                 config,
                 shared_kb_dir=shared_kb_dir,
@@ -2039,12 +2044,12 @@ def _validate_runtime_architecture(config: RunnerConfig) -> None:
     mode = normalize_runtime_mode(config.runtime.mode)
     if (
         host_arch in {"aarch64", "arm64"}
-        and mode == "container-openclaw"
-        and config.runtime.stage2_required
+        and mode == CONTAINER_OPENCLAW_MODE
+        and config.runtime.ebpf_required
     ):
         raise RuntimeError(
-            "strict Stage-2 telemetry on ARM/Kunpeng requires "
-            "runtime.mode=host-openclaw-sandbox; container-openclaw can run "
+            "strict eBPF telemetry on ARM/Kunpeng requires "
+            "runtime.mode=host-openclaw; container-openclaw can run "
             "an amd64/QEMU userspace against an arm64 kernel and misinterpret "
             "BCC pt_regs telemetry"
         )
@@ -2052,7 +2057,7 @@ def _validate_runtime_architecture(config: RunnerConfig) -> None:
 
 def _container_runtime_id(task: TaskDef) -> str:
     digest = hashlib.sha256(task.instance_id.encode("utf-8")).hexdigest()[:20]
-    return f"claw-srb-container-{digest}"
+    return f"clawtune-srb-container-{digest}"
 
 
 def _merge_parallel_task_kbs(
@@ -2063,17 +2068,17 @@ def _merge_parallel_task_kbs(
     """Deterministically merge concurrent per-container observations.
 
     Each task learns against the same frozen batch baseline.  We replay its
-    canonical trace and Stage-2 artifacts once at the batch barrier, then use
+    canonical trace and eBPF artifacts once at the batch barrier, then use
     the existing transactional three-snapshot publisher.  This avoids both
     mixed generations and last-writer-wins data loss.
     """
 
-    from agent_scheduler.config import SchedulerConfig
-    from agent_scheduler.predictors.tool_resource import ToolResourcePredictor
+    from clawtune_sidecar.config import SidecarConfig
+    from clawtune_sidecar.predictors.tool_resource import ToolResourcePredictor
     from tool_resource.runtime_kb import LatencyBuckets
 
     openclaw_paths: list[Path] = []
-    stage2_paths: list[Path] = []
+    ebpf_paths: list[Path] = []
     snapshot_names = {
         "runtime-tool-resource-kb.json",
         "clause-resource-kb.json",
@@ -2084,17 +2089,17 @@ def _merge_parallel_task_kbs(
         openclaw_paths.extend(sorted(task_dir.glob("*.jsonl")))
         artifact_dir = task_dir / "tool-resource"
         if artifact_dir.is_dir():
-            stage2_paths.extend(
+            ebpf_paths.extend(
                 path
                 for path in sorted(artifact_dir.glob("*.json"))
                 if path.name not in snapshot_names
             )
 
-    if not openclaw_paths and not stage2_paths:
+    if not openclaw_paths and not ebpf_paths:
         _log("Parallel KB merge: no completed observations to merge")
         return
 
-    scheduler_defaults = SchedulerConfig()
+    scheduler_defaults = SidecarConfig()
     try:
         with tempfile.TemporaryDirectory(
             prefix=".kb-merge-",
@@ -2109,7 +2114,7 @@ def _merge_parallel_task_kbs(
             staging_kb_dir = staging_root / "tool-resource"
             predictor = ToolResourcePredictor.from_traces(
                 openclaw_trace_paths=openclaw_paths,
-                stage2_trace_paths=stage2_paths,
+                ebpf_trace_paths=ebpf_paths,
                 buckets=LatencyBuckets(
                     scheduler_defaults.tool_resource_latency_buckets_ms
                 ),
@@ -2136,14 +2141,14 @@ def _merge_parallel_task_kbs(
 
     _log(
         "Parallel KB merge: "
-        f"{len(openclaw_paths)} traces, {len(stage2_paths)} Stage-2 artifacts"
+        f"{len(openclaw_paths)} traces, {len(ebpf_paths)} eBPF artifacts"
     )
 
 
 def _run_one(
     client: Any,
     task: TaskDef,
-    bundle_dir: Path,
+    runtime_assets_dir: Path,
     trace_dir: Path,
     config: RunnerConfig,
     *,
@@ -2160,14 +2165,14 @@ def _run_one(
         docker_platform=config.docker.platform,
     )
 
-    # ── Seed KB from shared directory before execution ──
+    # 鈹€鈹€ Seed KB from shared directory before execution 鈹€鈹€
     # - Container mode: the in-container sidecar needs the KB seeded into
     #   the trace directory (mounted at /traces inside the container).
     # - Host-sandbox mode: when using a shared sidecar the sidecar reads
     #   and writes the shared KB directly; when using a per-task sidecar,
-    #   run_host_sandbox_task seeds internally (manage_sidecar=True).
+    #   run_host_openclaw_task seeds internally (manage_sidecar=True).
     mode = normalize_runtime_mode(config.runtime.mode)
-    if shared_kb_dir is not None and mode == "container-openclaw":
+    if shared_kb_dir is not None and mode == CONTAINER_OPENCLAW_MODE:
         _seed_runtime_tool_resource_kb(
             trace_dir,
             config,
@@ -2177,7 +2182,7 @@ def _run_one(
     result = _execute_one(
         client=client,
         task=task,
-        bundle_dir=bundle_dir,
+        runtime_assets_dir=runtime_assets_dir,
         trace_dir=trace_dir,
         config=config,
         shared_kb_dir=shared_kb_dir,
@@ -2185,9 +2190,9 @@ def _run_one(
         shared_sidecar_trace_dir=shared_sidecar_trace_dir,
     )
 
-    # ── Publish task KB back to shared directory ──
+    # 鈹€鈹€ Publish task KB back to shared directory 鈹€鈹€
     # Publish whenever a per-task sidecar wrote KB into the trace directory
-    # (container mode always; host-sandbox mode only without shared sidecar).
+    # (container mode always; host-openclaw mode only without shared sidecar).
     # When a shared sidecar is active it writes KB directly to shared_kb_dir
     # so no per-task publish is needed and it would conflict with the sidecar.
     if (
@@ -2212,7 +2217,7 @@ def _execute_one(
     *,
     client: Any,
     task: TaskDef,
-    bundle_dir: Path,
+    runtime_assets_dir: Path,
     trace_dir: Path,
     config: RunnerConfig,
     shared_kb_dir: Path | None,
@@ -2221,12 +2226,12 @@ def _execute_one(
 ) -> ContainerResult:
     """Execute a task after its isolated directory and shared KB are ready."""
 
-    if normalize_runtime_mode(config.runtime.mode) == "host-openclaw-sandbox":
-        return run_host_sandbox_task(
+    if normalize_runtime_mode(config.runtime.mode) == HOST_OPENCLAW_MODE:
+        return run_host_openclaw_task(
             task=task,
             trace_dir=trace_dir,
             config=config,
-            bundle_dir=bundle_dir,
+            runtime_assets_dir=runtime_assets_dir,
             shared_kb_dir=shared_kb_dir,
             sidecar_port=shared_sidecar_port,
             shared_sidecar_trace_dir=shared_sidecar_trace_dir,
@@ -2258,7 +2263,7 @@ def _execute_one(
             client=client,
             image=task.image,
             task_id=task.instance_id,
-            bundle_dir=bundle_dir,
+            runtime_assets_dir=runtime_assets_dir,
             trace_dir=trace_dir,
             problem_statement=task.problem_statement,
             config=config.docker,
@@ -2267,20 +2272,20 @@ def _execute_one(
             llm_model=config.llm.model,
             openclaw_model_ref=config.llm.openclaw_model_ref,
             timeout_seconds=config.batch.task_timeout_seconds,
-            stage2_required=config.runtime.stage2_required,
+            ebpf_required=config.runtime.ebpf_required,
             env_extra={
                 **task.extra_env,
                 "TASK_BASE_COMMIT": task.base_commit,
                 "TASK_HINT_TEXT": task.hint_text,
-                "AGENT_SCHEDULER_TOOL_RESOURCE_REPO": task_repo_key(task),
-                "CLAW_REPO_KEY": task_repo_key(task),
-                "CLAW_GATEWAY_ID": "swe-rebench-container",
-                "CLAW_RUNTIME_ID": _container_runtime_id(task),
+                "CLAWTUNE_TOOL_RESOURCE_REPO": task_repo_key(task),
+                "CLAWTUNE_REPO_KEY": task_repo_key(task),
+                "CLAWTUNE_GATEWAY_ID": "swe-rebench-container",
+                "CLAWTUNE_RUNTIME_ID": _container_runtime_id(task),
             },
         )
         last_result = result
 
-        # Success ── don't retry
+        # Success 鈹€鈹€ don't retry
         if result.exit_code == 0 and not result.error:
             return result
 
@@ -2294,16 +2299,16 @@ def _execute_one(
 def run_replay(
     config: RunnerConfig,
     task: TaskDef,
-    bundle_dir: Path,
+    runtime_assets_dir: Path,
     source_trace: Path,
     *,
     timing: str = "exact",
     timing_scale: float = 1.0,
 ) -> ContainerResult:
-    """Replay one SWE-Rebench case through host-openclaw-sandbox."""
-    if normalize_runtime_mode(config.runtime.mode) != "host-openclaw-sandbox":
+    """Replay one SWE-Rebench case through host-openclaw."""
+    if normalize_runtime_mode(config.runtime.mode) != HOST_OPENCLAW_MODE:
         raise ValueError(
-            "SWE-Rebench replay currently requires runtime.mode=host-openclaw-sandbox"
+            "SWE-Rebench replay currently requires runtime.mode=host-openclaw"
         )
     trace_dir = config.output.trace_root.parent / "replays" / task.instance_id.replace("/", "_")
     _reset_task_trace_dir(
@@ -2312,11 +2317,11 @@ def run_replay(
         docker_cleanup_image=task.image,
         docker_platform=config.docker.platform,
     )
-    return run_host_sandbox_replay_task(
+    return run_host_openclaw_replay_task(
         task=task,
         trace_dir=trace_dir,
         config=config,
-        bundle_dir=bundle_dir,
+        runtime_assets_dir=runtime_assets_dir,
         source_trace=source_trace,
         timing=timing,
         timing_scale=timing_scale,
@@ -2377,7 +2382,7 @@ def _task_trace_dir(config: RunnerConfig, task: TaskDef) -> Path:
     return config.output.trace_root / safe_id
 
 
-# ── Trace export ──────────────────────────────────────────────────
+# 鈹€鈹€ Trace export 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def _reset_task_trace_dir(
     trace_root: Path,
@@ -2444,7 +2449,7 @@ def _export_traces(config: RunnerConfig, report: BatchReport) -> None:
             src = Path(tf_path_str)
             if not src.exists():
                 continue
-            # Collected host-sandbox traces already carry the case label
+            # Collected host-openclaw traces already carry the case label
             # (e.g. <task_id>__<runtime_id>__...jsonl), so only prepend the
             # task id when the basename does not already start with it.  This
             # avoids a redundant "<task_id>_<task_id>__" prefix while keeping
@@ -2464,7 +2469,7 @@ def _export_traces(config: RunnerConfig, report: BatchReport) -> None:
 def collect_traces(config: RunnerConfig) -> BatchReport:
     """Scan trace_root for existing trace files and export them.
 
-    Does not run containers ── only collects traces from previous runs.
+    Does not run containers 鈹€鈹€ only collects traces from previous runs.
     """
     trace_root = config.output.trace_root
     if not trace_root.exists():
@@ -2509,7 +2514,7 @@ def collect_traces(config: RunnerConfig) -> BatchReport:
     return report
 
 
-# ── CLI ───────────────────────────────────────────────────────────
+# 鈹€鈹€ CLI 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def _detect_repo_root() -> Path:
     p = Path(__file__).resolve()
@@ -2546,19 +2551,19 @@ def _apply_runtime_overrides(
     config: RunnerConfig,
     *,
     runtime_mode: str | None,
-    stage2_required: bool | None,
+    ebpf_required: bool | None = None,
 ) -> None:
     if runtime_mode is not None:
         config.runtime.mode = normalize_runtime_mode(runtime_mode)
-    if stage2_required is not None:
-        config.runtime.stage2_required = stage2_required
+    if ebpf_required is not None:
+        config.runtime.ebpf_required = ebpf_required
     elif (
         runtime_mode is not None
-        and normalize_runtime_mode(runtime_mode) == "host-openclaw-sandbox"
+        and normalize_runtime_mode(runtime_mode) == HOST_OPENCLAW_MODE
     ):
-        # host-openclaw-sandbox with managed-wrapper backend provides
+        # host-openclaw with managed-wrapper backend provides
         # full eBPF clause telemetry via the launcher lifecycle.
-        config.runtime.stage2_required = True
+        config.runtime.ebpf_required = True
 
 
 def _apply_batch_overrides(
@@ -2616,12 +2621,16 @@ def main() -> None:
             help=f"Path to config YAML (default: {default_config})",
         )
 
-    # ── prepare ──
-    prep = sub.add_parser("prepare", help="Build the runtime bundle")
+    # 鈹€鈹€ prepare 鈹€鈹€
+    prep = sub.add_parser("prepare", help="Build the runtime assets")
     add_config_arg(prep)
-    prep.add_argument("--bundle-dir", default=None, help="Override bundle output directory")
+    prep.add_argument(
+        "--runtime-assets-dir",
+        default=None,
+        help="Override runtime-assets output directory",
+    )
 
-    # ── run ──
+    # 鈹€鈹€ run 鈹€鈹€
     run_p = sub.add_parser("run", help="Run swe-rebench tasks")
     add_config_arg(run_p)
     run_p.add_argument("--prepare", action="store_true", dest="do_prepare",
@@ -2670,19 +2679,18 @@ def main() -> None:
                        help="Run only tasks whose repo field matches this value")
     run_p.add_argument("--runtime-mode", default=None,
                        choices=(
-                           "container-openclaw",
-                           "host-openclaw-sandbox",
-                           "host-openclaw-container",
+                           CONTAINER_OPENCLAW_MODE,
+                           HOST_OPENCLAW_MODE,
                        ),
                        help="Override runtime mode from config")
     run_p.add_argument(
-        "--stage2-required",
+        "--ebpf-required",
         action=argparse.BooleanOptionalAction,
         default=None,
         help=(
-            "Require Stage-2 eBPF clause telemetry. Defaults to true when "
-            "--runtime-mode host-openclaw-sandbox is supplied; use "
-            "--no-stage2-required for an explicit best-effort run."
+            "Require eBPF exec-clause telemetry. Defaults to true when "
+            "--runtime-mode host-openclaw is supplied; use "
+            "--no-ebpf-required for an explicit best-effort run."
         ),
     )
     run_p.add_argument("--export", action="store_true",
@@ -2696,7 +2704,7 @@ def main() -> None:
         help="Print the complete report JSON to stdout (it is always saved to report_path)",
     )
 
-    # ── collect ──
+    # 鈹€鈹€ collect 鈹€鈹€
     col = sub.add_parser("collect", help="Collect and export traces from previous runs")
     add_config_arg(col)
     col.add_argument("--export-dir", default=None, help="Override flat export directory")
@@ -2707,10 +2715,10 @@ def main() -> None:
         help="Print the complete report JSON to stdout (it is always saved to report_path)",
     )
 
-    # ── replay ──
+    # 鈹€鈹€ replay 鈹€鈹€
     replay = sub.add_parser(
         "replay",
-        help="Replay one SWE-Rebench v6 trace through host-openclaw-sandbox",
+        help="Replay one SWE-Rebench v6 trace through host-openclaw",
     )
     add_config_arg(replay)
     replay.add_argument("--trace", required=True, help="Source v6 JSONL file or trace directory")
@@ -2719,11 +2727,19 @@ def main() -> None:
     replay.add_argument("--task-id", required=True, help="SWE-Rebench instance ID")
     replay.add_argument("--timing", choices=("exact", "scale", "none"), default="exact")
     replay.add_argument("--timing-scale", type=float, default=1.0)
-    replay.add_argument("--runtime-mode", default="host-openclaw-sandbox", choices=("host-openclaw-sandbox", "host-openclaw-container"))
-    replay.add_argument("--stage2-required", action=argparse.BooleanOptionalAction, default=True)
+    replay.add_argument(
+        "--runtime-mode",
+        default=HOST_OPENCLAW_MODE,
+        choices=(HOST_OPENCLAW_MODE,),
+    )
+    replay.add_argument(
+        "--ebpf-required",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     replay.add_argument("--prepare", action="store_true", dest="do_prepare")
 
-    # ── cleanup ──
+    # 鈹€鈹€ cleanup 鈹€鈹€
     cln = sub.add_parser("cleanup", help="(No-op: containers are auto-removed)")
     add_config_arg(cln)
 
@@ -2738,17 +2754,17 @@ def main() -> None:
     config = RunnerConfig.from_yaml(config_path, repo_root=repo_root)
 
     if args.command == "prepare":
-        bundle_dir = Path(args.bundle_dir) if args.bundle_dir else None
-        if bundle_dir is not None:
-            config.bundle.output_dir = str(bundle_dir)
-        build_bundle(config)
+        runtime_assets_dir = Path(args.runtime_assets_dir) if args.runtime_assets_dir else None
+        if runtime_assets_dir is not None:
+            config.runtime_assets.output_dir = str(runtime_assets_dir)
+        build_runtime_assets(config)
         return
 
     if args.command == "run":
         _apply_runtime_overrides(
             config,
             runtime_mode=args.runtime_mode,
-            stage2_required=args.stage2_required,
+            ebpf_required=args.ebpf_required,
         )
         try:
             _apply_batch_overrides(
@@ -2760,15 +2776,15 @@ def main() -> None:
         except ValueError as exc:
             parser.error(str(exc))
 
-        # Build bundle if requested or stale.  The plugin runtime lives in
+        # Build runtime assets if requested or stale. The plugin runtime lives in
         # ignored dist/ files, so relying on git reset alone is not enough.
-        bundle_dir = repo_root / config.bundle.output_dir
+        runtime_assets_dir = repo_root / config.runtime_assets.output_dir
         should_prepare = args.do_prepare or (
-            not args.dry_run and bundle_needs_rebuild(config, bundle_dir)
+            not args.dry_run and runtime_assets_need_rebuild(config, runtime_assets_dir)
         )
         if should_prepare:
-            _log("Preparing runtime bundle...")
-            build_bundle(config)
+            _log("Preparing runtime assets...")
+            build_runtime_assets(config)
 
         # Load and select tasks
         tasks = _load_tasks(args, repo_root)
@@ -2819,7 +2835,7 @@ def main() -> None:
 
         _require_llm_api_key(config)
 
-        report = run_batch(config, tasks, bundle_dir, export_after=args.export)
+        report = run_batch(config, tasks, runtime_assets_dir, export_after=args.export)
 
         _print_report_json(report, enabled=args.print_report_json)
         if report.failed > 0:
@@ -2829,14 +2845,14 @@ def main() -> None:
         _apply_runtime_overrides(
             config,
             runtime_mode=args.runtime_mode,
-            stage2_required=args.stage2_required,
+            ebpf_required=args.ebpf_required,
         )
         if args.timing_scale < 0:
             parser.error("--timing-scale must be >= 0")
-        bundle_dir = repo_root / config.bundle.output_dir
-        if args.do_prepare or bundle_needs_rebuild(config, bundle_dir):
-            _log("Preparing runtime bundle...")
-            build_bundle(config)
+        runtime_assets_dir = repo_root / config.runtime_assets.output_dir
+        if args.do_prepare or runtime_assets_need_rebuild(config, runtime_assets_dir):
+            _log("Preparing runtime assets...")
+            build_runtime_assets(config)
         tasks = _load_tasks(args, repo_root)
         selected = [task for task in tasks if task.instance_id == args.task_id]
         if len(selected) != 1:
@@ -2846,7 +2862,7 @@ def main() -> None:
         result = run_replay(
             config,
             selected[0],
-            bundle_dir,
+            runtime_assets_dir,
             _resolve_path(args.trace, repo_root),
             timing=args.timing,
             timing_scale=args.timing_scale,

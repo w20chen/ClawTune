@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://openclaw.ai/schemas/scheduler/tool-completed-event.schema.json",
+  "$id": "https://openclaw.ai/schemas/clawtune/tool-completed-event.schema.json",
   "unevaluatedProperties": false,
   "allOf": [
     {"$ref": "common.schema.json"},
@@ -18,7 +18,7 @@
         "tool_body_ns": {"type": ["string", "null"], "pattern": "^[0-9]+$"},
         "decision_duration_ns": {"type": ["string", "null"], "pattern": "^[0-9]+$"},
         "completion_duration_ns": {"type": ["string", "null"], "pattern": "^[0-9]+$"},
-        "scheduler_overhead_ns": {"type": ["string", "null"], "pattern": "^[0-9]+$"},
+        "sidecar_overhead_ns": {"type": ["string", "null"], "pattern": "^[0-9]+$"},
         "succeeded": {"type": "boolean"},
         "error_type": {"type": ["string", "null"]},
         "error_digest": {"type": ["string", "null"]},

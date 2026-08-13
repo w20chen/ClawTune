@@ -10,17 +10,17 @@ The root `.env` controls the long-running sidecar. Useful settings are:
 
 | Setting | Default | When to change it |
 | --- | --- | --- |
-| `AGENT_SCHEDULER_TRACE_DIR` | `traces` | Move OpenClaw trace output |
-| `AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL` | DeepSeek API | Use another OpenAI-compatible provider |
-| `AGENT_SCHEDULER_TOKEN` | unset | Require local sidecar authentication |
+| `CLAWTUNE_TRACE_DIR` | `traces` | Move OpenClaw trace output |
+| `CLAWTUNE_LLM_UPSTREAM_BASE_URL` | DeepSeek API | Use another OpenAI-compatible provider |
+| `CLAWTUNE_TOKEN` | unset | Require local sidecar authentication |
 
 For a provider other than the `.env` default, point the proxy at its upstream
 base URL in `.env` and restart the sidecar:
 
 ```bash
-AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL=https://openrouter.ai/api/v1
-AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL=your-visible-model
-AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL=provider/real-model
+CLAWTUNE_LLM_UPSTREAM_BASE_URL=https://openrouter.ai/api/v1
+CLAWTUNE_LLM_PROXY_EXPOSE_MODEL=your-visible-model
+CLAWTUNE_LLM_PROXY_UPSTREAM_MODEL=provider/real-model
 ```
 
 Only use the explicit upstream-key override when the proxy must intentionally
@@ -77,10 +77,10 @@ report on stdout.
 ### Deep Research Bench
 
 Setup also copies `deep_research_bench/config.example.yaml`. The Deep Research
-Bench config keeps the same `llm`, `batch`, `output`, and `bundle` sections,
+Bench config keeps the same `llm`, `batch`, `output`, and `runtime_assets` sections,
 but differs from SWE-Rebench in a few ways:
 
-- `runtime.stage2_required` defaults to `false`. Research tools
+- `runtime.ebpf_required` defaults to `false`. Research tools
   (web/fetch/read/edit) never produce eBPF exec-clause telemetry.
 - `runtime.gate_required` (default `true`) is a **relaxed** required-telemetry
   gate: a task fails only when its trace has no LLM span or no
@@ -97,7 +97,7 @@ but differs from SWE-Rebench in a few ways:
 
 ```yaml
 runtime:
-  stage2_required: false
+  ebpf_required: false
   gate_required: true
 sandbox:
   image: "python:3.11-slim"
@@ -158,8 +158,8 @@ that hierarchy; it stores one flat observation corpus shared by all three
 algorithms. Files named `call_*.json` are per-call eBPF telemetry evidence
 used to update the KBs; they are not additional knowledge bases.
 
-Keep the host-sandbox runtime, eBPF requirement, privileged cgroup access, and
-bundle paths at their defaults. The unified benchmark command defaults to
+Keep the host-openclaw runtime, eBPF requirement, privileged cgroup access, and
+runtime asset paths at their defaults. The unified benchmark command defaults to
 `linux/amd64` on Kunpeng and leaves the platform native on x86. Export
 `SWE_REBENCH_DOCKER_PLATFORM` only when an explicit override is needed; an
 environment value takes priority over `docker.platform` in this file.
@@ -169,7 +169,7 @@ OpenClaw 2026.7.x does not accept an
 key out of OpenClaw JSON and passes the selected platform to its Docker calls
 and child environment instead. Setup validates the resulting OpenClaw config.
 
-The API key file, `.env`, generated runtime bundle, traces, and reports are
+The API key file, `.env`, generated runtime assets, traces, and reports are
 Git-ignored.
 
 ## OpenClaw Plugin
@@ -185,13 +185,13 @@ Setup installs and patches the plugin with:
 - automatic sidecar startup with an empty `sidecarCommand`.
 
 The permission is deliberately placed beside `config` under the
-`agent-scheduler` plugin entry, not inside the plugin-specific configuration:
+`clawtune` plugin entry, not inside the plugin-specific configuration:
 
 ```json
 {
   "plugins": {
     "entries": {
-      "agent-scheduler": {
+      "clawtune": {
         "hooks": {"allowConversationAccess": true},
         "config": {"endpoint": "http://127.0.0.1:8765"}
       }
@@ -223,12 +223,12 @@ terminal.
 
 The default sidecar startup window is 60 seconds so a Kunpeng cold start and
 an interactive sudo prompt do not consume the old 15-second limit. Advanced
-deployments can set `plugins.entries.agent-scheduler.config.sidecarStartupTimeoutMs`
+deployments can set `plugins.entries.clawtune.config.sidecarStartupTimeoutMs`
 between 1,000 and 600,000 milliseconds; the pre-agent hook always receives an
 additional five-second margin.
 
 OpenClaw provider traffic should use `http://127.0.0.1:8765/v1`. The plugin's
-full schema is in `packages/openclaw-plugin/openclaw.plugin.json`; values not
+full schema is in `packages/clawtune-plugin/openclaw.plugin.json`; values not
 covered here are advanced/developer options.
 
 ## KB Repo Namespace
@@ -237,17 +237,17 @@ The scheduler keeps per-repository tool-resource knowledge under a `repo` key
 (the KB `repo` layer). Each OpenClaw event already carries a `repo` field; the
 plugin resolves that value once per runtime with this priority:
 
-1. `CLAW_REPO_KEY` environment variable — explicit override. The SWE-Rebench
+1. `CLAWTUNE_REPO_KEY` environment variable — explicit override. The SWE-Rebench
    runner injects this per task (`task_repo_key`), so benchmark runs keep their
    exact per-repository namespaces and never hit the derivation path.
 2. Plugin config `repo`
-   (`plugins.entries.agent-scheduler.config.repo`, or
-   `OPENCLAW_AGENT_SCHEDULER_REPO` env) — explicit user override for a gateway.
+   (`plugins.entries.clawtune.config.repo`, or
+   `CLAWTUNE_REPO` env) — explicit user override for a gateway.
 3. Auto-derived from the process working directory:
    - git remote `origin` → `owner/repo` (handles HTTPS, SSH, `ssh://`, `git://`
      and scp-like URLs, preserves subgroup paths);
    - otherwise the working-directory basename (non-git workspace).
-4. `null` — the sidecar falls back to `AGENT_SCHEDULER_TOOL_RESOURCE_REPO`
+4. `null` — the sidecar falls back to `CLAWTUNE_TOOL_RESOURCE_REPO`
    (default `openclaw`).
 
 Normal interactive use therefore needs no configuration: start the Gateway from
@@ -270,7 +270,7 @@ repositories), set the plugin config or environment variable:
 {
   "plugins": {
     "entries": {
-      "agent-scheduler": {
+      "clawtune": {
         "config": {"repo": "acme/widgets"}
       }
     }
@@ -279,6 +279,6 @@ repositories), set the plugin config or environment variable:
 ```
 
 The value is fixed for the lifetime of the Gateway process. Use a separate
-Gateway process (with its own working directory, `repo`, or `CLAW_REPO_KEY`) to
+Gateway process (with its own working directory, `repo`, or `CLAWTUNE_REPO_KEY`) to
 keep distinct repositories in separate namespaces, or let the sidecar default
-`AGENT_SCHEDULER_TOOL_RESOURCE_REPO` absorb everything as a single fallback.
+`CLAWTUNE_TOOL_RESOURCE_REPO` absorb everything as a single fallback.

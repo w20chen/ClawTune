@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://openclaw.ai/schemas/scheduler/execution-registration.schema.json",
+  "$id": "https://openclaw.ai/schemas/clawtune/execution-registration.schema.json",
   "type": "object",
   "required": [
     "execution_id",

@@ -18,12 +18,12 @@ from swe_rebench.docker import (
     _container_tracefs_volumes,
     local_image_available,
 )
-from swe_rebench.host_sandbox import (
+from swe_rebench.host_openclaw import (
     KnowledgeBaseSyncError,
     _SANDBOX_TASK_PATH,
     _cleanup_openclaw_sandbox_containers,
     _cleanup_runtime_artifacts,
-    _collect_runtime_stage2_artifacts,
+    _collect_runtime_ebpf_artifacts,
     _configure_openclaw,
     _openclaw_agent_argv,
     _openclaw_uses_agent_flag,
@@ -31,14 +31,14 @@ from swe_rebench.host_sandbox import (
     _ensure_openclaw_sandbox_image,
     _export_testbed_from_image,
     _ensure_plugin_built,
-    _install_sandbox_launcher,
+    _install_sandbox_runtime,
     _make_sandbox_workspace_writable,
     _openclaw_config,
     _openclaw_env,
     _prepare_batch_tool_resource_kb,
     _publish_tool_resource_kb,
     _run_openclaw_agent,
-    run_host_sandbox_task,
+    run_host_openclaw_task,
     _reset_directory,
     _sandbox_container_prefix,
     _seed_runtime_tool_resource_kb,
@@ -57,10 +57,10 @@ from swe_rebench.prepare import (
     _build_plugin_dist,
     _restore_sudo_user_ownership,
     _write_entrypoint,
-    _write_bundle_fingerprint,
+    _write_runtime_assets_fingerprint,
     _write_plugin_config,
     _write_setup_script,
-    bundle_needs_rebuild,
+    runtime_assets_need_rebuild,
 )
 from swe_rebench.sandbox import sandbox_container_prefix
 from swe_rebench.task_source import (
@@ -487,7 +487,7 @@ def test_inspect_trace_summarizes_cgroup_resource_coverage(tmp_path: Path) -> No
                 "record_type": "span_end",
                 "kind": "tool",
                 "name": "exec",
-                "execution": {"mode": "launcher", "cgroup_path": "/sys/fs/cgroup/claw/exec-1"},
+                "execution": {"mode": "launcher", "cgroup_path": "/sys/fs/cgroup/clawtune/exec-1"},
                 "resources": {
                     "attribution_status": "attributed",
                     "scope": "cgroup",
@@ -605,10 +605,10 @@ def test_inspect_trace_does_not_treat_result_code_as_exit_code(tmp_path: Path) -
 
 
 def test_entrypoint_uses_runtime_llm_env_and_writes_task_manifest() -> None:
-    assert 'AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL="${LLM_UPSTREAM_BASE_URL:-__UPSTREAM__}"' in _ENTRYPOINT_TEMPLATE
-    assert 'AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY="${LLM_API_KEY:-__LLM_KEY__}"' in _ENTRYPOINT_TEMPLATE
+    assert 'CLAWTUNE_LLM_UPSTREAM_BASE_URL="${LLM_UPSTREAM_BASE_URL:-__UPSTREAM__}"' in _ENTRYPOINT_TEMPLATE
+    assert 'CLAWTUNE_LLM_UPSTREAM_API_KEY="${LLM_API_KEY:-__LLM_KEY__}"' in _ENTRYPOINT_TEMPLATE
     assert (
-        'AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED="${AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED:-false}"'
+        'CLAWTUNE_TOOL_RESOURCE_EBPF_REQUIRED="${CLAWTUNE_TOOL_RESOURCE_EBPF_REQUIRED:-false}"'
         in _ENTRYPOINT_TEMPLATE
     )
     assert 'export OPENCLAW_MODEL_REF="${OPENCLAW_MODEL_REF:-__MODEL_FULL__}"' in _ENTRYPOINT_TEMPLATE
@@ -627,20 +627,20 @@ def test_entrypoint_uses_runtime_llm_env_and_writes_task_manifest() -> None:
 
 def test_swe_rebench_plugin_config_uses_managed_wrapper_cgroup() -> None:
     assert _PLUGIN_CONFIG["executionBackend"] == "managed-wrapper"
-    assert _PLUGIN_CONFIG["launcherPath"] == "/opt/claw/bin/claw-launch"
+    assert _PLUGIN_CONFIG["launcherPath"] == "/opt/clawtune/bin/clawtune-launch"
     assert _PLUGIN_CONFIG["enableCgroup"] is True
     assert _PLUGIN_CONFIG["reportTimeoutMs"] == 10000
     assert _PLUGIN_CONFIG["securityBoundaryAccepted"] is True
-    assert _PLUGIN_CONFIG["recordRawTrace"] is False
+    assert _PLUGIN_CONFIG["trace"]["include_raw_events"] is False
     assert _PLUGIN_CONFIG["trace"]["include_raw_events"] is False
 
 
 def test_entrypoint_installs_stable_launcher_path() -> None:
-    assert "cat > /opt/claw/bin/claw-launch" in _ENTRYPOINT_TEMPLATE
-    assert 'export CLAW_LAUNCHER_PYTHONPATH="/claw/scheduler/src"' in _ENTRYPOINT_TEMPLATE
-    assert "python3 -m agent_scheduler.launcher" in _ENTRYPOINT_TEMPLATE
+    assert "cat > /opt/clawtune/bin/clawtune-launch" in _ENTRYPOINT_TEMPLATE
+    assert 'export CLAWTUNE_LAUNCHER_PYTHONPATH="/clawtune/sidecar/src"' in _ENTRYPOINT_TEMPLATE
+    assert "python3 -m clawtune_sidecar.launcher" in _ENTRYPOINT_TEMPLATE
     assert 'for PIP_NAME in pip pip3; do' in _ENTRYPOINT_TEMPLATE
-    assert 'exec "$CLAW_TASK_PYTHON" -m pip "$@"' in _ENTRYPOINT_TEMPLATE
+    assert 'exec "$CLAWTUNE_TASK_PYTHON" -m pip "$@"' in _ENTRYPOINT_TEMPLATE
 
 
 def test_setup_installs_scheduler_runtime_dependencies() -> None:
@@ -657,12 +657,12 @@ def test_setup_installs_scheduler_runtime_dependencies() -> None:
     assert "python3-bpfcc bpfcc-tools libbpfcc libelf1" in _SETUP_TEMPLATE
     assert "clang llvm kmod" in _SETUP_TEMPLATE
     assert 'linux-headers-"$(uname -r)"' in _SETUP_TEMPLATE
-    assert "/tmp/.claw_bcc_pythonpath" in _SETUP_TEMPLATE
+    assert "/tmp/.clawtune_bcc_pythonpath" in _SETUP_TEMPLATE
     assert "import bcc" in _SETUP_TEMPLATE
     assert "ensure_compatible_adapter" in _SETUP_TEMPLATE
     assert "with MvdanClient(built_path)" in _SETUP_TEMPLATE
     assert 'SETUP_REVISION="2:mvdan-protocol-3:mvdan-v3.13.1"' in _SETUP_TEMPLATE
-    assert 'MVDAN_STATUS="/tmp/.claw_mvdan_adapter_status.json"' in _SETUP_TEMPLATE
+    assert 'MVDAN_STATUS="/tmp/.clawtune_mvdan_adapter_status.json"' in _SETUP_TEMPLATE
     assert 'mv -f "$SETUP_DONE.$$" "$SETUP_DONE"' in _SETUP_TEMPLATE
     assert 'touch "$SETUP_DONE"' not in _SETUP_TEMPLATE
     assert _SETUP_TEMPLATE.index("# Detect python:") < _SETUP_TEMPLATE.index(
@@ -685,13 +685,13 @@ def test_setup_repairs_libelf_payload_removed_from_minimized_apt_image() -> None
     assert "_claw_apt install -y -q --reinstall libelf1" in _SETUP_TEMPLATE
     assert "libelf1 reinstall repaired the BCC runtime" in _SETUP_TEMPLATE
     assert "BCC remains unavailable after container repair probes" in _SETUP_TEMPLATE
-    assert "libelf1 reinstall failed (Stage-2 will remain unavailable)" in _SETUP_TEMPLATE
+    assert "libelf1 reinstall failed (eBPF telemetry will remain unavailable)" in _SETUP_TEMPLATE
 
 
 def test_container_setup_bounds_and_exposes_apt_network_work() -> None:
     from swe_rebench.prepare import _SETUP_TEMPLATE
 
-    assert "CLAW_SETUP_COMMAND_TIMEOUT_SECONDS:-300" in _SETUP_TEMPLATE
+    assert "CLAWTUNE_SETUP_COMMAND_TIMEOUT_SECONDS:-300" in _SETUP_TEMPLATE
     assert "Acquire::http::Timeout=20" in _SETUP_TEMPLATE
     assert "Acquire::https::Timeout=20" in _SETUP_TEMPLATE
     assert "refreshing apt metadata" in _SETUP_TEMPLATE
@@ -705,22 +705,22 @@ def test_container_bcc_repair_scopes_system_libstdcxx_to_sidecar() -> None:
     assert '*"libstdc++.so.6"*GLIBCXX_*"not found"*)' in _SETUP_TEMPLATE
     assert "ldconfig -p" in _SETUP_TEMPLATE
     assert '$1 == "libstdc++.so.6"' in _SETUP_TEMPLATE
-    assert "/tmp/.claw_bcc_ld_preload" in _SETUP_TEMPLATE
-    assert 'rm -f -- "$_CLAW_BCC_PRELOAD_FILE" || true' in _SETUP_TEMPLATE
-    assert 'chmod 0600 "$_CLAW_BCC_PRELOAD_FILE"' in _SETUP_TEMPLATE
+    assert "/tmp/.clawtune_bcc_ld_preload" in _SETUP_TEMPLATE
+    assert 'rm -f -- "$_CLAWTUNE_BCC_PRELOAD_FILE" || true' in _SETUP_TEMPLATE
+    assert 'chmod 0600 "$_CLAWTUNE_BCC_PRELOAD_FILE"' in _SETUP_TEMPLATE
     assert "sidecar deps and BCC OK with system libstdc++" in _SETUP_TEMPLATE
-    assert "disabling the Stage-2 preload" in _SETUP_TEMPLATE
+    assert "disabling the eBPF preload" in _SETUP_TEMPLATE
     assert "export LD_PRELOAD" not in _SETUP_TEMPLATE
     assert "LD_LIBRARY_PATH" not in _SETUP_TEMPLATE
 
-    assert "CLAW_BCC_RUNTIME_ENV=()" in _ENTRYPOINT_TEMPLATE
+    assert "CLAWTUNE_BCC_RUNTIME_ENV=()" in _ENTRYPOINT_TEMPLATE
     assert _ENTRYPOINT_TEMPLATE.count(
-        'env "${CLAW_BCC_RUNTIME_ENV[@]}"'
+        'env "${CLAWTUNE_BCC_RUNTIME_ENV[@]}"'
     ) == 2
     assert '"bcc_ld_preload": os.environ.get("LD_PRELOAD")' in _ENTRYPOINT_TEMPLATE
     assert "export LD_PRELOAD" not in _ENTRYPOINT_TEMPLATE
     launcher = _ENTRYPOINT_TEMPLATE.split(
-        "cat > /opt/claw/bin/claw-launch <<'EOF_LAUNCHER'\n", 1
+        "cat > /opt/clawtune/bin/clawtune-launch <<'EOF_LAUNCHER'\n", 1
     )[1].split("\nEOF_LAUNCHER", 1)[0]
     assert "LD_PRELOAD" not in launcher
 
@@ -767,11 +767,11 @@ def test_docker_runner_config_sets_sandbox_container_prefix_placeholder(tmp_path
     assert agent_defaults["workspace"] == "/testbed"
     assert agent_defaults["repoRoot"] == "/testbed"
     assert "tools" not in agent_defaults
-    assert parsed["tools"]["exec"]["pathPrepend"][0] == "/opt/claw/bin"
+    assert parsed["tools"]["exec"]["pathPrepend"][0] == "/opt/clawtune/bin"
     assert docker_cfg["containerPrefix"] == "__SANDBOX_CONTAINER_PREFIX__"
-    assert parsed["env"]["CLAW_EXEC_WORKDIR"] == "/testbed"
-    assert parsed["env"]["CLAW_SCHEDULER_ENDPOINT"] == "http://127.0.0.1:8765"
-    plugin_entry = parsed["plugins"]["entries"]["agent-scheduler"]
+    assert parsed["env"]["CLAWTUNE_EXEC_WORKDIR"] == "/testbed"
+    assert parsed["env"]["CLAWTUNE_ENDPOINT"] == "http://127.0.0.1:8765"
+    plugin_entry = parsed["plugins"]["entries"]["clawtune"]
     assert plugin_entry["hooks"] == {"allowConversationAccess": True}
     assert "hooks" not in plugin_entry["config"]
     assert "__SANDBOX_CONTAINER_PREFIX__" in _ENTRYPOINT_TEMPLATE
@@ -784,28 +784,28 @@ def test_openclaw_config_writer_emits_expected_config(tmp_path: Path) -> None:
     generated = json.loads(
         (tmp_path / "openclaw-config.json5").read_text(encoding="utf-8")
     )
-    plugin = generated["plugins"]["entries"]["agent-scheduler"]
+    plugin = generated["plugins"]["entries"]["clawtune"]
 
     assert plugin["enabled"] is True
     assert plugin["config"] == _PLUGIN_CONFIG
 
 
 def test_entrypoint_exports_container_runtime_identity_for_launcher() -> None:
-    assert 'export CLAW_SCHEDULER_ENDPOINT="http://127.0.0.1:$SIDECAR_PORT"' in _ENTRYPOINT_TEMPLATE
-    assert 'export CLAW_EXEC_WORKDIR="/testbed"' in _ENTRYPOINT_TEMPLATE
-    assert 'export CLAW_TASK_PYTHON="$_CLW_PYTHON"' in _ENTRYPOINT_TEMPLATE
-    assert 'export PATH="/opt/claw/bin:$(dirname "$CLAW_TASK_PYTHON"):$PATH"' in _ENTRYPOINT_TEMPLATE
-    assert "AGENT_SCHEDULER_SANDBOX_CONTAINER_ID" in _ENTRYPOINT_TEMPLATE
-    assert "CLAW_SANDBOX_CONTAINER_ID" in _ENTRYPOINT_TEMPLATE
-    assert '"container_id": os.environ.get("AGENT_SCHEDULER_SANDBOX_CONTAINER_ID")' in _ENTRYPOINT_TEMPLATE
+    assert 'export CLAWTUNE_ENDPOINT="http://127.0.0.1:$SIDECAR_PORT"' in _ENTRYPOINT_TEMPLATE
+    assert 'export CLAWTUNE_EXEC_WORKDIR="/testbed"' in _ENTRYPOINT_TEMPLATE
+    assert 'export CLAWTUNE_TASK_PYTHON="$_CLW_PYTHON"' in _ENTRYPOINT_TEMPLATE
+    assert 'export PATH="/opt/clawtune/bin:$(dirname "$CLAWTUNE_TASK_PYTHON"):$PATH"' in _ENTRYPOINT_TEMPLATE
+    assert "CLAWTUNE_SANDBOX_CONTAINER_ID" in _ENTRYPOINT_TEMPLATE
+    assert "CLAWTUNE_SANDBOX_CONTAINER_ID" in _ENTRYPOINT_TEMPLATE
+    assert '"container_id": os.environ.get("CLAWTUNE_SANDBOX_CONTAINER_ID")' in _ENTRYPOINT_TEMPLATE
     assert "tool_resource_preflight.json" in _ENTRYPOINT_TEMPLATE
-    assert '"stage2_ready"' in _ENTRYPOINT_TEMPLATE
+    assert '"ebpf_ready"' in _ENTRYPOINT_TEMPLATE
     assert '"clang": shutil.which("clang")' in _ENTRYPOINT_TEMPLATE
     assert '"tracefs": tracefs' in _ENTRYPOINT_TEMPLATE
     assert '"mvdan_adapter": mvdan_adapter' in _ENTRYPOINT_TEMPLATE
     assert "with mvdan_client.MvdanClient(binary_path)" in _ENTRYPOINT_TEMPLATE
     assert 'mvdan_adapter.get("ok") is True' in _ENTRYPOINT_TEMPLATE
-    assert "required Stage-2 preflight failed" in _ENTRYPOINT_TEMPLATE
+    assert "required eBPF preflight failed" in _ENTRYPOINT_TEMPLATE
     assert 'candidate / "events/sched/sched_process_exit/id"' in _ENTRYPOINT_TEMPLATE
     assert 'tracefs.get("sched_process_exit") is True' in _ENTRYPOINT_TEMPLATE
     assert 'tracefs.get("kprobe_events_writable") is True' in _ENTRYPOINT_TEMPLATE
@@ -813,10 +813,10 @@ def test_entrypoint_exports_container_runtime_identity_for_launcher() -> None:
         "print(json.dumps(preflight, indent=2))"
     )
     required_gate = _ENTRYPOINT_TEMPLATE.index(
-        'case "${AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED,,}"'
+        'case "${CLAWTUNE_TOOL_RESOURCE_EBPF_REQUIRED,,}"'
     )
     sidecar_start = _ENTRYPOINT_TEMPLATE.index(
-        '"$_CLW_PYTHON" -m agent_scheduler.main'
+        '"$_CLW_PYTHON" -m clawtune_sidecar.main'
     )
     assert preflight_end < required_gate < sidecar_start
 
@@ -824,67 +824,80 @@ def test_entrypoint_exports_container_runtime_identity_for_launcher() -> None:
 def test_runner_config_enables_complete_cgroup_sampling() -> None:
     config = RunnerConfig.from_yaml("swe_rebench/config.yaml")
 
-    assert config.runtime.mode == "host-openclaw-sandbox"
-    assert config.runtime.stage2_required is True
+    assert config.runtime.mode == "host-openclaw"
+    assert config.runtime.ebpf_required is True
     assert config.docker.privileged is True
     assert config.docker.cgroupns_mode == "host"
     assert config.docker.cgroup_mount_rw is True
     assert config.docker.cgroup_required is True
 
 
-def test_runner_config_parses_host_openclaw_sandbox_mode(tmp_path: Path) -> None:
+def test_runner_config_parses_host_openclaw_mode(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         """
 runtime:
-  mode: "host-openclaw-sandbox"
+  mode: "host-openclaw"
 """,
         encoding="utf-8",
     )
 
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
 
-    assert config.runtime.mode == "host-openclaw-sandbox"
+    assert config.runtime.mode == "host-openclaw"
 
 
-def test_runner_normalizes_host_openclaw_container_alias(tmp_path: Path) -> None:
+def test_runner_applies_host_openclaw_defaults(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        'runtime:\n  mode: "host-openclaw-container"\n',
+        'runtime:\n  mode: "host-openclaw"\n',
         encoding="utf-8",
     )
 
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
-    assert config.runtime.mode == "host-openclaw-sandbox"
+    assert config.runtime.mode == "host-openclaw"
 
-    config.runtime.stage2_required = False
+    config.runtime.ebpf_required = False
     _apply_runtime_overrides(
         config,
-        runtime_mode="host-openclaw-container",
-        stage2_required=None,
+        runtime_mode="host-openclaw",
+        ebpf_required=None,
     )
-    assert config.runtime.mode == "host-openclaw-sandbox"
-    assert config.runtime.stage2_required is True
+    assert config.runtime.mode == "host-openclaw"
+    assert config.runtime.ebpf_required is True
 
 
-def test_cli_host_sandbox_override_requires_stage2_by_default(tmp_path: Path) -> None:
+def test_runner_reads_ebpf_required(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "runtime:\n"
+        "  ebpf_required: true\n",
+        encoding="utf-8",
+    )
+
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+
+    assert config.runtime.ebpf_required is True
+
+
+def test_cli_host_openclaw_override_requires_ebpf_by_default(tmp_path: Path) -> None:
     config = RunnerConfig.from_yaml("swe_rebench/config.yaml", repo_root=tmp_path)
 
     _apply_runtime_overrides(
         config,
-        runtime_mode="host-openclaw-sandbox",
-        stage2_required=None,
+        runtime_mode="host-openclaw",
+        ebpf_required=None,
     )
 
-    assert config.runtime.mode == "host-openclaw-sandbox"
-    assert config.runtime.stage2_required is True
+    assert config.runtime.mode == "host-openclaw"
+    assert config.runtime.ebpf_required is True
 
     _apply_runtime_overrides(
         config,
-        runtime_mode="host-openclaw-sandbox",
-        stage2_required=False,
+        runtime_mode="host-openclaw",
+        ebpf_required=False,
     )
-    assert config.runtime.stage2_required is False
+    assert config.runtime.ebpf_required is False
 
 
 def test_cli_task_timeout_override(tmp_path: Path) -> None:
@@ -955,17 +968,17 @@ runtime:
         raise AssertionError("expected ValueError")
 
 
-def test_run_one_dispatches_to_host_sandbox_runtime(monkeypatch, tmp_path: Path) -> None:
+def test_run_one_dispatches_to_host_openclaw_runtime(monkeypatch, tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         """
 runtime:
-  mode: "host-openclaw-sandbox"
+  mode: "host-openclaw"
 output:
   trace_root: "traces"
   report_path: "report.json"
-bundle:
-  output_dir: "bundle"
+runtime_assets:
+  output_dir: "assets"
 """,
         encoding="utf-8",
     )
@@ -989,7 +1002,7 @@ bundle:
 
     import swe_rebench.runner as runner
 
-    monkeypatch.setattr(runner, "run_host_sandbox_task", fake_host_runner)
+    monkeypatch.setattr(runner, "run_host_openclaw_task", fake_host_runner)
     monkeypatch.setattr(
         runner,
         "run_container",
@@ -999,7 +1012,7 @@ bundle:
     result = _run_one(
         client=object(),
         task=task,
-        bundle_dir=tmp_path / "bundle",
+        runtime_assets_dir=tmp_path / "assets",
         trace_dir=trace_dir,
         config=config,
     )
@@ -1017,12 +1030,12 @@ def test_run_one_passes_shared_kb_through_host_runtime_and_publishes(
     config_path.write_text(
         """
 runtime:
-  mode: "host-openclaw-sandbox"
+  mode: "host-openclaw"
 output:
   trace_root: "traces"
   report_path: "report.json"
-bundle:
-  output_dir: "bundle"
+runtime_assets:
+  output_dir: "assets"
 """,
         encoding="utf-8",
     )
@@ -1038,8 +1051,8 @@ bundle:
 
     def fake_host_runner(**kwargs):
         called.update(kwargs)
-        # In host-sandbox mode, _run_one delegates KB seeding to
-        # run_host_sandbox_task (manage_sidecar=True path).  The fake
+        # In host-openclaw mode, _run_one delegates KB seeding to
+        # run_host_openclaw_task (manage_sidecar=True path).  The fake
         # must seed so that the subsequent publish has valid input.
         _seed_runtime_tool_resource_kb(
             trace_dir,
@@ -1056,7 +1069,7 @@ bundle:
 
     import swe_rebench.runner as runner
 
-    monkeypatch.setattr(runner, "run_host_sandbox_task", fake_host_runner)
+    monkeypatch.setattr(runner, "run_host_openclaw_task", fake_host_runner)
     monkeypatch.setattr(
         runner,
         "run_container",
@@ -1066,7 +1079,7 @@ bundle:
     result = _run_one(
         client=object(),
         task=task,
-        bundle_dir=tmp_path / "bundle",
+        runtime_assets_dir=tmp_path / "assets",
         trace_dir=trace_dir,
         config=config,
         shared_kb_dir=shared_kb_dir,
@@ -1089,7 +1102,7 @@ def test_run_one_does_not_publish_when_task_writer_exit_is_unconfirmed(
 ) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "runtime:\n  mode: host-openclaw-sandbox\n"
+        "runtime:\n  mode: host-openclaw\n"
         "output:\n  trace_root: traces\n",
         encoding="utf-8",
     )
@@ -1107,7 +1120,7 @@ def test_run_one_does_not_publish_when_task_writer_exit_is_unconfirmed(
 
     monkeypatch.setattr(
         runner,
-        "run_host_sandbox_task",
+        "run_host_openclaw_task",
         fail_without_confirming_cleanup,
     )
 
@@ -1115,7 +1128,7 @@ def test_run_one_does_not_publish_when_task_writer_exit_is_unconfirmed(
         _run_one(
             client=object(),
             task=task,
-            bundle_dir=tmp_path / "bundle",
+            runtime_assets_dir=tmp_path / "assets",
             trace_dir=trace_dir,
             config=config,
             shared_kb_dir=shared_kb_dir,
@@ -1128,13 +1141,13 @@ def test_run_one_does_not_publish_when_task_writer_exit_is_unconfirmed(
     }
 
 
-def test_host_sandbox_propagates_unconfirmed_agent_cleanup(
+def test_host_openclaw_propagates_unconfirmed_agent_cleanup(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "runtime:\n  mode: host-openclaw-sandbox\n"
+        "runtime:\n  mode: host-openclaw\n"
         "batch:\n  task_timeout_seconds: 0\n"
         "output:\n  trace_root: traces\n",
         encoding="utf-8",
@@ -1147,7 +1160,7 @@ def test_host_sandbox_propagates_unconfirmed_agent_cleanup(
         "_write_host_tool_resource_preflight",
         "_export_testbed_from_image",
         "_make_sandbox_workspace_writable",
-        "_install_sandbox_launcher",
+        "_install_sandbox_runtime",
         "_write_task_inputs",
         "_ensure_openclaw_sandbox_image",
         "_verify_sandbox_launcher",
@@ -1158,7 +1171,7 @@ def test_host_sandbox_propagates_unconfirmed_agent_cleanup(
     )
     for name in no_op_names:
         monkeypatch.setattr(
-            f"swe_rebench.host_sandbox.{name}",
+            f"swe_rebench.host_openclaw.{name}",
             lambda *_args, **_kwargs: None,
         )
 
@@ -1167,22 +1180,22 @@ def test_host_sandbox_propagates_unconfirmed_agent_cleanup(
             return 0
 
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._start_sidecar",
+        "swe_rebench.host_openclaw._start_sidecar",
         lambda **_kwargs: StoppedSidecar(),
     )
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._run_openclaw_agent",
+        "swe_rebench.host_openclaw._run_openclaw_agent",
         lambda **_kwargs: (_ for _ in ()).throw(
             ContainerCleanupError("agent exit unconfirmed")
         ),
     )
 
     with pytest.raises(ContainerCleanupError, match="agent exit unconfirmed"):
-        run_host_sandbox_task(
+        run_host_openclaw_task(
             task=task,
             trace_dir=trace_dir,
             config=config,
-            bundle_dir=tmp_path / "bundle",
+            runtime_assets_dir=tmp_path / "assets",
         )
 
 
@@ -1192,7 +1205,7 @@ def test_shared_sidecar_trace_snapshot_survives_drain_failure(
 ) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "runtime:\n  mode: host-openclaw-sandbox\n"
+        "runtime:\n  mode: host-openclaw\n"
         "batch:\n  task_timeout_seconds: 0\n"
         "output:\n  trace_root: traces\n",
         encoding="utf-8",
@@ -1203,10 +1216,10 @@ def test_shared_sidecar_trace_snapshot_survives_drain_failure(
     shared_trace_dir = tmp_path / "shared-sidecar"
     shared_trace_dir.mkdir()
 
-    import swe_rebench.host_sandbox as host_sandbox
+    import swe_rebench.host_openclaw as host_openclaw
 
-    workspace = host_sandbox._task_workspace(config, task)
-    runtime_id = host_sandbox._runtime_id(workspace)
+    workspace = host_openclaw._task_workspace(config, task)
+    runtime_id = host_openclaw._runtime_id(workspace)
     source = shared_trace_dir / f"{runtime_id}__session_run.jsonl"
     source.write_bytes(
         b'{"schema_version":6,"record_type":"trace_metadata"}\n'
@@ -1218,7 +1231,7 @@ def test_shared_sidecar_trace_snapshot_survives_drain_failure(
         "_reset_directory",
         "_export_testbed_from_image",
         "_make_sandbox_workspace_writable",
-        "_install_sandbox_launcher",
+        "_install_sandbox_runtime",
         "_write_task_inputs",
         "_verify_sandbox_launcher",
         "_verify_sandbox_task_environment",
@@ -1229,35 +1242,35 @@ def test_shared_sidecar_trace_snapshot_survives_drain_failure(
         "_write_result_summary",
     ):
         monkeypatch.setattr(
-            f"swe_rebench.host_sandbox.{name}",
+            f"swe_rebench.host_openclaw.{name}",
             lambda *_args, **_kwargs: None,
         )
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._ensure_openclaw_sandbox_image",
+        "swe_rebench.host_openclaw._ensure_openclaw_sandbox_image",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._run_openclaw_agent",
+        "swe_rebench.host_openclaw._run_openclaw_agent",
         lambda **_kwargs: 0,
     )
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._drain_runtime",
+        "swe_rebench.host_openclaw._drain_runtime",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             RuntimeError("runtime drain failed")
         ),
     )
     deleted: list[tuple[int, str]] = []
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._delete_runtime_scope",
+        "swe_rebench.host_openclaw._delete_runtime_scope",
         lambda port, identity, **_kwargs: deleted.append((port, identity)),
     )
 
     with pytest.raises(RuntimeError, match="runtime drain failed"):
-        run_host_sandbox_task(
+        run_host_openclaw_task(
             task=task,
             trace_dir=trace_dir,
             config=config,
-            bundle_dir=tmp_path / "bundle",
+            runtime_assets_dir=tmp_path / "assets",
             sidecar_port=19090,
             shared_sidecar_trace_dir=shared_trace_dir,
             manage_sidecar=False,
@@ -1271,7 +1284,7 @@ def test_shared_sidecar_trace_snapshot_survives_drain_failure(
     assert deleted == [(19090, runtime_id)]
 
 
-def test_collect_runtime_stage2_artifacts_copies_only_referenced_clause_files(
+def test_collect_runtime_ebpf_artifacts_copies_only_referenced_clause_files(
     tmp_path: Path,
 ) -> None:
     shared_kb_dir = tmp_path / "shared-kb"
@@ -1327,7 +1340,7 @@ def test_collect_runtime_stage2_artifacts_copies_only_referenced_clause_files(
         )
     trace.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    copied = _collect_runtime_stage2_artifacts(shared_kb_dir, trace_dir)
+    copied = _collect_runtime_ebpf_artifacts(shared_kb_dir, trace_dir)
 
     artifact_dir = trace_dir / "tool-resource"
     assert [path.name for path in copied] == ["exec-good.json"]
@@ -1342,26 +1355,26 @@ def test_collect_runtime_stage2_artifacts_copies_only_referenced_clause_files(
     assert not (artifact_dir / "clause-resource-kb.json").exists()
 
 
-def test_collect_runtime_stage2_artifacts_noop_without_shared_kb(
+def test_collect_runtime_ebpf_artifacts_noop_without_shared_kb(
     tmp_path: Path,
 ) -> None:
     trace_dir = tmp_path / "task-trace"
     trace_dir.mkdir()
     (trace_dir / "runtime.jsonl").write_text('{"x": 1}\n', encoding="utf-8")
 
-    copied = _collect_runtime_stage2_artifacts(None, trace_dir)
+    copied = _collect_runtime_ebpf_artifacts(None, trace_dir)
 
     assert copied == []
     assert not (trace_dir / "tool-resource").exists()
 
 
-def test_shared_sidecar_stage2_artifacts_collected_into_task_trace(
+def test_shared_sidecar_ebpf_artifacts_collected_into_task_trace(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "runtime:\n  mode: host-openclaw-sandbox\n"
+        "runtime:\n  mode: host-openclaw\n"
         "batch:\n  task_timeout_seconds: 0\n"
         "output:\n  trace_root: traces\n",
         encoding="utf-8",
@@ -1374,10 +1387,10 @@ def test_shared_sidecar_stage2_artifacts_collected_into_task_trace(
     shared_kb_dir = tmp_path / "shared-kb"
     shared_kb_dir.mkdir()
 
-    import swe_rebench.host_sandbox as host_sandbox
+    import swe_rebench.host_openclaw as host_openclaw
 
-    workspace = host_sandbox._task_workspace(config, task)
-    runtime_id = host_sandbox._runtime_id(workspace)
+    workspace = host_openclaw._task_workspace(config, task)
+    runtime_id = host_openclaw._runtime_id(workspace)
     artifact = {
         "mode": "clause",
         "schema": "clause_telemetry_v2",
@@ -1423,7 +1436,7 @@ def test_shared_sidecar_stage2_artifacts_collected_into_task_trace(
         "_reset_directory",
         "_export_testbed_from_image",
         "_make_sandbox_workspace_writable",
-        "_install_sandbox_launcher",
+        "_install_sandbox_runtime",
         "_write_task_inputs",
         "_verify_sandbox_launcher",
         "_verify_sandbox_task_environment",
@@ -1434,31 +1447,31 @@ def test_shared_sidecar_stage2_artifacts_collected_into_task_trace(
         "_write_result_summary",
     ):
         monkeypatch.setattr(
-            f"swe_rebench.host_sandbox.{name}",
+            f"swe_rebench.host_openclaw.{name}",
             lambda *_args, **_kwargs: None,
         )
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._ensure_openclaw_sandbox_image",
+        "swe_rebench.host_openclaw._ensure_openclaw_sandbox_image",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._run_openclaw_agent",
+        "swe_rebench.host_openclaw._run_openclaw_agent",
         lambda **_kwargs: 0,
     )
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._drain_runtime",
+        "swe_rebench.host_openclaw._drain_runtime",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._delete_runtime_scope",
+        "swe_rebench.host_openclaw._delete_runtime_scope",
         lambda *_args, **_kwargs: None,
     )
 
-    result = run_host_sandbox_task(
+    result = run_host_openclaw_task(
         task=task,
         trace_dir=trace_dir,
         config=config,
-        bundle_dir=tmp_path / "bundle",
+        runtime_assets_dir=tmp_path / "assets",
         sidecar_port=19090,
         shared_kb_dir=shared_kb_dir,
         shared_sidecar_trace_dir=shared_trace_dir,
@@ -1489,12 +1502,12 @@ def test_export_traces_does_not_double_prefix_case_labeled_traces(
     trace_dir.mkdir()
 
     task_id = "owner__repo-1"
-    # Collected host-sandbox trace already carries the case label:
+    # Collected host-openclaw trace already carries the case label:
     # <task_id>__<runtime_id>__<session>_<run>__<digest>.jsonl
-    labeled = trace_dir / f"{task_id}__claw-srb-abc__s1_r1__digest.jsonl"
+    labeled = trace_dir / f"{task_id}__clawtune-srb-abc__s1_r1__digest.jsonl"
     labeled.write_text('{"schema_version": 6}\n', encoding="utf-8")
     # Container-mode trace: unattributed basename, still needs the prefix.
-    unattributed = trace_dir / "claw-srb-xyz__s2_r2__digest.jsonl"
+    unattributed = trace_dir / "clawtune-srb-xyz__s2_r2__digest.jsonl"
     unattributed.write_text('{"schema_version": 6}\n', encoding="utf-8")
 
     report = BatchReport(
@@ -1511,31 +1524,31 @@ def test_export_traces_does_not_double_prefix_case_labeled_traces(
     _export_traces(config, report)
 
     assert (
-        export_dir / f"{task_id}__claw-srb-abc__s1_r1__digest.jsonl"
+        export_dir / f"{task_id}__clawtune-srb-abc__s1_r1__digest.jsonl"
     ).exists()
     # Unattributed traces still get the task id prefixed.
     assert (
-        export_dir / f"{task_id}_claw-srb-xyz__s2_r2__digest.jsonl"
+        export_dir / f"{task_id}_clawtune-srb-xyz__s2_r2__digest.jsonl"
     ).exists()
     # No redundant "<task_id>_<task_id>__" double prefix.
     assert not (
-        export_dir / f"{task_id}_{task_id}__claw-srb-abc__s1_r1__digest.jsonl"
+        export_dir / f"{task_id}_{task_id}__clawtune-srb-abc__s1_r1__digest.jsonl"
     ).exists()
 
 
 
-def test_run_one_propagates_container_stage2_fallback_mode(monkeypatch, tmp_path: Path) -> None:
+def test_run_one_propagates_container_ebpf_fallback_mode(monkeypatch, tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         """
 runtime:
   mode: "container-openclaw"
-  stage2_required: false
+  ebpf_required: false
 output:
   trace_root: "traces"
   report_path: "report.json"
-bundle:
-  output_dir: "bundle"
+runtime_assets:
+  output_dir: "assets"
 """,
         encoding="utf-8",
     )
@@ -1545,7 +1558,7 @@ bundle:
         image="image:latest",
         problem_statement="fix",
         repo="12rambau/sepal_ui",
-        extra_env={"AGENT_SCHEDULER_TOOL_RESOURCE_REPO": "wrong/repo"},
+        extra_env={"CLAWTUNE_TOOL_RESOURCE_REPO": "wrong/repo"},
     )
     trace_dir = tmp_path / "traces" / "task-1"
     called: dict[str, object] = {}
@@ -1568,21 +1581,21 @@ bundle:
     result = _run_one(
         client=object(),
         task=task,
-        bundle_dir=tmp_path / "bundle",
+        runtime_assets_dir=tmp_path / "assets",
         trace_dir=trace_dir,
         config=config,
     )
 
     assert result.exit_code == 0
-    assert called["stage2_required"] is False
+    assert called["ebpf_required"] is False
     env_extra = called["env_extra"]
     assert isinstance(env_extra, dict)
-    assert env_extra["AGENT_SCHEDULER_TOOL_RESOURCE_REPO"] == (
+    assert env_extra["CLAWTUNE_TOOL_RESOURCE_REPO"] == (
         "12rambau/sepal_ui"
     )
 
 
-def test_host_sandbox_openclaw_config_uses_only_public_top_level_keys(tmp_path: Path) -> None:
+def test_host_openclaw_openclaw_config_uses_only_public_top_level_keys(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -1603,7 +1616,7 @@ def test_host_sandbox_openclaw_config_uses_only_public_top_level_keys(tmp_path: 
     assert docker_cfg["extraHosts"] == ["host.docker.internal:host-gateway"]
     assert "binds" not in docker_cfg
     assert parsed["agents"]["defaults"]["sandbox"]["workspaceAccess"] == "rw"
-    plugin_entry = parsed["plugins"]["entries"]["agent-scheduler"]
+    plugin_entry = parsed["plugins"]["entries"]["clawtune"]
     assert plugin_entry["hooks"] == {"allowConversationAccess": True}
     assert "hooks" not in plugin_entry["config"]
     plugin_cfg = plugin_entry["config"]
@@ -1611,17 +1624,17 @@ def test_host_sandbox_openclaw_config_uses_only_public_top_level_keys(tmp_path: 
     assert plugin_cfg["reportTimeoutMs"] == 10000
     assert plugin_cfg["autoStartSidecar"] is False
     assert plugin_cfg["sidecarCommand"] == ""
-    assert parsed["env"]["CLAW_EXEC_WORKDIR"] == "/workspace"
-    assert parsed["env"]["CLAW_SANDBOX_HOST_WORKSPACE"] == str(tmp_path / "workspace")
-    assert parsed["env"]["CLAW_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
-    assert parsed["env"]["CLAW_ENABLE_CGROUP"] == "1"
-    assert parsed["env"]["CLAW_LAUNCH_MODE"] == "fork-exec"
+    assert parsed["env"]["CLAWTUNE_EXEC_WORKDIR"] == "/workspace"
+    assert parsed["env"]["CLAWTUNE_SANDBOX_HOST_WORKSPACE"] == str(tmp_path / "workspace")
+    assert parsed["env"]["CLAWTUNE_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
+    assert parsed["env"]["CLAWTUNE_ENABLE_CGROUP"] == "1"
+    assert parsed["env"]["CLAWTUNE_LAUNCH_MODE"] == "fork-exec"
     assert "PATH" not in parsed["env"]
     assert parsed["tools"]["deny"] == ["process"]
     assert parsed["tools"]["exec"]["pathPrepend"] == _SANDBOX_TASK_PATH.split(":")
 
 
-def test_host_sandbox_openclaw_config_omits_unsupported_docker_platform(tmp_path: Path) -> None:
+def test_host_openclaw_openclaw_config_omits_unsupported_docker_platform(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "docker:\n  platform: linux/amd64\n",
@@ -1639,19 +1652,19 @@ def test_host_sandbox_openclaw_config_omits_unsupported_docker_platform(tmp_path
     assert "platform" not in docker_cfg
 
 
-def test_host_sandbox_container_prefix_is_stable_and_workspace_scoped(tmp_path: Path) -> None:
+def test_host_openclaw_container_prefix_is_stable_and_workspace_scoped(tmp_path: Path) -> None:
     first = _sandbox_container_prefix(tmp_path / "workspace-a")
     second = _sandbox_container_prefix(tmp_path / "workspace-a")
     other = _sandbox_container_prefix(tmp_path / "workspace-b")
 
     assert first == second
     assert first != other
-    assert first.startswith("claw-srb-")
+    assert first.startswith("clawtune-srb-")
     assert first.endswith("-")
     assert len(first) < 32
 
 
-def test_host_sandbox_cleanup_removes_prefixed_openclaw_containers(monkeypatch, tmp_path: Path) -> None:
+def test_host_openclaw_cleanup_removes_prefixed_openclaw_containers(monkeypatch, tmp_path: Path) -> None:
     trace_dir = tmp_path / "trace"
     trace_dir.mkdir()
     workspace = tmp_path / "workspace"
@@ -1666,8 +1679,8 @@ def test_host_sandbox_cleanup_removes_prefixed_openclaw_containers(monkeypatch, 
             return subprocess.CompletedProcess(cmd, 0, stdout="removed\n", stderr="")
         raise AssertionError(cmd)
 
-    monkeypatch.setattr("swe_rebench.host_sandbox._require_executable", lambda name: "/usr/bin/docker")
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw._require_executable", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
 
     _cleanup_openclaw_sandbox_containers(trace_dir, workspace)
 
@@ -1678,20 +1691,20 @@ def test_host_sandbox_cleanup_removes_prefixed_openclaw_containers(monkeypatch, 
     assert "abc123" in log
 
 
-def test_host_sandbox_discovers_sandbox_container_by_docker_prefix(monkeypatch) -> None:
+def test_host_openclaw_discovers_sandbox_container_by_docker_prefix(monkeypatch) -> None:
     calls = []
 
     def fake_run(cmd, **kwargs):
         calls.append((list(cmd), kwargs))
         return subprocess.CompletedProcess(cmd, 0, stdout="abc123def456\nnot a container id!\n", stderr="")
 
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
 
-    assert _docker_sandbox_container_ids("/usr/bin/docker", "claw-srb-test") == ["abc123def456"]
-    assert calls[0][0] == ["/usr/bin/docker", "ps", "-q", "--filter", "name=claw-srb-test"]
+    assert _docker_sandbox_container_ids("/usr/bin/docker", "clawtune-srb-test") == ["abc123def456"]
+    assert calls[0][0] == ["/usr/bin/docker", "ps", "-q", "--filter", "name=clawtune-srb-test"]
 
 
-def test_host_sandbox_openclaw_env_points_workspace_dir_at_task_workspace(
+def test_host_openclaw_openclaw_env_points_workspace_dir_at_task_workspace(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1699,11 +1712,11 @@ def test_host_sandbox_openclaw_env_points_workspace_dir_at_task_workspace(
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
     workspace = tmp_path / "workspace"
-    monkeypatch.setenv("OPENCLAW_AGENT_SCHEDULER_TRACE_DIR", "/tmp/plugin-should-not-write")
-    monkeypatch.setenv("OPENCLAW_AGENT_SCHEDULER_PLUGIN_TRACE_DIR", "/tmp/plugin-fallback")
-    monkeypatch.setenv("OPENCLAW_AGENT_SCHEDULER_AUTO_START_SIDECAR", "true")
-    monkeypatch.setenv("OPENCLAW_AGENT_SCHEDULER_SIDECAR_COMMAND", "start-stale-sidecar")
-    monkeypatch.setenv("OPENCLAW_AGENT_SCHEDULER_ENDPOINT", "http://127.0.0.1:9999")
+    monkeypatch.setenv("CLAWTUNE_TRACE_DIR", "/tmp/plugin-should-not-write")
+    monkeypatch.setenv("CLAWTUNE_PLUGIN_TRACE_DIR", "/tmp/plugin-fallback")
+    monkeypatch.setenv("CLAWTUNE_AUTO_START_SIDECAR", "true")
+    monkeypatch.setenv("CLAWTUNE_SIDECAR_COMMAND", "start-stale-sidecar")
+    monkeypatch.setenv("CLAWTUNE_ENDPOINT", "http://127.0.0.1:9999")
     monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "stale-token")
     monkeypatch.setenv("OPENCLAW_GATEWAY_PASSWORD", "stale-password")
     monkeypatch.setenv("OPENCLAW_GATEWAY_URL", "ws://127.0.0.1:18789")
@@ -1712,25 +1725,25 @@ def test_host_sandbox_openclaw_env_points_workspace_dir_at_task_workspace(
     env = _openclaw_env(tmp_path / "home", 8765, config, workspace)
 
     assert env["OPENCLAW_WORKSPACE_DIR"] == str(workspace)
-    assert env["CLAW_EXEC_WORKDIR"] == "/workspace"
-    assert env["CLAW_SANDBOX_HOST_WORKSPACE"] == str(workspace)
-    assert env["CLAW_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
-    assert env["CLAW_ENABLE_CGROUP"] == "1"
-    assert env["CLAW_LAUNCH_MODE"] == "fork-exec"
-    assert env["CLAW_GATEWAY_ID"] == "swe-rebench"
-    assert env["CLAW_RUNTIME_ID"].startswith("claw-srb-")
-    assert "OPENCLAW_AGENT_SCHEDULER_TRACE_DIR" not in env
-    assert "OPENCLAW_AGENT_SCHEDULER_PLUGIN_TRACE_DIR" not in env
-    assert "OPENCLAW_AGENT_SCHEDULER_AUTO_START_SIDECAR" not in env
-    assert "OPENCLAW_AGENT_SCHEDULER_SIDECAR_COMMAND" not in env
-    assert "OPENCLAW_AGENT_SCHEDULER_ENDPOINT" not in env
+    assert env["CLAWTUNE_EXEC_WORKDIR"] == "/workspace"
+    assert env["CLAWTUNE_SANDBOX_HOST_WORKSPACE"] == str(workspace)
+    assert env["CLAWTUNE_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
+    assert env["CLAWTUNE_ENABLE_CGROUP"] == "1"
+    assert env["CLAWTUNE_LAUNCH_MODE"] == "fork-exec"
+    assert env["CLAWTUNE_GATEWAY_ID"] == "swe-rebench"
+    assert env["CLAWTUNE_RUNTIME_ID"].startswith("clawtune-srb-")
+    assert "CLAWTUNE_TRACE_DIR" not in env
+    assert "CLAWTUNE_PLUGIN_TRACE_DIR" not in env
+    assert "CLAWTUNE_AUTO_START_SIDECAR" not in env
+    assert "CLAWTUNE_SIDECAR_COMMAND" not in env
+    assert env["CLAWTUNE_ENDPOINT"] == "http://host.docker.internal:8765"
     assert "OPENCLAW_GATEWAY_TOKEN" not in env
     assert "OPENCLAW_GATEWAY_PASSWORD" not in env
     assert "OPENCLAW_GATEWAY_URL" not in env
     assert "OPENCLAW_GATEWAY_AUTH_TOKEN" not in env
 
 
-def test_host_sandbox_openclaw_env_uses_platform_and_local_proxy_key(
+def test_host_openclaw_openclaw_env_uses_platform_and_local_proxy_key(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1741,7 +1754,7 @@ def test_host_sandbox_openclaw_env_uses_platform_and_local_proxy_key(
         encoding="utf-8",
     )
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
-    monkeypatch.setenv("AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY", "stale-secret")
+    monkeypatch.setenv("CLAWTUNE_LLM_UPSTREAM_API_KEY", "stale-secret")
 
     env = _openclaw_env(
         tmp_path / "home",
@@ -1751,13 +1764,13 @@ def test_host_sandbox_openclaw_env_uses_platform_and_local_proxy_key(
     )
 
     assert env["DOCKER_DEFAULT_PLATFORM"] == "linux/amd64"
-    assert env["VLLM_API_KEY"].startswith("clawtune-runtime.claw-srb-")
+    assert env["VLLM_API_KEY"].startswith("clawtune-runtime.clawtune-srb-")
     assert env["LLM_API_KEY"] == env["VLLM_API_KEY"]
     assert "sk-upstream-secret" not in env.values()
     assert "stale-secret" not in env.values()
 
 
-def test_host_sandbox_onboard_does_not_put_upstream_key_in_argv(
+def test_host_openclaw_onboard_does_not_put_upstream_key_in_argv(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1771,23 +1784,23 @@ def test_host_sandbox_onboard_does_not_put_upstream_key_in_argv(
     trace_dir.mkdir()
     commands: list[list[str]] = []
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._require_executable",
+        "swe_rebench.host_openclaw._require_executable",
         lambda _name: "openclaw",
     )
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._ensure_plugin_built",
+        "swe_rebench.host_openclaw._ensure_plugin_built",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._stage_plugin_for_openclaw_if_needed",
+        "swe_rebench.host_openclaw._stage_plugin_for_openclaw_if_needed",
         lambda **kwargs: kwargs["plugin_dir"],
     )
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._run_logged",
+        "swe_rebench.host_openclaw._run_logged",
         lambda command, *_args: commands.append(list(command)),
     )
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox.subprocess.run",
+        "swe_rebench.host_openclaw.subprocess.run",
         lambda command, **_kwargs: subprocess.CompletedProcess(command, 0),
     )
 
@@ -1802,63 +1815,63 @@ def test_host_sandbox_onboard_does_not_put_upstream_key_in_argv(
     argv = [item for command in commands for item in command]
     assert "sk-upstream-secret" not in argv
     assert any(
-        item.startswith("clawtune-runtime.claw-srb-") for item in argv
+        item.startswith("clawtune-runtime.clawtune-srb-") for item in argv
     )
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not represented on Windows")
-def test_host_sandbox_launcher_is_readable_under_restrictive_umask(
+def test_host_openclaw_launcher_is_readable_under_restrictive_umask(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
-    scheduler_src = tmp_path / "bundle" / "scheduler" / "src"
-    package = scheduler_src / "agent_scheduler"
+    sidecar_src = tmp_path / "assets" / "sidecar" / "src"
+    package = sidecar_src / "clawtune_sidecar"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
 
     previous_umask = os.umask(0o077)
     try:
-        _install_sandbox_launcher(workspace, tmp_path / "bundle")
+        _install_sandbox_runtime(workspace, tmp_path / "assets")
     finally:
         os.umask(previous_umask)
 
-    runtime = workspace / ".claw"
-    launcher = runtime / "bin" / "claw-launch"
+    runtime = workspace / ".clawtune"
+    launcher = runtime / "bin" / "clawtune-launch"
     assert launcher.stat().st_mode & 0o777 == 0o755
     assert (runtime / "bin" / "pip").stat().st_mode & 0o777 == 0o755
     assert (runtime / "bin" / "pip3").stat().st_mode & 0o777 == 0o755
     assert runtime.stat().st_mode & 0o055 == 0o055
     assert (runtime / "scheduler").stat().st_mode & 0o055 == 0o055
-    assert (runtime / "scheduler" / "src").stat().st_mode & 0o055 == 0o055
-    assert (runtime / "scheduler" / "src" / "agent_scheduler" / "__init__.py").stat().st_mode & 0o044 == 0o044
+    assert (runtime / "sidecar" / "src").stat().st_mode & 0o055 == 0o055
+    assert (runtime / "sidecar" / "src" / "clawtune_sidecar" / "__init__.py").stat().st_mode & 0o044 == 0o044
 
 
-def test_host_sandbox_installs_testbed_pip_wrappers(tmp_path: Path) -> None:
+def test_host_openclaw_installs_testbed_pip_wrappers(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
-    package = tmp_path / "bundle" / "scheduler" / "src" / "agent_scheduler"
+    package = tmp_path / "assets" / "sidecar" / "src" / "clawtune_sidecar"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
 
-    _install_sandbox_launcher(workspace, tmp_path / "bundle")
+    _install_sandbox_runtime(workspace, tmp_path / "assets")
 
     for name in ("pip", "pip3"):
-        wrapper = workspace / ".claw" / "bin" / name
+        wrapper = workspace / ".clawtune" / "bin" / name
         assert wrapper.read_text(encoding="utf-8") == (
             '#!/bin/sh\nexec python3 -m pip "$@"\n'
         )
 
 
-def test_host_sandbox_launcher_exports_testbed_path_but_uses_system_python(
+def test_host_openclaw_launcher_exports_testbed_path_but_uses_system_python(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
-    package = tmp_path / "bundle" / "scheduler" / "src" / "agent_scheduler"
+    package = tmp_path / "assets" / "sidecar" / "src" / "clawtune_sidecar"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
 
-    _install_sandbox_launcher(workspace, tmp_path / "bundle")
+    _install_sandbox_runtime(workspace, tmp_path / "assets")
 
-    launcher = (workspace / ".claw" / "bin" / "claw-launch").read_text(
+    launcher = (workspace / ".clawtune" / "bin" / "clawtune-launch").read_text(
         encoding="utf-8"
     )
     assert f'export PATH="{_SANDBOX_TASK_PATH}"\n' in launcher
@@ -1931,7 +1944,7 @@ def _kb_pair_markers(directory: Path) -> dict[str, str]:
     }
 
 
-def test_host_sandbox_seeds_runtime_and_clause_predictor_kbs(tmp_path: Path) -> None:
+def test_host_openclaw_seeds_runtime_and_clause_predictor_kbs(tmp_path: Path) -> None:
     source_dir = tmp_path / "traces" / "tool-resource"
     _write_test_kb_pair(source_dir, "tracked-seed")
     runtime_payload = (source_dir / "runtime-tool-resource-kb.json").read_text(
@@ -2122,7 +2135,7 @@ def test_batch_shared_kb_second_replace_failure_rolls_back_whole_pair(
             raise OSError("simulated second snapshot replace failure")
         return real_replace(source, destination)
 
-    monkeypatch.setattr("swe_rebench.host_sandbox.os.replace", fail_second_commit)
+    monkeypatch.setattr("swe_rebench.host_openclaw.os.replace", fail_second_commit)
 
     with pytest.raises(RuntimeError, match="was rolled back"):
         _publish_tool_resource_kb(task_trace, shared_kb_dir)
@@ -2172,7 +2185,7 @@ def test_run_batch_aborts_before_next_task_on_kb_sync_failure(
 
     monkeypatch.setattr(runner, "_run_one", fail_first_task)
 
-    report = run_batch(config, tasks, tmp_path / "bundle")
+    report = run_batch(config, tasks, tmp_path / "assets")
 
     assert attempted == ["owner__repo-1"]
     assert report.aborted is True
@@ -2182,7 +2195,7 @@ def test_run_batch_aborts_before_next_task_on_kb_sync_failure(
     assert len(report.results) == 1
 
 
-def test_host_sandbox_verifies_mounted_launcher_before_agent(
+def test_host_openclaw_verifies_mounted_launcher_before_agent(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -2199,18 +2212,18 @@ def test_host_sandbox_verifies_mounted_launcher_before_agent(
                     "fork_supported": True,
                     "ready": True,
                     "payload_python3": "/opt/miniconda3/envs/testbed/bin/python3",
-                    "payload_pip": "/workspace/.claw/bin/pip",
-                    "payload_pip3": "/workspace/.claw/bin/pip3",
+                    "payload_pip": "/workspace/.clawtune/bin/pip",
+                    "payload_pip3": "/workspace/.clawtune/bin/pip3",
                 }
             ),
             stderr="",
         )
 
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._require_executable",
+        "swe_rebench.host_openclaw._require_executable",
         lambda name: "/usr/bin/docker",
     )
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "setup.py").write_text("", encoding="utf-8")
@@ -2223,15 +2236,15 @@ def test_host_sandbox_verifies_mounted_launcher_before_agent(
     assert command[4].startswith(_sandbox_container_prefix(workspace))
     assert command[5:7] == ["--platform", "linux/amd64"]
     assert command[command.index("--network") + 1] == "none"
-    assert command[command.index("--env") + 1] == "CLAW_LAUNCH_MODE=fork-exec"
+    assert command[command.index("--env") + 1] == "CLAWTUNE_LAUNCH_MODE=fork-exec"
     assert not any(part.startswith("PATH=") for part in command)
     assert command[command.index("--user") + 1] == "65534:65534"
     assert command[command.index("--entrypoint") + 1] == "/bin/sh"
-    assert command[-2] == "/workspace/.claw/bin/claw-launch"
+    assert command[-2] == "/workspace/.clawtune/bin/clawtune-launch"
     assert command[-1] == "diagnose"
 
 
-def test_host_sandbox_launcher_preflight_rejects_system_python(
+def test_host_openclaw_launcher_preflight_rejects_system_python(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -2240,11 +2253,11 @@ def test_host_sandbox_launcher_preflight_rejects_system_python(
     (workspace / "setup.py").write_text("", encoding="utf-8")
 
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._require_executable",
+        "swe_rebench.host_openclaw._require_executable",
         lambda name: "/usr/bin/docker",
     )
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox.subprocess.run",
+        "swe_rebench.host_openclaw.subprocess.run",
         lambda command, **kwargs: subprocess.CompletedProcess(
             command,
             0,
@@ -2266,7 +2279,7 @@ def test_host_sandbox_launcher_preflight_rejects_system_python(
         _verify_sandbox_launcher(tmp_path, workspace)
 
 
-def test_host_sandbox_verifies_python_task_environment(
+def test_host_openclaw_verifies_python_task_environment(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -2280,10 +2293,10 @@ def test_host_sandbox_verifies_python_task_environment(
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._require_executable",
+        "swe_rebench.host_openclaw._require_executable",
         lambda name: "/usr/bin/docker",
     )
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
 
     _verify_sandbox_task_environment(tmp_path, workspace, "linux/amd64")
 
@@ -2294,7 +2307,7 @@ def test_host_sandbox_verifies_python_task_environment(
     assert command[5:7] == ["--platform", "linux/amd64"]
     assert any(
         part.startswith(
-            "PATH=/workspace/.claw/bin:/opt/miniconda3/envs/testbed/bin:"
+            "PATH=/workspace/.clawtune/bin:/opt/miniconda3/envs/testbed/bin:"
         )
         for part in command
     )
@@ -2304,7 +2317,7 @@ def test_host_sandbox_verifies_python_task_environment(
     assert (tmp_path / "sandbox-runtime-preflight.log").exists()
 
 
-def test_host_sandbox_exports_testbed_with_docker_platform(monkeypatch, tmp_path: Path) -> None:
+def test_host_openclaw_exports_testbed_with_docker_platform(monkeypatch, tmp_path: Path) -> None:
     calls: list[list[str]] = []
 
     class Result:
@@ -2326,11 +2339,11 @@ def test_host_sandbox_exports_testbed_with_docker_platform(monkeypatch, tmp_path
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._require_executable",
+        "swe_rebench.host_openclaw._require_executable",
         lambda name: "/usr/bin/docker",
     )
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
-    monkeypatch.setattr("swe_rebench.host_sandbox._run_checked", lambda cmd, phase: calls.append(list(cmd)))
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw._run_checked", lambda cmd, phase: calls.append(list(cmd)))
 
     _export_testbed_from_image("image:latest", tmp_path / "workspace", "always", "linux/amd64")
 
@@ -2338,7 +2351,7 @@ def test_host_sandbox_exports_testbed_with_docker_platform(monkeypatch, tmp_path
     assert ["/usr/bin/docker", "create", "--platform", "linux/amd64", "image:latest"] in calls
 
 
-def test_host_sandbox_missing_pull_policy_pulls_when_platform_is_set(monkeypatch, tmp_path: Path) -> None:
+def test_host_openclaw_missing_pull_policy_pulls_when_platform_is_set(monkeypatch, tmp_path: Path) -> None:
     calls: list[list[str]] = []
 
     class Result:
@@ -2356,11 +2369,11 @@ def test_host_sandbox_missing_pull_policy_pulls_when_platform_is_set(monkeypatch
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._require_executable",
+        "swe_rebench.host_openclaw._require_executable",
         lambda name: "/usr/bin/docker",
     )
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
-    monkeypatch.setattr("swe_rebench.host_sandbox._run_checked", lambda cmd, phase: calls.append(list(cmd)))
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw._run_checked", lambda cmd, phase: calls.append(list(cmd)))
 
     _export_testbed_from_image("image:latest", tmp_path / "workspace", "missing", "linux/amd64")
 
@@ -2369,7 +2382,7 @@ def test_host_sandbox_missing_pull_policy_pulls_when_platform_is_set(monkeypatch
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not represented on Windows")
-def test_host_sandbox_makes_sudo_export_writable_without_following_symlinks(
+def test_host_openclaw_makes_sudo_export_writable_without_following_symlinks(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -2391,7 +2404,7 @@ def test_host_sandbox_makes_sudo_export_writable_without_following_symlinks(
     assert outside.stat().st_mode & 0o077 == 0
 
 
-def test_host_sandbox_prompt_uses_relative_paths(tmp_path: Path) -> None:
+def test_host_openclaw_prompt_uses_relative_paths(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -2402,16 +2415,16 @@ def test_host_sandbox_prompt_uses_relative_paths(tmp_path: Path) -> None:
     )
     trace_dir = tmp_path / "trace"
     workspace = tmp_path / "workspace"
-    bundle_dir = tmp_path / "bundle"
+    runtime_assets_dir = tmp_path / "assets"
     shared_kb_dir = tmp_path / "kb-batches" / "batch-1"
-    bundle_dir.mkdir()
+    runtime_assets_dir.mkdir()
     fingerprint = {
-        "schema": "swe_rebench_bundle_source_fingerprint_v1",
+        "schema": "swe_rebench_runtime_assets_source_fingerprint_v1",
         "digest": "sha256:" + "a" * 64,
         "file_count": 1,
         "files": ["swe_rebench/runner.py"],
     }
-    (bundle_dir / "bundle-source-fingerprint.json").write_text(
+    (runtime_assets_dir / "runtime-assets-source-fingerprint.json").write_text(
         json.dumps(fingerprint),
         encoding="utf-8",
     )
@@ -2421,7 +2434,7 @@ def test_host_sandbox_prompt_uses_relative_paths(tmp_path: Path) -> None:
         task,
         config,
         workspace,
-        bundle_dir,
+        runtime_assets_dir,
         shared_kb_dir=shared_kb_dir,
     )
     prompt = (trace_dir / "agent_prompt.txt").read_text(encoding="utf-8")
@@ -2434,10 +2447,10 @@ def test_host_sandbox_prompt_uses_relative_paths(tmp_path: Path) -> None:
     assert manifest["repo"] == "12rambau/sepal_ui"
     assert manifest["shared_kb_dir"] == str(shared_kb_dir)
     assert manifest["runner_config"] == str(config_path.resolve())
-    assert manifest["bundle_source_fingerprint"] == fingerprint
+    assert manifest["runtime_assets_source_fingerprint"] == fingerprint
 
 
-def test_host_sandbox_agent_forces_sandbox_exec_workdir(monkeypatch, tmp_path: Path) -> None:
+def test_host_openclaw_agent_forces_sandbox_exec_workdir(monkeypatch, tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -2466,8 +2479,8 @@ def test_host_sandbox_agent_forces_sandbox_exec_workdir(monkeypatch, tmp_path: P
         captured["env"] = kwargs["env"]
         return FakeProcess()
 
-    monkeypatch.setattr("swe_rebench.host_sandbox._require_executable", lambda name: "/usr/bin/openclaw")
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("swe_rebench.host_openclaw._require_executable", lambda name: "/usr/bin/openclaw")
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.Popen", fake_popen)
 
     exit_code = _run_openclaw_agent(
         trace_dir=trace_dir,
@@ -2483,9 +2496,9 @@ def test_host_sandbox_agent_forces_sandbox_exec_workdir(monkeypatch, tmp_path: P
     env = captured["env"]
     assert isinstance(env, dict)
     assert env["OPENCLAW_WORKSPACE_DIR"] == str(workspace)
-    assert env["CLAW_EXEC_WORKDIR"] == "/workspace"
-    assert env["CLAW_SANDBOX_HOST_WORKSPACE"] == str(workspace)
-    assert env["CLAW_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
+    assert env["CLAWTUNE_EXEC_WORKDIR"] == "/workspace"
+    assert env["CLAWTUNE_SANDBOX_HOST_WORKSPACE"] == str(workspace)
+    assert env["CLAWTUNE_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
 
 
 def test_openclaw_uses_agent_flag_detects_flag_syntax(monkeypatch) -> None:
@@ -2502,7 +2515,7 @@ def test_openclaw_uses_agent_flag_detects_flag_syntax(monkeypatch) -> None:
         calls.append(list(cmd))
         return FakeResult()
 
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
 
     assert _openclaw_uses_agent_flag("/usr/bin/openclaw") is True
     assert calls == [["/usr/bin/openclaw", "agent", "main", "--help"]]
@@ -2526,7 +2539,7 @@ def test_openclaw_uses_agent_flag_ignores_error_hint_on_stderr(monkeypatch) -> N
     def fake_run(cmd, **kwargs):
         return FakeResult()
 
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
 
     assert _openclaw_uses_agent_flag("/usr/bin/openclaw") is True
 
@@ -2542,7 +2555,7 @@ def test_openclaw_uses_agent_flag_requires_usage_line_on_stdout(monkeypatch) -> 
     def fake_run(cmd, **kwargs):
         return FakeResult()
 
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
 
     assert _openclaw_uses_agent_flag("/usr/bin/openclaw") is True
 
@@ -2562,7 +2575,7 @@ def test_openclaw_uses_agent_flag_detects_positional_syntax(monkeypatch) -> None
     def fake_run(cmd, **kwargs):
         return FakeResult()
 
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
 
     assert _openclaw_uses_agent_flag("/usr/bin/openclaw") is False
 
@@ -2571,14 +2584,14 @@ def test_openclaw_uses_agent_flag_falls_back_when_probe_fails(monkeypatch) -> No
     def fake_run(cmd, **kwargs):
         raise FileNotFoundError(cmd[0])
 
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
 
     assert _openclaw_uses_agent_flag("/usr/bin/openclaw") is True
 
 
 def test_openclaw_agent_argv_flag_syntax(monkeypatch) -> None:
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._openclaw_uses_agent_flag",
+        "swe_rebench.host_openclaw._openclaw_uses_agent_flag",
         lambda _openclaw: True,
     )
     argv = _openclaw_agent_argv(
@@ -2602,7 +2615,7 @@ def test_openclaw_agent_argv_flag_syntax(monkeypatch) -> None:
 
 def test_openclaw_agent_argv_positional_syntax(monkeypatch) -> None:
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._openclaw_uses_agent_flag",
+        "swe_rebench.host_openclaw._openclaw_uses_agent_flag",
         lambda _openclaw: False,
     )
     argv = _openclaw_agent_argv(
@@ -2632,7 +2645,7 @@ def test_openclaw_agent_argv_positional_syntax(monkeypatch) -> None:
         (0.25, 30, "task"),
     ],
 )
-def test_host_sandbox_agent_uses_smallest_timeout_and_kills_process(
+def test_host_openclaw_agent_uses_smallest_timeout_and_kills_process(
     monkeypatch,
     tmp_path: Path,
     task_budget_seconds: float | None,
@@ -2667,11 +2680,11 @@ def test_host_sandbox_agent_uses_smallest_timeout_and_kills_process(
 
     process = FakeProcess()
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._require_executable",
+        "swe_rebench.host_openclaw._require_executable",
         lambda _name: "/usr/bin/openclaw",
     )
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox.subprocess.Popen",
+        "swe_rebench.host_openclaw.subprocess.Popen",
         lambda *_args, **_kwargs: process,
     )
     task_deadline = (
@@ -2703,7 +2716,7 @@ def test_host_sandbox_agent_uses_smallest_timeout_and_kills_process(
     assert timeout_record["scope"] == expected_scope
 
 
-def test_host_sandbox_cleanup_timeout_is_bounded_and_strict(
+def test_host_openclaw_cleanup_timeout_is_bounded_and_strict(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -2715,10 +2728,10 @@ def test_host_sandbox_cleanup_timeout_is_bounded_and_strict(
         raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
 
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._require_executable",
+        "swe_rebench.host_openclaw._require_executable",
         lambda _name: "/usr/bin/docker",
     )
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
 
     with pytest.raises(ContainerCleanupError, match="timed out listing"):
         _cleanup_openclaw_sandbox_containers(
@@ -2733,7 +2746,7 @@ def test_host_sandbox_cleanup_timeout_is_bounded_and_strict(
     ).read_text(encoding="utf-8")
 
 
-def test_host_sandbox_tags_sandbox_image_from_task_image(monkeypatch, tmp_path: Path) -> None:
+def test_host_openclaw_tags_sandbox_image_from_task_image(monkeypatch, tmp_path: Path) -> None:
     task_image = "swebench/swe-rebench-task:latest"
     calls: list[list[str]] = []
 
@@ -2754,8 +2767,8 @@ def test_host_sandbox_tags_sandbox_image_from_task_image(monkeypatch, tmp_path: 
             return Result(0)
         raise AssertionError(f"unexpected command: {cmd}")
 
-    monkeypatch.setattr("swe_rebench.host_sandbox.shutil.which", fake_which)
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw.shutil.which", fake_which)
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
 
     sandbox_image = _ensure_openclaw_sandbox_image(task_image, tmp_path)
 
@@ -2766,7 +2779,7 @@ def test_host_sandbox_tags_sandbox_image_from_task_image(monkeypatch, tmp_path: 
     assert (tmp_path / "sandbox-image-build.log").exists()
 
 
-def test_host_sandbox_builds_plugin_before_install(monkeypatch, tmp_path: Path) -> None:
+def test_host_openclaw_builds_plugin_before_install(monkeypatch, tmp_path: Path) -> None:
     plugin_dir = tmp_path / "plugin"
     plugin_dir.mkdir()
     (plugin_dir / "package.json").write_text('{"scripts":{"build":"tsc"}}\n', encoding="utf-8")
@@ -2784,8 +2797,8 @@ def test_host_sandbox_builds_plugin_before_install(monkeypatch, tmp_path: Path) 
         assert kwargs["cwd"] == str(plugin_dir)
         return Result()
 
-    monkeypatch.setattr("swe_rebench.host_sandbox._require_executable", fake_require)
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw._require_executable", fake_require)
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
 
     _ensure_plugin_built(tmp_path / "trace", plugin_dir)
 
@@ -2793,7 +2806,7 @@ def test_host_sandbox_builds_plugin_before_install(monkeypatch, tmp_path: Path) 
     assert (tmp_path / "trace" / "plugin-build.log").exists()
 
 
-def test_host_sandbox_stages_user_owned_plugin_when_running_as_root(monkeypatch, tmp_path: Path) -> None:
+def test_host_openclaw_stages_user_owned_plugin_when_running_as_root(monkeypatch, tmp_path: Path) -> None:
     plugin_dir = tmp_path / "plugin"
     plugin_dir.mkdir()
     (plugin_dir / "package.json").write_text("{}\n", encoding="utf-8")
@@ -2803,7 +2816,7 @@ def test_host_sandbox_stages_user_owned_plugin_when_running_as_root(monkeypatch,
     trace_dir = tmp_path / "trace"
     trace_dir.mkdir()
 
-    monkeypatch.setattr("swe_rebench.host_sandbox.os.geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr("swe_rebench.host_openclaw.os.geteuid", lambda: 0, raising=False)
     original_stat = Path.stat
 
     class FakeStat:
@@ -2821,15 +2834,15 @@ def test_host_sandbox_stages_user_owned_plugin_when_running_as_root(monkeypatch,
         plugin_dir=plugin_dir,
     )
 
-    assert staged == trace_dir / "openclaw-plugin-root-owned"
+    assert staged == trace_dir / "clawtune-plugin-root-owned"
     assert (staged / "package.json").exists()
     assert (staged / "dist.js").exists()
     assert not (staged / "node_modules").exists()
 
 
-def test_host_sandbox_sidecar_enables_docker_exec_observer(monkeypatch, tmp_path: Path) -> None:
+def test_host_openclaw_sidecar_enables_docker_exec_observer(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("LD_PRELOAD", raising=False)
-    monkeypatch.setenv("AGENT_SCHEDULER_TOOL_RESOURCE_REPO", "stale/openclaw")
+    monkeypatch.setenv("CLAWTUNE_TOOL_RESOURCE_REPO", "stale/openclaw")
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -2848,8 +2861,8 @@ def test_host_sandbox_sidecar_enables_docker_exec_observer(monkeypatch, tmp_path
         captured["env"] = kwargs["env"]
         return FakeProcess()
 
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("swe_rebench.host_sandbox._wait_ready", lambda port, **kw: None)
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("swe_rebench.host_openclaw._wait_ready", lambda port, **kw: None)
 
     process = _start_sidecar(
         trace_dir=trace_dir,
@@ -2862,15 +2875,15 @@ def test_host_sandbox_sidecar_enables_docker_exec_observer(monkeypatch, tmp_path
     assert isinstance(process, FakeProcess)
     env = captured["env"]
     assert isinstance(env, dict)
-    assert env["AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER"] == "true"
-    assert env["AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED"] == "true"
-    assert env["AGENT_SCHEDULER_TOOL_RESOURCE_REPO"] == "12rambau/sepal_ui"
-    assert env["AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX"] == _sandbox_container_prefix(workspace)
-    assert str(tmp_path / "services" / "scheduler" / "src") in env["PYTHONPATH"]
+    assert env["CLAWTUNE_DOCKER_EXEC_OBSERVER"] == "true"
+    assert env["CLAWTUNE_TOOL_RESOURCE_EBPF_REQUIRED"] == "true"
+    assert env["CLAWTUNE_TOOL_RESOURCE_REPO"] == "12rambau/sepal_ui"
+    assert env["CLAWTUNE_DOCKER_EXEC_CONTAINER_PREFIX"] == _sandbox_container_prefix(workspace)
+    assert str(tmp_path / "services" / "sidecar" / "src") in env["PYTHONPATH"]
     assert "LD_PRELOAD" not in env
 
 
-def test_host_sandbox_sidecar_readiness_failure_stops_unreturned_process(
+def test_host_openclaw_sidecar_readiness_failure_stops_unreturned_process(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -2902,9 +2915,9 @@ def test_host_sandbox_sidecar_readiness_failure_stops_unreturned_process(
         captured["stderr"] = kwargs["stderr"]
         return process
 
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.Popen", fake_popen)
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox._wait_ready",
+        "swe_rebench.host_openclaw._wait_ready",
         lambda _port, **kw: (_ for _ in ()).throw(RuntimeError("not ready")),
     )
 
@@ -2923,7 +2936,7 @@ def test_host_sandbox_sidecar_readiness_failure_stops_unreturned_process(
     assert getattr(captured["stderr"], "closed") is True
 
 
-def test_host_sandbox_writes_tool_resource_preflight(monkeypatch, tmp_path: Path) -> None:
+def test_host_openclaw_writes_tool_resource_preflight(monkeypatch, tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -2932,7 +2945,7 @@ def test_host_sandbox_writes_tool_resource_preflight(monkeypatch, tmp_path: Path
     captured: dict[str, object] = {}
 
     class FakeRunResult:
-        stdout = '{"mode": "host-openclaw-sandbox", "stage2_ready": true}\n'
+        stdout = '{"mode": "host-openclaw", "ebpf_ready": true}\n'
         stderr = ""
         returncode = 0
 
@@ -2941,38 +2954,38 @@ def test_host_sandbox_writes_tool_resource_preflight(monkeypatch, tmp_path: Path
         captured["env"] = kwargs["env"]
         return FakeRunResult()
 
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
 
     _write_host_tool_resource_preflight(trace_dir, config)
 
     preflight = trace_dir / "tool_resource_preflight_host.json"
     assert json.loads(preflight.read_text(encoding="utf-8")) == {
-        "mode": "host-openclaw-sandbox",
-        "stage2_ready": True,
+        "mode": "host-openclaw",
+        "ebpf_ready": True,
     }
     env = captured["env"]
     assert isinstance(env, dict)
-    assert str(tmp_path / "services" / "scheduler" / "src") in env["PYTHONPATH"]
+    assert str(tmp_path / "services" / "sidecar" / "src") in env["PYTHONPATH"]
     command = captured["cmd"]
     assert isinstance(command, list)
     assert "ensure_compatible_adapter" in command[-1]
 
 
-def test_host_sandbox_preserves_bpf_compiler_stderr(monkeypatch, tmp_path: Path) -> None:
+def test_host_openclaw_preserves_bpf_compiler_stderr(monkeypatch, tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
-    config.runtime.stage2_required = False
+    config.runtime.ebpf_required = False
     trace_dir = tmp_path / "trace"
     trace_dir.mkdir()
 
     class FakeRunResult:
-        stdout = '{"mode": "host-openclaw-sandbox", "stage2_ready": false}\n'
+        stdout = '{"mode": "host-openclaw", "ebpf_ready": false}\n'
         stderr = "/virtual/main.c:137: error: incompatible rss_stat layout\n"
         returncode = 0
 
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox.subprocess.run",
+        "swe_rebench.host_openclaw.subprocess.run",
         lambda *args, **kwargs: FakeRunResult(),
     )
 
@@ -2986,13 +2999,13 @@ def test_host_sandbox_preserves_bpf_compiler_stderr(monkeypatch, tmp_path: Path)
     )
 
 
-def test_host_sandbox_required_stage2_fails_fast_on_preflight(
+def test_host_openclaw_required_ebpf_fails_fast_on_preflight(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "runtime:\n  mode: host-openclaw-sandbox\n  stage2_required: true\n",
+        "runtime:\n  mode: host-openclaw\n  ebpf_required: true\n",
         encoding="utf-8",
     )
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -3002,16 +3015,16 @@ def test_host_sandbox_required_stage2_fails_fast_on_preflight(
     class FakeRunResult:
         stdout = json.dumps(
             {
-                "mode": "host-openclaw-sandbox",
-                "stage2_ready": False,
-                "stage2_disabled_reason": "ValueError: clause telemetry requires root",
+                "mode": "host-openclaw",
+                "ebpf_ready": False,
+                "ebpf_disabled_reason": "ValueError: clause telemetry requires root",
             }
         )
         stderr = ""
         returncode = 0
 
     monkeypatch.setattr(
-        "swe_rebench.host_sandbox.subprocess.run",
+        "swe_rebench.host_openclaw.subprocess.run",
         lambda *args, **kwargs: FakeRunResult(),
     )
 
@@ -3021,13 +3034,13 @@ def test_host_sandbox_required_stage2_fails_fast_on_preflight(
     recorded = json.loads(
         (trace_dir / "tool_resource_preflight_host.json").read_text(encoding="utf-8")
     )
-    assert recorded["stage2_ready"] is False
+    assert recorded["ebpf_ready"] is False
 
 
-def test_host_sandbox_cleans_only_untracked_runtime_artifacts(monkeypatch, tmp_path: Path) -> None:
+def test_host_openclaw_cleans_only_untracked_runtime_artifacts(monkeypatch, tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / ".claw").mkdir()
+    (workspace / ".clawtune").mkdir()
     (workspace / ".local").mkdir()
     (workspace / "AGENTS.md").write_text("tracked instructions\n", encoding="utf-8")
     (workspace / "HEARTBEAT.md").write_text("runtime\n", encoding="utf-8")
@@ -3043,19 +3056,19 @@ def test_host_sandbox_cleans_only_untracked_runtime_artifacts(monkeypatch, tmp_p
         seen.append(relative_path)
         return Result(0 if relative_path == "AGENTS.md" else 1)
 
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
 
     _cleanup_runtime_artifacts(workspace)
 
     assert (workspace / "AGENTS.md").exists()
-    assert not (workspace / ".claw").exists()
+    assert not (workspace / ".clawtune").exists()
     assert not (workspace / ".local").exists()
     assert not (workspace / "HEARTBEAT.md").exists()
     assert not (workspace / "openclaw-workspace-state.json").exists()
     assert "AGENTS.md" in seen
 
 
-def test_host_sandbox_workspace_reset_falls_back_to_docker_on_permission_error(
+def test_host_openclaw_workspace_reset_falls_back_to_docker_on_permission_error(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -3078,9 +3091,9 @@ def test_host_sandbox_workspace_reset_falls_back_to_docker_on_permission_error(
         calls.append(list(cmd))
         return Result()
 
-    monkeypatch.setattr("swe_rebench.host_sandbox.shutil.rmtree", fake_rmtree)
-    monkeypatch.setattr("swe_rebench.host_sandbox.shutil.which", fake_which)
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw.shutil.rmtree", fake_rmtree)
+    monkeypatch.setattr("swe_rebench.host_openclaw.shutil.which", fake_which)
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
 
     _reset_directory(
         workspace,
@@ -3141,8 +3154,8 @@ def test_runner_trace_reset_falls_back_to_docker_on_permission_error(
         return Result()
 
     monkeypatch.setattr("swe_rebench.runner.shutil.rmtree", fake_rmtree)
-    monkeypatch.setattr("swe_rebench.host_sandbox.shutil.which", fake_which)
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw.shutil.which", fake_which)
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
 
     _reset_task_trace_dir(
         trace_root,
@@ -3184,8 +3197,8 @@ def test_runner_trace_reset_falls_back_to_docker_on_directory_not_empty(
         return Result()
 
     monkeypatch.setattr("swe_rebench.runner.shutil.rmtree", fake_rmtree)
-    monkeypatch.setattr("swe_rebench.host_sandbox.shutil.which", fake_which)
-    monkeypatch.setattr("swe_rebench.host_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("swe_rebench.host_openclaw.shutil.which", fake_which)
+    monkeypatch.setattr("swe_rebench.host_openclaw.subprocess.run", fake_run)
 
     _reset_task_trace_dir(trace_root, trace_dir, docker_cleanup_image="task-image:latest")
 
@@ -3337,7 +3350,7 @@ def test_task_artifacts_summarizes_patch_and_result_summary(tmp_path: Path) -> N
     (tmp_path / "sidecar-stderr.txt").write_text("bcc diagnostics\n", encoding="utf-8")
     container_log = "container done\n"
     (tmp_path / "container.log").write_text(container_log, encoding="utf-8")
-    (tmp_path / "tool_resource_preflight.json").write_text('{"stage2_ready": true}\n', encoding="utf-8")
+    (tmp_path / "tool_resource_preflight.json").write_text('{"ebpf_ready": true}\n', encoding="utf-8")
     (tmp_path / "tool_resource_preflight_host.json").write_text('{"bcc_import": {"ok": true}}\n', encoding="utf-8")
     (tmp_path / "result_summary.json").write_text(
         json.dumps({"has_patch": True, "patch_bytes": 19}),
@@ -3491,23 +3504,23 @@ def test_docker_cli_uses_wait_exit_code_with_rm_container(monkeypatch, tmp_path:
         client=None,
         image="image:latest",
         task_id="task-1",
-        bundle_dir=tmp_path,
+        runtime_assets_dir=tmp_path,
         trace_dir=tmp_path / "trace",
         problem_statement="fix",
         config=config.docker,
         llm_api_key="sk-test",
         llm_upstream_url="https://example.invalid",
         timeout_seconds=10,
-        env_extra={"AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED": "true"},
+        env_extra={"CLAWTUNE_TOOL_RESOURCE_EBPF_REQUIRED": "true"},
     )
 
     assert result.exit_code == 7
     assert not any(call[:2] == ["docker", "inspect"] for call in calls)
     docker_run = calls[0]
     expected_prefix = sandbox_container_prefix("docker:task-1")
-    assert f"AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX={expected_prefix}" in docker_run
-    assert "AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED=false" in docker_run
-    assert "CLAW_CGROUP_REQUIRED=0" in docker_run
+    assert f"CLAWTUNE_DOCKER_EXEC_CONTAINER_PREFIX={expected_prefix}" in docker_run
+    assert "CLAWTUNE_TOOL_RESOURCE_EBPF_REQUIRED=false" in docker_run
+    assert "CLAWTUNE_CGROUP_REQUIRED=0" in docker_run
     assert (tmp_path / "trace" / "container.log").read_text(encoding="utf-8") == "container output\n"
 
 
@@ -3560,7 +3573,7 @@ def test_docker_cli_wait_failure_stops_container_before_return(
         client=None,
         image="image:latest",
         task_id="task-wait-failure",
-        bundle_dir=tmp_path,
+        runtime_assets_dir=tmp_path,
         trace_dir=tmp_path / "trace",
         problem_statement="fix",
         config=config.docker,
@@ -3613,7 +3626,7 @@ def test_docker_sdk_remove_failure_is_not_reported_as_quiesced(
             client=client,
             image="image:latest",
             task_id="task-sdk-cleanup",
-            bundle_dir=tmp_path,
+            runtime_assets_dir=tmp_path,
             trace_dir=tmp_path / "trace",
             problem_statement="fix",
             config=config.docker,
@@ -3777,7 +3790,7 @@ def test_docker_cli_adds_discovered_kernel_header_mounts(
         client=None,
         image="image:latest",
         task_id="task-headers",
-        bundle_dir=tmp_path,
+        runtime_assets_dir=tmp_path,
         trace_dir=tmp_path / "trace",
         problem_statement="fix",
         config=config.docker,
@@ -3831,18 +3844,18 @@ docker:
         client=None,
         image="image:latest",
         task_id="task-1",
-        bundle_dir=tmp_path,
+        runtime_assets_dir=tmp_path,
         trace_dir=tmp_path / "trace",
         problem_statement="fix",
         config=config.docker,
         llm_api_key="sk-test",
         llm_upstream_url="https://example.invalid",
         timeout_seconds=10,
-        stage2_required=True,
+        ebpf_required=True,
     )
 
-    assert "CLAW_CGROUP_REQUIRED=1" in calls[0]
-    assert "AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED=true" in calls[0]
+    assert "CLAWTUNE_CGROUP_REQUIRED=1" in calls[0]
+    assert "CLAWTUNE_TOOL_RESOURCE_EBPF_REQUIRED=true" in calls[0]
 
 
 def test_docker_cli_passes_configured_platform(monkeypatch, tmp_path: Path) -> None:
@@ -3881,7 +3894,7 @@ docker:
         client=None,
         image="image:latest",
         task_id="task-1",
-        bundle_dir=tmp_path,
+        runtime_assets_dir=tmp_path,
         trace_dir=tmp_path / "trace",
         problem_statement="fix",
         config=config.docker,
@@ -3923,28 +3936,28 @@ def test_entrypoint_generation_does_not_embed_api_key(tmp_path: Path) -> None:
         """
 llm:
   api_key: "sk-secret"
-bundle:
-  output_dir: "bundle"
+runtime_assets:
+  output_dir: "assets"
 """,
         encoding="utf-8",
     )
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
-    bundle_dir = tmp_path / "bundle"
-    bundle_dir.mkdir()
+    runtime_assets_dir = tmp_path / "assets"
+    runtime_assets_dir.mkdir()
 
-    _write_entrypoint(bundle_dir, config)
+    _write_entrypoint(runtime_assets_dir, config)
 
-    assert "sk-secret" not in (bundle_dir / "entrypoint.sh").read_text(encoding="utf-8")
+    assert "sk-secret" not in (runtime_assets_dir / "entrypoint.sh").read_text(encoding="utf-8")
 
 
 def test_prepare_rebuilds_plugin_dist_after_removing_stale_files(monkeypatch, tmp_path: Path) -> None:
-    plugin_dir = tmp_path / "packages" / "openclaw-plugin"
+    plugin_dir = tmp_path / "packages" / "clawtune-plugin"
     dist_dir = plugin_dir / "dist"
     dist_dir.mkdir(parents=True)
     (plugin_dir / "package.json").write_text('{"scripts":{"build":"tsc"}}\n', encoding="utf-8")
     (dist_dir / "stale.js").write_text("old runtime\n", encoding="utf-8")
-    bundle_dir = tmp_path / "bundle"
-    bundle_dir.mkdir()
+    runtime_assets_dir = tmp_path / "assets"
+    runtime_assets_dir.mkdir()
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -3966,12 +3979,12 @@ def test_prepare_rebuilds_plugin_dist_after_removing_stale_files(monkeypatch, tm
     monkeypatch.setattr("swe_rebench.prepare.shutil.which", fake_which)
     monkeypatch.setattr("swe_rebench.prepare.subprocess.run", fake_run)
 
-    _build_plugin_dist(tmp_path, bundle_dir, config)
+    _build_plugin_dist(tmp_path, runtime_assets_dir, config)
 
     assert calls == [["/usr/bin/npm", "run", "build"]]
     assert not (dist_dir / "stale.js").exists()
     assert (dist_dir / "index.js").read_text(encoding="utf-8") == "fresh runtime\n"
-    assert (bundle_dir / "plugin-build.log").exists()
+    assert (runtime_assets_dir / "plugin-build.log").exists()
 
 
 def test_prepare_restores_root_built_dist_to_sudo_caller(monkeypatch, tmp_path: Path) -> None:
@@ -3999,19 +4012,19 @@ def test_prepare_restores_root_built_dist_to_sudo_caller(monkeypatch, tmp_path: 
     assert all(item[1:] == (1001, 1002, False) for item in calls)
 
 
-def test_bundle_stale_check_ignores_dist_but_tracks_source(tmp_path: Path) -> None:
-    plugin_dir = tmp_path / "packages" / "openclaw-plugin"
-    scheduler_dir = tmp_path / "services" / "scheduler"
-    bundle_dir = tmp_path / "bundle"
+def test_runtime_assets_stale_check_ignores_dist_but_tracks_source(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "packages" / "clawtune-plugin"
+    sidecar_dir = tmp_path / "services" / "sidecar"
+    runtime_assets_dir = tmp_path / "assets"
     (plugin_dir / "src").mkdir(parents=True)
     (plugin_dir / "dist").mkdir()
-    scheduler_dir.mkdir(parents=True)
-    bundle_dir.mkdir()
+    sidecar_dir.mkdir(parents=True)
+    runtime_assets_dir.mkdir()
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
 
-    marker = bundle_dir / "entrypoint.sh"
+    marker = runtime_assets_dir / "entrypoint.sh"
     marker.write_text("built\n", encoding="utf-8")
     future = marker.stat().st_mtime + 1000
     os.utime(marker, (future, future))
@@ -4020,51 +4033,51 @@ def test_bundle_stale_check_ignores_dist_but_tracks_source(tmp_path: Path) -> No
     for path in (
         plugin_dir / "src" / "index.ts",
         plugin_dir / "dist" / "index.js",
-        scheduler_dir / "pyproject.toml",
+        sidecar_dir / "pyproject.toml",
     ):
         path.write_text("old\n", encoding="utf-8")
         os.utime(path, (old, old))
-    _write_bundle_fingerprint(config, bundle_dir)
+    _write_runtime_assets_fingerprint(config, runtime_assets_dir)
 
-    assert bundle_needs_rebuild(config, bundle_dir) is False
+    assert runtime_assets_need_rebuild(config, runtime_assets_dir) is False
 
     source = plugin_dir / "src" / "index.ts"
     new = now + 100
     os.utime(source, (new, new))
 
-    assert bundle_needs_rebuild(config, bundle_dir) is True
+    assert runtime_assets_need_rebuild(config, runtime_assets_dir) is True
 
 
-def test_bundle_stale_check_rebuilds_when_fingerprint_is_missing(tmp_path: Path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    bundle_dir.mkdir()
+def test_runtime_assets_stale_check_rebuilds_when_fingerprint_is_missing(tmp_path: Path) -> None:
+    runtime_assets_dir = tmp_path / "assets"
+    runtime_assets_dir.mkdir()
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
-    (bundle_dir / "entrypoint.sh").write_text("built\n", encoding="utf-8")
+    (runtime_assets_dir / "entrypoint.sh").write_text("built\n", encoding="utf-8")
 
-    assert bundle_needs_rebuild(config, bundle_dir) is True
+    assert runtime_assets_need_rebuild(config, runtime_assets_dir) is True
 
 
-def test_bundle_stale_check_tracks_content_even_when_mtime_is_old(tmp_path: Path) -> None:
-    plugin_dir = tmp_path / "packages" / "openclaw-plugin"
-    scheduler_dir = tmp_path / "services" / "scheduler"
-    bundle_dir = tmp_path / "bundle"
+def test_runtime_assets_stale_check_tracks_content_even_when_mtime_is_old(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "packages" / "clawtune-plugin"
+    sidecar_dir = tmp_path / "services" / "sidecar"
+    runtime_assets_dir = tmp_path / "assets"
     (plugin_dir / "src").mkdir(parents=True)
-    scheduler_dir.mkdir(parents=True)
-    bundle_dir.mkdir()
+    sidecar_dir.mkdir(parents=True)
+    runtime_assets_dir.mkdir()
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
 
     source = plugin_dir / "src" / "index.ts"
     source.write_text("old\n", encoding="utf-8")
-    marker = bundle_dir / "entrypoint.sh"
+    marker = runtime_assets_dir / "entrypoint.sh"
     marker.write_text("built\n", encoding="utf-8")
-    _write_bundle_fingerprint(config, bundle_dir)
+    _write_runtime_assets_fingerprint(config, runtime_assets_dir)
     now = marker.stat().st_mtime
     source.write_text("new\n", encoding="utf-8")
     old = now - 100
     os.utime(source, (old, old))
 
-    assert bundle_needs_rebuild(config, bundle_dir) is True
+    assert runtime_assets_need_rebuild(config, runtime_assets_dir) is True

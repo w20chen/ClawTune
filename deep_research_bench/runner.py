@@ -7,12 +7,12 @@ Orchestrates batch execution of DeepResearchBench research tasks with OpenClaw
 OpenClaw agent whose tools execute in a very basic Docker sandbox image (no
 SWE-Bench task image, no /testbed export).  Telemetry is the read/edit/web-tool
 style (sandbox-container / per-PID docker-exec); the relaxed required-telemetry
-gate checks LLM + resource-sampled tool spans and does not require Stage-2
+gate checks LLM + resource-sampled tool spans and does not require eBPF
 exec clause artifacts.
 
 Usage::
 
-    # 1. Prepare the runtime bundle (once)
+    # 1. Prepare the runtime assets (once)
     python -m deep_research_bench.runner prepare
 
     # 2. Run tasks from a DeepResearchBench dataset
@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from swe_rebench.docker import ContainerResult
-from swe_rebench.prepare import build_bundle, bundle_needs_rebuild
+from swe_rebench.prepare import build_runtime_assets, runtime_assets_need_rebuild
 from swe_rebench.runner import (
     _agent_diagnostics,
     _count_lines,
@@ -145,7 +145,7 @@ def _drb_required_telemetry_error(
     """Relaxed required-telemetry gate for research tasks.
 
     Requires at least one LLM span and one resource-sampled tool span in the
-    v6 trace.  Stage-2 eBPF exec clause telemetry is never required: research
+    v6 trace.  eBPF exec-clause telemetry is never required: research
     tools are read/edit/web style, measured via the sandbox-container /
     per-PID scope.
 
@@ -186,7 +186,7 @@ def _result_trace_dir(config: DRBConfig, task: DRBTask) -> Path:
 def run_batch(
     config: DRBConfig,
     tasks: list[DRBTask],
-    bundle_dir: Path,
+    runtime_assets_dir: Path,
     *,
     export_after: bool = False,
 ) -> BatchReport:
@@ -243,7 +243,7 @@ def run_batch(
                 trace_dir=trace_dir,
                 config=config,
                 swe_cfg=swe_cfg,
-                bundle_dir=bundle_dir,
+                runtime_assets_dir=runtime_assets_dir,
             )
         except Exception as exc:
             # Host-sandbox cleanup failures must not hide telemetry that the
@@ -296,7 +296,7 @@ def run_batch(
             if tool_spans and sandbox_attributed == tool_spans:
                 result_dict["telemetry_audit"]["note"] = (
                     "tool spans are sandbox-container/per-PID attributed "
-                    "(research read/edit/web tools), not Stage-2 exec clauses"
+                    "(research read/edit/web tools), not eBPF exec clauses"
                 )
                 _log(
                     "       note: tool spans are sandbox-container/per-PID "
@@ -514,10 +514,10 @@ def main() -> None:
             help=f"Path to config YAML (default: {default_config})",
         )
 
-    prep = sub.add_parser("prepare", help="Build the runtime bundle")
+    prep = sub.add_parser("prepare", help="Build the runtime assets")
     add_config_arg(prep)
-    prep.add_argument("--bundle-dir", default=None,
-                      help="Override bundle output directory")
+    prep.add_argument("--runtime-assets-dir", default=None,
+                      help="Override runtime-assets output directory")
 
     run_p = sub.add_parser("run", help="Run DeepResearchBench tasks")
     add_config_arg(run_p)
@@ -569,10 +569,10 @@ def main() -> None:
     config = DRBConfig.from_yaml(config_path, repo_root=repo_root)
 
     if args.command == "prepare":
-        bundle_dir = Path(args.bundle_dir) if args.bundle_dir else None
-        if bundle_dir is not None:
-            config.bundle.output_dir = str(bundle_dir)
-        build_bundle(config.to_swe_runner_config())
+        runtime_assets_dir = Path(args.runtime_assets_dir) if args.runtime_assets_dir else None
+        if runtime_assets_dir is not None:
+            config.runtime_assets.output_dir = str(runtime_assets_dir)
+        build_runtime_assets(config.to_swe_runner_config())
         return
 
     if args.command == "run":
@@ -588,15 +588,15 @@ def main() -> None:
         if args.gate_required is not None:
             config.gate_required = args.gate_required
 
-        bundle_dir = repo_root / config.bundle.output_dir
+        runtime_assets_dir = repo_root / config.runtime_assets.output_dir
         should_prepare = args.do_prepare or (
-            not args.dry_run and bundle_needs_rebuild(
-                config.to_swe_runner_config(), bundle_dir
+            not args.dry_run and runtime_assets_need_rebuild(
+                config.to_swe_runner_config(), runtime_assets_dir
             )
         )
         if should_prepare:
-            _log("Preparing runtime bundle...")
-            build_bundle(config.to_swe_runner_config())
+            _log("Preparing runtime assets...")
+            build_runtime_assets(config.to_swe_runner_config())
 
         tasks = _load_tasks(args, repo_root)
         tasks = filter_tasks(
@@ -635,7 +635,7 @@ def main() -> None:
 
         _require_llm_api_key(config)
 
-        report = run_batch(config, tasks, bundle_dir, export_after=args.export)
+        report = run_batch(config, tasks, runtime_assets_dir, export_after=args.export)
         _print_report_json(report, enabled=args.print_report_json)
         if report.failed > 0:
             sys.exit(1)

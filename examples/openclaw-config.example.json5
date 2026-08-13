@@ -1,7 +1,7 @@
 {
   plugins: {
     entries: {
-      "agent-scheduler": {
+      "clawtune": {
         enabled: true,
         // OpenClaw protects agent_end for external plugins. ClawTune uses
         // that hook to finalize run-scoped writers and registry state.
@@ -14,28 +14,31 @@
           decisionTimeoutMs: 800,
           reportTimeoutMs: 800,
           failOpen: true,
-          sendRawParams: false,
-          recordRawTrace: true,
           logLevel: "info",
 
           // managed-wrapper is the primary path: rewrite exec commands to
-          // claw-launch so tool_resource Stage-2 eBPF clause telemetry can
+          // clawtune-launch so tool_resource eBPF clause telemetry can
           // start before the payload command.
           //
           // hook-only: observe/report without changing exec params.
-          // marker: inject CLAW_* env markers into built-in exec.
+          // marker: inject CLAWTUNE_* env markers into built-in exec.
           // managed-wrapper: rewrite exec command to launcherPath; requires
-          // securityBoundaryAccepted=true and a deployed claw-launch binary.
+          // securityBoundaryAccepted=true and a deployed clawtune-launch binary.
           executionBackend: "managed-wrapper",
-          launcherPath: "/opt/claw/bin/claw-launch",
-          collectorSocket: "/run/claw/collector.sock",
+          launcherPath: "/opt/clawtune/bin/clawtune-launch",
+          collectorSocket: "/run/clawtune/collector.sock",
           instrumentHosts: ["gateway"],
           instrumentTools: ["exec"],
           enableCgroup: true,
           enableAffinity: true,
           enableNuma: true,
           profilingMode: "off",
-          securityBoundaryAccepted: true
+          securityBoundaryAccepted: true,
+          trace: {
+            include_raw_events: true,
+            include_llm_messages: true,
+            include_tool_outputs: true
+          }
         }
       }
     }

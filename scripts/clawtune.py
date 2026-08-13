@@ -249,12 +249,12 @@ def create_venv(system_python: Path) -> None:
                 "python3-venv or python3 package."
             )
     # The venv deliberately sees distribution system packages so it can use
-    # BCC, but it must not satisfy scheduler dependencies from the invoking
+    # BCC, but it must not satisfy sidecar dependencies from the invoking
     # user's ~/.local site. The benchmark sidecar runs under sudo and cannot
     # see that user site, which otherwise makes setup pass and runtime fail.
     isolated_env = {**os.environ, "PYTHONNOUSERSITE": "1"}
     run(
-        [venv_python, "-m", "pip", "install", "-e", "services/scheduler[dev]"],
+        [venv_python, "-m", "pip", "install", "-e", "services/sidecar[dev]"],
         env=isolated_env,
     )
     runtime_probe = run(
@@ -263,11 +263,10 @@ def create_venv(system_python: Path) -> None:
             "-c",
             (
                 "from importlib.metadata import version\n"
-                "import agent_scheduler, fastapi, httpx, numpy, pydantic, "
+                "import clawtune_sidecar, fastapi, httpx, numpy, pydantic, "
                 "prometheus_client, psutil, typing_extensions, uvicorn\n"
-                "try: pkg_ver = version('clawtune-sidecar')\n"
-                "except: pkg_ver = version('agent-scheduler')\n"
-                "assert pkg_ver == '0.2.0'"
+                "pkg_ver = version('clawtune-sidecar')\n"
+                "assert pkg_ver == '0.1.0'"
             ),
         ],
         check=False,
@@ -277,7 +276,7 @@ def create_venv(system_python: Path) -> None:
     if runtime_probe.returncode != 0:
         detail = (runtime_probe.stderr or runtime_probe.stdout).strip()
         raise SetupError(
-            "Scheduler installation completed but its runtime dependencies "
+            "Sidecar installation completed but its runtime dependencies "
             f"cannot be imported with {venv_python}:\n{detail}"
         )
 
@@ -294,7 +293,7 @@ def copy_defaults() -> None:
 
 
 def repair_plugin_permissions() -> None:
-    dist = ROOT / "packages" / "openclaw-plugin" / "dist"
+    dist = ROOT / "packages" / "clawtune-plugin" / "dist"
     if not dist.exists():
         return
     generated_paths = [dist, *dist.rglob("*")]
@@ -308,7 +307,7 @@ def repair_plugin_permissions() -> None:
 
 def build_plugin() -> None:
     repair_plugin_permissions()
-    plugin = ROOT / "packages" / "openclaw-plugin"
+    plugin = ROOT / "packages" / "clawtune-plugin"
     log("Installing and building the OpenClaw plugin")
     subprocess.run(["npm", "install"], cwd=plugin, check=True)
     subprocess.run(["npm", "run", "build"], cwd=plugin, check=True)
@@ -326,7 +325,7 @@ def stale_clawtune_plugin_link(output: str) -> bool:
     return (
         "plugins.load.paths" in normalized
         and "plugin path not found" in normalized
-        and "openclaw-plugin" in normalized
+        and "clawtune-plugin" in normalized
     )
 
 
@@ -345,14 +344,14 @@ def backup_openclaw_config() -> Path | None:
 
 
 def remove_stale_clawtune_plugin_paths() -> bool:
-    """Remove stale openclaw-plugin references from the OpenClaw config.
+    """Remove stale clawtune-plugin references from the OpenClaw config.
 
     Cleans up two things that can cause OpenClaw to treat the config as
     invalid and auto-restore from its last-known-good backup:
 
     * ``plugins.load.paths`` entries whose leaf name is
-      ``openclaw-plugin`` (stale checkout paths).
-    * ``plugins.entries.agent-scheduler`` (orphaned entry that
+      ``clawtune-plugin`` (stale checkout paths).
+    * ``plugins.entries.clawtune`` (orphaned entry that
       references a plugin no longer in the registry).
       ``configure_openclaw()`` re-adds this entry with the correct
       configuration immediately after ``plugins install`` succeeds.
@@ -375,7 +374,7 @@ def remove_stale_clawtune_plugin_paths() -> bool:
     paths = load.get("paths") if isinstance(load, dict) else None
     if isinstance(paths, list):
         # Remove *every* plugins.load.paths entry whose leaf name is
-        # "openclaw-plugin", regardless of whether it still exists on
+        # "clawtune-plugin", regardless of whether it still exists on
         # disk.  A path may exist (old checkout directory is still
         # present) yet be unusable (e.g. a broken symlink or an
         # incompatible plugin version).
@@ -389,18 +388,18 @@ def remove_stale_clawtune_plugin_paths() -> bool:
                 return path.rstrip("/\\").replace("\\", "/").rsplit("/", 1)[-1]
 
             if isinstance(value, str):
-                return leaf(value) == "openclaw-plugin"
+                return leaf(value) == "clawtune-plugin"
             if isinstance(value, dict):
                 p = value.get("path")
                 if isinstance(p, str):
-                    return leaf(p) == "openclaw-plugin"
+                    return leaf(p) == "clawtune-plugin"
             return False
 
         retained = [v for v in paths if not _is_clawtune_plugin_entry(v)]
         removed = len(paths) - len(retained)
         log(
             f"plugins.load.paths: {len(paths)} total, "
-            f"{removed} openclaw-plugin entries removed, "
+            f"{removed} clawtune-plugin entries removed, "
             f"{len(retained)} retained"
         )
         if removed > 0:
@@ -413,22 +412,22 @@ def remove_stale_clawtune_plugin_paths() -> bool:
             "state rather than in plugins.load.paths."
         )
 
-    # ── Clean plugins.entries.agent-scheduler ─────────────────────────
-    # A stale agent-scheduler entry (plugin not found in registry) makes
+    # ── Clean plugins.entries.clawtune ─────────────────────────
+    # A stale clawtune entry (plugin not found in registry) makes
     # OpenClaw treat the config as invalid and auto-restore from its
     # last-known-good backup — even after plugins.load.paths is clean.
     # configure_openclaw() re-adds this entry with the correct
     # configuration after install succeeds, so removing it here is safe.
     if isinstance(plugins, dict):
         entries = plugins.get("entries")
-        if isinstance(entries, dict) and "agent-scheduler" in entries:
-            log("Removing stale plugins.entries.agent-scheduler from config")
-            del entries["agent-scheduler"]
+        if isinstance(entries, dict) and "clawtune" in entries:
+            log("Removing stale plugins.entries.clawtune from config")
+            del entries["clawtune"]
             changed = True
 
     if not changed:
         log(
-            "No stale openclaw-plugin references found in the OpenClaw "
+            "No stale clawtune-plugin references found in the OpenClaw "
             "config.  The stale reference lives in OpenClaw's internal "
             "plugin state rather than in the JSON config."
         )
@@ -506,18 +505,18 @@ def install_openclaw_plugin(openclaw: str, plugin: Path) -> None:
 def configure_openclaw() -> None:
     openclaw = shutil.which("openclaw")
     assert openclaw is not None
-    plugin = ROOT / "packages" / "openclaw-plugin"
+    plugin = ROOT / "packages" / "clawtune-plugin"
     install_openclaw_plugin(openclaw, plugin)
-    run([openclaw, "plugins", "enable", "agent-scheduler"])
-    # Resolve claw-launch: prefer the one on PATH (pip-installed), fall back
+    run([openclaw, "plugins", "enable", "clawtune"])
+    # Resolve clawtune-launch: prefer the one on PATH (pip-installed), fall back
     # to the repo .venv (dev checkout).
-    launcher = shutil.which("claw-launch")
+    launcher = shutil.which("clawtune-launch")
     if launcher is None:
-        launcher = str((VENV / "bin" / "claw-launch").resolve())
+        launcher = str((VENV / "bin" / "clawtune-launch").resolve())
     patch = {
         "plugins": {
             "entries": {
-                "agent-scheduler": {
+                "clawtune": {
                     "enabled": True,
                     # agent_end is a protected conversation lifecycle hook
                     # for non-bundled plugins. The handler uses only run/session
@@ -530,7 +529,11 @@ def configure_openclaw() -> None:
                         # command at runtime (well-known venv, installed
                         # module, or repo checkout).
                         "sidecarCommand": "",
-                        "recordRawTrace": True,
+                        "trace": {
+                            "include_raw_events": True,
+                            "include_llm_messages": True,
+                            "include_tool_outputs": True,
+                        },
                         "executionBackend": "managed-wrapper",
                         "launcherPath": launcher,
                         "enableCgroup": True,
@@ -585,7 +588,7 @@ def privileged_command(
         "env",
         f"PATH={runtime_path}",
         "PYTHONNOUSERSITE=1",
-        f"PYTHONPATH={ROOT}{os.pathsep}{ROOT / 'services' / 'scheduler' / 'src'}",
+        f"PYTHONPATH={ROOT}{os.pathsep}{ROOT / 'services' / 'sidecar' / 'src'}",
         f"BCC_KERNEL_SOURCE={build}",
         *[str(item) for item in module_args],
     ]
@@ -622,8 +625,8 @@ def sidecar_health() -> dict[str, object]:
         return {"running": False, "endpoint": endpoint, "error": str(exc)}
     identity_ok = (
         isinstance(payload, dict)
-        and payload.get("service") == "clawtune-scheduler"
-        and payload.get("schema_version") == "scheduler.health.v1"
+        and payload.get("service") == "clawtune-sidecar"
+        and payload.get("schema_version") == "clawtune.health.v1"
         and payload.get("ready") is True
     )
     return {
@@ -766,10 +769,10 @@ def sidecar() -> None:
 def sidecar_command() -> list[str]:
     return privileged_command(
         [
-            f"AGENT_SCHEDULER_ENV_FILE={ROOT / '.env'}",
+            f"CLAWTUNE_ENV_FILE={ROOT / '.env'}",
             VENV / "bin" / "python",
             "-m",
-            "agent_scheduler.main",
+            "clawtune_sidecar.main",
             "--host",
             "127.0.0.1",
             "--port",
@@ -780,7 +783,7 @@ def sidecar_command() -> list[str]:
             *(
                 name
                 for name in os.environ
-                if name.startswith(("LC_", "AGENT_SCHEDULER_", "CLAWTUNE_"))
+                if name.startswith(("LC_", "CLAWTUNE_"))
             ),
         ),
     )
@@ -1006,7 +1009,7 @@ def parser() -> argparse.ArgumentParser:
     )
     sub.add_parser("doctor", help="Show one consolidated environment report")
     sub.add_parser("check", help="Run the real eBPF compile/attach/exec smoke test")
-    sub.add_parser("sidecar", help="Start the privileged Scheduler sidecar")
+    sub.add_parser("sidecar", help="Start the privileged ClawTune sidecar")
     sub.add_parser("agent", help="Start eBPF sidecar, run OpenClaw agent, then clean up")
     sub.add_parser("benchmark", help="Run SWE-Rebench; remaining options go to the runner")
     sub.add_parser("replay", help="Replay one SWE-Rebench v6 trace; remaining options go to the runner")

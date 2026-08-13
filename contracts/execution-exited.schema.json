@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://openclaw.ai/schemas/scheduler/execution-exited.schema.json",
+  "$id": "https://openclaw.ai/schemas/clawtune/execution-exited.schema.json",
   "type": "object",
   "required": ["update_token", "exit_code", "signal"],
   "properties": {

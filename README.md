@@ -138,7 +138,7 @@ Traces are written under `traces/`.
 
 #### SWE-Rebench
 
-The default runtime is `host-openclaw-sandbox`; use `--runtime-mode
+The default runtime is `host-openclaw`; use `--runtime-mode
 container-openclaw` only when OpenClaw itself must run inside the task
 container. Start serially:
 
@@ -188,7 +188,7 @@ See [Deep Research Bench usage](deep_research_bench/README.md).
 
 - [Complete installation and first run](docs/getting-started.md)
 - [Configuration](docs/configuration.md)
-- [Scheduler sidecar reference](docs/sidecar.md)
+- [ClawTune Sidecar reference](docs/sidecar.md)
 - [Kunpeng and arm64](docs/arm-qemu.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Trace & protocol reference](docs/trace-schema.md)
@@ -204,8 +204,8 @@ See [Deep Research Bench usage](deep_research_bench/README.md).
 ```bash
 python tools/validate_contracts.py
 python -m pytest tests -q
-python -m pytest services/scheduler/tests -q
-cd packages/openclaw-plugin && npm test && npm run typecheck
+python -m pytest services/sidecar/tests -q
+cd packages/clawtune-plugin && npm test && npm run typecheck
 ```
 
 The JSON Schemas in `contracts/` are the public protocol source of truth.

@@ -6,12 +6,12 @@
 
 # ── LLM Provider ──────────────────────────────────────────────────
 runtime:
-  # Maintained default: OpenClaw and the privileged Stage-2 sidecar run on the
+  # Maintained default: OpenClaw and the privileged eBPF sidecar run on the
   # host; tools execute in OpenClaw's Docker sandbox.
-  mode: "host-openclaw-sandbox"
+  mode: "host-openclaw"
 
   # Strict eBPF clause telemetry. Set false only for explicit troubleshooting.
-  stage2_required: true
+  ebpf_required: true
 
 llm:
   # API key for the upstream LLM provider (required)
@@ -91,14 +91,14 @@ output:
   # Set to empty string to disable.
   flat_export_dir: "./swe_rebench/.runtime/export"
 
-# ── Runtime Bundle ────────────────────────────────────────────────
-bundle:
+# ── Runtime Assets ────────────────────────────────────────────────
+runtime_assets:
   # Source directories (relative to repo root).
-  plugin_source: "packages/openclaw-plugin"
-  scheduler_source: "services/scheduler"
+  plugin_source: "packages/clawtune-plugin"
+  sidecar_source: "services/sidecar"
 
-  # Generated runtime files stay outside the Git-tracked bundle template.
-  output_dir: "swe_rebench/.runtime/bundle"
+  # Generated runtime files stay outside the Git-tracked source tree.
+  output_dir: "swe_rebench/.runtime/assets"
 
 # ── Agent ─────────────────────────────────────────────────────────
 agent:

@@ -7,7 +7,7 @@ Usage::
         --train-frac 0.8 --seed 42 --out legacy_eval/.runtime/report.json
     python -m legacy_eval --dataset <dataset-root> --max-train-tasks 4 --max-test-tasks 2  # smoke
 
-Run from anywhere; the scheduler source path is bootstrapped automatically.
+Run from anywhere; the sidecar source path is bootstrapped automatically.
 """
 
 from __future__ import annotations

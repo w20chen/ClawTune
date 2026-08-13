@@ -7,11 +7,11 @@ Legacy layout (per task ``<org>__<repo>-<pr>``)::
 
     <task_dir>/
       attempt_1/
-        clause_telemetry.json   # Stage-2 clause artifact (ClawTune-valid)
+        clause_telemetry.json   # eBPF clause artifact (ClawTune-valid)
         trace.jsonl             # action-level trace (llm_call + tool_exec)
         ...                     # resources.json etc. (unused here)
 
-The clause artifact is structurally identical to ClawTune's own Stage-2
+The clause artifact is structurally identical to ClawTune's own eBPF
 clause telemetry, so this module reuses the native validator
 (``tool_resource.sdk._load_valid_artifact``) verbatim and extracts
 ``ClauseEvent`` records (one per measured executable clause).  ``trace.jsonl``
@@ -40,7 +40,7 @@ from legacy_eval._bootstrap import ensure_paths
 
 ensure_paths()
 
-from agent_scheduler.tool_resource_commands import extract_command  # noqa: E402
+from clawtune_sidecar.tool_resource_commands import extract_command  # noqa: E402
 from tool_resource.sdk import _load_valid_artifact  # noqa: E402
 from tool_time._lattice_vendor.normalize import is_trivial_pipe_tool  # noqa: E402
 
@@ -127,7 +127,7 @@ def parse_clause_artifact(path: Path, repo: str) -> list[ClauseEvent]:
     """Validate one legacy clause artifact and extract measured clauses.
 
     Raises ``ValueError`` when the artifact does not pass ClawTune's native
-    Stage-2 validation (identical schema), so invalid artifacts are reported
+    eBPF validation (identical schema), so invalid artifacts are reported
     rather than silently skipped.
     """
 

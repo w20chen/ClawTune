@@ -100,7 +100,7 @@ file when a site already manages secrets that way.
 
 Edit `swe_rebench/config.yaml` (or `deep_research_bench/config.yaml` for Deep
 Research Bench) and set the upstream URL and model names. Most
-users do not need to change the runtime, Docker privilege, cgroup, bundle, or
+users do not need to change the runtime, Docker privilege, cgroup, runtime assets, or
 output sections. On arm64, the SWE-Rebench wrapper defaults the Docker platform
 to `linux/amd64`. An explicitly exported `SWE_REBENCH_DOCKER_PLATFORM` takes
 priority; x86 stays native by default. Deep Research Bench uses a multi-arch
@@ -118,7 +118,7 @@ http://127.0.0.1:8765/v1
 
 ClawTune forwards the authorization header to the upstream provider. If the
 upstream URL is not DeepSeek-compatible, set
-`AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL` in `.env` and restart the sidecar.
+`CLAWTUNE_LLM_UPSTREAM_BASE_URL` in `.env` and restart the sidecar.
 
 ## Start and Verify
 
@@ -219,7 +219,7 @@ After pulling commits, rerun the same idempotent setup command:
 python3 scripts/clawtune.py setup
 ```
 
-It rebuilds the plugin, refreshes the editable Scheduler installation, retains
+It rebuilds the plugin, refreshes the editable Sidecar installation, retains
 your existing `.env` and benchmark config, validates the current OpenClaw
 schema, and verifies eBPF again.
 

@@ -1,11 +1,11 @@
 """
-Runtime bundle preparation.
+Runtime assets preparation.
 
 Assembles a self-contained directory that is volume-mounted into every
-swe-rebench container at ``/claw``.  The bundle includes:
+swe-rebench container at ``/clawtune``.  The runtime assets include:
 
 - The OpenClaw plugin source (``plugin/``)
-- The scheduler sidecar source (``scheduler/``)
+- The ClawTune Sidecar source (``sidecar/``)
 - Generated entrypoint and setup scripts
 - Generated OpenClaw plugin config (pointing at localhost:8765)
 """
@@ -24,7 +24,7 @@ from typing import Any
 
 from swe_rebench.config import RunnerConfig
 
-_BUNDLE_FINGERPRINT_FILE = "bundle-source-fingerprint.json"
+_RUNTIME_ASSETS_FINGERPRINT_FILE = "runtime-assets-source-fingerprint.json"
 
 
 _PLUGIN_CONFIG: dict[str, Any] = {
@@ -37,12 +37,10 @@ _PLUGIN_CONFIG: dict[str, Any] = {
     # calls with the plugin's generic 800 ms default.
     "reportTimeoutMs": 10000,
     "failOpen": True,
-    "sendRawParams": False,
-    "recordRawTrace": False,
     "logLevel": "info",
     "consoleMode": "verbose",
     "executionBackend": "managed-wrapper",
-    "launcherPath": "/opt/claw/bin/claw-launch",
+    "launcherPath": "/opt/clawtune/bin/clawtune-launch",
     # Run the shell wrapper through an explicit interpreter.  Recent OpenClaw
     # exec transports special-case direct script paths, which is unsuitable for
     # the managed launcher lifecycle.
@@ -90,49 +88,49 @@ fi
 '''
 
 
-def build_bundle(config: RunnerConfig) -> Path:
+def build_runtime_assets(config: RunnerConfig) -> Path:
     repo = config.repo_root
-    bundle_dir = repo / config.bundle.output_dir
-    if bundle_dir.exists():
-        _remove_tree(bundle_dir)
-    bundle_dir.mkdir(parents=True, exist_ok=True)
+    runtime_assets_dir = repo / config.runtime_assets.output_dir
+    if runtime_assets_dir.exists():
+        _remove_tree(runtime_assets_dir)
+    runtime_assets_dir.mkdir(parents=True, exist_ok=True)
 
-    _build_plugin_dist(repo, bundle_dir, config)
-    _copy_plugin(repo, bundle_dir, config)
-    _copy_scheduler(repo, bundle_dir, config)
-    _write_entrypoint(bundle_dir, config)
-    _write_setup_script(bundle_dir)
-    _write_plugin_config(bundle_dir)
-    _write_run_agent(bundle_dir, config)
-    _write_bundle_fingerprint(config, bundle_dir)
+    _build_plugin_dist(repo, runtime_assets_dir, config)
+    _copy_plugin(repo, runtime_assets_dir, config)
+    _copy_sidecar(repo, runtime_assets_dir, config)
+    _write_entrypoint(runtime_assets_dir, config)
+    _write_setup_script(runtime_assets_dir)
+    _write_plugin_config(runtime_assets_dir)
+    _write_run_agent(runtime_assets_dir, config)
+    _write_runtime_assets_fingerprint(config, runtime_assets_dir)
 
-    _log(f"Bundle assembled at {bundle_dir}")
-    _log(f"  plugin/     <- {repo / config.bundle.plugin_source}")
-    _log(f"  scheduler/  <- {repo / config.bundle.scheduler_source}")
-    return bundle_dir
+    _log(f"Runtime assets assembled at {runtime_assets_dir}")
+    _log(f"  plugin/     <- {repo / config.runtime_assets.plugin_source}")
+    _log(f"  sidecar/    <- {repo / config.runtime_assets.sidecar_source}")
+    return runtime_assets_dir
 
 
-def bundle_needs_rebuild(config: RunnerConfig, bundle_dir: Path | None = None) -> bool:
+def runtime_assets_need_rebuild(config: RunnerConfig, runtime_assets_dir: Path | None = None) -> bool:
     repo = config.repo_root
-    bundle = bundle_dir or repo / config.bundle.output_dir
-    marker = bundle / "entrypoint.sh"
+    assets = runtime_assets_dir or repo / config.runtime_assets.output_dir
+    marker = assets / "entrypoint.sh"
     if not marker.exists():
         return True
-    fingerprint_path = bundle / _BUNDLE_FINGERPRINT_FILE
+    fingerprint_path = assets / _RUNTIME_ASSETS_FINGERPRINT_FILE
     if not fingerprint_path.exists():
         return True
     try:
         previous = json.loads(fingerprint_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return True
-    current = _bundle_source_fingerprint(config)
+    current = _runtime_assets_source_fingerprint(config)
     if previous.get("digest") != current["digest"]:
         return True
 
     marker_mtime = marker.stat().st_mtime
     sources = [
-        repo / config.bundle.plugin_source,
-        repo / config.bundle.scheduler_source,
+        repo / config.runtime_assets.plugin_source,
+        repo / config.runtime_assets.sidecar_source,
         Path(__file__).resolve(),
     ]
     for source in sources:
@@ -141,24 +139,24 @@ def bundle_needs_rebuild(config: RunnerConfig, bundle_dir: Path | None = None) -
     return False
 
 
-def _write_bundle_fingerprint(config: RunnerConfig, bundle_dir: Path) -> None:
-    path = bundle_dir / _BUNDLE_FINGERPRINT_FILE
+def _write_runtime_assets_fingerprint(config: RunnerConfig, runtime_assets_dir: Path) -> None:
+    path = runtime_assets_dir / _RUNTIME_ASSETS_FINGERPRINT_FILE
     path.write_text(
-        json.dumps(_bundle_source_fingerprint(config), indent=2, sort_keys=True) + "\n",
+        json.dumps(_runtime_assets_source_fingerprint(config), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
 
-def _bundle_source_fingerprint(config: RunnerConfig) -> dict[str, Any]:
+def _runtime_assets_source_fingerprint(config: RunnerConfig) -> dict[str, Any]:
     repo = config.repo_root
     roots = [
-        repo / config.bundle.plugin_source,
-        repo / config.bundle.scheduler_source,
+        repo / config.runtime_assets.plugin_source,
+        repo / config.runtime_assets.sidecar_source,
         repo / "contracts",
         repo / "traces" / "tool-resource",
         Path(__file__).resolve(),
         repo / "swe_rebench" / "runner.py",
-        repo / "swe_rebench" / "host_sandbox.py",
+        repo / "swe_rebench" / "host_openclaw.py",
     ]
     files = _fingerprint_files(roots)
     digest = hashlib.sha256()
@@ -177,7 +175,7 @@ def _bundle_source_fingerprint(config: RunnerConfig) -> dict[str, Any]:
             digest.update(b"<unreadable>")
         digest.update(b"\0")
     return {
-        "schema": "swe_rebench_bundle_source_fingerprint_v1",
+        "schema": "swe_rebench_runtime_assets_source_fingerprint_v1",
         "digest": f"sha256:{digest.hexdigest()}",
         "file_count": len(entries),
         "files": entries,
@@ -215,9 +213,9 @@ def _fingerprint_files(roots: list[Path]) -> list[Path]:
     return sorted(set(files), key=lambda path: path.as_posix())
 
 
-def _build_plugin_dist(repo: Path, bundle_dir: Path, config: RunnerConfig) -> None:
+def _build_plugin_dist(repo: Path, runtime_assets_dir: Path, config: RunnerConfig) -> None:
     """Rebuild ignored plugin JS so git resets cannot leave stale runtime code."""
-    plugin_dir = repo / config.bundle.plugin_source
+    plugin_dir = repo / config.runtime_assets.plugin_source
     package_json = plugin_dir / "package.json"
     if not package_json.exists():
         raise FileNotFoundError(f"plugin package.json not found: {package_json}")
@@ -230,7 +228,7 @@ def _build_plugin_dist(repo: Path, bundle_dir: Path, config: RunnerConfig) -> No
     if npm is None:
         raise FileNotFoundError("required executable not found: npm")
 
-    log_path = bundle_dir / "plugin-build.log"
+    log_path = runtime_assets_dir / "plugin-build.log"
     result: subprocess.CompletedProcess[str] | None = None
     try:
         with log_path.open("w", encoding="utf-8") as log:
@@ -298,9 +296,9 @@ def _latest_source_mtime(path: Path) -> float:
     return latest
 
 
-def _copy_plugin(repo: Path, bundle_dir: Path, config: RunnerConfig) -> None:
-    src = repo / config.bundle.plugin_source
-    dst = bundle_dir / "plugin"
+def _copy_plugin(repo: Path, runtime_assets_dir: Path, config: RunnerConfig) -> None:
+    src = repo / config.runtime_assets.plugin_source
+    dst = runtime_assets_dir / "plugin"
     _copytree_selective(
         src,
         dst,
@@ -316,14 +314,14 @@ def _copy_plugin(repo: Path, bundle_dir: Path, config: RunnerConfig) -> None:
     _log(f"  Copied plugin source ({_count_files(dst)} files)")
 
 
-def _copy_scheduler(repo: Path, bundle_dir: Path, config: RunnerConfig) -> None:
-    src = repo / config.bundle.scheduler_source
-    dst = bundle_dir / "scheduler"
+def _copy_sidecar(repo: Path, runtime_assets_dir: Path, config: RunnerConfig) -> None:
+    src = repo / config.runtime_assets.sidecar_source
+    dst = runtime_assets_dir / "sidecar"
     _copytree_selective(src, dst, skip={
         "__pycache__", ".pytest_cache", ".pytest-tmp*", "*.egg-info", "traces",
-        "scheduler.sqlite3*", "dist", "*.whl", "*.tar.gz",
+        "sidecar.sqlite3*", "dist", "*.whl", "*.tar.gz",
     })
-    _log(f"  Copied scheduler source ({_count_files(dst)} files)")
+    _log(f"  Copied sidecar source ({_count_files(dst)} files)")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -332,17 +330,17 @@ def _copy_scheduler(repo: Path, bundle_dir: Path, config: RunnerConfig) -> None:
 
 _ENTRYPOINT_TEMPLATE = r"""#!/bin/bash
 set -euo pipefail
-CLAW_ROOT="/claw"
+CLAWTUNE_ROOT="/clawtune"
 TRACE_DIR="/traces"
 SIDECAR_PORT=8765
 """ + _BASH_PYTHON_DETECT + r"""
 
-echo "[claw] === Phase 1: environment setup ==="
-bash "$CLAW_ROOT/setup.sh"
+echo "[clawtune] === Phase 1: environment setup ==="
+bash "$CLAWTUNE_ROOT/setup.sh"
 
-echo "[claw] === Phase 2: start sidecar ==="
+echo "[clawtune] === Phase 2: start sidecar ==="
 if [ -z "${LLM_API_KEY:-}" ]; then
-    echo "[claw] FATAL: LLM_API_KEY is not set; refusing to run with the local sk-test placeholder"
+    echo "[clawtune] FATAL: LLM_API_KEY is not set; refusing to run with the local sk-test placeholder"
     mkdir -p "$TRACE_DIR"
     cat > "$TRACE_DIR/result_summary.json" <<EOF
 {
@@ -356,57 +354,55 @@ if [ -z "${LLM_API_KEY:-}" ]; then
 EOF
     exit 2
 fi
-export AGENT_SCHEDULER_DB_PATH="/tmp/scheduler.sqlite3"
-export AGENT_SCHEDULER_TRACE_DIR="$TRACE_DIR"
-export AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER="${AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER:-true}"
-export AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED="${AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED:-false}"
-export AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL="${LLM_UPSTREAM_BASE_URL:-__UPSTREAM__}"
-export AGENT_SCHEDULER_LLM_UPSTREAM_API_KEY="${LLM_API_KEY:-__LLM_KEY__}"
-export AGENT_SCHEDULER_LLM_PROXY_ENABLED="true"
+export CLAWTUNE_DB_PATH="/tmp/sidecar.sqlite3"
+export CLAWTUNE_TRACE_DIR="$TRACE_DIR"
+export CLAWTUNE_DOCKER_EXEC_OBSERVER="${CLAWTUNE_DOCKER_EXEC_OBSERVER:-true}"
+export CLAWTUNE_TOOL_RESOURCE_EBPF_REQUIRED="${CLAWTUNE_TOOL_RESOURCE_EBPF_REQUIRED:-false}"
+export CLAWTUNE_LLM_UPSTREAM_BASE_URL="${LLM_UPSTREAM_BASE_URL:-__UPSTREAM__}"
+export CLAWTUNE_LLM_UPSTREAM_API_KEY="${LLM_API_KEY:-__LLM_KEY__}"
+export CLAWTUNE_LLM_PROXY_ENABLED="true"
 # Model spoofing: the sidecar auto-normalises upstream /v1/models by default.
 # Setting both vars explicitly provides a synthetic fallback for cases where
 # the upstream /models endpoint is unreachable or returns unparseable data.
 # Set UPSTREAM_MODEL to a different value to translate model names.
-export AGENT_SCHEDULER_LLM_PROXY_EXPOSE_MODEL="${LLM_MODEL:-__MODEL_SHORT__}"
-export AGENT_SCHEDULER_LLM_PROXY_UPSTREAM_MODEL="${LLM_MODEL:-__MODEL_SHORT__}"
-export AGENT_SCHEDULER_POLICY="observe-only"
-export CLAW_SCHEDULER_ENDPOINT="http://127.0.0.1:$SIDECAR_PORT"
-export OPENCLAW_SCHEDULER_ENDPOINT="$CLAW_SCHEDULER_ENDPOINT"
-export CLAW_EXEC_WORKDIR="/testbed"
+export CLAWTUNE_LLM_PROXY_EXPOSE_MODEL="${LLM_MODEL:-__MODEL_SHORT__}"
+export CLAWTUNE_LLM_PROXY_UPSTREAM_MODEL="${LLM_MODEL:-__MODEL_SHORT__}"
+export CLAWTUNE_POLICY="observe-only"
+export CLAWTUNE_ENDPOINT="http://127.0.0.1:$SIDECAR_PORT"
+export CLAWTUNE_EXEC_WORKDIR="/testbed"
 export OPENCLAW_WORKSPACE_DIR="/testbed"
 export OPENCLAW_REPO_ROOT="/testbed"
 # Keep managed exec payloads in the task image's Python environment.  The
 # sidecar itself deliberately uses _CLW_PYTHON, but bare python3/pip issued by
 # an agent must resolve to the same task interpreter instead of /usr/bin.
 if [ -x /opt/miniconda3/envs/testbed/bin/python3 ]; then
-    export CLAW_TASK_PYTHON="/opt/miniconda3/envs/testbed/bin/python3"
+    export CLAWTUNE_TASK_PYTHON="/opt/miniconda3/envs/testbed/bin/python3"
 elif [ -x /opt/conda/envs/testbed/bin/python3 ]; then
-    export CLAW_TASK_PYTHON="/opt/conda/envs/testbed/bin/python3"
+    export CLAWTUNE_TASK_PYTHON="/opt/conda/envs/testbed/bin/python3"
 else
-    export CLAW_TASK_PYTHON="$_CLW_PYTHON"
+    export CLAWTUNE_TASK_PYTHON="$_CLW_PYTHON"
 fi
-export PATH="/opt/claw/bin:$(dirname "$CLAW_TASK_PYTHON"):$PATH"
+export PATH="/opt/clawtune/bin:$(dirname "$CLAWTUNE_TASK_PYTHON"):$PATH"
 CONTAINER_ID_CANDIDATE="$(hostname 2>/dev/null || true)"
 if [ -n "$CONTAINER_ID_CANDIDATE" ]; then
-    export AGENT_SCHEDULER_SANDBOX_CONTAINER_ID="${AGENT_SCHEDULER_SANDBOX_CONTAINER_ID:-$CONTAINER_ID_CANDIDATE}"
-    export CLAW_SANDBOX_CONTAINER_ID="${CLAW_SANDBOX_CONTAINER_ID:-$CONTAINER_ID_CANDIDATE}"
+    export CLAWTUNE_SANDBOX_CONTAINER_ID="${CLAWTUNE_SANDBOX_CONTAINER_ID:-$CONTAINER_ID_CANDIDATE}"
 fi
-CLAW_BCC_PYTHONPATH=""
-if [ -s /tmp/.claw_bcc_pythonpath ]; then
-    CLAW_BCC_PYTHONPATH="$(cat /tmp/.claw_bcc_pythonpath)"
+CLAWTUNE_BCC_PYTHONPATH=""
+if [ -s /tmp/.clawtune_bcc_pythonpath ]; then
+    CLAWTUNE_BCC_PYTHONPATH="$(cat /tmp/.clawtune_bcc_pythonpath)"
 fi
-CLAW_BCC_LD_PRELOAD=""
+CLAWTUNE_BCC_LD_PRELOAD=""
 # Keep the ABI repair out of the entrypoint environment.  This array is passed
 # only to the BCC preflight and sidecar process below, never to task payloads.
-CLAW_BCC_RUNTIME_ENV=()
-if [ -s /tmp/.claw_bcc_ld_preload ]; then
-    IFS= read -r CLAW_BCC_LD_PRELOAD < /tmp/.claw_bcc_ld_preload \
-        || CLAW_BCC_LD_PRELOAD=""
-    case "$CLAW_BCC_LD_PRELOAD" in
+CLAWTUNE_BCC_RUNTIME_ENV=()
+if [ -s /tmp/.clawtune_bcc_ld_preload ]; then
+    IFS= read -r CLAWTUNE_BCC_LD_PRELOAD < /tmp/.clawtune_bcc_ld_preload \
+        || CLAWTUNE_BCC_LD_PRELOAD=""
+    case "$CLAWTUNE_BCC_LD_PRELOAD" in
         /lib/*|/lib64/*|/usr/lib/*|/usr/lib64/*)
-            if [ -r "$CLAW_BCC_LD_PRELOAD" ]; then
-                CLAW_BCC_RUNTIME_ENV=(
-                    "LD_PRELOAD=${CLAW_BCC_LD_PRELOAD}${LD_PRELOAD:+:$LD_PRELOAD}"
+            if [ -r "$CLAWTUNE_BCC_LD_PRELOAD" ]; then
+                CLAWTUNE_BCC_RUNTIME_ENV=(
+                    "LD_PRELOAD=${CLAWTUNE_BCC_LD_PRELOAD}${LD_PRELOAD:+:$LD_PRELOAD}"
                 )
             fi
             ;;
@@ -418,7 +414,7 @@ import json
 import os
 from pathlib import Path
 
-root = Path(os.environ.get("CLAW_CGROUP_ROOT") or "/sys/fs/cgroup/claw")
+root = Path(os.environ.get("CLAWTUNE_CGROUP_ROOT") or "/sys/fs/cgroup/clawtune")
 mount = Path("/sys/fs/cgroup")
 self_path = None
 try:
@@ -430,7 +426,7 @@ try:
 except OSError:
     pass
 probe = {
-    "cgroup_required": os.environ.get("CLAW_CGROUP_REQUIRED") == "1",
+    "cgroup_required": os.environ.get("CLAWTUNE_CGROUP_REQUIRED") == "1",
     "cgroup_root": str(root),
     "cgroup_root_exists": root.exists(),
     "cgroup_root_parent_exists": root.parent.exists(),
@@ -438,13 +434,13 @@ probe = {
     "cgroup_mount_exists": mount.exists(),
     "cgroup_mount_writable": os.access(mount, os.W_OK),
     "self_cgroup_path": self_path,
-    "container_id": os.environ.get("AGENT_SCHEDULER_SANDBOX_CONTAINER_ID"),
+    "container_id": os.environ.get("CLAWTUNE_SANDBOX_CONTAINER_ID"),
 }
 print(json.dumps(probe, indent=2))
 PY
 
-env "${CLAW_BCC_RUNTIME_ENV[@]}" \
-    "PYTHONPATH=$CLAW_ROOT/scheduler/src${CLAW_BCC_PYTHONPATH:+:$CLAW_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" \
+env "${CLAWTUNE_BCC_RUNTIME_ENV[@]}" \
+    "PYTHONPATH=$CLAWTUNE_ROOT/sidecar/src${CLAWTUNE_BCC_PYTHONPATH:+:$CLAWTUNE_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" \
     "$_CLW_PYTHON" - <<'PY' > "$TRACE_DIR/tool_resource_preflight.json" 2>&1 || true
 import json
 import http.client
@@ -456,7 +452,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-container_id = os.environ.get("AGENT_SCHEDULER_SANDBOX_CONTAINER_ID") or os.environ.get("CLAW_SANDBOX_CONTAINER_ID")
+container_id = os.environ.get("CLAWTUNE_SANDBOX_CONTAINER_ID")
 docker = shutil.which("docker")
 docker_inspect = {"ok": False, "detail": "docker or container id unavailable"}
 
@@ -474,7 +470,7 @@ class _UnixHTTPConnection(http.client.HTTPConnection):
 
 
 def _inspect_from_socket(value):
-    socket_path = os.environ.get("AGENT_SCHEDULER_DOCKER_SOCKET", "/var/run/docker.sock")
+    socket_path = os.environ.get("CLAWTUNE_DOCKER_SOCKET", "/var/run/docker.sock")
     if not os.path.exists(socket_path):
         return None
     connection = _UnixHTTPConnection(socket_path)
@@ -529,7 +525,7 @@ try:
     builder_path = (
         Path(mvdan_client.__file__).with_name("_mvdan_adapter") / "build.sh"
     )
-    status_path = Path("/tmp/.claw_mvdan_adapter_status.json")
+    status_path = Path("/tmp/.clawtune_mvdan_adapter_status.json")
     try:
         provision_status = json.loads(status_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -596,7 +592,7 @@ preflight = {
     "bcc_import": bcc_import,
     "mvdan_adapter": mvdan_adapter,
     "tracefs": tracefs,
-    "stage2_ready": (
+    "ebpf_ready": (
         platform.system().lower() == "linux"
         and (not hasattr(os, "geteuid") or os.geteuid() == 0)
         and Path("/sys/fs/cgroup/cgroup.controllers").is_file()
@@ -610,7 +606,7 @@ preflight = {
 print(json.dumps(preflight, indent=2))
 PY
 
-case "${AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED,,}" in
+case "${CLAWTUNE_TOOL_RESOURCE_EBPF_REQUIRED,,}" in
     1|true|yes|on)
         if ! "$_CLW_PYTHON" - "$TRACE_DIR" <<'PY'
 import json
@@ -623,10 +619,10 @@ try:
     preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
 except (OSError, json.JSONDecodeError) as exc:
     preflight = {
-        "stage2_ready": False,
+        "ebpf_ready": False,
         "preflight_error": f"{type(exc).__name__}: {exc}",
     }
-if preflight.get("stage2_ready") is not True:
+if preflight.get("ebpf_ready") is not True:
     (trace_dir / "result_summary.json").write_text(
         json.dumps(
             {
@@ -637,7 +633,7 @@ if preflight.get("stage2_ready") is not True:
                 "testbed_exists": Path("/testbed").is_dir(),
                 "patch_bytes": 0,
                 "has_patch": False,
-                "error": "required Stage-2 preflight failed",
+                "error": "required eBPF preflight failed",
                 "tool_resource_preflight": preflight,
             },
             ensure_ascii=False,
@@ -650,54 +646,54 @@ if preflight.get("stage2_ready") is not True:
     raise SystemExit(1)
 PY
         then
-            echo "[claw] FATAL: required Stage-2 preflight failed"
+            echo "[clawtune] FATAL: required eBPF preflight failed"
             exit 3
         fi
         ;;
 esac
 
-cd "$CLAW_ROOT/scheduler"
+cd "$CLAWTUNE_ROOT/sidecar"
 
-# Install scheduler package (editable, best-effort)
+# Install sidecar package (editable, best-effort)
 $_CLW_PIP install -e . --quiet 2>/dev/null || $_CLW_PIP install . --quiet 2>/dev/null || true
 
 # Start sidecar.  BCC's system Python package is scoped to this process; do
 # not leak it into the agent's task interpreter.
-CLAW_SIDECAR_PYTHONPATH="src"
-if [ -n "$CLAW_BCC_PYTHONPATH" ]; then
-    CLAW_SIDECAR_PYTHONPATH="$CLAW_SIDECAR_PYTHONPATH:$CLAW_BCC_PYTHONPATH"
+CLAWTUNE_SIDECAR_PYTHONPATH="src"
+if [ -n "$CLAWTUNE_BCC_PYTHONPATH" ]; then
+    CLAWTUNE_SIDECAR_PYTHONPATH="$CLAWTUNE_SIDECAR_PYTHONPATH:$CLAWTUNE_BCC_PYTHONPATH"
 fi
-env "${CLAW_BCC_RUNTIME_ENV[@]}" \
-    "PYTHONPATH=$CLAW_SIDECAR_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}" \
-    "$_CLW_PYTHON" -m agent_scheduler.main \
+env "${CLAWTUNE_BCC_RUNTIME_ENV[@]}" \
+    "PYTHONPATH=$CLAWTUNE_SIDECAR_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}" \
+    "$_CLW_PYTHON" -m clawtune_sidecar.main \
     --host 127.0.0.1 --port "$SIDECAR_PORT" \
     > "$TRACE_DIR/sidecar.log" 2>&1 &
 SIDECAR_PID=$!
-echo "[claw] sidecar PID=$SIDECAR_PID"
+echo "[clawtune] sidecar PID=$SIDECAR_PID"
 
 # Install a stable launcher path for managed-wrapper exec instrumentation.
 # pip may place console scripts under /opt/conda/bin or /usr/local/bin
 # depending on the task image, while the plugin config points here.
-mkdir -p /opt/claw/bin
-cat > /opt/claw/bin/claw-launch <<'EOF_LAUNCHER'
+mkdir -p /opt/clawtune/bin
+cat > /opt/clawtune/bin/clawtune-launch <<'EOF_LAUNCHER'
 #!/bin/sh
-export CLAW_LAUNCHER_PYTHONPATH="/claw/scheduler/src"
-export PYTHONPATH="$CLAW_LAUNCHER_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}"
+export CLAWTUNE_LAUNCHER_PYTHONPATH="/clawtune/sidecar/src"
+export PYTHONPATH="$CLAWTUNE_LAUNCHER_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}"
 if [ -x /opt/conda/bin/python3 ]; then
-    exec /opt/conda/bin/python3 -m agent_scheduler.launcher "$@"
+    exec /opt/conda/bin/python3 -m clawtune_sidecar.launcher "$@"
 fi
-exec python3 -m agent_scheduler.launcher "$@"
+exec python3 -m clawtune_sidecar.launcher "$@"
 EOF_LAUNCHER
-chmod +x /opt/claw/bin/claw-launch
+chmod +x /opt/clawtune/bin/clawtune-launch
 for PIP_NAME in pip pip3; do
-    cat > "/opt/claw/bin/$PIP_NAME" <<'EOF_PIP'
+    cat > "/opt/clawtune/bin/$PIP_NAME" <<'EOF_PIP'
 #!/bin/sh
-if [ -n "${CLAW_TASK_PYTHON:-}" ] && [ -x "$CLAW_TASK_PYTHON" ]; then
-    exec "$CLAW_TASK_PYTHON" -m pip "$@"
+if [ -n "${CLAWTUNE_TASK_PYTHON:-}" ] && [ -x "$CLAWTUNE_TASK_PYTHON" ]; then
+    exec "$CLAWTUNE_TASK_PYTHON" -m pip "$@"
 fi
 exec python3 -m pip "$@"
 EOF_PIP
-    chmod +x "/opt/claw/bin/$PIP_NAME"
+    chmod +x "/opt/clawtune/bin/$PIP_NAME"
 done
 
 # Wait for ready
@@ -705,13 +701,13 @@ READY=0
 for i in $(seq 1 60); do
     if curl -sf "http://127.0.0.1:$SIDECAR_PORT/health/ready" >/dev/null 2>&1; then
         READY=1
-        echo "[claw] sidecar ready after ${i}s"
+        echo "[clawtune] sidecar ready after ${i}s"
         break
     fi
     sleep 1
 done
 if [ "$READY" -eq 0 ]; then
-    echo "[claw] FATAL: sidecar not ready after 60s"
+    echo "[clawtune] FATAL: sidecar not ready after 60s"
     {
         echo ""
         echo "=== sidecar readiness failure ==="
@@ -721,7 +717,7 @@ if [ "$READY" -eq 0 ]; then
     exit 1
 fi
 
-echo "[claw] === Phase 3: configure OpenClaw ==="
+echo "[clawtune] === Phase 3: configure OpenClaw ==="
 # vLLM provider requires VLLM_API_KEY (any value works).
 export VLLM_API_KEY="${LLM_API_KEY:-sk-test}"
 export OPENCLAW_MODEL_REF="${OPENCLAW_MODEL_REF:-__MODEL_FULL__}"
@@ -732,7 +728,7 @@ TASK_HINT_TEXT_SAFE="${TASK_HINT_TEXT:-}"
 cat > "$TRACE_DIR/task_manifest.json" <<EOF
 {
   "task_id": "${TASK_INSTANCE_ID:-}",
-  "repo": "${AGENT_SCHEDULER_TOOL_RESOURCE_REPO:-}",
+  "repo": "${CLAWTUNE_TOOL_RESOURCE_REPO:-}",
   "image": "${TASK_IMAGE:-}",
   "base_commit": "${TASK_BASE_COMMIT:-}",
   "model": "$LLM_MODEL",
@@ -757,17 +753,17 @@ echo ""
 
 echo "=== openclaw plugins install ==="
 # Copy plugin to writable location to avoid "suspicious ownership" error
-# from the read-only /claw bind mount (host uid ≠ container root uid).
-cp -r "$CLAW_ROOT/plugin" /tmp/plugin
+# from the read-only /clawtune bind mount (host uid ≠ container root uid).
+cp -r "$CLAWTUNE_ROOT/plugin" /tmp/plugin
 openclaw plugins install --link /tmp/plugin || echo "plugin install FAILED (exit=$?)"
 echo "=== openclaw plugins enable ==="
-openclaw plugins enable agent-scheduler || echo "plugin enable FAILED (exit=$?)"
+openclaw plugins enable clawtune || echo "plugin enable FAILED (exit=$?)"
 echo ""
 
-if [ -f "$CLAW_ROOT/openclaw-config.json5" ]; then
+if [ -f "$CLAWTUNE_ROOT/openclaw-config.json5" ]; then
     echo "=== openclaw config patch ==="
-    sed "s/__SANDBOX_CONTAINER_PREFIX__/${AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX:-}/g" \
-        "$CLAW_ROOT/openclaw-config.json5" \
+    sed "s/__SANDBOX_CONTAINER_PREFIX__/${CLAWTUNE_DOCKER_EXEC_CONTAINER_PREFIX:-}/g" \
+        "$CLAWTUNE_ROOT/openclaw-config.json5" \
         | openclaw config patch --stdin || {
             echo "config patch FAILED (exit=$?)"
             exit 1
@@ -790,9 +786,9 @@ echo ""
 echo "=== Phase 3 done ==="
 } > "$TRACE_DIR/phase3.log" 2>&1 || true
 
-echo "[claw] === Phase 4: run agent ==="
+echo "[clawtune] === Phase 4: run agent ==="
 AGENT_EXIT=0
-AGENT_CWD="$CLAW_ROOT/scheduler"
+AGENT_CWD="$CLAWTUNE_ROOT/sidecar"
 if [ -d /testbed ]; then
     AGENT_CWD="/testbed"
 fi
@@ -827,7 +823,7 @@ EOF_PROMPT
         printf '%s\n%s\n\n' "Hint:" "$TASK_HINT_TEXT" >> /tmp/problem_statement.txt
     fi
     cp /tmp/problem_statement.txt "$TRACE_DIR/agent_prompt.txt"
-    echo "[claw] running in $AGENT_CWD: openclaw agent (--local, --model $OPENCLAW_MODEL_REF) ..."
+    echo "[clawtune] running in $AGENT_CWD: openclaw agent (--local, --model $OPENCLAW_MODEL_REF) ..."
     (
         cd "$AGENT_CWD"
         # OpenClaw 2026.7.x uses `--agent main`; newer builds moved the agent
@@ -849,15 +845,15 @@ EOF_PROMPT
         fi
     ) > >(tee "$TRACE_DIR/agent-stdout.txt") 2> >(tee "$TRACE_DIR/agent-stderr.txt" >&2) || AGENT_EXIT=$?
 else
-    echo "[claw] WARNING: PROBLEM_STATEMENT not set"
+    echo "[clawtune] WARNING: PROBLEM_STATEMENT not set"
     (
         cd "$AGENT_CWD"
-        bash "$CLAW_ROOT/run_agent.sh"
+        bash "$CLAWTUNE_ROOT/run_agent.sh"
     ) > >(tee "$TRACE_DIR/agent-stdout.txt") 2> >(tee "$TRACE_DIR/agent-stderr.txt" >&2) || AGENT_EXIT=$?
 fi
-echo "[claw] agent exited code=$AGENT_EXIT"
+echo "[clawtune] agent exited code=$AGENT_EXIT"
 
-echo "[claw] === Phase 5: collect smoke-test artifacts ==="
+echo "[clawtune] === Phase 5: collect smoke-test artifacts ==="
 PATCH_BYTES=0
 if [ -d /testbed ]; then
     {
@@ -884,7 +880,7 @@ if [ -d /testbed ]; then
         PATCH_BYTES=$(wc -c < "$TRACE_DIR/model.patch" | tr -d ' ')
     fi
 else
-    echo "[claw] WARNING: /testbed not found" > "$TRACE_DIR/repo_status.txt"
+    echo "[clawtune] WARNING: /testbed not found" > "$TRACE_DIR/repo_status.txt"
 fi
 
 cat > "$TRACE_DIR/result_summary.json" <<EOF
@@ -897,26 +893,26 @@ cat > "$TRACE_DIR/result_summary.json" <<EOF
 }
 EOF
 
-echo "[claw] === Phase 6: stop sidecar ==="
+echo "[clawtune] === Phase 6: stop sidecar ==="
 kill "$SIDECAR_PID" 2>/dev/null || true
 wait "$SIDECAR_PID" 2>/dev/null || true
 sleep 2
 
 # Log traces
 if [ -f "$TRACE_DIR/trace.jsonl" ]; then
-    echo "[claw] trace: $TRACE_DIR/trace.jsonl ($(wc -l < "$TRACE_DIR/trace.jsonl") lines)"
+    echo "[clawtune] trace: $TRACE_DIR/trace.jsonl ($(wc -l < "$TRACE_DIR/trace.jsonl") lines)"
 elif compgen -G "$TRACE_DIR/*.jsonl" >/dev/null 2>&1; then
     for f in "$TRACE_DIR"/*.jsonl; do
-        echo "[claw] trace: $f ($(wc -l < "$f") lines)"
+        echo "[clawtune] trace: $f ($(wc -l < "$f") lines)"
     done
 else
-    echo "[claw] WARNING: no trace.jsonl found"
+    echo "[clawtune] WARNING: no trace.jsonl found"
 fi
 exit $AGENT_EXIT
 """
 
 
-def _write_entrypoint(bundle_dir: Path, config: RunnerConfig) -> None:
+def _write_entrypoint(runtime_assets_dir: Path, config: RunnerConfig) -> None:
     model_full = config.llm.openclaw_model_ref
     model_short = config.llm.model
     script = (_ENTRYPOINT_TEMPLATE
@@ -925,7 +921,7 @@ def _write_entrypoint(bundle_dir: Path, config: RunnerConfig) -> None:
               .replace("__MODEL_FULL__", model_full)
               .replace("__MODEL_SHORT__", model_short)
               .replace("__EXTRA__", " ".join(config.agent.extra_args)))
-    dest = bundle_dir / "entrypoint.sh"
+    dest = runtime_assets_dir / "entrypoint.sh"
     dest.write_text(script, encoding="utf-8")
     dest.chmod(dest.stat().st_mode | stat.S_IEXEC)
     _log(f"  Wrote entrypoint.sh ({len(script)} bytes)")
@@ -946,15 +942,15 @@ _SETUP_TEMPLATE = r"""#!/bin/bash
 # ────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-echo "[claw] container arch: $(uname -m)"
+echo "[clawtune] container arch: $(uname -m)"
 """ + _BASH_PYTHON_DETECT + r"""
-CLAW_ROOT="${CLAW_ROOT:-/claw}"
-SETUP_DONE="/tmp/.claw_setup_done"
+CLAWTUNE_ROOT="${CLAWTUNE_ROOT:-/clawtune}"
+SETUP_DONE="/tmp/.clawtune_setup_done"
 SETUP_REVISION="2:mvdan-protocol-3:mvdan-v3.13.1"
-MVDAN_STATUS="/tmp/.claw_mvdan_adapter_status.json"
+MVDAN_STATUS="/tmp/.clawtune_mvdan_adapter_status.json"
 
 _claw_mvdan_adapter_ready() {
-    env "PYTHONPATH=$CLAW_ROOT/scheduler/src${PYTHONPATH:+:$PYTHONPATH}" \
+    env "PYTHONPATH=$CLAWTUNE_ROOT/sidecar/src${PYTHONPATH:+:$PYTHONPATH}" \
         "$_CLW_PYTHON" -c \
         'from tool_resource.mvdan_client import MvdanClient, default_binary_path; client = MvdanClient(default_binary_path()); client.__enter__(); client.close()' \
         >/dev/null 2>&1
@@ -964,14 +960,14 @@ if [ -f "$SETUP_DONE" ] \
     && [ "$(cat "$SETUP_DONE" 2>/dev/null || true)" = "$SETUP_REVISION" ] \
     && _claw_mvdan_adapter_ready
 then
-    echo "[claw] setup already complete, skipping."
+    echo "[clawtune] setup already complete, skipping."
     return 0 2>/dev/null || exit 0
 fi
 if [ -f "$SETUP_DONE" ]; then
-    echo "[claw] stale setup marker or mvdan adapter; rerunning setup."
+    echo "[clawtune] stale setup marker or mvdan adapter; rerunning setup."
 fi
 
-echo "[claw] checking container system dependencies..."
+echo "[clawtune] checking container system dependencies..."
 
 # ── Detect package manager ──────────────────────────────────────
 if command -v apt-get &>/dev/null; then PKG_MGR="apt"
@@ -981,11 +977,11 @@ elif command -v apk &>/dev/null; then PKG_MGR="apk"
 else PKG_MGR="none"
 fi
 
-echo "[claw] package manager: $PKG_MGR"
+echo "[clawtune] package manager: $PKG_MGR"
 
 _claw_run_bounded() {
     if command -v timeout &>/dev/null; then
-        timeout --signal=TERM "${CLAW_SETUP_COMMAND_TIMEOUT_SECONDS:-300}" "$@"
+        timeout --signal=TERM "${CLAWTUNE_SETUP_COMMAND_TIMEOUT_SECONDS:-300}" "$@"
     else
         "$@"
     fi
@@ -1001,19 +997,19 @@ _claw_apt() {
 
 case "$PKG_MGR" in
     apt)
-        echo "[claw] refreshing apt metadata (network timeout: 20s, retries: 2)..."
+        echo "[clawtune] refreshing apt metadata (network timeout: 20s, retries: 2)..."
         if ! _claw_apt update; then
-            echo "[claw] FATAL: apt metadata refresh failed; check container DNS/proxy/mirror access"
+            echo "[clawtune] FATAL: apt metadata refresh failed; check container DNS/proxy/mirror access"
             exit 1
         fi
-        echo "[claw] apt metadata ready"
+        echo "[clawtune] apt metadata ready"
         ;;
     apk) apk update ;;
 esac
 
 # ── curl (needed for health checks + nodesource) ────────────────
 if ! command -v curl &>/dev/null; then
-    echo "[claw] installing curl..."
+    echo "[clawtune] installing curl..."
     case "$PKG_MGR" in
         apt) _claw_apt install -y -q curl ;;
         yum) yum install -y -q curl ;;
@@ -1024,7 +1020,7 @@ fi
 
 # ── Docker CLI (needed by sidecar DockerExecObserver) ───────────
 if ! command -v docker &>/dev/null; then
-    echo "[claw] installing docker CLI..."
+    echo "[clawtune] installing docker CLI..."
     case "$PKG_MGR" in
         apt) _claw_apt install -y -q docker.io || _claw_apt install -y -q docker-ce-cli || true ;;
         yum) yum install -y -q docker-cli 2>/dev/null || yum install -y -q docker 2>/dev/null || true ;;
@@ -1033,12 +1029,12 @@ if ! command -v docker &>/dev/null; then
     esac
 fi
 if command -v docker &>/dev/null; then
-    echo "[claw] docker CLI OK"
+    echo "[clawtune] docker CLI OK"
 else
-    echo "[claw] docker CLI not available (DockerExecObserver will idle)"
+    echo "[clawtune] docker CLI not available (DockerExecObserver will idle)"
 fi
 
-echo "[claw] installing BCC/eBPF dependencies (best-effort)..."
+echo "[clawtune] installing BCC/eBPF dependencies (best-effort)..."
 case "$PKG_MGR" in
     # libbpfcc's Python extension dynamically links libelf.so.1.  Keep this
     # container-only bootstrap fail-open, but install the runtime library
@@ -1060,11 +1056,11 @@ case "$PKG_MGR" in
     apk) apk add --no-cache clang llvm kmod linux-headers 2>/dev/null || true ;;
 esac
 if [ -d /usr/lib/python3/dist-packages/bcc ]; then
-    echo "/usr/lib/python3/dist-packages" > /tmp/.claw_bcc_pythonpath
+    echo "/usr/lib/python3/dist-packages" > /tmp/.clawtune_bcc_pythonpath
 else
-    _CLAW_BCC_PATH="$(find /usr/lib /usr/lib64 -path '*/site-packages/bcc' -type d -print -quit 2>/dev/null || true)"
-    if [ -n "$_CLAW_BCC_PATH" ]; then
-        dirname "$_CLAW_BCC_PATH" > /tmp/.claw_bcc_pythonpath
+    _CLAWTUNE_BCC_PATH="$(find /usr/lib /usr/lib64 -path '*/site-packages/bcc' -type d -print -quit 2>/dev/null || true)"
+    if [ -n "$_CLAWTUNE_BCC_PATH" ]; then
+        dirname "$_CLAWTUNE_BCC_PATH" > /tmp/.clawtune_bcc_pythonpath
     fi
 fi
 
@@ -1074,20 +1070,20 @@ fi
 # and libclang were installed from the system package manager.  Repair only
 # those observed container failures; all other optional BCC failures remain
 # fail-open.
-_CLAW_BCC_PYTHONPATH=""
-_CLAW_BCC_LD_PRELOAD=""
-_CLAW_BCC_PRELOAD_FILE="/tmp/.claw_bcc_ld_preload"
+_CLAWTUNE_BCC_PYTHONPATH=""
+_CLAWTUNE_BCC_LD_PRELOAD=""
+_CLAWTUNE_BCC_PRELOAD_FILE="/tmp/.clawtune_bcc_ld_preload"
 # SETUP_DONE returns before this point, so a completed setup keeps its verified
 # marker while a fresh or resumed setup cannot inherit a stale one.
-rm -f -- "$_CLAW_BCC_PRELOAD_FILE" || true
+rm -f -- "$_CLAWTUNE_BCC_PRELOAD_FILE" || true
 
 _claw_import_bcc() {
-    if [ -n "$_CLAW_BCC_LD_PRELOAD" ]; then
-        LD_PRELOAD="${_CLAW_BCC_LD_PRELOAD}${LD_PRELOAD:+:$LD_PRELOAD}" \
-        PYTHONPATH="${_CLAW_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" \
+    if [ -n "$_CLAWTUNE_BCC_LD_PRELOAD" ]; then
+        LD_PRELOAD="${_CLAWTUNE_BCC_LD_PRELOAD}${LD_PRELOAD:+:$LD_PRELOAD}" \
+        PYTHONPATH="${_CLAWTUNE_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" \
             "$_CLW_PYTHON" -c "import bcc"
     else
-        PYTHONPATH="${_CLAW_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" \
+        PYTHONPATH="${_CLAWTUNE_BCC_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}" \
             "$_CLW_PYTHON" -c "import bcc"
     fi
 }
@@ -1105,19 +1101,19 @@ _claw_try_system_libstdcxx() {
             /lib/*|/lib64/*|/usr/lib/*|/usr/lib64/*) ;;
             *) continue ;;
         esac
-        _CLAW_BCC_LD_PRELOAD="$candidate"
+        _CLAWTUNE_BCC_LD_PRELOAD="$candidate"
         if candidate_error="$(_claw_import_bcc 2>&1)"; then
-            if printf '%s\n' "$candidate" > "$_CLAW_BCC_PRELOAD_FILE" \
-                && chmod 0600 "$_CLAW_BCC_PRELOAD_FILE"
+            if printf '%s\n' "$candidate" > "$_CLAWTUNE_BCC_PRELOAD_FILE" \
+                && chmod 0600 "$_CLAWTUNE_BCC_PRELOAD_FILE"
             then
-                echo "[claw] BCC runtime repaired with system libstdc++ (sidecar-only): $candidate"
+                echo "[clawtune] BCC runtime repaired with system libstdc++ (sidecar-only): $candidate"
                 return 0
             fi
             candidate_error="verified $candidate but could not persist the sidecar-only preload marker"
-            rm -f "$_CLAW_BCC_PRELOAD_FILE" || true
+            rm -f "$_CLAWTUNE_BCC_PRELOAD_FILE" || true
         fi
-        _CLAW_BCC_LD_PRELOAD=""
-        _CLAW_BCC_PRELOAD_ERROR="$candidate_error"
+        _CLAWTUNE_BCC_LD_PRELOAD=""
+        _CLAWTUNE_BCC_PRELOAD_ERROR="$candidate_error"
     done < <(
         ldconfig -p 2>/dev/null \
             | awk '$1 == "libstdc++.so.6" && !seen[$NF]++ { print $NF }'
@@ -1125,62 +1121,62 @@ _claw_try_system_libstdcxx() {
     return 1
 }
 
-if [ -s /tmp/.claw_bcc_pythonpath ]; then
-    _CLAW_BCC_PYTHONPATH="$(cat /tmp/.claw_bcc_pythonpath)"
-    _CLAW_BCC_IMPORT_ERROR=""
-    if ! _CLAW_BCC_IMPORT_ERROR="$(_claw_import_bcc 2>&1)"; then
+if [ -s /tmp/.clawtune_bcc_pythonpath ]; then
+    _CLAWTUNE_BCC_PYTHONPATH="$(cat /tmp/.clawtune_bcc_pythonpath)"
+    _CLAWTUNE_BCC_IMPORT_ERROR=""
+    if ! _CLAWTUNE_BCC_IMPORT_ERROR="$(_claw_import_bcc 2>&1)"; then
         if [ "$PKG_MGR" = "apt" ]; then
-            case "$_CLAW_BCC_IMPORT_ERROR" in
+            case "$_CLAWTUNE_BCC_IMPORT_ERROR" in
                 *"libelf.so.1"*)
-                    echo "[claw] libelf.so.1 is missing; reinstalling libelf1..."
+                    echo "[clawtune] libelf.so.1 is missing; reinstalling libelf1..."
                     if _claw_apt install -y -q --reinstall libelf1; then
                         if command -v ldconfig &>/dev/null; then
                             ldconfig 2>/dev/null || true
                         fi
-                        if _CLAW_BCC_RECHECK_ERROR="$(_claw_import_bcc 2>&1)"; then
-                            _CLAW_BCC_IMPORT_ERROR=""
-                            echo "[claw] libelf1 reinstall repaired the BCC runtime"
+                        if _CLAWTUNE_BCC_RECHECK_ERROR="$(_claw_import_bcc 2>&1)"; then
+                            _CLAWTUNE_BCC_IMPORT_ERROR=""
+                            echo "[clawtune] libelf1 reinstall repaired the BCC runtime"
                         else
-                            _CLAW_BCC_IMPORT_ERROR="$_CLAW_BCC_RECHECK_ERROR"
+                            _CLAWTUNE_BCC_IMPORT_ERROR="$_CLAWTUNE_BCC_RECHECK_ERROR"
                         fi
                     else
-                        echo "[claw] libelf1 reinstall failed (Stage-2 will remain unavailable)"
+                        echo "[clawtune] libelf1 reinstall failed (eBPF telemetry will remain unavailable)"
                     fi
                     ;;
             esac
         fi
-        if [ -n "$_CLAW_BCC_IMPORT_ERROR" ]; then
-            case "$_CLAW_BCC_IMPORT_ERROR" in
+        if [ -n "$_CLAWTUNE_BCC_IMPORT_ERROR" ]; then
+            case "$_CLAWTUNE_BCC_IMPORT_ERROR" in
                 *"libstdc++.so.6"*GLIBCXX_*"not found"*)
-                    echo "[claw] Conda libstdc++ is incompatible with system BCC; probing a sidecar-only system preload..."
+                    echo "[clawtune] Conda libstdc++ is incompatible with system BCC; probing a sidecar-only system preload..."
                     if _claw_try_system_libstdcxx; then
-                        _CLAW_BCC_IMPORT_ERROR=""
+                        _CLAWTUNE_BCC_IMPORT_ERROR=""
                     else
-                        _CLAW_BCC_IMPORT_ERROR="${_CLAW_BCC_PRELOAD_ERROR:-$_CLAW_BCC_IMPORT_ERROR}"
+                        _CLAWTUNE_BCC_IMPORT_ERROR="${_CLAWTUNE_BCC_PRELOAD_ERROR:-$_CLAWTUNE_BCC_IMPORT_ERROR}"
                     fi
                     ;;
             esac
         fi
-        if [ -n "$_CLAW_BCC_IMPORT_ERROR" ]; then
-            echo "[claw] BCC remains unavailable after container repair probes: $_CLAW_BCC_IMPORT_ERROR"
+        if [ -n "$_CLAWTUNE_BCC_IMPORT_ERROR" ]; then
+            echo "[clawtune] BCC remains unavailable after container repair probes: $_CLAWTUNE_BCC_IMPORT_ERROR"
         fi
     fi
 fi
 
 # ── Python 3 (system fallback -- usually conda is already present) ──
 if ! $_CLW_PYTHON --version &>/dev/null 2>&1; then
-    echo "[claw] installing python3..."
+    echo "[clawtune] installing python3..."
     case "$PKG_MGR" in
         apt) _claw_apt install -y -q python3 python3-pip ;;
         yum) yum install -y -q python3 python3-pip ;;
         dnf) dnf install -y -q python3 python3-pip ;;
         apk) apk add --no-cache python3 py3-pip ;;
-        *)  echo "[claw] FATAL: cannot install python3" ; exit 1 ;;
+        *)  echo "[clawtune] FATAL: cannot install python3" ; exit 1 ;;
     esac
     _CLW_PYTHON="$(command -v python3)"
     _CLW_PIP="$(command -v pip3 2>/dev/null || command -v pip 2>/dev/null)"
 fi
-echo "[claw] python=$_CLW_PYTHON"
+echo "[clawtune] python=$_CLW_PYTHON"
 
 # ── Node.js 24 (direct tarball, no gpg needed) ──────────────────
 NODE_OK=0
@@ -1188,7 +1184,7 @@ if command -v node &>/dev/null && node --version &>/dev/null 2>&1; then
     NODE_OK=1
 fi
 if [ "$NODE_OK" -eq 0 ]; then
-    echo "[claw] installing Node.js (direct download)..."
+    echo "[clawtune] installing Node.js (direct download)..."
     NODE_ARCH="x64"
     case "$(uname -m)" in
         aarch64|arm64) NODE_ARCH="arm64" ;;
@@ -1198,7 +1194,7 @@ if [ "$NODE_OK" -eq 0 ]; then
     # architecture from the checksum manifest so ARM does not fall back to x64.
     NODE_BASE_URL="https://nodejs.org/dist/latest-v24.x"
     if ! NODE_SHASUMS="$(curl -fsSL --connect-timeout 15 --max-time 60 "$NODE_BASE_URL/SHASUMS256.txt")"; then
-        echo "[claw] FATAL: cannot resolve the latest Node.js 24 release"
+        echo "[clawtune] FATAL: cannot resolve the latest Node.js 24 release"
         exit 1
     fi
     LATEST="$(
@@ -1206,12 +1202,12 @@ if [ "$NODE_OK" -eq 0 ]; then
             | awk -v arch="$NODE_ARCH" '$2 ~ ("-linux-" arch "\\.tar\\.xz$") { print $2; exit }'
     )"
     if [ -z "$LATEST" ]; then
-        echo "[claw] FATAL: no Node.js 24 archive for architecture $NODE_ARCH"
+        echo "[clawtune] FATAL: no Node.js 24 archive for architecture $NODE_ARCH"
         exit 1
     fi
     if ! curl -fsSL --connect-timeout 15 --max-time 180 \
         "$NODE_BASE_URL/$LATEST" -o "/tmp/node.tar.xz"; then
-        echo "[claw] FATAL: Node.js download failed; check container DNS/proxy/network access"
+        echo "[clawtune] FATAL: Node.js download failed; check container DNS/proxy/network access"
         exit 1
     fi
     tar -xJf "/tmp/node.tar.xz" -C /usr/local --strip-components=1
@@ -1220,16 +1216,16 @@ fi
 
 # Verify node actually works
 if node --version &>/dev/null 2>&1; then
-    echo "[claw] node $(node --version) OK"
+    echo "[clawtune] node $(node --version) OK"
 else
-    echo "[claw] FATAL: node installed but does not run"
+    echo "[clawtune] FATAL: node installed but does not run"
     ldd "$(command -v node)" 2>&1 | grep "not found" || true
     exit 1
 fi
 
 # ── OpenClaw CLI ─────────────────────────────────────────────────
 if ! command -v openclaw &>/dev/null; then
-    echo "[claw] installing openclaw CLI..."
+    echo "[clawtune] installing openclaw CLI..."
     _claw_run_bounded env \
         npm_config_fetch_retries=2 \
         npm_config_fetch_timeout=120000 \
@@ -1238,61 +1234,61 @@ if ! command -v openclaw &>/dev/null; then
         npm_config_fetch_retries=2 \
         npm_config_fetch_timeout=120000 \
         npm install -g openclaw || {
-        echo "[claw] FATAL: openclaw install failed"
+        echo "[clawtune] FATAL: openclaw install failed"
         exit 1
     }
 fi
-echo "[claw] openclaw $(openclaw --version 2>&1 | head -1)"
+echo "[clawtune] openclaw $(openclaw --version 2>&1 | head -1)"
 
 # ── Sidecar Python deps ─────────────────────────────────────────
-echo "[claw] installing sidecar Python deps..."
+echo "[clawtune] installing sidecar Python deps..."
 $_CLW_PIP install --quiet \
     fastapi uvicorn pydantic psutil httpx prometheus-client numpy typing-extensions \
     2>&1 | tail -1
-if [ -s /tmp/.claw_bcc_pythonpath ]; then
-    export PYTHONPATH="$(cat /tmp/.claw_bcc_pythonpath)${PYTHONPATH:+:$PYTHONPATH}"
+if [ -s /tmp/.clawtune_bcc_pythonpath ]; then
+    export PYTHONPATH="$(cat /tmp/.clawtune_bcc_pythonpath)${PYTHONPATH:+:$PYTHONPATH}"
 fi
-_CLAW_BCC_RUNTIME_ENV=()
-if [ -s "$_CLAW_BCC_PRELOAD_FILE" ]; then
-    IFS= read -r _CLAW_BCC_LD_PRELOAD < "$_CLAW_BCC_PRELOAD_FILE" \
-        || _CLAW_BCC_LD_PRELOAD=""
-    case "$_CLAW_BCC_LD_PRELOAD" in
+_CLAWTUNE_BCC_RUNTIME_ENV=()
+if [ -s "$_CLAWTUNE_BCC_PRELOAD_FILE" ]; then
+    IFS= read -r _CLAWTUNE_BCC_LD_PRELOAD < "$_CLAWTUNE_BCC_PRELOAD_FILE" \
+        || _CLAWTUNE_BCC_LD_PRELOAD=""
+    case "$_CLAWTUNE_BCC_LD_PRELOAD" in
         /lib/*|/lib64/*|/usr/lib/*|/usr/lib64/*)
-            if [ -r "$_CLAW_BCC_LD_PRELOAD" ]; then
-                _CLAW_BCC_RUNTIME_ENV=(
-                    "LD_PRELOAD=${_CLAW_BCC_LD_PRELOAD}${LD_PRELOAD:+:$LD_PRELOAD}"
+            if [ -r "$_CLAWTUNE_BCC_LD_PRELOAD" ]; then
+                _CLAWTUNE_BCC_RUNTIME_ENV=(
+                    "LD_PRELOAD=${_CLAWTUNE_BCC_LD_PRELOAD}${LD_PRELOAD:+:$LD_PRELOAD}"
                 )
             else
-                _CLAW_BCC_LD_PRELOAD=""
+                _CLAWTUNE_BCC_LD_PRELOAD=""
             fi
             ;;
-        *) _CLAW_BCC_LD_PRELOAD="" ;;
+        *) _CLAWTUNE_BCC_LD_PRELOAD="" ;;
     esac
 fi
-if [ -n "$_CLAW_BCC_LD_PRELOAD" ]; then
-    if ! env "${_CLAW_BCC_RUNTIME_ENV[@]}" "$_CLW_PYTHON" \
-        -c "import fastapi, uvicorn, pydantic, psutil, numpy, typing_extensions, bcc; print('[claw] sidecar deps and BCC OK with system libstdc++')"
+if [ -n "$_CLAWTUNE_BCC_LD_PRELOAD" ]; then
+    if ! env "${_CLAWTUNE_BCC_RUNTIME_ENV[@]}" "$_CLW_PYTHON" \
+        -c "import fastapi, uvicorn, pydantic, psutil, numpy, typing_extensions, bcc; print('[clawtune] sidecar deps and BCC OK with system libstdc++')"
     then
-        echo "[claw] system libstdc++ preload failed the combined sidecar/BCC probe; disabling the Stage-2 preload"
-        rm -f "$_CLAW_BCC_PRELOAD_FILE" || true
-        _CLAW_BCC_LD_PRELOAD=""
-        _CLAW_BCC_RUNTIME_ENV=()
-        "$_CLW_PYTHON" -c "import fastapi, uvicorn, pydantic, psutil, numpy, typing_extensions; print('[claw] sidecar deps OK')"
+        echo "[clawtune] system libstdc++ preload failed the combined sidecar/BCC probe; disabling the eBPF preload"
+        rm -f "$_CLAWTUNE_BCC_PRELOAD_FILE" || true
+        _CLAWTUNE_BCC_LD_PRELOAD=""
+        _CLAWTUNE_BCC_RUNTIME_ENV=()
+        "$_CLW_PYTHON" -c "import fastapi, uvicorn, pydantic, psutil, numpy, typing_extensions; print('[clawtune] sidecar deps OK')"
     fi
 else
-    "$_CLW_PYTHON" -c "import fastapi, uvicorn, pydantic, psutil, numpy, typing_extensions; print('[claw] sidecar deps OK')"
+    "$_CLW_PYTHON" -c "import fastapi, uvicorn, pydantic, psutil, numpy, typing_extensions; print('[clawtune] sidecar deps OK')"
 fi
-env "${_CLAW_BCC_RUNTIME_ENV[@]}" "$_CLW_PYTHON" - <<'PY' || true
+env "${_CLAWTUNE_BCC_RUNTIME_ENV[@]}" "$_CLW_PYTHON" - <<'PY' || true
 try:
     import bcc  # noqa: F401
-    print("[claw] BCC Python binding OK")
+    print("[clawtune] BCC Python binding OK")
 except Exception as exc:
-    print(f"[claw] BCC Python binding unavailable: {type(exc).__name__}: {exc}")
+    print(f"[clawtune] BCC Python binding unavailable: {type(exc).__name__}: {exc}")
 PY
 
 # ── Done ────────────────────────────────────────────────────────
-echo "[claw] building/verifying pinned mvdan adapter..."
-if env "PYTHONPATH=$CLAW_ROOT/scheduler/src${PYTHONPATH:+:$PYTHONPATH}" \
+echo "[clawtune] building/verifying pinned mvdan adapter..."
+if env "PYTHONPATH=$CLAWTUNE_ROOT/sidecar/src${PYTHONPATH:+:$PYTHONPATH}" \
     "$_CLW_PYTHON" - "$MVDAN_STATUS" <<'PY'
 import json
 import os
@@ -1351,7 +1347,7 @@ os.replace(temporary_path, status_path)
 if not status["ok"]:
     raise SystemExit(1)
 print(
-    "[claw] mvdan adapter OK "
+    "[clawtune] mvdan adapter OK "
     f"({PARSER_NAME} {PARSER_VERSION}, protocol {ADAPTER_PROTOCOL_VERSION})"
 )
 PY
@@ -1361,15 +1357,15 @@ then
     mv -f "$SETUP_DONE.$$" "$SETUP_DONE"
 else
     rm -f -- "$SETUP_DONE"
-    echo "[claw] mvdan adapter unavailable (Stage-2 will remain unavailable)"
+    echo "[clawtune] mvdan adapter unavailable (eBPF telemetry will remain unavailable)"
 fi
 
-echo "[claw] setup complete."
+echo "[clawtune] setup complete."
 """
 
 
-def _write_setup_script(bundle_dir: Path) -> None:
-    dest = bundle_dir / "setup.sh"
+def _write_setup_script(runtime_assets_dir: Path) -> None:
+    dest = runtime_assets_dir / "setup.sh"
     dest.write_text(_SETUP_TEMPLATE, encoding="utf-8")
     dest.chmod(dest.stat().st_mode | stat.S_IEXEC)
     _log(f"  Wrote setup.sh ({len(_SETUP_TEMPLATE)} bytes)")
@@ -1381,8 +1377,8 @@ def _write_setup_script(bundle_dir: Path) -> None:
 
 _RUN_AGENT_TEMPLATE = r"""#!/bin/bash
 set -euo pipefail
-echo "[claw] running agent (fallback)..."
-echo "[claw] TASK_INSTANCE_ID=${TASK_INSTANCE_ID:-unknown}"
+echo "[clawtune] running agent (fallback)..."
+echo "[clawtune] TASK_INSTANCE_ID=${TASK_INSTANCE_ID:-unknown}"
 # OpenClaw 2026.7.x uses `--agent main`; newer builds moved the agent id to a
 # positional subcommand (`openclaw agent main ...`).  Match the installed CLI.
 # A flag build answers `agent main --help` with the parent usage or the "Too
@@ -1402,12 +1398,12 @@ fi
 """
 
 
-def _write_run_agent(bundle_dir: Path, config: RunnerConfig) -> None:
+def _write_run_agent(runtime_assets_dir: Path, config: RunnerConfig) -> None:
     model_full = config.llm.openclaw_model_ref
     script = (_RUN_AGENT_TEMPLATE
               .replace("__MODEL_FULL__", model_full)
               .replace("__EXTRA__", " ".join(config.agent.extra_args)))
-    dest = bundle_dir / "run_agent.sh"
+    dest = runtime_assets_dir / "run_agent.sh"
     dest.write_text(script, encoding="utf-8")
     dest.chmod(dest.stat().st_mode | stat.S_IEXEC)
     _log(f"  Wrote run_agent.sh ({len(script)} bytes)")
@@ -1415,7 +1411,7 @@ def _write_run_agent(bundle_dir: Path, config: RunnerConfig) -> None:
 
 # ── helpers ──────────────────────────────────────────────────────
 
-def _write_plugin_config(bundle_dir: Path) -> None:
+def _write_plugin_config(runtime_assets_dir: Path) -> None:
     cfg = json.dumps({
         "agents": {
             "defaults": {
@@ -1431,7 +1427,7 @@ def _write_plugin_config(bundle_dir: Path) -> None:
         "tools": {
             "exec": {
                 "pathPrepend": [
-                    "/opt/claw/bin",
+                    "/opt/clawtune/bin",
                     "/opt/miniconda3/envs/testbed/bin",
                     "/opt/conda/envs/testbed/bin",
                     "/opt/miniconda3/condabin",
@@ -1441,15 +1437,14 @@ def _write_plugin_config(bundle_dir: Path) -> None:
             },
         },
         "env": {
-            "CLAW_SCHEDULER_ENDPOINT": "http://127.0.0.1:8765",
-            "OPENCLAW_SCHEDULER_ENDPOINT": "http://127.0.0.1:8765",
-            "CLAW_EXEC_WORKDIR": "/testbed",
+            "CLAWTUNE_ENDPOINT": "http://127.0.0.1:8765",
+            "CLAWTUNE_EXEC_WORKDIR": "/testbed",
             "OPENCLAW_WORKSPACE_DIR": "/testbed",
             "OPENCLAW_REPO_ROOT": "/testbed",
         },
         "plugins": {
             "entries": {
-                "agent-scheduler": {
+                "clawtune": {
                     "enabled": True,
                     "hooks": {"allowConversationAccess": True},
                     "config": _PLUGIN_CONFIG,
@@ -1457,7 +1452,7 @@ def _write_plugin_config(bundle_dir: Path) -> None:
             }
         },
     }, indent=2) + "\n"
-    dest = bundle_dir / "openclaw-config.json5"
+    dest = runtime_assets_dir / "openclaw-config.json5"
     dest.write_text(cfg, encoding="utf-8")
     _log("  Wrote openclaw-config.json5")
 
@@ -1515,14 +1510,14 @@ def _log(msg: str) -> None:
 
 def main() -> None:
     import argparse
-    parser = argparse.ArgumentParser(description="Build the swe-rebench runtime bundle.")
+    parser = argparse.ArgumentParser(description="Build the swe-rebench runtime assets.")
     parser.add_argument("--config", default="swe_rebench/config.example.yaml")
     parser.add_argument("--repo-root", default=None)
     args = parser.parse_args()
     repo_root = Path(args.repo_root) if args.repo_root else _detect_repo_root()
     cfg = RunnerConfig.from_yaml(args.config, repo_root=repo_root)
-    bundle_path = build_bundle(cfg)
-    print(f"Bundle ready: {bundle_path}")
+    assets_path = build_runtime_assets(cfg)
+    print(f"Runtime assets ready: {assets_path}")
 
 
 def _detect_repo_root() -> Path:

@@ -8,7 +8,7 @@
 runtime:
   # OpenClaw and the privileged sidecar run on the host; tools execute in
   # OpenClaw's Docker sandbox.
-  mode: "host-openclaw-sandbox"
+  mode: "host-openclaw"
 
   # eBPF clause telemetry is the purpose of this project and fails closed by
   # default. Set false only for an explicit troubleshooting run whose output
@@ -62,8 +62,8 @@ docker:
   cap_add: []
 
   # Enable these when you need complete per-tool cgroup v2 sampling.
-  # They grant the task container write access to cgroupfs so claw-launch can
-  # create /sys/fs/cgroup/claw/<execution_id> instead of borrowing the
+  # They grant the task container write access to cgroupfs so clawtune-launch can
+  # create /sys/fs/cgroup/clawtune/<execution_id> instead of borrowing the
   # container root cgroup.
   privileged: true
   cgroupns_mode: "host"
@@ -104,14 +104,14 @@ output:
   # Set to empty string to disable.
   flat_export_dir: "./swe_rebench/.runtime/export"
 
-# ── Runtime Bundle ────────────────────────────────────────────────
-bundle:
+# ── Runtime Assets ────────────────────────────────────────────────
+runtime_assets:
   # Source directories (relative to repo root).
-  plugin_source: "packages/openclaw-plugin"
-  scheduler_source: "services/scheduler"
+  plugin_source: "packages/clawtune-plugin"
+  sidecar_source: "services/sidecar"
 
-  # Generated runtime files stay outside the Git-tracked bundle template.
-  output_dir: "swe_rebench/.runtime/bundle"
+  # Generated runtime files stay outside the Git-tracked source tree.
+  output_dir: "swe_rebench/.runtime/assets"
 
 # ── Agent ─────────────────────────────────────────────────────────
 agent:

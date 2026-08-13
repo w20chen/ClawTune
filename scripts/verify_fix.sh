@@ -7,8 +7,8 @@ PYTHON="${REPO_ROOT}/.venv/bin/python"
 if [[ ! -x "${PYTHON}" ]]; then
   PYTHON="$(command -v python3)"
 fi
-export PYTHONPATH="${REPO_ROOT}/services/scheduler/src${PYTHONPATH:+:${PYTHONPATH}}"
-export CLAWTUNE_TELEMETRY_SOURCE="${REPO_ROOT}/services/scheduler/src/tool_resource/telemetry.py"
+export PYTHONPATH="${REPO_ROOT}/services/sidecar/src${PYTHONPATH:+:${PYTHONPATH}}"
+export CLAWTUNE_TELEMETRY_SOURCE="${REPO_ROOT}/services/sidecar/src/tool_resource/telemetry.py"
 
 echo "=== Python version ==="
 "${PYTHON}" --version

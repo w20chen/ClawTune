@@ -1,0 +1,294 @@
+from __future__ import annotations
+
+import math
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+
+DEFAULT_LLM_UPSTREAM_BASE_URL = "https://api.deepseek.com"
+
+
+@dataclass(frozen=True)
+class SidecarConfig:
+    policy: str = "observe-only"
+    # 0 means derive the technical active-tool ceiling from effective CPU.
+    max_global_concurrency: int = 0
+    lease_ttl_ms: int = 300_000
+    admission_wait_ms: int = 5_000
+    # Capacity defaults scale with the CPUs actually available to the
+    # sidecar.  An explicit reserve takes precedence over the ratio; the
+    # optional budget caps tool work after the housekeeping reserve.
+    cpu_reserve_ratio: float = 0.05
+    cpu_reserve_cores: int | None = None
+    cpu_budget_cores: float | None = None
+    tool_resource_trace_paths: tuple[Path, ...] = ()
+    tool_resource_ebpf_trace_paths: tuple[Path, ...] = ()
+    tool_resource_latency_buckets_ms: tuple[float, ...] = (100.0, 500.0, 2_000.0, 10_000.0)
+    # KV-TTL cost proxy policy for the tool-resource prediction output.
+    # ``tool_resource_ttl_by_bucket_s`` holds one KV TTL (seconds) per latency
+    # bucket, including the open-ended tail bucket. Legacy edge-count policies
+    # imply a zero TTL for that tail. ``tool_resource_miss_penalty_s`` is an
+    # optional non-negative miss penalty added to the compatibility proxy cost.
+    tool_resource_ttl_by_bucket_s: tuple[float, ...] | None = None
+    tool_resource_miss_penalty_s: float | None = None
+    tool_resource_repo: str = "openclaw"
+    tool_resource_artifact_dir: Path | None = None
+    tool_resource_container_executable: str = "docker"
+    tool_resource_ebpf_required: bool = True
+    auth_token: str | None = None
+    trace_dir: Path = Path("traces")
+    trace_max_messages_bytes: int = 131_072  # 128 KiB, matches plugin default
+    resource_poll_interval_ms: int = 50
+    resource_timeline_max_points: int = 2_000
+    sandbox_cgroup_path: str | None = None
+    execution_cgroup_root: str | None = None
+    sandbox_container_id: str | None = None
+    sandbox_root_pid: int | None = None
+    docker_exec_observer_enabled: bool = False
+    docker_exec_container_prefix: str | None = None
+    docker_socket: str = "/var/run/docker.sock"
+    llm_proxy_enabled: bool = True
+    llm_proxy_upstream_base_url: str | None = None
+    llm_proxy_upstream_api_key: str | None = None
+    llm_proxy_debug_dump: bool = False
+    # Model name spoofing: expose a different model ID to OpenClaw than the
+    # real upstream model.  Useful when OpenClaw's provider (vllm, openai)
+    # validates model names against its own registry and rejects upstream
+    # model IDs it does not recognise.
+    #   expose_model  — model ID returned by sidecar /v1/models (what OpenClaw sees)
+    #   upstream_model — real model ID sent to the upstream LLM API
+    # If expose_model is set, /v1/models returns a synthetic list instead of
+    # proxying; if upstream_model is unset, it defaults to expose_model.
+    llm_proxy_expose_model: str | None = None
+    llm_proxy_upstream_model: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "SidecarConfig":
+        env_base = load_env_file()
+        trace = os.getenv("CLAWTUNE_TRACE_DIR")
+        tool_resource_traces = os.getenv("CLAWTUNE_TOOL_RESOURCE_TRACES")
+        tool_resource_ebpf_traces = os.getenv("CLAWTUNE_TOOL_RESOURCE_EBPF_TRACES")
+        tool_resource_artifact_dir = os.getenv("CLAWTUNE_TOOL_RESOURCE_ARTIFACT_DIR")
+        tool_resource_ttl_by_bucket_raw = os.getenv(
+            "CLAWTUNE_TOOL_RESOURCE_TTL_BY_BUCKET_S"
+        )
+        return cls(
+            policy=os.getenv("CLAWTUNE_POLICY", "observe-only"),
+            max_global_concurrency=_nonnegative_int_from_env(
+                "CLAWTUNE_MAX_GLOBAL_CONCURRENCY",
+                0,
+            ),
+            lease_ttl_ms=int(os.getenv("CLAWTUNE_LEASE_TTL_MS", "300000")),
+            admission_wait_ms=int(os.getenv("CLAWTUNE_ADMISSION_WAIT_MS", "5000")),
+            cpu_reserve_ratio=_ratio_from_env(
+                "CLAWTUNE_CPU_RESERVE_RATIO",
+                0.05,
+            ),
+            cpu_reserve_cores=_optional_nonnegative_int_from_env(
+                "CLAWTUNE_CPU_RESERVE_CORES"
+            ),
+            cpu_budget_cores=_optional_nonnegative_float_from_env(
+                "CLAWTUNE_CPU_BUDGET_CORES"
+            ),
+            tool_resource_trace_paths=tuple(
+                _resolve_path(item, env_base)
+                for item in _split_env_paths(tool_resource_traces)
+            ),
+            tool_resource_ebpf_trace_paths=tuple(
+                _resolve_path(item, env_base)
+                for item in _split_env_paths(tool_resource_ebpf_traces)
+            ),
+            tool_resource_latency_buckets_ms=tuple(
+                _parse_float_list(
+                    os.getenv("CLAWTUNE_TOOL_RESOURCE_LATENCY_BUCKETS_MS"),
+                    default=(100.0, 500.0, 2_000.0, 10_000.0),
+                )
+            ),
+            tool_resource_ttl_by_bucket_s=(
+                tuple(_parse_float_list(tool_resource_ttl_by_bucket_raw, default=()))
+                if tool_resource_ttl_by_bucket_raw is not None
+                and tool_resource_ttl_by_bucket_raw.strip()
+                else None
+            ),
+            tool_resource_miss_penalty_s=_optional_nonnegative_float_from_env(
+                "CLAWTUNE_TOOL_RESOURCE_MISS_PENALTY_S"
+            ),
+            tool_resource_repo=os.getenv("CLAWTUNE_TOOL_RESOURCE_REPO", "openclaw"),
+            tool_resource_artifact_dir=(
+                _resolve_path(tool_resource_artifact_dir, env_base)
+                if tool_resource_artifact_dir
+                else None
+            ),
+            tool_resource_container_executable=os.getenv(
+                "CLAWTUNE_TOOL_RESOURCE_CONTAINER_EXECUTABLE",
+                "docker",
+            ),
+            tool_resource_ebpf_required=os.getenv(
+                "CLAWTUNE_TOOL_RESOURCE_EBPF_REQUIRED", "true"
+            ).lower()
+            in {"1", "true", "yes", "on"},
+            auth_token=os.getenv("CLAWTUNE_TOKEN"),
+            trace_dir=_resolve_path(trace, env_base) if trace else Path("traces"),
+            trace_max_messages_bytes=int(os.getenv("CLAWTUNE_TRACE_MAX_MESSAGES_BYTES", "131072")),
+            resource_poll_interval_ms=int(os.getenv("CLAWTUNE_RESOURCE_POLL_INTERVAL_MS", "50")),
+            resource_timeline_max_points=int(os.getenv("CLAWTUNE_RESOURCE_TIMELINE_MAX_POINTS", "2000")),
+            sandbox_cgroup_path=os.getenv("CLAWTUNE_SANDBOX_CGROUP_PATH"),
+            execution_cgroup_root=os.getenv("CLAWTUNE_EXECUTION_CGROUP_ROOT"),
+            sandbox_container_id=os.getenv("CLAWTUNE_SANDBOX_CONTAINER_ID"),
+            sandbox_root_pid=_optional_int(os.getenv("CLAWTUNE_SANDBOX_ROOT_PID")),
+            docker_exec_observer_enabled=os.getenv("CLAWTUNE_DOCKER_EXEC_OBSERVER", "false").lower()
+            in {"1", "true", "yes", "on"},
+            docker_exec_container_prefix=os.getenv("CLAWTUNE_DOCKER_EXEC_CONTAINER_PREFIX"),
+            docker_socket=os.getenv("CLAWTUNE_DOCKER_SOCKET", "/var/run/docker.sock"),
+            llm_proxy_enabled=True,
+            llm_proxy_upstream_base_url=os.getenv(
+                "CLAWTUNE_LLM_UPSTREAM_BASE_URL",
+                DEFAULT_LLM_UPSTREAM_BASE_URL,
+            ),
+            llm_proxy_upstream_api_key=(
+                os.getenv("CLAWTUNE_LLM_UPSTREAM_API_KEY_OVERRIDE")
+                or os.getenv("CLAWTUNE_LLM_UPSTREAM_API_KEY")
+            ),
+            llm_proxy_debug_dump=os.getenv("CLAWTUNE_LLM_PROXY_DEBUG_DUMP", "false").lower()
+            in {"1", "true", "yes", "on"},
+            llm_proxy_expose_model=os.getenv("CLAWTUNE_LLM_PROXY_EXPOSE_MODEL"),
+            llm_proxy_upstream_model=os.getenv("CLAWTUNE_LLM_PROXY_UPSTREAM_MODEL"),
+        )
+
+
+def load_env_file() -> Path:
+    selected = os.getenv("CLAWTUNE_ENV_FILE")
+    candidates = [Path(selected)] if selected else list(_default_env_candidates())
+    for candidate in candidates:
+        path = candidate.expanduser()
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        if not path.exists() or not path.is_file():
+            continue
+        _load_dotenv(path)
+        return path.parent
+    return Path.cwd()
+
+
+def _default_env_candidates() -> Iterable[Path]:
+    cwd = Path.cwd()
+    root = _repo_root()
+    yield cwd / ".env"
+    yield cwd / ".env.openclaw-recorder"
+    yield root / ".env"
+    yield root / ".env.openclaw-recorder"
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[4]
+
+
+def _load_dotenv(path: Path) -> None:
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        key, sep, value = line.partition("=")
+        if sep != "=":
+            continue
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        os.environ[key] = _unquote_env_value(value.strip())
+
+
+def _unquote_env_value(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _path_from_env(name: str, default: str, base: Path) -> Path:
+    return _resolve_path(os.getenv(name, default), base)
+
+
+def _resolve_path(value: str, base: Path) -> Path:
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else base / path
+
+
+def _optional_int(value: str | None) -> int | None:
+    if value is None or value.strip() == "":
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _ratio_from_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number between 0 and 1") from exc
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise ValueError(f"{name} must be a number between 0 and 1")
+    return value
+
+
+def _optional_nonnegative_int_from_env(name: str) -> int | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a non-negative integer") from exc
+    if value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return value
+
+
+def _nonnegative_int_from_env(name: str, default: int) -> int:
+    value = _optional_nonnegative_int_from_env(name)
+    return default if value is None else value
+
+
+def _optional_nonnegative_float_from_env(name: str) -> float | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a non-negative number") from exc
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError(f"{name} must be a non-negative number")
+    return value
+
+
+def _split_env_paths(value: str | None) -> list[str]:
+    if value is None or not value.strip():
+        return []
+    parts: list[str] = []
+    for chunk in value.split(os.pathsep):
+        parts.extend(item.strip() for item in chunk.split(",") if item.strip())
+    return parts
+
+
+def _parse_float_list(value: str | None, *, default: tuple[float, ...]) -> list[float]:
+    if value is None or not value.strip():
+        return list(default)
+    parsed: list[float] = []
+    for raw in value.split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        try:
+            parsed.append(float(item))
+        except ValueError:
+            continue
+    return parsed or list(default)

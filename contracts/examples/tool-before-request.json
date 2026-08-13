@@ -1,5 +1,5 @@
 {
-  "schema_version": "scheduler.v1",
+  "schema_version": "clawtune.v1",
   "event_id": "evt-1",
   "occurred_at": "2026-07-16T03:23:00Z",
   "plugin_version": "0.1.0",

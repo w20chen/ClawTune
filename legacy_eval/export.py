@@ -9,7 +9,7 @@ its cold-start seed under ``traces/tool-resource/``:
 * ``runtime-tool-resource-kb.json`` (schema ``runtime_tool_resource_kb_v1``)
 
 These filenames and schemas are validated by
-``swe_rebench.host_sandbox._validate_kb_snapshot_pair`` and loaded by
+``swe_rebench.host_openclaw._validate_kb_snapshot_pair`` and loaded by
 ``ToolResourcePredictor.from_traces`` (via ``artifact_dir``), so an export
 written here is picked up automatically as the cold-start seed on the next
 benchmark run.
@@ -45,7 +45,7 @@ from legacy_eval.engine import (  # noqa: E402
     split_train_test,
 )
 
-# The three snapshot filenames the runtime expects (host_sandbox schema map).
+# The three snapshot filenames the runtime expects (host_openclaw schema map).
 CLAUSE_KB_FILENAME = "clause-resource-kb.json"
 LATTICE_KB_FILENAME = "clause-lattice-time-kb.json"
 RUNTIME_KB_FILENAME = "runtime-tool-resource-kb.json"

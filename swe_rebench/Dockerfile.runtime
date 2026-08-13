@@ -1,7 +1,7 @@
 # ────────────────────────────────────────────────────────────────
 # claw-runtime: pre-built Node.js + OpenClaw + sidecar deps.
 #
-# Built ONCE, mounted into swe-rebench containers at /claw/runtime.
+# Built ONCE, mounted into swe-rebench containers at /clawtune/runtime.
 # This avoids per-container apt-get/npm/pip install (saves ~3 min/task).
 #
 # Multi-arch: debian:bookworm-slim supports linux/amd64 and linux/arm64.

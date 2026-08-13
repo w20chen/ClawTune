@@ -1,5 +1,5 @@
 {
-  "schema_version": "scheduler.health.v1",
-  "service": "clawtune-scheduler",
+  "schema_version": "clawtune.health.v1",
+  "service": "clawtune-sidecar",
   "ready": true
 }

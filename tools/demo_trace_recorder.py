@@ -30,7 +30,7 @@ def main() -> None:
 
     print("\n== recent runtime sample ==")
     print_json(get_json(args.endpoint, "/v1/tools/recent?limit=1"))
-    print("\nTrace file is written by the sidecar in AGENT_SCHEDULER_TRACE_DIR.")
+    print("\nTrace file is written by the sidecar in CLAWTUNE_TRACE_DIR.")
 
 
 def emit_model_turn(endpoint: str, run_id: str, agent_id: str) -> None:
@@ -189,7 +189,7 @@ def emit_tool_turn(endpoint: str, run_id: str, agent_id: str) -> None:
 
 def common(event_prefix: str, run_id: str, agent_id: str) -> dict[str, object]:
     return {
-        "schema_version": "scheduler.v1",
+        "schema_version": "clawtune.v1",
         "event_id": f"{event_prefix}-{uuid4().hex[:8]}",
         "occurred_at": utc_now(),
         "plugin_version": "demo-trace-recorder",

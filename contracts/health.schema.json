@@ -1,16 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://openclaw.ai/schemas/scheduler/health.schema.json",
+  "$id": "https://openclaw.ai/schemas/clawtune/health.schema.json",
   "type": "object",
   "required": ["schema_version", "service"],
   "properties": {
-    "schema_version": {"const": "scheduler.health.v1"},
-    "service": {"const": "clawtune-scheduler"},
+    "schema_version": {"const": "clawtune.health.v1"},
+    "service": {"const": "clawtune-sidecar"},
     "sidecar_version": {"type": "string", "description": "Semver of the running clawtune-sidecar package."},
     "protocol_versions": {
       "type": "array",
       "items": {"type": "string"},
-      "description": "Protocol versions this sidecar supports (scheduler.api.v1, trace.v6, execution.v1)."
+      "description": "Protocol versions this sidecar supports (clawtune.api.v1, trace.v6, execution.v1)."
     },
     "live": {"type": "boolean"},
     "ready": {"type": "boolean"}

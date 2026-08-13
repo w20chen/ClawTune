@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from agent_scheduler.api.app import create_app
+from clawtune_sidecar.api.app import create_app
 
 
 def main() -> None:

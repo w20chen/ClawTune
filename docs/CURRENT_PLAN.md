@@ -10,13 +10,13 @@ ClawTune supports Kunpeng/arm64 and x86_64 Linux hosts with Docker, cgroup v2,
 and BCC/eBPF:
 
 - The OpenClaw plugin sends model, tool, and execution events to a local
-  Scheduler sidecar. Placement decisions are advisory in this MVP.
+  ClawTune sidecar. Placement decisions are advisory in this MVP.
 - Managed `exec` calls use cgroup-v2 sampling and eBPF clause telemetry.
   SWE-Rebench fails closed when required telemetry cannot start.
 - Native sandbox tools such as `read` and `edit` use Docker container/PID
   attribution and do not produce exec-clause artifacts.
 - JSON Schemas in `contracts/` are the public protocol source of truth. Trace
-  JSONL uses schema version 6; API event contracts use `scheduler.v1`.
+  JSONL uses schema version 6; API event contracts use `clawtune.v1`.
 - SWE-Rebench runs task images through OpenClaw, supports serial or concurrent
   cases, and shares one sidecar and one evolving KB within a batch.
 - Deep Research Bench runs research tasks in a basic sandbox image. Its relaxed
@@ -53,8 +53,8 @@ See [configuration.md](configuration.md), [trace-schema.md](trace-schema.md),
 ```bash
 python tools/validate_contracts.py
 python -m pytest tests -q --basetemp .pytest-tmp-root
-python -m pytest services/scheduler/tests -q --basetemp .pytest-tmp-scheduler
-cd packages/openclaw-plugin && npm test && npm run typecheck
+python -m pytest services/sidecar/tests -q --basetemp .pytest-tmp-sidecar
+cd packages/clawtune-plugin && npm test && npm run typecheck
 ```
 
 The legacy evaluator also has local unit coverage:
@@ -84,10 +84,10 @@ sudo bash scripts/setup/arm_qemu_setup.sh install
 sudo bash scripts/setup/arm_qemu_setup.sh check
 
 # Per-PID BCC network accounting
-BCC_KERNEL_SOURCE=/usr/src/kernels/$(uname -r) .venv/bin/python -c "import os; from agent_scheduler.monitoring.net_accounting import ProcessNetAccounting as A; a=A([os.stat('/proc/self/ns/net').st_ino]); print(a.available, a._attach_error)"
+BCC_KERNEL_SOURCE=/usr/src/kernels/$(uname -r) .venv/bin/python -c "import os; from clawtune_sidecar.monitoring.net_accounting import ProcessNetAccounting as A; a=A([os.stat('/proc/self/ns/net').st_ino]); print(a.available, a._attach_error)"
 
 # NUMA sampler
-.venv/bin/python -c "import time; from agent_scheduler.topology.linux import NumaCpuUsageSampler; s=NumaCpuUsageSampler(); time.sleep(1); print(s.sample())"
+.venv/bin/python -c "import time; from clawtune_sidecar.topology.linux import NumaCpuUsageSampler; s=NumaCpuUsageSampler(); time.sleep(1); print(s.sample())"
 ```
 
 For SWE-Rebench, verify that preflight passes, launcher spans are cgroup-backed,
@@ -99,29 +99,23 @@ plus a passed relaxed telemetry audit. Detailed output fields are defined in
 
 ### Known local validation gaps
 
-- Ruff is not installed in the current Python environment, so `python -m ruff
-  check ...` cannot run. Use contract validation, tests, and `git diff --check`.
-- The documented top-level pytest command requires the project virtual
-  environment and an explicit Scheduler source path in this checkout. Running
-  it with the system interpreter fails during collection with
-  `ModuleNotFoundError: No module named 'tool_resource'`; the equivalent check
-  succeeds with
-  `$env:PYTHONPATH=(Resolve-Path 'services\\scheduler\\src').Path; .\\.venv\\Scripts\\python.exe -m pytest tests -q --basetemp .pytest-tmp-root`.
-- The bundled Scheduler test copy has existing repository-layout failures
-  because it resolves fixtures below `swe_rebench/`; validate the source suite
-  under `services/scheduler/tests` instead.
+- Ruff 0.16.1 runs in the current Python environment, but the repository has
+  491 lint findings across benchmark, evaluator, test, and tool code. This
+  broad cleanup is outside the naming-only change; the correctness-focused
+  `F821`, `F601`, and `PLW0127` rules pass for the renamed runtime code, while
+  contract validation, full tests, typecheck, and `git diff --check` are the
+  current gates.
+- The top-level pytest command requires the project virtual environment and
+  `services/sidecar/src` on `PYTHONPATH` in this checkout. The verified Windows
+  equivalent is
+  `$env:PYTHONPATH=((Resolve-Path '.').Path + [IO.Path]::PathSeparator + (Resolve-Path 'services\\sidecar\\src').Path); .\\.venv\\Scripts\\python.exe -m pytest tests -q --basetemp .pytest-tmp-root`.
 - A stale `%USERPROFILE%\.pytest-tmp` is not removable by this account. Always
   give pytest a workspace-local `--basetemp` as shown above.
-- Windows ACLs currently prevent this account from removing the historical
-  `swe_rebench/bundle/` tree completely (notably the generated wheel and source
-  archive) and the stale `swe_rebench/.pytest-runner-tmp/` and
-  `swe_rebench/.pytest-scheduler-tmp/` directories. These are generated or
-  obsolete outputs, not runtime inputs; remove them from an elevated host shell.
 - `python -m swe_rebench.prepare` successfully generates the current runtime
-  scripts under `swe_rebench/.runtime/bundle/`, but Git for Windows Bash cannot
+  scripts under `swe_rebench/.runtime/assets/`, but Git for Windows Bash cannot
   run `bash -n` in this account because its WSL service startup fails with
   `Bash/Service/CreateInstance/E_ACCESSDENIED`. CI runs both syntax checks on
-  `ubuntu-latest` after generating the bundle.
+  `ubuntu-latest` after generating the runtime assets.
 
 ## Two-sandbox Kubernetes delivery (2026-08-10)
 
@@ -133,11 +127,11 @@ sandbox backend. `exec`, `process`, `read`, `write`, `edit`, and `apply_patch`
 are allowed on that backend; browser and control-plane tools are denied.
 
 This topology deliberately runs the plugin with `executionBackend=hook-only`
-and disables cgroup, affinity, NUMA, eBPF, and Stage-2-required collection in
+and disables cgroup, affinity, NUMA, and required eBPF collection in
 the Runtime Pod. The sidecar cannot observe trustworthy Tool Pod PID/cgroup
 scope, so existing absent/unattributed scope and unavailable telemetry behavior
 is used. Tool lifecycle traces and advisory prediction remain active. No public
-contract fields and no code under `services/scheduler/src/tool_resource` were
+contract fields and no code under `services/sidecar/src/tool_resource` were
 changed.
 
 Local checks completed:
@@ -145,7 +139,7 @@ Local checks completed:
 ```bash
 python deploy/two-sandbox/test_render.py
 bash -n deploy/two-sandbox/cell.sh deploy/two-sandbox/smoke-test.sh scripts/two-sandbox/*.sh
-cd packages/openclaw-plugin && npm.cmd test
+cd packages/clawtune-plugin && npm.cmd test
 OPENCLAW_CONFIG_PATH=<claw-k8s>/deploy/two-sandbox/openclaw-sandbox.example.json node <npm-openclaw>/openclaw.mjs config validate
 ```
 
@@ -170,3 +164,12 @@ and once with `--runtime-class kata-fc --tool-runtime-class kata-fc`. The smoke
 test verifies separate Pods/hostnames/PID namespaces/filesystems, remote tool
 output and file placement, Tool credential absence, no Docker socket,
 cross-tenant SSH denial, and optional managed-resource cleanup.
+
+## Incremental bug review validation gap (2026-08-14)
+
+The following validation command could not run in this Windows workspace:
+
+```powershell
+# Ruff is not installed in the active Python environment (`No module named ruff`).
+python -m ruff check services/sidecar/src services/sidecar/tests swe_rebench deep_research_bench legacy_eval scripts tools tests
+```

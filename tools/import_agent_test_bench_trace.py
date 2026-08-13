@@ -9,7 +9,7 @@ from uuid import uuid4
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Import agent-test-bench trace.jsonl into scheduler.v1 offline events.")
+    parser = argparse.ArgumentParser(description="Import agent-test-bench trace.jsonl into clawtune.v1 offline events.")
     parser.add_argument("input", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--profiles-out", type=Path)
@@ -66,7 +66,7 @@ def map_tool_exec(record: dict[str, Any], metadata: dict[str, Any]) -> dict[str,
     if not isinstance(succeeded, bool):
         succeeded = not bool(data.get("error"))
     return {
-        "schema_version": "scheduler.v1",
+        "schema_version": "clawtune.v1",
         "event_id": f"import-{uuid4()}",
         "occurred_at": datetime.fromtimestamp(end or start or datetime.now(timezone.utc).timestamp(), timezone.utc).isoformat().replace("+00:00", "Z"),
         "plugin_version": "import-agent-test-bench",

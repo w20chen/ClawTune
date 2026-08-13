@@ -11,9 +11,9 @@ from typing import Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEDULER_SRC = ROOT / "services" / "scheduler" / "src"
-if str(SCHEDULER_SRC) not in sys.path:
-    sys.path.insert(0, str(SCHEDULER_SRC))
+SIDECAR_SRC = ROOT / "services" / "sidecar" / "src"
+if str(SIDECAR_SRC) not in sys.path:
+    sys.path.insert(0, str(SIDECAR_SRC))
 
 
 def docker_output(*args: str) -> str:
@@ -29,9 +29,9 @@ def docker_output(*args: str) -> str:
 def resolve_container(value: str | None) -> str:
     if value:
         return value
-    containers = docker_output("ps", "-q", "--filter", "name=claw-srb").splitlines()
+    containers = docker_output("ps", "-q", "--filter", "name=clawtune-srb").splitlines()
     if not containers:
-        raise RuntimeError("no running claw-srb container found; pass a container ID or name")
+        raise RuntimeError("no running clawtune-srb container found; pass a container ID or name")
     return containers[0]
 
 

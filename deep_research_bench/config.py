@@ -3,13 +3,13 @@ Deep Research Bench integration configuration.
 
 Loads YAML config and applies environment-variable overrides, reusing the
 proven dataclasses from ``swe_rebench.config`` (LLM/API-key resolution,
-runtime mode, Docker, batch, output, bundle, agent) and adding the
+runtime mode, Docker, batch, output, runtime assets, agent) and adding the
 research-specific ``sandbox`` (a very basic tool container) and ``dataset``
 sections.
 
-Unlike SWE-Rebench there is no per-task Docker image and no Stage-2 eBPF
+Unlike SWE-Rebench there is no per-task Docker image and no eBPF
 clause telemetry: research tools (read/edit/web) are measured with the
-sandbox-container / per-PID scope.  ``runtime.stage2_required`` therefore
+sandbox-container / per-PID scope.  ``runtime.ebpf_required`` therefore
 defaults to ``false``; the separate ``runtime.gate_required`` flag (default
 ``true``) enables the relaxed LLM + tool-span telemetry gate.
 """
@@ -24,7 +24,7 @@ from typing import Any
 from swe_rebench.config import (
     AgentConfig,
     BatchConfig,
-    BundleConfig,
+    RuntimeAssetsConfig,
     DockerConfig,
     LLMConfig,
     OutputConfig,
@@ -178,7 +178,7 @@ class DRBConfig:
     sandbox: SandboxConfig
     batch: BatchConfig
     output: OutputConfig
-    bundle: BundleConfig
+    runtime_assets: RuntimeAssetsConfig
     agent: AgentConfig
     dataset: DatasetConfig
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
@@ -200,10 +200,10 @@ class DRBConfig:
         raw = _load_yaml_safe(path)
         runtime_raw = raw.get("runtime", {})
         runtime = RuntimeConfig.from_dict(runtime_raw)
-        # Research tasks never produce Stage-2 exec clause telemetry; the
+        # Research tasks never produce eBPF exec-clause telemetry; the
         # sidecar must not demand it unless the operator explicitly opts in.
-        if "stage2_required" not in runtime_raw and "ebpf_required" not in runtime_raw:
-            runtime.stage2_required = False
+        if "ebpf_required" not in runtime_raw:
+            runtime.ebpf_required = False
         gate_raw = runtime_raw.get("gate_required")
         gate_required = _as_bool(gate_raw) if gate_raw is not None else True
         return cls(
@@ -213,7 +213,7 @@ class DRBConfig:
             sandbox=SandboxConfig.from_dict(raw.get("sandbox", {})),
             batch=BatchConfig.from_dict(raw.get("batch", {})),
             output=OutputConfig.from_dict(raw.get("output", {}), repo_root),
-            bundle=BundleConfig.from_dict(raw.get("bundle", {})),
+            runtime_assets=RuntimeAssetsConfig.from_dict(raw.get("runtime_assets", {})),
             agent=AgentConfig.from_dict(raw.get("agent", {})),
             dataset=DatasetConfig.from_dict(raw.get("dataset", {})),
             web_search=WebSearchConfig.from_dict(raw.get("web_search", {}), repo_root),
@@ -223,14 +223,14 @@ class DRBConfig:
         )
 
     def to_swe_runner_config(self) -> RunnerConfig:
-        """Build the swe-rebench RunnerConfig consumed by host_sandbox helpers."""
+        """Build the swe-rebench RunnerConfig consumed by host_openclaw helpers."""
         return RunnerConfig(
             runtime=self.runtime,
             llm=self.llm,
             docker=self.docker,
             batch=self.batch,
             output=self.output,
-            bundle=self.bundle,
+            runtime_assets=self.runtime_assets,
             agent=self.agent,
             repo_root=self.repo_root,
             config_path=self.config_path,

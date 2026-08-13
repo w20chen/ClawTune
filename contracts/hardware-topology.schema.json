@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://openclaw.ai/schemas/scheduler/hardware-topology.schema.json",
+  "$id": "https://openclaw.ai/schemas/clawtune/hardware-topology.schema.json",
   "type": "object",
   "required": ["available", "platform", "cpu_count", "online_cpus", "numa_nodes", "llc_clusters"],
   "properties": {

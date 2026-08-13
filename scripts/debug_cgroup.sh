@@ -19,6 +19,6 @@ fi
 
 exec sudo env \
   "PATH=${PATH}" \
-  "PYTHONPATH=${REPO_ROOT}/services/scheduler/src" \
+  "PYTHONPATH=${REPO_ROOT}/services/sidecar/src" \
   "BCC_KERNEL_SOURCE=${KERNEL_BUILD}" \
   "${VENV_PYTHON}" "${SCRIPT_DIR}/debug_cgroup.py" "$@"

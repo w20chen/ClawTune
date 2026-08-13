@@ -1,6 +1,6 @@
 # Kunpeng and arm64 Hosts
 
-Kunpeng is a primary ClawTune target. The Scheduler, OpenClaw plugin, and eBPF
+Kunpeng is a primary ClawTune target. The Sidecar, OpenClaw plugin, and eBPF
 collector run natively on arm64. Official SWE-Rebench task images are commonly
 amd64, so Docker needs a binfmt/QEMU handler only for those task containers.
 

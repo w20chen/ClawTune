@@ -8,8 +8,8 @@ OpenClaw CLI / TUI / chat channel
     -> agent
       -> session
         -> run (one submitted turn)
-          -> agent-scheduler plugin hooks
-            -> scheduler sidecar + eBPF collector
+          -> ClawTune plugin hooks
+            -> ClawTune Sidecar + eBPF collector
               -> JSONL traces + SQLite state + recent metrics
 ```
 
@@ -39,7 +39,7 @@ SWE-Rebench path:
 
 ```text
 swe_rebench.runner
-  -> generated /claw bundle
+  -> generated /clawtune runtime assets
   -> Docker task container
   -> sidecar + plugin + openclaw agent --local
   -> swe_rebench/traces/<task_id>/*.jsonl
@@ -49,7 +49,7 @@ Deep Research Bench path:
 
 ```text
 deep_research_bench.runner
-  -> runtime bundle (plugin + scheduler + claw-launch)
+  -> runtime assets (plugin + sidecar + clawtune-launch)
   -> one very basic Docker sandbox image (python:3.11-slim by default)
   -> host sidecar + plugin + openclaw agent --local
   -> deep_research_bench/.runtime/traces/<task_id>/*.jsonl

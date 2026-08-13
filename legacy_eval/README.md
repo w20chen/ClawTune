@@ -72,7 +72,7 @@ and `seed=42`.
 ## Reproduce the SWE277 bucket report
 
 Run from the repository root. `_bootstrap.py` adds
-`services/scheduler/src` to `sys.path`; no manual `PYTHONPATH` is required.
+`services/sidecar/src` to `sys.path`; no manual `PYTHONPATH` is required.
 
 PowerShell:
 
@@ -196,7 +196,7 @@ Run the evaluator tests from the repository root:
 ```powershell
 python -m pytest tests/test_legacy_eval.py tests/test_legacy_eval_export.py -q `
   --basetemp .pytest-legacy-eval
-python -m pytest services/scheduler/tests/test_kv_ttl.py -q `
+python -m pytest services/sidecar/tests/test_kv_ttl.py -q `
   --basetemp .pytest-kv-ttl
 ```
 

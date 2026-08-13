@@ -1,15 +1,15 @@
 """
 Host OpenClaw + very basic Docker sandbox runner for Deep Research Bench.
 
-Topology mirrors swe_rebench host-openclaw-sandbox: OpenClaw, the plugin, and
-the scheduler sidecar run on the host; the agent's tools execute inside a
+Topology mirrors swe_rebench host-openclaw: OpenClaw, the plugin, and
+the ClawTune sidecar run on the host; the agent's tools execute inside a
 single very basic Docker sandbox image (no SWE-Bench task image, no /testbed
 export).  DeepResearchBench tasks are research QA, so telemetry is the
 read/edit/web-tool style (sandbox-container / per-PID docker-exec) rather than
-Stage-2 exec clause telemetry.
+eBPF exec-clause telemetry.
 
 The OpenClaw onboarding, plugin staging, sidecar lifecycle, and agent argv
-helpers are reused from ``swe_rebench.host_sandbox`` (they take a
+helpers are reused from ``swe_rebench.host_openclaw`` (they take a
 swe-rebench ``RunnerConfig``, which :meth:`DRBConfig.to_swe_runner_config`
 provides).
 """
@@ -32,13 +32,13 @@ from swe_rebench.docker import (
     local_image_available,
     pull_image,
 )
-from swe_rebench.host_sandbox import (
+from swe_rebench.host_openclaw import (
     TaskDeadlineExceeded,
     _TASK_CLEANUP_TIMEOUT_SECONDS,
     _cleanup_openclaw_sandbox_containers,
     _configure_openclaw,
     _free_port,
-    _install_sandbox_launcher,
+    _install_sandbox_runtime,
     _make_sandbox_workspace_writable,
     _openclaw_env,
     _read_json_object,
@@ -69,7 +69,7 @@ def run_drb_task(
     trace_dir: Path,
     config: DRBConfig,
     swe_cfg: RunnerConfig,
-    bundle_dir: Path,
+    runtime_assets_dir: Path,
     sidecar_port: int | None = None,
 ) -> ContainerResult:
     """Run one DeepResearchBench task via host OpenClaw + basic sandbox."""
@@ -86,13 +86,13 @@ def run_drb_task(
         _reset_directory(workspace, deadline=deadline)
         _reset_directory(openclaw_home, deadline=deadline)
         _make_sandbox_workspace_writable(workspace)
-        # Exec (if the model calls it) runs through claw-launch in the basic
+        # Exec (if the model calls it) runs through clawtune-launch in the basic
         # container; install the launcher runtime into the host workspace.
-        _install_sandbox_launcher(workspace, bundle_dir)
+        _install_sandbox_runtime(workspace, runtime_assets_dir)
         _write_drb_task_inputs(trace_dir, task, config, workspace)
         _apply_web_search_key(config)
         _ensure_basic_image(config, swe_cfg)
-        # Managed-wrapper exec runs through claw-launch in the basic sandbox
+        # Managed-wrapper exec runs through clawtune-launch in the basic sandbox
         # container.  Preflight it so a launcher that is unreadable or not
         # executable in the sandbox fails fast with one clear error instead of
         # surfacing as repeated docker-exec failures during agent execution.
@@ -239,7 +239,7 @@ def _web_search_config_patch(config: DRBConfig) -> dict[str, Any] | None:
 # Official external web-search provider plugins that OpenClaw ships as
 # separate npm packages (``openclaw plugins install <package>``).  DRB runs the
 # agent in an isolated ``OPENCLAW_HOME`` that only contains the ClawTune
-# ``agent-scheduler`` plugin, so a globally installed provider plugin (e.g.
+# ``clawtune`` plugin, so a globally installed provider plugin (e.g.
 # Tavily) is invisible there unless the runner links it in.
 _WEB_SEARCH_PROVIDER_PACKAGES: dict[str, str] = {
     "tavily": "@openclaw/tavily-plugin",

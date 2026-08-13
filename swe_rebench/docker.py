@@ -56,7 +56,7 @@ def _container_kernel_header_volumes(
     the wrong version.  Only local Linux Docker daemons are eligible: paths on
     this machine are not meaningful to a remote daemon.
 
-    Discovery is deliberately fail-open because Stage-2 is best effort in the
+    Discovery is deliberately fail-open because eBPF telemetry is best effort in the
     container runtime.  The resolved build target must remain below /usr/src;
     an unexpected link can never turn into an arbitrary host-path mount.
     """
@@ -258,7 +258,7 @@ def run_container(
     client: Any,
     image: str,
     task_id: str,
-    bundle_dir: Path,
+    runtime_assets_dir: Path,
     trace_dir: Path,
     problem_statement: str,
     config: DockerConfig,
@@ -268,7 +268,7 @@ def run_container(
     openclaw_model_ref: str = "",
     timeout_seconds: int = 1800,
     env_extra: dict[str, str] | None = None,
-    stage2_required: bool = False,
+    ebpf_required: bool = False,
 ) -> ContainerResult:
     """Run a single task container and return the result.
 
@@ -280,8 +280,8 @@ def run_container(
         swe-rebench Docker image name.
     task_id:
         Unique task identifier (used for trace directory naming).
-    bundle_dir:
-        Host path to the runtime bundle (mounted at ``/claw``).
+    runtime_assets_dir:
+        Host path to the runtime assets (mounted at ``/clawtune``).
     trace_dir:
         Host path for trace output (mounted at ``/traces``).
     problem_statement:
@@ -300,8 +300,8 @@ def run_container(
         Maximum wall-clock time for the container.
     env_extra:
         Additional environment variables to pass.
-    stage2_required:
-        Whether the in-container sidecar must fail closed when Stage-2 eBPF
+    ebpf_required:
+        Whether the in-container sidecar must fail closed when eBPF
         telemetry cannot be started.  False keeps container-openclaw usable
         through its documented best-effort fallback.
     """
@@ -319,24 +319,24 @@ def run_container(
         "LLM_UPSTREAM_BASE_URL": llm_upstream_url,
         "LLM_MODEL": llm_model,
         "OPENCLAW_MODEL_REF": openclaw_model_ref,
-        "CLAW_CGROUP_REQUIRED": "1" if config.cgroup_required else "0",
-        "CLAW_CGROUP_ROOT": "/sys/fs/cgroup/claw",
+        "CLAWTUNE_CGROUP_REQUIRED": "1" if config.cgroup_required else "0",
+        "CLAWTUNE_CGROUP_ROOT": "/sys/fs/cgroup/clawtune",
         # Enable DockerExecObserver so read/write/edit tools get
         # independent PID/cgroup attribution via docker-exec events.
-        "AGENT_SCHEDULER_DOCKER_EXEC_OBSERVER": "true",
-        "AGENT_SCHEDULER_DOCKER_EXEC_CONTAINER_PREFIX": docker_exec_container_prefix,
+        "CLAWTUNE_DOCKER_EXEC_OBSERVER": "true",
+        "CLAWTUNE_DOCKER_EXEC_CONTAINER_PREFIX": docker_exec_container_prefix,
     }
     if env_extra:
         environment.update(env_extra)
     # Runtime policy is runner-owned. Dataset-provided task environment must
-    # not silently turn a best-effort container run into fail-closed Stage-2
+    # not silently turn a best-effort container run into fail-closed eBPF telemetry
     # (or weaken an explicitly required run).
-    environment["AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_REQUIRED"] = (
-        "true" if stage2_required else "false"
+    environment["CLAWTUNE_TOOL_RESOURCE_EBPF_REQUIRED"] = (
+        "true" if ebpf_required else "false"
     )
 
     volumes = {
-        str(bundle_dir.resolve()): {"bind": "/claw", "mode": "ro"},
+        str(runtime_assets_dir.resolve()): {"bind": "/clawtune", "mode": "ro"},
         str(trace_dir.resolve()): {"bind": "/traces", "mode": "rw"},
     }
     # Mount Docker socket so OpenClaw can use Docker sandbox and
@@ -349,7 +349,7 @@ def run_container(
         volumes["/sys/fs/cgroup"] = {"bind": "/sys/fs/cgroup", "mode": "rw"}
     # BCC must compile for the host kernel. Mount only the exact module tree
     # and resolved header directory, and only for a local Linux Docker daemon.
-    # Missing or suspicious paths leave Stage-2 in its existing fail-open mode.
+    # Missing or suspicious paths leave eBPF telemetry in its existing fail-open mode.
     volumes.update(_container_kernel_header_volumes(config.host))
     # Privileged containers do not inherit the host tracefs mount through their
     # mount namespace.  Without this narrow bind, BCC imports and compiles but
@@ -387,7 +387,7 @@ def _run_container_sdk(
     try:
         container = client.containers.run(
             image=image,
-            entrypoint=["/claw/entrypoint.sh"],
+            entrypoint=["/clawtune/entrypoint.sh"],
             volumes=volumes,
             environment=environment,
             detach=True,
@@ -478,7 +478,7 @@ def _run_container_cli(
         cmd.extend(["-e", f"{k}={v}"])
 
     # Entrypoint
-    cmd.extend(["--entrypoint", "/claw/entrypoint.sh"])
+    cmd.extend(["--entrypoint", "/clawtune/entrypoint.sh"])
 
     # Resource limits
     if config.memory_limit:

@@ -22,7 +22,7 @@ SPEC.loader.exec_module(clawtune)
 
 
 def test_scheduler_declares_python_310_typing_extensions_dependency() -> None:
-    pyproject = SCRIPT.parents[1] / "services" / "scheduler" / "pyproject.toml"
+    pyproject = SCRIPT.parents[1] / "services" / "sidecar" / "pyproject.toml"
     assert '"typing-extensions>=4.12"' in pyproject.read_text(encoding="utf-8")
 
 
@@ -33,7 +33,7 @@ def test_legacy_scheduler_setup_declares_runtime_metadata(monkeypatch) -> None:
     setattr(fake_setuptools, "find_packages", lambda **kwargs: [])
     monkeypatch.setitem(sys.modules, "setuptools", fake_setuptools)
 
-    runpy.run_path(str(SCRIPT.parents[1] / "services" / "scheduler" / "setup.py"))
+    runpy.run_path(str(SCRIPT.parents[1] / "services" / "sidecar" / "setup.py"))
 
     assert captured["name"] == "clawtune-sidecar"
     assert "typing-extensions>=4.12" in captured["install_requires"]
@@ -59,11 +59,11 @@ def test_create_venv_probes_runtime_dependencies(tmp_path, monkeypatch) -> None:
 
     clawtune.create_venv(Path("/usr/bin/python3"))
 
-    assert calls[0][0][-2:] == ("-e", "services/scheduler[dev]")
+    assert calls[0][0][-2:] == ("-e", "services/sidecar[dev]")
     assert calls[0][1]["env"]["PYTHONNOUSERSITE"] == "1"
     assert "typing_extensions" in calls[1][0][-1]
-    assert "try: pkg_ver = version('clawtune-sidecar')" in calls[1][0][-1]
-    assert "assert pkg_ver == '0.2.0'" in calls[1][0][-1]
+    assert "pkg_ver = version('clawtune-sidecar')" in calls[1][0][-1]
+    assert "assert pkg_ver == '0.1.0'" in calls[1][0][-1]
     assert calls[1][1]["env"]["PYTHONNOUSERSITE"] == "1"
 
 
@@ -173,29 +173,33 @@ def test_runtime_config_accepts_user_facing_ebpf_name() -> None:
     from swe_rebench.config import RuntimeConfig
 
     config = RuntimeConfig.from_dict(
-        {"mode": "host-openclaw-sandbox", "ebpf_required": False}
+        {"mode": "host-openclaw", "ebpf_required": False}
     )
-    assert config.stage2_required is False
+    assert config.ebpf_required is False
 
 
-def test_user_facing_ebpf_name_wins_over_legacy_name() -> None:
+def test_runtime_config_uses_ebpf_name() -> None:
     from swe_rebench.config import RuntimeConfig
 
     config = RuntimeConfig.from_dict(
-        {
-            "mode": "host-openclaw-sandbox",
-            "ebpf_required": True,
-            "stage2_required": False,
-        }
+        {"mode": "host-openclaw", "ebpf_required": True}
     )
-    assert config.stage2_required is True
+    assert config.ebpf_required is True
+
+
+def test_runtime_config_can_be_constructed_with_ebpf_requirement() -> None:
+    from swe_rebench.config import RuntimeConfig
+
+    constructed = RuntimeConfig(ebpf_required=False)
+
+    assert constructed.ebpf_required is False
 
 
 def test_ebpf_check_presents_stable_user_facing_readiness(monkeypatch) -> None:
     monkeypatch.setattr(
         "tools.check_ebpf.run_preflight",
         lambda: {
-            "stage2_ready": True,
+            "ebpf_ready": True,
             "platform": "linux",
             "python": "/repo/.venv/bin/python",
             "bcc_import": {"ok": True, "module": "bpfcc"},
@@ -210,14 +214,14 @@ def test_ebpf_check_presents_stable_user_facing_readiness(monkeypatch) -> None:
 
     assert report["ready"] is True
     assert report["bcc"]["module"] == "bpfcc"
-    assert "stage2_ready" not in report
+    assert "ebpf_ready" not in report
 
 
 def test_plugin_install_repairs_stale_clawtune_link(tmp_path, monkeypatch) -> None:
     config = tmp_path / "openclaw.json"
     original = (
         '{"plugins": {"load": {"paths": ['
-        '"/home/user/claw/packages/openclaw-plugin", "/opt/another-plugin"'
+        '"/home/user/clawtune/packages/clawtune-plugin", "/opt/another-plugin"'
         ']}}}'
     )
     config.write_text(original, encoding="utf-8")
@@ -238,7 +242,7 @@ def test_plugin_install_repairs_stale_clawtune_link(tmp_path, monkeypatch) -> No
                     1,
                     "",
                     "plugins.load.paths: plugin: plugin path not found: "
-                    "/home/user/claw/packages/openclaw-plugin",
+                    "/home/user/clawtune/packages/clawtune-plugin",
                 )
             # On retry the stale path has already been removed.
             current = json.loads(config.read_text(encoding="utf-8"))
@@ -251,7 +255,7 @@ def test_plugin_install_repairs_stale_clawtune_link(tmp_path, monkeypatch) -> No
 
     clawtune.install_openclaw_plugin(
         "/usr/bin/openclaw",
-        Path("/home/user/ClawTune/packages/openclaw-plugin"),
+        Path("/home/user/ClawTune/packages/clawtune-plugin"),
     )
 
     assert install_attempts == 2
@@ -276,7 +280,7 @@ def test_plugin_install_only_retries_once_after_repair(
     config = tmp_path / "openclaw.json"
     original = (
         '{"plugins": {"load": {"paths": ['
-        '"/home/user/claw/packages/openclaw-plugin", "/opt/another-plugin"'
+        '"/home/user/clawtune/packages/clawtune-plugin", "/opt/another-plugin"'
         ']}}}'
     )
     config.write_text(original, encoding="utf-8")
@@ -297,7 +301,7 @@ def test_plugin_install_only_retries_once_after_repair(
                     1,
                     "",
                     "plugins.load.paths: plugin: plugin path not found: "
-                    "/home/user/claw/packages/openclaw-plugin",
+                    "/home/user/clawtune/packages/clawtune-plugin",
                 )
         return subprocess.CompletedProcess(rendered, 0, "ok", "")
 
@@ -305,7 +309,7 @@ def test_plugin_install_only_retries_once_after_repair(
 
     clawtune.install_openclaw_plugin(
         "/usr/bin/openclaw",
-        Path("/home/user/ClawTune/packages/openclaw-plugin"),
+        Path("/home/user/ClawTune/packages/clawtune-plugin"),
     )
 
     assert install_attempts == 2
@@ -318,13 +322,13 @@ def test_plugin_install_only_retries_once_after_repair(
 def test_plugin_install_removes_stale_path_even_when_it_exists_on_disk(
     tmp_path, monkeypatch,
 ) -> None:
-    """A stale openclaw-plugin directory that still exists on disk
+    """A stale clawtune-plugin directory that still exists on disk
     (old checkout not deleted) must still be removed from
     plugins.load.paths — otherwise openclaw config validate fails,
     doctor --fix auto-restores a last-known-good backup that also
     contains the stale path, and the repair loop is dead."""
 
-    stale_dir = tmp_path / "old-claw" / "packages" / "openclaw-plugin"
+    stale_dir = tmp_path / "old-claw" / "packages" / "clawtune-plugin"
     stale_dir.mkdir(parents=True)
     stale_path = str(stale_dir)
 
@@ -366,7 +370,7 @@ def test_plugin_install_removes_stale_path_even_when_it_exists_on_disk(
 
     clawtune.install_openclaw_plugin(
         "/usr/bin/openclaw",
-        Path("/home/user/ClawTune/packages/openclaw-plugin"),
+        Path("/home/user/ClawTune/packages/clawtune-plugin"),
     )
 
     assert install_attempts == 2
@@ -387,7 +391,7 @@ def test_plugin_install_removes_stale_dict_format_path_entries(
         "plugins": {
             "load": {
                 "paths": [
-                    {"path": "/home/user/claw/packages/openclaw-plugin"},
+                    {"path": "/home/user/clawtune/packages/clawtune-plugin"},
                     "/opt/another-plugin",
                 ],
             },
@@ -412,7 +416,7 @@ def test_plugin_install_removes_stale_dict_format_path_entries(
                     1,
                     "",
                     "plugins.load.paths: plugin: plugin path not found: "
-                    "/home/user/claw/packages/openclaw-plugin",
+                    "/home/user/clawtune/packages/clawtune-plugin",
                 )
             # On retry, only the string entry should remain.
             current = json.loads(config.read_text(encoding="utf-8"))
@@ -425,7 +429,7 @@ def test_plugin_install_removes_stale_dict_format_path_entries(
 
     clawtune.install_openclaw_plugin(
         "/usr/bin/openclaw",
-        Path("/home/user/ClawTune/packages/openclaw-plugin"),
+        Path("/home/user/ClawTune/packages/clawtune-plugin"),
     )
 
     assert install_attempts == 2
@@ -446,7 +450,7 @@ def test_plugin_install_does_not_repair_an_unrelated_invalid_config(monkeypatch)
     try:
         clawtune.install_openclaw_plugin(
             "/usr/bin/openclaw",
-            Path("/home/user/ClawTune/packages/openclaw-plugin"),
+            Path("/home/user/ClawTune/packages/clawtune-plugin"),
         )
     except clawtune.SetupError as exc:
         assert "OpenClaw" in str(exc)
@@ -464,7 +468,7 @@ def test_plugin_install_removes_windows_path_on_posix_host(
                 "plugins": {
                     "load": {
                         "paths": [
-                            "C:\\old-claw\\packages\\openclaw-plugin\\",
+                            "C:\\old-claw\\packages\\clawtune-plugin\\",
                             "/opt/another-plugin",
                         ]
                     }
@@ -487,12 +491,12 @@ def test_plugin_install_removes_windows_path_on_posix_host(
                     1,
                     "",
                     "plugins.load.paths: plugin path not found: "
-                    "C:\\old-claw\\packages\\openclaw-plugin",
+                    "C:\\old-claw\\packages\\clawtune-plugin",
                 )
         return subprocess.CompletedProcess(rendered, 0, "ok", "")
 
     monkeypatch.setattr(clawtune, "run", fake_run)
-    clawtune.install_openclaw_plugin("openclaw", Path("/repo/openclaw-plugin"))
+    clawtune.install_openclaw_plugin("openclaw", Path("/repo/clawtune-plugin"))
 
     repaired = json.loads(config.read_text(encoding="utf-8"))
     assert repaired["plugins"]["load"]["paths"] == ["/opt/another-plugin"]
@@ -504,7 +508,7 @@ def test_plugin_install_stops_when_repaired_config_is_invalid(
     config = tmp_path / "openclaw.json"
     config.write_text(
         json.dumps(
-            {"plugins": {"load": {"paths": ["/old/openclaw-plugin"]}}}
+            {"plugins": {"load": {"paths": ["/old/clawtune-plugin"]}}}
         ),
         encoding="utf-8",
     )
@@ -520,7 +524,7 @@ def test_plugin_install_stops_when_repaired_config_is_invalid(
                 rendered,
                 1,
                 "",
-                "plugins.load.paths: plugin path not found: /old/openclaw-plugin",
+                "plugins.load.paths: plugin path not found: /old/clawtune-plugin",
             )
         if "config" in rendered and "validate" in rendered:
             return subprocess.CompletedProcess(rendered, 1, "", "invalid schema")
@@ -529,7 +533,7 @@ def test_plugin_install_stops_when_repaired_config_is_invalid(
     monkeypatch.setattr(clawtune, "run", fake_run)
 
     with pytest.raises(clawtune.SetupError, match="rejected the repaired config"):
-        clawtune.install_openclaw_plugin("openclaw", Path("/repo/openclaw-plugin"))
+        clawtune.install_openclaw_plugin("openclaw", Path("/repo/clawtune-plugin"))
     assert install_attempts == 1
 
 
@@ -537,7 +541,7 @@ def test_plugin_install_falls_back_to_doctor_when_load_paths_are_empty(
     tmp_path, monkeypatch,
 ) -> None:
     """When plugins.load.paths is empty but OpenClaw still reports a
-    stale openclaw-plugin path, the stale reference lives in OpenClaw's
+    stale clawtune-plugin path, the stale reference lives in OpenClaw's
     internal plugin state rather than in plugins.load.paths.  Setup
     falls back to ``openclaw doctor --fix``, which may restore the
     stale path into plugins.load.paths via a last-known-good backup.
@@ -565,7 +569,7 @@ def test_plugin_install_falls_back_to_doctor_when_load_paths_are_empty(
                     1,
                     "",
                     "plugins.load.paths: plugin: plugin path not found: "
-                    "/home/user/claw/packages/openclaw-plugin",
+                    "/home/user/clawtune/packages/clawtune-plugin",
                 )
             # Retry after doctor --fix should succeed.
             return subprocess.CompletedProcess(rendered, 0, "ok", "")
@@ -577,7 +581,7 @@ def test_plugin_install_falls_back_to_doctor_when_load_paths_are_empty(
                 "plugins": {
                     "load": {
                         "paths": [
-                            "/home/user/claw/packages/openclaw-plugin",
+                            "/home/user/clawtune/packages/clawtune-plugin",
                             "/opt/another-plugin",
                         ],
                     },
@@ -591,7 +595,7 @@ def test_plugin_install_falls_back_to_doctor_when_load_paths_are_empty(
 
     clawtune.install_openclaw_plugin(
         "/usr/bin/openclaw",
-        Path("/home/user/ClawTune/packages/openclaw-plugin"),
+        Path("/home/user/ClawTune/packages/clawtune-plugin"),
     )
 
     assert install_attempts == 2
@@ -606,10 +610,10 @@ def test_plugin_install_falls_back_to_doctor_when_load_paths_are_empty(
     assert backups[0].read_text(encoding="utf-8") == original
 
 
-def test_plugin_install_also_removes_stale_agent_scheduler_entry(
+def test_plugin_install_also_removes_stale_clawtune_sidecar_entry(
     tmp_path, monkeypatch,
 ) -> None:
-    """A stale plugins.entries.agent-scheduler entry (plugin not found
+    """A stale plugins.entries.clawtune entry (plugin not found
     in registry) makes OpenClaw treat the config as invalid and
     auto-restore from last-known-good.  The repair must remove it so
     that config validate can succeed and update the last-known-good
@@ -619,12 +623,12 @@ def test_plugin_install_also_removes_stale_agent_scheduler_entry(
         "plugins": {
             "load": {
                 "paths": [
-                    "/home/user/claw/packages/openclaw-plugin",
+                    "/home/user/clawtune/packages/clawtune-plugin",
                     "/opt/another-plugin",
                 ],
             },
             "entries": {
-                "agent-scheduler": {
+                "clawtune": {
                     "enabled": True,
                     "config": {"endpoint": "http://127.0.0.1:8765"},
                 },
@@ -648,14 +652,14 @@ def test_plugin_install_also_removes_stale_agent_scheduler_entry(
                     1,
                     "",
                     "plugins.load.paths: plugin: plugin path not found: "
-                    "/home/user/claw/packages/openclaw-plugin",
+                    "/home/user/clawtune/packages/clawtune-plugin",
                 )
             # Retry: verify both path and entry were cleaned.
             current = json.loads(config.read_text(encoding="utf-8"))
             assert current["plugins"]["load"]["paths"] == [
                 "/opt/another-plugin"
             ]
-            assert "agent-scheduler" not in current["plugins"].get(
+            assert "clawtune" not in current["plugins"].get(
                 "entries", {}
             )
         return subprocess.CompletedProcess(rendered, 0, "ok", "")
@@ -664,13 +668,13 @@ def test_plugin_install_also_removes_stale_agent_scheduler_entry(
 
     clawtune.install_openclaw_plugin(
         "/usr/bin/openclaw",
-        Path("/home/user/ClawTune/packages/openclaw-plugin"),
+        Path("/home/user/ClawTune/packages/clawtune-plugin"),
     )
 
     assert install_attempts == 2
     repaired = json.loads(config.read_text(encoding="utf-8"))
     assert repaired["plugins"]["load"]["paths"] == ["/opt/another-plugin"]
-    assert "agent-scheduler" not in repaired["plugins"].get("entries", {})
+    assert "clawtune" not in repaired["plugins"].get("entries", {})
     backups = list(tmp_path.glob("openclaw.json.clawtune-backup-*"))
     assert len(backups) == 1
     assert backups[0].read_text(encoding="utf-8") == original
@@ -688,8 +692,8 @@ def test_sidecar_health_reports_ready_loopback_service(monkeypatch) -> None:
 
         def read(self, _limit):
             return (
-                b'{"schema_version":"scheduler.health.v1",'
-                b'"service":"clawtune-scheduler","ready":true}'
+                b'{"schema_version":"clawtune.health.v1",'
+                b'"service":"clawtune-sidecar","ready":true}'
             )
 
     monkeypatch.setattr(clawtune, "urlopen", lambda *_args, **_kwargs: Response())
@@ -927,7 +931,7 @@ def test_openclaw_config_enables_gated_privileged_sidecar(monkeypatch) -> None:
     assert len(patches) == 1
     import json
 
-    entry = json.loads(patches[0])["plugins"]["entries"]["agent-scheduler"]
+    entry = json.loads(patches[0])["plugins"]["entries"]["clawtune"]
     assert entry["hooks"] == {"allowConversationAccess": True}
     assert "hooks" not in entry["config"]
     assert entry["config"]["autoStartSidecar"] is True

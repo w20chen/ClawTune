@@ -111,7 +111,7 @@ python3 scripts/clawtune.py drb --sample 1
 ```
 
 `clawtune.py drb` runs the `deep_research_bench.runner` under `sudo` (for the
-sidecar's privileged eBPF runtime), prepares the runtime bundle, and exports
+sidecar's privileged eBPF runtime), prepares the runtime assets, and exports
 traces.  Per-task output lands under
 `deep_research_bench/.runtime/traces/<task-id>/`, including the JSONL trace,
 `agent_prompt.txt`, `task_manifest.json`, `reference_answer.txt` (record-only),
@@ -131,7 +131,7 @@ when its trace has no LLM span or no resource-sampled tool span.  Set
 ```bash
 python3 -m deep_research_bench.runner run \
   --dataset deep_research_bench/tasks-32.json --sample 5 --export
-python3 -m deep_research_bench.runner prepare   # build the runtime bundle once
+python3 -m deep_research_bench.runner prepare   # build the runtime assets once
 ```
 
 Requires a Linux host (same as the SWE-Rebench journey): Docker, Node.js/npm,

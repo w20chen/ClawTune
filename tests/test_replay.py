@@ -9,7 +9,7 @@ import pytest
 from swe_rebench.replay import ReplayLLMServer, ReplayTraceError, load_replay_plan
 
 
-FIXTURE = Path("packages/openclaw-plugin/test/fixtures/trace_v6_sample.jsonl")
+FIXTURE = Path("packages/clawtune-plugin/test/fixtures/trace_v6_sample.jsonl")
 
 
 def test_load_replay_plan_extracts_v6_turns_and_tools() -> None:

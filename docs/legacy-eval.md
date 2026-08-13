@@ -25,7 +25,7 @@ The published SWE277 experiment uses:
 
 Offline evaluation does not require Docker, cgroup, or eBPF. Commands must be run
 from the repository root. `legacy_eval/_bootstrap.py` automatically loads
-`services/scheduler/src`.
+`services/sidecar/src`.
 
 It is recommended to first define a PowerShell variable:
 
@@ -202,7 +202,7 @@ Unit tests:
 ```powershell
 python -m pytest tests/test_legacy_eval.py tests/test_legacy_eval_export.py -q `
   --basetemp .pytest-legacy-eval
-python -m pytest services/scheduler/tests/test_kv_ttl.py -q `
+python -m pytest services/sidecar/tests/test_kv_ttl.py -q `
   --basetemp .pytest-kv-ttl
 ```
 

@@ -1,4 +1,4 @@
-# Scheduler Sidecar Reference
+# ClawTune Sidecar Reference
 
 The sidecar receives OpenClaw lifecycle events, proxies model requests, owns
 the eBPF collector, records traces, and serves recent measurements/predictions.
@@ -53,8 +53,8 @@ eliminate the old first-request race.
 | `GET /v1/models` | OpenAI-compatible model discovery |
 | `POST /v1/chat/completions` | Model proxy and tracing |
 
-Both health responses include `service: clawtune-scheduler` and
-`schema_version: scheduler.health.v1`. The launcher checks those fields instead
+Both health responses include `service: clawtune-sidecar` and
+`schema_version: clawtune.health.v1`. The launcher checks those fields instead
 of treating any HTTP server on port 8765 as ClawTune. An unrelated listener is
 therefore a port conflict and startup stops with an actionable error. The
 public response contract is `contracts/health.schema.json`.
@@ -171,7 +171,7 @@ raw traces can contain sensitive data.
 
 ## Container-Only Development
 
-`docker compose up --build scheduler` is useful for API development. It is not
+`docker compose up --build sidecar` is useful for API development. It is not
 the supported measurement deployment by itself: a container does not inherit
 the host's matching headers, tracefs mount, perf access, and cgroup boundaries
 simply because it is privileged.
@@ -179,7 +179,7 @@ simply because it is privileged.
 ## Configuration and Security
 
 See [configuration](configuration.md) for normal settings. The complete
-environment surface remains in `services/scheduler/src/agent_scheduler/config.py`
+environment surface remains in `services/sidecar/src/clawtune_sidecar/config.py`
 for developers.
 
 - Bind locally unless remote authentication/TLS is deliberately configured.
@@ -188,7 +188,7 @@ for developers.
 - Do not commit API keys or unredacted traces.
 - Setup applies the plugin's `securityBoundaryAccepted: true` because the
   managed launcher rewrites shell execution.
-- Keep the sidecar local and use `AGENT_SCHEDULER_TOKEN` if another local user
+- Keep the sidecar local and use `CLAWTUNE_TOKEN` if another local user
   must not call it.
 - Never commit `.env`, model provider credentials, raw benchmark workspaces, or
   trace output.

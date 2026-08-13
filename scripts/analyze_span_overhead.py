@@ -16,7 +16,7 @@ Interpretation ("option 0", no code change):
   attribution is not container-wide.
 - overhead (gap)   = action_duration_s - cpu_time_s (blocked/startup inside
   the OpenClaw action) + scheduler round-trips (when plugin_window_ns and
-  scheduler_overhead_ns are recorded).
+  sidecar_overhead_ns are recorded).
 """
 import json
 import sys
@@ -74,7 +74,7 @@ def main(path):
                 "attrib": res.get("attribution_status"),
                 "attrib_src": res.get("attribution_source"),
                 "tool_body_s": _opt_s(res.get("tool_body_ns")),
-                "sched_overhead_s": _opt_s(res.get("scheduler_overhead_ns")),
+                "sched_overhead_s": _opt_s(res.get("sidecar_overhead_ns")),
                 "decision_s": _opt_s(res.get("decision_duration_ns")),
                 "completion_s": _opt_s(res.get("completion_duration_ns")),
                 "plugin_window_s": _opt_s(res.get("plugin_window_ns")),

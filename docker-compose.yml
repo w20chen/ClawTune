@@ -1,18 +1,18 @@
 services:
-  scheduler:
+  sidecar:
     # On ARM/Kunpeng hosts, uncomment the line below to force the service
     # image/runtime platform.  The base image (python:3.12-slim) is multi-arch
     # and resolves to the host architecture automatically when platform is not
     # specified.
     # platform: linux/arm64
     build:
-      context: ./services/scheduler
-    command: ["python", "-m", "agent_scheduler.main", "--host", "0.0.0.0", "--port", "8765"]
+      context: ./services/sidecar
+    command: ["python", "-m", "clawtune_sidecar.main", "--host", "0.0.0.0", "--port", "8765"]
     environment:
-      AGENT_SCHEDULER_DB_PATH: /data/scheduler.sqlite3
-      AGENT_SCHEDULER_POLICY: observe-only
-      AGENT_SCHEDULER_TOOL_RESOURCE_TRACES: /data/traces
-      AGENT_SCHEDULER_TOOL_RESOURCE_STAGE2_TRACES: /data/tool-resource
+      CLAWTUNE_DB_PATH: /data/sidecar.sqlite3
+      CLAWTUNE_POLICY: observe-only
+      CLAWTUNE_TOOL_RESOURCE_TRACES: /data/traces
+      CLAWTUNE_TOOL_RESOURCE_EBPF_TRACES: /data/tool-resource
     ports:
       - "127.0.0.1:8765:8765"
     volumes:

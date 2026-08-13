@@ -14,6 +14,13 @@ from pathlib import Path
 from typing import Any
 
 
+CONTAINER_OPENCLAW_MODE = "container-openclaw"
+HOST_OPENCLAW_MODE = "host-openclaw"
+RUNTIME_MODES = frozenset({CONTAINER_OPENCLAW_MODE, HOST_OPENCLAW_MODE})
+
+RUNTIME_EBPF_REQUIRED_KEY = "ebpf_required"
+
+
 def _env_subst(value: str) -> str:
     """Replace ``${VAR}`` or ``$VAR`` patterns with environment values."""
     pattern = re.compile(r"\$\{(\w+)\}|\$(\w+)")
@@ -56,33 +63,30 @@ def _as_str_list(value: Any) -> list[str]:
 
 
 def normalize_runtime_mode(value: str) -> str:
-    # "host-openclaw-container" describes the same topology in user-facing
-    # terms: OpenClaw/sidecar on the host, tool execution in its Docker
-    # sandbox container.  Keep one canonical internal name.
-    if value == "host-openclaw-container":
-        return "host-openclaw-sandbox"
     return value
+
+
+def runtime_ebpf_required(config: dict[str, Any], default: bool = True) -> bool:
+    """Read the eBPF telemetry gate."""
+
+    return _as_bool(config.get(RUNTIME_EBPF_REQUIRED_KEY, default))
 
 
 @dataclass
 class RuntimeConfig:
-    mode: str = "host-openclaw-sandbox"
-    stage2_required: bool = True
+    mode: str = HOST_OPENCLAW_MODE
+    ebpf_required: bool = True
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "RuntimeConfig":
-        mode = normalize_runtime_mode(str(d.get("mode", "host-openclaw-sandbox")))
-        if mode not in {"container-openclaw", "host-openclaw-sandbox"}:
+        mode = normalize_runtime_mode(str(d.get("mode", HOST_OPENCLAW_MODE)))
+        if mode not in RUNTIME_MODES:
             raise ValueError(
-                "runtime.mode must be 'container-openclaw', "
-                "'host-openclaw-sandbox', or its alias "
-                "'host-openclaw-container'"
+                "runtime.mode must be 'host-openclaw' or 'container-openclaw'"
             )
         return cls(
             mode=mode,
-            stage2_required=_as_bool(
-                d.get("ebpf_required", d.get("stage2_required", True))
-            ),
+            ebpf_required=runtime_ebpf_required(d),
         )
 
 
@@ -183,17 +187,17 @@ class OutputConfig:
 
 
 @dataclass
-class BundleConfig:
-    plugin_source: str = "packages/openclaw-plugin"
-    scheduler_source: str = "services/scheduler"
-    output_dir: str = "swe_rebench/.runtime/bundle"
+class RuntimeAssetsConfig:
+    plugin_source: str = "packages/clawtune-plugin"
+    sidecar_source: str = "services/sidecar"
+    output_dir: str = "swe_rebench/.runtime/assets"
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BundleConfig":
+    def from_dict(cls, d: dict[str, Any]) -> "RuntimeAssetsConfig":
         return cls(
-            plugin_source=str(d.get("plugin_source", "packages/openclaw-plugin")),
-            scheduler_source=str(d.get("scheduler_source", "services/scheduler")),
-            output_dir=str(d.get("output_dir", "swe_rebench/.runtime/bundle")),
+            plugin_source=str(d.get("plugin_source", "packages/clawtune-plugin")),
+            sidecar_source=str(d.get("sidecar_source", "services/sidecar")),
+            output_dir=str(d.get("output_dir", "swe_rebench/.runtime/assets")),
         )
 
 
@@ -215,7 +219,7 @@ class RunnerConfig:
     docker: DockerConfig
     batch: BatchConfig
     output: OutputConfig
-    bundle: BundleConfig
+    runtime_assets: RuntimeAssetsConfig
     agent: AgentConfig
     repo_root: Path
     config_path: Path | None = None
@@ -238,7 +242,7 @@ class RunnerConfig:
             docker=DockerConfig.from_dict(raw.get("docker", {})),
             batch=BatchConfig.from_dict(raw.get("batch", {})),
             output=OutputConfig.from_dict(raw.get("output", {}), repo_root),
-            bundle=BundleConfig.from_dict(raw.get("bundle", {})),
+            runtime_assets=RuntimeAssetsConfig.from_dict(raw.get("runtime_assets", {})),
             agent=AgentConfig.from_dict(raw.get("agent", {})),
             repo_root=repo_root,
             config_path=path.resolve(),

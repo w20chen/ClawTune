@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from swe_rebench.host_sandbox import _validate_kb_snapshot_pair
+from swe_rebench.host_openclaw import _validate_kb_snapshot_pair
 
 from legacy_eval.engine import EvalConfig
 from legacy_eval.export import (

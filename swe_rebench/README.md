@@ -146,7 +146,7 @@ budgets at the process boundary.
 ## Replay a Case
 
 Replay is currently supported for one current-format JSONL trace in the
-`host-openclaw-sandbox` topology. It uses the same task image, `/testbed`
+`host-openclaw` topology. It uses the same task image, `/testbed`
 export, OpenClaw Docker sandbox, task Python environment, launcher, sidecar,
 cgroup scope, and eBPF exec-clause path as a normal benchmark case. Only the
 model provider is replaced by a local deterministic server: recorded LLM turns sleep
@@ -173,7 +173,7 @@ under the benchmark output directory, for example:
 swe_rebench/.runtime/traces/<task-id>/*.jsonl
 ```
 
-Run the first replay with the same `host-openclaw-sandbox` mode used by the
+Run the first replay with the same `host-openclaw` mode used by the
 benchmark and with `--timing none` to reduce the smoke-test duration:
 
 ```bash
@@ -305,7 +305,7 @@ can identify a repository, the runner uses the isolated
 `instance:<instance-id>` key instead of mixing unrelated tasks. The resolved
 key is recorded as `repo` in each task's `task_manifest.json`.
 
-The wrapper always refreshes a stale runtime bundle and exports results. It
+The wrapper always refreshes a stale runtime assets and exports results. It
 also supplies the verified Python, BCC, kernel, sudo, and architecture settings
 used by setup; no activation or manual environment exports are needed.
 
@@ -327,12 +327,12 @@ swe_rebench/.runtime/
 Each task trace also retains the KB snapshots used and updated by that task
 under `traces/<task-id>/tool-resource/`. The batch directory above is the
 auditable final aggregate generation, and its exact path is recorded as
-`shared_kb_dir` in `report.json`. The maintained host-sandbox mode also records
+`shared_kb_dir` in `report.json`. The maintained host-openclaw mode also records
 it in each task manifest.
 
 With the shared batch sidecar, trace JSONL files are named
 `<runtime_id>__<session>_<run>__<digest>.jsonl` (`runtime_id` is the opaque
-`claw-srb-<hash>`). The runner labels collected copies with the case id, so
+`clawtune-srb-<hash>`). The runner labels collected copies with the case id, so
 `traces/<task-id>/` contains `<task-id>__<runtime_id>__...jsonl`. While a batch
 is still running, `kb-batches/<batch-id>/_sidecar/runtime-case-map.json` maps
 each in-flight `runtime_id` to its case id so traces are attributable before

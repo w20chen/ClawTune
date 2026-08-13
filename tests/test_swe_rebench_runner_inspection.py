@@ -7,7 +7,7 @@ from pathlib import Path
 from swe_rebench.docker import ContainerResult
 from swe_rebench.config import RunnerConfig
 from swe_rebench.task_source import TaskDef
-import swe_rebench.host_sandbox as host_sandbox
+import swe_rebench.host_openclaw as host_openclaw
 import swe_rebench.runner as runner
 from swe_rebench.runner import (
     _agent_diagnostics,
@@ -15,11 +15,11 @@ from swe_rebench.runner import (
     _inspect_trace,
     _required_telemetry_error,
     _resource_summary,
-    _stage2_call_lifecycle_complete,
+    _ebpf_call_lifecycle_complete,
 )
 
 
-def _stage2_call_provenance(root_pid: int = 1234) -> dict:
+def _ebpf_call_provenance(root_pid: int = 1234) -> dict:
     return {
         "command_tree": {
             "status": "ok",
@@ -38,11 +38,11 @@ def _stage2_call_provenance(root_pid: int = 1234) -> dict:
     }
 
 
-def _stage2_pid_namespace_remap_provenance(
+def _ebpf_pid_namespace_remap_provenance(
     root_pid: int = 612345,
     claimed_root_pid: int = 1234,
 ) -> dict:
-    provenance = _stage2_call_provenance(root_pid)
+    provenance = _ebpf_call_provenance(root_pid)
     provenance["event_isolation"] = {
         "mode": "trusted_execution_root_pid_namespace_remap",
         "trusted_root_pid": root_pid,
@@ -55,7 +55,7 @@ def _stage2_pid_namespace_remap_provenance(
     return provenance
 
 
-def _stage2_artifact(
+def _ebpf_artifact(
     call_id: str,
     *,
     quality: str = "ok",
@@ -93,7 +93,7 @@ def _stage2_artifact(
                 "telemetry_quality": quality,
                 "eligible_for_kb": eligible_for_kb,
                 "invalid_reasons": invalid_reasons or [],
-                "provenance": _stage2_call_provenance(),
+                "provenance": _ebpf_call_provenance(),
                 "clauses": clauses or [],
                 "no_runtime_exec": [],
             }
@@ -101,14 +101,14 @@ def _stage2_artifact(
     }
 
 
-def test_stage2_lifecycle_accepts_strict_pid_namespace_remap() -> None:
+def test_ebpf_lifecycle_accepts_strict_pid_namespace_remap() -> None:
     call = {
         "tool_call_id": "call-remapped",
         "tool_trace_ref": "call-remapped",
-        "provenance": _stage2_pid_namespace_remap_provenance(),
+        "provenance": _ebpf_pid_namespace_remap_provenance(),
     }
 
-    assert _stage2_call_lifecycle_complete(call) is True
+    assert _ebpf_call_lifecycle_complete(call) is True
 
     invalid_mutations = [
         ("claimed_trusted_root_pid", None),
@@ -123,10 +123,10 @@ def test_stage2_lifecycle_accepts_strict_pid_namespace_remap() -> None:
     for field, value in invalid_mutations:
         invalid_call = json.loads(json.dumps(call))
         invalid_call["provenance"]["event_isolation"][field] = value
-        assert _stage2_call_lifecycle_complete(invalid_call) is False
+        assert _ebpf_call_lifecycle_complete(invalid_call) is False
 
 
-def _stage2_clause(bin_: str = "printf", exit_code: int = 0) -> dict:
+def _ebpf_clause(bin_: str = "printf", exit_code: int = 0) -> dict:
     return {
         "bin": bin_,
         "status": {
@@ -140,7 +140,7 @@ def _stage2_clause(bin_: str = "printf", exit_code: int = 0) -> dict:
     }
 
 
-def _stage2_span_end(call_id: str, *, status: str = "invalid") -> dict:
+def _ebpf_span_end(call_id: str, *, status: str = "invalid") -> dict:
     return {
         "record_type": "span_end",
         "span_id": call_id,
@@ -181,7 +181,7 @@ def _stage2_span_end(call_id: str, *, status: str = "invalid") -> dict:
     }
 
 
-def _stage2_prediction_start() -> dict:
+def _ebpf_prediction_start() -> dict:
     return {
         "record_type": "span_start",
         "kind": "tool",
@@ -278,7 +278,7 @@ def test_trace_inspection_counts_failed_and_unattributed_launcher_spans(tmp_path
     assert inspected["unattributed_launcher_tool_span_ends"] == 1
     assert inspected["launcher_tool_resource_span_ends"] == 0
     assert "trace contains failed tool spans" in inspected["warnings"]
-    assert "launcher tool spans have no Stage-2 tool-resource telemetry" in inspected["warnings"]
+    assert "launcher tool spans have no eBPF tool-resource telemetry" in inspected["warnings"]
     assert summary["cgroup_coverage_ratio"] == 1.0
     assert summary["launcher_attribution_ratio"] == 0.0
     assert summary["launcher_tool_resource_ratio"] == 0.0
@@ -351,7 +351,7 @@ def test_launcher_bare_run_failure_is_reported_before_no_patch(tmp_path):
     assert diagnostics["launcher_command_not_found_span_ends"] == 1
 
 
-def test_trace_inspection_reports_stage2_failures_and_prediction_fallbacks(tmp_path):
+def test_trace_inspection_reports_ebpf_failures_and_prediction_fallbacks(tmp_path):
     trace = tmp_path / "trace.jsonl"
     records = [
         {"record_type": "trace_metadata", "task": "task-1"},
@@ -433,7 +433,7 @@ def test_trace_inspection_reports_stage2_failures_and_prediction_fallbacks(tmp_p
     assert inspected[
         "continuous_peak_memory_mb_prediction_available_span_starts"
     ] == 0
-    assert "Stage-2 tool-resource telemetry is unavailable for some launcher tool spans" in inspected["warnings"]
+    assert "eBPF tool-resource telemetry is unavailable for some launcher tool spans" in inspected["warnings"]
     assert summary["launcher_tool_resource_unavailable_span_ends"] == 1
     assert summary["tool_resource_prediction_available_ratio"] == 1.0
 
@@ -484,7 +484,7 @@ def test_required_telemetry_audits_all_tool_samples_and_async_artifacts(tmp_path
     # Fallback execution IDs are exec-<uuid>, not necessarily call_<id>.
     # The audit must discover artifacts by schema rather than filename prefix.
     (artifact_dir / "exec-async.json").write_text(
-        json.dumps(_stage2_artifact("call_async", clauses=[_stage2_clause()])),
+        json.dumps(_ebpf_artifact("call_async", clauses=[_ebpf_clause()])),
         encoding="utf-8",
     )
     (artifact_dir / "clause-resource-kb.json").write_text(
@@ -498,7 +498,7 @@ def test_required_telemetry_audits_all_tool_samples_and_async_artifacts(tmp_path
     artifact_report = _inspect_tool_resource_artifacts(trace_dir)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "runtime:\n  mode: host-openclaw-sandbox\n  stage2_required: true\n",
+        "runtime:\n  mode: host-openclaw\n  ebpf_required: true\n",
         encoding="utf-8",
     )
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -509,12 +509,12 @@ def test_required_telemetry_audits_all_tool_samples_and_async_artifacts(tmp_path
             "cgroup_sampled_tool_span_ends": 2,
             "launcher_tool_span_ends": 1,
             "launcher_cgroup_tool_span_ends": 1,
-            "launcher_stage2_expected_span_ends": 1,
+            "launcher_ebpf_expected_span_ends": 1,
             "launcher_exit_status_span_ends": 1,
             "launcher_tool_resource_span_ends": 1,
-            "launcher_stage2_lifecycle_span_ends": 1,
-            "launcher_stage2_artifact_envelope_span_ends": 1,
-            "launcher_stage2_artifact_refs": [
+            "launcher_ebpf_lifecycle_span_ends": 1,
+            "launcher_ebpf_artifact_envelope_span_ends": 1,
+            "launcher_ebpf_artifact_refs": [
                 {
                     "execution_id": "exec-async",
                     "tool_call_id": "call_async",
@@ -544,36 +544,36 @@ def test_required_telemetry_audits_all_tool_samples_and_async_artifacts(tmp_path
     assert artifact_report["clauses_with_status"] == 1
     assert _required_telemetry_error(config, result) is None
 
-    result["resource_summary"]["launcher_stage2_artifact_refs"] = [
+    result["resource_summary"]["launcher_ebpf_artifact_refs"] = [
         {"execution_id": "exec-async", "tool_call_id": "wrong-call"}
     ]
     assert "references are inconsistent" in (
         _required_telemetry_error(config, result) or ""
     )
-    result["resource_summary"]["launcher_stage2_artifact_refs"] = [
+    result["resource_summary"]["launcher_ebpf_artifact_refs"] = [
         {"execution_id": "exec-async", "tool_call_id": "call_async"}
     ]
 
-    result["resource_summary"]["launcher_stage2_expected_span_ends"] = 2
+    result["resource_summary"]["launcher_ebpf_expected_span_ends"] = 2
     result["resource_summary"]["launcher_exit_status_span_ends"] = 2
     result["resource_summary"]["launcher_tool_resource_span_ends"] = 2
-    result["resource_summary"]["launcher_stage2_lifecycle_span_ends"] = 2
-    result["resource_summary"]["launcher_stage2_artifact_envelope_span_ends"] = 2
+    result["resource_summary"]["launcher_ebpf_lifecycle_span_ends"] = 2
+    result["resource_summary"]["launcher_ebpf_artifact_envelope_span_ends"] = 2
     assert "1/2 executed launcher commands" in (
         _required_telemetry_error(config, result) or ""
     )
-    result["resource_summary"]["launcher_stage2_expected_span_ends"] = 1
+    result["resource_summary"]["launcher_ebpf_expected_span_ends"] = 1
     result["resource_summary"]["launcher_exit_status_span_ends"] = 1
     result["resource_summary"]["launcher_tool_resource_span_ends"] = 1
-    result["resource_summary"]["launcher_stage2_lifecycle_span_ends"] = 1
-    result["resource_summary"]["launcher_stage2_artifact_envelope_span_ends"] = 1
+    result["resource_summary"]["launcher_ebpf_lifecycle_span_ends"] = 1
+    result["resource_summary"]["launcher_ebpf_artifact_envelope_span_ends"] = 1
     result["resource_summary"]["resource_sampled_tool_span_ends"] = 1
     assert "sampled 1/2" in (_required_telemetry_error(config, result) or "")
 
 
 def test_trace_prediction_availability_requires_usable_contract_values(tmp_path):
     trace = tmp_path / "trace.jsonl"
-    prediction = _stage2_prediction_start()
+    prediction = _ebpf_prediction_start()
     payload = prediction["prediction"]["tool_resource"]
     payload["prediction"] = {}
     payload["continuous_predictions"] = {
@@ -616,7 +616,7 @@ def test_trace_prediction_availability_requires_usable_contract_values(tmp_path)
     assert inspected["continuous_prediction_available_span_starts"] == 0
 
 
-def test_required_stage2_accepts_explicit_semantic_rejections_but_not_for_kb(
+def test_required_ebpf_accepts_explicit_semantic_rejections_but_not_for_kb(
     tmp_path,
 ):
     trace_dir = tmp_path / "trace"
@@ -624,7 +624,7 @@ def test_required_stage2_accepts_explicit_semantic_rejections_but_not_for_kb(
     artifact_dir.mkdir(parents=True)
     parse_id = "call_parse_failed"
     unmatched_id = "call_unmatched"
-    parse_artifact = _stage2_artifact(
+    parse_artifact = _ebpf_artifact(
         parse_id,
         quality="invalid",
         eligible_for_kb=False,
@@ -632,7 +632,7 @@ def test_required_stage2_accepts_explicit_semantic_rejections_but_not_for_kb(
             {"kind": "parse_failed", "detail": "shell syntax error"}
         ],
     )
-    unmatched_artifact = _stage2_artifact(
+    unmatched_artifact = _ebpf_artifact(
         unmatched_id,
         quality="invalid",
         eligible_for_kb=False,
@@ -642,7 +642,7 @@ def test_required_stage2_accepts_explicit_semantic_rejections_but_not_for_kb(
                 "detail": "pip executable was not found",
             }
         ],
-        clauses=[_stage2_clause("tail")],
+        clauses=[_ebpf_clause("tail")],
     )
     (artifact_dir / f"{parse_id}.json").write_text(
         json.dumps(parse_artifact), encoding="utf-8"
@@ -653,10 +653,10 @@ def test_required_stage2_accepts_explicit_semantic_rejections_but_not_for_kb(
     trace = trace_dir / "trace.jsonl"
     records = [
         {"record_type": "trace_metadata", "task": "task-1"},
-        _stage2_prediction_start(),
-        _stage2_span_end(parse_id),
-        _stage2_prediction_start(),
-        _stage2_span_end(unmatched_id),
+        _ebpf_prediction_start(),
+        _ebpf_span_end(parse_id),
+        _ebpf_prediction_start(),
+        _ebpf_span_end(unmatched_id),
     ]
     trace.write_text(
         "\n".join(json.dumps(record) for record in records) + "\n",
@@ -666,7 +666,7 @@ def test_required_stage2_accepts_explicit_semantic_rejections_but_not_for_kb(
     artifact_report = _inspect_tool_resource_artifacts(trace_dir)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "runtime:\n  mode: host-openclaw-sandbox\n  stage2_required: true\n",
+        "runtime:\n  mode: host-openclaw\n  ebpf_required: true\n",
         encoding="utf-8",
     )
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -675,8 +675,8 @@ def test_required_stage2_accepts_explicit_semantic_rejections_but_not_for_kb(
         "tool_resource_artifacts": artifact_report,
     }
 
-    assert inspected["launcher_stage2_lifecycle_span_ends"] == 2
-    assert inspected["launcher_stage2_artifact_envelope_span_ends"] == 2
+    assert inspected["launcher_ebpf_lifecycle_span_ends"] == 2
+    assert inspected["launcher_ebpf_artifact_envelope_span_ends"] == 2
     assert artifact_report["collector_healthy_artifact_count"] == 2
     assert artifact_report["healthy_artifact_count"] == 2
     assert artifact_report["ok_call_count"] == 0
@@ -763,14 +763,14 @@ def test_required_stage2_accepts_explicit_semantic_rejections_but_not_for_kb(
     assert _required_telemetry_error(config, result) is not None
 
 
-def test_required_stage2_still_fails_real_collector_infrastructure_failure(
+def test_required_ebpf_still_fails_real_collector_infrastructure_failure(
     tmp_path,
 ):
     trace_dir = tmp_path / "trace"
     artifact_dir = trace_dir / "tool-resource"
     artifact_dir.mkdir(parents=True)
     call_id = "call_collector_failed"
-    artifact = _stage2_artifact(
+    artifact = _ebpf_artifact(
         call_id,
         quality="unavailable",
         eligible_for_kb=False,
@@ -793,8 +793,8 @@ def test_required_stage2_still_fails_real_collector_infrastructure_failure(
             json.dumps(record)
             for record in [
                 {"record_type": "trace_metadata", "task": "task-1"},
-                _stage2_prediction_start(),
-                _stage2_span_end(call_id, status="unavailable"),
+                _ebpf_prediction_start(),
+                _ebpf_span_end(call_id, status="unavailable"),
             ]
         )
         + "\n",
@@ -804,7 +804,7 @@ def test_required_stage2_still_fails_real_collector_infrastructure_failure(
     artifact_report = _inspect_tool_resource_artifacts(trace_dir)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "runtime:\n  mode: host-openclaw-sandbox\n  stage2_required: true\n",
+        "runtime:\n  mode: host-openclaw\n  ebpf_required: true\n",
         encoding="utf-8",
     )
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -826,10 +826,10 @@ def test_required_stage2_still_fails_real_collector_infrastructure_failure(
     assert "collector/infrastructure health is incomplete" in (error or "")
 
 
-def test_host_sandbox_required_telemetry_requires_predictions(tmp_path):
+def test_host_openclaw_required_telemetry_requires_predictions(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "runtime:\n  mode: host-openclaw-sandbox\n  stage2_required: true\n",
+        "runtime:\n  mode: host-openclaw\n  ebpf_required: true\n",
         encoding="utf-8",
     )
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -838,12 +838,12 @@ def test_host_sandbox_required_telemetry_requires_predictions(tmp_path):
         "resource_sampled_tool_span_ends": 1,
         "launcher_tool_span_ends": 1,
         "launcher_cgroup_tool_span_ends": 1,
-        "launcher_stage2_expected_span_ends": 1,
+        "launcher_ebpf_expected_span_ends": 1,
         "launcher_exit_status_span_ends": 1,
         "launcher_tool_resource_span_ends": 1,
-        "launcher_stage2_lifecycle_span_ends": 1,
-        "launcher_stage2_artifact_envelope_span_ends": 1,
-        "launcher_stage2_artifact_refs": [
+        "launcher_ebpf_lifecycle_span_ends": 1,
+        "launcher_ebpf_artifact_envelope_span_ends": 1,
+        "launcher_ebpf_artifact_refs": [
             {"execution_id": "exec-1", "tool_call_id": "call-1"}
         ],
         "launcher_tool_resource_eligible_span_ends": 1,
@@ -900,10 +900,10 @@ def test_host_sandbox_required_telemetry_requires_predictions(tmp_path):
     assert _required_telemetry_error(config, result) is None
 
 
-def test_container_mode_honors_explicit_stage2_requirement(tmp_path):
+def test_container_mode_honors_explicit_ebpf_requirement(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "runtime:\n  mode: container-openclaw\n  stage2_required: true\n",
+        "runtime:\n  mode: container-openclaw\n  ebpf_required: true\n",
         encoding="utf-8",
     )
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -915,7 +915,7 @@ def test_container_mode_honors_explicit_stage2_requirement(tmp_path):
                 "tool_span_ends": 1,
                 "resource_sampled_tool_span_ends": 0,
                 "cgroup_sampled_tool_span_ends": 0,
-                "launcher_stage2_expected_span_ends": 1,
+                "launcher_ebpf_expected_span_ends": 1,
             },
             "tool_resource_artifacts": {
                 "artifact_count": 0,
@@ -936,7 +936,7 @@ def test_container_mode_honors_explicit_stage2_requirement(tmp_path):
                 "resource_sampled_tool_span_ends": 1,
                 "launcher_tool_span_ends": 1,
                 "launcher_cgroup_tool_span_ends": 1,
-                "launcher_stage2_expected_span_ends": 1,
+                "launcher_ebpf_expected_span_ends": 1,
                 "launcher_tool_resource_span_ends": 1,
                 "launcher_tool_resource_eligible_span_ends": 1,
             },
@@ -968,7 +968,7 @@ def test_launcher_per_pid_attribution_passes_gate(tmp_path):
     unattributed spans are a real loss."""
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "runtime:\n  mode: host-openclaw-sandbox\n  stage2_required: true\n",
+        "runtime:\n  mode: host-openclaw\n  ebpf_required: true\n",
         encoding="utf-8",
     )
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -979,12 +979,12 @@ def test_launcher_per_pid_attribution_passes_gate(tmp_path):
         "launcher_cgroup_tool_span_ends": 0,
         "launcher_attributed_tool_span_ends": 1,
         "unattributed_launcher_tool_span_ends": 0,
-        "launcher_stage2_expected_span_ends": 1,
+        "launcher_ebpf_expected_span_ends": 1,
         "launcher_exit_status_span_ends": 1,
         "launcher_tool_resource_span_ends": 1,
-        "launcher_stage2_lifecycle_span_ends": 1,
-        "launcher_stage2_artifact_envelope_span_ends": 1,
-        "launcher_stage2_artifact_refs": [
+        "launcher_ebpf_lifecycle_span_ends": 1,
+        "launcher_ebpf_artifact_envelope_span_ends": 1,
+        "launcher_ebpf_artifact_refs": [
             {"execution_id": "exec-1", "tool_call_id": "call-1"}
         ],
         "launcher_tool_resource_eligible_span_ends": 1,
@@ -1030,7 +1030,7 @@ def test_launcher_per_pid_attribution_passes_gate(tmp_path):
 def test_launcher_unattributed_spans_fail_gate_with_diagnostics(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "runtime:\n  mode: host-openclaw-sandbox\n  stage2_required: true\n",
+        "runtime:\n  mode: host-openclaw\n  ebpf_required: true\n",
         encoding="utf-8",
     )
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -1052,7 +1052,7 @@ def test_launcher_unattributed_spans_fail_gate_with_diagnostics(tmp_path):
                 "launcher_cgroup_tool_span_ends": 0,
                 "launcher_attributed_tool_span_ends": 1,
                 "unattributed_launcher_tool_span_ends": 1,
-                "launcher_stage2_expected_span_ends": 2,
+                "launcher_ebpf_expected_span_ends": 2,
             },
             "tool_resource_artifacts": {"artifact_count": 2},
         }
@@ -1095,13 +1095,13 @@ def test_wait_process_exit_tolerates_keyboard_interrupt():
         # Simulate a user Ctrl+C landing while the harness waits for the
         # process: the wait must not raise and must report the current state.
         proc.wait = interrupt_wait  # type: ignore[method-assign]
-        assert host_sandbox._wait_process_exit(proc, timeout=5) is False
+        assert host_openclaw._wait_process_exit(proc, timeout=5) is False
         assert proc.poll() is None
 
         # Restoring the real wait, SIGTERM still reaps the process.
         proc.wait = real_wait  # type: ignore[method-assign]
         proc.terminate()
-        assert host_sandbox._wait_process_exit(proc, timeout=5) is True
+        assert host_openclaw._wait_process_exit(proc, timeout=5) is True
         assert proc.poll() is not None
     finally:
         if proc.poll() is None:
@@ -1127,7 +1127,7 @@ def test_stop_process_raises_when_process_never_exits():
             raise subprocess.TimeoutExpired("cmd", timeout)
 
     try:
-        host_sandbox._stop_process(_NeverExits())  # type: ignore[arg-type]
+        host_openclaw._stop_process(_NeverExits())  # type: ignore[arg-type]
     except RuntimeError as exc:
         assert "sidecar did not exit after terminate and kill" in str(exc)
     else:
@@ -1140,8 +1140,8 @@ def _runner_config(tmp_path: Path, parallelism: int) -> RunnerConfig:
         "\n".join(
             [
                 "runtime:",
-                "  mode: host-openclaw-sandbox",
-                "  stage2_required: false",
+                "  mode: host-openclaw",
+                "  ebpf_required: false",
                 "batch:",
                 f"  parallelism: {parallelism}",
                 "output:",
@@ -1182,18 +1182,18 @@ def test_run_batch_parallel_tasks_share_one_sidecar_endpoint(tmp_path, monkeypat
         "_prepare_batch_tool_resource_kb",
         lambda shared_kb_dir, _config: shared_kb_dir.mkdir(parents=True),
     )
-    monkeypatch.setattr(host_sandbox, "_free_port", lambda: 19090)
+    monkeypatch.setattr(host_openclaw, "_free_port", lambda: 19090)
 
     class Sidecar:
         poll = None  # noqa: A003 (return None → process still running)
 
     monkeypatch.setattr(
-        host_sandbox,
+        host_openclaw,
         "_start_sidecar",
         lambda **_kwargs: events.append(("sidecar-start", None)) or Sidecar(),
     )
     monkeypatch.setattr(
-        host_sandbox,
+        host_openclaw,
         "_stop_process",
         lambda _process: events.append(("sidecar-stop", None)),
     )
@@ -1214,7 +1214,7 @@ def test_run_batch_parallel_tasks_share_one_sidecar_endpoint(tmp_path, monkeypat
 
     monkeypatch.setattr(runner, "_execute_one", fake_execute_one)
 
-    report = runner.run_batch(config, tasks, tmp_path / "bundle")
+    report = runner.run_batch(config, tasks, tmp_path / "assets")
 
     endpoints = {entry["sidecar_endpoint"] for entry in report.results}
     assert endpoints == {"http://127.0.0.1:19090"}
@@ -1236,9 +1236,9 @@ def test_run_batch_parallelism_one_keeps_single_worker_path(tmp_path, monkeypatc
         "_prepare_batch_tool_resource_kb",
         lambda shared_kb_dir, _config: shared_kb_dir.mkdir(parents=True),
     )
-    monkeypatch.setattr(host_sandbox, "_free_port", lambda: 19091)
-    monkeypatch.setattr(host_sandbox, "_start_sidecar", lambda **_kwargs: object())
-    monkeypatch.setattr(host_sandbox, "_stop_process", lambda _process: None)
+    monkeypatch.setattr(host_openclaw, "_free_port", lambda: 19091)
+    monkeypatch.setattr(host_openclaw, "_start_sidecar", lambda **_kwargs: object())
+    monkeypatch.setattr(host_openclaw, "_stop_process", lambda _process: None)
     monkeypatch.setattr(runner, "_stop_process", lambda _process: None)
 
     def fake_execute_one(**kwargs):
@@ -1251,7 +1251,7 @@ def test_run_batch_parallelism_one_keeps_single_worker_path(tmp_path, monkeypatc
 
     monkeypatch.setattr(runner, "_execute_one", fake_execute_one)
 
-    report = runner.run_batch(config, [task], tmp_path / "bundle")
+    report = runner.run_batch(config, [task], tmp_path / "assets")
 
     assert calls == ["owner__repo-1"]
     assert report.completed == 1
@@ -1272,9 +1272,9 @@ def test_run_batch_keeps_snapshotted_trace_when_task_cleanup_raises(
         "_prepare_batch_tool_resource_kb",
         lambda shared_kb_dir, _config: shared_kb_dir.mkdir(parents=True),
     )
-    monkeypatch.setattr(host_sandbox, "_free_port", lambda: 19092)
-    monkeypatch.setattr(host_sandbox, "_start_sidecar", lambda **_kwargs: object())
-    monkeypatch.setattr(host_sandbox, "_stop_process", lambda _process: None)
+    monkeypatch.setattr(host_openclaw, "_free_port", lambda: 19092)
+    monkeypatch.setattr(host_openclaw, "_start_sidecar", lambda **_kwargs: object())
+    monkeypatch.setattr(host_openclaw, "_stop_process", lambda _process: None)
     monkeypatch.setattr(runner, "_stop_process", lambda _process: None)
 
     def fail_after_trace_snapshot(**kwargs):
@@ -1296,7 +1296,7 @@ def test_run_batch_keeps_snapshotted_trace_when_task_cleanup_raises(
 
     monkeypatch.setattr(runner, "_execute_one", fail_after_trace_snapshot)
 
-    report = runner.run_batch(config, [task], tmp_path / "bundle")
+    report = runner.run_batch(config, [task], tmp_path / "assets")
 
     assert report.completed == 0
     assert report.failed == 1

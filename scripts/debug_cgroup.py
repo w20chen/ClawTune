@@ -15,9 +15,9 @@ from typing import Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEDULER_SRC = ROOT / "services" / "scheduler" / "src"
-if str(SCHEDULER_SRC) not in sys.path:
-    sys.path.insert(0, str(SCHEDULER_SRC))
+SIDECAR_SRC = ROOT / "services" / "sidecar" / "src"
+if str(SIDECAR_SRC) not in sys.path:
+    sys.path.insert(0, str(SIDECAR_SRC))
 
 
 def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -52,10 +52,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     created = False
     container = args.container
     if not container:
-        existing = run("docker", "ps", "-q", "--filter", "name=claw-srb").stdout.splitlines()
+        existing = run("docker", "ps", "-q", "--filter", "name=clawtune-srb").stdout.splitlines()
         container = existing[0] if existing else None
     if not container:
-        name = f"claw-srb-debug-{os.getpid()}"
+        name = f"clawtune-srb-debug-{os.getpid()}"
         container = run(
             "docker",
             "run",
@@ -69,7 +69,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ).stdout.strip()
         created = True
 
-    temp_dir = Path(tempfile.mkdtemp(prefix="claw-cgroup-debug-"))
+    temp_dir = Path(tempfile.mkdtemp(prefix="clawtune-cgroup-debug-"))
     try:
         raw_pid = run("docker", "inspect", container, "--format", "{{.State.Pid}}").stdout.strip()
         if not raw_pid.isdigit() or int(raw_pid) <= 0:

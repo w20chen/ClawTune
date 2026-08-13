@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://openclaw.ai/schemas/scheduler/common.schema.json",
+  "$id": "https://openclaw.ai/schemas/clawtune/common.schema.json",
   "type": "object",
   "required": ["schema_version", "event_id", "occurred_at", "plugin_version", "run_id", "session_id", "session_key", "agent_id"],
   "properties": {
-    "schema_version": {"const": "scheduler.v1"},
+    "schema_version": {"const": "clawtune.v1"},
     "event_id": {"type": "string", "minLength": 1, "maxLength": 128},
     "occurred_at": {"type": "string", "format": "date-time"},
     "plugin_version": {"type": "string", "minLength": 1},

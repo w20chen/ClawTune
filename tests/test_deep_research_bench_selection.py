@@ -20,7 +20,7 @@ def _write_config(tmp_path, extra: str = "") -> DRBConfig:
     config = tmp_path / "config.yaml"
     config.write_text(
         "runtime:\n"
-        '  mode: "host-openclaw-sandbox"\n'
+        '  mode: "host-openclaw"\n'
         + extra
         + "llm:\n"
         '  api_key: "test-key"\n',
@@ -29,10 +29,10 @@ def _write_config(tmp_path, extra: str = "") -> DRBConfig:
     return DRBConfig.from_yaml(config, repo_root=tmp_path)
 
 
-def test_drb_config_defaults_stage2_off_and_gate_on(tmp_path) -> None:
+def test_drb_config_defaults_ebpf_off_and_gate_on(tmp_path) -> None:
     config = _write_config(tmp_path)
-    assert config.runtime.mode == "host-openclaw-sandbox"
-    assert config.runtime.stage2_required is False
+    assert config.runtime.mode == "host-openclaw"
+    assert config.runtime.ebpf_required is False
     assert config.gate_required is True
     assert config.dataset.harness_dataset == "muset-ai/DeepResearch-Bench-Dataset"
     assert config.dataset.data_files == "generated_reports/openai-deepresearch.jsonl"
@@ -45,16 +45,16 @@ def test_drb_config_explicit_gate_required(tmp_path) -> None:
     assert config.gate_required is False
 
 
-def test_drb_config_explicit_stage2_required(tmp_path) -> None:
-    config = _write_config(tmp_path, "  stage2_required: true\n")
-    assert config.runtime.stage2_required is True
+def test_drb_config_explicit_ebpf_required(tmp_path) -> None:
+    config = _write_config(tmp_path, "  ebpf_required: true\n")
+    assert config.runtime.ebpf_required is True
 
 
 def test_drb_config_builds_swe_runner_config(tmp_path) -> None:
     config = _write_config(tmp_path)
     swe = config.to_swe_runner_config()
     assert swe.llm.api_key == "test-key"
-    assert swe.runtime.mode == "host-openclaw-sandbox"
+    assert swe.runtime.mode == "host-openclaw"
     assert swe.repo_root == tmp_path
     assert swe.config_path is not None
 
@@ -183,7 +183,7 @@ def test_web_search_config_key_from_file(tmp_path) -> None:
     config_file = tmp_path / "config.yaml"
     config_file.write_text(
         "runtime:\n"
-        '  mode: "host-openclaw-sandbox"\n'
+        '  mode: "host-openclaw"\n'
         "llm:\n"
         '  api_key: "k"\n'
         "web_search:\n"
@@ -206,7 +206,7 @@ def test_web_search_config_template_resolves_from_env(tmp_path, monkeypatch) -> 
     config_file = tmp_path / "config.yaml"
     config_file.write_text(
         "runtime:\n"
-        '  mode: "host-openclaw-sandbox"\n'
+        '  mode: "host-openclaw"\n'
         "llm:\n"
         '  api_key: "k"\n'
         "web_search:\n"

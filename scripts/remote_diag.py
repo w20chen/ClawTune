@@ -78,7 +78,7 @@ def parser() -> argparse.ArgumentParser:
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument(
         "--base-url",
-        default=os.getenv("AGENT_SCHEDULER_LLM_UPSTREAM_BASE_URL", DEFAULT_BASE_URL),
+        default=os.getenv("CLAWTUNE_LLM_UPSTREAM_BASE_URL", DEFAULT_BASE_URL),
         help="OpenAI-compatible API base URL.",
     )
     cli.add_argument(

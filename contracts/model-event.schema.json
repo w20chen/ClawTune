@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://openclaw.ai/schemas/scheduler/model-event.schema.json",
+  "$id": "https://openclaw.ai/schemas/clawtune/model-event.schema.json",
   "unevaluatedProperties": false,
   "allOf": [
     {"$ref": "common.schema.json"},

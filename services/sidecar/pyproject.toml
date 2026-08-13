@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clawtune-sidecar"
+version = "0.1.0"
+description = "ClawTune hardware-aware sidecar for OpenClaw"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.110",
+  "httpx>=0.27",
+  "pydantic>=2",
+  "psutil>=5.9",
+  "numpy>=1.26",
+  "typing-extensions>=4.12",
+  "uvicorn>=0.27",
+  "prometheus-client>=0.20"
+]
+
+[project.scripts]
+clawtune-launch = "clawtune_sidecar.launcher:main"
+clawtune-sidecar = "clawtune_sidecar.main:main"
+clawtune-setup = "clawtune_sidecar.cli:setup_main"
+clawtune-doctor = "clawtune_sidecar.cli:doctor_main"
+clawtune-check = "clawtune_sidecar.cli:check_main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "jsonschema>=4"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+tool_resource = ["_mvdan_adapter/*"]
+tool_time = ["_lattice_vendor/LICENSE", "_lattice_vendor/VENDORED.md"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "--basetemp ../../.pytest-tmp"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["src/tool_time/_lattice_vendor"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+
+[[tool.mypy.overrides]]
+module = "tool_time._lattice_vendor.*"
+ignore_errors = true

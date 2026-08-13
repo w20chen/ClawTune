@@ -29,7 +29,7 @@ def main() -> None:
             "total=sum(math.sqrt(i) for i in range(2000000)); "
             "digest=hashlib.sha256(blob).hexdigest()[:16]; "
             "p.write_bytes(blob); data=p.read_bytes(); time.sleep(0.5); "
-            "print('claw-launch-heavy-ok', len(data), int(total), digest)\""
+            "print('clawtune-launch-heavy-ok', len(data), int(total), digest)\""
         ),
     )
     parser.add_argument("--cpu-set", default=None)
@@ -57,7 +57,7 @@ def decision_demo(endpoint: str) -> None:
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     tool_call_id = f"demo-call-{uuid4().hex[:8]}"
     request = {
-        "schema_version": "scheduler.v1",
+        "schema_version": "clawtune.v1",
         "event_id": f"evt-before-{uuid4().hex[:8]}",
         "occurred_at": now,
         "plugin_version": "demo",
@@ -87,7 +87,7 @@ def decision_demo(endpoint: str) -> None:
     print_json(decision)
 
     completion = {
-        "schema_version": "scheduler.v1",
+        "schema_version": "clawtune.v1",
         "event_id": f"evt-after-{uuid4().hex[:8]}",
         "occurred_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "plugin_version": "demo",
@@ -156,7 +156,7 @@ def execution_demo(
     if not run_launcher:
         print("launcher not run. To claim this spec manually:")
         print(
-            "  python -m agent_scheduler.launcher run "
+            "  python -m clawtune_sidecar.launcher run "
             f"--endpoint {endpoint} --execution-id={execution_id} "
             f"--token={registration['one_time_token']}"
         )
@@ -169,7 +169,7 @@ def execution_demo(
         [
             sys.executable,
             "-m",
-            "agent_scheduler.launcher",
+            "clawtune_sidecar.launcher",
             "run",
             "--endpoint",
             endpoint,

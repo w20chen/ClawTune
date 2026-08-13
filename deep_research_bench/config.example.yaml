@@ -9,11 +9,11 @@
 runtime:
   # OpenClaw, the plugin, and the sidecar run on the host; the agent's tools
   # execute in the basic Docker sandbox image below.
-  mode: "host-openclaw-sandbox"
+  mode: "host-openclaw"
 
-  # Research tools (read/edit/web) never produce Stage-2 eBPF exec clause
+  # Research tools (read/edit/web) never produce eBPF exec-clause
   # telemetry, so the sidecar must not demand it.
-  stage2_required: false
+  ebpf_required: false
 
   # Relaxed required-telemetry gate: a task fails if its v6 trace lacks an
   # LLM span or a resource-sampled tool span.  Set false for a best-effort
@@ -53,7 +53,7 @@ docker:
 # ── Sandbox (the "very basic" tool container) ────────────────────
 sandbox:
   # A small image that can run OpenClaw's sandbox tools (read/edit/exec) and
-  # provides a Python >= 3.10 interpreter for the claw-launch wrapper.
+  # provides a Python >= 3.10 interpreter for the clawtune-launch wrapper.
   image: "python:3.11-slim"
   workdir: "/workspace"
 
@@ -118,14 +118,14 @@ output:
   # Set to empty string to disable.
   flat_export_dir: "./deep_research_bench/.runtime/export"
 
-# ── Runtime Bundle ───────────────────────────────────────────────
-bundle:
+# ── Runtime Assets ───────────────────────────────────────────────
+runtime_assets:
   # Source directories (relative to repo root).
-  plugin_source: "packages/openclaw-plugin"
-  scheduler_source: "services/scheduler"
+  plugin_source: "packages/clawtune-plugin"
+  sidecar_source: "services/sidecar"
 
-  # Generated runtime files stay outside the Git-tracked bundle template.
-  output_dir: "deep_research_bench/.runtime/bundle"
+  # Generated runtime files stay outside the Git-tracked source tree.
+  output_dir: "deep_research_bench/.runtime/assets"
 
 # ── Agent ────────────────────────────────────────────────────────
 agent:

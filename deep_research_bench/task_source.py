@@ -108,7 +108,7 @@ def parse_instance_ids(value: str | None) -> list[str] | None:
 
 
 def task_to_swe_taskdef(task: DRBTask, image: str) -> TaskDef:
-    """Convert a DRB task to the swe-rebench TaskDef used by host_sandbox."""
+    """Convert a DRB task to the swe-rebench TaskDef used by host_openclaw."""
     return TaskDef(
         instance_id=task.instance_id,
         image=image,

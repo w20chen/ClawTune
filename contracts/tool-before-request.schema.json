@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://openclaw.ai/schemas/scheduler/tool-before-request.schema.json",
+  "$id": "https://openclaw.ai/schemas/clawtune/tool-before-request.schema.json",
   "unevaluatedProperties": false,
   "allOf": [
     {"$ref": "common.schema.json"},

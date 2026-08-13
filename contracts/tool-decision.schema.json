@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://openclaw.ai/schemas/scheduler/tool-decision.schema.json",
+  "$id": "https://openclaw.ai/schemas/clawtune/tool-decision.schema.json",
   "type": "object",
   "$defs": {
     "clauseLatencyBucketPrediction": {

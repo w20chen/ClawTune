@@ -2,7 +2,7 @@
 algorithms over external "legacy" trace datasets.
 
 This package NEVER modifies the vendored algorithm code under
-``services/scheduler/src/tool_resource`` and ``services/scheduler/src/tool_time``.
+``services/sidecar/src/tool_resource`` and ``services/sidecar/src/tool_time``.
 It only:
 
 * parses the external (legacy) dataset format into the algorithm input objects
@@ -17,9 +17,9 @@ It only:
 Legacy format
 -------------
 Each task directory ``<org>__<repo>-<pr>`` contains an ``attempt_1/`` folder
-with a Stage-2 ``clause_telemetry.json`` artifact and an action-level
+with a eBPF ``clause_telemetry.json`` artifact and an action-level
 ``trace.jsonl``.  The clause artifacts are structurally identical to
-ClawTune's own Stage-2 clause telemetry and pass the native
+ClawTune's own eBPF clause telemetry and pass the native
 ``tool_resource.sdk._load_valid_artifact`` validation unchanged; only the
 surrounding trace layout differs, which this package adapts.
 """

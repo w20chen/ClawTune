@@ -14,9 +14,9 @@ python tools/validate_contracts.py
 
 Main event families:
 
-- `scheduler.v1` tool before/completed events
+- `clawtune.v1` tool before/completed events
 - model start/end events
-- `scheduler.v2` managed execution registration and scope lookup
+- `clawtune.v2` managed execution registration and scope lookup
 - schema trace records written as JSONL
 
 ## Trace Format
@@ -69,7 +69,7 @@ Useful fields:
 - `input.messages`: LLM request messages when proxy capture is active.
 - `output.content`: LLM output. When the model emits tool calls, this may be
   an object containing both `content` and `tool_calls`.
-- `input.requested_args`: tool input when `recordRawTrace: true`.
+- `input.requested_args`: tool input when `trace.include_raw_events: true`.
 - `prediction`: tool prediction captured before execution on tool
   `span_start` records. This mirrors the `/v1/decisions/tool` response
   `prediction`, including native `tool_resource` details when available.
@@ -96,7 +96,7 @@ Useful fields:
 - `resources.sampling_interval_ms`, `resources.sampling_point_count`,
   `resources.sampling_quality`: resource sampler cadence and quality.
 - `resources.resource_timeline`: per-sample resource timeline, capped by
-  `AGENT_SCHEDULER_RESOURCE_TIMELINE_MAX_POINTS`.
+  `CLAWTUNE_RESOURCE_TIMELINE_MAX_POINTS`.
 
 Coverage reasons distinguish attribution failures from expected shared scopes:
 
@@ -114,10 +114,10 @@ Coverage reasons distinguish attribution failures from expected shared scopes:
   capture an overlapping resource window.
 
 For complete cgroup sampling in SWE-Rebench, the task container must be able
-to create per-execution cgroups under `/sys/fs/cgroup/claw`. The default
+to create per-execution cgroups under `/sys/fs/cgroup/clawtune`. The default
 `swe_rebench/config.yaml` enables the required privileged Docker mode,
 host cgroup namespace, and read-write cgroupfs mount. If those permissions are
-removed, `CLAW_CGROUP_REQUIRED=1` makes launcher startup fail instead of
+removed, `CLAWTUNE_CGROUP_REQUIRED=1` makes launcher startup fail instead of
 silently recording the container root cgroup as if it were per-tool data.
 
 The JSON Schema contracts remain the source of truth for protocol details.
