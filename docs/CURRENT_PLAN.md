@@ -101,11 +101,22 @@ plus a passed relaxed telemetry audit. Detailed output fields are defined in
 
 - Ruff is not installed in the current Python environment, so `python -m ruff
   check ...` cannot run. Use contract validation, tests, and `git diff --check`.
+- The documented top-level pytest command requires the project virtual
+  environment and an explicit Scheduler source path in this checkout. Running
+  it with the system interpreter fails during collection with
+  `ModuleNotFoundError: No module named 'tool_resource'`; the equivalent check
+  succeeds with
+  `$env:PYTHONPATH=(Resolve-Path 'services\\scheduler\\src').Path; .\\.venv\\Scripts\\python.exe -m pytest tests -q --basetemp .pytest-tmp-root`.
 - The bundled Scheduler test copy has existing repository-layout failures
   because it resolves fixtures below `swe_rebench/`; validate the source suite
   under `services/scheduler/tests` instead.
 - A stale `%USERPROFILE%\.pytest-tmp` is not removable by this account. Always
   give pytest a workspace-local `--basetemp` as shown above.
+- Windows ACLs currently prevent this account from removing the historical
+  `swe_rebench/bundle/` tree completely (notably the generated wheel and source
+  archive) and the stale `swe_rebench/.pytest-runner-tmp/` and
+  `swe_rebench/.pytest-scheduler-tmp/` directories. These are generated or
+  obsolete outputs, not runtime inputs; remove them from an elevated host shell.
 
 ## Two-sandbox Kubernetes delivery (2026-08-10)
 

@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .pytest-tmp-root/
 .pytest-tmp-*/
+.pytest-*-tmp/
 .pytest-tmp/
 .ruff_cache/
 .mypy_cache/
@@ -20,6 +21,7 @@ build/
 *.egg-info/
 .env
 swe_rebench/llm_api_key.txt
+swe_rebench/bundle/
 swe_rebench/.runtime/
 deep_research_bench/llm_api_key.txt
 deep_research_bench/tavily_api_key.txt
@@ -27,4 +29,5 @@ deep_research_bench/.runtime/
 legacy_eval/.runtime/
 .DS_Store
 .gateway-run.*.log
+/services/scheduler/traces/unknown_unknown*.jsonl
 /services/scheduler/traces/tool-resource/
