@@ -30,3 +30,5 @@ legacy_eval/.runtime/
 .gateway-run.*.log
 /services/sidecar/traces/unknown_unknown*.jsonl
 /services/sidecar/traces/tool-resource/
+.npm-review-cache/
+.review-dist-sidecar/
