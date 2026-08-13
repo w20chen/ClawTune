@@ -1841,7 +1841,7 @@ def test_host_openclaw_launcher_is_readable_under_restrictive_umask(
     assert (runtime / "bin" / "pip").stat().st_mode & 0o777 == 0o755
     assert (runtime / "bin" / "pip3").stat().st_mode & 0o777 == 0o755
     assert runtime.stat().st_mode & 0o055 == 0o055
-    assert (runtime / "scheduler").stat().st_mode & 0o055 == 0o055
+    assert (runtime / "sidecar").stat().st_mode & 0o055 == 0o055
     assert (runtime / "sidecar" / "src").stat().st_mode & 0o055 == 0o055
     assert (runtime / "sidecar" / "src" / "clawtune_sidecar" / "__init__.py").stat().st_mode & 0o044 == 0o044
 
