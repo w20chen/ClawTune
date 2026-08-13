@@ -1620,7 +1620,10 @@ def _run_openclaw_agent(
     env.update(
         {
             "TASK_INSTANCE_ID": task.instance_id,
-            "CLAWTUNE_ENDPOINT": f"http://host.docker.internal:{sidecar_port}",
+            # This environment belongs to the host OpenClaw/plugin process.
+            # Sandbox commands receive their own host.docker.internal endpoint
+            # through sandbox.docker.env in the generated OpenClaw config.
+            "CLAWTUNE_ENDPOINT": f"http://127.0.0.1:{sidecar_port}",
             "CLAWTUNE_EXEC_WORKDIR": "/workspace",
             "CLAWTUNE_SANDBOX_HOST_WORKSPACE": str(workspace),
             "CLAWTUNE_SANDBOX_CONTAINER_WORKSPACE": "/workspace",
@@ -2052,6 +2055,7 @@ def _openclaw_env(
         "CLAWTUNE_AUTO_START_SIDECAR",
         "CLAWTUNE_SIDECAR_COMMAND",
         "CLAWTUNE_ENDPOINT",
+        "CLAWTUNE_LAUNCHER_ENDPOINT",
         "CLAWTUNE_TRACE_DIR",
         "CLAWTUNE_PLUGIN_TRACE_DIR",
     ):
@@ -2088,7 +2092,14 @@ def _openclaw_env(
                 if workspace is not None
                 else _LOCAL_PROXY_API_KEY
             ),
-            "CLAWTUNE_ENDPOINT": f"http://host.docker.internal:{sidecar_port}",
+            # The plugin runs on the host.  Only its Docker-sandbox children
+            # need host.docker.internal (configured separately in
+            # _openclaw_config); using it here overrides the plugin config and
+            # makes host-side sidecar requests fail on Linux.
+            "CLAWTUNE_ENDPOINT": f"http://127.0.0.1:{sidecar_port}",
+            "CLAWTUNE_LAUNCHER_ENDPOINT": (
+                f"http://host.docker.internal:{sidecar_port}"
+            ),
             "CLAWTUNE_EXEC_WORKDIR": "/workspace",
             "CLAWTUNE_SANDBOX_HOST_WORKSPACE": str(workspace) if workspace is not None else "",
             "CLAWTUNE_SANDBOX_CONTAINER_WORKSPACE": "/workspace",

@@ -131,7 +131,8 @@ export async function instrumentExecParams(
   }
 
   const inheritedLauncherEnv = launcherEnv();
-  const launcherEndpoint = inheritedLauncherEnv.CLAWTUNE_ENDPOINT
+  const launcherEndpoint = process.env.CLAWTUNE_LAUNCHER_ENDPOINT
+    ?? inheritedLauncherEnv.CLAWTUNE_ENDPOINT
     ?? config.endpoint;
   params.env = {
     ...safeExecEnv(params.env),

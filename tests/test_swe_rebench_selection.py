@@ -1717,6 +1717,7 @@ def test_host_openclaw_openclaw_env_points_workspace_dir_at_task_workspace(
     monkeypatch.setenv("CLAWTUNE_AUTO_START_SIDECAR", "true")
     monkeypatch.setenv("CLAWTUNE_SIDECAR_COMMAND", "start-stale-sidecar")
     monkeypatch.setenv("CLAWTUNE_ENDPOINT", "http://127.0.0.1:9999")
+    monkeypatch.setenv("CLAWTUNE_LAUNCHER_ENDPOINT", "http://stale.invalid:9999")
     monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "stale-token")
     monkeypatch.setenv("OPENCLAW_GATEWAY_PASSWORD", "stale-password")
     monkeypatch.setenv("OPENCLAW_GATEWAY_URL", "ws://127.0.0.1:18789")
@@ -1736,7 +1737,8 @@ def test_host_openclaw_openclaw_env_points_workspace_dir_at_task_workspace(
     assert "CLAWTUNE_PLUGIN_TRACE_DIR" not in env
     assert "CLAWTUNE_AUTO_START_SIDECAR" not in env
     assert "CLAWTUNE_SIDECAR_COMMAND" not in env
-    assert env["CLAWTUNE_ENDPOINT"] == "http://host.docker.internal:8765"
+    assert env["CLAWTUNE_ENDPOINT"] == "http://127.0.0.1:8765"
+    assert env["CLAWTUNE_LAUNCHER_ENDPOINT"] == "http://host.docker.internal:8765"
     assert "OPENCLAW_GATEWAY_TOKEN" not in env
     assert "OPENCLAW_GATEWAY_PASSWORD" not in env
     assert "OPENCLAW_GATEWAY_URL" not in env
@@ -2497,6 +2499,8 @@ def test_host_openclaw_agent_forces_sandbox_exec_workdir(monkeypatch, tmp_path: 
     assert isinstance(env, dict)
     assert env["OPENCLAW_WORKSPACE_DIR"] == str(workspace)
     assert env["CLAWTUNE_EXEC_WORKDIR"] == "/workspace"
+    assert env["CLAWTUNE_ENDPOINT"] == "http://127.0.0.1:8765"
+    assert env["CLAWTUNE_LAUNCHER_ENDPOINT"] == "http://host.docker.internal:8765"
     assert env["CLAWTUNE_SANDBOX_HOST_WORKSPACE"] == str(workspace)
     assert env["CLAWTUNE_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
 

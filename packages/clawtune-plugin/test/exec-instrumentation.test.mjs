@@ -169,6 +169,7 @@ test("exec instrumentation forwards launcher cgroup environment", async () => {
     "CLAWTUNE_LAUNCH_DEBUG",
     "CLAWTUNE_TASK_PYTHON",
     "CLAWTUNE_ENDPOINT",
+    "CLAWTUNE_LAUNCHER_ENDPOINT",
     "CLAWTUNE_TOKEN",
     "CLAWTUNE_SANDBOX_CONTAINER_ID",
   ];
@@ -179,7 +180,8 @@ test("exec instrumentation forwards launcher cgroup environment", async () => {
   process.env.CLAWTUNE_LAUNCH_MODE = "fork-exec";
   process.env.CLAWTUNE_LAUNCH_DEBUG = "1";
   process.env.CLAWTUNE_TASK_PYTHON = "/opt/conda/bin/python3";
-  process.env.CLAWTUNE_ENDPOINT = "http://host.docker.internal:8765";
+  process.env.CLAWTUNE_ENDPOINT = "http://127.0.0.1:8765";
+  process.env.CLAWTUNE_LAUNCHER_ENDPOINT = "http://host.docker.internal:8765";
   process.env.CLAWTUNE_TOKEN = "sidecar-bearer";
   process.env.CLAWTUNE_SANDBOX_CONTAINER_ID = "5a423f3b2078";
   const client = {
