@@ -113,11 +113,20 @@ Coverage reasons distinguish attribution failures from expected shared scopes:
 - `monitor_window_no_overlap`: a PID/cgroup existed, but the sampler did not
   capture an overlapping resource window.
 
-For complete cgroup sampling in SWE-Rebench, the task container must be able
-to create per-execution cgroups under `/sys/fs/cgroup/clawtune`. The default
-`swe_rebench/config.yaml` enables the required privileged Docker mode,
-host cgroup namespace, and read-write cgroupfs mount. If those permissions are
-removed, `CLAWTUNE_CGROUP_REQUIRED=1` makes launcher startup fail instead of
-silently recording the container root cgroup as if it were per-tool data.
+`coverage_ratio` measures overlap with the complete tool span, not just the
+payload command. In fork-exec mode the payload remains behind its pipe gate
+while `/started` resolves the host PID and attaches collectors. That pre-monitor
+registration window can lower span coverage without implying that the same
+duration of payload work was missed; it still means the complete tool span was
+not monitored from its initial boundary.
+
+For complete cgroup sampling in SWE-Rebench, each managed execution must enter
+its own cgroup. The container runtime uses the privileged/cgroup-v2 settings in
+`swe_rebench/config.yaml`. Host-OpenClaw's Docker sandbox does not consume those
+runner-owned Docker flags, so its fork-exec launcher requests a privileged
+host-side cgroup gate when the sandbox cgroupfs is read-only. With
+`cgroup_required=true`, launcher startup fails unless the resulting scope is
+`exclusive-execution-cgroup`; the runner also rejects a shared
+`docker-<container>.scope` or a cgroup path reused by multiple executions.
 
 The JSON Schema contracts remain the source of truth for protocol details.

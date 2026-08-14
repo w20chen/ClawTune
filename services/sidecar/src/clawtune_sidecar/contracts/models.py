@@ -201,6 +201,7 @@ class ExecutionStartedRequest(BaseModel):
     pid_namespace_inode: int | None = Field(default=None, ge=0)
     container_id: str | None = None
     host_cgroup_gate: bool = False
+    cgroup_required: bool = False
 
 
 class ExecutionExitedRequest(BaseModel):

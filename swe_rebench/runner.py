@@ -156,6 +156,27 @@ def _count_lines(path: Path) -> int:
         return 0
 
 
+def _normalise_cgroup_path(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalised = value.strip().replace("\\", "/").rstrip("/")
+    return normalised or "/"
+
+
+def _is_docker_container_scope_path(value: Any) -> bool:
+    """Return whether *value* names a Docker container's shared systemd scope."""
+    path = _normalise_cgroup_path(value)
+    if path is None:
+        return False
+    basename = path.rsplit("/", 1)[-1]
+    if not basename.startswith("docker-") or not basename.endswith(".scope"):
+        return False
+    container_id = basename[len("docker-") : -len(".scope")]
+    return 12 <= len(container_id) <= 128 and all(
+        character in "0123456789abcdefABCDEF" for character in container_id
+    )
+
+
 def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
     """Return lightweight sanity checks for an OpenClaw trace export."""
     report: dict[str, Any] = {
@@ -173,8 +194,13 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         "launcher_ebpf_expected_span_ends": 0,
         "launcher_exit_status_span_ends": 0,
         "launcher_cgroup_tool_span_ends": 0,
+        "launcher_exclusive_cgroup_tool_span_ends": 0,
+        "launcher_docker_container_scope_tool_span_ends": 0,
         "launcher_attributed_tool_span_ends": 0,
         "unattributed_launcher_tool_span_ends": 0,
+        "launcher_execution_ids": [],
+        "launcher_cgroup_paths": [],
+        "launcher_execution_cgroup_refs": [],
         "cgroup_tool_span_ends": 0,
         "process_tree_tool_span_ends": 0,
         "docker_exec_pid_tool_span_ends": 0,
@@ -318,6 +344,34 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                     report["failed_tool_span_ends"] += 1
                 if _nested_get(record, ("execution", "mode")) == "launcher":
                     report["launcher_tool_span_ends"] += 1
+                    execution_id = _nested_get(
+                        record,
+                        ("execution", "execution_id"),
+                    )
+                    if not isinstance(execution_id, str) or not execution_id:
+                        execution_id = None
+                    cgroup_path = _normalise_cgroup_path(
+                        _nested_get(record, ("execution", "cgroup_path"))
+                    )
+                    report["launcher_execution_cgroup_refs"].append(
+                        {
+                            "execution_id": execution_id,
+                            "cgroup_path": cgroup_path,
+                        }
+                    )
+                    if execution_id is not None:
+                        report["launcher_execution_ids"].append(execution_id)
+                    if cgroup_path is not None:
+                        report["launcher_cgroup_paths"].append(cgroup_path)
+                    if (
+                        resources.get("attribution_source")
+                        == "exclusive-execution-cgroup"
+                    ):
+                        report["launcher_exclusive_cgroup_tool_span_ends"] += 1
+                    if _is_docker_container_scope_path(cgroup_path):
+                        report[
+                            "launcher_docker_container_scope_tool_span_ends"
+                        ] += 1
                     if _tool_failure_kind(record) == "shell-not-executable":
                         report["launcher_not_executable_span_ends"] += 1
                     if _is_launcher_command_not_found(record):
@@ -395,6 +449,23 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         report["warnings"].append("launcher tool spans have no resource attribution")
     if report["launcher_tool_span_ends"] and not report["launcher_cgroup_tool_span_ends"]:
         report["warnings"].append("launcher tool spans have no cgroup resource samples")
+    if (
+        report["launcher_exclusive_cgroup_tool_span_ends"]
+        != report["launcher_tool_span_ends"]
+    ):
+        report["warnings"].append(
+            "some launcher tool spans lack exclusive execution cgroup attribution"
+        )
+    if report["launcher_docker_container_scope_tool_span_ends"]:
+        report["warnings"].append(
+            "launcher tool spans reuse a Docker container cgroup scope"
+        )
+    if len(set(report["launcher_cgroup_paths"])) != len(
+        report["launcher_cgroup_paths"]
+    ):
+        report["warnings"].append(
+            "launcher tool spans reuse an execution cgroup path"
+        )
     if report["failed_tool_span_ends"]:
         report["warnings"].append("trace contains failed tool spans")
     if report["status_exit_code_disagreements"]:
@@ -499,6 +570,41 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
     launcher_cgroup_tool_span_ends = sum(
         int(item.get("launcher_cgroup_tool_span_ends", 0))
         for item in trace_inspection
+    )
+    launcher_exclusive_cgroup_tool_span_ends = sum(
+        int(item.get("launcher_exclusive_cgroup_tool_span_ends", 0))
+        for item in trace_inspection
+    )
+    launcher_docker_container_scope_tool_span_ends = sum(
+        int(item.get("launcher_docker_container_scope_tool_span_ends", 0))
+        for item in trace_inspection
+    )
+    launcher_execution_cgroup_refs = sorted(
+        (
+            {
+                "execution_id": ref.get("execution_id"),
+                "cgroup_path": ref.get("cgroup_path"),
+            }
+            for item in trace_inspection
+            for ref in item.get("launcher_execution_cgroup_refs", [])
+            if isinstance(ref, dict)
+        ),
+        key=lambda ref: (
+            str(ref.get("execution_id") or ""),
+            str(ref.get("cgroup_path") or ""),
+        ),
+    )
+    launcher_execution_ids = sorted(
+        execution_id
+        for item in trace_inspection
+        for execution_id in item.get("launcher_execution_ids", [])
+        if isinstance(execution_id, str) and execution_id
+    )
+    launcher_cgroup_paths = sorted(
+        cgroup_path
+        for item in trace_inspection
+        for cgroup_path in item.get("launcher_cgroup_paths", [])
+        if isinstance(cgroup_path, str) and cgroup_path
     )
     launcher_attributed_tool_span_ends = sum(
         int(item.get("launcher_attributed_tool_span_ends", 0))
@@ -626,6 +732,17 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         "launcher_exit_status_span_ends": launcher_exit_status_span_ends,
         "launcher_attributed_tool_span_ends": launcher_attributed_tool_span_ends,
         "launcher_cgroup_tool_span_ends": launcher_cgroup_tool_span_ends,
+        "launcher_exclusive_cgroup_tool_span_ends": (
+            launcher_exclusive_cgroup_tool_span_ends
+        ),
+        "launcher_docker_container_scope_tool_span_ends": (
+            launcher_docker_container_scope_tool_span_ends
+        ),
+        "launcher_execution_ids": launcher_execution_ids,
+        "launcher_unique_execution_id_count": len(set(launcher_execution_ids)),
+        "launcher_cgroup_paths": launcher_cgroup_paths,
+        "launcher_unique_cgroup_path_count": len(set(launcher_cgroup_paths)),
+        "launcher_execution_cgroup_refs": launcher_execution_cgroup_refs,
         "launcher_tool_resource_span_ends": launcher_tool_resource_span_ends,
         "launcher_tool_resource_available_span_ends": launcher_tool_resource_available_span_ends,
         "launcher_tool_resource_eligible_span_ends": launcher_tool_resource_eligible_span_ends,
@@ -1212,15 +1329,105 @@ def _launcher_cgroup_failure_detail(result: dict[str, Any]) -> str:
     return "; ".join(parts)
 
 
+def _required_host_openclaw_cgroup_error(
+    resources: dict[str, Any],
+) -> str | None:
+    """Audit strict per-execution host cgroup attribution."""
+    launcher_spans = int(resources.get("launcher_tool_span_ends", 0))
+    if launcher_spans == 0:
+        return "required exclusive execution cgroup audit found no launcher executions"
+
+    issues: list[str] = []
+    cgroup_spans = int(resources.get("launcher_cgroup_tool_span_ends", 0))
+    if cgroup_spans != launcher_spans:
+        issues.append(f"scope=cgroup for {cgroup_spans}/{launcher_spans}")
+
+    exclusive_spans = int(
+        resources.get("launcher_exclusive_cgroup_tool_span_ends", 0)
+    )
+    if exclusive_spans != launcher_spans:
+        issues.append(
+            "attribution_source=exclusive-execution-cgroup for "
+            f"{exclusive_spans}/{launcher_spans}"
+        )
+
+    raw_refs = resources.get("launcher_execution_cgroup_refs")
+    refs = raw_refs if isinstance(raw_refs, list) else []
+    valid_refs = [ref for ref in refs if isinstance(ref, dict)]
+    if len(valid_refs) != launcher_spans:
+        issues.append(
+            f"execution_id/cgroup_path pairs={len(valid_refs)}/{launcher_spans}"
+        )
+
+    execution_ids = [
+        ref.get("execution_id")
+        for ref in valid_refs
+        if isinstance(ref.get("execution_id"), str)
+        and bool(ref.get("execution_id"))
+    ]
+    if len(execution_ids) != launcher_spans:
+        issues.append(
+            f"non-empty execution IDs={len(execution_ids)}/{launcher_spans}"
+        )
+    unique_execution_ids = len(set(execution_ids))
+    if len(execution_ids) == launcher_spans and unique_execution_ids != launcher_spans:
+        issues.append(
+            f"unique execution IDs={unique_execution_ids}/{launcher_spans}"
+        )
+
+    cgroup_paths = [
+        path
+        for ref in valid_refs
+        if (path := _normalise_cgroup_path(ref.get("cgroup_path"))) is not None
+    ]
+    if len(cgroup_paths) != launcher_spans:
+        issues.append(f"non-empty cgroup paths={len(cgroup_paths)}/{launcher_spans}")
+    unique_cgroup_paths = len(set(cgroup_paths))
+    if len(cgroup_paths) == launcher_spans and unique_cgroup_paths != launcher_spans:
+        issues.append(
+            f"unique cgroup paths={unique_cgroup_paths}/{launcher_spans}"
+        )
+
+    docker_scope_spans = max(
+        int(
+            resources.get(
+                "launcher_docker_container_scope_tool_span_ends",
+                0,
+            )
+        ),
+        sum(_is_docker_container_scope_path(path) for path in cgroup_paths),
+    )
+    if docker_scope_spans:
+        issues.append(
+            f"shared docker-<container-id>.scope paths={docker_scope_spans}"
+        )
+
+    if not issues:
+        return None
+    return "required exclusive execution cgroup audit failed: " + "; ".join(issues)
+
+
 def _required_telemetry_error(
     config: RunnerConfig,
     result: dict[str, Any],
 ) -> str | None:
-    if not config.runtime.ebpf_required:
+    strict_host_cgroup_required = (
+        normalize_runtime_mode(config.runtime.mode) == HOST_OPENCLAW_MODE
+        and config.docker.cgroup_required
+    )
+    if not config.runtime.ebpf_required and not strict_host_cgroup_required:
         return None
     resources = result.get("resource_summary")
+    if not isinstance(resources, dict):
+        return "required resource telemetry audit is missing"
+    if strict_host_cgroup_required:
+        cgroup_error = _required_host_openclaw_cgroup_error(resources)
+        if cgroup_error is not None:
+            return cgroup_error
+    if not config.runtime.ebpf_required:
+        return None
     artifacts = result.get("tool_resource_artifacts")
-    if not isinstance(resources, dict) or not isinstance(artifacts, dict):
+    if not isinstance(artifacts, dict):
         return "required resource telemetry audit is missing"
     tool_spans = int(resources.get("tool_span_ends", 0))
     sampled_spans = int(resources.get("resource_sampled_tool_span_ends", 0))
@@ -1815,8 +2022,15 @@ def run_batch(
             result_dict["sidecar_endpoint"] = f"http://127.0.0.1:{shared_sidecar_port}"
         telemetry_error = _required_telemetry_error(config, result_dict)
         agent_error = _nested_get(result_dict, ("agent_diagnostics", "failure"))
-        telemetry_not_evaluable = bool(
+        telemetry_required = bool(
             config.runtime.ebpf_required
+            or (
+                normalize_runtime_mode(config.runtime.mode) == HOST_OPENCLAW_MODE
+                and config.docker.cgroup_required
+            )
+        )
+        telemetry_not_evaluable = bool(
+            telemetry_required
             and isinstance(agent_error, str)
             and int(
                 _nested_get(result_dict, ("resource_summary", "tool_span_ends"))
@@ -1825,23 +2039,21 @@ def run_batch(
             == 0
         )
         result_dict["telemetry_audit"] = {
-            "required": config.runtime.ebpf_required,
+            "required": telemetry_required,
             "status": (
                 "not_evaluable"
                 if telemetry_not_evaluable
                 else "failed"
                 if telemetry_error is not None
-                else ("passed" if config.runtime.ebpf_required else "not_required")
+                else ("passed" if telemetry_required else "not_required")
             ),
             "error": None if telemetry_not_evaluable else telemetry_error,
             "not_evaluable_reason": (
                 telemetry_error if telemetry_not_evaluable else None
             ),
         }
-        # When the launcher fell back to per-PID process-tree attribution
-        # (host did not delegate a writable cgroup subtree), the gate passes
-        # but the operator should see that telemetry is per-PID, not
-        # cgroup-backed.  The full scope breakdown is in resource_summary.
+        # In explicitly non-strict configurations, a per-PID fallback may pass
+        # the gate. Keep that degraded attribution visible to the operator.
         launcher_spans = int(
             _nested_get(result_dict, ("resource_summary", "launcher_tool_span_ends"))
             or 0
@@ -1853,22 +2065,32 @@ def run_batch(
             )
             or 0
         )
+        launcher_exclusive_cgroup_spans = int(
+            _nested_get(
+                result_dict,
+                (
+                    "resource_summary",
+                    "launcher_exclusive_cgroup_tool_span_ends",
+                ),
+            )
+            or 0
+        )
         if (
             telemetry_error is None
             and config.runtime.ebpf_required
             and launcher_spans
-            and launcher_cgroup_spans != launcher_spans
+            and launcher_exclusive_cgroup_spans != launcher_spans
         ):
             result_dict["telemetry_audit"]["warning"] = (
-                f"launcher telemetry is per-PID attributed "
-                f"({launcher_cgroup_spans}/{launcher_spans} cgroup-backed) "
-                "instead of cgroup-v2"
+                "launcher telemetry is not exclusively cgroup-attributed "
+                f"({launcher_exclusive_cgroup_spans}/{launcher_spans} exclusive; "
+                f"{launcher_cgroup_spans}/{launcher_spans} cgroup-backed)"
             )
             _log(
-                "       note: launcher telemetry is per-PID attributed "
-                f"({launcher_cgroup_spans}/{launcher_spans} cgroup-backed) "
-                "instead of cgroup-v2; see report resource_summary for the "
-                "scope breakdown"
+                "       note: launcher telemetry is not exclusively "
+                f"cgroup-attributed ({launcher_exclusive_cgroup_spans}/"
+                f"{launcher_spans} exclusive; {launcher_cgroup_spans}/"
+                f"{launcher_spans} cgroup-backed); see report resource_summary"
             )
         primary_error = (
             str(agent_error)

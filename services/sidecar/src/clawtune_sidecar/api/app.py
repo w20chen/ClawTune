@@ -523,6 +523,7 @@ def _log_execution_started_decision(
         "execution_started "
         f"id={execution_id} "
         f"gate={request.host_cgroup_gate} "
+        f"cgroup_required={request.cgroup_required} "
         f"launcher_cgroup={request.cgroup_path or '-'} "
         f"backend={backend or '-'} "
         f"container={request.container_id or '-'} "
@@ -1802,6 +1803,21 @@ def create_app(state: AppState | None = None) -> FastAPI:
                         s,
                         "host_cgroup_provision_last_error.txt",
                         cgroup_diagnostics,
+                    )
+                if request.cgroup_required:
+                    host_cgroup_gate_failed = True
+                    record.scope = None
+                    _log_execution_started_decision(
+                        execution_id,
+                        request,
+                        trusted_root_pid,
+                        record.scope,
+                        host_cgroup_gate_failed,
+                        record.request.backend,
+                    )
+                    raise HTTPException(
+                        status_code=503,
+                        detail="exclusive_execution_cgroup_unavailable",
                     )
                 host_scope = (
                     _verified_host_execution_scope(

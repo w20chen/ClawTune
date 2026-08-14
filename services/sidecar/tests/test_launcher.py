@@ -258,6 +258,213 @@ def test_fork_exec_registers_before_releasing_child_and_closes_gate(
             os.fstat(fd)
 
 
+def test_fork_exec_uses_host_gate_when_required_local_cgroup_is_unavailable(
+    monkeypatch,
+) -> None:
+    posts: list[tuple[str, dict[str, Any]]] = []
+    releases: list[bytes] = []
+    cleaned: list[str | None] = []
+    host_cgroup = "/sys/fs/cgroup/sandbox/clawtune-executions/exec-1"
+
+    def fake_post(
+        _endpoint: str,
+        path: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        posts.append((path, payload))
+        if path.endswith("/started"):
+            return {"stored": True, "cgroup_path": host_cgroup}
+        return {
+            "command": "echo hello",
+            "workdir": None,
+            "update_token": "update-1",
+            "placement": None,
+            "profiling": {"enable_cgroup": True},
+        }
+
+    def local_cgroup_unavailable(*_args: Any) -> str | None:
+        raise RuntimeError("cgroup_unavailable: read-only cgroupfs")
+
+    monkeypatch.setenv("CLAWTUNE_CGROUP_REQUIRED", "1")
+    monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
+    monkeypatch.setattr(launcher, "_prepare_cgroup", local_cgroup_unavailable)
+    monkeypatch.setattr(launcher.os, "fork", lambda: 4242, raising=False)
+    monkeypatch.setattr(
+        launcher.os,
+        "write",
+        lambda _fd, data: releases.append(data) or len(data),
+    )
+    monkeypatch.setattr(launcher.os, "waitpid", lambda _pid, _flags: (4242, 0))
+    monkeypatch.setattr(
+        launcher.os,
+        "WIFEXITED",
+        lambda _status: True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        launcher.os,
+        "WEXITSTATUS",
+        lambda _status: 0,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        launcher.os,
+        "WIFSIGNALED",
+        lambda _status: False,
+        raising=False,
+    )
+    monkeypatch.setattr(launcher, "_post_json", fake_post)
+    monkeypatch.setattr(launcher, "_post_json_best_effort", lambda *_args: {})
+    monkeypatch.setattr(launcher, "_read_pid_starttime_ticks", lambda _pid: 99)
+    monkeypatch.setattr(launcher, "_pid_namespace_inode", lambda _pid: 123)
+    monkeypatch.setattr(launcher, "_detect_container_id", lambda: "a" * 64)
+    monkeypatch.setattr(launcher, "_cleanup_cgroup", cleaned.append)
+    monkeypatch.setattr(
+        launcher,
+        "_install_fork_signal_forwarders",
+        lambda _pid: lambda: None,
+    )
+
+    assert launcher._run_forkexec("http://sidecar", "exec-1", "token-1") == 0
+
+    started = next(payload for path, payload in posts if path.endswith("/started"))
+    assert started["cgroup_path"] is None
+    assert started["host_cgroup_gate"] is True
+    assert started["cgroup_required"] is True
+    assert releases == [b"1"]
+    # The returned host path is owned by the sidecar, not by the launcher.
+    assert cleaned == []
+
+
+def test_fork_exec_remote_host_gate_creates_exclusive_cgroup(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    import clawtune_sidecar.api.app as app_module
+    from clawtune_sidecar.api.app import create_app
+    from clawtune_sidecar.api.dependencies import build_state
+    from clawtune_sidecar.config import SidecarConfig
+
+    sandbox_cgroup = tmp_path / "sandbox-cgroup"
+    sandbox_cgroup.mkdir()
+    (sandbox_cgroup / "cpu.stat").write_text(
+        "usage_usec 100000\n",
+        encoding="utf-8",
+    )
+    (sandbox_cgroup / "memory.current").write_text("4096\n", encoding="utf-8")
+    (sandbox_cgroup / "io.stat").write_text(
+        "8:0 rbytes=10 wbytes=20\n",
+        encoding="utf-8",
+    )
+    (sandbox_cgroup / "cgroup.procs").write_text("", encoding="utf-8")
+    state = build_state(
+        SidecarConfig(
+            trace_dir=tmp_path / "traces",
+            sandbox_cgroup_path=str(sandbox_cgroup),
+            sandbox_container_id="b" * 64,
+            execution_cgroup_root=str(tmp_path / "host-executions"),
+            tool_resource_ebpf_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
+    state.predictor.begin_execution = lambda **_kwargs: True  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        app_module,
+        "_resolve_host_pid",
+        lambda *_args, **_kwargs: 4242,
+    )
+    monkeypatch.setattr(app_module, "_pid_starttime_ticks", lambda _pid: 99)
+    monkeypatch.setattr(app_module, "_pid_namespace_inode", lambda _pid: 123)
+
+    registration_response = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "exec-integration",
+            "tool_call_id": "exec-integration",
+            "run_id": "run-fork-host-gate",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"enable_cgroup": True},
+            "backend": "managed-wrapper",
+        },
+    )
+    assert registration_response.status_code == 200
+    token = registration_response.json()["one_time_token"]
+
+    def post_to_sidecar(
+        _endpoint: str,
+        path: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = client.post(path, json=payload)
+        response.raise_for_status()
+        return response.json()
+
+    local_cgroup_unavailable = RuntimeError(
+        "cgroup_unavailable: read-only sandbox cgroupfs"
+    )
+    monkeypatch.setenv("CLAWTUNE_CGROUP_REQUIRED", "1")
+    monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
+    monkeypatch.setattr(
+        launcher,
+        "_prepare_cgroup",
+        lambda *_args: (_ for _ in ()).throw(local_cgroup_unavailable),
+    )
+    monkeypatch.setattr(launcher.os, "fork", lambda: 4242, raising=False)
+    monkeypatch.setattr(launcher.os, "write", lambda _fd, data: len(data))
+    monkeypatch.setattr(launcher.os, "waitpid", lambda _pid, _flags: (4242, 0))
+    monkeypatch.setattr(
+        launcher.os,
+        "WIFEXITED",
+        lambda _status: True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        launcher.os,
+        "WEXITSTATUS",
+        lambda _status: 0,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        launcher.os,
+        "WIFSIGNALED",
+        lambda _status: False,
+        raising=False,
+    )
+    monkeypatch.setattr(launcher, "_post_json", post_to_sidecar)
+    monkeypatch.setattr(launcher, "_post_json_best_effort", lambda *_args: {})
+    monkeypatch.setattr(launcher, "_read_pid_starttime_ticks", lambda _pid: 99)
+    monkeypatch.setattr(launcher, "_pid_namespace_inode", lambda _pid: 123)
+    monkeypatch.setattr(launcher, "_detect_container_id", lambda: "b" * 64)
+    monkeypatch.setattr(
+        launcher,
+        "_install_fork_signal_forwarders",
+        lambda _pid: lambda: None,
+    )
+
+    assert (
+        launcher._run_forkexec(
+            "http://sidecar",
+            "exec-integration",
+            token,
+        )
+        == 0
+    )
+
+    scope = state.executions.get("exec-integration").scope
+    exact = tmp_path / "host-executions" / "exec-integration"
+    assert scope is not None
+    assert scope.attribution_source == "exclusive-execution-cgroup"
+    assert scope.cgroup_path == str(exact)
+    assert (exact / "cgroup.procs").read_text(encoding="utf-8").strip() == "4242"
+
+
 def test_fork_exec_reaps_child_without_release_when_started_fails(
     monkeypatch,
 ) -> None:
@@ -393,6 +600,7 @@ def test_launcher_claims_starts_and_returns_child_exit_code(monkeypatch) -> None
             "pid_namespace_inode": 123,
             "container_id": None,
             "host_cgroup_gate": False,
+            "cgroup_required": False,
         },
     )
     assert posts[2] == (
@@ -694,6 +902,27 @@ def test_launcher_can_require_cgroup(monkeypatch, tmp_path) -> None:
             None,
             {"enable_cgroup": True},
         )
+
+
+def test_required_local_cgroup_join_failure_uses_host_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("CLAWTUNE_CGROUP_REQUIRED", "1")
+    monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
+    monkeypatch.setattr(
+        launcher,
+        "_join_child_cgroup",
+        lambda *_args: (_ for _ in ()).throw(
+            RuntimeError("cgroup_join_failed path=/sys/fs/cgroup/local")
+        ),
+    )
+
+    assert (
+        launcher._join_child_cgroup_with_host_fallback(
+            4242,
+            "/sys/fs/cgroup/local",
+            {"enable_cgroup": True},
+        )
+        is False
+    )
 
 
 def test_launcher_required_cgroup_overrides_profiling_disable(monkeypatch, tmp_path) -> None:
@@ -1007,6 +1236,7 @@ def test_launcher_join_failure_restarts_in_systemd_scope(monkeypatch, tmp_path) 
             "pid_namespace_inode": 123,
             "container_id": None,
             "host_cgroup_gate": False,
+            "cgroup_required": False,
         },
     )
 

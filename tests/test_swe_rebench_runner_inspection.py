@@ -181,6 +181,36 @@ def _ebpf_span_end(call_id: str, *, status: str = "invalid") -> dict:
     }
 
 
+def _launcher_cgroup_span_end(
+    execution_id: str | None,
+    cgroup_path: str | None,
+    *,
+    scope: str = "cgroup",
+    attribution_source: str = "exclusive-execution-cgroup",
+) -> dict:
+    return {
+        "record_type": "span_end",
+        "kind": "tool",
+        "name": "exec",
+        "status": {"code": "ok"},
+        "output": {"exit_code": 0},
+        "execution": {
+            "mode": "launcher",
+            "execution_id": execution_id,
+            "cgroup_path": cgroup_path,
+        },
+        "resources": {
+            "scope": scope,
+            "attribution_source": attribution_source,
+            "attribution_status": "attributed",
+            "sampling_point_count": 1,
+            "cpu_time_s": 0.1,
+            "rss_peak_bytes": 1024,
+            "resource_timeline": [{"available": True}],
+        },
+    }
+
+
 def _ebpf_prediction_start() -> dict:
     return {
         "record_type": "span_start",
@@ -282,6 +312,58 @@ def test_trace_inspection_counts_failed_and_unattributed_launcher_spans(tmp_path
     assert summary["cgroup_coverage_ratio"] == 1.0
     assert summary["launcher_attribution_ratio"] == 0.0
     assert summary["launcher_tool_resource_ratio"] == 0.0
+
+
+def test_trace_inspection_records_exclusive_and_shared_launcher_cgroups(tmp_path):
+    trace = tmp_path / "trace.jsonl"
+    container_scope = (
+        "/sys/fs/cgroup/system.slice/docker-"
+        + ("a" * 64)
+        + ".scope"
+    )
+    execution_cgroup = f"{container_scope}/clawtune-executions/exec-1"
+    records = [
+        _launcher_cgroup_span_end("exec-1", execution_cgroup),
+        _launcher_cgroup_span_end(
+            "exec-2",
+            container_scope,
+            attribution_source="trusted-execution-root-pid",
+        ),
+    ]
+    trace.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n",
+        encoding="utf-8",
+    )
+
+    inspected = _inspect_trace(trace, "")
+    summary = _resource_summary([inspected])
+
+    assert inspected["launcher_execution_ids"] == ["exec-1", "exec-2"]
+    assert inspected["launcher_cgroup_paths"] == [
+        execution_cgroup,
+        container_scope,
+    ]
+    assert inspected["launcher_execution_cgroup_refs"] == [
+        {"execution_id": "exec-1", "cgroup_path": execution_cgroup},
+        {"execution_id": "exec-2", "cgroup_path": container_scope},
+    ]
+    assert inspected["launcher_exclusive_cgroup_tool_span_ends"] == 1
+    assert inspected["launcher_docker_container_scope_tool_span_ends"] == 1
+    assert (
+        "some launcher tool spans lack exclusive execution cgroup attribution"
+        in inspected["warnings"]
+    )
+    assert "launcher tool spans reuse a Docker container cgroup scope" in inspected[
+        "warnings"
+    ]
+    assert summary["launcher_exclusive_cgroup_tool_span_ends"] == 1
+    assert summary["launcher_docker_container_scope_tool_span_ends"] == 1
+    assert summary["launcher_unique_execution_id_count"] == 2
+    assert summary["launcher_unique_cgroup_path_count"] == 2
+    assert summary["launcher_execution_cgroup_refs"] == [
+        {"execution_id": "exec-1", "cgroup_path": execution_cgroup},
+        {"execution_id": "exec-2", "cgroup_path": container_scope},
+    ]
 
 
 def test_launcher_permission_failure_and_invalid_coverage_are_root_diagnostics(tmp_path):
@@ -968,7 +1050,11 @@ def test_launcher_per_pid_attribution_passes_gate(tmp_path):
     unattributed spans are a real loss."""
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "runtime:\n  mode: host-openclaw\n  ebpf_required: true\n",
+        "runtime:\n"
+        "  mode: host-openclaw\n"
+        "  ebpf_required: true\n"
+        "docker:\n"
+        "  cgroup_required: false\n",
         encoding="utf-8",
     )
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -1025,6 +1111,99 @@ def test_launcher_per_pid_attribution_passes_gate(tmp_path):
     # cgroup-v2 unavailable but every launcher span is per-PID attributed:
     # the gate passes (the telemetry is complete and attributed).
     assert _required_telemetry_error(config, result) is None
+
+
+def test_host_openclaw_cgroup_required_audits_exclusive_unique_paths(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "runtime:\n"
+        "  mode: host-openclaw\n"
+        "  ebpf_required: false\n"
+        "docker:\n"
+        "  cgroup_required: true\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    container_scope = (
+        "/sys/fs/cgroup/system.slice/docker-"
+        + ("b" * 64)
+        + ".scope"
+    )
+
+    def inspect(records: list[dict], filename: str) -> dict:
+        trace = tmp_path / filename
+        trace.write_text(
+            "\n".join(json.dumps(record) for record in records) + "\n",
+            encoding="utf-8",
+        )
+        return _resource_summary([_inspect_trace(trace, "")])
+
+    valid_resources = inspect(
+        [
+            _launcher_cgroup_span_end(
+                "exec-1",
+                f"{container_scope}/clawtune-executions/exec-1",
+            ),
+            _launcher_cgroup_span_end(
+                "exec-2",
+                f"{container_scope}/clawtune-executions/exec-2",
+            ),
+        ],
+        "valid.jsonl",
+    )
+    assert _required_telemetry_error(
+        config,
+        {"resource_summary": valid_resources},
+    ) is None
+
+    shared_resources = inspect(
+        [
+            _launcher_cgroup_span_end(
+                "exec-1",
+                container_scope,
+                attribution_source="trusted-execution-root-pid",
+            ),
+            _launcher_cgroup_span_end(
+                "exec-2",
+                container_scope,
+                attribution_source="trusted-execution-root-pid",
+            ),
+        ],
+        "shared.jsonl",
+    )
+    shared_error = _required_telemetry_error(
+        config,
+        {"resource_summary": shared_resources},
+    )
+    assert shared_error is not None
+    assert (
+        "attribution_source=exclusive-execution-cgroup for 0/2"
+        in shared_error
+    )
+    assert "unique cgroup paths=1/2" in shared_error
+    assert "shared docker-<container-id>.scope paths=2" in shared_error
+
+    wrong_scope = json.loads(json.dumps(valid_resources))
+    wrong_scope["launcher_cgroup_tool_span_ends"] = 1
+    assert "scope=cgroup for 1/2" in (
+        _required_telemetry_error(
+            config,
+            {"resource_summary": wrong_scope},
+        )
+        or ""
+    )
+
+    duplicate_execution = json.loads(json.dumps(valid_resources))
+    duplicate_execution["launcher_execution_cgroup_refs"][1][
+        "execution_id"
+    ] = "exec-1"
+    assert "unique execution IDs=1/2" in (
+        _required_telemetry_error(
+            config,
+            {"resource_summary": duplicate_execution},
+        )
+        or ""
+    )
 
 
 def test_launcher_unattributed_spans_fail_gate_with_diagnostics(tmp_path):

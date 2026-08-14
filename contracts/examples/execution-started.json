@@ -6,5 +6,6 @@
   "cgroup_path": null,
   "pid_namespace_inode": 4026531836,
   "container_id": null,
-  "host_cgroup_gate": false
+  "host_cgroup_gate": false,
+  "cgroup_required": false
 }

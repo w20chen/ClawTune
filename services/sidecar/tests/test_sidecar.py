@@ -1744,6 +1744,76 @@ def test_execution_started_host_cgroup_gate_creates_exact_scope(
     assert begin_calls[-1]["cgroup_path"] == str(exact)
 
 
+def test_execution_started_required_host_gate_fails_without_exclusive_cgroup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    state = build_state(
+        SidecarConfig(
+            trace_dir=tmp_path / "traces",
+            sandbox_container_id="b" * 64,
+            tool_resource_ebpf_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
+    monkeypatch.setattr(
+        app_module,
+        "_resolve_host_pid",
+        lambda *_args, **_kwargs: 4242,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_prepare_host_execution_cgroup",
+        lambda *_args, **_kwargs: None,
+    )
+
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": "call-exec",
+            "tool_call_id": "call-exec",
+            "run_id": "run-required-host-gate",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"enable_cgroup": True},
+            "backend": "managed-wrapper",
+        },
+    ).json()
+    claim = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": "call-exec",
+            "token": registration["one_time_token"],
+            "launcher_pid": 100,
+        },
+    ).json()
+
+    started = client.post(
+        "/v2/executions/call-exec/started",
+        json={
+            "update_token": claim["update_token"],
+            "launcher_pid": 100,
+            "child_pid": 7,
+            "process_starttime_ticks": 99,
+            "cgroup_path": None,
+            "pid_namespace_inode": 123,
+            "container_id": None,
+            "host_cgroup_gate": True,
+            "cgroup_required": True,
+        },
+    )
+
+    assert started.status_code == 503
+    assert started.json() == {
+        "detail": "exclusive_execution_cgroup_unavailable"
+    }
+    assert state.executions.get("call-exec").scope is None
+
+
 def test_execution_started_derives_host_cgroup_when_launcher_gate_off(
     tmp_path: Path,
     monkeypatch,

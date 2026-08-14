@@ -1888,6 +1888,9 @@ def _openclaw_config(
                 "CLAWTUNE_SANDBOX_HOST_WORKSPACE": str(workspace),
                 "CLAWTUNE_SANDBOX_CONTAINER_WORKSPACE": "/workspace",
                 "CLAWTUNE_ENABLE_CGROUP": "1",
+                "CLAWTUNE_CGROUP_REQUIRED": (
+                    "1" if config.docker.cgroup_required else "0"
+                ),
                 "CLAWTUNE_LAUNCH_MODE": "fork-exec",
                 "CLAWTUNE_LAUNCH_DEBUG": "1",
             },
@@ -2104,6 +2107,9 @@ def _openclaw_env(
             "CLAWTUNE_SANDBOX_HOST_WORKSPACE": str(workspace) if workspace is not None else "",
             "CLAWTUNE_SANDBOX_CONTAINER_WORKSPACE": "/workspace",
             "CLAWTUNE_ENABLE_CGROUP": "1",
+            "CLAWTUNE_CGROUP_REQUIRED": (
+                "1" if config.docker.cgroup_required else "0"
+            ),
             "CLAWTUNE_LAUNCH_MODE": "fork-exec",
             "CLAWTUNE_LAUNCH_DEBUG": "1",
             "CLAWTUNE_RUNTIME_ID": _runtime_id(workspace) if workspace is not None else "",

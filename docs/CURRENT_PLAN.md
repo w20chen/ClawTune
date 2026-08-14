@@ -41,8 +41,10 @@ See [configuration.md](configuration.md), [trace-schema.md](trace-schema.md),
   the CPU value comes from the shared sandbox cgroup.
 - Network totals for a derived container-cgroup scope cover the container
   network namespace, not one PID.
-- Benchmark launcher spans report `host_cgroup_gate=false` by design; the
-  sidecar derives their host cgroup from `/proc/<host_pid>/cgroup`.
+- Host-OpenClaw launcher spans request a host cgroup gate whenever the sandbox
+  cannot create a local per-execution cgroup. With `cgroup_required=true`, the
+  payload remains gated unless the sidecar creates an exclusive execution
+  cgroup; a shared Docker container scope is not accepted as success.
 - Legacy traces lack causal timestamps and memory samples. Memory is therefore
   not evaluated, and CPU coverage is limited to eligible sampled clauses.
 
@@ -90,8 +92,9 @@ BCC_KERNEL_SOURCE=/usr/src/kernels/$(uname -r) .venv/bin/python -c "import os; f
 .venv/bin/python -c "import time; from clawtune_sidecar.topology.linux import NumaCpuUsageSampler; s=NumaCpuUsageSampler(); time.sleep(1); print(s.sample())"
 ```
 
-For SWE-Rebench, verify that preflight passes, launcher spans are cgroup-backed,
-each executed clause has healthy telemetry, native sandbox spans have
+For SWE-Rebench, verify that preflight passes, every launcher span has
+`exclusive-execution-cgroup` attribution and a distinct per-execution cgroup
+path, each executed clause has healthy telemetry, native sandbox spans have
 `docker-exec-pid` attribution, and the required-telemetry gate passes. For Deep
 Research Bench, verify at least one LLM span and one resource-sampled tool span,
 plus a passed relaxed telemetry audit. Detailed output fields are defined in
@@ -99,10 +102,15 @@ plus a passed relaxed telemetry audit. Detailed output fields are defined in
 
 ### Known local validation gaps
 
+- The fork-exec to host-side cgroup gate cannot be exercised end to end in
+  this Windows workspace because it requires a Linux cgroup-v2 host, Docker,
+  and the privileged sidecar. Unit tests cover the gated fallback and strict
+  503 path; the Linux `scripts/clawtune.py benchmark` command above remains the
+  runtime validation.
 - Ruff 0.16.1 runs in the current Python environment, but the repository has
   491 lint findings across benchmark, evaluator, test, and tool code. This
-  broad cleanup is outside the naming-only change; the correctness-focused
-  `F821`, `F601`, and `PLW0127` rules pass for the renamed runtime code, while
+  broad cleanup is outside this cgroup fallback change; the correctness-focused
+  `F821`, `F601`, and `PLW0127` rules pass for the changed runtime code, while
   contract validation, full tests, typecheck, and `git diff --check` are the
   current gates.
 - The top-level pytest command requires the project virtual environment and

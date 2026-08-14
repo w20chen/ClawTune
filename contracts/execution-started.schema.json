@@ -20,7 +20,8 @@
     "cgroup_path": {"type": ["string", "null"]},
     "pid_namespace_inode": {"type": ["integer", "null"], "minimum": 0},
     "container_id": {"type": ["string", "null"]},
-    "host_cgroup_gate": {"type": "boolean"}
+    "host_cgroup_gate": {"type": "boolean"},
+    "cgroup_required": {"type": "boolean", "default": false}
   },
   "additionalProperties": false
 }

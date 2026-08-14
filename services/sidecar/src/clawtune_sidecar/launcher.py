@@ -164,20 +164,44 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
     # Give the forked payload a per-execution cgroup when one can be created
     # (writable cgroupfs).  The child is moved into it *before* the exec gate
     # opens, so its exec and the whole clause run inside the dedicated cgroup
-    # and the sidecar gets a usable cgroup-v2 clawtune-launch scope instead of the
-    # coarse shared-sandbox-container fallback.  When cgroupfs is read-only
-    # (Docker sandbox, remote sidecar) _prepare_cgroup returns None and the
-    # behaviour is unchanged: started reports cgroup_path=None.
-    placement = claim.get("placement")
-    profiling = claim.get("profiling")
-    cpu_set = _extract_cpu_set(placement)
-    mems = _extract_mems(placement)
-    cgroup_path = _prepare_cgroup(execution_id, cpu_set, mems, profiling)
-    if cgroup_path is not None and not _join_child_cgroup(pid, cgroup_path):
-        # Moving the child failed; never report a cgroup we do not own, or the
-        # sampler would misattribute the container cgroup as per-execution.
-        cgroup_path = None
+    # and the sidecar gets a usable cgroup-v2 clawtune-launch scope instead of
+    # the coarse shared-sandbox-container fallback.  When cgroupfs is read-only
+    # (Docker sandbox, remote sidecar), keep the child blocked and ask the
+    # privileged host sidecar to create and populate the exclusive cgroup.
+    cgroup_path: str | None = None
+    local_cgroup_owned = False
     try:
+        placement = claim.get("placement")
+        profiling = claim.get("profiling")
+        cpu_set = _extract_cpu_set(placement)
+        mems = _extract_mems(placement)
+        cgroup_path = _prepare_cgroup_with_host_fallback(
+            execution_id,
+            cpu_set,
+            mems,
+            profiling,
+        )
+        local_cgroup_owned = _prepared_cgroup_is_launcher_owned(cgroup_path)
+        if cgroup_path is not None and not _join_child_cgroup_with_host_fallback(
+            pid,
+            cgroup_path,
+            profiling,
+        ):
+            # Moving the child failed; never report a cgroup we do not own, or
+            # the sampler would misattribute a shared scope as per-execution.
+            if local_cgroup_owned:
+                _cleanup_cgroup(cgroup_path)
+            local_cgroup_owned = False
+            cgroup_path = None
+        use_host_cgroup_gate = (
+            cgroup_path is None and _host_cgroup_gate_enabled(profiling)
+        )
+        if (
+            cgroup_path is None
+            and _env_enabled("CLAWTUNE_CGROUP_REQUIRED")
+            and not use_host_cgroup_gate
+        ):
+            raise RuntimeError("cgroup_unavailable: host_cgroup_gate_disabled")
         started_response = _post_started(
             endpoint,
             execution_id=execution_id,
@@ -185,12 +209,16 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
             launcher_pid=launcher_pid,
             child_pid=pid,
             cgroup_path=cgroup_path,
-            host_cgroup_gate=False,
+            host_cgroup_gate=use_host_cgroup_gate,
         )
         if started_response.get("stored") is not True:
             raise RuntimeError(
                 "sidecar did not acknowledge the forked execution start"
             )
+        if cgroup_path is None:
+            response_cgroup = started_response.get("cgroup_path")
+            if isinstance(response_cgroup, str) and response_cgroup:
+                cgroup_path = response_cgroup
         # Release the child only after successful registration.
         if os.write(write_fd, b"1") != 1:
             raise RuntimeError("failed to release the forked execution gate")
@@ -201,6 +229,8 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
         except OSError:
             pass
         _waitpid_nointr(pid)
+        if local_cgroup_owned:
+            _cleanup_cgroup(cgroup_path)
         raise
     os.close(write_fd)
 
@@ -214,6 +244,8 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
             except InterruptedError:
                 continue
     except OSError:
+        if local_cgroup_owned:
+            _cleanup_cgroup(cgroup_path)
         return 1
     finally:
         restore_signal_handlers()
@@ -230,6 +262,8 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
         endpoint, f"/v2/executions/{execution_id}/exited",
         {"update_token": update_token, "exit_code": exit_code, "signal": term_signal},
     )
+    if local_cgroup_owned:
+        _cleanup_cgroup(cgroup_path)
     return exit_code if exit_code is not None else _shell_exit_code(-int(term_signal or 1))
 
 
@@ -298,7 +332,12 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
     profiling = claim.get("profiling")
     cpu_set = _extract_cpu_set(placement)
     mems = _extract_mems(placement)
-    cgroup_path = _prepare_cgroup(execution_id, cpu_set, mems, profiling)
+    cgroup_path = _prepare_cgroup_with_host_fallback(
+        execution_id,
+        cpu_set,
+        mems,
+        profiling,
+    )
     parsed_affinity = _parse_cpu_list(cpu_set) if _enabled(profiling, "enable_affinity", True) else set()
     affinity_cpus = parsed_affinity or None
     started_reported = False
@@ -347,38 +386,41 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
         )
     else:
         child = _spawn_shell(command, cwd, cgroup_path=cgroup_path, affinity_cpus=affinity_cpus)
-    cgroup_owned = cgroup_path is not None
+    cgroup_owned = _prepared_cgroup_is_launcher_owned(cgroup_path)
     try:
-        if cgroup_owned:
-            if not _join_child_cgroup(child.pid, cgroup_path):
-                fallback = _restart_in_systemd_scope(
-                    child, command, cwd,
-                    execution_id=execution_id,
-                    affinity_cpus=affinity_cpus, profiling=profiling,
-                    on_cgroup_ready=lambda pid, path: report_started(
-                        pid, path, host_cgroup_gate=False,
-                    ),
-                )
-                if fallback is None:
-                    # The child never entered the cgroup we created. Do not
-                    # report that stale path to the sidecar because it may
-                    # misattribute or lose telemetry. Remote sidecars resolve
-                    # the host scope through the gate. Never substitute a
-                    # shared login/session cgroup: that would mix unrelated
-                    # host processes into this execution's telemetry.
+        if cgroup_path is not None and not _join_child_cgroup_with_host_fallback(
+            child.pid,
+            cgroup_path,
+            profiling,
+        ):
+            fallback = _restart_in_systemd_scope(
+                child, command, cwd,
+                execution_id=execution_id,
+                affinity_cpus=affinity_cpus, profiling=profiling,
+                on_cgroup_ready=lambda pid, path: report_started(
+                    pid, path, host_cgroup_gate=False,
+                ),
+            )
+            if fallback is None:
+                # The child never entered the cgroup we created. Do not report
+                # that stale path to the sidecar because it may misattribute or
+                # lose telemetry. Remote sidecars resolve the host scope through
+                # the gate. Never substitute a shared login/session cgroup:
+                # that would mix unrelated host processes into this execution's
+                # telemetry.
+                if cgroup_owned:
                     _cleanup_cgroup(cgroup_path)
-                    cgroup_owned = False
-                    use_host_cgroup_gate = _host_cgroup_gate_enabled(profiling)
-                    cgroup_path = None
-                else:
-                    _cleanup_cgroup(cgroup_path)
-                    if release_gate is not None:
-                        release_gate(False)
-                        release_gate = None
-                    child, cgroup_path = fallback
-                    cgroup_owned = False
+                cgroup_owned = False
+                use_host_cgroup_gate = _host_cgroup_gate_enabled(profiling)
+                cgroup_path = None
             else:
-                _verify_child_cgroup(child.pid, cgroup_path)
+                if cgroup_owned:
+                    _cleanup_cgroup(cgroup_path)
+                if release_gate is not None:
+                    release_gate(False)
+                    release_gate = None
+                child, cgroup_path = fallback
+                cgroup_owned = False
     except Exception:
         if release_gate is not None:
             release_gate(False)
@@ -388,6 +430,12 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
             _cleanup_cgroup(cgroup_path)
         raise
     try:
+        if (
+            cgroup_path is None
+            and _env_enabled("CLAWTUNE_CGROUP_REQUIRED")
+            and not use_host_cgroup_gate
+        ):
+            raise RuntimeError("cgroup_unavailable: host_cgroup_gate_disabled")
         _install_signal_forwarders(child)
         started_response = (
             {}
@@ -529,6 +577,7 @@ def _post_started(
             "pid_namespace_inode": _pid_namespace_inode(child_pid),
             "container_id": _detect_container_id(),
             "host_cgroup_gate": host_cgroup_gate,
+            "cgroup_required": _env_enabled("CLAWTUNE_CGROUP_REQUIRED"),
         },
     )
 
@@ -726,6 +775,65 @@ def _host_cgroup_gate_enabled(profiling: object) -> bool:
     # when an unprivileged local launcher cannot. This is required for direct
     # host execution and is equally valid for local and remote endpoints.
     return _supports_posix_controls()
+
+
+def _prepare_cgroup_with_host_fallback(
+    execution_id: str,
+    cpu_set: str | None,
+    mems: str | None,
+    profiling: object,
+) -> str | None:
+    """Try launcher-side isolation, deferring strict failure to the host gate.
+
+    ``CLAWTUNE_CGROUP_REQUIRED=1`` normally makes ``_prepare_cgroup`` fail
+    immediately when the launcher's cgroup namespace is read-only.  A remote
+    privileged sidecar is another valid creator, so keep the payload gated and
+    let ``/started`` enforce the same requirement on the host instead.
+    """
+
+    try:
+        return _prepare_cgroup(execution_id, cpu_set, mems, profiling)
+    except RuntimeError as exc:
+        if (
+            str(exc).startswith("cgroup_unavailable:")
+            and _host_cgroup_gate_enabled(profiling)
+        ):
+            return None
+        raise
+
+
+def _prepared_cgroup_is_launcher_owned(cgroup_path: str | None) -> bool:
+    """Distinguish a created child cgroup from explicit or borrowed scopes."""
+
+    if cgroup_path is None or _explicit_cgroup_path() is not None:
+        return False
+    borrowed = _read_self_cgroup_path()
+    return borrowed is None or os.path.normpath(borrowed) != os.path.normpath(
+        cgroup_path
+    )
+
+
+def _join_child_cgroup_with_host_fallback(
+    child_pid: int,
+    cgroup_path: str,
+    profiling: object,
+) -> bool:
+    """Join and verify a local cgroup, or preserve the host-gate fallback."""
+
+    try:
+        if not _join_child_cgroup(child_pid, cgroup_path):
+            return False
+        _verify_child_cgroup(child_pid, cgroup_path)
+        return True
+    except RuntimeError as exc:
+        if (
+            str(exc).startswith(
+                ("cgroup_join_failed", "cgroup_join_missing", "cgroup_verify_failed")
+            )
+            and _host_cgroup_gate_enabled(profiling)
+        ):
+            return False
+        raise
 
 
 def _systemd_unit_cgroup_path(unit: str) -> str | None:

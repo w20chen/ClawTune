@@ -1628,6 +1628,7 @@ def test_host_openclaw_openclaw_config_uses_only_public_top_level_keys(tmp_path:
     assert parsed["env"]["CLAWTUNE_SANDBOX_HOST_WORKSPACE"] == str(tmp_path / "workspace")
     assert parsed["env"]["CLAWTUNE_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
     assert parsed["env"]["CLAWTUNE_ENABLE_CGROUP"] == "1"
+    assert parsed["env"]["CLAWTUNE_CGROUP_REQUIRED"] == "0"
     assert parsed["env"]["CLAWTUNE_LAUNCH_MODE"] == "fork-exec"
     assert "PATH" not in parsed["env"]
     assert parsed["tools"]["deny"] == ["process"]
@@ -1650,6 +1651,32 @@ def test_host_openclaw_openclaw_config_omits_unsupported_docker_platform(tmp_pat
     docker_cfg = json.loads(raw)["agents"]["defaults"]["sandbox"]["docker"]
 
     assert "platform" not in docker_cfg
+
+
+def test_host_openclaw_propagates_required_cgroup_to_sandbox(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "docker:\n  cgroup_required: true\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    workspace = tmp_path / "workspace"
+    parsed = json.loads(
+        _openclaw_config(
+            endpoint_host="http://127.0.0.1:8765",
+            endpoint_sandbox="http://host.docker.internal:8765",
+            workspace=workspace,
+            config=config,
+        )
+    )
+
+    assert parsed["env"]["CLAWTUNE_CGROUP_REQUIRED"] == "1"
+    assert (
+        _openclaw_env(tmp_path / "home", 8765, config, workspace)[
+            "CLAWTUNE_CGROUP_REQUIRED"
+        ]
+        == "1"
+    )
 
 
 def test_host_openclaw_container_prefix_is_stable_and_workspace_scoped(tmp_path: Path) -> None:
@@ -1730,6 +1757,7 @@ def test_host_openclaw_openclaw_env_points_workspace_dir_at_task_workspace(
     assert env["CLAWTUNE_SANDBOX_HOST_WORKSPACE"] == str(workspace)
     assert env["CLAWTUNE_SANDBOX_CONTAINER_WORKSPACE"] == "/workspace"
     assert env["CLAWTUNE_ENABLE_CGROUP"] == "1"
+    assert env["CLAWTUNE_CGROUP_REQUIRED"] == "0"
     assert env["CLAWTUNE_LAUNCH_MODE"] == "fork-exec"
     assert env["CLAWTUNE_GATEWAY_ID"] == "swe-rebench"
     assert env["CLAWTUNE_RUNTIME_ID"].startswith("clawtune-srb-")
