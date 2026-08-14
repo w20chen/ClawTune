@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {instrumentExecParams} from "../dist/exec-instrumentation.js";
+import {
+  classifyResourceScope,
+  instrumentExecParams,
+  preferExecutionResourceScope,
+} from "../dist/exec-instrumentation.js";
 
 const baseConfig = {
   endpoint: "http://localhost:8765",
@@ -48,6 +52,175 @@ const payload = {
   raw_params: null,
   resource_scope: null
 };
+
+test("completion prefers the execution scope over shared OpenClaw scopes", async (t) => {
+  const executionScope = {
+    kind: "cgroup-v2",
+    execution_id: "exec-1",
+    pid: 4242,
+    root_pid: 4242,
+    cgroup_path: "/sys/fs/cgroup/clawtune-executions/exec-1",
+    source: "clawtune-sidecar-host-cgroup",
+    attribution_source: "exclusive-execution-cgroup",
+  };
+  for (const sharedScope of [
+    {
+      kind: "cgroup-v2",
+      cgroup_path: "/sys/fs/cgroup/docker.scope",
+      source: "openclaw-sandbox",
+      attribution_source: "shared-sandbox-container",
+    },
+    {
+      kind: "pid",
+      pid: 100,
+      source: "openclaw-runtime",
+      attribution_source: "shared-runtime-process",
+    },
+  ]) {
+    await t.test(sharedScope.source, async () => {
+      const requested = [];
+      const resolved = await preferExecutionResourceScope(
+        sharedScope,
+        "exec-1",
+        {
+          async getExecutionScope(executionId) {
+            requested.push(executionId);
+            return executionScope;
+          },
+        },
+      );
+
+      assert.deepEqual(requested, ["exec-1"]);
+      assert.strictEqual(resolved, executionScope);
+    });
+  }
+});
+
+test("completion preserves an existing authoritative scope when lookup is unavailable", async () => {
+  const executionScope = {
+    kind: "cgroup-v2",
+    execution_id: "exec-1",
+    cgroup_path: "/sys/fs/cgroup/clawtune-executions/exec-1",
+    source: "clawtune-sidecar-host-cgroup",
+    attribution_source: "exclusive-execution-cgroup",
+  };
+  let calls = 0;
+  const resolved = await preferExecutionResourceScope(
+    executionScope,
+    "exec-1",
+    {
+      async getExecutionScope() {
+        calls += 1;
+        return null;
+      },
+    },
+  );
+
+  assert.equal(calls, 1);
+  assert.strictEqual(resolved, executionScope);
+});
+
+test("completion replaces a stale non-authoritative execution scope", async () => {
+  const staleScope = {
+    kind: "pid",
+    execution_id: "exec-1",
+    pid: 100,
+    source: "clawtune-launch",
+    attribution_source: "clawtune-launch",
+  };
+  const authoritativeScope = {
+    kind: "cgroup-v2",
+    execution_id: "exec-1",
+    cgroup_path: "/sys/fs/cgroup/clawtune-executions/exec-1",
+    source: "clawtune-sidecar-host-cgroup",
+    attribution_source: "exclusive-execution-cgroup",
+  };
+  const requested = [];
+  const resolved = await preferExecutionResourceScope(
+    staleScope,
+    "exec-1",
+    {
+      async getExecutionScope(executionId) {
+        requested.push(executionId);
+        return authoritativeScope;
+      },
+    },
+  );
+
+  assert.deepEqual(requested, ["exec-1"]);
+  assert.strictEqual(resolved, authoritativeScope);
+});
+
+test("completion preserves its shared fallback when execution scope is unavailable", async () => {
+  const sharedScope = {
+    kind: "cgroup-v2",
+    cgroup_path: "/sys/fs/cgroup/docker.scope",
+    source: "openclaw-sandbox",
+    attribution_source: "shared-sandbox-container",
+  };
+  const resolved = await preferExecutionResourceScope(
+    sharedScope,
+    "exec-1",
+    {async getExecutionScope() { return null; }},
+  );
+
+  assert.strictEqual(resolved, sharedScope);
+});
+
+test("completion rejects a mismatched or non-authoritative lookup scope", async (t) => {
+  const sharedScope = {
+    kind: "cgroup-v2",
+    cgroup_path: "/sys/fs/cgroup/docker.scope",
+    source: "openclaw-sandbox",
+    attribution_source: "shared-sandbox-container",
+  };
+  for (const lookupScope of [
+    {
+      kind: "cgroup-v2",
+      execution_id: "exec-other",
+      cgroup_path: "/sys/fs/cgroup/clawtune-executions/exec-other",
+      source: "clawtune-sidecar-host-cgroup",
+      attribution_source: "exclusive-execution-cgroup",
+    },
+    {
+      kind: "pid",
+      execution_id: "exec-1",
+      pid: 100,
+      source: "clawtune-launch",
+      attribution_source: "clawtune-launch",
+    },
+  ]) {
+    await t.test(lookupScope.attribution_source, async () => {
+      const resolved = await preferExecutionResourceScope(
+        sharedScope,
+        "exec-1",
+        {async getExecutionScope() { return lookupScope; }},
+      );
+
+      assert.strictEqual(resolved, sharedScope);
+    });
+  }
+});
+
+test("trace classification preserves a shared cgroup-only native scope", () => {
+  assert.deepEqual(
+    classifyResourceScope(
+      {
+        kind: "cgroup-v2",
+        cgroup_path: "/sys/fs/cgroup/docker.scope",
+        source: "openclaw-sandbox",
+        attribution_source: "shared-sandbox-container",
+      },
+      null,
+    ),
+    {
+      attributionStatus: "partially_attributed",
+      quality: "partial",
+      coverageReason: "shared_sandbox_container",
+      scope: "cgroup",
+    },
+  );
+});
 
 const decision = {
   decision_id: "decision-1",

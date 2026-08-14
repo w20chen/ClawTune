@@ -3,9 +3,14 @@ import {execFileSync} from "node:child_process";
 import type {PluginConfig, ResourceScope, ToolBeforeRequest, ToolDecision} from "./contracts.js";
 import {isRecord} from "./config.js";
 import {stableDigest} from "./redaction.js";
+import type {AttributionStatus, CoverageReason, MonitorQuality} from "./trace/schema.js";
 
 export type ExecutionRegistrar = {
   registerExecution(payload: Parameters<ToolRegistrationFunction>[0]): Promise<{one_time_token: string}>;
+};
+
+export type ExecutionScopeLookup = {
+  getExecutionScope(executionId: string): Promise<ResourceScope | null>;
 };
 
 type ToolRegistrationFunction = (payload: {
@@ -221,6 +226,92 @@ export function buildTrustedResourceScope(event: unknown, context: unknown): Res
     cgroup_path: cgroupPath,
     pid_namespace_inode: extractNumber(scope, ["pid_namespace_inode", "pidNamespaceInode"]),
     attribution_source: extractString(scope, ["attribution_source", "attributionSource"])
+  };
+}
+
+/**
+ * Resolve the authoritative scope for a launcher-backed completion.
+ *
+ * OpenClaw can attach a sandbox/runtime scope, and an early launcher scope can
+ * outlive the `/started` update locally. Those scopes are useful fallbacks,
+ * but they must not mask the authenticated per-execution scope registered
+ * after the payload entered its host cgroup.
+ */
+export async function preferExecutionResourceScope(
+  currentScope: ResourceScope | null,
+  executionId: string | null,
+  lookup: ExecutionScopeLookup,
+): Promise<ResourceScope | null> {
+  if (executionId === null) return currentScope;
+  const executionScope = await lookup.getExecutionScope(executionId);
+  return executionScope !== null
+    && isAuthoritativeExecutionScope(executionScope, executionId)
+    ? executionScope
+    : currentScope;
+}
+
+export function isSharedResourceScope(scope: ResourceScope): boolean {
+  return scope.source === "openclaw-runtime"
+    || scope.source === "openclaw-sandbox"
+    || scope.attribution_source === "shared-runtime-process"
+    || scope.attribution_source === "shared-sandbox-container";
+}
+
+export function isAuthoritativeExecutionScope(
+  scope: ResourceScope,
+  executionId: string,
+): boolean {
+  return scope.execution_id === executionId
+    && (
+      scope.attribution_source === "exclusive-execution-cgroup"
+      || scope.attribution_source === "trusted-execution-root-pid"
+    );
+}
+
+export type ResourceScopeClassification = {
+  attributionStatus: AttributionStatus;
+  quality: MonitorQuality;
+  coverageReason: CoverageReason;
+  scope: "cgroup" | "process_tree" | "none";
+};
+
+export function classifyResourceScope(
+  resourceScope: ResourceScope | null,
+  executionId: string | null,
+): ResourceScopeClassification {
+  const hasPid = (resourceScope?.pid ?? resourceScope?.root_pid) != null;
+  const hasCgroup = resourceScope?.cgroup_path != null;
+  if (!hasPid && !hasCgroup) {
+    return {
+      attributionStatus: "unattributed",
+      quality: "unknown",
+      coverageReason: executionId === null ? "internal_tool_no_process" : "pid_unavailable",
+      scope: "none",
+    };
+  }
+  if (resourceScope !== null && isSharedResourceScope(resourceScope)) {
+    const sharedSandbox = resourceScope.source === "openclaw-sandbox"
+      || resourceScope.attribution_source === "shared-sandbox-container";
+    return {
+      attributionStatus: "partially_attributed",
+      quality: "partial",
+      coverageReason: sharedSandbox ? "shared_sandbox_container" : "shared_runtime_process",
+      scope: hasCgroup ? "cgroup" : "process_tree",
+    };
+  }
+  if (hasCgroup) {
+    return {
+      attributionStatus: "attributed",
+      quality: "partial",
+      coverageReason: "full_window",
+      scope: "cgroup",
+    };
+  }
+  return {
+    attributionStatus: "partially_attributed",
+    quality: "partial",
+    coverageReason: "pid_registered_late",
+    scope: "process_tree",
   };
 }
 

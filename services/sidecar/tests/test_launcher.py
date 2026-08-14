@@ -375,6 +375,14 @@ def test_fork_exec_remote_host_gate_creates_exclusive_cgroup(
         "_resolve_host_pid",
         lambda *_args, **_kwargs: 4242,
     )
+    # This test exercises the launcher-to-sidecar protocol rather than Linux
+    # cgroupfs controller semantics; the latter has dedicated tests.
+    monkeypatch.setattr(app_module, "_cgroup_accounting_usable", lambda _path: True)
+    monkeypatch.setattr(
+        app_module,
+        "_execution_cgroup_accounting_usable",
+        lambda _path: True,
+    )
     monkeypatch.setattr(app_module, "_pid_starttime_ticks", lambda _pid: 99)
     monkeypatch.setattr(app_module, "_pid_namespace_inode", lambda _pid: 123)
 

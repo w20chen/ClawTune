@@ -128,5 +128,12 @@ host-side cgroup gate when the sandbox cgroupfs is read-only. With
 `cgroup_required=true`, launcher startup fails unless the resulting scope is
 `exclusive-execution-cgroup`; the runner also rejects a shared
 `docker-<container>.scope` or a cgroup path reused by multiple executions.
+The sidecar accepts an exclusive scope only after `cpu` and `memory` are
+confirmed in the execution root's `cgroup.subtree_control` and the new leaf's
+accounting files are readable. At completion, the launcher-authenticated
+execution scope takes precedence over OpenClaw's shared sandbox/runtime scope.
+A sidecar-owned leaf remains present through the final resource snapshot and
+trace flush, then is removed; delayed garbage collection covers a lost
+completion hook.
 
 The JSON Schema contracts remain the source of truth for protocol details.

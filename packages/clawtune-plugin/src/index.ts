@@ -7,7 +7,12 @@ import {CorrelationMap} from "./correlation.js";
 import type {CommonEvent, ModelEvent, PluginConfig, SidecarHealth, ToolBeforeRequest, ToolCompletedEvent, ToolDecision} from "./contracts.js";
 import {MIN_COMPATIBLE_SIDECAR_VERSION, REQUIRED_PROTOCOL_VERSIONS} from "./contracts.js";
 import type {ResourceScope} from "./contracts.js";
-import {buildTrustedResourceScope, instrumentExecParams} from "./exec-instrumentation.js";
+import {
+  buildTrustedResourceScope,
+  classifyResourceScope,
+  instrumentExecParams,
+  preferExecutionResourceScope,
+} from "./exec-instrumentation.js";
 import type {InstrumentResult} from "./exec-instrumentation.js";
 import {consoleLogger} from "./logging.js";
 import {jsonSafe, paramFeatures, redact, stableDigest} from "./redaction.js";
@@ -33,9 +38,6 @@ import type {
   SpanKind,
   StatusCode,
   ExecutionMode,
-  AttributionStatus,
-  MonitorQuality,
-  CoverageReason,
   SpanEndExecution,
   SpanEndResources,
   ActiveSpan,
@@ -864,12 +866,14 @@ export default definePluginEntry({
       runtimeRepo,
     );
     completion.resource_scope = buildTrustedResourceScope(event, context) ?? buildRuntimeResourceScope(toolName);
-    if (completion.resource_scope === null && completion.execution_id !== null) {
-      try {
-        completion.resource_scope = await client.getExecutionScope(completion.execution_id);
-      } catch (error) {
-        logger.warn("ClawTune execution scope lookup failed", classifyError(error));
-      }
+    try {
+      completion.resource_scope = await preferExecutionResourceScope(
+        completion.resource_scope,
+        completion.execution_id,
+        client,
+      );
+    } catch (error) {
+      logger.warn("ClawTune execution scope lookup failed", classifyError(error));
     }
     // Precise tool-time split: separate the OpenClaw-reported tool action
     // from the plugin's own sidecar/plugin round-trip overhead.
@@ -968,42 +972,15 @@ export default definePluginEntry({
 
     // Build resource info
     const resourceScope = completion.resource_scope;
-    const hasPid = (resourceScope?.pid ?? resourceScope?.root_pid) != null;
-    const hasCgroup = resourceScope?.cgroup_path != null;
-    const isSharedRuntime = isSharedRuntimeScope(resourceScope);
-
-    let attrStatus: AttributionStatus;
-    let resQuality: MonitorQuality = "unknown";
-    let coverageReason: CoverageReason | string = "pid_unavailable";
-
-    if (!hasPid && !hasCgroup) {
-      attrStatus = "unattributed";
-      coverageReason = completion.execution_id ? "pid_unavailable" : "internal_tool_no_process";
-    } else if (hasCgroup) {
-      attrStatus = "attributed";
-      coverageReason = "full_window";
-      resQuality = "partial"; // We don't know the exact monitor window without launcher data
-    } else if (isSharedRuntime) {
-      attrStatus = "partially_attributed";
-      coverageReason = "shared_runtime_process";
-      resQuality = "partial";
-    } else {
-      attrStatus = "partially_attributed";
-      coverageReason = "pid_registered_late";
-      resQuality = "partial";
-    }
-
-    // For native tools with no PID, mark appropriately
-    if (!completion.execution_id && !hasPid) {
-      attrStatus = "unattributed";
-      resQuality = "unknown";
-      coverageReason = "internal_tool_no_process";
-    }
+    const scopeClassification = classifyResourceScope(
+      resourceScope,
+      completion.execution_id,
+    );
 
     const resources: SpanEndResources = {
-      attribution_status: attrStatus,
-      scope: hasCgroup ? "cgroup" : (hasPid ? "process_tree" : "none"),
-      quality: resQuality,
+      attribution_status: scopeClassification.attributionStatus,
+      scope: scopeClassification.scope,
+      quality: scopeClassification.quality,
       monitor_start_wall_time_ns: null,
       monitor_end_wall_time_ns: null,
       monitor_start_monotonic_ns: null,
@@ -1016,7 +993,7 @@ export default definePluginEntry({
       completion_duration_ns: completion.completion_duration_ns ?? null,
       sidecar_overhead_ns: completion.sidecar_overhead_ns ?? null,
       coverage_ratio: null,
-      coverage_reason: coverageReason,
+      coverage_reason: scopeClassification.coverageReason,
       cpu_time_s: null,
       rss_peak_bytes: null,
     };
@@ -1737,10 +1714,6 @@ function readSelfCgroupPath(): string | null {
     return null;
   }
   return null;
-}
-
-function isSharedRuntimeScope(scope: ResourceScope | null): boolean {
-  return scope?.source === "openclaw-runtime" || scope?.attribution_source === "shared-runtime-process";
 }
 
 async function reportModel(

@@ -84,9 +84,10 @@ def test_host_execution_cgroup_roots_are_permission_aware(monkeypatch) -> None:
         "/cfg/clawtune"
     ]
 
-    # Root (euid 0): the sandbox container subtree is tried FIRST (a child of
-    # the payload's cgroup inherits the same controllers, so the move is the
-    # most reliable), then the root-managed clawtune cgroup.
+    # Root (euid 0): try the sandbox container subtree first when it was
+    # already delegated, then the root-managed clawtune cgroup. Provisioning
+    # now verifies delegation and skips the first candidate when Docker's
+    # populated scope cannot enable domain controllers for children.
     import types
 
     monkeypatch.setattr(
@@ -191,12 +192,28 @@ def test_prepare_host_execution_cgroup_moves_pid_tree_and_records_diagnostics(
         "cpu memory\n", encoding="utf-8"
     )
     monkeypatch.setattr(app_module, "_CGROUP_V2_ROOT", cgroup_root)
+    monkeypatch.setattr(app_module, "_PROC_ROOT", tmp_path / "proc")
     monkeypatch.setattr(app_module, "_resolve_host_pid", lambda *_args, **_kwargs: 4242)
+    monkeypatch.setattr(app_module, "_cgroup_accounting_usable", lambda _path: True)
+    monkeypatch.setattr(
+        app_module,
+        "_execution_cgroup_accounting_usable",
+        lambda _path: True,
+    )
     # The payload has already forked a child; both must be moved into the
     # per-execution cgroup so the cgroup captures the whole tool's CPU.
     monkeypatch.setattr(
         app_module, "_process_tree_pids", lambda _pid: [4242, 9999]
     )
+    written_pids: list[int] = []
+    original_write_text = Path.write_text
+
+    def capture_cgroup_write(path: Path, data: str, *args, **kwargs) -> int:
+        if path.name == "cgroup.procs":
+            written_pids.append(int(data.strip()))
+        return original_write_text(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", capture_cgroup_write)
     request = SimpleNamespace(
         child_pid=7,
         pid_namespace_inode=123,
@@ -220,23 +237,214 @@ def test_prepare_host_execution_cgroup_moves_pid_tree_and_records_diagnostics(
     procs = (cgroup_root / "clawtune" / "exec-1" / "cgroup.procs").read_text(
         encoding="utf-8"
     ).split()
+    assert written_pids == [9999, 4242]
     assert "4242" in procs
-    assert "9999" in procs
     joined = "\n".join(diagnostics)
     assert "resolved launcher host pid 4242" in joined
     assert "owns launcher pid tree" in joined
 
 
-def test_cgroup_accounting_usable_reads_subtree_control(tmp_path) -> None:
+def test_prepare_host_execution_cgroup_skips_undelegated_candidate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    docker_root = tmp_path / "docker.scope" / "clawtune-executions"
+    delegated_root = tmp_path / "delegated"
+    moved_to: list[Path] = []
+    monkeypatch.setattr(app_module, "_resolve_host_pid", lambda *_args, **_kwargs: 4242)
+    monkeypatch.setattr(
+        app_module,
+        "_host_execution_cgroup_roots",
+        lambda *_args: [str(docker_root), str(delegated_root)],
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_enable_cgroup_controllers",
+        lambda _path: frozenset(),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_cgroup_accounting_usable",
+        lambda path: path == delegated_root,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_execution_cgroup_accounting_usable",
+        lambda _path: True,
+    )
+
+    def move(_pid, path, **_kwargs):
+        moved_to.append(path)
+        return True
+
+    monkeypatch.setattr(app_module, "_move_pid_tree_into_cgroup", move)
+    request = SimpleNamespace(
+        child_pid=7,
+        pid_namespace_inode=123,
+        process_starttime_ticks=456,
+        container_id=None,
+    )
+    diagnostics: list[str] = []
+
+    scope = app_module._prepare_host_execution_cgroup(
+        "exec-1",
+        request,
+        None,
+        None,
+        diagnostics=diagnostics,
+    )
+
+    expected = delegated_root / "exec-1"
+    assert scope is not None
+    assert scope.cgroup_path == str(expected)
+    assert moved_to == [expected]
+    assert any(
+        "cpu and memory controllers not delegated" in item
+        and str(docker_root) in item
+        for item in diagnostics
+    )
+
+
+def test_move_pid_tree_retries_when_live_child_membership_is_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    cgroup = tmp_path / "execution-cgroup"
+    cgroup.mkdir()
+    (cgroup / "cgroup.procs").write_text("", encoding="utf-8")
+    proc_root = tmp_path / "proc"
+    (proc_root / "9999").mkdir(parents=True)
+    monkeypatch.setattr(app_module, "_PROC_ROOT", proc_root)
+    monkeypatch.setattr(
+        app_module,
+        "_process_tree_pids",
+        lambda _root_pid: [4242, 9999],
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr(app_module.time, "sleep", sleeps.append)
+
+    moved = app_module._move_pid_tree_into_cgroup(4242, cgroup)
+
+    assert moved is False
+    assert sleeps == [0.02, 0.02]
+    assert (cgroup / "cgroup.procs").read_text(encoding="utf-8").strip() == "4242"
+
+
+def test_enable_cgroup_controllers_separates_required_from_optional(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "cgroup"
+    enabled: set[str] = set()
+    writes: list[str] = []
+
+    def fake_read(path: Path, **_kwargs) -> str:
+        if path.name == "cgroup.controllers":
+            # cpuset is intentionally unavailable and must not poison the
+            # required cpu+memory operation.
+            return "cpu memory io"
+        if path.name == "cgroup.subtree_control":
+            return " ".join(sorted(enabled))
+        raise OSError(path)
+
+    def fake_write(path: Path, value: str, **_kwargs) -> int:
+        assert path.name == "cgroup.subtree_control"
+        writes.append(value)
+        for token in value.split():
+            if token.startswith("+"):
+                enabled.add(token[1:])
+        return len(value)
+
+    monkeypatch.setattr(Path, "read_text", fake_read)
+    monkeypatch.setattr(Path, "write_text", fake_write)
+
+    result = app_module._enable_cgroup_controllers(root)
+
+    assert writes == ["+cpu +memory", "+io"]
+    assert result == frozenset({"cpu", "memory", "io"})
+
+
+@pytest.mark.parametrize(
+    ("subtree_control", "expected"),
+    [
+        ("cpu memory", True),
+        ("memory cpu io", True),
+        ("cpu", False),
+        ("memory", False),
+        ("pids", False),
+        ("", False),
+    ],
+)
+def test_cgroup_accounting_usable_requires_cpu_and_memory(
+    tmp_path: Path,
+    subtree_control: str,
+    expected: bool,
+) -> None:
     from clawtune_sidecar.api import app as app_module
 
-    parent = tmp_path / "cg"
-    parent.mkdir()
-    (parent / "cgroup.subtree_control").write_text("cpu memory", encoding="utf-8")
-    assert app_module._cgroup_accounting_usable(parent) is True
+    parent = tmp_path / "parent"
+    root = parent / "execution-root"
+    root.mkdir(parents=True)
+    # A rich parent availability list must not mask a missing delegation on
+    # the root that will own the per-execution children.
+    (parent / "cgroup.controllers").write_text(
+        "cpu memory io cpuset\n",
+        encoding="utf-8",
+    )
+    (root / "cgroup.subtree_control").write_text(
+        subtree_control,
+        encoding="utf-8",
+    )
 
-    (parent / "cgroup.subtree_control").write_text("pids", encoding="utf-8")
-    assert app_module._cgroup_accounting_usable(parent) is False
+    assert app_module._cgroup_accounting_usable(root) is expected
+
+
+def test_cgroup_accounting_usable_fails_closed_when_readback_missing(
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "parent"
+    root = parent / "execution-root"
+    root.mkdir(parents=True)
+    (parent / "cgroup.controllers").write_text(
+        "cpu memory io cpuset\n",
+        encoding="utf-8",
+    )
+
+    assert app_module._cgroup_accounting_usable(root) is False
+
+
+@pytest.mark.parametrize(
+    ("cpu_stat", "memory_current", "expected"),
+    [
+        ("usage_usec 0\n", "0\n", True),
+        ("usage_usec 123\n", "4096\n", True),
+        ("user_usec 1\n", "4096\n", False),
+        ("usage_usec nope\n", "4096\n", False),
+        ("usage_usec 1\n", "nope\n", False),
+    ],
+)
+def test_execution_cgroup_requires_parsable_cpu_and_memory_interfaces(
+    tmp_path: Path,
+    cpu_stat: str,
+    memory_current: str,
+    expected: bool,
+) -> None:
+    leaf = tmp_path / "execution"
+    leaf.mkdir()
+    (leaf / "cpu.stat").write_text(cpu_stat, encoding="utf-8")
+    (leaf / "memory.current").write_text(memory_current, encoding="utf-8")
+
+    assert app_module._execution_cgroup_accounting_usable(leaf) is expected
+
+
+def test_execution_cgroup_accounting_fails_when_interface_is_missing(
+    tmp_path: Path,
+) -> None:
+    leaf = tmp_path / "execution"
+    leaf.mkdir()
+    (leaf / "cpu.stat").write_text("usage_usec 1\n", encoding="utf-8")
+
+    assert app_module._execution_cgroup_accounting_usable(leaf) is False
 
 
 def _read_trace_records(trace_dir: Path) -> list[dict]:
@@ -314,6 +522,43 @@ def _write_cgroup_fixture(path: Path, usage_usec: int = 100_000) -> None:
     (path / "cgroup.procs").write_text("", encoding="utf-8")
 
 
+def _register_claimed_execution(
+    client: TestClient,
+    *,
+    execution_id: str = "call-exec",
+    runtime_id: str = "runtime-1",
+    gateway_id: str = "gateway-1",
+) -> dict[str, object]:
+    registration = client.post(
+        "/v2/executions",
+        json={
+            "execution_id": execution_id,
+            "tool_call_id": "call-exec",
+            "run_id": "run-exec",
+            "session_key_hash": None,
+            "command_digest": "sha256:" + "c" * 64,
+            "command": "echo hi",
+            "workdir": "/workspace",
+            "host": "gateway",
+            "placement": None,
+            "profiling": {"enable_cgroup": True},
+            "backend": "managed-wrapper",
+            "runtime_id": runtime_id,
+            "gateway_id": gateway_id,
+        },
+    ).json()
+    claimed = client.post(
+        "/v2/executions/claim",
+        json={
+            "execution_id": execution_id,
+            "token": registration["one_time_token"],
+            "launcher_pid": 100,
+        },
+    )
+    assert claimed.status_code == 200
+    return claimed.json()
+
+
 def test_host_cgroup_path_is_derived_from_verified_pid_membership(
     tmp_path: Path,
 ) -> None:
@@ -377,6 +622,12 @@ def test_host_cgroup_gate_uses_standard_v2_root_when_unconfigured(
     (cgroup_root / "cgroup.controllers").write_text("cpu memory\n", encoding="utf-8")
     monkeypatch.setattr(app_module, "_CGROUP_V2_ROOT", cgroup_root)
     monkeypatch.setattr(app_module, "_resolve_host_pid", lambda *_args, **_kwargs: 4242)
+    monkeypatch.setattr(app_module, "_cgroup_accounting_usable", lambda _path: True)
+    monkeypatch.setattr(
+        app_module,
+        "_execution_cgroup_accounting_usable",
+        lambda _path: True,
+    )
     request = SimpleNamespace(
         child_pid=7,
         pid_namespace_inode=123,
@@ -1667,6 +1918,419 @@ def test_running_exec_completion_waits_for_real_exit_fallback(
     ]
 
 
+@pytest.mark.parametrize(
+    "authoritative_attribution",
+    ["exclusive-execution-cgroup", "trusted-execution-root-pid"],
+)
+@pytest.mark.parametrize(
+    ("shared_source", "shared_attribution"),
+    [
+        ("openclaw-sandbox", "shared-sandbox-container"),
+        ("openclaw-runtime", "shared-runtime-process"),
+        ("clawtune-launch", "clawtune-launch"),
+    ],
+)
+def test_completion_prefers_authoritative_execution_scope_over_supplied_scope(
+    tmp_path: Path,
+    monkeypatch,
+    authoritative_attribution: str,
+    shared_source: str,
+    shared_attribution: str,
+) -> None:
+    state = build_state(
+        SidecarConfig(
+            trace_dir=tmp_path / "traces",
+            tool_resource_ebpf_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
+    claim = _register_claimed_execution(client)
+    historical_cgroup = tmp_path / "removed-after-exit" / "call-exec"
+    historical_cgroup.mkdir(parents=True)
+    state.executions.update_scope(
+        "call-exec",
+        ResourceScope(
+            kind="cgroup-v2",
+            execution_id="call-exec",
+            pid=4242,
+            root_pid=4242,
+            cgroup_path=str(historical_cgroup),
+            include_children=True,
+            source="clawtune-sidecar-host-cgroup",
+            attribution_source=authoritative_attribution,
+        ),
+        owned_cgroup_path=str(historical_cgroup),
+    )
+    state.predictor.begin_execution = (  # type: ignore[method-assign]
+        lambda **_kwargs: True
+    )
+    shared_cgroup = tmp_path / "sandbox-cgroup"
+    sandbox_response = client.post(
+        "/v1/gateways/gateway-1/runtimes/runtime-1/sandbox-scope",
+        json={
+            "kind": "cgroup-v2",
+            "execution_id": None,
+            "pid": 200,
+            "root_pid": 200,
+            "cgroup_path": str(shared_cgroup),
+            "container_id": "b" * 64,
+            "include_children": True,
+            "source": "openclaw-sandbox",
+            "attribution_source": "shared-sandbox-container",
+        },
+    )
+    assert sandbox_response.status_code == 200
+    monkeypatch.setattr(
+        app_module,
+        "_cleanup_owned_cgroup",
+        lambda path: Path(path).rmdir() if path is not None else None,
+    )
+    exited = client.post(
+        "/v2/executions/call-exec/exited",
+        json={
+            "update_token": claim["update_token"],
+            "exit_code": 0,
+            "signal": None,
+        },
+    )
+    assert exited.status_code == 200
+    assert historical_cgroup.exists()
+    completed_scopes: list[ResourceScope | None] = []
+
+    def capture_completion(event):
+        completed_scopes.append(event.resource_scope)
+        return None
+
+    state.tool_monitor.complete = capture_completion  # type: ignore[method-assign]
+    response = client.post(
+        "/v1/events/tool-completed",
+        json={
+            "schema_version": "clawtune.v1",
+            "event_id": "evt-exec-end",
+            "occurred_at": "2026-07-16T03:23:01Z",
+            "plugin_version": "0.1.0",
+            "run_id": "run-exec",
+            "session_id": "session-exec",
+            "session_key": None,
+            "agent_id": None,
+            "tool_call_id": "call-exec",
+            "decision_id": None,
+            "lease_id": None,
+            "execution_id": "call-exec",
+            "tool_name": "exec",
+            "duration_ms": 100,
+            "succeeded": True,
+            "error_type": None,
+            "error_digest": None,
+            "result_size_bytes": None,
+            "raw_result": {"details": {"exitCode": 0}},
+            "runtime_id": "runtime-1",
+            "gateway_id": "gateway-1",
+            "resource_scope": {
+                "kind": "cgroup-v2",
+                "execution_id": None,
+                "pid": 200,
+                "root_pid": 200,
+                "cgroup_path": str(shared_cgroup),
+                "container_id": "b" * 64,
+                "include_children": True,
+                "source": shared_source,
+                "attribution_source": shared_attribution,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(completed_scopes) == 1
+    completed_scope = completed_scopes[0]
+    assert completed_scope is not None
+    assert completed_scope.cgroup_path == str(historical_cgroup)
+    assert completed_scope.attribution_source == authoritative_attribution
+    assert not historical_cgroup.exists()
+
+
+@pytest.mark.parametrize(
+    ("record_attribution", "expected_rebinds"),
+    [
+        ("exclusive-execution-cgroup", 0),
+        ("trusted-execution-root-pid", 0),
+        ("clawtune-launch", 1),
+    ],
+)
+def test_late_sandbox_scope_does_not_downgrade_authoritative_monitor_scope(
+    tmp_path: Path,
+    record_attribution: str,
+    expected_rebinds: int,
+) -> None:
+    state = build_state(
+        SidecarConfig(
+            trace_dir=tmp_path / "traces",
+            tool_resource_ebpf_required=False,
+        )
+    )
+    client = TestClient(create_app(state))
+    _register_claimed_execution(client)
+    execution_cgroup = tmp_path / "execution-cgroup"
+    state.executions.update_scope(
+        "call-exec",
+        ResourceScope(
+            kind="cgroup-v2",
+            execution_id="call-exec",
+            pid=4242,
+            root_pid=4242,
+            cgroup_path=str(execution_cgroup),
+            include_children=True,
+            source="clawtune-sidecar-host-cgroup",
+            attribution_source=record_attribution,
+        ),
+    )
+    state.predictor.begin_execution = (  # type: ignore[method-assign]
+        lambda **_kwargs: True
+    )
+    rebound_scopes: list[ResourceScope] = []
+
+    def capture_rebind(_tool_call_id, scope, **_kwargs):
+        rebound_scopes.append(scope)
+        return True
+
+    state.tool_monitor.bind_scope = capture_rebind  # type: ignore[method-assign]
+    sandbox_cgroup = tmp_path / "sandbox-cgroup"
+    response = client.post(
+        "/v1/gateways/gateway-1/runtimes/runtime-1/sandbox-scope",
+        json={
+            "kind": "cgroup-v2",
+            "execution_id": None,
+            "pid": 200,
+            "root_pid": 200,
+            "cgroup_path": str(sandbox_cgroup),
+            "container_id": "b" * 64,
+            "include_children": True,
+            "source": "openclaw-sandbox",
+            "attribution_source": "shared-sandbox-container",
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(rebound_scopes) == expected_rebinds
+    if rebound_scopes:
+        assert rebound_scopes[0].attribution_source == "shared-sandbox-container"
+
+
+def test_owned_cgroup_survives_exited_until_completion_final_snapshot(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(app_module, "_OWNED_CGROUP_CLEANUP_GRACE_SECONDS", 0.01)
+    monkeypatch.setattr(app_module, "_OWNED_CGROUP_CLEANUP_RETRY_SECONDS", 1.0)
+    trace_dir = tmp_path / "traces"
+    state = build_state(
+        SidecarConfig(
+            trace_dir=trace_dir,
+            tool_resource_ebpf_required=False,
+        )
+    )
+    cleanup_observations: list[tuple[int, bool]] = []
+    cleanup_started = Event()
+
+    def remove_fixture(path: str | None) -> bool:
+        assert path is not None
+        target = Path(path)
+        usage = int(
+            (target / "cpu.stat").read_text(encoding="utf-8").split()[1]
+        )
+        trace_flushed = any(
+            record.get("record_type") == "span_end"
+            for record in _read_trace_records(trace_dir)
+        )
+        cleanup_observations.append((usage, trace_flushed))
+        if not trace_flushed:
+            cleanup_started.set()
+            return False
+        for child in target.iterdir():
+            child.unlink()
+        target.rmdir()
+        return True
+
+    monkeypatch.setattr(app_module, "_cleanup_owned_cgroup", remove_fixture)
+    with TestClient(create_app(state)) as client:
+        before = {
+            "schema_version": "clawtune.v1",
+            "event_id": "evt-owned-start",
+            "occurred_at": "2026-07-16T03:23:00Z",
+            "plugin_version": "0.1.0",
+            "run_id": "run-exec",
+            "session_id": "session-exec",
+            "session_key": None,
+            "agent_id": None,
+            "tool_call_id": "call-exec",
+            "tool_name": "exec",
+            "tool_kind": "shell",
+            "tool_input_kind": "json",
+            "operation_hint": "echo",
+            "derived_paths": [],
+            "params_digest": "sha256:" + "b" * 64,
+            "param_features": {
+                "serialized_size_bytes": 10,
+                "string_length": 7,
+                "list_item_count": 0,
+                "path_count": 0,
+                "has_command_like_field": True,
+            },
+            "raw_params": {"command": "echo hi"},
+            "runtime_id": "runtime-1",
+            "gateway_id": "gateway-1",
+            "resource_scope": None,
+        }
+        decision = client.post("/v1/decisions/tool", json=before).json()
+        claim = _register_claimed_execution(client)
+        exact = tmp_path / "exact-execution-cgroup"
+        _write_cgroup_fixture(exact, usage_usec=100_000)
+        scope = ResourceScope(
+            kind="cgroup-v2",
+            execution_id="call-exec",
+            pid=4242,
+            root_pid=4242,
+            cgroup_path=str(exact),
+            include_children=True,
+            source="clawtune-sidecar-host-cgroup",
+            attribution_source="exclusive-execution-cgroup",
+        )
+        state.executions.update_scope(
+            "call-exec",
+            scope,
+            owned_cgroup_path=str(exact),
+        )
+        record = state.executions.get("call-exec")
+        assert record is not None
+        assert state.tool_monitor.bind_scope(
+            "call-exec",
+            scope,
+            runtime_id="runtime-1",
+            owner=record.request,
+        )
+        exited = client.post(
+            "/v2/executions/call-exec/exited",
+            json={
+                "update_token": claim["update_token"],
+                "exit_code": 0,
+                "signal": None,
+            },
+        )
+        assert exited.status_code == 200
+        assert exact.is_dir()
+        assert cleanup_started.wait(timeout=2.0)
+        assert cleanup_observations == [(100_000, False)]
+        # Simulate counters advancing after delayed GC has started but while
+        # its cooperative retry is cancellable by the completion hook.
+        (exact / "cpu.stat").write_text(
+            "usage_usec 300000\n",
+            encoding="utf-8",
+        )
+
+        completed = client.post(
+            "/v1/events/tool-completed",
+            json={
+                "schema_version": "clawtune.v1",
+                "event_id": "evt-owned-end",
+                "occurred_at": "2026-07-16T03:23:01Z",
+                "plugin_version": "0.1.0",
+                "run_id": "run-exec",
+                "session_id": "session-exec",
+                "session_key": None,
+                "agent_id": None,
+                "tool_call_id": "call-exec",
+                "decision_id": decision["decision_id"],
+                "lease_id": decision["lease_id"],
+                "execution_id": "call-exec",
+                "tool_name": "exec",
+                "duration_ms": 100,
+                "succeeded": True,
+                "error_type": None,
+                "error_digest": None,
+                "result_size_bytes": None,
+                "raw_result": {"details": {"exitCode": 0}},
+                "runtime_id": "runtime-1",
+                "gateway_id": "gateway-1",
+                "resource_scope": None,
+            },
+        )
+        assert completed.status_code == 200
+        assert completed.json() == {"stored": True}
+        assert cleanup_observations == [(100_000, False), (300_000, True)]
+        assert not exact.exists()
+
+    tool_end = next(
+        record
+        for record in _read_trace_records(trace_dir)
+        if record.get("record_type") == "span_end"
+        and record.get("kind") == "tool"
+    )
+    assert tool_end["execution"]["cgroup_path"] == str(exact)
+    assert tool_end["resources"]["attribution_source"] == (
+        "exclusive-execution-cgroup"
+    )
+    assert tool_end["resources"]["cpu_time_s"] == pytest.approx(0.2)
+
+
+def test_owned_cgroup_delayed_gc_when_completion_is_lost(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(app_module, "_OWNED_CGROUP_CLEANUP_GRACE_SECONDS", 0.02)
+    cleaned = Event()
+
+    def remove_fixture(path: str | None) -> bool:
+        assert path is not None
+        target = Path(path)
+        for child in target.iterdir():
+            child.unlink()
+        target.rmdir()
+        cleaned.set()
+        return True
+
+    monkeypatch.setattr(app_module, "_cleanup_owned_cgroup", remove_fixture)
+    state = build_state(
+        SidecarConfig(
+            trace_dir=tmp_path / "traces",
+            tool_resource_ebpf_required=False,
+        )
+    )
+    with TestClient(create_app(state)) as client:
+        claim = _register_claimed_execution(client)
+        exact = tmp_path / "lost-completion-cgroup"
+        _write_cgroup_fixture(exact)
+        state.executions.update_scope(
+            "call-exec",
+            ResourceScope(
+                kind="cgroup-v2",
+                execution_id="call-exec",
+                cgroup_path=str(exact),
+                source="clawtune-sidecar-host-cgroup",
+                attribution_source="exclusive-execution-cgroup",
+            ),
+            owned_cgroup_path=str(exact),
+        )
+
+        exited = client.post(
+            "/v2/executions/call-exec/exited",
+            json={
+                "update_token": claim["update_token"],
+                "exit_code": 0,
+                "signal": None,
+            },
+        )
+        assert exited.status_code == 200
+        assert cleaned.wait(timeout=2.0)
+        assert not exact.exists()
+        deadline = time.monotonic() + 2.0
+        while (
+            "call-exec" in state._owned_cgroup_paths
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert "call-exec" not in state._owned_cgroup_paths
+
+
 def test_execution_started_host_cgroup_gate_creates_exact_scope(
     tmp_path: Path,
     monkeypatch,
@@ -1693,6 +2357,12 @@ def test_execution_started_host_cgroup_gate_creates_exact_scope(
     monkeypatch.setattr(app_module, "_resolve_host_pid", lambda *_args, **_kwargs: 4242)
     monkeypatch.setattr(app_module, "_pid_starttime_ticks", lambda _pid: 99)
     monkeypatch.setattr(app_module, "_pid_namespace_inode", lambda _pid: 123)
+    monkeypatch.setattr(app_module, "_cgroup_accounting_usable", lambda _path: True)
+    monkeypatch.setattr(
+        app_module,
+        "_execution_cgroup_accounting_usable",
+        lambda _path: True,
+    )
 
     registration = client.post(
         "/v2/executions",
@@ -1748,10 +2418,21 @@ def test_execution_started_required_host_gate_fails_without_exclusive_cgroup(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    available_only_root = tmp_path / "available-only-root"
+    available_only_root.mkdir()
+    (available_only_root / "cgroup.controllers").write_text(
+        "cpu memory io\n",
+        encoding="utf-8",
+    )
+    (available_only_root / "cgroup.subtree_control").write_text(
+        "",
+        encoding="utf-8",
+    )
     state = build_state(
         SidecarConfig(
             trace_dir=tmp_path / "traces",
             sandbox_container_id="b" * 64,
+            execution_cgroup_root=str(available_only_root),
             tool_resource_ebpf_required=False,
         )
     )
@@ -1761,10 +2442,12 @@ def test_execution_started_required_host_gate_fails_without_exclusive_cgroup(
         "_resolve_host_pid",
         lambda *_args, **_kwargs: 4242,
     )
+    # Model a populated/non-delegated parent: controllers are advertised as
+    # available, but the kernel refuses to enable them for children.
     monkeypatch.setattr(
         app_module,
-        "_prepare_host_execution_cgroup",
-        lambda *_args, **_kwargs: None,
+        "_enable_cgroup_controllers",
+        lambda _root: frozenset(),
     )
 
     registration = client.post(

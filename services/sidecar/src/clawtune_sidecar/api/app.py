@@ -39,11 +39,16 @@ from clawtune_sidecar.security.auth import verify_bearer
 
 _EBPF_COMPLETION_GRACE_SECONDS = 10.0
 _EBPF_ORPHAN_GRACE_SECONDS = 1.0
+_OWNED_CGROUP_CLEANUP_GRACE_SECONDS = 10.0
+_OWNED_CGROUP_CLEANUP_RETRY_SECONDS = 0.02
 _HEALTH_SERVICE = "clawtune-sidecar"
 _HEALTH_SCHEMA_VERSION = "clawtune.health.v1"
 _PROTOCOL_VERSIONS = ["clawtune.api.v1", "trace.v6", "execution.v1"]
 _PROC_ROOT = Path("/proc")
 _CGROUP_V2_ROOT = Path("/sys/fs/cgroup")
+_AUTHORITATIVE_EXECUTION_ATTRIBUTION_SOURCES = frozenset(
+    {"exclusive-execution-cgroup", "trusted-execution-root-pid"}
+)
 
 
 def _sample_summary(sample: ToolRuntimeSample) -> dict[str, object]:
@@ -106,6 +111,30 @@ def _is_shared_runtime_scope(scope: ResourceScope | None) -> bool:
             scope.source == "openclaw-runtime"
             or scope.attribution_source == "shared-runtime-process"
         )
+    )
+
+
+def _is_shared_sandbox_scope(scope: ResourceScope | None) -> bool:
+    return bool(
+        scope is not None
+        and (
+            scope.source == "openclaw-sandbox"
+            or scope.attribution_source == "shared-sandbox-container"
+        )
+    )
+
+
+def _is_authoritative_execution_scope(
+    scope: ResourceScope | None,
+    execution_id: str | None = None,
+) -> bool:
+    """Return whether the sidecar authenticated this execution's identity."""
+
+    if scope is None:
+        return False
+    return bool(
+        scope.attribution_source in _AUTHORITATIVE_EXECUTION_ATTRIBUTION_SOURCES
+        and (execution_id is None or scope.execution_id == execution_id)
     )
 
 
@@ -391,11 +420,11 @@ def _host_execution_cgroup_roots(
     create per-execution cgroups.  Priority:
 
       1. the sandbox container's own subtree
-         (``<container-cgroup>/clawtune-executions``): a child of the payload's
-         current cgroup inherits the same controller set, so moving the
-         process tree into it is the canonical cgroup-v2 move and succeeds
-         even when the host cannot delegate a *sibling* subtree (some
-         systemd/openEuler hosts reject moves across controller boundaries).
+         (``<container-cgroup>/clawtune-executions``): this preserves the
+         container's hierarchy and is preferred when the container scope has
+         already delegated cpu/memory controllers. A populated Docker scope
+         commonly cannot enable those domain controllers after the fact, so
+         this candidate is verified and skipped when delegation is absent.
       2. root (euid 0): /sys/fs/cgroup/clawtune (root-managed).
       3. non-root: the systemd user slice (pre-delegated via PAM/logind),
          then /sys/fs/cgroup/clawtune.
@@ -406,9 +435,10 @@ def _host_execution_cgroup_roots(
         return [configured_root]
     claw_root = _CGROUP_V2_ROOT / "clawtune"
     if fallback_scope is not None and fallback_scope.cgroup_path:
-        # Same-subtree child of the sandbox container cgroup: controllers are
-        # already delegated there (the container cgroup yields cpu/mem) and
-        # the payload does not cross a controller boundary when moved in.
+        # Same-subtree placement avoids a cross-boundary move when the Docker
+        # scope was configured with controller delegation. Merely exposing
+        # controllers on the parent is not enough; _cgroup_accounting_usable
+        # verifies the root's subtree_control before this candidate is used.
         roots.append(
             f"{fallback_scope.cgroup_path.rstrip('/')}/clawtune-executions"
         )
@@ -445,64 +475,90 @@ def _host_execution_cgroup_roots(
     return unique
 
 
-def _enable_cgroup_controllers(root: Path) -> None:
-    """Best-effort enable of cpu/memory/cpuset on a delegated cgroup parent."""
-    wanted = ("cpu", "memory", "cpuset")
+def _enable_cgroup_controllers(root: Path) -> frozenset[str]:
+    """Enable required accounting controllers and return the kernel readback.
+
+    ``cpu`` and ``memory`` are enabled together because both are required by
+    the strict resource-sampling audit. Optional ``io`` is attempted
+    separately so an unavailable optional controller cannot make the required
+    operation fail atomically.
+    """
+
     try:
-        current = (
+        available = set(
+            (root / "cgroup.controllers").read_text(encoding="utf-8").split()
+        )
+        current = set(
             (root / "cgroup.subtree_control").read_text(encoding="utf-8").split()
         )
     except OSError:
-        return
-    additions = [name for name in wanted if name not in current]
-    if not additions:
-        return
+        return frozenset()
+
+    required = {"cpu", "memory"}
+    required_additions = (
+        [name for name in ("cpu", "memory") if name not in current]
+        if required.issubset(available)
+        else []
+    )
+    if required_additions:
+        try:
+            (root / "cgroup.subtree_control").write_text(
+                " ".join(f"+{name}" for name in required_additions),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    if "io" in available and "io" not in current:
+        try:
+            (root / "cgroup.subtree_control").write_text(
+                "+io",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
     try:
-        (root / "cgroup.subtree_control").write_text(
-            " ".join(f"+{name}" for name in additions),
-            encoding="utf-8",
+        return frozenset(
+            (root / "cgroup.subtree_control").read_text(encoding="utf-8").split()
         )
     except OSError:
-        pass
+        return frozenset()
 
 
 def _cgroup_accounting_usable(root_path: Path) -> bool:
-    """True when cpu/memory accounting can be obtained for a child cgroup.
+    """Return whether children receive both required accounting controllers.
 
-    A per-execution cgroup is only useful for resource accounting when cpu or
-    memory is delegated via the parent's ``cgroup.subtree_control`` or is
-    available on the parent's ``cgroup.controllers`` so it can be delegated.
-    Otherwise ``cpu.stat``/``memory.current`` stay empty and the cgroup view
-    would be worse than the per-PID fallback.
-
-    This is deliberately best-effort: when the cgroupfs files are not
-    inspectable (e.g. an explicitly configured root, or the sidecar cannot
-    read the control files), the cgroup is assumed usable rather than failing
-    -- only positive evidence that no accounting controller is available
-    rejects the candidate.
+    ``cgroup.controllers`` only describes what *could* be enabled. The
+    authoritative state is this root's ``cgroup.subtree_control`` after the
+    enable attempt. Fail closed when it cannot be read; otherwise a child may
+    look exclusive while every cpu/memory sample is unavailable.
     """
-    subtree_readable = False
+
     try:
-        control = (
+        enabled = set(
             (root_path / "cgroup.subtree_control").read_text(encoding="utf-8").split()
         )
-        subtree_readable = True
-        if any(name in control for name in ("cpu", "memory")):
-            return True
     except OSError:
-        pass
+        return False
+    return {"cpu", "memory"}.issubset(enabled)
+
+
+def _execution_cgroup_accounting_usable(cgroup_path: Path) -> bool:
+    """Verify that the execution leaf exposes parsable cpu and memory data."""
+
     try:
-        available = (
-            (root_path.parent / "cgroup.controllers")
-            .read_text(encoding="utf-8")
-            .split()
+        cpu_stat = (cgroup_path / "cpu.stat").read_text(encoding="utf-8")
+        memory_current = int(
+            (cgroup_path / "memory.current").read_text(encoding="utf-8").strip()
         )
-    except OSError:
-        # Cannot inspect the parent's available controllers.  If the subtree
-        # control was readable and already had no accounting controller, this
-        # is positive evidence the subtree is not delegated.
-        return not subtree_readable
-    return any(name in available for name in ("cpu", "memory"))
+    except (OSError, ValueError):
+        return False
+    return memory_current >= 0 and any(
+        line.startswith("usage_usec ")
+        and line.removeprefix("usage_usec ").strip().isdigit()
+        for line in cpu_stat.splitlines()
+    )
 
 
 def _record_cgroup_diag(diagnostics: list[str] | None, message: str) -> None:
@@ -600,27 +656,31 @@ def _move_pid_tree_into_cgroup(
     The launcher payload forks children before /started; moving only the
     parent would capture just its own future CPU.  Writing each pid to
     ``cgroup.procs`` moves it (children inherit the cgroup at fork), with a
-    short retry to absorb fork races.  The cgroup is accepted as soon as the
-    root pid is a member.
+    short retry to absorb fork races. cgroupfs accepts one PID per write; each
+    existing child is therefore migrated separately and the gated root is
+    written last so future children inherit the execution scope.
     """
     procs_file = cgroup_path / "cgroup.procs"
-    for attempt in range(3):
+    for _attempt in range(3):
         pids = _process_tree_pids(host_pid)
-        # Write all pids in one write: cgroup.procs accepts newline-separated
-        # pids, and successive writes would overwrite earlier members.
-        try:
-            procs_file.write_text(
-                "".join(f"{pid}\n" for pid in pids if pid > 0),
-                encoding="utf-8",
-            )
-        except OSError as exc:
-            _record_cgroup_diag(
-                diagnostics,
-                f"cgroup.procs move pid tree failed: {exc}",
-            )
-        if _host_pid_in_cgroup(host_pid, cgroup_path):
+        ordered_pids = [pid for pid in pids if pid > 0 and pid != host_pid]
+        ordered_pids.append(host_pid)
+        for pid in ordered_pids:
+            try:
+                procs_file.write_text(f"{pid}\n", encoding="utf-8")
+            except OSError as exc:
+                _record_cgroup_diag(
+                    diagnostics,
+                    f"cgroup.procs move pid {pid} failed: {exc}",
+                )
+        members = _cgroup_member_pids(cgroup_path)
+        if members is not None and host_pid in members and not any(
+            pid not in members and (_PROC_ROOT / str(pid)).exists()
+            for pid in ordered_pids
+        ):
             return True
-        time.sleep(0.02)
+        if _attempt < 2:
+            time.sleep(0.02)
     return False
 
 
@@ -650,10 +710,17 @@ def _prepare_host_execution_cgroup(
             root_path.mkdir(parents=True, exist_ok=True)
             _enable_cgroup_controllers(root_path)
             if not _cgroup_accounting_usable(root_path):
-                # No accounting controller delegated at this root: the cgroup
-                # would yield empty cpu/mem.  Try the next candidate.
-                raise PermissionError(f"no accounting controller at {root}")
+                # Available controllers are not the same as controllers
+                # delegated to children. Reject a false-exclusive scope whose
+                # cpu/memory samples would all be unavailable.
+                raise PermissionError(
+                    f"cpu and memory controllers not delegated at {root}"
+                )
             cgroup_path.mkdir(mode=0o700, exist_ok=True)
+            if not _execution_cgroup_accounting_usable(cgroup_path):
+                raise PermissionError(
+                    f"cpu.stat or memory.current unavailable at {cgroup_path}"
+                )
             _record_cgroup_diag(diagnostics, f"created per-exec cgroup {cgroup_path}")
         except OSError as exc:
             _record_cgroup_diag(diagnostics, f"root {root}: setup failed: {exc}")
@@ -698,28 +765,44 @@ def _prepare_host_execution_cgroup(
 
 
 def _host_pid_in_cgroup(host_pid: int, cgroup_path: Path) -> bool:
+    members = _cgroup_member_pids(cgroup_path)
+    return members is not None and host_pid in members
+
+
+def _cgroup_member_pids(cgroup_path: Path) -> set[int] | None:
     try:
-        procs = (cgroup_path / "cgroup.procs").read_text(encoding="utf-8").split()
+        raw_members = (cgroup_path / "cgroup.procs").read_text(
+            encoding="utf-8"
+        ).split()
+        return {int(pid) for pid in raw_members}
+    except (OSError, ValueError):
+        return None
+
+
+def _cleanup_owned_cgroup(path: str | None) -> bool:
+    """Try once to remove an empty owned cgroup.
+
+    Retrying is handled asynchronously by the lifecycle task so a completion
+    can cancel cleanup before taking its final snapshot.
+    """
+
+    if not path:
+        return True
+    cgroup = Path(path)
+    try:
+        if (cgroup / "cgroup.procs").read_text(encoding="utf-8").strip():
+            return False
+    except FileNotFoundError:
+        return True
     except OSError:
         return False
-    return str(host_pid) in procs
-
-
-def _cleanup_owned_cgroup(path: str | None) -> None:
-    if not path:
-        return
-    cgroup = Path(path)
-    for _attempt in range(10):
-        try:
-            if (cgroup / "cgroup.procs").read_text(encoding="utf-8").strip():
-                return
-        except OSError:
-            return
-        try:
-            cgroup.rmdir()
-            return
-        except OSError:
-            time.sleep(0.02)
+    try:
+        cgroup.rmdir()
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
 
 
 def create_app(state: AppState | None = None) -> FastAPI:
@@ -729,6 +812,13 @@ def create_app(state: AppState | None = None) -> FastAPI:
 
     @app.on_event("shutdown")
     async def shutdown_state() -> None:
+        cleanup_tasks = list(app_state._owned_cgroup_cleanup_tasks.values())
+        app_state._owned_cgroup_cleanup_tasks.clear()
+        for task in cleanup_tasks:
+            if not task.done():
+                task.cancel()
+        if cleanup_tasks:
+            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
         app_state.tool_monitor.stop()
         if app_state.docker_exec_observer is not None:
             app_state.docker_exec_observer.stop()
@@ -742,6 +832,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
         close_predictor = getattr(app_state.predictor, "close", None)
         if callable(close_predictor):
             await asyncio.to_thread(close_predictor)
+        for execution_id in list(app_state._owned_cgroup_paths):
+            await cleanup_owned_cgroup(app_state, execution_id)
 
     def get_state() -> AppState:
         return app.state.sidecar
@@ -834,6 +926,77 @@ def create_app(state: AppState | None = None) -> FastAPI:
         task = s._ebpf_finalize_tasks.pop(execution_id, None)
         if task is not None and not task.done():
             task.cancel()
+
+    def cancel_owned_cgroup_cleanup(s: AppState, execution_id: str) -> None:
+        task = s._owned_cgroup_cleanup_tasks.pop(execution_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def cleanup_owned_cgroup(s: AppState, execution_id: str) -> bool:
+        """Remove an empty sidecar-owned cgroup without losing final counters."""
+
+        path = s._owned_cgroup_paths.get(execution_id)
+        if path is None:
+            record = s.executions.get(execution_id)
+            path = record.owned_cgroup_path if record is not None else None
+            if path is not None:
+                s._owned_cgroup_paths[execution_id] = path
+        if path is None:
+            return True
+        for attempt in range(10):
+            removed = _cleanup_owned_cgroup(path)
+            if removed or not Path(path).exists():
+                break
+            if attempt < 9:
+                # Keep retries cooperative: cancelling the delayed GC now
+                # guarantees that no worker thread can delete the cgroup while
+                # a completion is taking its final snapshot.
+                await asyncio.sleep(_OWNED_CGROUP_CLEANUP_RETRY_SECONDS)
+        if Path(path).exists():
+            return False
+        s._owned_cgroup_paths.pop(execution_id, None)
+        record = s.executions.get(execution_id)
+        if record is not None and record.owned_cgroup_path == path:
+            record.owned_cgroup_path = None
+        return True
+
+    async def cleanup_owned_cgroup_after_grace(
+        s: AppState,
+        execution_id: str,
+    ) -> None:
+        """Eventually collect a cgroup when the completion hook is lost."""
+
+        try:
+            while True:
+                await asyncio.sleep(_OWNED_CGROUP_CLEANUP_GRACE_SECONDS)
+                finalizer = s._ebpf_finalize_tasks.get(execution_id)
+                if s.predictor.execution_active(execution_id) or (
+                    finalizer is not None and not finalizer.done()
+                ):
+                    # /exited schedules the eBPF fallback and cgroup GC at
+                    # nearly the same time. Do not remove the collector's
+                    # scope while it is still producing its final artifact.
+                    continue
+                if await cleanup_owned_cgroup(s, execution_id):
+                    return
+        finally:
+            current = s._owned_cgroup_cleanup_tasks.get(execution_id)
+            if current is asyncio.current_task():
+                s._owned_cgroup_cleanup_tasks.pop(execution_id, None)
+
+    def schedule_owned_cgroup_cleanup(s: AppState, execution_id: str) -> None:
+        record = s.executions.get(execution_id)
+        if record is not None and record.owned_cgroup_path is not None:
+            s._owned_cgroup_paths.setdefault(
+                execution_id,
+                record.owned_cgroup_path,
+            )
+        if execution_id not in s._owned_cgroup_paths:
+            return
+        cancel_owned_cgroup_cleanup(s, execution_id)
+        s._owned_cgroup_cleanup_tasks[execution_id] = asyncio.create_task(
+            cleanup_owned_cgroup_after_grace(s, execution_id)
+        )
 
     def record_ebpf_telemetry(
         s: AppState,
@@ -971,7 +1134,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
             existing is not None
             and not _is_shared_runtime_scope(existing)
             and (
-                _is_verified_host_pid_scope(existing)
+                _is_authoritative_execution_scope(existing, event.execution_id)
+                or _is_verified_host_pid_scope(existing)
                 or event.execution_id is None
                 or _has_usable_cgroup_scope(existing)
             )
@@ -983,21 +1147,40 @@ def create_app(state: AppState | None = None) -> FastAPI:
         event: ToolCompletedEvent,
         s: AppState,
     ) -> ToolCompletedEvent:
-        if event.resource_scope is not None or event.execution_id is None:
+        if event.execution_id is None:
             return event
+        supplied_scope = event.resource_scope
+        supplied_scope_is_shared = bool(
+            _is_shared_runtime_scope(supplied_scope)
+            or _is_shared_sandbox_scope(supplied_scope)
+        )
         deadline = time.monotonic() + 0.75
         while True:
             scope = s.executions.scope(event.execution_id)
+            # The execution registry is populated by the authenticated launcher
+            # lifecycle. Its exact cgroup/PID identity outranks the shared
+            # runtime or sandbox scope carried by an OpenClaw completion hook.
+            # Delayed cleanup normally keeps the owned cgroup readable through
+            # this final snapshot; its recorded identity also survives retries
+            # after cleanup.
+            if _is_authoritative_execution_scope(scope, event.execution_id):
+                return event.model_copy(update={"resource_scope": scope})
+            if supplied_scope is not None and not supplied_scope_is_shared:
+                return event
             if (
-                _has_usable_cgroup_scope(scope)
-                or _is_verified_host_pid_scope(scope)
-                or (
-                    sandbox_fallback_scope(
-                        s,
-                        event.runtime_id,
-                        event.gateway_id,
-                    ) is None
-                    and scope is not None
+                supplied_scope is None
+                and (
+                    _has_usable_cgroup_scope(scope)
+                    or _is_verified_host_pid_scope(scope)
+                    or (
+                        sandbox_fallback_scope(
+                            s,
+                            event.runtime_id,
+                            event.gateway_id,
+                        )
+                        is None
+                        and scope is not None
+                    )
                 )
             ):
                 return event.model_copy(update={"resource_scope": scope})
@@ -1108,6 +1291,10 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 record.scope is not None
                 and record.scope.cgroup_path
                 and record.scope.cgroup_path != scope.cgroup_path
+                and not _is_authoritative_execution_scope(
+                    record.scope,
+                    record.request.execution_id,
+                )
             ):
                 s.tool_monitor.bind_scope(
                     record.request.tool_call_id,
@@ -1507,6 +1694,10 @@ def create_app(state: AppState | None = None) -> FastAPI:
             )
             s._completed_tool_event_ids.discard(oldest_unknown)
         activity_key = begin_runtime_activity(event)
+        if event.execution_id is not None:
+            # The delayed exit fallback must not race the final resource
+            # snapshot or trace flush performed by this completion.
+            cancel_owned_cgroup_cleanup(s, event.execution_id)
         try:
             # Finalize before the scope lookup's async wait.  The plugin may
             # time out its completion POST and issue a telemetry GET; keeping
@@ -1554,6 +1745,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     await asyncio.to_thread(s.trace_writer.flush)
             if event.execution_id is not None:
                 s.executions.mark_completed(event.execution_id)
+                if not await cleanup_owned_cgroup(s, event.execution_id):
+                    schedule_owned_cgroup_cleanup(s, event.execution_id)
             s.metrics.inc("scheduler_tool_completions_total")
             s.metrics.tool_durations.append(event.duration_ms / 1000)
             return {"stored": True}
@@ -1564,6 +1757,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
             s._completed_tool_event_ids.discard(completion_key)
             if event.execution_id is not None:
                 record = s.executions.get(event.execution_id)
+                if record is not None and record.exited:
+                    schedule_owned_cgroup_cleanup(s, event.execution_id)
                 if (
                     record is not None
                     and record.exited
@@ -1784,6 +1979,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     host_scope,
                     owned_cgroup_path=host_scope.cgroup_path,
                 )
+                if host_scope.cgroup_path is not None:
+                    s._owned_cgroup_paths[execution_id] = host_scope.cgroup_path
                 record = s.executions.get(execution_id)
                 response = ExecutionUpdateResponse(
                     stored=True,
@@ -1980,9 +2177,10 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 request.exit_code,
                 request.signal,
             )
-        record = s.executions.get(execution_id)
-        if record is not None:
-            _cleanup_owned_cgroup(record.owned_cgroup_path)
+        # The launcher waits for this response before OpenClaw can emit the
+        # completion hook. Keep the empty cgroup alive for that hook's final
+        # cpu/memory/io snapshot, with delayed collection if the hook is lost.
+        schedule_owned_cgroup_cleanup(s, execution_id)
         return response
 
     return app

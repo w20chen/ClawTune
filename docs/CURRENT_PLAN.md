@@ -44,7 +44,10 @@ See [configuration.md](configuration.md), [trace-schema.md](trace-schema.md),
 - Host-OpenClaw launcher spans request a host cgroup gate whenever the sandbox
   cannot create a local per-execution cgroup. With `cgroup_required=true`, the
   payload remains gated unless the sidecar creates an exclusive execution
-  cgroup; a shared Docker container scope is not accepted as success.
+  cgroup with verified CPU and memory accounting; a shared Docker container
+  scope is not accepted as success. Authenticated execution scope wins over a
+  shared completion scope, and owned cgroups remain readable through the final
+  resource snapshot before cleanup.
 - Legacy traces lack causal timestamps and memory samples. Memory is therefore
   not evaluated, and CPU coverage is limited to eligible sampled clauses.
 
@@ -107,12 +110,10 @@ plus a passed relaxed telemetry audit. Detailed output fields are defined in
   and the privileged sidecar. Unit tests cover the gated fallback and strict
   503 path; the Linux `scripts/clawtune.py benchmark` command above remains the
   runtime validation.
-- Ruff 0.16.1 runs in the current Python environment, but the repository has
-  491 lint findings across benchmark, evaluator, test, and tool code. This
-  broad cleanup is outside this cgroup fallback change; the correctness-focused
-  `F821`, `F601`, and `PLW0127` rules pass for the changed runtime code, while
-  contract validation, full tests, typecheck, and `git diff --check` are the
-  current gates.
+- Ruff is not installed in the active Python environment. The commands and
+  exact error are recorded in the incremental validation gap below; contract
+  validation, full tests, typecheck, compileall, and `git diff --check` are the
+  available local gates.
 - The top-level pytest command requires the project virtual environment and
   `services/sidecar/src` on `PYTHONPATH` in this checkout. The verified Windows
   equivalent is
@@ -180,4 +181,5 @@ The following validation command could not run in this Windows workspace:
 ```powershell
 # Ruff is not installed in the active Python environment (`No module named ruff`).
 python -m ruff check services/sidecar/src services/sidecar/tests swe_rebench deep_research_bench legacy_eval scripts tools tests
+python -m ruff check --select F821,F601,PLW0127 services/sidecar/src/clawtune_sidecar/api/app.py services/sidecar/src/clawtune_sidecar/api/dependencies.py services/sidecar/tests/test_launcher.py services/sidecar/tests/test_sidecar.py
 ```
