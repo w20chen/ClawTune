@@ -5,7 +5,7 @@ import json
 import pytest
 
 from deep_research_bench.config import DRBConfig
-from deep_research_bench.prompt import load_drb_prompt_template, render_drb_prompt
+from deep_research_bench.prompt import render_drb_prompt
 from deep_research_bench.task_source import (
     DRBTask,
     filter_tasks,
@@ -143,6 +143,11 @@ def test_prompt_render_replaces_task_and_appends_metadata() -> None:
     assert '"topic": "physics"' in prompt
     assert '"difficulty": "phd"' in prompt
     assert '"domain": "science-technology"' in prompt
+    normalized_prompt = " ".join(prompt.split())
+    assert "native `web_search`" in normalized_prompt
+    assert "do not run Git commands" in normalized_prompt
+    assert "inline Markdown links" in normalized_prompt
+    assert "Do not describe workspace setup" in normalized_prompt
 
     plain = DRBTask(instance_id="2", problem_statement="Q")
     assert "Inference-time metadata" not in render_drb_prompt(plain)
