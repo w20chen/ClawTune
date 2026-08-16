@@ -222,18 +222,33 @@ def _apply_web_search_key(config: DRBConfig) -> None:
 
 
 def _web_search_config_patch(config: DRBConfig) -> dict[str, Any] | None:
-    """Return the ``tools.web.search`` config patch for this run, or ``None``.
+    """Return the web-search config and tool-policy patch, or ``None``.
 
     ``None`` (web search disabled) leaves OpenClaw's config untouched.  A
     ``provider`` of ``""`` or ``"auto"`` enables search but keeps
-    auto-detection.
+    auto-detection. DRB agents run with ``sandbox.mode=all``, so web tools
+    must pass both the normal profile policy and the sandbox's second tool
+    gate. ``alsoAllow`` extends OpenClaw's defaults without replacing the
+    runtime/filesystem tools needed by the benchmark.
     """
     if not config.web_search.enabled:
         return None
     search: dict[str, Any] = {"enabled": True}
     if config.web_search.provider and config.web_search.provider != "auto":
         search["provider"] = config.web_search.provider
-    return {"tools": {"web": {"search": search}}}
+    return _web_tools_config_patch(search)
+
+
+def _web_tools_config_patch(search: dict[str, Any]) -> dict[str, Any]:
+    """Expose host-backed web tools to a sandboxed DRB agent."""
+    allowed = ["web_search", "web_fetch"]
+    return {
+        "tools": {
+            "alsoAllow": allowed,
+            "sandbox": {"tools": {"alsoAllow": allowed}},
+            "web": {"search": search},
+        }
+    }
 
 
 # Official external web-search provider plugins that OpenClaw ships as
@@ -523,7 +538,9 @@ def _pin_web_search_provider(
                 "`openclaw plugin install tavily`) or run `openclaw doctor "
                 "--fix`.\n"
             )
-        fallback = {"tools": {"web": {"search": {"enabled": True}}}}
+        # Keep both tool-policy gates open when falling back from an
+        # unavailable pinned provider to OpenClaw's provider auto-detection.
+        fallback = _web_tools_config_patch({"enabled": True})
         result = _run_web_search_config_patch(openclaw, fallback, env, log_path)
         if result.returncode == 0:
             return

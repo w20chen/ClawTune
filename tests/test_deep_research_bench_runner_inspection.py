@@ -239,7 +239,13 @@ def test_web_search_config_patch_pins_tavily() -> None:
     config.web_search.enabled = True
     config.web_search.provider = "tavily"
     assert _web_search_config_patch(config) == {
-        "tools": {"web": {"search": {"enabled": True, "provider": "tavily"}}}
+        "tools": {
+            "alsoAllow": ["web_search", "web_fetch"],
+            "sandbox": {
+                "tools": {"alsoAllow": ["web_search", "web_fetch"]},
+            },
+            "web": {"search": {"enabled": True, "provider": "tavily"}},
+        }
     }
 
 
@@ -253,7 +259,13 @@ def test_web_search_config_patch_auto_keeps_detection() -> None:
     config = _config()
     config.web_search.provider = "auto"
     assert _web_search_config_patch(config) == {
-        "tools": {"web": {"search": {"enabled": True}}}
+        "tools": {
+            "alsoAllow": ["web_search", "web_fetch"],
+            "sandbox": {
+                "tools": {"alsoAllow": ["web_search", "web_fetch"]},
+            },
+            "web": {"search": {"enabled": True}},
+        }
     }
 
 
@@ -289,7 +301,13 @@ def test_pin_web_search_provider_pins_when_available(tmp_path, monkeypatch) -> N
     _pin_provider(config, tmp_path)
     assert len(calls) == 1
     assert json.loads(calls[0]) == {
-        "tools": {"web": {"search": {"enabled": True, "provider": "tavily"}}}
+        "tools": {
+            "alsoAllow": ["web_search", "web_fetch"],
+            "sandbox": {
+                "tools": {"alsoAllow": ["web_search", "web_fetch"]},
+            },
+            "web": {"search": {"enabled": True, "provider": "tavily"}},
+        }
     }
     log = (tmp_path / "web-search-config.log").read_text(encoding="utf-8")
     assert "degrading to auto-detection" not in log
@@ -316,7 +334,13 @@ def test_pin_web_search_provider_degrades_to_auto_when_provider_missing(
     assert len(calls) == 2
     # First attempt pins tavily; the fallback retries with auto-detection.
     assert json.loads(calls[0])["tools"]["web"]["search"]["provider"] == "tavily"
-    assert "provider" not in json.loads(calls[1])["tools"]["web"]["search"]
+    fallback = json.loads(calls[1])
+    assert "provider" not in fallback["tools"]["web"]["search"]
+    assert fallback["tools"]["alsoAllow"] == ["web_search", "web_fetch"]
+    assert fallback["tools"]["sandbox"]["tools"]["alsoAllow"] == [
+        "web_search",
+        "web_fetch",
+    ]
     log = (tmp_path / "web-search-config.log").read_text(encoding="utf-8")
     assert "degrading to auto-detection" in log
     assert "openclaw doctor --fix" in log

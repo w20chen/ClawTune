@@ -105,6 +105,13 @@ plus a passed relaxed telemetry audit. Detailed output fields are defined in
 
 ### Known local validation gaps
 
+- During the 2026-08-16 DRB sandbox web-tool policy fix, the focused pytest
+  run completed (`49 passed`), but a subsequent Ruff command could not start
+  the Microsoft Store `python.exe` alias because the
+  Windows sandbox reported `A specified logon session does not exist. It may
+  already have been terminated`. Re-run
+  `python -m ruff check deep_research_bench/host_runner.py tests/test_deep_research_bench_runner_inspection.py`
+  in CI or a fresh local login session.
 - The fork-exec to host-side cgroup gate cannot be exercised end to end in
   this Windows workspace because it requires a Linux cgroup-v2 host, Docker,
   and the privileged sidecar. Unit tests cover the gated fallback and strict
