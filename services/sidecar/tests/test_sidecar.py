@@ -205,11 +205,15 @@ def test_prepare_host_execution_cgroup_moves_pid_tree_and_records_diagnostics(
     monkeypatch.setattr(
         app_module, "_process_tree_pids", lambda _pid: [4242, 9999]
     )
+    execution_cgroup = cgroup_root / "clawtune" / "exec-1"
     written_pids: list[int] = []
     original_write_text = Path.write_text
 
     def capture_cgroup_write(path: Path, data: str, *args, **kwargs) -> int:
-        if path.name == "cgroup.procs":
+        # Other tests may still have asynchronous cgroup cleanup work running.
+        # Observe only the execution cgroup created by this test so unrelated
+        # background writes cannot make this assertion timing-dependent.
+        if path == execution_cgroup / "cgroup.procs":
             written_pids.append(int(data.strip()))
         return original_write_text(path, data, *args, **kwargs)
 
@@ -232,11 +236,9 @@ def test_prepare_host_execution_cgroup_moves_pid_tree_and_records_diagnostics(
 
     assert scope is not None
     assert scope.kind == "cgroup-v2"
-    assert scope.cgroup_path == str(cgroup_root / "clawtune" / "exec-1")
+    assert scope.cgroup_path == str(execution_cgroup)
     assert scope.attribution_source == "exclusive-execution-cgroup"
-    procs = (cgroup_root / "clawtune" / "exec-1" / "cgroup.procs").read_text(
-        encoding="utf-8"
-    ).split()
+    procs = (execution_cgroup / "cgroup.procs").read_text(encoding="utf-8").split()
     assert written_pids == [9999, 4242]
     assert "4242" in procs
     joined = "\n".join(diagnostics)
