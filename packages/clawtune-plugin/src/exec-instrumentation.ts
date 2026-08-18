@@ -44,6 +44,60 @@ export type InstrumentResult = {
   payloadCommand: string | null;
 };
 
+/** Marker prefix for the ClawBox SSH tool-bridge execution envelope. */
+export const CLAWBOX_EXEC_ENVELOPE_PREFIX = "__CBX_EXEC_1__";
+
+/**
+ * Builds the single-line envelope the ClawBox tool bridge parses so it adopts
+ * the runtime-generated execution_id.  Format mirrors the Go parser
+ * (toolbridge/main.go parseExecEnvelope):
+ *
+ *   <PREFIX><JSON header line>\n<payload command>
+ *
+ * Any change to this format MUST be mirrored in the Go bridge parser.
+ */
+export function buildSandboxExecEnvelope(command: string, executionId: string): string {
+  return `${CLAWBOX_EXEC_ENVELOPE_PREFIX}${JSON.stringify({v: 1, execution_id: executionId})}\n${command}`;
+}
+
+/**
+ * Hook-only instrumentation for ClawBox.  When sandboxExecEnvelope is enabled
+ * the plugin still mints a per-call execution_id and wraps the exec command in
+ * the bridge envelope so the tool bridge records the SAME execution_id as the
+ * ClawTune span (exact join, no time window).  Otherwise it returns empty.
+ */
+function instrumentHookOnlyExec(event: unknown, config: PluginConfig): InstrumentResult {
+  const empty: InstrumentResult = {
+    params: null,
+    executionId: null,
+    requestedCommand: null,
+    effectiveCommand: null,
+    payloadCommand: null,
+  };
+  if (config.sandboxExecEnvelope !== true || !shouldInstrument(event, config)) {
+    return empty;
+  }
+  const params = cloneRecord(isRecord(event) ? event.params ?? event.arguments ?? event.input ?? null : null);
+  if (params === null || typeof params.command !== "string" || params.command.length === 0) {
+    return empty;
+  }
+  const requestedCommand = params.command;
+  const executionId = `exec-${randomUUID()}`;
+  params.env = {
+    ...safeExecEnv(params.env),
+    CLAWTUNE_EXECUTION_ID: executionId,
+  };
+  const effectiveCommand = buildSandboxExecEnvelope(requestedCommand, executionId);
+  params.command = effectiveCommand;
+  return {
+    params,
+    executionId,
+    requestedCommand,
+    effectiveCommand,
+    payloadCommand: requestedCommand,
+  };
+}
+
 export async function instrumentExecParams(
   event: unknown,
   context: unknown,
@@ -60,7 +114,9 @@ export async function instrumentExecParams(
     payloadCommand: null,
   };
 
-  if (config.executionBackend === "hook-only") return empty;
+  if (config.executionBackend === "hook-only") {
+    return instrumentHookOnlyExec(event, config);
+  }
   const shouldInstrumentResult = shouldInstrument(event, config);
   if (!shouldInstrumentResult) {
     if (config.logLevel === "debug") {

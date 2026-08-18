@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildSandboxExecEnvelope,
   classifyResourceScope,
+  CLAWBOX_EXEC_ENVELOPE_PREFIX,
   instrumentExecParams,
   preferExecutionResourceScope,
 } from "../dist/exec-instrumentation.js";
@@ -475,4 +477,98 @@ test("managed-wrapper can invoke a launcher on a noexec workspace through an int
     result.params.command,
     `'/bin/sh' -c 'exec '\\''/bin/sh'\\'' '\\''/workspace/.clawtune/bin/clawtune-launch'\\'' run --execution-id='\\''${result.executionId}'\\'''`
   );
+});
+
+test("hook-only without envelope flag stays inert", async () => {
+  const client = {
+    async registerExecution() {
+      return {one_time_token: "token-1"};
+    }
+  };
+  const event = {toolName: "exec", toolCallId: "call-1", params: {command: "pytest tests -q"}};
+
+  const result = await instrumentExecParams(
+    event,
+    {},
+    payload,
+    decision,
+    client,
+    {...baseConfig, executionBackend: "hook-only"}
+  );
+
+  assert.equal(result.executionId, null);
+  assert.equal(result.params, null);
+  assert.equal(result.requestedCommand, null);
+});
+
+test("hook-only with envelope mints execution_id and wraps command", async () => {
+  const client = {
+    async registerExecution() {
+      return {one_time_token: "token-1"};
+    }
+  };
+  const event = {
+    toolName: "exec",
+    toolCallId: "call-1",
+    params: {command: "pytest tests -q", env: {KEEP: "1"}}
+  };
+
+  const result = await instrumentExecParams(
+    event,
+    {},
+    payload,
+    decision,
+    client,
+    {...baseConfig, executionBackend: "hook-only", sandboxExecEnvelope: true}
+  );
+
+  assert.match(result.executionId, /^exec-[0-9a-f-]{36}$/);
+  assert.equal(result.requestedCommand, "pytest tests -q");
+  assert.equal(result.payloadCommand, "pytest tests -q");
+  // The effective command is the bridge envelope carrying the same execution_id.
+  assert.ok(result.effectiveCommand.startsWith(`${CLAWBOX_EXEC_ENVELOPE_PREFIX}{"v":1,"execution_id":"${result.executionId}"}\n`));
+  assert.equal(result.effectiveCommand.endsWith("pytest tests -q"), true);
+  // Env still records the execution_id for in-sandbox observability.
+  assert.equal(result.params.env.CLAWTUNE_EXECUTION_ID, result.executionId);
+  assert.equal(result.params.env.KEEP, "1");
+});
+
+test("hook-only envelope keeps requested command out of execution_id", async () => {
+  const client = {
+    async registerExecution() {
+      return {one_time_token: "token-1"};
+    }
+  };
+  const event = {
+    toolName: "exec",
+    toolCallId: "call-1",
+    params: {command: "python -c 'print(1)'"}
+  };
+
+  const result = await instrumentExecParams(
+    event,
+    {},
+    payload,
+    decision,
+    client,
+    {...baseConfig, executionBackend: "hook-only", sandboxExecEnvelope: true}
+  );
+
+  const firstLine = result.params.command.split("\n")[0];
+  const header = JSON.parse(firstLine.slice(CLAWBOX_EXEC_ENVELOPE_PREFIX.length));
+  assert.deepEqual(header, {v: 1, execution_id: result.executionId});
+});
+
+test("buildSandboxExecEnvelope emits the bridge parseable format", () => {
+  const command = "echo hello\nworld";
+  const envelope = buildSandboxExecEnvelope(command, "exec-1234");
+  assert.equal(
+    envelope,
+    `__CBX_EXEC_1__{"v":1,"execution_id":"exec-1234"}\necho hello\nworld`
+  );
+  // First line is a single JSON header; payload begins after the first newline.
+  const newline = envelope.indexOf("\n");
+  const header = JSON.parse(envelope.slice(CLAWBOX_EXEC_ENVELOPE_PREFIX.length, newline));
+  assert.deepEqual(header, {v: 1, execution_id: "exec-1234"});
+  assert.equal(envelope.slice(newline + 1), "echo hello\nworld");
 });

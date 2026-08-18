@@ -9,6 +9,9 @@ const defaults: PluginConfig = {
   logLevel: "info",
   consoleMode: "verbose",
   executionBackend: "managed-wrapper",
+  // Opt-in: only ClawBox hook-only runtimes set this so the exec command is
+  // wrapped in a bridge envelope carrying the execution_id.
+  sandboxExecEnvelope: false,
   // Empty string = auto-resolve via `which clawtune-launch` at runtime.
   launcherPath: "",
   launcherInterpreter: null,
@@ -69,6 +72,12 @@ export function loadConfig(input: unknown): PluginConfig {
   }
   if (!["hook-only", "marker", "managed-wrapper"].includes(String(config.executionBackend))) {
     throw new Error(`invalid executionBackend: ${String(config.executionBackend)}`);
+  }
+  if (typeof config.sandboxExecEnvelope !== "boolean") {
+    throw new Error("sandboxExecEnvelope must be a boolean");
+  }
+  if (config.sandboxExecEnvelope && config.executionBackend !== "hook-only") {
+    throw new Error("sandboxExecEnvelope is only valid with executionBackend=hook-only");
   }
   if (!["off", "proc", "perf", "ksys", "vtune"].includes(String(config.profilingMode))) {
     throw new Error(`invalid profilingMode: ${String(config.profilingMode)}`);

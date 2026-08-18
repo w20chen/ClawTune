@@ -31,6 +31,14 @@ export type PluginConfig = {
    */
   consoleMode: "verbose" | "quiet";
   executionBackend: ExecutionBackend;
+  /**
+   * When true and executionBackend is "hook-only", the plugin still mints a
+   * per-call execution_id and wraps the exec command in a ClawBox SSH bridge
+   * envelope (`__CBX_EXEC_1__` header line).  The tool bridge adopts that
+   * execution_id so the ClawTune span and the bridge execution record share an
+   * exact join key (no time-window heuristic).  Default: false.
+   */
+  sandboxExecEnvelope: boolean;
   launcherPath: string;
   launcherInterpreter: string | null;
   collectorSocket: string;

@@ -67,6 +67,7 @@ export default definePluginEntry({
       logLevel: {enum: ["error", "warn", "info", "debug"], default: "info"},
       consoleMode: {enum: ["verbose", "quiet"], default: "verbose"},
       executionBackend: {enum: ["hook-only", "marker", "managed-wrapper"], default: "managed-wrapper"},
+      sandboxExecEnvelope: {type: "boolean", default: false, description: "In hook-only mode, mint a per-call execution_id and wrap the exec command in the ClawBox SSH bridge envelope so the tool bridge adopts the same execution_id."},
       launcherPath: {type: "string", default: "", description: "Absolute path to clawtune-launch. Empty = auto-resolve from PATH."},
       launcherInterpreter: {type: ["string", "null"], default: null},
       collectorSocket: {type: "string", default: "/run/clawtune/collector.sock"},
