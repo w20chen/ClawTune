@@ -52,12 +52,13 @@ export const CLAWBOX_EXEC_ENVELOPE_PREFIX = "__CBX_EXEC_1__";
  * the runtime-generated execution_id.  Format mirrors the Go parser
  * (toolbridge/main.go parseExecEnvelope):
  *
- *   <PREFIX><JSON header line>\n<payload command>
+ *   <PREFIX><shell-safe execution_id>\n<payload command>
  *
- * Any change to this format MUST be mirrored in the Go bridge parser.
+ * The token avoids quotes because the OpenClaw SSH path passes commands
+ * through a shell before the bridge receives the SSH exec payload.
  */
 export function buildSandboxExecEnvelope(command: string, executionId: string): string {
-  return `${CLAWBOX_EXEC_ENVELOPE_PREFIX}${JSON.stringify({v: 1, execution_id: executionId})}\n${command}`;
+  return `${CLAWBOX_EXEC_ENVELOPE_PREFIX}${executionId}\n${command}`;
 }
 
 /**

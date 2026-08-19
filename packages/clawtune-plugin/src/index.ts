@@ -764,9 +764,10 @@ export default definePluginEntry({
       // When the sidecar's decision endpoint is unreachable or times out
       // the tool still runs (failOpen).  Execution registration and
       // launcher wrapping should also proceed so that PID / cgroup /
-      // resource monitoring does not silently degrade to "unattributed"
-      // on every decision failure.
-      if (config.executionBackend !== "hook-only") {
+      // resource monitoring does not silently degrade to "unattributed".
+      // Hook-only mode must also run this path because its local envelope
+      // does not depend on a successful sidecar decision.
+      {
         try {
           const tInst = monotonicNowNs();
           const instrumentation = await instrumentExecParams(
