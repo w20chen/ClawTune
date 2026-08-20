@@ -123,6 +123,7 @@ def test_prepare_guest_mounts_mounts_tracefs_and_remounts_cgroup(monkeypatch) ->
     monkeypatch.setattr(module.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(module.Path, "mkdir", lambda self, **kwargs: None)
     monkeypatch.setattr(module.Path, "exists", lambda self: False)
+    monkeypatch.setattr(module.Path, "is_mount", lambda self: False)
     monkeypatch.setattr(
         module.subprocess,
         "run",
@@ -133,6 +134,34 @@ def test_prepare_guest_mounts_mounts_tracefs_and_remounts_cgroup(monkeypatch) ->
 
     assert calls == [
         ["mount", "-t", "tracefs", "tracefs", "/sys/kernel/tracing"],
+        ["mount", "-t", "debugfs", "debugfs", "/sys/kernel/debug"],
+        ["mount", "-t", "tracefs", "tracefs", "/sys/kernel/debug/tracing"],
+        ["mount", "-o", "remount,rw", "/sys/fs/cgroup"],
+    ]
+
+
+def test_prepare_guest_mounts_reuses_existing_debugfs(monkeypatch) -> None:
+    module = _module()
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(module.os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(module.Path, "mkdir", lambda self, **kwargs: None)
+    monkeypatch.setattr(
+        module.Path,
+        "exists",
+        lambda self: str(self) == "/sys/kernel/tracing/events/sched/sched_process_exit/id",
+    )
+    monkeypatch.setattr(module.Path, "is_mount", lambda self: True)
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda argv, check: calls.append(argv),
+    )
+
+    module._prepare_guest_mounts()
+
+    assert calls == [
+        ["mount", "-t", "tracefs", "tracefs", "/sys/kernel/debug/tracing"],
         ["mount", "-o", "remount,rw", "/sys/fs/cgroup"],
     ]
 

@@ -43,6 +43,28 @@ def _prepare_guest_mounts() -> None:
             ["mount", "-t", "tracefs", "tracefs", "/sys/kernel/tracing"],
             check=True,
         )
+    # Ubuntu 22.04's BCC 0.18 Python wrapper asks libbcc to resolve
+    # tracepoints through the historical debugfs path even when its Python
+    # TRACEFS constant is corrected.  A Firecracker guest starts with debugfs
+    # unmounted, so provide the legacy view as a second tracefs mount.  Mount
+    # debugfs first because /sys itself is read-only inside the pod and the
+    # tracing mountpoint must therefore be created on a writable filesystem.
+    legacy_tracing = Path("/sys/kernel/debug/tracing")
+    legacy_exit_tracepoint = (
+        legacy_tracing / "events" / "sched" / "sched_process_exit" / "id"
+    )
+    if not legacy_exit_tracepoint.exists():
+        debugfs = Path("/sys/kernel/debug")
+        if not debugfs.is_mount():
+            subprocess.run(
+                ["mount", "-t", "debugfs", "debugfs", "/sys/kernel/debug"],
+                check=True,
+            )
+        legacy_tracing.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["mount", "-t", "tracefs", "tracefs", "/sys/kernel/debug/tracing"],
+            check=True,
+        )
     subprocess.run(
         ["mount", "-o", "remount,rw", "/sys/fs/cgroup"],
         check=True,
