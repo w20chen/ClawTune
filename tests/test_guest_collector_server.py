@@ -133,7 +133,6 @@ def test_prepare_guest_mounts_mounts_tracefs_and_remounts_cgroup(monkeypatch) ->
 
     assert calls == [
         ["mount", "-t", "tracefs", "tracefs", "/sys/kernel/tracing"],
-        ["mount", "-t", "tracefs", "tracefs", "/sys/kernel/debug/tracing"],
         ["mount", "-o", "remount,rw", "/sys/fs/cgroup"],
     ]
 

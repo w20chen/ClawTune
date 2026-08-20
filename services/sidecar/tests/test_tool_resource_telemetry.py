@@ -312,6 +312,28 @@ def test_ensure_bcc_importable_aliases_openEuler_bpfcc(monkeypatch) -> None:
     assert sys.modules["bcc"] is fake
 
 
+def test_ensure_bcc_importable_normalizes_legacy_tracefs_path(monkeypatch) -> None:
+    fake = SimpleNamespace(
+        __name__="bcc",
+        __file__="/usr/lib/python3/dist-packages/bcc/__init__.py",
+        BPF=object(),
+        PerfSWConfig=object(),
+        PerfType=object(),
+        TRACEFS="/sys/kernel/debug/tracing",
+    )
+
+    monkeypatch.setattr(
+        "tool_resource.telemetry.importlib.import_module", lambda _name: fake
+    )
+    monkeypatch.setattr(
+        "tool_resource.telemetry.Path.exists",
+        lambda path: str(path) == "/sys/kernel/tracing",
+    )
+
+    assert _ensure_bcc_importable() is fake
+    assert fake.TRACEFS == "/sys/kernel/tracing"
+
+
 def test_sampled_rss_provenance_marks_percpu_global_counter_as_approximate() -> None:
     samples = [
         {

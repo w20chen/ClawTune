@@ -61,6 +61,15 @@ _BCC_BINDING_NAMES = ("bcc", "bpfcc")
 _BCC_REQUIRED_ATTRIBUTES = ("BPF", "PerfSWConfig", "PerfType")
 
 
+def _configure_bcc_tracefs(module: Any) -> Any:
+    """Prefer the kernel's modern tracefs mount when packaged BCC is legacy."""
+    configured = getattr(module, "TRACEFS", None)
+    modern = Path("/sys/kernel/tracing")
+    if configured and not Path(str(configured)).exists() and modern.exists():
+        module.TRACEFS = str(modern)
+    return module
+
+
 def _ensure_bcc_importable() -> Any:
     """Return usable BCC bindings, including openEuler's ``bpfcc`` name.
 
@@ -91,7 +100,7 @@ def _ensure_bcc_importable() -> Any:
                 )
                 continue
             sys.modules["bcc"] = module
-            return module
+            return _configure_bcc_tracefs(module)
         return None
 
     module = load_candidate()
