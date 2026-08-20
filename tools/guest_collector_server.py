@@ -54,12 +54,13 @@ def _prepare_guest_mounts() -> None:
         legacy_tracing / "events" / "sched" / "sched_process_exit" / "id"
     )
     if not legacy_exit_tracepoint.exists():
-        debugfs = Path("/sys/kernel/debug")
-        if not debugfs.is_mount():
-            subprocess.run(
-                ["mount", "-t", "debugfs", "debugfs", "/sys/kernel/debug"],
-                check=True,
-            )
+        # Kata may present /sys/kernel/debug as an unusable read-only mask
+        # which still reports itself as a mount point.  The tracepoint is the
+        # readiness signal; overlay debugfs whenever that signal is absent.
+        subprocess.run(
+            ["mount", "-t", "debugfs", "debugfs", "/sys/kernel/debug"],
+            check=True,
+        )
         legacy_tracing.mkdir(parents=True, exist_ok=True)
         subprocess.run(
             ["mount", "-t", "tracefs", "tracefs", "/sys/kernel/debug/tracing"],
