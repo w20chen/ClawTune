@@ -145,8 +145,14 @@ def test_write_cgroup_resource_writes_independent_artifact(tmp_path: Path) -> No
     assert data["disk_write_bytes_delta"] == 8192
     assert data["network_rx_bytes_delta"] == 1234
     assert data["network_tx_bytes_delta"] == 5678
+    assert data["cpu_source"] == "cgroup-v2-cpu.stat"
+    assert data["memory_source"] == "cgroup-v2-memory"
+    assert data["disk_source"] == "cgroup-v2-io.stat"
+    assert data["network_source"] == "procfs-process-tree"
+    assert data["fallback_used"] is True
+    assert data["sampling_coverage_ms"] == 611
     assert data["attribution_source"] == "shared-sandbox-container"
-    assert "independent of eBPF" in data["independence"]
+    assert "independent of native eBPF" in data["independence"]
 
 
 def test_write_cgroup_resource_skips_non_cgroup_or_no_exec(tmp_path: Path) -> None:

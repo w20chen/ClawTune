@@ -2,8 +2,8 @@
 
 Writes the cgroup/process-sampler view of a tool execution into a standalone
 ``tool-resource/cgroup-resource-<execution_id>.json`` file next to the run's
-trace.  This is an intentionally *independent* measurement source from the
-eBPF eBPF clause telemetry:
+trace. This is an intentionally *independent* measurement source from native
+eBPF clause telemetry:
 
 - cpu / memory / disk / network here come from the cgroup v2 + procfs
   sampler (``ToolRuntimeSample``), not from eBPF.
@@ -57,8 +57,17 @@ class CgroupResourceResult:
     sampling_interval_ms: int | None = None
     sampling_point_count: int | None = None
     sampling_quality: str | None = None
+    sampling_coverage_ms: int | None = None
+    cpu_source: str | None = None
+    memory_source: str | None = None
+    disk_source: str | None = None
+    network_source: str | None = None
+    fallback_used: bool = False
+    cgroup_setup_error: str | None = None
+    cgroup_read_error: str | None = None
+    collector_errors: tuple[str, ...] = ()
     independence: str = (
-        "independent of eBPF eBPF clause telemetry; "
+        "independent of native eBPF clause telemetry; "
         "network sourced via procfs sampler (cgroup v2 has no native counter)"
     )
 
@@ -75,6 +84,13 @@ def build_cgroup_resource(
     attribution_source: str | None = None,
 ) -> CgroupResourceResult:
     """Map a cgroup/process sampler snapshot into the standalone result."""
+    cgroup_backed = sample.monitor_source == "cgroup-v2"
+    process_source = "procfs-process-tree"
+    network_source = (
+        process_source
+        if sample.net_rx_bytes_delta is not None or sample.net_tx_bytes_delta is not None
+        else "unavailable"
+    )
     return CgroupResourceResult(
         execution_id=execution_id,
         tool_call_id=tool_call_id,
@@ -101,6 +117,12 @@ def build_cgroup_resource(
         sampling_interval_ms=sample.sampling_interval_ms,
         sampling_point_count=sample.sampling_point_count,
         sampling_quality=sample.sampling_quality,
+        sampling_coverage_ms=sample.monitor_duration_ms,
+        cpu_source="cgroup-v2-cpu.stat" if cgroup_backed else process_source,
+        memory_source="cgroup-v2-memory" if cgroup_backed else process_source,
+        disk_source="cgroup-v2-io.stat" if cgroup_backed else process_source,
+        network_source=network_source,
+        fallback_used=not cgroup_backed or network_source == process_source,
     )
 
 
