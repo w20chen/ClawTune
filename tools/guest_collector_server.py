@@ -49,6 +49,10 @@ def _prepare_guest_mounts() -> None:
     # unmounted, so provide the legacy view as a second tracefs mount.  Mount
     # debugfs first because /sys itself is read-only inside the pod and the
     # tracing mountpoint must therefore be created on a writable filesystem.
+    # Do not use debugfs as that writable overlay: debugfs accepts the mount
+    # but rejects userspace mkdir(2) with EPERM.  A private tmpfs supplies only
+    # the legacy directory layout libbcc needs; the data itself still comes
+    # from the guest kernel's tracefs mounted below it.
     legacy_tracing = Path("/sys/kernel/debug/tracing")
     legacy_exit_tracepoint = (
         legacy_tracing / "events" / "sched" / "sched_process_exit" / "id"
@@ -56,9 +60,18 @@ def _prepare_guest_mounts() -> None:
     if not legacy_exit_tracepoint.exists():
         # Kata may present /sys/kernel/debug as an unusable read-only mask
         # which still reports itself as a mount point.  The tracepoint is the
-        # readiness signal; overlay debugfs whenever that signal is absent.
+        # readiness signal; overlay a private writable directory whenever that
+        # signal is absent.
         subprocess.run(
-            ["mount", "-t", "debugfs", "debugfs", "/sys/kernel/debug"],
+            [
+                "mount",
+                "-t",
+                "tmpfs",
+                "-o",
+                "mode=0755,nosuid,nodev,noexec",
+                "tmpfs",
+                "/sys/kernel/debug",
+            ],
             check=True,
         )
         legacy_tracing.mkdir(parents=True, exist_ok=True)

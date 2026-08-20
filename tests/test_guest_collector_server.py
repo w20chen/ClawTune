@@ -133,7 +133,15 @@ def test_prepare_guest_mounts_mounts_tracefs_and_remounts_cgroup(monkeypatch) ->
 
     assert calls == [
         ["mount", "-t", "tracefs", "tracefs", "/sys/kernel/tracing"],
-        ["mount", "-t", "debugfs", "debugfs", "/sys/kernel/debug"],
+        [
+            "mount",
+            "-t",
+            "tmpfs",
+            "-o",
+            "mode=0755,nosuid,nodev,noexec",
+            "tmpfs",
+            "/sys/kernel/debug",
+        ],
         ["mount", "-t", "tracefs", "tracefs", "/sys/kernel/debug/tracing"],
         ["mount", "-o", "remount,rw", "/sys/fs/cgroup"],
     ]
@@ -148,7 +156,8 @@ def test_prepare_guest_mounts_overlays_unusable_debugfs_mount(monkeypatch) -> No
     monkeypatch.setattr(
         module.Path,
         "exists",
-        lambda self: str(self) == "/sys/kernel/tracing/events/sched/sched_process_exit/id",
+        lambda self: str(self).replace("\\", "/")
+        == "/sys/kernel/tracing/events/sched/sched_process_exit/id",
     )
     monkeypatch.setattr(
         module.subprocess,
@@ -159,7 +168,15 @@ def test_prepare_guest_mounts_overlays_unusable_debugfs_mount(monkeypatch) -> No
     module._prepare_guest_mounts()
 
     assert calls == [
-        ["mount", "-t", "debugfs", "debugfs", "/sys/kernel/debug"],
+        [
+            "mount",
+            "-t",
+            "tmpfs",
+            "-o",
+            "mode=0755,nosuid,nodev,noexec",
+            "tmpfs",
+            "/sys/kernel/debug",
+        ],
         ["mount", "-t", "tracefs", "tracefs", "/sys/kernel/debug/tracing"],
         ["mount", "-o", "remount,rw", "/sys/fs/cgroup"],
     ]

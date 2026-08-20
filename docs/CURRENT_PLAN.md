@@ -183,3 +183,24 @@ The following validation command could not run in this Windows workspace:
 python -m ruff check services/sidecar/src services/sidecar/tests swe_rebench deep_research_bench legacy_eval scripts tools tests
 python -m ruff check --select F821,F601,PLW0127 services/sidecar/src/clawtune_sidecar/api/app.py services/sidecar/src/clawtune_sidecar/api/dependencies.py services/sidecar/tests/test_launcher.py services/sidecar/tests/test_sidecar.py
 ```
+
+## Tool-VM production tracefs validation (2026-08-20)
+
+Ubuntu 22.04 BCC 0.18 in the ClawBox production Tool image reads
+`/sys/kernel/debug/tracing/events/sched/sched_process_exit/id` through libbcc.
+In a real ARM64 Kata/Firecracker guest (`6.18.28`), mounting debugfs over
+Kata's masked `/sys/kernel/debug` returned zero, but debugfs rejected creation
+of the missing `tracing` directory with `EPERM`. A private tmpfs overlay plus a
+tracefs mount at the legacy path exposed tracepoint ID 197. The native bridge
+workload then produced six valid, zero-loss artifacts with cleanup `ok`; final
+KB eligibility remained blocked by a ClawBox production-image packaging issue
+(`numpy` absent), not by BPF compilation, loading, or attachment.
+
+Linux-only validation commands used on the designated ClawBox test cluster:
+
+```bash
+mount -t tmpfs -o mode=0755,nosuid,nodev,noexec tmpfs /sys/kernel/debug
+mkdir -p /sys/kernel/debug/tracing
+mount -t tracefs tracefs /sys/kernel/debug/tracing
+cat /sys/kernel/debug/tracing/events/sched/sched_process_exit/id
+```
