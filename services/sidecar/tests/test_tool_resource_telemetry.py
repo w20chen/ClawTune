@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import tool_resource.telemetry as telemetry_module
 from tool_resource.clause_bridge import ExecImageRecord, _clause_status, bridge_command
 from tool_resource.telemetry import (
     BPF_PROGRAM,
@@ -303,10 +304,7 @@ def test_ensure_bcc_importable_aliases_openEuler_bpfcc(monkeypatch) -> None:
         return fake
 
     monkeypatch.delitem(sys.modules, "bcc", raising=False)
-    monkeypatch.setattr(
-        "tool_resource.telemetry.importlib.import_module",
-        import_module,
-    )
+    monkeypatch.setattr(telemetry_module.importlib, "import_module", import_module)
 
     assert _ensure_bcc_importable() is fake
     assert sys.modules["bcc"] is fake
@@ -323,15 +321,16 @@ def test_ensure_bcc_importable_normalizes_legacy_tracefs_path(monkeypatch) -> No
     )
 
     monkeypatch.setattr(
-        "tool_resource.telemetry.importlib.import_module", lambda _name: fake
+        telemetry_module.importlib, "import_module", lambda _name: fake
     )
     monkeypatch.setattr(
-        "tool_resource.telemetry.Path.is_dir",
-        lambda path: str(path) == "/sys/kernel/tracing/events",
+        telemetry_module.Path,
+        "is_dir",
+        lambda path: path.as_posix() == "/sys/kernel/tracing/events",
     )
 
     assert _ensure_bcc_importable() is fake
-    assert fake.TRACEFS == "/sys/kernel/tracing"
+    assert Path(fake.TRACEFS).as_posix() == "/sys/kernel/tracing"
 
 
 def test_sampled_rss_provenance_marks_percpu_global_counter_as_approximate() -> None:
