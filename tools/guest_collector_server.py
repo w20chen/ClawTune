@@ -33,13 +33,19 @@ def _prepare_guest_mounts() -> None:
     """Make the guest kernel interfaces required by BCC usable."""
     if os.geteuid() != 0:
         raise RuntimeError("guest collector must run as root")
-    tracing = Path("/sys/kernel/tracing")
-    tracing.mkdir(parents=True, exist_ok=True)
-    if not (tracing / "kprobe_events").exists():
-        subprocess.run(
-            ["mount", "-t", "tracefs", "tracefs", "/sys/kernel/tracing"],
-            check=True,
-        )
+    # BCC's tracepoint resolver differs by distribution/version: Debian's
+    # package uses /sys/kernel/tracing while Ubuntu 22.04's package uses the
+    # historical /sys/kernel/debug/tracing path. Mount the same tracefs at
+    # both locations so the embedded collector is independent of that choice.
+    for tracefs_path in ("/sys/kernel/tracing", "/sys/kernel/debug/tracing"):
+        tracing = Path(tracefs_path)
+        tracing.mkdir(parents=True, exist_ok=True)
+        exit_tracepoint = tracing / "events" / "sched" / "sched_process_exit" / "id"
+        if not exit_tracepoint.exists():
+            subprocess.run(
+                ["mount", "-t", "tracefs", "tracefs", tracefs_path],
+                check=True,
+            )
     subprocess.run(
         ["mount", "-o", "remount,rw", "/sys/fs/cgroup"],
         check=True,
