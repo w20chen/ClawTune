@@ -3827,10 +3827,16 @@ class ClauseTelemetryCollector:
         self.container_id = container_id
         self.cgroup = cgroup
         self.cgroup_id = cgroup.stat().st_ino
+        # An observer running inside a container can see a namespace-local
+        # launcher PID while bpf_get_current_pid_tgid() reports the enclosing
+        # kernel namespace PID.  An explicit leaf cgroup is a sufficiently
+        # narrow ownership boundary to permit the existing fail-closed remap:
+        # it still requires one exact registered root-shell argv match and
+        # rejects absent or ambiguous candidates.  This applies both to the
+        # Docker sidecar topology and to an observer inside a Kata guest tool
+        # container, where there is intentionally no Docker container id.
         self._trusted_root_pid_remap_allowed = (
-            bool(container_id)
-            and cgroup_path is not None
-            and not _is_root_cgroup_str(cgroup_path)
+            cgroup_path is not None and not _is_root_cgroup_str(cgroup_path)
         )
         # Docker may place exec processes in related transient scopes, while
         # direct-host collection already has an exact sidecar-verified cgroup.
