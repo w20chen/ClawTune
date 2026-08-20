@@ -326,8 +326,8 @@ def test_ensure_bcc_importable_normalizes_legacy_tracefs_path(monkeypatch) -> No
         "tool_resource.telemetry.importlib.import_module", lambda _name: fake
     )
     monkeypatch.setattr(
-        "tool_resource.telemetry.Path.exists",
-        lambda path: str(path) == "/sys/kernel/tracing",
+        "tool_resource.telemetry.Path.is_dir",
+        lambda path: str(path) == "/sys/kernel/tracing/events",
     )
 
     assert _ensure_bcc_importable() is fake

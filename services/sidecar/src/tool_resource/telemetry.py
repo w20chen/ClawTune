@@ -63,9 +63,20 @@ _BCC_REQUIRED_ATTRIBUTES = ("BPF", "PerfSWConfig", "PerfType")
 
 def _configure_bcc_tracefs(module: Any) -> Any:
     """Prefer the kernel's modern tracefs mount when packaged BCC is legacy."""
+    def is_dir(path: Path) -> bool:
+        try:
+            return path.is_dir()
+        except OSError:
+            return False
+
     configured = getattr(module, "TRACEFS", None)
     modern = Path("/sys/kernel/tracing")
-    if configured and not Path(str(configured)).exists() and modern.exists():
+    configured_events = Path(str(configured)) / "events" if configured else None
+    if (
+        configured_events is not None
+        and not is_dir(configured_events)
+        and is_dir(modern / "events")
+    ):
         module.TRACEFS = str(modern)
     return module
 
