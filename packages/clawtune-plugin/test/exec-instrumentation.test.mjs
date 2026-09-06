@@ -526,7 +526,11 @@ test("hook-only with envelope mints execution_id and wraps command", async () =>
   assert.equal(result.requestedCommand, "pytest tests -q");
   assert.equal(result.payloadCommand, "pytest tests -q");
   // The effective command is the bridge envelope carrying the same execution_id.
-  assert.ok(result.effectiveCommand.startsWith(`${CLAWBOX_EXEC_ENVELOPE_PREFIX}${result.executionId}\n`));
+  assert.ok(result.effectiveCommand.startsWith(`${CLAWBOX_EXEC_ENVELOPE_PREFIX}b64:`));
+  const encoded = result.effectiveCommand.split("\n", 1)[0]
+    .slice(`${CLAWBOX_EXEC_ENVELOPE_PREFIX}b64:`.length);
+  const header = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  assert.equal(header.execution_id, result.executionId);
   assert.equal(result.effectiveCommand.endsWith("pytest tests -q"), true);
   // Env still records the execution_id for in-sandbox observability.
   assert.equal(result.params.env.CLAWTUNE_EXECUTION_ID, result.executionId);
@@ -555,10 +559,12 @@ test("hook-only envelope does not require a sidecar decision", async () => {
   );
 
   assert.match(result.executionId, /^exec-[0-9a-f-]{36}$/);
-  assert.equal(
-    result.params.command,
-    `${CLAWBOX_EXEC_ENVELOPE_PREFIX}${result.executionId}\npytest -q`
-  );
+  assert.equal(result.params.command.split("\n", 2)[1], "pytest -q");
+  const encoded = result.params.command.split("\n", 1)[0]
+    .slice(`${CLAWBOX_EXEC_ENVELOPE_PREFIX}b64:`.length);
+  const header = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  assert.equal(header.execution_id, result.executionId);
+  assert.equal(Buffer.from(header.profile_command_b64, "base64url").toString("utf8"), "pytest -q");
 });
 
 test("hook-only envelope keeps requested command out of execution_id", async () => {
@@ -583,18 +589,20 @@ test("hook-only envelope keeps requested command out of execution_id", async () 
   );
 
   const firstLine = result.params.command.split("\n")[0];
-  assert.equal(firstLine, `${CLAWBOX_EXEC_ENVELOPE_PREFIX}${result.executionId}`);
+  assert.match(firstLine, new RegExp(`^${CLAWBOX_EXEC_ENVELOPE_PREFIX}b64:[A-Za-z0-9_-]+$`));
 });
 
 test("buildSandboxExecEnvelope emits the bridge parseable format", () => {
   const command = "echo hello\nworld";
   const envelope = buildSandboxExecEnvelope(command, "exec-1234");
-  assert.equal(
-    envelope,
-    `__CBX_EXEC_1__exec-1234\necho hello\nworld`
-  );
   // First line is shell-safe; payload begins after the first newline.
   const newline = envelope.indexOf("\n");
-  assert.equal(envelope.slice(CLAWBOX_EXEC_ENVELOPE_PREFIX.length, newline), "exec-1234");
+  const encoded = envelope.slice(`${CLAWBOX_EXEC_ENVELOPE_PREFIX}b64:`.length, newline);
+  const header = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  assert.deepEqual(header, {
+    v: 1,
+    execution_id: "exec-1234",
+    profile_command_b64: Buffer.from(command, "utf8").toString("base64url"),
+  });
   assert.equal(envelope.slice(newline + 1), "echo hello\nworld");
 });
