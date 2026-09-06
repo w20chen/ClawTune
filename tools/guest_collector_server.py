@@ -142,6 +142,10 @@ class CollectorService:
         command = str(request.get("command") or "")
         if not command or len(command.encode("utf-8")) > MAX_COMMAND_BYTES:
             raise ValueError("invalid_command")
+        execution_command = str(request.get("execution_command") or command)
+        if (not execution_command
+                or len(execution_command.encode("utf-8")) > MAX_COMMAND_BYTES):
+            raise ValueError("invalid_execution_command")
         cgroup_path = str(request.get("cgroup_path") or "")
         if not cgroup_path or Path(cgroup_path).resolve() == Path("/sys/fs/cgroup"):
             raise ValueError("invalid_cgroup_path")
@@ -166,7 +170,11 @@ class CollectorService:
                 trusted_root_pid=trusted_root_pid,
             )
             try:
-                token = collector.begin_tool_call(execution_id, command)
+                token = collector.begin_tool_call(
+                    execution_id,
+                    command,
+                    execution_command=execution_command,
+                )
             except BaseException:
                 collector.finalize(replay_execution="incomplete")
                 raise

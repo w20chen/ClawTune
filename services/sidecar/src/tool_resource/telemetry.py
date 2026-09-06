@@ -1083,6 +1083,7 @@ class RawRun:
 class ToolCallToken:
     tool_call_id: str
     command: str
+    execution_command: str
     started_ns: int
     ringbuf_reserve_failures: int
     perf_sample_count: int
@@ -4057,7 +4058,13 @@ class ClauseTelemetryCollector:
         return summary
 
     @_lifecycle_synchronized
-    def begin_tool_call(self, tool_call_id: str, command: str) -> ToolCallToken:
+    def begin_tool_call(
+        self,
+        tool_call_id: str,
+        command: str,
+        *,
+        execution_command: str | None = None,
+    ) -> ToolCallToken:
         source_tool_call_id, source_command, source_tool_result = self._source_fields()
         poll_error = self._shared_poll_error()
         if self.state == "active" and poll_error is not None:
@@ -4105,6 +4112,7 @@ class ClauseTelemetryCollector:
         token = ToolCallToken(
             tool_call_id=tool_call_id,
             command=command,
+            execution_command=execution_command or command,
             started_ns=time.monotonic_ns(),
             ringbuf_reserve_failures=int(counters["ringbuf_reserve_failures"]),
             perf_sample_count=int(counters["perf_sample_count"]),
@@ -4411,7 +4419,7 @@ class ClauseTelemetryCollector:
         collector_perf_samples = perf_samples
         events, event_isolation = _isolate_call_events(
             events,
-            token.command,
+            token.execution_command,
             trusted_root_pid=self.trusted_root_pid,
             allow_trusted_root_pid_remap=self._trusted_root_pid_remap_allowed,
         )

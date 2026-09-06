@@ -25,7 +25,11 @@ class _FakeCollector:
         self.finalized: list[str] = []
         self.instances.append(self)
 
-    def begin_tool_call(self, execution_id: str, command: str):
+    def begin_tool_call(
+        self, execution_id: str, command: str, *, execution_command: str | None = None,
+    ):
+        self.logical_command = command
+        self.execution_command = execution_command
         return (execution_id, command)
 
     def finish_tool_call(self, token, *, replay_response):
@@ -64,6 +68,7 @@ def test_service_begin_finish_uses_exact_explicit_scope(monkeypatch, tmp_path) -
             "begin",
             execution_id="exec-1",
             command="echo ok",
+            execution_command="env /bin/sh -c 'echo ok'",
             cgroup_path=str(cgroup),
             trusted_root_pid=42,
             repo="tenant/repo",
@@ -74,6 +79,8 @@ def test_service_begin_finish_uses_exact_explicit_scope(monkeypatch, tmp_path) -
     )
 
     assert begun["state"] == "observing"
+    assert _FakeCollector.instances[-1].logical_command == "echo ok"
+    assert _FakeCollector.instances[-1].execution_command == "env /bin/sh -c 'echo ok'"
     assert finished == {
         "ok": True,
         "v": 1,
