@@ -4568,9 +4568,14 @@ class ClauseTelemetryCollector:
             }
         ]
         exec_image_records = [_exec_image_record(metric) for metric in metrics]
+        # Map eBPF exec images against the command that actually ran.  The
+        # logical command remains ``token.command`` in the call summary and is
+        # the key used by RuntimeToolResourceKB, while execution wrappers (for
+        # example OpenClaw's env/shell setup) are required here to prove the
+        # observed process tree without misclassifying wrapper images as gaps.
         bridge = bridge_command(
             self.repo,
-            token.command,
+            token.execution_command,
             exec_image_records,
             failed_exec_attempts=[
                 attempt
