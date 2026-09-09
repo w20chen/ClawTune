@@ -646,6 +646,9 @@ def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) ->
     assert result.confidence is None
     continuous = result.tool_resource["continuous_predictions"]
     without_continuous = result.tool_resource | {"continuous_predictions": {}}
+    resources = without_continuous.pop("lattice_resource_predictions")
+    assert resources
+    assert all(item["p50"] is None for clause in resources for item in clause["predictions"])
     assert without_continuous == {
         "repo": "repo-1",
         "command": "python -m pytest tests -q",
@@ -1221,6 +1224,9 @@ def test_tool_resource_predictor_exposes_native_unavailable_reason(
     assert result.resource_class == "latency_medium"
     continuous = result.tool_resource["continuous_predictions"]
     without_continuous = result.tool_resource | {"continuous_predictions": {}}
+    resources = without_continuous.pop("lattice_resource_predictions")
+    assert resources
+    assert all(item["p50"] is None for clause in resources for item in clause["predictions"])
     assert without_continuous == {
         "repo": "repo-1",
         "command": "python -m pytest && git status",
@@ -1991,6 +1997,34 @@ def test_lattice_time_predictions_are_limited_to_ebpf_exec_clauses() -> None:
     result = predictor.predict(request)
 
     assert result.tool_resource["lattice_time_predictions"] == []
+    assert result.tool_resource["lattice_resource_predictions"] == []
+
+
+def test_resource_lattice_predictions_reach_before_call_payload_and_fail_independently(monkeypatch) -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(), ebpf_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)), repo="repo-1",
+    )
+    predictor.lattice_kb.merge_historical([ClauseObservation(
+        repo="repo-1", bin="python", argv=("python", "task.py"),
+        ts_start=1, ts_end=2, latency_ms=1000,
+        cpu_ns_cumulative=2_000_000_000, sampled_peak_rss_mb=128,
+        peak_cpu_cores=3,
+    )])
+    request = _tool_request("resource-event", "resource-call", "python task.py")
+    result = predictor.predict(request)
+    output = result.tool_resource["lattice_resource_predictions"][0]
+    by_target = {row["target"]: row for row in output["predictions"] if row["algorithm"] == "shrinkage"}
+    assert by_target["cpu_time_seconds"]["p50"] == 2
+    assert by_target["cpu_avg_cores"]["p50"] == 2
+    assert by_target["memory_peak_rss_bytes"]["p90"] == 128 * 1024**2
+    assert all(row["prediction_ms"] == 1000 for row in result.tool_resource["lattice_time_predictions"][0]["predictions"])
+    def fail(*args, **kwargs):
+        raise ValueError("resource-only failure")
+    monkeypatch.setattr(predictor.lattice_kb, "predict_resource_clauses", fail)
+    result = predictor.predict(request)
+    assert result.tool_resource["lattice_time_predictions"][0]["predictions"][0]["prediction_ms"] == 1000
+    assert result.tool_resource["lattice_resource_predictions"][0]["predictions"][0]["unavailable_reason"] == "lattice_resource_error:ValueError"
 
 
 def test_finish_execution_feeds_and_persists_the_shared_lattice_kb(
@@ -2626,22 +2660,22 @@ def _prediction_algorithms() -> dict:
                 "name": "lattice_shrinkage",
                 "family": "context_lattice",
                 "source": "LatticeTimeKB",
-                "targets": ["latency_ms"],
-                "outputs": ["clause_point_prediction_ms"],
+                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_peak_rss_bytes"],
+                "outputs": ["clause_point_prediction_ms", "resource_p50", "resource_p90"],
             },
             {
                 "name": "lattice_loso",
                 "family": "context_lattice",
                 "source": "LatticeTimeKB",
-                "targets": ["latency_ms"],
-                "outputs": ["clause_point_prediction_ms"],
+                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_peak_rss_bytes"],
+                "outputs": ["clause_point_prediction_ms", "resource_p50", "resource_p90"],
             },
             {
                 "name": "lattice_max_cardinality",
                 "family": "context_lattice",
                 "source": "LatticeTimeKB",
-                "targets": ["latency_ms"],
-                "outputs": ["clause_point_prediction_ms"],
+                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_peak_rss_bytes"],
+                "outputs": ["clause_point_prediction_ms", "resource_p50", "resource_p90"],
             },
             {
                 "name": "runtime_tool_resource_conditional_p90",

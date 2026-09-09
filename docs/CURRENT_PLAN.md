@@ -48,8 +48,9 @@ See [configuration.md](configuration.md), [trace-schema.md](trace-schema.md),
   scope is not accepted as success. Authenticated execution scope wins over a
   shared completion scope, and owned cgroups remain readable through the final
   resource snapshot before cleanup.
-- Legacy traces lack causal timestamps and memory samples. Memory is therefore
-  not evaluated, and CPU coverage is limited to eligible sampled clauses.
+- Legacy traces lack causal clause timestamps and per-call memory anchors.
+  The new lattice evaluation uses measured clause RSS and CPU totals; the older
+  continuous call-memory evaluation remains unavailable.
 
 ## Validation
 
@@ -204,3 +205,66 @@ mkdir -p /sys/kernel/debug/tracing
 mount -t tracefs tracefs /sys/kernel/debug/tracing
 cat /sys/kernel/debug/tracing/events/sched/sched_process_exit/id
 ```
+
+
+## Lattice resource extension (2026-09-09)
+
+See [lattice-resources.md](lattice-resources.md) for metric semantics, snapshot
+compatibility, the reproducible cold-start exporter, and held-out evaluation.
+Lattice now emits clause CPU time, average cores, 500 ms peak cores, and sampled
+RSS peak p50/p90 using independent target contexts. Heavy thresholds are not KB
+labels. The shared raw snapshot is v2, with a v1-compatible reader. Old RuntimeKB
+and prefix-bucket outputs remain active pending a separate consumer migration.
+
+Cold start was regenerated from the user-supplied read-only
+`D:/swe277-full-5be74da-20260726` directory. Within each repo, 80% of tasks go to
+training (integer rounding; singletons train-only), seed 42. The manifest lists
+239 training tasks and 38 held-out tasks. Test observations never update the KB.
+
+Validation commands and environment limitations for this change:
+
+- `python tools/validate_contracts.py`: passed.
+- `python -m pytest services/sidecar/tests -q -p no:cacheprovider --basetemp .pytest-tmp-sidecar-resource-final`: passed; two POSIX subprocess-control tests skip on Windows.
+- Initial `python -m pytest tests -q -p no:cacheprovider --basetemp .pytest-tmp-root-resources` could not collect because this checkout's sidecar modules were absent from Python's import path. Resolved with `python -m pytest tests -q -p no:cacheprovider -o "pythonpath=services/sidecar/src ." --basetemp .pytest-tmp-root-resource-final`; two POSIX permission-bit tests skip on Windows.
+- Initial `npm run typecheck` in the plugin directory could not run because PowerShell blocks npm.ps1. `npm.cmd run typecheck` and `npm.cmd test` in `packages/clawtune-plugin` passed. An intermediate `npm.cmd run typecheck` from the repository root could not run because the root has no package.json; corrected by using the plugin working directory.
+- The initial focused pytest run warned that the existing sidecar pytest cache directory was not writable. Subsequent runs use `-p no:cacheprovider`; test execution itself succeeded.
+- `python scripts/export_resource_lattice.py --dataset D:/swe277-full-5be74da-20260726 --seed 42 --train-fraction 0.8`: produced the seed and split/source manifest.
+- `python scripts/evaluate_resource_lattice.py --dataset D:/swe277-full-5be74da-20260726`: completed offline held-out evaluation; see resource-lattice-evaluation.json.
+- Live Linux collector validation (`python3 scripts/clawtune.py check`) cannot run natively on this Windows host because cgroup v2/BCC/eBPF are unavailable. No new live collector accuracy claim is made; real recorded eBPF artifacts were replayed read-only instead.
+
+The empirical p90 estimates are not calibrated scheduling guarantees: held-out
+memory p90 coverage is about 81%. CPU evidence comes from 8-core-quota source
+runs. Full lattice preparation still uses the existing shared-lock lifecycle;
+background rebuilds can delay prediction requests at larger KB sizes.
+
+Final verification: sidecar 340 passed / 2 platform skips; root 286 passed /
+2 platform skips; plugin 95 passed. Release verification used the same pytest
+commands above with basetemp `.pytest-tmp-sidecar-resource-release` and
+`.pytest-tmp-root-resource-release`. Contract examples, snapshot hand-off, split
+disjointness, seed/manifest/evaluation hashes, and `git diff --check` passed.
+Optional Ruff availability probe (`python -m ruff --version`) found no installed
+ruff module; no Ruff lint result is claimed.
+
+
+## Offline lattice accuracy report (2026-09-09)
+
+`python scripts/benchmark_lattice_accuracy.py --dataset D:/swe277-full-5be74da-20260726`
+uses the existing frozen seed and its within-repository 80/20 task manifest.
+It adds physical-unit errors, WAPE, within-factor-two rate, p90 coverage and
+pinball loss, plus paired comparisons with a training-only repo/binary baseline.
+It does not alter model logic, hyperparameters, the seed, or external datasets.
+Outputs: docs/lattice-accuracy/{report.md,metrics.json,predictions.jsonl,accuracy.png}.
+
+`python -m pytest tests/test_lattice_accuracy_metrics.py -q -p no:cacheprovider -o "pythonpath=services/sidecar/src ." --basetemp .pytest-tmp-accuracy`: 3 passed.
+The first report run stopped at the immutable-training assertion because Python
+tuple argv values were compared directly with JSON list argv values. Normalizing
+both to JSON before comparison fixes the representation mismatch; no training
+update occurred. The corrected report command is rerun before delivery.
+
+The corrected offline run completed: 38 test tasks across 36 repositories,
+1,387 unique command queries, zero test updates. Immutable training observations
+were verified after prediction. Numerical metric tests passed; accuracy.png was
+visually inspected. Results show limited predictive accuracy, not merely missing
+coverage: no lattice algorithm beats the repo/binary baseline on time or CPU peak
+MAE, and larger realized memory workloads remain poorly predicted. Full paired
+errors, tail losses, and raw prediction pairs are retained in the report folder.

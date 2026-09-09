@@ -82,10 +82,17 @@ Useful fields:
   `shrinkage`, `loso`, and `max_cardinality` point estimates in milliseconds,
   together with selected-feature, evidence, risk, exact-match, fallback, or
   explicit unavailability metadata. All three algorithms read the same
-  independent, flat lattice KB, which is trained only from eligible
+  independent, flat lattice KB; its time views use eligible
   eBPF `ClauseObservation` latency measurements. For compound commands these
   remain per-clause results; the sidecar does not synthesize a command-level
   duration across sequential, conditional, or pipeline clauses.
+  `prediction.tool_resource.lattice_resource_predictions` adds per-clause
+  p50/p90 for cumulative CPU seconds, average cores, 500 ms peak cores, and
+  sampled distinct-mm RSS peak bytes. Each target independently selects a
+  lattice context for each of the same three algorithms. Scope, units, sample
+  count, selected features/risk, and explicit unavailable reasons accompany
+  the values. These are not cgroup memory or composed whole-call estimates.
+  See [lattice resource semantics and evaluation](lattice-resources.md).
   `prediction.tool_resource.prediction_algorithms` lists the enabled
   non-MLP predictors and records `tool_resource.mlp` as excluded.
 - `resources.attribution_status`: resource attribution status.

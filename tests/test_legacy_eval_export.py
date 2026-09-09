@@ -115,7 +115,7 @@ def test_export_writes_three_valid_snapshots(tmp_path) -> None:
     # All three files exist with the expected schemas.
     schemas = {
         "clause-resource-kb.json": "runtime_clause_resource_kb_v4",
-        "clause-lattice-time-kb.json": "clause_lattice_time_kb_v1",
+        "clause-lattice-time-kb.json": "clause_lattice_kb_v2",
         "runtime-tool-resource-kb.json": "runtime_tool_resource_kb_v1",
     }
     for filename, schema in schemas.items():

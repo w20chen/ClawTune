@@ -70,7 +70,7 @@ _BENCHMARK_GATEWAY_ID = "swe-rebench"
 _TOOL_RESOURCE_KB_SCHEMAS = {
     "runtime-tool-resource-kb.json": "runtime_tool_resource_kb_v1",
     "clause-resource-kb.json": "runtime_clause_resource_kb_v4",
-    "clause-lattice-time-kb.json": "clause_lattice_time_kb_v1",
+    "clause-lattice-time-kb.json": "clause_lattice_kb_v2",
 }
 
 _TASK_CLEANUP_TIMEOUT_SECONDS = 15.0
@@ -1114,7 +1114,8 @@ def _validate_kb_snapshot_pair(directory: Path) -> None:
                 f"invalid KB snapshot {path}: {exc}"
             ) from exc
         schema = payload.get("schema") if isinstance(payload, dict) else None
-        if schema != schema_prefix:
+        legacy_lattice = filename == "clause-lattice-time-kb.json" and schema == "clause_lattice_time_kb_v1"
+        if schema != schema_prefix and not legacy_lattice:
             raise KnowledgeBaseSyncError(
                 f"invalid KB snapshot schema in {path}: {schema!r}; "
                 f"expected {schema_prefix!r}"
@@ -1192,6 +1193,7 @@ def _validate_lattice_time_kb_snapshot(path: Path, payload: dict[str, Any]) -> N
                 path,
                 row,
                 location=f"{collection_name}[{index}]",
+                allow_resource_only=payload.get("schema") == "clause_lattice_kb_v2",
             )
     last_query_ts = payload.get("last_query_ts")
     if last_query_ts is not None and not _is_finite_number(last_query_ts):
@@ -1205,6 +1207,7 @@ def _validate_lattice_time_observation(
     row: Any,
     *,
     location: str,
+    allow_resource_only: bool = False,
 ) -> None:
     if not isinstance(row, dict):
         raise KnowledgeBaseSyncError(
@@ -1267,6 +1270,15 @@ def _validate_lattice_time_observation(
             f"invalid lattice KB observation {location} in {path}: "
             "ts_end precedes ts_start"
         )
+    resource_fields = ("cpu_ns_cumulative", "peak_cpu_cores", "sampled_peak_rss_mb")
+    for field in resource_fields:
+        value = row.get(field)
+        if value is not None and (not _is_finite_number(value) or value < 0):
+            raise KnowledgeBaseSyncError(f"invalid lattice resource {field} in {path}")
+    if allow_resource_only and row.get("latency_ms") in (None, 0) and not isinstance(row.get("latency_ms"), bool) and any(
+        _is_finite_number(row.get(field)) for field in resource_fields
+    ):
+        return
     latency_ms = row.get("latency_ms")
     if not _is_finite_number(latency_ms) or float(latency_ms) <= 0.0:
         raise KnowledgeBaseSyncError(

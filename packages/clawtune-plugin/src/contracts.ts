@@ -164,6 +164,7 @@ export type ToolResourceCommandPrediction = {
   unavailable_reason: string | null;
   continuous_predictions?: Record<string, ToolResourceContinuousPrediction> | null;
   lattice_time_predictions?: ToolResourceClauseLatticeTimePredictions[];
+  lattice_resource_predictions?: ToolResourceClauseLatticeResourcePredictions[];
   prediction_algorithms?: ToolResourcePredictionAlgorithms | null;
   composed?: boolean;
   composed_total_ms?: number | null;
@@ -334,3 +335,30 @@ export const MIN_COMPATIBLE_SIDECAR_VERSION = "0.1.0";
 
 /** Protocol versions the plugin expects from the sidecar. */
 export const REQUIRED_PROTOCOL_VERSIONS = ["clawtune.api.v1", "execution.v1"];
+
+/** Clause-lineage sampled RSS and CPU; never whole-call/cgroup estimates. */
+export type ToolResourceClauseLatticeResourcePredictions = {
+  clause_index: number;
+  bin: string;
+  argv: string[];
+  scope: "clause_owned_lineage";
+  memory_metric: "sampled_distinct_mm_rss";
+  cpu_peak_window_ms: 500;
+  quantile_method: "median_p50_nearest_rank_p90";
+  predictions: ToolResourceLatticeResourcePrediction[];
+};
+
+export type ToolResourceLatticeResourcePrediction = {
+  target: "cpu_time_seconds" | "cpu_avg_cores" | "cpu_peak_cores" | "memory_peak_rss_bytes";
+  unit: "core_seconds" | "cores" | "bytes";
+  algorithm: "shrinkage" | "loso" | "max_cardinality";
+  p50: number | null;
+  p90: number | null;
+  selected_features: string[];
+  evidence_count: number;
+  selected_risk: number | null;
+  exact_match: boolean | null;
+  unavailable_reason: string | null;
+  threshold: number | null;
+  probability_ge: number | null;
+};

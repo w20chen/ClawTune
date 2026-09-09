@@ -418,6 +418,26 @@ export default definePluginEntry({
     lines.push(`    ${continuousPredictionSummary(continuous.peak_cpu_cores, "cpu", "cores")}`);
     lines.push(`    ${continuousPredictionSummary(continuous.peak_memory_mb, "memory", "MB")}`);
 
+    const resourcePreds = toolResource.lattice_resource_predictions;
+    if (Array.isArray(resourcePreds) && resourcePreds.length > 0) {
+      lines.push("  lattice resources (clause RSS; CPU peak window 500 ms):");
+      for (const clause of resourcePreds) {
+        if (!isRecord(clause) || !Array.isArray(clause.predictions)) continue;
+        const bin = typeof clause.bin === "string" ? oneLine(clause.bin) : "?";
+        for (const item of clause.predictions) {
+          if (!isRecord(item)) continue;
+          const label = `${bin} ${item.algorithm} ${item.target}`;
+          if (typeof item.p50 !== "number" || typeof item.p90 !== "number" || !Number.isFinite(item.p50) || !Number.isFinite(item.p90)) {
+            lines.push(`    ${label}: unavailable (${item.unavailable_reason ?? "unknown"})`);
+          } else {
+            const scale = item.unit === "bytes" ? 1024 * 1024 : 1;
+            const unit = item.unit === "bytes" ? "MiB" : item.unit;
+            lines.push(`    ${label}: p50=${(item.p50 / scale).toFixed(3)} p90=${(item.p90 / scale).toFixed(3)} ${unit} (${item.evidence_count} samples)`);
+          }
+        }
+      }
+    }
+
     const latticePreds = toolResource.lattice_time_predictions;
     if (Array.isArray(latticePreds) && latticePreds.length > 0) {
       lines.push("  lattice estimates:");

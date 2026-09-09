@@ -562,6 +562,7 @@ class ToolResourcePredictor:
         with self._kb_lock:
             query_ts = time.time()
             lattice_time_predictions: tuple[ClauseLatticeTimePredictions, ...] = ()
+            lattice_resource_predictions: tuple[dict[str, Any], ...] = ()
             try:
                 if request.tool_name == "exec":
                     lattice_time_predictions = self._lattice_predictions_for_clauses(
@@ -570,6 +571,10 @@ class ToolResourcePredictor:
                         repo=repo,
                         parse_failed=parse_failed,
                         shell_command=True,
+                    )
+                if request.tool_name == "exec":
+                    lattice_resource_predictions = self._lattice_resource_predictions_for_clauses(
+                        repo, clauses, query_ts, parse_failed=parse_failed,
                     )
                 prediction = self.kb.predict_command_latency_bucket_from_clauses(
                     repo,
@@ -605,6 +610,7 @@ class ToolResourcePredictor:
                         ),
                         continuous_predictions=continuous_predictions,
                         lattice_time_predictions=lattice_time_predictions,
+                        lattice_resource_predictions=lattice_resource_predictions,
                         kv_ttl_cost=None,
                         numa_usage=numa_usage,
                     ),
@@ -629,6 +635,7 @@ class ToolResourcePredictor:
                         prediction,
                         continuous_predictions=continuous_predictions,
                         lattice_time_predictions=lattice_time_predictions,
+                        lattice_resource_predictions=lattice_resource_predictions,
                         kv_ttl_cost=None,
                         numa_usage=numa_usage,
                     ),
@@ -681,6 +688,7 @@ class ToolResourcePredictor:
                     prediction,
                     continuous_predictions=continuous_predictions,
                     lattice_time_predictions=lattice_time_predictions,
+                    lattice_resource_predictions=lattice_resource_predictions,
                     kv_ttl_cost=self._kv_ttl_cost_payload(
                         bucket_prediction,
                         reference_runtime_s=duration_p90_ms / 1000.0,
@@ -1217,6 +1225,23 @@ class ToolResourcePredictor:
             return True
         except Exception:
             return False
+
+    def _lattice_resource_predictions_for_clauses(
+        self, repo: str, clauses: Sequence[Mapping[str, Any]], query_ts: float,
+        *, parse_failed: bool,
+    ) -> tuple[dict[str, Any], ...]:
+        try:
+            return self.lattice_kb.predict_resource_clauses(
+                repo, clauses, query_ts, parse_failed=parse_failed,
+            )
+        except Exception as exc:
+            outcomes = LatticeTimeKB().predict_resource_clauses(
+                repo, clauses, query_ts, parse_failed=True,
+            )
+            for clause in outcomes:
+                for prediction in clause["predictions"]:
+                    prediction["unavailable_reason"] = f"lattice_resource_error:{type(exc).__name__}"
+            return outcomes
 
     def _lattice_predictions_for_clauses(
         self,
@@ -2176,6 +2201,7 @@ def _tool_resource_prediction_payload(
     *,
     continuous_predictions: dict[str, Any] | None = None,
     lattice_time_predictions: Sequence[ClauseLatticeTimePredictions] = (),
+    lattice_resource_predictions: Sequence[dict[str, Any]] = (),
     kv_ttl_cost: dict[str, Any] | None = None,
     numa_usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -2198,6 +2224,7 @@ def _tool_resource_prediction_payload(
         "prediction": _clause_bucket_prediction_payload(clause_prediction),
         "unavailable_reason": prediction.unavailable_reason,
         "continuous_predictions": continuous_predictions or {},
+        "lattice_resource_predictions": list(lattice_resource_predictions),
         "lattice_time_predictions": [
             _clause_lattice_time_predictions_payload(item)
             for item in lattice_time_predictions
@@ -2490,22 +2517,22 @@ def _prediction_algorithms_payload() -> dict[str, Any]:
                 "name": "lattice_shrinkage",
                 "family": "context_lattice",
                 "source": "LatticeTimeKB",
-                "targets": ["latency_ms"],
-                "outputs": ["clause_point_prediction_ms"],
+                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_peak_rss_bytes"],
+                "outputs": ["clause_point_prediction_ms", "resource_p50", "resource_p90"],
             },
             {
                 "name": "lattice_loso",
                 "family": "context_lattice",
                 "source": "LatticeTimeKB",
-                "targets": ["latency_ms"],
-                "outputs": ["clause_point_prediction_ms"],
+                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_peak_rss_bytes"],
+                "outputs": ["clause_point_prediction_ms", "resource_p50", "resource_p90"],
             },
             {
                 "name": "lattice_max_cardinality",
                 "family": "context_lattice",
                 "source": "LatticeTimeKB",
-                "targets": ["latency_ms"],
-                "outputs": ["clause_point_prediction_ms"],
+                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_peak_rss_bytes"],
+                "outputs": ["clause_point_prediction_ms", "resource_p50", "resource_p90"],
             },
             {
                 "name": "runtime_tool_resource_conditional_p90",

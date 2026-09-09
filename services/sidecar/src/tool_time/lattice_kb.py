@@ -1,4 +1,4 @@
-"""Clause-level execution-time prediction backed by one mixed lattice KB.
+"""Clause-level time and resource prediction backed by one mixed lattice KB.
 
 The algorithm implementation is vendored from the ``latt`` project under
 ``tool_time._lattice_vendor``.  This module is deliberately a thin adapter:
@@ -17,7 +17,7 @@ import math
 import shlex
 import statistics
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Iterable, Mapping, Sequence
 
 from tool_resource.features import shell_bin_requires_exec_evidence
@@ -28,10 +28,15 @@ from tool_time._lattice_vendor.normalize import FeatureSet, normalize_command
 from tool_time._lattice_vendor.schemas import NodeStats, Observation, PredictionResult
 from tool_time._lattice_vendor.selector import predict as select_prediction
 from tool_time._lattice_vendor.shrinkage import compute_shrinkage_variances
+from tool_time.resource_lattice import (
+    RESOURCE_TARGETS, ResourcePrediction, ResourceState, build_resource_states,
+    nonnegative, resource_values,
+)
 
 
 LATTICE_TIME_ALGORITHMS = ("shrinkage", "loso", "max_cardinality")
-LATTICE_TIME_KB_SCHEMA = "clause_lattice_time_kb_v1"
+LATTICE_TIME_KB_SCHEMA = "clause_lattice_kb_v2"
+_LEGACY_SCHEMA = "clause_lattice_time_kb_v1"
 
 _NODE_MODE = "bounded"
 _MAX_OPTIONAL_FEATURES = 6
@@ -45,8 +50,8 @@ _DOMINANCE_DELTA = 0.15
 _SPECIFICITY_RISK_TOLERANCE = 0.5
 _LOSO_RISK_WEIGHT = 1.0
 
-_ObservationKey = tuple[str, str, tuple[str, ...], float, float, float]
-_NodeState = tuple[dict[FeatureSet, NodeStats], float, float, float]
+_ObservationKey = tuple[Any, ...]
+_NodeState = tuple[dict[FeatureSet, NodeStats], float, float, float, dict[str, ResourceState]]
 
 
 @dataclass(frozen=True)
@@ -89,7 +94,7 @@ class ClauseLatticeTimePredictions:
 
 
 class LatticeTimeKB:
-    """One unlayered clause lattice shared by all three point predictors.
+    """One raw observation log with independent time and resource lattice views.
 
     Historical observations supplied at startup are committed training data.
     Newly completed eBPF clauses are buffered and become visible only when
@@ -104,6 +109,7 @@ class LatticeTimeKB:
         self._pending_seq = 0
         self._last_query_ts: float | None = None
         self._nodes: dict[FeatureSet, NodeStats] = {}
+        self._resource_states: dict[str, ResourceState] = {}
         self._global_log_var = 0.0
         self._global_log_std = 0.5
         self._global_median_s = 0.0
@@ -145,6 +151,7 @@ class LatticeTimeKB:
         seen: Counter[_ObservationKey] = Counter()
         added = 0
         for observation in observations:
+            observation = _sanitize_resources(observation)
             if not _eligible_observation(observation):
                 continue
             key = _observation_key(observation)
@@ -162,6 +169,7 @@ class LatticeTimeKB:
     def observe_completed_clause(self, observation: ClauseObservation) -> bool:
         """Buffer one valid eBPF clause for a strictly later query."""
 
+        observation = _sanitize_resources(observation)
         if not _eligible_observation(observation):
             return False
         heapq.heappush(
@@ -222,6 +230,49 @@ class LatticeTimeKB:
                     predictions=predictions,
                 )
             )
+        return tuple(outcomes)
+
+    def predict_resource_clauses(
+        self, repo: str, clauses: Sequence[Mapping[str, Any]], ts_start: float,
+        *, parse_failed: bool = False, shell_command: bool = True,
+        thresholds: Mapping[str, float] | None = None,
+    ) -> tuple[dict[str, Any], ...]:
+        """Query independent resource distributions before execution.
+
+        Optional thresholds are query-time inclusive exceedance requests, not
+        persisted labels. Empirical probabilities are not calibrated confidence.
+        The caller serializes this query with time prediction under the KB lock.
+        """
+        thresholds = thresholds or {}
+        for target, value in thresholds.items():
+            if target not in RESOURCE_TARGETS or not nonnegative(value):
+                raise ValueError("resource thresholds require known targets and finite nonnegative values")
+        self._advance(ts_start)
+        self._ensure_nodes()
+        outcomes = []
+        for index, clause in enumerate(clauses):
+            bin_ = str(clause["bin"])
+            argv = tuple(str(value) for value in clause["argv"])
+            if not argv or not bin_ or (shell_command and not shell_bin_requires_exec_evidence(bin_, argv[0])):
+                continue
+            predictions = []
+            for target, (unit, _scale) in RESOURCE_TARGETS.items():
+                state = self._resource_states.get(target, ResourceState({}, 0.0, 0.5))
+                for algorithm in LATTICE_TIME_ALGORITHMS:
+                    try:
+                        result = (
+                            ResourcePrediction(target, unit, algorithm, unavailable_reason="parse_failed", threshold=thresholds.get(target))
+                            if parse_failed else state.predict(repo, argv, target, algorithm, threshold=thresholds.get(target))
+                        )
+                    except (KeyError, TypeError, ValueError) as exc:
+                        result = ResourcePrediction(target, unit, algorithm, unavailable_reason=f"lattice_resource_error:{type(exc).__name__}")
+                    predictions.append(result.to_dict())
+            outcomes.append({
+                "clause_index": index, "bin": bin_, "argv": list(argv),
+                "scope": "clause_owned_lineage", "memory_metric": "sampled_distinct_mm_rss",
+                "cpu_peak_window_ms": 500, "quantile_method": "median_p50_nearest_rank_p90",
+                "predictions": predictions,
+            })
         return tuple(outcomes)
 
     def _predict_clause(
@@ -308,7 +359,7 @@ class LatticeTimeKB:
                 algorithm="max_cardinality",
                 prediction_ms=self._global_median_s * 1000.0,
                 selected_features=(),
-                evidence_count=len(self._observations),
+                evidence_count=sum(nonnegative(row.latency_ms) and row.latency_ms > 0 for row in self._observations),
                 selected_risk=None,
                 exact_match=False,
                 fallback="global",
@@ -358,6 +409,7 @@ class LatticeTimeKB:
             self._global_log_var,
             self._global_log_std,
             self._global_median_s,
+            self._resource_states,
         ) = state
         self._dirty = False
 
@@ -389,7 +441,7 @@ class LatticeTimeKB:
 
     @classmethod
     def from_json_obj(cls, obj: Mapping[str, Any]) -> LatticeTimeKB:
-        if obj.get("schema") != LATTICE_TIME_KB_SCHEMA:
+        if obj.get("schema") not in {LATTICE_TIME_KB_SCHEMA, _LEGACY_SCHEMA}:
             raise ValueError(f"unsupported lattice KB schema {obj.get('schema')!r}")
         expected_generation = {
             "mode": _NODE_MODE,
@@ -408,11 +460,15 @@ class LatticeTimeKB:
         if not isinstance(pending_rows, list):
             raise ValueError("lattice KB pending must be an array")
         kb = cls()
+        resource_only = obj.get("schema") == LATTICE_TIME_KB_SCHEMA
         kb.merge_historical(
-            _observation_from_json(row) for row in observation_rows
+            _observation_from_json(row, allow_resource_only=resource_only)
+            for row in observation_rows
         )
         for row in pending_rows:
-            kb.observe_completed_clause(_observation_from_json(row))
+            kb.observe_completed_clause(
+                _observation_from_json(row, allow_resource_only=resource_only)
+            )
         last_query_ts = obj.get("last_query_ts")
         if last_query_ts is not None:
             if (
@@ -437,10 +493,11 @@ def _build_node_state(
             clause_index=0,
         )
         for observation in ordered
-        if observation.latency_ms is not None
+        if nonnegative(observation.latency_ms) and observation.latency_ms > 0
     ]
+    resources = build_resource_states(ordered)
     if not training:
-        return {}, 0.0, 0.5, 0.0
+        return {}, 0.0, 0.5, 0.0, resources
     effective_max_optional_features = _effective_max_optional_features(training)
     nodes, global_log_var, global_log_std = build_nodes(
         training,
@@ -459,7 +516,7 @@ def _build_node_state(
     global_median_s = statistics.median(
         observation.duration_s for observation in training
     )
-    return nodes, global_log_var, global_log_std, global_median_s
+    return nodes, global_log_var, global_log_std, global_median_s, resources
 
 
 def _effective_max_optional_features(
@@ -528,20 +585,25 @@ def _unavailable_prediction(algorithm: str, reason: str) -> LatticeTimePredictio
     )
 
 
+def _sanitize_resources(observation: ClauseObservation) -> ClauseObservation:
+    """Mask invalid optional resources without losing valid time/other targets."""
+    fields = ("cpu_ns_cumulative", "peak_cpu_cores", "sampled_peak_rss_mb")
+    invalid = {name: None for name in fields
+               if getattr(observation, name) is not None and not nonnegative(getattr(observation, name))}
+    if observation.latency_ms is not None and not nonnegative(observation.latency_ms):
+        invalid["latency_ms"] = None
+    return replace(observation, **invalid) if invalid else observation
+
+
 def _eligible_observation(observation: ClauseObservation) -> bool:
-    value = observation.latency_ms
     return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-        and value > 0.0
-        and bool(observation.argv)
-        and bool(observation.bin)
+        bool(observation.argv) and bool(observation.bin)
+        and ((nonnegative(observation.latency_ms) and observation.latency_ms > 0)
+             or bool(resource_values(observation)))
     )
 
 
 def _observation_key(observation: ClauseObservation) -> _ObservationKey:
-    assert observation.latency_ms is not None
     return (
         observation.repo,
         observation.bin,
@@ -549,6 +611,9 @@ def _observation_key(observation: ClauseObservation) -> _ObservationKey:
         observation.ts_start,
         observation.ts_end,
         observation.latency_ms,
+        observation.cpu_ns_cumulative,
+        observation.peak_cpu_cores,
+        observation.sampled_peak_rss_mb,
     )
 
 
@@ -564,7 +629,7 @@ def _observation_sort_key(
     )
 
 
-def _observation_from_json(row: Any) -> ClauseObservation:
+def _observation_from_json(row: Any, *, allow_resource_only: bool = True) -> ClauseObservation:
     if not isinstance(row, Mapping):
         raise ValueError("lattice KB observation must be an object")
     values = dict(row)
@@ -601,6 +666,10 @@ def _observation_from_json(row: Any) -> ClauseObservation:
         raise ValueError("lattice KB observation argv must be non-empty strings")
     values["argv"] = tuple(argv)
     for field in ("ts_start", "ts_end", "latency_ms"):
+        if allow_resource_only and field == "latency_ms" and values[field] is None and any(
+            nonnegative(values.get(key)) for key in ("cpu_ns_cumulative", "peak_cpu_cores", "sampled_peak_rss_mb")
+        ):
+            continue
         value = values[field]
         if (
             not isinstance(value, (int, float))
@@ -609,8 +678,15 @@ def _observation_from_json(row: Any) -> ClauseObservation:
         ):
             raise ValueError(f"lattice KB observation {field} must be finite")
         values[field] = float(value)
-    if values["latency_ms"] <= 0.0:
-        raise ValueError("lattice KB observation latency_ms must be positive")
+    for field in ("cpu_ns_cumulative", "peak_cpu_cores", "sampled_peak_rss_mb"):
+        if values.get(field) is not None and not nonnegative(values[field]):
+            raise ValueError(f"lattice KB observation {field} must be finite and non-negative")
+    if values["latency_ms"] is not None and values["latency_ms"] <= 0.0:
+        zero_resource_row = allow_resource_only and values["latency_ms"] == 0 and any(
+            nonnegative(values.get(key)) for key in ("cpu_ns_cumulative", "peak_cpu_cores", "sampled_peak_rss_mb")
+        )
+        if not zero_resource_row:
+            raise ValueError("lattice KB observation latency_ms must be positive")
     return ClauseObservation(**values)
 
 
