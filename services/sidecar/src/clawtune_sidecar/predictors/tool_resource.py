@@ -453,8 +453,7 @@ class ToolResourcePredictor:
                     kb._public = ClauseResourceKB.fit_public(observations)._public  # type: ignore[attr-defined]
                 except ValueError as exc:
                     rejections.append(f"fit_public: {exc}")
-            for observation in observations:
-                kb.observe_completed_clause(observation)
+            kb.merge_historical(observations)
             kb_has_public_evidence = _has_public_clause_latency(kb)
         elif observations:
             try:
@@ -463,8 +462,7 @@ class ToolResourcePredictor:
             except ValueError as exc:
                 rejections.append(f"fit_public: {exc}")
                 kb = ClauseResourceKB()
-            for observation in observations:
-                kb.observe_completed_clause(observation)
+            kb.merge_historical(observations)
         else:
             kb = ClauseResourceKB()
 
@@ -519,8 +517,7 @@ class ToolResourcePredictor:
         )
         if loaded_runtime_snapshot is not None:
             predictor.continuous_kb = loaded_runtime_snapshot
-        for call in continuous_observations:
-            predictor.continuous_kb.observe_completed_call(call)
+        predictor.continuous_kb.merge_historical(continuous_observations)
         if observations or loaded_snapshot is not None:
             predictor._persist_clause_kb()
         if continuous_observations or loaded_runtime_snapshot is not None:

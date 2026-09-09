@@ -14,6 +14,38 @@ def valid(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
 
 
+def _censored_call(data: dict) -> bool:
+    """Inspect structured lifecycle metadata, never command/result text.
+
+    Failure alone is not censoring: a completed nonzero exit still supplies a
+    duration. Collector unavailability alone also does not prove truncation.
+    """
+    observation = data.get("resource_observation")
+    timeline = data.get("resource_timeline")
+    records = [data]
+    if isinstance(observation, dict):
+        records.append(observation)
+    if isinstance(timeline, dict):
+        records.append(timeline)
+    for record in tuple(records):
+        status = record.get("status")
+        if isinstance(status, dict):
+            records.append(status)
+    for record in records:
+        if any(record.get(flag) is True for flag in (
+            "censored", "timed_out", "timeout", "cancelled", "canceled", "aborted",
+            "interrupted", "protocol_timeout",
+        )):
+            return True
+        for field in ("error_type", "outcome", "code", "reason", "unavailable_reason"):
+            value = record.get(field)
+            if isinstance(value, str) and any(marker in value.lower() for marker in (
+                "timeout", "timed out", "cancel", "abort", "interrupt", "killed",
+            )):
+                return True
+    return False
+
+
 @dataclass
 class LoadedTask:
     clauses: list[ClauseObservation] = field(default_factory=list)
@@ -66,6 +98,9 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
             command = args.get("command") if name == "exec" and isinstance(args, dict) else None
             if not isinstance(command, str):
                 command = None
+            censored = _censored_call(data)
+            if censored:
+                result.counts["censored_calls"] += 1
             duration = data.get("duration_ms")
             if not valid(duration):
                 result.counts["invalid_call_duration"] += 1
@@ -80,6 +115,7 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
                 # Static training labels have synthetic zero-based intervals;
                 # call duration and paired CPU average stay numerically exact.
                 call = CompletedCall(repo, name, command, 0., duration / 1000,
+                    censored=censored,
                     cpu_time_seconds=float(cpu) if eligible_cpu else None, cpu_time_eligible=eligible_cpu,
                     outcome="ok" if data.get("success") is True else "error")
                 result.calls.append(call)
@@ -90,6 +126,9 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
             if (observation.get("tool_call_id") != data.get("tool_call_id")
                     or (command is not None and observation.get("command") != command)):
                 raise ValueError(f"{path.name}:{line_number}: resource/action identity mismatch")
+            if censored:
+                result.counts["withheld_censored_clause_observations"] += 1
+                continue
             if (observation.get("eligible_for_kb") is not True
                     or observation.get("telemetry_quality") != "ok"
                     or observation.get("telemetry_status") != "ok"):

@@ -1022,8 +1022,10 @@ runtime_assets:
     assert called["config"] == config
 
 
+@pytest.mark.parametrize("frozen", [True, False])
 def test_run_one_passes_shared_kb_through_host_runtime_and_publishes(
     monkeypatch,
+    frozen,
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.yaml"
@@ -1040,6 +1042,9 @@ runtime_assets:
         encoding="utf-8",
     )
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    assert config.runtime.kb_frozen is True
+    if frozen is False:
+        config.runtime.kb_frozen = False
     task = TaskDef(
         instance_id="12rambau__sepal_ui-411",
         image="image:latest",
@@ -1087,12 +1092,12 @@ runtime_assets:
 
     assert result.exit_code == 0
     assert called["shared_kb_dir"] == shared_kb_dir
-    # _run_one publishes KB after a per-task sidecar run (shared_sidecar_port
-    # is None → should_publish is True).
+    # Only explicit online runs publish updates to the shared seed.
+    expected = "shared-before-task" if frozen else "task-update"
     assert _kb_pair_markers(shared_kb_dir) == {
-        "runtime-tool-resource-kb.json": "task-update",
-        "clause-resource-kb.json": "task-update",
-        "clause-lattice-time-kb.json": "task-update",
+        "runtime-tool-resource-kb.json": expected,
+        "clause-resource-kb.json": expected,
+        "clause-lattice-time-kb.json": expected,
     }
 
 

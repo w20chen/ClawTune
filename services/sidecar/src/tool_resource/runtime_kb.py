@@ -84,7 +84,10 @@ API reads only ``latency_ms``. Backoff for clause identity is repo exact clause
 from __future__ import annotations
 
 import heapq
+import hashlib
+import json
 import math
+from collections import Counter
 from bisect import bisect_right
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
@@ -260,7 +263,75 @@ def _public_keys(tool_name: str, command: str | None) -> list[NodeKey]:
     return keys
 
 
-class RuntimeToolResourceKB:
+def _history_identity(row: Any) -> str:
+    # Replay reconstructs nanosecond timestamps through JSON/float conversion.
+    # Metric eligibility may evolve; it is not a new execution identity.
+    identity = [row.repo, round(float(row.ts_start), 6), round(float(row.ts_end), 6)]
+    if isinstance(row, CompletedCall):
+        identity.extend([row.tool_name, row.command])
+    else:
+        identity.extend([row.bin, list(row.argv)])
+    return hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
+
+
+def _legacy_history_key(repo: str, source: str, key: NodeKey, value: float) -> str:
+    return json.dumps([repo, source, *key, round(float(value), 6)], separators=(",", ":"))
+
+
+class _ReplayHistory:
+    """Persist execution multiplicities independently of pending/absorbed state.
+
+    Old snapshots have no execution identities. Reconcile their repository
+    leaf measurements once as a multiset; public priors are never consumed.
+    Live observations are always appended, even when their values are equal.
+    """
+
+    def _init_history(self) -> None:
+        self._observed_counts: Counter[str] = Counter()
+        self._legacy_counts: Counter[str] = Counter()
+
+    def _restore_history(self, obj: Mapping[str, Any], leaf_kinds: set[str]) -> None:
+        if "observed_counts" in obj:
+            self._observed_counts = Counter(obj["observed_counts"])
+            self._legacy_counts = Counter(obj.get("legacy_counts", {}))
+            return
+        # Pending records were counted by observe_completed_* during restore.
+        for repo, sources in self._repo.items():
+            for source, nodes in sources.items():
+                for key, values in nodes.items():
+                    if key[0] in leaf_kinds:
+                        self._legacy_counts.update(
+                            _legacy_history_key(repo, source, key, value) for value in values
+                        )
+
+    def _merge_historical(self, rows: Iterable[Any], project: Any, observe: Any) -> int:
+        if self._frozen:
+            return 0
+        baseline = self._observed_counts.copy()
+        seen: Counter[str] = Counter()
+        added = 0
+        for row in rows:
+            identity = _history_identity(row)
+            seen[identity] += 1
+            if seen[identity] <= baseline[identity]:
+                continue
+            keys = project(row)
+            if keys and self._legacy_counts[keys[0]] > 0:
+                # Bind a previously anonymous legacy measurement to its replay
+                # identity. Consume each available target for this occurrence.
+                for key in keys:
+                    if self._legacy_counts[key] > 0:
+                        self._legacy_counts[key] -= 1
+                        if self._legacy_counts[key] == 0:
+                            del self._legacy_counts[key]
+                self._observed_counts[identity] += 1
+                continue
+            observe(row)
+            added += 1
+        return added
+
+
+class RuntimeToolResourceKB(_ReplayHistory):
     """Frozen public layer plus causally accumulated per-repo nodes.
 
     Construct via :meth:`fit_public` or :meth:`from_json_obj`; the public
@@ -269,6 +340,7 @@ class RuntimeToolResourceKB:
     """
 
     def __init__(self) -> None:
+        self._init_history()
         self._public: dict[str, dict[NodeKey, tuple[float, ...]]] = {
             target: {} for target in _ALL_TARGETS
         }
@@ -313,8 +385,16 @@ class RuntimeToolResourceKB:
 
         if self._frozen:
             return
+        self._observed_counts[_history_identity(call)] += 1
         heapq.heappush(self._pending, (call.ts_end, self._pending_seq, call))
         self._pending_seq += 1
+
+    def merge_historical(self, calls: Iterable[CompletedCall]) -> int:
+        def project(call: CompletedCall) -> list[str]:
+            keys = _repo_keys(call.tool_name, call.command)
+            return [_legacy_history_key(call.repo, source, keys[0], value)
+                    for source, value in _target_values(call).items()] if keys else []
+        return self._merge_historical(calls, project, self.observe_completed_call)
 
     def query(self, query: ToolCallQuery) -> dict[str, TargetPrediction]:
         """Predict secondary conditional p90 before ``query.ts_start``."""
@@ -430,6 +510,8 @@ class RuntimeToolResourceKB:
 
         return {
             "schema": _SCHEMA,
+            "observed_counts": dict(self._observed_counts),
+            "legacy_counts": dict(self._legacy_counts),
             "quantile": _CONDITIONAL_P90_QUANTILE,
             "max_prefix_depth": _MAX_PREFIX_DEPTH,
             "public": {
@@ -487,6 +569,7 @@ class RuntimeToolResourceKB:
                     targets[target] = {}
         last_query_ts = obj.get("last_query_ts")
         kb._last_query_ts = None if last_query_ts is None else float(last_query_ts)
+        kb._restore_history(obj, {"exact_command", "tool_name"})
         return kb
 
 
@@ -840,7 +923,7 @@ def _compose_compound_latency_ms(
     return total_ms, tuple(units)
 
 
-class ClauseResourceKB:
+class ClauseResourceKB(_ReplayHistory):
     """Causal clause history with a current-stage latency-bucket API.
 
     Public bin priors are frozen after construction; repo clause/prefix nodes
@@ -849,6 +932,7 @@ class ClauseResourceKB:
     """
 
     def __init__(self) -> None:
+        self._init_history()
         self._public: dict[str, dict[NodeKey, tuple[float, ...]]] = {
             source: {} for source in _CLAUSE_SOURCES
         }
@@ -896,8 +980,17 @@ class ClauseResourceKB:
 
         if self._frozen:
             return
+        self._observed_counts[_history_identity(obs)] += 1
         heapq.heappush(self._pending, (obs.ts_end, self._pending_seq, obs))
         self._pending_seq += 1
+
+    def merge_historical(self, observations: Iterable[ClauseObservation]) -> int:
+        def project(obs: ClauseObservation) -> list[str]:
+            key = _clause_repo_keys(obs.bin, obs.argv)[0]
+            return [_legacy_history_key(obs.repo, source, key, value)
+                    for source in _CLAUSE_SOURCES
+                    if (value := _clause_value(obs, source)) is not None]
+        return self._merge_historical(observations, project, self.observe_completed_clause)
 
     def _absorb_completed(self, ts_start: float) -> None:
         while self._pending and self._pending[0][0] < ts_start:
@@ -1196,6 +1289,8 @@ class ClauseResourceKB:
 
         return {
             "schema": _CLAUSE_SCHEMA,
+            "observed_counts": dict(self._observed_counts),
+            "legacy_counts": dict(self._legacy_counts),
             "max_prefix_depth": _CLAUSE_MAX_DEPTH,
             "public": {
                 source: _nodes_to_json(nodes) for source, nodes in self._public.items()
@@ -1242,6 +1337,7 @@ class ClauseResourceKB:
             )
         last_query_ts = obj.get("last_query_ts")
         kb._last_query_ts = None if last_query_ts is None else float(last_query_ts)
+        kb._restore_history(obj, {"exact_clause"})
         return kb
 
 

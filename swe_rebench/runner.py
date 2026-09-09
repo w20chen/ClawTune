@@ -229,6 +229,10 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         "continuous_latency_ms_prediction_available_span_starts": 0,
         "continuous_peak_cpu_cores_prediction_available_span_starts": 0,
         "continuous_peak_memory_mb_prediction_available_span_starts": 0,
+        "call_prediction_span_starts": 0,
+        "call_prediction_valid_span_starts": 0,
+        "call_prediction_available_span_starts": 0,
+        "call_prediction_target_available_span_starts": {},
         "warnings": [],
     }
     try:
@@ -256,6 +260,32 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         if kind == "tool" or "tool" in span_name or record.get("action_type") == "tool_exec":
             report["has_tool_span"] = True
             if record_type == "span_start":
+                call_prediction = _nested_get(record, ("prediction", "call_prediction"))
+                if call_prediction is not None:
+                    report["call_prediction_span_starts"] += 1
+                    try:
+                        # Reuse the sidecar's semantic mirror of the public
+                        # JSON Schema, including independent target availability.
+                        from clawtune_sidecar.contracts.load_prediction import CallLoadPrediction
+                        if not isinstance(call_prediction, dict) or not all(
+                            field in call_prediction for field in (
+                                "schema_version", "scope", "lifecycle", "cpu_peak_window_ms",
+                                "quantile_method", "targets",
+                            )
+                        ):
+                            raise ValueError("missing call-load envelope")
+                        load = CallLoadPrediction.model_validate(call_prediction, strict=True)
+                    except (ValueError, TypeError) as exc:
+                        report["warnings"].append(f"invalid call-load prediction: {exc}")
+                    else:
+                        report["call_prediction_valid_span_starts"] += 1
+                        available = [target for target, estimate in load.targets.items()
+                                     if estimate.status == "available"]
+                        if available:
+                            report["call_prediction_available_span_starts"] += 1
+                        counts = report["call_prediction_target_available_span_starts"]
+                        for target in available:
+                            counts[target] = counts.get(target, 0) + 1
                 prediction = _nested_get(record, ("prediction", "tool_resource"))
                 if isinstance(prediction, dict):
                     report["tool_resource_prediction_span_starts"] += 1
@@ -727,6 +757,14 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
     )
     return {
         "tool_span_ends": tool_span_ends,
+        **{key: sum(int(item.get(key, 0)) for item in trace_inspection) for key in (
+            "call_prediction_span_starts", "call_prediction_valid_span_starts",
+            "call_prediction_available_span_starts",
+        )},
+        "call_prediction_target_available_span_starts": dict(sum(
+            (collections.Counter(item.get("call_prediction_target_available_span_starts", {}))
+             for item in trace_inspection), collections.Counter(),
+        )),
         "launcher_tool_span_ends": launcher_tool_span_ends,
         "launcher_ebpf_expected_span_ends": launcher_ebpf_expected_span_ends,
         "launcher_exit_status_span_ends": launcher_exit_status_span_ends,
@@ -1606,6 +1644,21 @@ def _required_telemetry_error(
             f"{clauses_with_status}/{clause_count} mapped clauses"
         )
     if config.runtime.mode == HOST_OPENCLAW_MODE:
+        # New-protocol runs are judged by complete call predictions. Missing
+        # evidence for individual targets is legal; deprecated backend fields
+        # cannot veto a valid prediction or rescue a malformed new payload.
+        if int(resources.get("call_prediction_span_starts", 0)):
+            valid_predictions = int(resources.get("call_prediction_valid_span_starts", 0))
+            if (valid_predictions != tool_spans
+                    or valid_predictions != int(resources["call_prediction_span_starts"])):
+                return (
+                    "required call-load prediction coverage is incomplete or invalid: "
+                    f"{valid_predictions}/{tool_spans} tool calls"
+                )
+            if int(resources.get("call_prediction_available_span_starts", 0)) == 0:
+                return "required call-load prediction produced no usable target estimate"
+            return None
+        # Compatibility with traces produced before call_load.v1.
         prediction_spans = int(
             resources.get("tool_resource_prediction_span_starts", 0)
         )

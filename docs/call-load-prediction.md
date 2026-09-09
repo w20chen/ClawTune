@@ -128,6 +128,13 @@ observations and excluded from complete canonical load labels. This is not
 survival analysis, and error classification is limited to available event
 metadata. Shared execution scopes are not accepted as per-call CPU/RSS labels.
 
+The flat cold-start exporter follows the same censoring rule. It checks
+structured lifecycle fields on the action, resource observation and timeline,
+retains censored call records for accounting, and withholds their clause
+observations as well as complete call labels. It does not infer truncation from
+command text or tool output, or from an ordinary nonzero exit. The seed report
+includes `censored_calls` and `withheld_censored_clause_observations` counts.
+
 The old `tool_resource` payload is retained as **deprecated diagnostics** during
 migration. Its clause arrays and old bucket/continuous shapes are not the new
 statistics contract. Top-level duration fields are compatibility aliases of
@@ -149,6 +156,51 @@ Failures retain the staged successor for a subsequent retry. Partial-pending
 offline replay can still require rebuilding a causal subset.
 
 ## Evaluation and remaining limits
+
+### Console output
+
+With plugin `consoleMode=verbose` (the default, also selectable with
+`CLAWTUNE_CONSOLE_MODE=verbose`), each successful decision prints the selected
+five-target prediction, then separate Runtime, Trie and Lattice candidates.
+Each group includes mean/p50/p90, units, backend/method, historical component
+counts versus summary sample count, labeled histogram intervals, selected
+context and composition assumptions. Unavailable targets include their reason
+and configured edges. RSS statistics and histogram boundaries both display in
+MiB; the API/trace continues to use bytes.
+
+The following diagnostic section retains clause argv/index, legacy bucket and
+Runtime estimates, and every supplied Lattice time/resource algorithm, including
+selected features and risk. These diagnostics are labeled separately from the
+selected call prediction. Host SWE-Rebench tees the output to the terminal and
+`agent-stdout.txt`; quiet mode suppresses this console output.
+
+### Restart-safe history loading
+
+Runtime and Trie snapshots now include additive `observed_counts` and
+`legacy_counts` metadata. Replay reconciles observation multiplicities against
+both pending and absorbed history; fresh online completions still append, and
+equal measurements from distinct executions are retained. Timestamp identity
+uses microsecond precision to tolerate JSON timestamp round trips. Lattice
+continues to use its raw-observation multiset reconciliation.
+
+Old aggregate snapshots lack execution identities. Their repository leaf
+measurements are conservatively reconciled by primary metric multiplicity once
+and then associated with replay identities. Public priors are not treated as
+already learned repository history. This cannot reconstruct exact identities
+from a partial old corpus, or remove duplicate weights already baked into an
+old snapshot; rebuilding from the original history is required for that.
+Frozen loading never merges history or mutates these counters.
+
+For required host SWE-Rebench telemetry, a run containing `call_prediction`
+must have a valid canonical prediction for every tool call and at least one
+available target somewhere in the run. Individual unavailable targets are
+allowed; old Runtime CPU/memory diagnostics and clause buckets are not required
+by this gate. Malformed or mixed incomplete canonical coverage fails even if
+legacy diagnostics are available. Entirely legacy traces keep their previous
+compatibility checks. Reports expose canonical presence, validity, availability
+and per-target counts separately from the legacy diagnostic counters.
+Frozen runs must report zero KB updates; explicit online runs must account for
+their eligible updates. All collector, ownership and lifecycle checks still run.
 
 `python tools/evaluate_call_load.py held_out_calls.jsonl` scores recorded,
 held-out **tool-call** predictions without changing data or training a KB.

@@ -71,6 +71,75 @@ def test_flat_loader_units_and_unproven_call_resource_scope(tmp_path):
     assert trusted.calls[0].cpu_time_seconds == 2 and trusted.calls[0].cpu_time_eligible
 
 
+@pytest.mark.parametrize("metadata", [
+    {"error_type": "TimeoutError"},
+    {"error_type": "cancelled"},
+    {"status": {"code": "aborted"}},
+    {"censored": True},
+    {"resource_timeline": {"censored": True}},
+    {"resource_observation": {"unavailable_reason": "protocol_timeout"}},
+])
+def test_censored_flat_calls_cannot_train_any_backend(tmp_path, metadata):
+    records = [json.loads(line) for line in trace("org__a-1").splitlines()]
+    data = records[1]["data"]
+    data.update(success=False, duration_ms=60000)
+    for key, value in metadata.items():
+        if isinstance(value, dict) and isinstance(data.get(key), dict):
+            data[key].update(value)
+        else:
+            data[key] = value
+    # Leave otherwise eligible clauses present to verify no partial resource
+    # evidence is silently accepted after a call-level truncation signal.
+    path = tmp_path / "timeout.trace.jsonl"
+    path.write_text("\n".join(map(json.dumps, records)), encoding="utf-8")
+    loaded = read_task(path, repo="org/a", task_id="org__a-1", rss_unit="MB", trust_call_cgroup=True)
+    assert len(loaded.calls) == 1 and loaded.calls[0].censored
+    assert loaded.calls[0].cpu_time_seconds == 2  # retained as censored evidence
+    assert loaded.counts["censored_calls"] == 1
+    assert loaded.clauses == []
+    runtime = RuntimeToolResourceKB()
+    runtime.observe_completed_call(loaded.calls[0])
+    assert runtime.predict_load_samples(ToolCallQuery("org/a", "exec", "python work.py", 100)) == {}
+
+
+def test_completed_error_and_timeout_text_are_not_censored(tmp_path):
+    records = [json.loads(line) for line in trace("org__a-1", "python timeout_test.py").splitlines()]
+    data = records[1]["data"]
+    data.update(success=False, error_type="ProcessExitError", tool_result="cancel timeout abort")
+    path = tmp_path / "error.trace.jsonl"
+    path.write_text("\n".join(map(json.dumps, records)), encoding="utf-8")
+    loaded = read_task(path, repo="org/a", task_id="org__a-1", rss_unit="MB", trust_call_cgroup=True)
+    assert not loaded.calls[0].censored and len(loaded.clauses) == 1
+    runtime = RuntimeToolResourceKB.fit_public(loaded.calls)
+    targets = runtime.predict_load_samples(ToolCallQuery("org/a", "exec", "python timeout_test.py", 100))
+    assert targets["duration_ms"]["values"] == (1000,)
+    assert targets["cpu_time_seconds"]["values"] == (2,)
+
+
+def test_exported_snapshots_exclude_timeout_labels(tmp_path):
+    root = tmp_path / "dataset"
+    root.mkdir()
+    records = [json.loads(line) for line in trace("org__single-1").splitlines()]
+    timed_out = json.loads(json.dumps(records[1]))
+    timed_out["action_id"] = "tool-2"
+    timed_out["data"].update(duration_ms=60000, success=False, error_type="timeout")
+    records.append(timed_out)
+    (root / "org__single-1.trace.jsonl").write_text("\n".join(map(json.dumps, records)), encoding="utf-8")
+    out = tmp_path / "seed"
+    report = export(root, build_manifest(root), out, rss_unit="MB", trust_call_cgroup=True)
+    assert report["counts"]["censored_calls"] == 1
+    payloads = [json.loads((out / name).read_text()) for name in FILENAMES]
+    trie, runtime, lattice = (ClauseResourceKB.from_json_obj(payloads[0]),
+                              RuntimeToolResourceKB.from_json_obj(payloads[1]),
+                              LatticeTimeKB.from_json_obj(payloads[2]))
+    targets = runtime.predict_load_samples(ToolCallQuery("org/single", "exec", "python work.py", 100))
+    assert targets["duration_ms"]["values"] == (1000,)
+    assert targets["cpu_time_seconds"]["values"] == (2,)
+    for kb in (trie, lattice):
+        samples = kb.predict_load_samples("org/single", [{"bin": "python", "argv": ["python", "work.py"]}], 100)
+        assert samples[0]["duration_ms"]["values"] == (1000,)
+
+
 def test_export_is_train_only_and_every_backend_freezes_without_mutation(tmp_path):
     root = dataset(tmp_path)
     manifest = build_manifest(root)

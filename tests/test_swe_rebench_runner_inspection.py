@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import time
+
+import pytest
 from pathlib import Path
 
 from swe_rebench.docker import ContainerResult
@@ -584,6 +586,7 @@ def test_required_telemetry_audits_all_tool_samples_and_async_artifacts(tmp_path
         encoding="utf-8",
     )
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    config.runtime.kb_frozen = False  # This fixture exercises legacy online traces.
     result = {
         "resource_summary": {
             "tool_span_ends": 2,
@@ -908,13 +911,7 @@ def test_required_ebpf_still_fails_real_collector_infrastructure_failure(
     assert "collector/infrastructure health is incomplete" in (error or "")
 
 
-def test_host_openclaw_required_telemetry_requires_predictions(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        "runtime:\n  mode: host-openclaw\n  ebpf_required: true\n",
-        encoding="utf-8",
-    )
-    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+def _host_prediction_result():
     resources = {
         "tool_span_ends": 1,
         "resource_sampled_tool_span_ends": 1,
@@ -958,10 +955,19 @@ def test_host_openclaw_required_telemetry_requires_predictions(tmp_path):
         "clause_count": 1,
         "clauses_with_status": 1,
     }
-    result = {
-        "resource_summary": resources,
-        "tool_resource_artifacts": artifacts,
-    }
+    return {"resource_summary": resources, "tool_resource_artifacts": artifacts}
+
+
+def test_host_openclaw_required_telemetry_requires_predictions(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "runtime:\n  mode: host-openclaw\n  ebpf_required: true\n",
+        encoding="utf-8",
+    )
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    config.runtime.kb_frozen = False  # This fixture exercises legacy online traces.
+    result = _host_prediction_result()
+    resources = result["resource_summary"]
 
     assert "prediction coverage is incomplete" in (
         _required_telemetry_error(config, result) or ""
@@ -982,6 +988,104 @@ def test_host_openclaw_required_telemetry_requires_predictions(tmp_path):
     assert _required_telemetry_error(config, result) is None
 
 
+def _canonical_prediction():
+    from clawtune_sidecar.prediction_config import load_bucket_edges
+    from clawtune_sidecar.predictors.call_load import predict_call_load
+    from tool_resource.runtime_kb import ClauseResourceKB, RuntimeToolResourceKB, ToolCallQuery
+    from tool_time.lattice_kb import LatticeTimeKB
+
+    root = Path(__file__).resolve().parents[1]
+    snapshot = json.loads((root / "traces/tool-resource/runtime-tool-resource-kb.json").read_text())
+    runtime = RuntimeToolResourceKB.from_json_obj(snapshot)
+    runtime.freeze()
+    query = ToolCallQuery("review", "read_file", None, 1, ambient_before_mb=100)
+    assert runtime.query(query)["peak_cpu_cores"].conditional_p90 is None
+    prediction, _ = predict_call_load(
+        runtime=runtime, trie=ClauseResourceKB(), lattice=LatticeTimeKB(), query=query,
+        edges=load_bucket_edges((100, 500, 2000, 10000)),
+    )
+    assert prediction.targets["duration_ms"].status == "available"
+    assert prediction.targets["cpu_peak_cores"].status == "unavailable"
+    return prediction.model_dump()
+
+
+def _inspect_call_prediction(tmp_path, prediction):
+    trace = tmp_path / "canonical.jsonl"
+    # Include apparently healthy old diagnostics: they must not rescue an
+    # invalid canonical prediction or supply the new coverage counters.
+    record = _ebpf_prediction_start()
+    record["prediction"]["call_prediction"] = prediction
+    trace.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    summary = _resource_summary([_inspect_trace(trace, "task-1")])
+    return {key: value for key, value in summary.items() if key.startswith("call_prediction_")}
+
+
+@pytest.mark.parametrize("frozen", [True, False])
+def test_canonical_gate_accepts_migrated_seed_and_checks_update_accounting(tmp_path, frozen):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("runtime:\n  mode: host-openclaw\n  ebpf_required: true\n", encoding="utf-8")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    assert config.runtime.kb_frozen is True
+    config.runtime.kb_frozen = frozen
+    result = _host_prediction_result()
+    resources = result["resource_summary"]
+    resources["launcher_tool_resource_eligible_span_ends"] = 0 if frozen else 1
+    resources.update(_inspect_call_prediction(tmp_path, _canonical_prediction()))
+    assert resources["call_prediction_target_available_span_starts"] == {"duration_ms": 1}
+    # No legacy prediction coverage, CPU peak, or memory prior is required.
+    assert _required_telemetry_error(config, result) is None
+    resources["launcher_tool_resource_eligible_span_ends"] = 1 if frozen else 0
+    assert "KB update accounting" in _required_telemetry_error(config, result)
+
+
+@pytest.mark.parametrize("damage", ["schema", "missing_target", "units", "histogram", "missing_envelope", "all_unavailable"])
+def test_canonical_gate_rejects_invalid_or_entirely_unavailable_predictions(tmp_path, damage):
+    from clawtune_sidecar.prediction_config import load_bucket_edges
+    from clawtune_sidecar.predictors.call_load import compose
+
+    prediction = _canonical_prediction()
+    if damage == "schema":
+        prediction["schema_version"] = "call_load.v999"
+    elif damage == "missing_target":
+        del prediction["targets"]["cpu_peak_cores"]
+    elif damage == "units":
+        prediction["targets"]["duration_ms"]["unit"] = "bytes"
+    elif damage == "histogram":
+        prediction["targets"]["duration_ms"]["buckets"]["probabilities"] = [0, 0]
+    elif damage == "missing_envelope":
+        del prediction["scope"]
+    else:
+        prediction = compose("trie", (), load_bucket_edges((100, 500))).model_dump()
+    result = _host_prediction_result()
+    resources = result["resource_summary"]
+    resources.update(_inspect_call_prediction(tmp_path, prediction))
+    resources["launcher_tool_resource_eligible_span_ends"] = 0
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("runtime:\n  mode: host-openclaw\n  ebpf_required: true\n", encoding="utf-8")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    expected = "no usable" if damage == "all_unavailable" else "coverage is incomplete or invalid"
+    assert expected in _required_telemetry_error(config, result)
+
+
+def test_canonical_summary_requires_coverage_of_every_tool_call(tmp_path):
+    prediction = _canonical_prediction()
+    record = _ebpf_prediction_start()
+    record["prediction"]["call_prediction"] = prediction
+    path = tmp_path / "mixed.jsonl"
+    path.write_text(json.dumps(record) + "\n" + json.dumps(_ebpf_prediction_start()), encoding="utf-8")
+    summary = _resource_summary([_inspect_trace(path, "task-1")])
+    assert summary["call_prediction_span_starts"] == 1
+    result = _host_prediction_result()
+    resources = result["resource_summary"]
+    resources.update({key: value for key, value in summary.items() if key.startswith("call_prediction_")})
+    resources.update(tool_span_ends=2, resource_sampled_tool_span_ends=2,
+                     launcher_tool_resource_eligible_span_ends=0)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("runtime:\n  mode: host-openclaw\n  ebpf_required: true\n", encoding="utf-8")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    assert "coverage is incomplete or invalid" in _required_telemetry_error(config, result)
+
+
 def test_container_mode_honors_explicit_ebpf_requirement(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -989,6 +1093,7 @@ def test_container_mode_honors_explicit_ebpf_requirement(tmp_path):
         encoding="utf-8",
     )
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    config.runtime.kb_frozen = False  # This fixture exercises legacy online traces.
 
     assert _required_telemetry_error(
         config,
@@ -1058,6 +1163,7 @@ def test_launcher_per_pid_attribution_passes_gate(tmp_path):
         encoding="utf-8",
     )
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    config.runtime.kb_frozen = False  # This fixture exercises legacy online traces.
     resources = {
         "tool_span_ends": 1,
         "resource_sampled_tool_span_ends": 1,

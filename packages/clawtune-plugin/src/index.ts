@@ -2,6 +2,7 @@ import {definePluginEntry, type HookApi} from "openclaw/plugin-sdk/plugin-entry"
 import {randomUUID} from "node:crypto";
 import {readFileSync} from "node:fs";
 import {SidecarClient} from "./client.js";
+import {formatCallLoadPrediction} from "./prediction-format.js";
 import {loadConfig, isRecord} from "./config.js";
 import {CorrelationMap} from "./correlation.js";
 import type {CommonEvent, ModelEvent, PluginConfig, SidecarHealth, ToolBeforeRequest, ToolCompletedEvent, ToolDecision} from "./contracts.js";
@@ -355,16 +356,8 @@ export default definePluginEntry({
     const toolResource = prediction.tool_resource;
     const callLoad = prediction.call_prediction;
     if (callLoad) {
-      lines.push("  call load (empirical, uncalibrated):");
-      for (const [target, estimate] of Object.entries(callLoad.targets)) {
-        if (estimate.status === "unavailable") {
-          lines.push(`    ${target}: unavailable (${estimate.unavailable_reason})`);
-          continue;
-        }
-        lines.push(`    ${target}: avg=${formatNumber(estimate.avg, 3)}; p50=${formatNumber(estimate.p50, 3)}; p90=${formatNumber(estimate.p90, 3)} ${estimate.unit} (${estimate.backend}/${estimate.method})`);
-        lines.push(`      bucket edges=${JSON.stringify(estimate.buckets.edges)}; probabilities=${JSON.stringify(estimate.buckets.probabilities)}`);
-      }
-      return lines.join("\n");
+      lines.push(...formatCallLoadPrediction(prediction));
+      if (toolResource) lines.push("", "  CLAUSE / LEGACY DIAGNOSTICS (not the selected call prediction)");
     }
     if (!toolResource) return lines.join("\n");
 
@@ -396,6 +389,7 @@ export default definePluginEntry({
           continue;
         }
         const bin = typeof cp.bin === "string" ? oneLine(cp.bin) : "?";
+        if (Array.isArray(cp.argv)) lines.push(`    clause #${cp.clause_index}: ${oneLine(JSON.stringify(cp.argv))}`);
         if (isRecord(cp.prediction)) {
           const p = cp.prediction;
           const probs = formatProbabilityList(p.probability_by_bucket);
@@ -437,6 +431,7 @@ export default definePluginEntry({
       for (const clause of resourcePreds) {
         if (!isRecord(clause) || !Array.isArray(clause.predictions)) continue;
         const bin = typeof clause.bin === "string" ? oneLine(clause.bin) : "?";
+        if (Array.isArray(clause.argv)) lines.push(`    clause #${clause.clause_index}: ${oneLine(JSON.stringify(clause.argv))}`);
         for (const item of clause.predictions) {
           if (!isRecord(item)) continue;
           const label = `${bin} ${item.algorithm} ${item.target}`;
@@ -447,6 +442,7 @@ export default definePluginEntry({
             const unit = item.unit === "bytes" ? "MiB" : item.unit;
             lines.push(`    ${label}: p50=${(item.p50 / scale).toFixed(3)} p90=${(item.p90 / scale).toFixed(3)} ${unit} (${item.evidence_count} samples)`);
           }
+          if (Array.isArray(item.selected_features)) lines.push(`      context: ${item.selected_features.map(String).map(oneLine).join(" / ") || "none"}; risk=${item.selected_risk ?? "n/a"}; exact=${item.exact_match ?? "unknown"}`);
         }
       }
     }
@@ -460,6 +456,7 @@ export default definePluginEntry({
           continue;
         }
         const bin = typeof lp.bin === "string" ? oneLine(lp.bin) : "?";
+        if (Array.isArray(lp.argv)) lines.push(`    clause #${lp.clause_index}: ${oneLine(JSON.stringify(lp.argv))}`);
         const predictions = Array.isArray(lp.predictions) ? lp.predictions : [];
         const estimates = predictions.map((item) => {
           if (!isRecord(item)) return "unknown";
@@ -467,11 +464,12 @@ export default definePluginEntry({
           if (typeof item.prediction_ms === "number" && Number.isFinite(item.prediction_ms)) {
             const evidence = typeof item.evidence_count === "number" ? item.evidence_count : 0;
             const match = item.exact_match === true ? "exact" : item.exact_match === false ? "generalized" : "unknown match";
-            return `${algorithm}=${formatMs(item.prediction_ms)} (${match}, ${evidence} sample${evidence === 1 ? "" : "s"})`;
+            const features = Array.isArray(item.selected_features) ? item.selected_features.map(String).map(oneLine).join(" / ") : "none";
+            return `${algorithm}=${formatMs(item.prediction_ms)} (${match}, ${evidence} sample${evidence === 1 ? "" : "s"}); context=${features}; risk=${item.selected_risk ?? "n/a"}; fallback=${item.fallback ?? "none"}`;
           }
           return `${algorithm}=unavailable (${item.unavailable_reason ?? "unknown reason"})`;
         });
-        lines.push(`    ${bin}: ${estimates.join("; ")}`);
+        lines.push(`    ${bin}:\n      ${estimates.join("\n      ")}`);
       }
     }
 

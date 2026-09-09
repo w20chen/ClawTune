@@ -945,6 +945,22 @@ def test_openclaw_trace_cold_start_persists_runtime_kb(tmp_path: Path) -> None:
     assert result.tool_resource["continuous_predictions"]["latency_ms"]["key_kind"] == "command_prefix_depth_3"
 
 
+def test_restarting_with_the_same_trace_does_not_duplicate_runtime_history(tmp_path):
+    trace = tmp_path / "trace.jsonl"
+    _write_trace(trace, command="python job.py")
+    for _ in range(3):
+        predictor = ToolResourcePredictor.from_traces(
+            openclaw_trace_paths=(trace,), ebpf_trace_paths=(),
+            buckets=LatencyBuckets((100, 500, 2000)), repo="repo-1",
+            artifact_dir=tmp_path / "kb",
+        )
+        samples = predictor.continuous_kb.predict_load_samples(
+            ToolCallQuery("repo-1", "exec", "python job.py", 2_000_000_000)
+        )
+        assert len(samples["duration_ms"]["values"]) == 1
+        predictor.close()
+
+
 def test_shipped_runtime_snapshot_produces_public_predictions_for_any_repo(
     tmp_path: Path,
 ) -> None:

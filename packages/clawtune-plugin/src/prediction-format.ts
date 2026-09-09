@@ -1,0 +1,61 @@
+import type {CallLoadPrediction, LoadEstimate, LoadTarget, ToolDecision} from "./contracts.js";
+
+const targets: LoadTarget[] = [
+  "duration_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_peak_rss_bytes",
+];
+const labels: Record<LoadTarget, string> = {
+  duration_ms: "Duration", cpu_time_seconds: "CPU time", cpu_avg_cores: "CPU average",
+  cpu_peak_cores: "CPU peak", memory_peak_rss_bytes: "Peak RSS",
+};
+const clean = (value: string): string => value.replace(/[\x00-\x1f\x7f]/g, " ");
+const number = (value: number | null, scale = 1): string =>
+  value === null ? "-" : Number((value / scale).toPrecision(6)).toString();
+
+function formatEstimate(target: LoadTarget, estimate: LoadEstimate): string[] {
+  const scale = target === "memory_peak_rss_bytes" ? 1024 ** 2 : 1;
+  const unit = target === "memory_peak_rss_bytes" ? "MiB" : estimate.unit;
+  const source = `${estimate.backend}/${estimate.method}`;
+  const lines = [estimate.status === "available"
+    ? `    ${labels[target].padEnd(12)} ${number(estimate.avg, scale).padStart(12)} ${number(estimate.p50, scale).padStart(12)} ${number(estimate.p90, scale).padStart(12)}  ${unit}  ${source}`
+    : `    ${labels[target].padEnd(12)} unavailable  [${unit}; ${source}]`];
+  if (estimate.unavailable_reason) lines.push(`      reason: ${clean(estimate.unavailable_reason)}`);
+  lines.push(`      evidence: historical=[${estimate.evidence_counts.join(", ")}]; summary samples=${estimate.sample_count}; calibration=${estimate.calibration}`);
+  const edges = estimate.buckets.edges;
+  const probabilities = estimate.buckets.probabilities;
+  if (probabilities) {
+    lines.push(`      histogram (${unit}; left closed, right open):`);
+    lines.push(`        ${probabilities.map((p, i) => {
+      const lower = i === 0 ? "0" : number(edges[i - 1], scale);
+      const upper = i === edges.length ? "inf" : number(edges[i], scale);
+      return `[${lower}, ${upper}): ${number(p * 100)}%`;
+    }).join(" | ")}`);
+  } else {
+    lines.push(`      histogram: unavailable; edges (${unit})=[${edges.map(v => number(v, scale)).join(", ")}]`);
+  }
+  if (estimate.context.length) lines.push(`      context: ${estimate.context.map(clean).join(" / ")}`);
+  if (estimate.assumptions.length) lines.push(`      assumptions: ${estimate.assumptions.map(clean).join("; ")}`);
+  return lines;
+}
+
+function formatBackend(title: string, prediction: CallLoadPrediction): string[] {
+  const lines = [
+    `  ${title}`,
+    `    scope=${prediction.scope}; lifecycle=${prediction.lifecycle}; CPU peak window=${prediction.cpu_peak_window_ms} ms`,
+    `    ${"Target".padEnd(12)} ${"Mean".padStart(12)} ${"P50".padStart(12)} ${"P90".padStart(12)}  Unit / source`,
+  ];
+  for (const target of targets) lines.push(...formatEstimate(target, prediction.targets[target]));
+  return lines;
+}
+
+/** Canonical results followed by every backend, including unavailable targets. */
+export function formatCallLoadPrediction(prediction: ToolDecision["prediction"]): string[] {
+  if (!prediction.call_prediction) return [];
+  const lines = ["  CALL LOAD — empirical estimates, uncalibrated", ...formatBackend("Selected prediction", prediction.call_prediction)];
+  for (const backend of ["runtime", "trie", "lattice"] as const) {
+    lines.push("");
+    const candidate = prediction.diagnostics?.backends[backend];
+    if (candidate) lines.push(...formatBackend(`${backend.toUpperCase()} — call-level candidate`, candidate));
+    else lines.push(`  ${backend.toUpperCase()} — diagnostics not supplied`);
+  }
+  return lines;
+}

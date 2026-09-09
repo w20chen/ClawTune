@@ -60,6 +60,39 @@ See [configuration.md](configuration.md), [trace-schema.md](trace-schema.md),
 
 ## Validation
 
+### History replay and console expansion (2026-09-10)
+
+- Runtime and Trie startup replay now uses persisted observation multiplicities instead of unconditionally appending history. Regression coverage includes pending and absorbed records, repeated restarts, old aggregate snapshot migration, identical real executions, public priors, new history and frozen immutability. Editing `services/sidecar/src/tool_resource/runtime_kb.py` was necessary because replay identity must survive its snapshot serializer/deserializer and online absorption.
+- Verbose console output now includes selected results, all supplied Runtime/Trie/Lattice call candidates, labeled histograms, evidence, context, assumptions and unavailable reasons, followed by clause/legacy diagnostics and Lattice algorithms. The TypeScript build is refreshed. Public prediction schemas and units are unchanged.
+- `python -m pytest services/sidecar/tests/test_kb_history.py services/sidecar/tests/test_tool_resource_predictor.py -q -p no:cacheprovider --basetemp C:/Users/29068/Desktop/ClawTune/.pytest-tmp-history-focused --tb=short`: 68 passed.
+- `python -m pytest services/sidecar/tests -q -p no:cacheprovider --basetemp C:/Users/29068/Desktop/ClawTune/.pytest-tmp-history-sidecar-final --tb=short`: **383 passed, 2 platform skips**. The first full run (`.pytest-tmp-history-sidecar`) exposed integer-versus-float serialization in legacy history matching; numeric key normalization fixed it.
+- `python -m pytest tests -q -p no:cacheprovider -o "pythonpath=C:/Users/29068/Desktop/ClawTune/services/sidecar/src C:/Users/29068/Desktop/ClawTune" --basetemp C:/Users/29068/Desktop/ClawTune/.pytest-tmp-history-root-final --tb=short`: **314 passed, 2 platform skips**.
+- `npm.cmd test` in `packages/clawtune-plugin`: TypeScript build and **97 tests passed**. The initial formatter test counted the phrase "CPU peak" in both headers and target rows; corrected to count target rows. Rendered console text was manually inspected with the contract example.
+- `python tools/validate_contracts.py`: **11 examples passed**. `git diff --check`: passed.
+- Old aggregate snapshots cannot recover exact execution identities or undo already accumulated duplicate weights. Migration uses conservative repository-measurement multiplicities; a clean rebuild from original history is needed to remove pre-existing duplicate weights. No shipped snapshots or external datasets were rewritten. Linux/eBPF end-to-end validation remains unavailable on this Windows host.
+
+### Review fixes (2026-09-10)
+
+- Fixed the host evaluation gate to consume canonical call predictions when present, retaining explicit per-target unavailability and legacy-only trace compatibility. Collector health and frozen/online update accounting remain enforced.
+- Fixed flat cold-start loading to mark structured timeout/cancel/abort/interruption records censored and exclude their partial clause labels. Regression tests verify the exported Runtime, Trie and Lattice snapshots, completed failures, and command/output text that mentions timeout.
+- `python -m pytest tests/test_cold_start.py tests/test_swe_rebench_runner_inspection.py tests/test_swe_rebench_selection.py -q -p no:cacheprovider -o "pythonpath=C:/Users/29068/Desktop/ClawTune/services/sidecar/src C:/Users/29068/Desktop/ClawTune" --basetemp C:/Users/29068/Desktop/ClawTune/.pytest-tmp-fix-focused2 --tb=short`: 181 passed, 2 platform skips. The first focused run with `--basetemp C:/Users/29068/Desktop/ClawTune/.pytest-tmp-fix-focused` failed nine new fixtures because they queried `read`, whereas the shipped legacy seed contains `read_file`; the corrected fixture now exercises real compatible seed evidence.
+- `python -m pytest tests -q -p no:cacheprovider -o "pythonpath=C:/Users/29068/Desktop/ClawTune/services/sidecar/src C:/Users/29068/Desktop/ClawTune" --basetemp C:/Users/29068/Desktop/ClawTune/.pytest-tmp-fix-root --tb=short`: **314 passed, 2 platform skips**, resolving the five review failures.
+- `python -m pytest services/sidecar/tests -q -p no:cacheprovider --basetemp C:/Users/29068/Desktop/ClawTune/.pytest-tmp-fix-sidecar --tb=short`: **376 passed, 2 platform skips**.
+- `npm.cmd test` in `packages/clawtune-plugin`: TypeScript build and **95 tests passed**. `python tools/validate_contracts.py`: **11 examples passed**. `git diff --check`: passed.
+- Native Linux/BCC/eBPF end-to-end validation remains unavailable on this Windows host. No external datasets, shipped seed snapshots, OpenClaw core, or `services/sidecar/src/tool_resource` implementation files were modified.
+
+### HEAD review (2026-09-10, commit 74380d1)
+
+- `python -m pytest services/sidecar/tests tests -q -p no:cacheprovider -o "pythonpath=services/sidecar/src ." --basetemp .pytest-tmp-commit-review` could not collect: pytest selected the sidecar configuration root, so the relative Python paths did not resolve to this checkout's modules. The separate commands below resolved collection.
+- `python -m pytest services/sidecar/tests -q -p no:cacheprovider --basetemp C:/Users/29068/Desktop/ClawTune/.pytest-tmp-review-sidecar`: 376 passed, 2 platform skips.
+- `python -m pytest tests -q -p no:cacheprovider -o "pythonpath=C:/Users/29068/Desktop/ClawTune/services/sidecar/src C:/Users/29068/Desktop/ClawTune" --basetemp C:/Users/29068/Desktop/ClawTune/.pytest-tmp-review-root`: 291 passed, 5 failed, 2 platform skips. Four failures in `test_swe_rebench_runner_inspection.py` still expect online KB updates with the new frozen default; one in `test_swe_rebench_selection.py` still expects publishing with that default. The earlier all-pass root result below does not describe this final commit.
+- Focused rerun of `tests/test_swe_rebench_runner_inspection.py tests/test_swe_rebench_selection.py` with the same absolute pythonpath, `--basetemp C:/Users/29068/Desktop/ClawTune/.pytest-tmp-review-gates --tb=short`: reproduced the same 5 failures; 151 passed, 2 skipped.
+- `npm.cmd test` in `packages/clawtune-plugin`: TypeScript build and all 95 tests passed.
+- `python tools/validate_contracts.py`: all 11 examples passed.
+- Read-only snapshot/gate reproduction: loading the shipped Runtime v1 snapshot removes legacy CPU peak nodes; an otherwise healthy frozen host-run fixture with zero KB updates fails the unchanged legacy prediction gate with `missing usable conditional_p90 values for: peak_cpu_cores`.
+- Synthetic flat-loader reproduction: a 60-second timeout record (`success=false`, `error_type=timeout`, resource observation ineligible with `protocol_timeout`) still produces `CompletedCall(censored=False)` and a complete 60000-ms duration label. With `trust_call_cgroup=True`, its partial CPU total and average also enter canonical training labels.
+- Native Linux/BCC/eBPF end-to-end validation remains unavailable on this Windows host; the passing unit suite does not establish live collector integration or held-out prediction accuracy. No source fixes, seed changes, or external dataset writes were made during this review.
+
 ### Call-load protocol migration
 
 Final local validation (2026-09-09):
