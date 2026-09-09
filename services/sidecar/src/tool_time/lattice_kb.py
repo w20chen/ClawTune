@@ -29,7 +29,7 @@ from tool_time._lattice_vendor.schemas import NodeStats, Observation, Prediction
 from tool_time._lattice_vendor.selector import predict as select_prediction
 from tool_time._lattice_vendor.shrinkage import compute_shrinkage_variances
 from tool_time.resource_lattice import (
-    RESOURCE_TARGETS, ResourcePrediction, ResourceState, build_resource_states,
+    RESOURCE_TARGETS, LOAD_TARGETS, ResourcePrediction, ResourceState, build_resource_states,
     nonnegative, resource_values,
 )
 
@@ -146,6 +146,8 @@ class LatticeTimeKB:
         without double-counting snapshot-plus-trace startup input.
         """
 
+        if getattr(self, "_frozen", False):
+            return 0
         baseline = Counter(_observation_key(item) for item in self._observations)
         baseline.update(_observation_key(item[2]) for item in self._pending)
         seen: Counter[_ObservationKey] = Counter()
@@ -169,6 +171,8 @@ class LatticeTimeKB:
     def observe_completed_clause(self, observation: ClauseObservation) -> bool:
         """Buffer one valid eBPF clause for a strictly later query."""
 
+        if getattr(self, "_frozen", False):
+            return False
         observation = _sanitize_resources(observation)
         if not _eligible_observation(observation):
             return False
@@ -180,6 +184,29 @@ class LatticeTimeKB:
         self._data_generation += 1
         self._prepared_all_state = None
         return True
+
+    def freeze(self) -> None:
+        if self._pending:
+            raise ValueError("frozen KB requires a finalized snapshot (pending must be empty)")
+        self.prepare()
+        self._last_query_ts = None
+        self._frozen = True
+
+    def fork_for_update(self) -> "LatticeTimeKB":
+        """Copy immutable raw observations for background generation building.
+
+        The owner serializes this short copy with queries, builds the successor
+        outside that lock, and publishes the prepared successor atomically.
+        Derived nodes are intentionally not copied or shared with the writer.
+        """
+        successor = type(self)()
+        successor._observations = list(self._observations)
+        successor._pending = list(self._pending)
+        successor._pending_seq = self._pending_seq
+        successor._data_generation = self._data_generation
+        successor._last_query_ts = self._last_query_ts
+        successor._dirty = True
+        return successor
 
     def prepare(self) -> None:
         """Build nodes outside the latency-sensitive prediction path."""
@@ -273,6 +300,35 @@ class LatticeTimeKB:
                 "cpu_peak_window_ms": 500, "quantile_method": "median_p50_nearest_rank_p90",
                 "predictions": predictions,
             })
+        return tuple(outcomes)
+
+    def predict_load_samples(self, repo: str, clauses: Sequence[Mapping[str, Any]],
+                             ts_start: float, *, algorithm: str = "shrinkage") -> tuple[dict[str, dict[str, Any]], ...]:
+        """Full-target standalone clause evidence, selected independently.
+
+        The shared call composer owns all call-level statistics. Raw samples
+        remain internal and are never serialized in a decision payload.
+        """
+        if algorithm not in LATTICE_TIME_ALGORITHMS:
+            raise ValueError("unknown lattice algorithm")
+        self._advance(ts_start)
+        self._ensure_nodes()
+        outcomes = []
+        for clause in clauses:
+            targets = {}
+            for target, (_, scale) in LOAD_TARGETS.items():
+                state = self._resource_states.get("load:" + target)
+                if state is None:
+                    continue
+                try:
+                    result = state.predict(repo, clause["argv"], target, algorithm)
+                    if result.unavailable_reason is None:
+                        node = state.nodes[frozenset(result.selected_features)]
+                        targets[target] = {"values": tuple(v * scale for v in node.durations),
+                                           "context": (algorithm, *result.selected_features)}
+                except (KeyError, TypeError, ValueError) as exc:
+                    targets[target] = {"values": (), "unavailable_reason": f"target_error:{type(exc).__name__}"}
+            outcomes.append(targets)
         return tuple(outcomes)
 
     def _predict_clause(
@@ -377,6 +433,8 @@ class LatticeTimeKB:
     def _advance(self, ts_start: float) -> None:
         if not math.isfinite(ts_start):
             raise ValueError("query ts_start must be finite")
+        if getattr(self, "_frozen", False):
+            return
         if self._last_query_ts is not None and ts_start < self._last_query_ts:
             raise ValueError(
                 f"backdated lattice query at {ts_start} after {self._last_query_ts}"
@@ -496,6 +554,7 @@ def _build_node_state(
         if nonnegative(observation.latency_ms) and observation.latency_ms > 0
     ]
     resources = build_resource_states(ordered)
+    resources.update({"load:" + target: state for target, state in build_resource_states(ordered, load=True).items()})
     if not training:
         return {}, 0.0, 0.5, 0.0, resources
     effective_max_optional_features = _effective_max_optional_features(training)

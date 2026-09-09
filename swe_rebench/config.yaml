@@ -12,6 +12,7 @@ runtime:
 
   # Strict eBPF clause telemetry. Set false only for explicit troubleshooting.
   ebpf_required: true
+  kb_frozen: true
 
 llm:
   # API key for the upstream LLM provider (required)

@@ -1592,10 +1592,11 @@ def _required_telemetry_error(
     trace_kb_updates = int(
         resources.get("launcher_tool_resource_eligible_span_ends", 0)
     )
-    if trace_kb_updates != eligible_calls:
+    expected_updates = 0 if config.runtime.kb_frozen else eligible_calls
+    if trace_kb_updates != expected_updates:
         return (
             "required eBPF Clause KB update accounting is inconsistent: "
-            f"{trace_kb_updates} trace updates != {eligible_calls} eligible calls"
+            f"{trace_kb_updates} trace updates != {expected_updates} expected updates (eligible={eligible_calls})"
         )
     clause_count = int(artifacts.get("clause_count", 0))
     clauses_with_status = int(artifacts.get("clauses_with_status", 0))
@@ -1969,6 +1970,7 @@ def run_batch(
     defer_container_kb_merge = (
         normalize_runtime_mode(config.runtime.mode) == CONTAINER_OPENCLAW_MODE
         and parallelism > 1
+        and not config.runtime.kb_frozen
     )
 
     # Container mode owns one long-running task container and benefits from a
@@ -2136,7 +2138,7 @@ def run_batch(
                 shared_kb_dir=shared_kb_dir,
                 shared_sidecar_port=shared_sidecar_port,
                 shared_sidecar_trace_dir=shared_sidecar_trace_dir,
-                publish_task_kb=not defer_container_kb_merge,
+                publish_task_kb=not defer_container_kb_merge and not config.runtime.kb_frozen,
             )
         except KnowledgeBaseSyncError:
             # KB sync failures must abort the batch to avoid propagating
@@ -2419,6 +2421,7 @@ def _run_one(
     # so no per-task publish is needed and it would conflict with the sidecar.
     if (
         publish_task_kb
+        and not config.runtime.kb_frozen
         and shared_kb_dir is not None
         and shared_sidecar_port is None
     ):
@@ -2500,6 +2503,7 @@ def _execute_one(
                 "TASK_BASE_COMMIT": task.base_commit,
                 "TASK_HINT_TEXT": task.hint_text,
                 "CLAWTUNE_TOOL_RESOURCE_REPO": task_repo_key(task),
+                "CLAWTUNE_TOOL_RESOURCE_FROZEN": "true" if config.runtime.kb_frozen else "false",
                 "CLAWTUNE_REPO_KEY": task_repo_key(task),
                 "CLAWTUNE_GATEWAY_ID": "swe-rebench-container",
                 "CLAWTUNE_RUNTIME_ID": _container_runtime_id(task),

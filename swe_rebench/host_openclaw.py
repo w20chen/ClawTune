@@ -68,7 +68,7 @@ _RUNTIME_PROXY_API_KEY_PREFIX = "clawtune-runtime."
 _BENCHMARK_GATEWAY_ID = "swe-rebench"
 
 _TOOL_RESOURCE_KB_SCHEMAS = {
-    "runtime-tool-resource-kb.json": "runtime_tool_resource_kb_v1",
+    "runtime-tool-resource-kb.json": "runtime_tool_resource_kb_v2",
     "clause-resource-kb.json": "runtime_clause_resource_kb_v4",
     "clause-lattice-time-kb.json": "clause_lattice_kb_v2",
 }
@@ -945,6 +945,7 @@ def _start_sidecar(
                 "true" if config.runtime.ebpf_required else "false"
             ),
             "CLAWTUNE_TOOL_RESOURCE_REPO": repo,
+            "CLAWTUNE_TOOL_RESOURCE_FROZEN": "true" if config.runtime.kb_frozen else "false",
             "CLAWTUNE_TOOL_RESOURCE_ARTIFACT_DIR": str(
                 artifact_dir or trace_dir / "tool-resource"
             ),
@@ -1009,6 +1010,10 @@ def _prepare_batch_tool_resource_kb(
         shared_kb_dir.mkdir(parents=True, exist_ok=False)
         for filename in _TOOL_RESOURCE_KB_SCHEMAS:
             _atomic_copy(source_dir / filename, shared_kb_dir / filename)
+        if config.runtime.kb_frozen:
+            for name in ("seed-manifest.json", "split-manifest.json", "test-tasks.json"):
+                if (source_dir / name).is_file():
+                    _atomic_copy(source_dir / name, shared_kb_dir / name)
         _validate_kb_snapshot_pair(shared_kb_dir)
     except KnowledgeBaseSyncError:
         raise
@@ -1040,8 +1045,12 @@ def _seed_runtime_tool_resource_kb(
         for filename in _TOOL_RESOURCE_KB_SCHEMAS:
             dest = dest_dir / filename
             source = source_dir / filename
-            if not dest.exists():
+            if config.runtime.kb_frozen or not dest.exists():
                 _atomic_copy(source, dest)
+        if config.runtime.kb_frozen:
+            for name in ("seed-manifest.json", "split-manifest.json", "test-tasks.json"):
+                if (source_dir / name).is_file():
+                    _atomic_copy(source_dir / name, dest_dir / name)
         _validate_kb_snapshot_pair(dest_dir)
     except KnowledgeBaseSyncError:
         raise
@@ -1115,7 +1124,8 @@ def _validate_kb_snapshot_pair(directory: Path) -> None:
             ) from exc
         schema = payload.get("schema") if isinstance(payload, dict) else None
         legacy_lattice = filename == "clause-lattice-time-kb.json" and schema == "clause_lattice_time_kb_v1"
-        if schema != schema_prefix and not legacy_lattice:
+        legacy_runtime = filename == "runtime-tool-resource-kb.json" and schema == "runtime_tool_resource_kb_v1"
+        if schema != schema_prefix and not legacy_lattice and not legacy_runtime:
             raise KnowledgeBaseSyncError(
                 f"invalid KB snapshot schema in {path}: {schema!r}; "
                 f"expected {schema_prefix!r}"

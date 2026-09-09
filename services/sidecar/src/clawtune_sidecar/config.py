@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
+from clawtune_sidecar.prediction_config import DEFAULT_RESOURCE_BUCKETS, load_bucket_edges
 
 
 DEFAULT_LLM_UPSTREAM_BASE_URL = "https://api.deepseek.com"
@@ -26,6 +27,7 @@ class SidecarConfig:
     tool_resource_trace_paths: tuple[Path, ...] = ()
     tool_resource_ebpf_trace_paths: tuple[Path, ...] = ()
     tool_resource_latency_buckets_ms: tuple[float, ...] = (100.0, 500.0, 2_000.0, 10_000.0)
+    tool_resource_load_buckets: dict[str, tuple[float, ...]] = field(default_factory=lambda: dict(DEFAULT_RESOURCE_BUCKETS))
     # KV-TTL cost proxy policy for the tool-resource prediction output.
     # ``tool_resource_ttl_by_bucket_s`` holds one KV TTL (seconds) per latency
     # bucket, including the open-ended tail bucket. Legacy edge-count policies
@@ -34,6 +36,7 @@ class SidecarConfig:
     tool_resource_ttl_by_bucket_s: tuple[float, ...] | None = None
     tool_resource_miss_penalty_s: float | None = None
     tool_resource_repo: str = "openclaw"
+    tool_resource_frozen: bool = False
     tool_resource_artifact_dir: Path | None = None
     tool_resource_container_executable: str = "docker"
     tool_resource_ebpf_required: bool = True
@@ -63,6 +66,9 @@ class SidecarConfig:
     # proxying; if upstream_model is unset, it defaults to expose_model.
     llm_proxy_expose_model: str | None = None
     llm_proxy_upstream_model: str | None = None
+
+    def __post_init__(self) -> None:
+        load_bucket_edges(self.tool_resource_latency_buckets_ms, self.tool_resource_load_buckets)
 
     @classmethod
     def from_env(cls) -> "SidecarConfig":
@@ -112,10 +118,20 @@ class SidecarConfig:
                 and tool_resource_ttl_by_bucket_raw.strip()
                 else None
             ),
+            tool_resource_load_buckets={
+                target: tuple(_parse_float_list(os.getenv(env), default=DEFAULT_RESOURCE_BUCKETS[target]))
+                for target, env in {
+                    "cpu_time_seconds": "CLAWTUNE_TOOL_RESOURCE_CPU_TIME_BUCKETS_S",
+                    "cpu_avg_cores": "CLAWTUNE_TOOL_RESOURCE_CPU_AVG_BUCKETS_CORES",
+                    "cpu_peak_cores": "CLAWTUNE_TOOL_RESOURCE_CPU_PEAK_BUCKETS_CORES",
+                    "memory_peak_rss_bytes": "CLAWTUNE_TOOL_RESOURCE_MEMORY_BUCKETS_BYTES",
+                }.items()
+            },
             tool_resource_miss_penalty_s=_optional_nonnegative_float_from_env(
                 "CLAWTUNE_TOOL_RESOURCE_MISS_PENALTY_S"
             ),
             tool_resource_repo=os.getenv("CLAWTUNE_TOOL_RESOURCE_REPO", "openclaw"),
+            tool_resource_frozen=os.getenv("CLAWTUNE_TOOL_RESOURCE_FROZEN", "false").lower() in {"1", "true", "yes", "on"},
             tool_resource_artifact_dir=(
                 _resolve_path(tool_resource_artifact_dir, env_base)
                 if tool_resource_artifact_dir

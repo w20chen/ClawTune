@@ -142,6 +142,8 @@ export type ToolDecision = {
     duration_p90_ms: number | null;
     resource_class: string;
     confidence: number | null;
+    call_prediction?: CallLoadPrediction | null;
+    diagnostics?: { backends: Partial<Record<LoadBackend, CallLoadPrediction>> } | null;
     tool_resource?: ToolResourceCommandPrediction | null;
   };
   placement_advice: {
@@ -152,6 +154,36 @@ export type ToolDecision = {
   };
   placement?: unknown | null;
   profiling?: unknown | null;
+};
+
+// Mirror of contracts/call-load.schema.json. Native KB payloads below are
+// migration diagnostics; consumers should use prediction.call_prediction.
+export type LoadBackend = "runtime" | "trie" | "lattice";
+export type LoadTarget = "duration_ms" | "cpu_time_seconds" | "cpu_avg_cores" | "cpu_peak_cores" | "memory_peak_rss_bytes";
+export type LoadEstimate = {
+  status: "available" | "unavailable";
+  unit: "ms" | "core_seconds" | "cores" | "bytes";
+  metric_definition: string;
+  avg: number | null;
+  p50: number | null;
+  p90: number | null;
+  buckets: { edges: number[]; interval: "left_closed_right_open"; probabilities: number[] | null };
+  backend: LoadBackend;
+  method: "direct" | "composed" | "unavailable";
+  evidence_counts: number[];
+  sample_count: number;
+  context: string[];
+  assumptions: string[];
+  calibration: "unvalidated";
+  unavailable_reason: string | null;
+};
+export type CallLoadPrediction = {
+  schema_version: "call_load.v1";
+  scope: "tool_call";
+  lifecycle: "tool_hook_interval";
+  cpu_peak_window_ms: 500;
+  quantile_method: "median_p50_nearest_rank_p90";
+  targets: Record<LoadTarget, LoadEstimate>;
 };
 
 export type ToolResourceCommandPrediction = {

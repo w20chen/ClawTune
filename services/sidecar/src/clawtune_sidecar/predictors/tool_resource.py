@@ -25,6 +25,8 @@ from clawtune_sidecar.identity import (
     owners_compatible,
 )
 from clawtune_sidecar.monitoring.tool_runtime import ToolRuntimeSample
+from clawtune_sidecar.prediction_config import load_bucket_edges
+from clawtune_sidecar.predictors.call_load import predict_call_load
 from clawtune_sidecar.topology.linux import NumaCpuUsageSampler
 from clawtune_sidecar.tool_resource_commands import extract_command
 from tool_resource.features import (
@@ -284,10 +286,14 @@ class ToolResourcePredictor:
         ttl_by_bucket_s: tuple[float, ...] | None = None,
         miss_penalty_s: float | None = None,
         numa_usage_sampler: NumaCpuUsageSampler | None = None,
+        load_buckets: Mapping[str, Sequence[float]] | None = None,
+        frozen: bool = False,
     ) -> None:
+        self.frozen = frozen
         self.kb = kb
         self.continuous_kb = RuntimeToolResourceKB()
         self.buckets = buckets
+        self.load_buckets = load_bucket_edges(buckets.edges_ms, load_buckets)
         self.report = report
         self.repo = repo
         self.artifact_dir = artifact_dir
@@ -295,6 +301,10 @@ class ToolResourcePredictor:
         self.clause_kb_snapshot_path = clause_kb_snapshot_path
         self.runtime_kb_snapshot_path = runtime_kb_snapshot_path
         self.lattice_kb = lattice_kb or LatticeTimeKB()
+        if frozen:
+            self.kb.freeze()
+            self.continuous_kb.freeze()
+            self.lattice_kb.freeze()
         self.lattice_kb_snapshot_path = lattice_kb_snapshot_path
         self.numa_usage_sampler = numa_usage_sampler
         # KV-TTL policy.  Finite bucket boundaries are derived from the
@@ -337,6 +347,7 @@ class ToolResourcePredictor:
         self._lattice_kb_version = 0
         self._lattice_kb_persisted_version = 0
         self._lattice_needs_prepare = False
+        self._lattice_staged: LatticeTimeKB | None = None
         self._sdk = ToolResourceSDK(  # type: ignore[arg-type]
             _DeferredSdkClauseKb(self),
             buckets,
@@ -362,7 +373,41 @@ class ToolResourcePredictor:
         ttl_by_bucket_s: tuple[float, ...] | None = None,
         miss_penalty_s: float | None = None,
         numa_usage_sampler: NumaCpuUsageSampler | None = None,
+        load_buckets: Mapping[str, Sequence[float]] | None = None,
+        frozen: bool = False,
     ) -> "ToolResourcePredictor":
+        if frozen:
+            if artifact_dir is None:
+                raise ValueError("frozen evaluation requires an explicit cold-start directory")
+            paths = [_clause_kb_snapshot_path(artifact_dir), _runtime_kb_snapshot_path(artifact_dir),
+                     _lattice_kb_snapshot_path(artifact_dir)]
+            # No trace scanning, artifact auto-discovery, training merge, or
+            # snapshot rewriting is legal when evaluating a frozen seed.
+            seed_manifest_path = artifact_dir / "seed-manifest.json"
+            expected = (json.loads(seed_manifest_path.read_text(encoding="utf-8"))["snapshots"]
+                        if seed_manifest_path.is_file() else None)
+            payloads = []
+            for path in paths:
+                data = path.read_bytes()
+                if expected is not None and hashlib.sha256(data).hexdigest() != expected.get(path.name):
+                    raise ValueError(f"frozen cold-start snapshot hash mismatch: {path.name}")
+                payloads.append(json.loads(data))
+            clause = ClauseResourceKB.from_json_obj(payloads[0])
+            runtime = RuntimeToolResourceKB.from_json_obj(payloads[1])
+            lattice = LatticeTimeKB.from_json_obj(payloads[2])
+            runtime.freeze()
+            result = cls(kb=clause, lattice_kb=lattice, buckets=buckets, repo=repo,
+                artifact_dir=artifact_dir, container_executable=container_executable,
+                load_buckets=load_buckets, ttl_by_bucket_s=ttl_by_bucket_s, miss_penalty_s=miss_penalty_s,
+                numa_usage_sampler=numa_usage_sampler, frozen=True,
+                report=ToolResourceLoadReport(ebpf_traces_seen=0, ebpf_traces_loaded=0,
+                    openclaw_traces_seen=0, openclaw_traces_accepted=0, openclaw_tool_spans_seen=0,
+                    observations_loaded=0, continuous_observations_loaded=0,
+                    kb_available=True, continuous_kb_available=True,
+                    lattice_observations_loaded=lattice.observation_count, lattice_kb_available=bool(lattice.observation_count),
+                    rejections=()))
+            result.continuous_kb = runtime
+            return result
         openclaw_paths = list(_expand_trace_paths(openclaw_trace_paths))
         ebpf_paths = list(_expand_trace_paths(ebpf_trace_paths))
         # When no explicit eBPF paths are configured, auto-discover
@@ -466,6 +511,7 @@ class ToolResourcePredictor:
             ttl_by_bucket_s=ttl_by_bucket_s,
             miss_penalty_s=miss_penalty_s,
             numa_usage_sampler=numa_usage_sampler,
+            load_buckets=load_buckets,
         )
         loaded_runtime_snapshot = _load_runtime_kb_snapshot(
             runtime_snapshot_path,
@@ -505,6 +551,37 @@ class ToolResourcePredictor:
         )
 
     def predict(
+        self, request: ToolBeforeRequest, *, ambient_before_mb: float | None = None,
+    ) -> ToolPrediction:
+        # All backends and diagnostics see one serialized causal transaction.
+        # Legacy payload is migration-only; no policy consumes its clause data.
+        with self._kb_lock:
+            legacy = self._predict_legacy(request, ambient_before_mb=ambient_before_mb)
+            query = ToolCallQuery(repo=request.repo or self.repo, tool_name=request.tool_name,
+                                  command=_command_for_request(request), ts_start=time.time(),
+                                  ambient_before_mb=ambient_before_mb)
+            call, diagnostics = predict_call_load(runtime=self.continuous_kb, trie=self.kb,
+                                                  lattice=self.lattice_kb, query=query, edges=self.load_buckets)
+            duration = call.targets["duration_ms"]
+            p50 = None if duration.p50 is None else int(round(duration.p50))
+            p90 = None if duration.p90 is None else int(round(duration.p90))
+            payload = legacy.tool_resource
+            if isinstance(payload, dict):
+                # TTL must use the same authoritative duration distribution.
+                payload["kv_ttl_cost"] = None
+                if duration.buckets.probabilities is not None and duration.p90 is not None:
+                    probabilities = duration.buckets.probabilities
+                    bucket = max(range(len(probabilities)), key=probabilities.__getitem__)
+                    derived = ClauseLatencyBucketPrediction(
+                        bucket_id=bucket, probability_by_bucket=tuple(probabilities), scope="composed",
+                        key_kind="compound_composed", evidence_count=min(duration.evidence_counts),
+                        fallback_path=("call_load.v1",))
+                    payload["kv_ttl_cost"] = self._kv_ttl_cost_payload(derived, reference_runtime_s=duration.p90 / 1000)
+            return ToolPrediction(duration_p50_ms=p50, duration_p90_ms=p90,
+                                  resource_class=_resource_class_for_duration_ms(p90), confidence=None,
+                                  call_prediction=call, diagnostics=diagnostics, tool_resource=payload)
+
+    def _predict_legacy(
         self,
         request: ToolBeforeRequest,
         *,
@@ -764,6 +841,8 @@ class ToolResourcePredictor:
                     event.tool_call_id,
                     event,
                 )
+        if self.frozen:
+            return 0
         completed_call = completed_call_from_completion(
             event,
             sample,
@@ -979,7 +1058,7 @@ class ToolResourcePredictor:
             [result.kb_update_error] if result.kb_update_error is not None else []
         )
         accepted_observations: list[ClauseObservation] = []
-        if result.kb_observations_added:
+        if result.kb_observations_added and not self.frozen:
             with self._kb_lock:
                 for observation in result.kb_observations:
                     try:
@@ -1091,32 +1170,42 @@ class ToolResourcePredictor:
         self,
         lattice_observations: tuple[ClauseObservation, ...],
     ) -> None:
+        if self.frozen:
+            return
         errors: list[str] = []
         snapshots: list[tuple[str, Path, dict[str, Any], int]] = []
 
         with self._kb_lock:
+            candidate = self._lattice_staged
+            if candidate is None and lattice_observations:
+                candidate = self.lattice_kb.fork_for_update()
+        if candidate is not None:
             for observation in lattice_observations:
                 try:
-                    self.lattice_kb.observe_completed_clause(observation)
+                    accepted = candidate.observe_completed_clause(observation)
                 except Exception as exc:
                     errors.append(
                         "lattice_kb_update_failed:"
                         f"{type(exc).__name__}: {exc}"
                     )
                     continue
-                self._lattice_kb_version += 1
-                self._lattice_needs_prepare = True
-
-            if self._lattice_needs_prepare:
-                try:
-                    self.lattice_kb.prepare()
-                except Exception as exc:
-                    errors.append(
-                        f"lattice_prepare_failed:{type(exc).__name__}: {exc}"
-                    )
-                else:
+                if accepted:
+                    self._lattice_kb_version += 1
+            # The coordinator is a single writer. Readers continue to use the
+            # previous prepared generation while this potentially slow build runs.
+            self._lattice_staged = candidate
+            self._lattice_needs_prepare = True
+            try:
+                candidate.prepare()
+            except Exception as exc:
+                errors.append(f"lattice_prepare_failed:{type(exc).__name__}: {exc}")
+            else:
+                with self._kb_lock:
+                    self.lattice_kb = candidate
+                    self._lattice_staged = None
                     self._lattice_needs_prepare = False
 
+        with self._kb_lock:
             self._capture_kb_snapshot_locked(
                 snapshots,
                 errors,
@@ -1502,12 +1591,8 @@ def observation_from_completion(
         ts_start=ts_start,
         ts_end=ts_end,
         latency_ms=max(0.0, float(event.duration_ms)),
-        peak_cpu_cores=(
-            None if shared_resources else sample.cpu_utilization_avg_cores
-        ),
-        sampled_peak_rss_mb=(
-            None if shared_resources else _rss_mb(sample.rss_bytes_peak)
-        ),
+        peak_cpu_cores=None,  # legacy helper cannot turn averages into peaks
+        sampled_peak_rss_mb=None,  # process/cgroup memory is not clause distinct-mm RSS
         cpu_ns_cumulative=(
             None if shared_resources else _cpu_ns(sample.cpu_time_delta_s)
         ),
@@ -1525,8 +1610,6 @@ def completed_call_from_completion(
     repo: str,
     start: ToolBeforeRequest | None = None,
 ) -> CompletedCall | None:
-    if not event.succeeded:
-        return None
     raw_params = start.raw_params if start is not None else _raw_params_from_result(event.raw_event, event.raw_result)
     command = extract_command(raw_params)
     ts_start = sample.started_at
@@ -1542,11 +1625,14 @@ def completed_call_from_completion(
         command=command,
         ts_start=ts_start,
         ts_end=ts_end,
-        censored=False,
-        peak_cpu_cores=sample.cpu_utilization_avg_cores,
-        peak_cpu_cores_eligible=(
-            not shared_resources and sample.cpu_utilization_avg_cores is not None
-        ),
+        censored=_truncated_outcome(event.error_type),
+        outcome="ok" if event.succeeded else "error",
+        # A monitor average is not a fixed-window peak. Only explicitly measured
+        # peak labels may populate either peak target.
+        peak_cpu_cores=None,
+        peak_cpu_cores_eligible=False,
+        cpu_time_seconds=sample.cpu_time_delta_s,
+        cpu_time_eligible=not shared_resources and sample.cpu_time_delta_s is not None,
         peak_memory_mb=peak_memory_mb,
         peak_memory_mb_eligible=(
             not shared_resources
@@ -1604,14 +1690,8 @@ def _observation_from_tool_span(
         ts_start=ts_start,
         ts_end=ts_end,
         latency_ms=duration_ms,
-        peak_cpu_cores=(
-            None
-            if shared_resources
-            else _optional_float(resources.get("cpu_utilization_avg_cores"))
-        ),
-        sampled_peak_rss_mb=(
-            None if shared_resources else _rss_mb(resources.get("rss_peak_bytes"))
-        ),
+        peak_cpu_cores=None,
+        sampled_peak_rss_mb=None,
         cpu_ns_cumulative=(
             None if shared_resources else _cpu_ns(resources.get("cpu_time_s"))
         ),
@@ -1622,6 +1702,11 @@ def _observation_from_tool_span(
     )
 
 
+def _truncated_outcome(value: Any) -> bool:
+    text = str(value or "").lower()
+    return any(marker in text for marker in ("timeout", "timed out", "cancel", "abort", "interrupt", "killed"))
+
+
 def _completed_call_from_tool_span(
     start: dict[str, Any] | None,
     end: dict[str, Any],
@@ -1629,7 +1714,7 @@ def _completed_call_from_tool_span(
     repo: str,
 ) -> CompletedCall | None:
     status = end.get("status") if isinstance(end.get("status"), dict) else {}
-    if status.get("code") not in {"ok", "unknown"}:
+    if status.get("code") not in {"ok", "unknown", "error"}:
         return None
     tool_name = end.get("name")
     if not isinstance(tool_name, str) or not tool_name:
@@ -1643,7 +1728,7 @@ def _completed_call_from_tool_span(
     resources = end.get("resources") if isinstance(end.get("resources"), dict) else {}
     peak_memory_mb = _rss_mb(resources.get("rss_peak_bytes"))
     ambient_before_mb = _rss_mb(resources.get("memory_rss_bytes_before"))
-    peak_cpu_cores = _optional_float(resources.get("cpu_utilization_avg_cores"))
+    peak_cpu_cores = _optional_float(resources.get("cpu_peak_cores"))
     execution = end.get("execution") if isinstance(end.get("execution"), dict) else {}
     shared_resources = _uses_shared_resources(resources) or _uses_shared_resources(
         execution
@@ -1654,9 +1739,17 @@ def _completed_call_from_tool_span(
         command=command,
         ts_start=ts_start,
         ts_end=ts_end,
-        censored=False,
+        censored=_truncated_outcome(status.get("message")) or resources.get("censored") is True,
+        outcome=str(status.get("code", "unknown")),
         peak_cpu_cores=peak_cpu_cores,
-        peak_cpu_cores_eligible=not shared_resources and peak_cpu_cores is not None,
+        peak_cpu_cores_eligible=(not shared_resources and peak_cpu_cores is not None
+                                 and resources.get("cpu_peak_window_ms") == 500),
+        cpu_peak_window_ms=resources.get("cpu_peak_window_ms"),
+        cpu_time_seconds=_optional_float(resources.get("cpu_time_s", resources.get("cpu_time_delta_s"))),
+        cpu_time_eligible=not shared_resources,
+        memory_peak_rss_bytes=_optional_float(resources.get("memory_peak_rss_bytes")),
+        memory_metric=resources.get("memory_metric"),
+        memory_rss_eligible=not shared_resources,
         peak_memory_mb=peak_memory_mb,
         peak_memory_mb_eligible=(
             not shared_resources

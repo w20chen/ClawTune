@@ -28,6 +28,7 @@ RESOURCE_TARGETS = {
     "cpu_peak_cores": ("cores", 1.0),
     "memory_peak_rss_bytes": ("bytes", 1024.0 * 1024.0),
 }
+LOAD_TARGETS = {"duration_ms": ("ms", 1000.0), **RESOURCE_TARGETS}
 
 
 def nonnegative(value: Any) -> bool:
@@ -86,7 +87,7 @@ class ResourceState:
     ) -> ResourcePrediction:
         from tool_time import lattice_kb as config
 
-        unit, scale = RESOURCE_TARGETS[target]
+        unit, scale = LOAD_TARGETS[target]
         def unavailable(reason: str) -> ResourcePrediction:
             return ResourcePrediction(
                 target, unit, algorithm, unavailable_reason=reason, threshold=threshold
@@ -137,7 +138,7 @@ class ResourceState:
         )
 
 
-def build_resource_states(observations: Sequence[ClauseObservation]) -> dict[str, ResourceState]:
+def build_resource_states(observations: Sequence[ClauseObservation], *, load: bool = False) -> dict[str, ResourceState]:
     """Build per-target statistics, retaining zero values and target eligibility.
 
 Use the vendored node/selector data model without its positive-duration-only
@@ -146,10 +147,18 @@ builder. Risk remains log1p(value/scale); zero CPU/RSS is a valid measurement.
     from tool_time import lattice_kb as config
 
     states = {}
-    for target, (_unit, scale) in RESOURCE_TARGETS.items():
+    def measured(row: ClauseObservation) -> dict[str, float]:
+        if load and (row.in_loop or row.in_pipe or row.in_subst):
+            return {}
+        values = resource_values(row)
+        if load and nonnegative(row.latency_ms):
+            values["duration_ms"] = float(row.latency_ms)
+        return values
+
+    for target, (_unit, scale) in (LOAD_TARGETS if load else RESOURCE_TARGETS).items():
         training = [
             Observation(cmd=shlex.join(row.argv), repo=row.repo, duration_s=values[target] / scale)
-            for row in observations if target in (values := resource_values(row))
+            for row in observations if target in (values := measured(row))
         ]
         maximum = config._effective_max_optional_features(training)
         samples: dict[FeatureSet, list[float]] = defaultdict(list)

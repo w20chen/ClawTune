@@ -76,6 +76,7 @@ def runtime_ebpf_required(config: dict[str, Any], default: bool = True) -> bool:
 class RuntimeConfig:
     mode: str = HOST_OPENCLAW_MODE
     ebpf_required: bool = True
+    kb_frozen: bool = True
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "RuntimeConfig":
@@ -87,6 +88,7 @@ class RuntimeConfig:
         return cls(
             mode=mode,
             ebpf_required=runtime_ebpf_required(d),
+            kb_frozen=_as_bool(d.get("kb_frozen", True)),
         )
 
 

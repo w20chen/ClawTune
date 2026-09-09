@@ -12,7 +12,7 @@ from clawtune_sidecar.policies.base import SchedulingContext
 
 class ConcurrencyPolicy:
     name = "concurrency"
-    version = "2"
+    version = "3"
 
     def __init__(self, leases: LeaseManager, admission_wait_ms: int) -> None:
         self.leases = leases
@@ -22,7 +22,7 @@ class ConcurrencyPolicy:
         lease_id = await self.leases.acquire(
             context.prediction.resource_class,
             self.admission_wait_ms,
-            demand_mcpu=_predicted_cpu_millis(context.prediction.tool_resource),
+            demand_mcpu=_predicted_cpu_millis(context.prediction.call_prediction),
             owner=owner_key(request),
         )
         if lease_id is None:
@@ -50,21 +50,27 @@ class ConcurrencyPolicy:
         )
 
 
-def _predicted_cpu_millis(tool_resource: Any) -> int:
-    """Translate shared-KB CPU p90 into a weighted admission reservation."""
+def _predicted_cpu_millis(call_prediction: Any) -> int:
+    """Reserve peak-p90, then average-p90; 1 core is a policy default only.
 
-    if not isinstance(tool_resource, dict):
+    No native KB fields or clause diagnostics are admission inputs. Empirical
+    quantiles remain uncalibrated estimates, not capacity guarantees.
+    """
+    if hasattr(call_prediction, "model_dump"):
+        call_prediction = call_prediction.model_dump()
+    if not isinstance(call_prediction, dict) or call_prediction.get("scope") != "tool_call":
         return 1_000
-    continuous = tool_resource.get("continuous_predictions")
-    if not isinstance(continuous, dict):
+    targets = call_prediction.get("targets", {})
+    if not isinstance(targets, dict):
         return 1_000
-    cpu = continuous.get("peak_cpu_cores")
-    if not isinstance(cpu, dict):
-        return 1_000
-    value = cpu.get("conditional_p90")
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return 1_000
-    cores = float(value)
-    if not math.isfinite(cores) or cores <= 0.0:
-        return 1_000
-    return max(1, math.ceil(cores * 1_000.0))
+    for target in ("cpu_peak_cores", "cpu_avg_cores"):
+        cpu = targets.get(target)
+        if not isinstance(cpu, dict) or cpu.get("status") != "available" or cpu.get("unit") != "cores":
+            continue
+        if target == "cpu_peak_cores" and call_prediction.get("cpu_peak_window_ms") != 500:
+            continue
+        value = cpu.get("p90")
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            continue
+        return max(1, math.ceil(value * 1_000.0))
+    return 1_000

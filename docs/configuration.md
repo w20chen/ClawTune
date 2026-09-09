@@ -31,6 +31,11 @@ will be treated as a valid ClawTune measurement.
 
 ## Benchmark Runs
 
+Tool-call load histogram edges are configurable independently for duration,
+CPU time, average/peak cores, and memory. See [call-load prediction](call-load-prediction.md#bucket-configuration)
+for defaults, units and `.env` variables; changing boundaries does not retrain a KB.
+
+
 The setup command copies `swe_rebench/config.example.yaml` once. Exporting a
 key in the launch shell is the simplest secret configuration:
 

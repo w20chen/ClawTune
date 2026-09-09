@@ -126,13 +126,7 @@ export interface ModelToolCallObservation {
   parse_status: "verified" | "damaged_or_unverified";
 }
 
-export interface ToolPrediction {
-  duration_p50_ms: number | null;
-  duration_p90_ms: number | null;
-  resource_class: string;
-  confidence: number | null;
-  tool_resource?: unknown | null;
-}
+export type ToolPrediction = import("../contracts.js").ToolDecision["prediction"];
 
 // ── Span End ───────────────────────────────────────────────────────────
 

@@ -450,13 +450,30 @@
       "type": "object",
       "required": ["duration_p50_ms", "duration_p90_ms", "resource_class", "confidence"],
       "properties": {
+        "call_prediction": {
+          "description": "Authoritative versioned call-level output. Nullable only for legacy/custom predictors during migration.",
+          "anyOf": [{"$ref": "call-load.schema.json"}, {"type": "null"}]
+        },
+        "diagnostics": {
+          "type": ["object", "null"], "additionalProperties": false,
+          "required": ["backends"],
+          "properties": {"backends": {
+            "type": "object", "additionalProperties": false,
+            "properties": {
+              "runtime": {"$ref": "call-load.schema.json"},
+              "trie": {"$ref": "call-load.schema.json"},
+              "lattice": {"$ref": "call-load.schema.json"}
+            }
+          }}
+        },
         "duration_p50_ms": {"type": ["integer", "null"], "minimum": 0},
         "duration_p90_ms": {"type": ["integer", "null"], "minimum": 0},
         "resource_class": {"type": "string"},
         "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
         "tool_resource": {
           "type": ["object", "null"],
-          "description": "Native tool_resource CommandLatencyBucketPrediction payload.",
+          "description": "Deprecated native KB diagnostics. Use call_prediction for authoritative tool-call load statistics.",
+          "deprecated": true,
           "properties": {
             "repo": {"type": "string"},
             "command": {"type": "string"},

@@ -6,6 +6,12 @@ carry change history; user instructions live in the dedicated guides.
 
 ## Current State
 
+- The sidecar publishes `call_load.v1` tool-call predictions for duration, CPU
+  time, average/peak cores and distinct-mm peak RSS. Every target exposes mean,
+  p50, p90 and a configurable histogram, or an explicit unavailable reason.
+  See [call-load prediction](call-load-prediction.md) for conservative composition,
+  Runtime v1-to-v2 label migration, admission v3 and evaluation limitations.
+
 ClawTune supports Kunpeng/arm64 and x86_64 Linux hosts with Docker, cgroup v2,
 and BCC/eBPF:
 
@@ -53,6 +59,22 @@ See [configuration.md](configuration.md), [trace-schema.md](trace-schema.md),
   continuous call-memory evaluation remains unavailable.
 
 ## Validation
+
+### Call-load protocol migration
+
+Final local validation (2026-09-09):
+
+- With `$env:PYTHONPATH=(Resolve-Path 'services/sidecar/src').Path`, `python -m pytest services/sidecar/tests -q -p no:cacheprovider --basetemp .pytest-tmp-sidecar-call-load-verified --tb=short`: **376 passed, 2 skipped**.
+- With the same `PYTHONPATH`, `python -m pytest tests -q -p no:cacheprovider --basetemp .pytest-tmp-root-call-load-complete --tb=short`: **289 passed, 2 skipped**.
+- In `packages/clawtune-plugin`, `npm.cmd test`: **95 passed**; `npm.cmd run typecheck`: passed.
+- `python tools/validate_contracts.py`: **11 examples passed**, including `call-load.json`.
+- `python tools/evaluate_call_load.py --help` and `git diff --check`: passed.
+- These checks do not establish real-workload accuracy/calibration or native Linux/eBPF correctness. No external trace datasets, shipped seed snapshots or OpenClaw core files were modified.
+
+- `npm run typecheck` could not launch through PowerShell because `npm.ps1` is blocked by the system execution policy. Use `npm.cmd run typecheck` / `npm.cmd test`; no execution-policy change is needed.
+
+- Initial targeted validation `python -m pytest services/sidecar/tests/test_call_load.py services/sidecar/tests/test_lattice_resources.py services/sidecar/tests/test_tool_resource_predictor.py services/sidecar/tests/test_admission_leases.py -q -p no:cacheprovider --basetemp .pytest-tmp-call-load` (absolute `PYTHONPATH=services/sidecar/src`) could not execute native parser cases: the Windows mvdan adapter and `/bin/sh` builder are unavailable; Go is not installed. Unit tests use explicit parser-response fixtures; real parser/eBPF integration requires Linux. Other failures in this run were migration assertions.
+- The earlier review command `python -m pytest services/sidecar/tests/test_lattice_resources.py services/sidecar/tests/test_tool_resource_predictor.py -q -p no:cacheprovider -o "pythonpath=services/sidecar/src ." --basetemp .pytest-tmp-interface-review` failed collection due to module-path resolution. Setting an absolute `PYTHONPATH` allowed those checks to run.
 
 ### Reproducible in this workspace or CI
 

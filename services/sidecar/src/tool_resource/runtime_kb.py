@@ -1,8 +1,9 @@
 """Runtime asymmetric two-layer tool resource knowledge bases.
 
-``RuntimeToolResourceKB`` is retained for historical continuous-resource
-diagnostics and snapshot compatibility. The current canonical API is the
-latency-bucket path on ``ClauseResourceKB`` described below.
+Both KBs expose full-target ``predict_load_samples`` evidence APIs consumed
+by the sidecar's common call-level adapter. The older continuous and latency-
+bucket APIs described below remain migration diagnostics, not canonical load
+outputs. Runtime v2 isolates canonical resources from legacy peak/residual labels.
 
 Public and repo layers intentionally use different key granularity because
 they encode different environment assumptions:
@@ -60,7 +61,7 @@ development candidates and are not implemented here.
 Clause latency bucket predictor (``ClauseResourceKB``)
 ------------------------------------------------------
 
-The current canonical stage predicts latency buckets with explicit boundaries.
+The legacy stage predicts latency buckets with explicit boundaries.
 The KB reuses mvdan clause identity, frozen public priors, and causal repo
 refinement. Compound commands remain explicitly unavailable at the top level,
 while each exec-producing clause exposes its own prediction or unavailable
@@ -86,7 +87,7 @@ import heapq
 import math
 from bisect import bisect_right
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 from tool_resource.features import (
@@ -99,7 +100,14 @@ from tool_time.command import shell_command_heads, shell_command_prefix_tokens
 TARGETS = ("latency_ms", "peak_cpu_cores", "peak_memory_mb")
 _CONDITIONAL_P90_QUANTILE = 0.9
 _MAX_PREFIX_DEPTH = 4  # frozen depth budget, same as the evaluated lattice
-_SCHEMA = "runtime_tool_resource_kb_v1"
+_SCHEMA = "runtime_tool_resource_kb_v2"
+_LEGACY_RUNTIME_SCHEMA = "runtime_tool_resource_kb_v1"
+# Legacy targets remain diagnostic only. Canonical resources require new,
+# explicitly eligible labels; legacy peak/ambient-residual nodes cannot feed them.
+LOAD_TARGET_SOURCES = {"duration_ms": "latency_ms", "cpu_time_seconds": "cpu_time_seconds",
+                       "cpu_avg_cores": "cpu_avg_cores", "cpu_peak_cores": "cpu_peak_cores",
+                       "memory_peak_rss_bytes": "memory_peak_rss_bytes"}
+_ALL_TARGETS = (*TARGETS, *(t for t in LOAD_TARGET_SOURCES.values() if t not in TARGETS))
 
 # (kind, key) — kind is what provenance exposes; key stays internal.
 NodeKey = tuple[str, str]
@@ -120,6 +128,13 @@ class CompletedCall:
     peak_memory_mb: float | None = None
     peak_memory_mb_eligible: bool = False
     ambient_before_mb: float | None = None
+    cpu_time_seconds: float | None = None
+    cpu_time_eligible: bool = False
+    cpu_peak_window_ms: int | None = None
+    memory_peak_rss_bytes: float | None = None
+    memory_metric: str | None = None
+    memory_rss_eligible: bool = False
+    outcome: str = "ok"
 
     def __post_init__(self) -> None:
         if not (math.isfinite(self.ts_start) and math.isfinite(self.ts_end)):
@@ -186,10 +201,24 @@ def _target_values(call: CompletedCall) -> dict[str, float]:
         and call.ambient_before_mb is not None
     ):
         residual = float(call.peak_memory_mb) - float(call.ambient_before_mb)
-        if not math.isfinite(residual):
-            raise ValueError("memory residual must be finite")
-        values["peak_memory_mb"] = residual
-    return values
+        if math.isfinite(residual):
+            values["peak_memory_mb"] = residual
+    if not call.censored and call.cpu_time_eligible and _valid_load_value(call.cpu_time_seconds):
+        values["cpu_time_seconds"] = float(call.cpu_time_seconds)
+        if not call.censored and call.ts_end > call.ts_start:
+            values["cpu_avg_cores"] = float(call.cpu_time_seconds) / (call.ts_end - call.ts_start)
+    if not call.censored and call.peak_cpu_cores_eligible and call.cpu_peak_window_ms == 500:
+        if _valid_load_value(call.peak_cpu_cores):
+            values["cpu_peak_cores"] = float(call.peak_cpu_cores)
+    if (not call.censored and call.memory_rss_eligible and call.memory_metric == "sampled_distinct_mm_rss"
+            and _valid_load_value(call.memory_peak_rss_bytes)):
+        values["memory_peak_rss_bytes"] = float(call.memory_peak_rss_bytes)
+    return {target: value for target, value in values.items()
+            if math.isfinite(value) and (value >= 0 or target == "peak_memory_mb")}
+
+
+def _valid_load_value(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
 
 
 def _single_head(command: str | None) -> str | None:
@@ -241,7 +270,7 @@ class RuntimeToolResourceKB:
 
     def __init__(self) -> None:
         self._public: dict[str, dict[NodeKey, tuple[float, ...]]] = {
-            target: {} for target in TARGETS
+            target: {} for target in _ALL_TARGETS
         }
         self._repo: dict[str, dict[str, dict[NodeKey, list[float]]]] = {}
         self._pending: list[tuple[float, int, CompletedCall]] = []
@@ -249,24 +278,29 @@ class RuntimeToolResourceKB:
         # Queries must be monotonic: absorbing pending calls is irreversible,
         # so a backdated query would see repo state from its future.
         self._last_query_ts: float | None = None
+        self._frozen = False
+
+    def freeze(self) -> None:
+        """Use a finalized static training snapshot without query-time mutation."""
+        if self._pending:
+            raise ValueError("frozen KB requires a finalized snapshot (pending must be empty)")
+        self._last_query_ts = None
+        self._frozen = True
 
     @classmethod
     def fit_public(cls, calls: Iterable[CompletedCall]) -> RuntimeToolResourceKB:
         """Fit the frozen public layer from historical completed calls."""
 
         accumulator: dict[str, dict[NodeKey, list[float]]] = {
-            target: {} for target in TARGETS
+            target: {} for target in _ALL_TARGETS
         }
         for call in calls:
             keys = _public_keys(call.tool_name, call.command)
             for target, value in _target_values(call).items():
                 for key in keys:
                     accumulator[target].setdefault(key, []).append(value)
-        missing = [
-            target for target in TARGETS if not accumulator[target].get(("global", ""))
-        ]
-        if missing:
-            raise ValueError(f"fit corpus has no eligible labels for {missing}")
+        if not any(nodes for nodes in accumulator.values()):
+            raise ValueError("fit corpus has no eligible labels")
         kb = cls()
         kb._public = {
             target: {key: tuple(values) for key, values in nodes.items()}
@@ -277,12 +311,16 @@ class RuntimeToolResourceKB:
     def observe_completed_call(self, call: CompletedCall) -> None:
         """Buffer a finished call; it becomes visible only once causally prior."""
 
+        if self._frozen:
+            return
         heapq.heappush(self._pending, (call.ts_end, self._pending_seq, call))
         self._pending_seq += 1
 
     def query(self, query: ToolCallQuery) -> dict[str, TargetPrediction]:
         """Predict secondary conditional p90 before ``query.ts_start``."""
 
+        if self._frozen:
+            return {target: self._predict_target(query, target) for target in TARGETS}
         if self._last_query_ts is not None and query.ts_start < self._last_query_ts:
             raise ValueError(
                 f"backdated query at ts_start {query.ts_start} after a query at "
@@ -299,7 +337,7 @@ class RuntimeToolResourceKB:
         while self._pending and self._pending[0][0] < ts_start:
             _, _, call = heapq.heappop(self._pending)
             repo_targets = self._repo.setdefault(
-                call.repo, {target: {} for target in TARGETS}
+                call.repo, {target: {} for target in _ALL_TARGETS}
             )
             keys = _repo_keys(call.tool_name, call.command)
             for target, value in _target_values(call).items():
@@ -343,9 +381,10 @@ class RuntimeToolResourceKB:
                 fallback_path=(),
                 note="memory prediction requires ambient_before_mb anchor",
             )
-        values, scope, kind, path = self._select(
-            query.repo, target, query.tool_name, query.command
-        )
+        try:
+            values, scope, kind, path = self._select(query.repo, target, query.tool_name, query.command)
+        except ValueError:
+            return TargetPrediction(target, None, None, None, 0, (), "no continuous evidence for target")
         conditional_p90 = ecdf_quantile(values, _CONDITIONAL_P90_QUANTILE)
         note = None
         if target == "peak_memory_mb":
@@ -360,6 +399,31 @@ class RuntimeToolResourceKB:
             fallback_path=path,
             note=note,
         )
+
+    def predict_load_samples(self, query: ToolCallQuery) -> dict[str, dict[str, Any]]:
+        """Public per-target evidence API; no synthetic values or global mixing.
+
+        Call-level labels keep compound commands intact. This API shares the
+        causal watermark with the legacy query and returns copies of evidence.
+        """
+        if not math.isfinite(query.ts_start):
+            raise ValueError("query time must be finite")
+        if self._last_query_ts is not None and query.ts_start < self._last_query_ts:
+            raise ValueError("backdated load query")
+        if not self._frozen:
+            self._last_query_ts = query.ts_start
+            self._absorb_completed(query.ts_start)
+        result = {}
+        for target, source in LOAD_TARGET_SOURCES.items():
+            for scope, (kind, _), values in self._levels(query.repo, source, query.tool_name, query.command):
+                # Unrelated tools are not workload predictions, even at cold start.
+                if kind == "global":
+                    continue
+                valid = tuple(float(v) for v in values if _valid_load_value(v))
+                if valid:
+                    result[target] = {"values": valid, "context": (scope, kind)}
+                    break
+        return result
 
     def to_json_obj(self) -> dict[str, Any]:
         """JSON-serializable snapshot of public, repo, and pending state."""
@@ -385,7 +449,7 @@ class RuntimeToolResourceKB:
     def from_json_obj(cls, obj: Mapping[str, Any]) -> RuntimeToolResourceKB:
         """Restore a snapshot produced by :meth:`to_json_obj`."""
 
-        if obj.get("schema") != _SCHEMA:
+        if obj.get("schema") not in {_SCHEMA, _LEGACY_RUNTIME_SCHEMA}:
             raise ValueError(f"unsupported schema {obj.get('schema')!r}")
         if obj.get("quantile") != _CONDITIONAL_P90_QUANTILE:
             raise ValueError("snapshot quantile differs from module quantile")
@@ -395,9 +459,9 @@ class RuntimeToolResourceKB:
         kb._public = {
             target: {
                 key: tuple(values)
-                for key, values in _nodes_from_json(obj["public"][target])
+                for key, values in _nodes_from_json(obj["public"].get(target, []))
             }
-            for target in TARGETS
+            for target in _ALL_TARGETS
         }
         kb._repo = {
             repo: {
@@ -405,12 +469,22 @@ class RuntimeToolResourceKB:
                     key: list(values)
                     for key, values in _nodes_from_json(targets.get(target, []))
                 }
-                for target in TARGETS
+                for target in _ALL_TARGETS
             }
             for repo, targets in obj.get("repo", {}).items()
         }
         for row in obj.get("pending", []):
-            kb.observe_completed_call(CompletedCall(**row))
+            call = CompletedCall(**row)
+            if obj.get("schema") == _LEGACY_RUNTIME_SCHEMA:
+                call = replace(call, peak_cpu_cores=None, peak_cpu_cores_eligible=False,
+                               cpu_peak_window_ms=None, cpu_time_eligible=False, memory_rss_eligible=False)
+            kb.observe_completed_call(call)
+        if obj.get("schema") == _LEGACY_RUNTIME_SCHEMA:
+            # v1 may contain averages mislabeled as peaks; do not reinterpret them.
+            for target in ("peak_cpu_cores", *[t for t in _ALL_TARGETS if t not in TARGETS]):
+                kb._public[target] = {}
+                for targets in kb._repo.values():
+                    targets[target] = {}
         last_query_ts = obj.get("last_query_ts")
         kb._last_query_ts = None if last_query_ts is None else float(last_query_ts)
         return kb
@@ -445,7 +519,8 @@ _DELIM = "\x00"  # argv tokens may contain spaces; NUL cannot collide
 _LATENCY_MS = "latency_ms"
 _PEAK_CPU_CORES = "peak_cpu_cores"
 _SAMPLED_PEAK_RSS_MB = "sampled_peak_rss_mb"
-_CLAUSE_SOURCES = (_LATENCY_MS, _PEAK_CPU_CORES, _SAMPLED_PEAK_RSS_MB)
+_CLAUSE_LOAD_SOURCES = {target: "load:" + target for target in LOAD_TARGET_SOURCES}
+_CLAUSE_SOURCES = (_LATENCY_MS, _PEAK_CPU_CORES, _SAMPLED_PEAK_RSS_MB, *_CLAUSE_LOAD_SOURCES.values())
 
 
 @dataclass(frozen=True)
@@ -603,6 +678,19 @@ def _clause_unavailable_reason(exc: Exception) -> str:
 
 
 def _clause_value(obs: ClauseObservation, source: str) -> float | None:
+    if source.startswith("load:"):
+        # A loop-aggregated or overlapping clause is not a standalone sample.
+        if obs.in_loop or obs.in_subst or obs.in_pipe:
+            return None
+        target = source.removeprefix("load:")
+        values = {"duration_ms": obs.latency_ms, "cpu_peak_cores": obs.peak_cpu_cores,
+                  "memory_peak_rss_bytes": None if obs.sampled_peak_rss_mb is None else obs.sampled_peak_rss_mb * 1024**2,
+                  "cpu_time_seconds": None if obs.cpu_ns_cumulative is None else obs.cpu_ns_cumulative / 1e9}
+        cpu = values["cpu_time_seconds"]
+        values["cpu_avg_cores"] = (cpu / (obs.latency_ms / 1000)
+                                   if _valid_load_value(cpu) and _valid_load_value(obs.latency_ms) and obs.latency_ms > 0 else None)
+        value = values[target]
+        return float(value) if _valid_load_value(value) else None
     if source == _LATENCY_MS:
         return obs.latency_ms
     if source == _PEAK_CPU_CORES:
@@ -768,6 +856,13 @@ class ClauseResourceKB:
         self._pending: list[tuple[float, int, ClauseObservation]] = []
         self._pending_seq = 0
         self._last_query_ts: float | None = None
+        self._frozen = False
+
+    def freeze(self) -> None:
+        if self._pending:
+            raise ValueError("frozen KB requires a finalized snapshot (pending must be empty)")
+        self._last_query_ts = None
+        self._frozen = True
 
     @classmethod
     def fit_public(
@@ -787,8 +882,8 @@ class ClauseResourceKB:
                     continue
                 for key in keys:
                     acc[source].setdefault(key, []).append(value)
-        if not acc[_LATENCY_MS].get(("global", "")):
-            raise ValueError("fit corpus has no clause latency (wall_ns) evidence")
+        if not any(nodes for nodes in acc.values()):
+            raise ValueError("fit corpus has no eligible clause evidence")
         kb = cls()
         kb._public = {
             source: {key: tuple(values) for key, values in nodes.items()}
@@ -799,6 +894,8 @@ class ClauseResourceKB:
     def observe_completed_clause(self, obs: ClauseObservation) -> None:
         """Buffer a completed clause; visible only once strictly causally prior."""
 
+        if self._frozen:
+            return
         heapq.heappush(self._pending, (obs.ts_end, self._pending_seq, obs))
         self._pending_seq += 1
 
@@ -833,6 +930,29 @@ class ClauseResourceKB:
             if values:
                 return values, "public", key[0], tuple(path)
         return None
+
+    def predict_load_samples(self, repo: str, clauses: Sequence[Mapping[str, Any]],
+                             ts_start: float) -> tuple[dict[str, dict[str, Any]], ...]:
+        """Standalone clause distributions for a call-level adapter/composer."""
+        if not math.isfinite(ts_start) or (self._last_query_ts is not None and ts_start < self._last_query_ts):
+            raise ValueError("invalid/backdated load query")
+        if not self._frozen:
+            self._last_query_ts = ts_start
+            self._absorb_completed(ts_start)
+        outcomes = []
+        for clause in clauses:
+            targets = {}
+            for target, source in _CLAUSE_LOAD_SOURCES.items():
+                selected = self._select(repo, source, str(clause["bin"]), clause["argv"])
+                if selected is not None:
+                    values, scope, kind, _ = selected
+                    if kind == "global":
+                        continue
+                    valid = tuple(float(v) for v in values if _valid_load_value(v))
+                    if valid:
+                        targets[target] = {"values": valid, "context": (scope, kind)}
+            outcomes.append(targets)
+        return tuple(outcomes)
 
     def _clause_median_latency_ms(
         self, repo: str, bin_: str, argv: Sequence[str]
@@ -1060,6 +1180,8 @@ class ClauseResourceKB:
     def _advance(self, ts_start: float) -> None:
         if not math.isfinite(ts_start):
             raise ValueError("query ts_start must be finite")
+        if self._frozen:
+            return
         if self._last_query_ts is not None and ts_start < self._last_query_ts:
             raise ValueError(
                 f"backdated query at ts_start {ts_start} after a query at "

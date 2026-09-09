@@ -14,6 +14,9 @@ runtime:
   # default. Set false only for an explicit troubleshooting run whose output
   # is not accepted as complete telemetry.
   ebpf_required: true
+  # Evaluation is read-only: every task sees the same training-only seed.
+  # Set false only for explicit online-learning experiments.
+  kb_frozen: true
 
 llm:
   # API key for the upstream LLM provider (required)

@@ -353,6 +353,19 @@ export default definePluginEntry({
       lines[2] += `; confidence=${formatNumber(prediction.confidence * 100, 0)}%`;
     }
     const toolResource = prediction.tool_resource;
+    const callLoad = prediction.call_prediction;
+    if (callLoad) {
+      lines.push("  call load (empirical, uncalibrated):");
+      for (const [target, estimate] of Object.entries(callLoad.targets)) {
+        if (estimate.status === "unavailable") {
+          lines.push(`    ${target}: unavailable (${estimate.unavailable_reason})`);
+          continue;
+        }
+        lines.push(`    ${target}: avg=${formatNumber(estimate.avg, 3)}; p50=${formatNumber(estimate.p50, 3)}; p90=${formatNumber(estimate.p90, 3)} ${estimate.unit} (${estimate.backend}/${estimate.method})`);
+        lines.push(`      bucket edges=${JSON.stringify(estimate.buckets.edges)}; probabilities=${JSON.stringify(estimate.buckets.probabilities)}`);
+      }
+      return lines.join("\n");
+    }
     if (!toolResource) return lines.join("\n");
 
     if (toolResource.prediction) {

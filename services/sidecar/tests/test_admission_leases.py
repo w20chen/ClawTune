@@ -86,8 +86,10 @@ def test_cpu_prediction_is_converted_to_integer_millicores() -> None:
     assert (
         _predicted_cpu_millis(
             {
-                "continuous_predictions": {
-                    "peak_cpu_cores": {"conditional_p90": 1.2341}
+                "scope": "tool_call",
+                "cpu_peak_window_ms": 500,
+                "targets": {
+                    "cpu_peak_cores": {"status": "available", "unit": "cores", "p90": 1.2341}
                 }
             }
         )

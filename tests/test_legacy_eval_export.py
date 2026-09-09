@@ -116,7 +116,7 @@ def test_export_writes_three_valid_snapshots(tmp_path) -> None:
     schemas = {
         "clause-resource-kb.json": "runtime_clause_resource_kb_v4",
         "clause-lattice-time-kb.json": "clause_lattice_kb_v2",
-        "runtime-tool-resource-kb.json": "runtime_tool_resource_kb_v1",
+        "runtime-tool-resource-kb.json": "runtime_tool_resource_kb_v2",
     }
     for filename, schema in schemas.items():
         path = out / filename

@@ -1,0 +1,221 @@
+{
+  "schema_version": "call_load.v1",
+  "scope": "tool_call",
+  "lifecycle": "tool_hook_interval",
+  "cpu_peak_window_ms": 500,
+  "quantile_method": "median_p50_nearest_rank_p90",
+  "targets": {
+    "duration_ms": {
+      "status": "available",
+      "unit": "ms",
+      "metric_definition": "tool_hook_elapsed",
+      "avg": 1200,
+      "p50": 1200,
+      "p90": 1200,
+      "buckets": {
+        "edges": [
+          100,
+          500,
+          2000,
+          10000
+        ],
+        "interval": "left_closed_right_open",
+        "probabilities": [
+          0,
+          0,
+          1,
+          0,
+          0
+        ]
+      },
+      "backend": "trie",
+      "method": "composed",
+      "evidence_counts": [
+        3
+      ],
+      "sample_count": 3,
+      "context": [
+        "public",
+        "bin"
+      ],
+      "assumptions": [
+        "foreground_clause_lineage_covers_call_workload",
+        "shell_and_hook_overhead_not_modeled"
+      ],
+      "calibration": "unvalidated",
+      "unavailable_reason": null
+    },
+    "cpu_time_seconds": {
+      "status": "available",
+      "unit": "core_seconds",
+      "metric_definition": "owned_workload_cpu_time",
+      "avg": 2,
+      "p50": 2,
+      "p90": 2,
+      "buckets": {
+        "edges": [
+          0.01,
+          0.1,
+          1,
+          10,
+          60
+        ],
+        "interval": "left_closed_right_open",
+        "probabilities": [
+          0,
+          0,
+          0,
+          1,
+          0,
+          0
+        ]
+      },
+      "backend": "trie",
+      "method": "composed",
+      "evidence_counts": [
+        3
+      ],
+      "sample_count": 3,
+      "context": [
+        "public",
+        "bin"
+      ],
+      "assumptions": [
+        "foreground_clause_lineage_covers_call_workload",
+        "shell_and_hook_overhead_not_modeled"
+      ],
+      "calibration": "unvalidated",
+      "unavailable_reason": null
+    },
+    "cpu_avg_cores": {
+      "status": "available",
+      "unit": "cores",
+      "metric_definition": "owned_cpu_time_over_tool_hook_elapsed",
+      "avg": 1.6666666666666667,
+      "p50": 1.6666666666666667,
+      "p90": 1.6666666666666667,
+      "buckets": {
+        "edges": [
+          0.1,
+          0.5,
+          1,
+          2,
+          4,
+          8
+        ],
+        "interval": "left_closed_right_open",
+        "probabilities": [
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0
+        ]
+      },
+      "backend": "trie",
+      "method": "composed",
+      "evidence_counts": [
+        3
+      ],
+      "sample_count": 3,
+      "context": [
+        "public",
+        "bin"
+      ],
+      "assumptions": [
+        "foreground_clause_lineage_covers_call_workload",
+        "shell_and_hook_overhead_not_modeled"
+      ],
+      "calibration": "unvalidated",
+      "unavailable_reason": null
+    },
+    "cpu_peak_cores": {
+      "status": "available",
+      "unit": "cores",
+      "metric_definition": "owned_cpu_fixed_500ms_window_peak",
+      "avg": 4,
+      "p50": 4,
+      "p90": 4,
+      "buckets": {
+        "edges": [
+          0.5,
+          1,
+          2,
+          4,
+          8,
+          16
+        ],
+        "interval": "left_closed_right_open",
+        "probabilities": [
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0
+        ]
+      },
+      "backend": "trie",
+      "method": "composed",
+      "evidence_counts": [
+        3
+      ],
+      "sample_count": 3,
+      "context": [
+        "public",
+        "bin"
+      ],
+      "assumptions": [
+        "foreground_clause_lineage_covers_call_workload",
+        "shell_and_hook_overhead_not_modeled"
+      ],
+      "calibration": "unvalidated",
+      "unavailable_reason": null
+    },
+    "memory_peak_rss_bytes": {
+      "status": "available",
+      "unit": "bytes",
+      "metric_definition": "sampled_distinct_mm_rss",
+      "avg": 67108864,
+      "p50": 67108864,
+      "p90": 67108864,
+      "buckets": {
+        "edges": [
+          16777216,
+          67108864,
+          268435456,
+          1073741824,
+          4294967296
+        ],
+        "interval": "left_closed_right_open",
+        "probabilities": [
+          0,
+          0,
+          1,
+          0,
+          0,
+          0
+        ]
+      },
+      "backend": "trie",
+      "method": "composed",
+      "evidence_counts": [
+        3
+      ],
+      "sample_count": 3,
+      "context": [
+        "public",
+        "bin"
+      ],
+      "assumptions": [
+        "foreground_clause_lineage_covers_call_workload",
+        "shell_and_hook_overhead_not_modeled"
+      ],
+      "calibration": "unvalidated",
+      "unavailable_reason": null
+    }
+  }
+}

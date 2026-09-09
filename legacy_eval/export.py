@@ -6,7 +6,7 @@ its cold-start seed under ``traces/tool-resource/``:
 
 * ``clause-resource-kb.json``       (schema ``runtime_clause_resource_kb_v4``)
 * ``clause-lattice-time-kb.json``   (schema ``clause_lattice_kb_v2``)
-* ``runtime-tool-resource-kb.json`` (schema ``runtime_tool_resource_kb_v1``)
+* ``runtime-tool-resource-kb.json`` (schema ``runtime_tool_resource_kb_v2``)
 
 These filenames and schemas are validated by
 ``swe_rebench.host_openclaw._validate_kb_snapshot_pair`` and loaded by

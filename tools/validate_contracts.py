@@ -13,6 +13,7 @@ CONTRACTS = ROOT / "contracts"
 
 
 EXAMPLES = {
+    "call-load.schema.json": "call-load.json",
     "health.schema.json": "health.json",
     "clause-telemetry.schema.json": "clause-telemetry.json",
     "tool-before-request.schema.json": "tool-before-request.json",
