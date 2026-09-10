@@ -346,3 +346,230 @@ Validation commands and environment limitations:
 - `python tools/validate_pmu.py --require-reliable --concurrency 8 --max-active 8 --high-concurrency 64 --benchmark-count 40`: cannot run on this Windows workspace because `perf_event_open`, Linux task inheritance, and a hardware/vPMU are unavailable. It must run on production x86 Linux and Kunpeng/Cube guests; no live overhead or counter-accuracy claim is made from this host.
 - `gofmt -w toolbridge/collector.go toolbridge/guest_collector.go toolbridge/main.go` and `go test ./...` in ClawBox cannot run because Go/gofmt are not installed in this workspace. The files require Linux/Go CI validation before release.
 - The full ClawBox Python suite still has five pre-existing/environment failures: one Windows `/proc` snapshot path, one Windows HTTP disconnect behavior mismatch (502 versus `RemoteDisconnected`), and three assertions that still expect legacy `runtime_tool_resource_kb_v1` although the sibling ClawTune checkout already emits v2. The focused PMU paths pass and this change does not rewrite those unrelated baselines.
+
+## Project inspection against benchmark failure log (2026-09-10)
+
+Inspection only; no implementation fixes applied. Four local reproductions:
+
+- SOCKS: with process-local ALL_PROXY=socks5://127.0.0.1:9, constructing the real HTTPX client raises the same missing-socksio ImportError as the supplied log. The wrapper preserves proxies, but pyproject.toml and the generated container install list specify plain httpx. Setup only imports the dependencies.
+- Diagnostics: four failed, empty model spans are classified as empty_llm_response despite a proxy error in stderr. failed_llm_span_ends does not control classification.
+- Authentication: TestClient GET /v1/status with the correct configured token returns 500; direct verify_bearer invocation leaves a Header object unresolved, producing AttributeError: 'Header' object has no attribute 'startswith'.
+- Compression: real HTTPX MockTransport returning gzip JSON makes the non-streaming chat proxy client raise DecodingError. The response retains content-encoding after decompression and JSON reserialization.
+
+Validation commands:
+
+- Root: `python -m pytest tests -q -p no:cacheprovider -o "pythonpath=services/sidecar/src ." --basetemp .pytest-tmp-review-root`: 315 passed, 2 skipped.
+- Sidecar directory: `python -m pytest tests -q -p no:cacheprovider --basetemp ../../.pytest-tmp-review-sidecar`: 393 passed, 2 skipped.
+- Plugin directory: `npm.cmd test`: build succeeded, 97 tests passed.
+- Root: `python tools/validate_contracts.py`: all 12 contract examples passed.
+- Ad hoc `python -` probes reproduced the four cases with temporary directories, TestClient, MockTransport and process-local environment patches. No external provider requests or dataset changes.
+- `python3 scripts/clawtune.py benchmark --sample 1 --parallelism 1` and `python3 scripts/clawtune.py check` cannot be validated natively on this Windows host: Docker is not installed and Linux BCC/eBPF/cgroup v2 are unavailable. No successful Linux end-to-end run is claimed.
+- Initial `rg --files` encountered existing inaccessible pytest cache/temp directories; subsequent reads targeted source paths. An initial rg wildcard positional path failed on Windows and was replaced by an explicit filename. The first documentation patch failed to match its context; this entry was appended instead.
+
+## Pipeline-dependent consumer filtering (2026-09-10)
+
+The supplied benchmark trace confirms that a downstream pipe consumer's wall
+interval is normally dominated by the upstream stage: `pytest | tail` measured
+25,800.7/25,803.4 ms, `pip install | tail` measured
+129,768.1/129,771.2 ms, and `python ... | grep` measured
+2,698.8/2,701.4 ms. These values are not independent labels for `tail` or
+`grep`.
+
+Training, historical import, online observation, lattice/trie prediction, and
+call-duration composition now share one structural rule. A configured consumer
+is excluded only when `in_pipe` is true and `pipeline_position` is greater than
+zero. The same executable remains eligible standalone or at pipeline position
+zero. The set includes `tail`, `head`, `wc`, `grep`/`egrep`/`fgrep`/`rg`, `cat`,
+and the existing presentation/filter utilities. Older telemetry rows recover
+these fields by matching `(bin, argv)` against the stored command parse.
+
+The predictor now preserves parser structural fields instead of normalizing
+every clause to a serial `single`. Simple pipeline duration uses the maximum of
+retained stage samples, while serial groups sum. The cold-start lattice and
+clause snapshots were regenerated from the read-only dataset. The aggregated
+clause snapshot schema is v5 so polluted v4 snapshots are rejected rather than
+silently reused. Eligible training
+observations changed from 11,253 to 7,800; held-out evaluation now covers 1,092
+unique commands and was regenerated together with its report and figure.
+
+Validation:
+
+- `python -m pytest tests -q -p no:cacheprovider --basetemp ../../.pytest-tmp-pipe-sidecar-final` from `services/sidecar`: 396 passed, 2 platform skips.
+- `python -m pytest tests -q -p no:cacheprovider -o "pythonpath=services/sidecar/src ." --basetemp .pytest-tmp-pipe-root-final2`: 317 passed, 2 platform skips.
+- `python tools/validate_contracts.py`: all 12 contract examples passed.
+- `python scripts/export_resource_lattice.py --dataset D:/swe277-full-5be74da-20260726 --seed 42 --train-fraction 0.8`: regenerated both cold-start snapshots and the manifest without modifying the dataset.
+- `python scripts/evaluate_resource_lattice.py --dataset D:/swe277-full-5be74da-20260726`: completed with 1,092 unique queries; p95 query time 14.01 ms.
+- `python scripts/benchmark_lattice_accuracy.py --dataset D:/swe277-full-5be74da-20260726`: completed with 38 held-out tasks, 36 repositories, and 1,092 unique queries; the generated chart was visually inspected.
+- Native mvdan adapter execution and live eBPF collection cannot be validated on this Windows host. The exporter exercised the conservative parser fallback; Linux CI/benchmark setup must validate the native adapter path.
+- `npm.cmd test` could not run at the previously documented `plugins/clawtune-srb` path because this checkout has no such directory or Node package; there is no plugin test target in this repository layout.
+
+## Three-path demo design (2026-09-10)
+
+The target design is recorded in [DEMO_SYSTEM_DESIGN.md](DEMO_SYSTEM_DESIGN.md).
+Keep daily OpenClaw use with a persistent user KB, serial SWE-Rebench as an
+online-learning user simulation with a run-owned KB, and one fixed-trace offline
+train/test pipeline. Strict within-repository task-held-out evaluation belongs
+to the offline path; the SWE simulation is no longer proposed as a second
+held-out evaluation frontend.
+
+The first implementation priority is separating immutable seed bundles from
+daily state and per-run state. Today the daily sidecar's default writable
+`traces/tool-resource` location is also the runner's seed source. The design
+also consolidates split/export/evaluation implementations, retains one shared
+prediction core, and defines a dependency-aware removal list for redundant
+demo paths. `cold_start` currently imports `legacy_eval._bootstrap`; migrate
+that dependency before deleting the legacy evaluator.
+
+This delivery changes documentation only. Proposed CLI commands, state layouts,
+online benchmark defaults, and deletion decisions are not implemented yet.
+No external datasets or existing knowledge bases were modified.
+
+Validation: inspected CLI routing, sidecar load/update/persistence logic, plugin
+launch and repo identity code, current manifests, offline loaders, and import
+dependencies; checked the documentation diff. Runtime tests are not applicable
+to this documentation-only change. The previous review's
+`python scripts/clawtune.py benchmark --help` ran but exposed only wrapper help;
+`python -m cold_start --help` ran successfully. Live
+`python3 scripts/clawtune.py benchmark --sample 2` and
+`openclaw gateway run` / `openclaw tui --session main` cannot be validated on
+this Windows workspace with Linux BCC/eBPF unavailable; they remain future
+implementation acceptance checks, not claimed successful runs.
+
+## Multi-dataset three-path implementation (2026-09-11)
+
+The current plan and implemented boundaries are documented in
+[MULTI_BENCHMARK_IMPLEMENTATION.md](MULTI_BENCHMARK_IMPLEMENTATION.md). This
+supersedes the prior documentation-only/SWE-only scope and the proposed removal
+of Deep Research Bench. Five adapters are peers: swe-rebench,
+deep-research-bench, swe-bench-verified, bfcl, terminal-bench.
+
+Implemented:
+
+- One public benchmark parser and serial online run lifecycle, immutable seed
+  initialization, per-task generation reporting, saved task order, and explicit
+  boundary-only resume. New tasks retain the run KB but receive new agent/task
+  environments. Config and seed hashes must match when resuming.
+- Daily state under the invoking user's state directory, separate from trace
+  outputs; managed KB writer lock, atomic three-snapshot generation commit,
+  last-commit recovery, and bounded generation retention. Health reports KB
+  ownership; the plugin rejects a managed owner mismatch.
+- Native repository/research runtime reuse; BFCL native function schemas,
+  mutable backend instances and multi-turn session; Terminal native Compose
+  copy and client-container tools. External task datasets remain read-only.
+- Unified offline v5/v6 import, per-dataset and per-repository/category task
+  split, train-only three-layer seed, shared pre-execution prediction API,
+  frozen test, target eligibility gates, coverage/error/calibration/baseline
+  reports. Mixed datasets train completely separate KBs.
+- Common config template, JSON Schemas for new artifacts, wheel-bundled
+  canonical contracts and demo seed, updated README. Removed unused replay and
+  old DRB wrapper implementations; `drb` delegates to the common benchmark CLI.
+  Historical evaluators and reused host helpers remain internal/compatibility
+  code rather than being deleted while other code still imports them.
+
+Validation commands and results:
+
+- `python -m pytest tests -q -p no:cacheprovider -o "pythonpath=services/sidecar/src ." --basetemp .pytest-tmp-demo-root-accepted --tb=short`:
+  327 passed, 2 platform skips.
+- From `services/sidecar`, `python -m pytest tests -q -p no:cacheprovider --basetemp ../../.pytest-tmp-demo-sidecar-final --tb=short`:
+  396 passed, 2 platform skips. Existing FastAPI lifespan deprecation warnings.
+- From `packages/clawtune-plugin`, `npm.cmd test`: TypeScript build and all 98
+  tests passed. This is the correct plugin test directory; it supersedes the
+  earlier note about the nonexistent `plugins/clawtune-srb` test target.
+- `python tools/validate_contracts.py`: all 12 existing protocol examples passed;
+  new seed/state/split/run/report/bridge contracts are exercised by workflow
+  tests and actual offline artifact generation.
+- `python scripts/clawtune.py benchmark --list`, `benchmark --sample 1 --dry-run`,
+  `benchmark --help`, and `offline --help`: successful, with the real common
+  parser exposed, all five peers listed and ordered online semantics displayed.
+- `python -m compileall -q benchmarks offline services/sidecar/src/clawtune_kb`:
+  successful.
+- `python -m pip wheel ./services/sidecar --no-deps --no-build-isolation --wheel-dir .runtime/wheels`:
+  successful; extracted-wheel subprocess outside the source package successfully
+  validated its bundled seed and contracts.
+- `python scripts/clawtune.py offline --dataset D:/swe277-full-5be74da-20260726 --benchmark swe-rebench --rss-unit MiB --output .runtime/offline/validation-swe277`:
+  successful against the read-only real trace collection. 239 train / 38 test;
+  1,977 eligible test calls; test updates = 0. MAE 1,643.62 ms vs tool-median
+  baseline 1,687.76 ms, WAPE 0.9705, P90 coverage 0.7699. Only duration labels
+  met the v5 call attribution gate. This is a modest improvement, not a claim
+  of strong CPU/memory accuracy. The exact split, exclusions, trained bundle,
+  predictions and report are under the named output directory.
+- Focused workflow tests verify all-five-dataset isolation, unchanged training
+  snapshots after modifying only test labels, crash recovery, one-writer
+  exclusion, immutable seed rejection, BFCL state across turns, Terminal
+  read-only input enforcement, bridge authentication/deduplication, and a
+  shared run KB with boundary-only resume. Native backend calls are mocked.
+
+Intermediate failures were resolved: four old tests seeded the previous traces
+directory; three explicit trace-import tests accidentally received the new
+default seed until initialization was limited to managed startup; the legacy
+setup metadata test needed to stub the new wheel build command import. One
+PowerShell inline edit failed due to quoting and was reapplied with a here-string.
+
+Validation commands that cannot run on this host:
+
+- `openclaw gateway run` / `openclaw tui --session main`, and
+  `python3 scripts/clawtune.py check`: native Linux OpenClaw + BCC/eBPF/cgroup
+  acceptance cannot run on this Windows host. The installed Python Scripts
+  `openclaw.exe` is not evidence of the native Node OpenClaw runtime.
+- `python3 scripts/clawtune.py benchmark --benchmark swe-rebench --sample 2` and
+  the equivalent `swe-bench-verified` invocation with `--dataset`: no native
+  Linux Docker/eBPF runtime is available. Task image startup and live shared-KB
+  learning therefore remain target-host acceptance checks.
+- `python3 scripts/clawtune.py benchmark --benchmark deep-research-bench --sample 2`:
+  same host limitation; actual native search-provider integration is unverified.
+- `python3 scripts/clawtune.py benchmark --benchmark bfcl --category multi_turn_base --sample 2`:
+  `bfcl_eval` is not installed, and native Linux OpenClaw is unavailable.
+- `python3 scripts/clawtune.py benchmark --benchmark terminal-bench --dataset /data/terminal-bench/tasks --sample 2`:
+  Docker is absent from PATH and the native task environment cannot be launched.
+  Compose validation and backend tests do not count as a live harness run.
+- Native mvdan/eBPF platform tests remain the two platform skips in each Python
+  suite. No live benchmark, official solve score, BFCL AST-only evaluator, or
+  persistent Terminal TTY support is claimed by this delivery.
+
+## PMU correctness audit (2026-09-11)
+
+Reviewed IPC, LLC read MPKI and LLC read miss fraction from perf ABI through
+collector, execution attribution, KB persistence, and offline evaluation.
+The formulas and per-event non-GROUP read format agree with the Linux
+[perf_event_open manual](https://man7.org/linux/man-pages/man2/perf_event_open.2.html).
+
+Fixed actual correctness gaps:
+
+- Abort, signal termination, lost exit callbacks and completion fallback can
+  no longer produce reliable training profiles. A failed group disable also
+  makes the profile partial. Normal nonzero program exits remain distinct from
+  signal/cancel censoring.
+- Invalid counter timing (`running > enabled`) is rejected rather than clamped
+  into apparently perfect coverage. Misses exceeding accesses yield an unknown
+  miss fraction and a partial profile, never a clamped percentage.
+- Learning rechecks raw counters, event semantics, full running time, coverage
+  flags, collector errors and execution ID; it recomputes ratios instead of
+  trusting serialized derived values. Undefined denominators remain null.
+- Native perf FDs use CLOEXEC. A syscall-argument test checks the 112-byte ABI,
+  inherit/enable-on-exec flags, leader/member grouping and the 24-byte read
+  format compatible with inheritance.
+- The offline runner now scores the three PMU targets through their separate
+  runtime-KB evidence interface. They were previously omitted because they are
+  deliberately outside call_load.v1. It uses frozen training evidence and the
+  same target-specific baselines. Historical v5 without PMU labels is unchanged.
+- The public PMU schema now requires the stronger reliable-profile invariants
+  and bounds LLC miss rate to [0, 1]. The runtime KB additionally rejects an
+  out-of-range miss fraction; this small `tool_resource` change is necessary to
+  prevent direct CompletedCall inputs from bypassing the metric constraint.
+
+Validation:
+
+- `python -m pytest tests -q -p no:cacheprovider --basetemp ../../.pytest-tmp-pmu-full --tb=short`
+  from `services/sidecar`: 404 passed, 2 platform skips.
+- After adding the syscall ABI regression,
+  `python -m pytest tests/test_pmu.py -q -p no:cacheprovider --basetemp ../../.pytest-tmp-pmu-abi --tb=short`
+  from `services/sidecar`: all 19 PMU tests passed.
+- `python -m pytest tests -q -p no:cacheprovider -o "pythonpath=services/sidecar/src ." --basetemp .pytest-tmp-pmu-root --tb=short`:
+  328 passed, 2 platform skips, including independent frozen PMU evaluation.
+- `python tools/validate_contracts.py`: all 12 protocol examples passed.
+- `python tools/validate_pmu.py --require-reliable --output .runtime/pmu-validation.json`
+  cannot execute hardware validation here: it returned `unsupported / Linux
+  required`. No hardware result file or successful PMU acceptance is claimed.
+  Run that same command with the target Linux host's privileged sidecar Python
+  on both deployment CPU architectures. True counter accuracy, descendant
+  inheritance and virtualized PMU behavior remain hardware acceptance items.

@@ -1,4 +1,18 @@
 from setuptools import find_packages, setup
+from setuptools.command.build_py import build_py
+from pathlib import Path
+import shutil
+
+
+class BuildWithContracts(build_py):
+    """Bundle canonical repo data when building a deployable sidecar wheel."""
+    def run(self):
+        super().run()
+        repo = Path(__file__).resolve().parents[2]
+        source = repo if (repo / "contracts").is_dir() else Path("src/clawtune_kb/_data")
+        for directory in ("contracts", "seeds/demo-v1"):
+            target = Path(self.build_lib) / "clawtune_kb/_data" / directory
+            shutil.copytree(source / directory, target, dirs_exist_ok=True)
 
 
 # Compatibility metadata for installers that fall back from PEP 660 editable
@@ -11,12 +25,15 @@ setup(
     python_requires=">=3.10",
     package_dir={"": "src"},
     packages=find_packages(where="src"),
+    cmdclass={"build_py": BuildWithContracts},
     install_requires=[
         "fastapi>=0.110",
         "httpx>=0.27",
         "pydantic>=2",
         "psutil>=5.9",
         "numpy>=1.26",
+        "jsonschema>=4",
+        "pyyaml>=6",
         "typing-extensions>=4.12",
         "uvicorn>=0.27",
         "prometheus-client>=0.20",

@@ -71,6 +71,8 @@ def run_drb_task(
     swe_cfg: RunnerConfig,
     runtime_assets_dir: Path,
     sidecar_port: int | None = None,
+    shared_kb_dir: Path | None = None,
+    shared_sidecar_trace_dir: Path | None = None,
 ) -> ContainerResult:
     """Run one DeepResearchBench task via host OpenClaw + basic sandbox."""
     started = time.monotonic()
@@ -104,14 +106,15 @@ def run_drb_task(
         )
         _remaining_task_seconds(deadline, phase="agent setup")
         sidecar_port = sidecar_port or _free_port()
-        sidecar = _start_sidecar(
-            trace_dir=trace_dir,
-            port=sidecar_port,
-            config=swe_cfg,
-            workspace=workspace,
-            repo="deep-research-bench",
-            deadline=deadline,
-        )
+        if shared_sidecar_trace_dir is None:
+            sidecar = _start_sidecar(
+                trace_dir=trace_dir, port=sidecar_port, config=swe_cfg,
+                workspace=workspace, repo="deep-research-bench", deadline=deadline,
+                artifact_dir=shared_kb_dir,
+            )
+        else:
+            from swe_rebench.host_openclaw import _write_runtime_case_map, _runtime_id
+            _write_runtime_case_map(shared_sidecar_trace_dir, _runtime_id(workspace), task.instance_id)
         _configure_openclaw(
             trace_dir=trace_dir,
             openclaw_home=openclaw_home,
@@ -178,6 +181,13 @@ def run_drb_task(
         error = str(exc)
         _write_text(trace_dir / "drb_host_error.txt", traceback.format_exc())
     finally:
+        if shared_sidecar_trace_dir is not None and sidecar_port is not None:
+            from swe_rebench.host_openclaw import _drain_runtime, _runtime_id, _collect_runtime_traces
+            try:
+                _drain_runtime(sidecar_port, _runtime_id(workspace), gateway_id="swe-rebench")
+                _collect_runtime_traces(shared_sidecar_trace_dir, trace_dir, _runtime_id(workspace), task_label=task.instance_id)
+            except Exception as exc:
+                error = error or f"shared sidecar finalization failed: {exc}"
         if sidecar is not None:
             try:
                 _stop_process(sidecar)
@@ -203,7 +213,7 @@ def run_drb_task(
 
 
 def _drb_workspace(config: DRBConfig, task: DRBTask) -> Path:
-    safe_id = task.instance_id.replace("/", "_").replace(":", "_")
+    safe_id = getattr(config, "task_directory", None) or task.instance_id.replace("/", "_").replace(":", "_")
     return config.output.trace_root.parent / "workspaces" / safe_id
 
 

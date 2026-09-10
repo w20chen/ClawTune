@@ -817,6 +817,11 @@ def create_app(state: AppState | None = None) -> FastAPI:
     app_state = state or build_state()
     app = FastAPI(title="ClawTune Sidecar", version="0.1.0")
     app.state.sidecar = app_state
+    kb_owner = None
+    kb_store = getattr(app_state.predictor, "_state_store", None)
+    if kb_store is not None:
+        import json
+        kb_owner = json.loads((kb_store.path / "state.json").read_text(encoding="utf-8"))["owner"]
 
     @app.on_event("shutdown")
     async def shutdown_state() -> None:
@@ -1205,6 +1210,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             "sidecar_version": _sidecar_version,
             "protocol_versions": _PROTOCOL_VERSIONS,
             "live": True,
+            "kb_owner": kb_owner,
         }
 
     @app.get("/health/ready")
@@ -1215,6 +1221,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             "sidecar_version": _sidecar_version,
             "protocol_versions": _PROTOCOL_VERSIONS,
             "ready": True,
+            "kb_owner": kb_owner,
         }
 
     @app.get("/v1/status", response_model=StatusResponse)
@@ -2198,7 +2205,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         response = s.executions.exited(execution_id, request)
         # Disable/read before any cgroup cleanup. perf task FDs retain counts
         # after process exit, so this is a constant-cost, non-polling read.
-        s.pmu_collector.finish(execution_id)
+        s.pmu_collector.finish(execution_id, reason="signal_terminated" if request.signal else "execution_exited")
         await s.leases.release_execution(execution_id)
         # The launcher knows process status first, but only OpenClaw's
         # subsequent completion event carries bounded stdout/stderr. Keep the

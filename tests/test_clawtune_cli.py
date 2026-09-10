@@ -32,6 +32,9 @@ def test_legacy_scheduler_setup_declares_runtime_metadata(monkeypatch) -> None:
     setattr(fake_setuptools, "setup", lambda **kwargs: captured.update(kwargs))
     setattr(fake_setuptools, "find_packages", lambda **kwargs: [])
     monkeypatch.setitem(sys.modules, "setuptools", fake_setuptools)
+    fake_build = types.ModuleType("setuptools.command.build_py")
+    fake_build.build_py = type("build_py", (), {})
+    monkeypatch.setitem(sys.modules, "setuptools.command.build_py", fake_build)
 
     runpy.run_path(str(SCRIPT.parents[1] / "services" / "sidecar" / "setup.py"))
 

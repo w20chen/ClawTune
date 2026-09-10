@@ -91,6 +91,8 @@ def _clause(
     peak_cpu_cores: float | None = None,
     sampled_peak_rss_mb: float | None = None,
     availability_latency: str = "ok",
+    in_pipe: bool = False,
+    pipeline_position: int = -1,
 ) -> dict:
     return {
         "bin": bin_,
@@ -100,6 +102,8 @@ def _clause(
         "peak_cpu_cores": peak_cpu_cores,
         "sampled_peak_rss_mb": sampled_peak_rss_mb,
         "availability": {"latency": availability_latency},
+        "in_pipe": in_pipe,
+        "pipeline_position": pipeline_position,
     }
 
 
@@ -303,17 +307,19 @@ def test_parse_clause_artifact_filters(tmp_path) -> None:
     assert pytest_ev.eligible is False  # call.eligible_for_kb False
 
 
-def test_parse_clause_artifact_skips_trivial_pipe_tools(tmp_path) -> None:
-    # Trivial pipe consumers (tail/head/wc/...) carry the producer's wall-clock
-    # in clause_telemetry; the loader must exclude them from both training and
-    # prediction (mirrors latt and the normalize module's documented intent).
+def test_parse_clause_artifact_skips_only_downstream_pipe_consumers(tmp_path) -> None:
     artifact = _artifact(
         [
             _call(
                 [
                     _clause("grep", ["grep", "-rn", "x"], 50.0, eligible=True),
-                    _clause("tail", ["tail", "-30"], 556000.0, eligible=True),
-                    _clause("head", ["head", "-200"], 210000.0, eligible=True),
+                    _clause("cat", ["cat", "file"], 20.0, eligible=True),
+                    _clause("head", ["head", "-200", "file"], 30.0,
+                            eligible=True, in_pipe=True, pipeline_position=0),
+                    _clause("grep", ["grep", "match"], 556000.0,
+                            eligible=True, in_pipe=True, pipeline_position=1),
+                    _clause("tail", ["tail", "-30"], 556000.0,
+                            eligible=True, in_pipe=True, pipeline_position=2),
                 ],
                 tool_call_id="call_0_0",
             )
@@ -322,7 +328,26 @@ def test_parse_clause_artifact_skips_trivial_pipe_tools(tmp_path) -> None:
     path = tmp_path / "clause_telemetry.json"
     path.write_text(json.dumps(artifact), encoding="utf-8")
     events = parse_clause_artifact(path, "repo__x-1")
-    assert [tuple(ev.argv) for ev in events] == [("grep", "-rn", "x")]
+    assert [tuple(ev.argv) for ev in events] == [
+        ("grep", "-rn", "x"),
+        ("cat", "file"),
+        ("head", "-200", "file"),
+    ]
+
+
+def test_parse_clause_artifact_recovers_pipeline_structure_from_command(tmp_path) -> None:
+    producer = _clause("python", ["python", "job.py"], 100.0)
+    consumer = _clause("grep", ["grep", "needle"], 101.0)
+    for row in (producer, consumer):
+        row.pop("in_pipe")
+        row.pop("pipeline_position")
+    artifact = _artifact(
+        [_call([producer, consumer], command="python job.py | grep needle")]
+    )
+    path = tmp_path / "clause_telemetry.json"
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+    events = parse_clause_artifact(path, "repo__x-1")
+    assert [tuple(event.argv) for event in events] == [("python", "job.py")]
 
 
 def test_parse_clause_artifact_rejects_invalid(tmp_path) -> None:

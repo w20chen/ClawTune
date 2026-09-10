@@ -1933,7 +1933,7 @@ def _write_test_kb_pair(directory: Path, marker: str) -> None:
             "marker": marker,
         },
         "clause-resource-kb.json": {
-            "schema": "runtime_clause_resource_kb_v4",
+            "schema": "runtime_clause_resource_kb_v5",
             "max_prefix_depth": 4,
             "public": {
                 "latency_ms": [],
@@ -1980,7 +1980,7 @@ def _kb_pair_markers(directory: Path) -> dict[str, str]:
 
 
 def test_host_openclaw_seeds_runtime_and_clause_predictor_kbs(tmp_path: Path) -> None:
-    source_dir = tmp_path / "traces" / "tool-resource"
+    source_dir = tmp_path / "seeds" / "demo-v1"
     _write_test_kb_pair(source_dir, "tracked-seed")
     runtime_payload = (source_dir / "runtime-tool-resource-kb.json").read_text(
         encoding="utf-8"
@@ -2017,7 +2017,7 @@ def test_batch_shared_kb_prepare_copy_in_and_publish_reaches_next_task(
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
-    tracked_seed = tmp_path / "traces" / "tool-resource"
+    tracked_seed = tmp_path / "seeds" / "demo-v1"
     shared_kb_dir = tmp_path / "kb-batches" / "batch-1"
     _write_test_kb_pair(tracked_seed, "tracked-seed")
 
@@ -2099,7 +2099,7 @@ def test_batch_shared_kb_rejects_schema_only_snapshot_as_unloadable(
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
-    tracked_seed = tmp_path / "traces" / "tool-resource"
+    tracked_seed = tmp_path / "seeds" / "demo-v1"
     _write_test_kb_pair(tracked_seed, "tracked-seed")
     (tracked_seed / "runtime-tool-resource-kb.json").write_text(
         json.dumps(
@@ -2124,7 +2124,7 @@ def test_batch_shared_kb_rejects_invalid_lattice_observation(
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
-    tracked_seed = tmp_path / "traces" / "tool-resource"
+    tracked_seed = tmp_path / "seeds" / "demo-v1"
     _write_test_kb_pair(tracked_seed, "tracked-seed")
     lattice_path = tracked_seed / "clause-lattice-time-kb.json"
     payload = json.loads(lattice_path.read_text(encoding="utf-8"))

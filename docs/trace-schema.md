@@ -84,8 +84,8 @@ Useful fields:
   explicit unavailability metadata. All three algorithms read the same
   independent, flat lattice KB; its time views use eligible
   eBPF `ClauseObservation` latency measurements. For compound commands these
-  remain per-clause results; the sidecar does not synthesize a command-level
-  duration across sequential, conditional, or pipeline clauses.
+  remain per-clause results. Configured downstream pipeline consumers are
+  omitted; standalone occurrences and pipeline position zero remain eligible.
   `prediction.tool_resource.lattice_resource_predictions` adds per-clause
   p50/p90 for cumulative CPU seconds, average cores, 500 ms peak cores, and
   sampled distinct-mm RSS peak bytes. Each target independently selects a

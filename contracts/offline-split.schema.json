@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/offline-split.schema.json",
+  "type": "object",
+  "required": ["schema", "seed", "train_fraction", "rule", "tasks", "train", "test", "groups"],
+  "properties": {
+    "schema": {"const": "clawtune.split.v1"},
+    "seed": {"type": "integer"},
+    "train_fraction": {"const": 0.8},
+    "rule": {"const": "sha256-per-benchmark-group-task-v1"},
+    "tasks": {"type": "object"},
+    "train": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "test": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "groups": {"type": "array", "items": {"type": "object"}},
+    "excluded_files": {"type": "array", "items": {"type": "object"}}
+  },
+  "additionalProperties": false
+}

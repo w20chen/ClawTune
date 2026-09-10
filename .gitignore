@@ -1,4 +1,7 @@
 __pycache__/
+.runtime/
+configs/benchmark.yaml
+configs/*api_key.txt
 *.pyc
 .pytest_cache/
 .pytest-tmp-root/

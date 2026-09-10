@@ -3,6 +3,11 @@
 > Final results for the SWE-bench-style legacy dataset `swe277`.
 > Run: `legacy_eval/.runtime/2026-08-06T160709.445174_0000/` (report.json / report.md)
 
+This archived report used the former bin-only exclusion rule. Current training
+uses pipeline structure, also covers `grep`-family consumers, and retains the
+same binaries when standalone or at pipeline position zero. Current held-out
+results are in `docs/lattice-accuracy/report.md`.
+
 ## 1. Setup & Configuration
 
 | Item | Value |

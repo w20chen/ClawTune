@@ -7,6 +7,7 @@
     "schema_version": {"const": "clawtune.health.v1"},
     "service": {"const": "clawtune-sidecar"},
     "sidecar_version": {"type": "string", "description": "Semver of the running clawtune-sidecar package."},
+    "kb_owner": {"type": ["string", "null"], "description": "Owner of the managed writable KB; null for legacy unmanaged state."},
     "protocol_versions": {
       "type": "array",
       "items": {"type": "string"},

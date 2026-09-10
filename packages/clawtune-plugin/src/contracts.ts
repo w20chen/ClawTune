@@ -354,6 +354,7 @@ export type ExecutionRegistrationResponse = {
 
 /** Health-check payload returned by GET /health/live and /health/ready. */
 export type SidecarHealth = {
+  kb_owner?: string | null;
   schema_version: string;
   service: string;
   sidecar_version?: string;

@@ -19,6 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "services" / "sidecar" / "src"))
 
 from tool_resource.sdk import _load_valid_artifact, _observation_from_clause
+from tool_resource.features import enrich_clause_structure
+from tool_resource.runtime_kb import ClauseResourceKB, is_pipeline_dependent_consumer
 from tool_time.lattice_kb import LatticeTimeKB
 from tool_time.resource_lattice import resource_values
 
@@ -30,7 +32,8 @@ def eligible_observations(repo: str, artifact: dict) -> tuple[list, list[str]]:
     for call in artifact["calls"]:
         if call.get("eligible_for_kb") is not True or call.get("telemetry_quality") != "ok":
             continue
-        for row in call.get("clauses", []):
+        rows = enrich_clause_structure(call.get("command"), call.get("clauses", []))
+        for row in rows:
             availability = row.get("availability", {})
             if (row.get("eligible_for_kb") is not True
                 or row.get("telemetry_quality") != "ok"
@@ -56,17 +59,30 @@ def eligible_observations(repo: str, artifact: dict) -> tuple[list, list[str]]:
             )
             if observation.latency_ms is None or observation.latency_ms <= 0:
                 continue
+            if is_pipeline_dependent_consumer(observation):
+                continue
             observations.append(observation)
     return observations, errors
 
 
-def export(dataset: Path, output: Path, *, seed: int = 42, train_fraction: float = 0.8) -> dict:
+def export(
+    dataset: Path,
+    output: Path,
+    *,
+    seed: int = 42,
+    train_fraction: float = 0.8,
+    clause_output: Path | None = None,
+) -> dict:
     if not 0 < train_fraction < 1:
         raise ValueError("train_fraction must be between zero and one")
     dataset = dataset.resolve()
     output = output.resolve()
     if output.is_relative_to(dataset):
         raise ValueError("output must not be inside the read-only dataset")
+    if clause_output is not None:
+        clause_output = clause_output.resolve()
+        if clause_output.is_relative_to(dataset):
+            raise ValueError("clause output must not be inside the read-only dataset")
     files = sorted(dataset.rglob("clause_telemetry.json"))
     if not files:
         raise ValueError("no clause_telemetry.json artifacts found")
@@ -113,6 +129,17 @@ def export(dataset: Path, output: Path, *, seed: int = 42, train_fraction: float
     output.parent.mkdir(parents=True, exist_ok=True)
     data = (json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
     output.write_bytes(data)
+    clause_data = None
+    if clause_output is not None:
+        clause_payload = ClauseResourceKB.fit_public(observations).to_json_obj()
+        clause_data = (
+            json.dumps(
+                clause_payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+            )
+            + "\n"
+        ).encode()
+        clause_output.parent.mkdir(parents=True, exist_ok=True)
+        clause_output.write_bytes(clause_data)
     manifest = {
         "schema": "resource_lattice_seed_manifest_v1", "seed": seed,
         "split": "task_holdout_within_repository", "train_fraction": train_fraction,
@@ -127,6 +154,8 @@ def export(dataset: Path, output: Path, *, seed: int = 42, train_fraction: float
         "snapshot_sha256": hashlib.sha256(data).hexdigest(),
         "sources": sources, "rejected": rejected,
     }
+    if clause_data is not None:
+        manifest["clause_snapshot_sha256"] = hashlib.sha256(clause_data).hexdigest()
     output.with_suffix(".manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return manifest
 
@@ -135,8 +164,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=ROOT / "traces/tool-resource/clause-lattice-time-kb.json")
+    parser.add_argument("--clause-output", type=Path, default=ROOT / "traces/tool-resource/clause-resource-kb.json")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--train-fraction", type=float, default=0.8)
     args = parser.parse_args()
-    result = export(args.dataset, args.output, seed=args.seed, train_fraction=args.train_fraction)
+    result = export(
+        args.dataset,
+        args.output,
+        seed=args.seed,
+        train_fraction=args.train_fraction,
+        clause_output=args.clause_output,
+    )
     print(json.dumps({key: result[key] for key in ("observation_count", "target_counts", "snapshot_sha256")}))

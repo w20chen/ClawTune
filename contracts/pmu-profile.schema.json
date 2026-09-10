@@ -59,7 +59,7 @@
       "properties": {
         "ipc": {"type": ["number", "null"], "minimum": 0},
         "llc_mpki": {"type": ["number", "null"], "minimum": 0},
-        "llc_miss_rate": {"type": ["number", "null"], "minimum": 0}
+        "llc_miss_rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
       },
       "additionalProperties": false
     },
@@ -83,6 +83,17 @@
     "collector_errors": {"type": "array", "items": {"type": "string"}}
   },
   "$defs": {
+    "reliable_event": {
+      "properties": {
+        "supported": {"const": true},
+        "raw_count": {"type": "integer", "minimum": 0},
+        "scaled_count": {"type": "number", "minimum": 0},
+        "time_enabled_ns": {"type": "integer", "minimum": 1},
+        "time_running_ns": {"type": "integer", "minimum": 1},
+        "running_ratio": {"const": 1},
+        "error": {"type": "null"}
+      }
+    },
     "event": {
       "type": "object",
       "required": [
@@ -115,11 +126,16 @@
       "then": {
         "properties": {
           "llc_semantics_confirmed": {"const": true},
+          "collector_errors": {"maxItems": 0},
+          "events": {"additionalProperties": {"$ref": "#/$defs/reliable_event"}},
           "coverage": {
             "properties": {
               "eligible_for_kb": {"const": true},
               "root_and_future_descendants": {"const": true},
-              "multiplexed": {"const": false}
+              "multiplexed": {"const": false},
+              "kernel_included": {"const": true},
+              "running_ratio": {"const": 1},
+              "reason": {"const": "execution_exited"}
             }
           }
         }

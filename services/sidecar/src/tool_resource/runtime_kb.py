@@ -235,6 +235,8 @@ def _target_values(call: CompletedCall) -> dict[str, float]:
             ("pmu_llc_mpki", call.pmu_llc_mpki),
             ("pmu_llc_miss_rate", call.pmu_llc_miss_rate),
         ):
+            if target == "pmu_llc_miss_rate" and _valid_load_value(value) and value > 1:
+                continue
             if _valid_load_value(value):
                 values[target] = float(value)
     return {target: value for target, value in values.items()
@@ -291,7 +293,16 @@ def _history_identity(row: Any) -> str:
     if isinstance(row, CompletedCall):
         identity.extend([row.tool_name, row.command])
     else:
-        identity.extend([row.bin, list(row.argv)])
+        identity.extend(
+            [
+                row.bin,
+                list(row.argv),
+                row.in_loop,
+                row.in_pipe,
+                row.in_subst,
+                row.pipeline_position,
+            ]
+        )
     return hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -638,7 +649,7 @@ def _nodes_from_json(
 # Clause latency bucket predictor
 # ==========================================================================
 
-_CLAUSE_SCHEMA = "runtime_clause_resource_kb_v4"
+_CLAUSE_SCHEMA = "runtime_clause_resource_kb_v5"
 _CLAUSE_MAX_DEPTH = 4  # frozen ordered argv-prefix depth budget
 _DELIM = "\x00"  # argv tokens may contain spaces; NUL cannot collide
 
@@ -808,10 +819,38 @@ def _clause_unavailable_reason(exc: Exception) -> str:
     return f"clause_prediction_error:{type(exc).__name__}"
 
 
+PIPELINE_DEPENDENT_CONSUMER_BINS = frozenset(
+    {
+        "cat", "comm", "column", "cut", "egrep", "fgrep", "fold", "grep",
+        "head", "hexdump", "less", "more", "nl", "od", "paste", "rev",
+        "rg", "tac", "tail", "tee", "tr", "ts", "uniq", "wc", "xxd",
+    }
+)
+
+
+def is_pipeline_dependent_consumer(
+    clause: ClauseObservation | Mapping[str, Any],
+) -> bool:
+    """Whether a downstream pipe consumer has an upstream-dependent label."""
+
+    if isinstance(clause, Mapping):
+        bin_ = str(clause.get("bin", ""))
+        in_pipe = bool(clause.get("in_pipe", False))
+        try:
+            position = int(clause.get("pipeline_position", -1))
+        except (TypeError, ValueError):
+            position = -1
+    else:
+        bin_ = clause.bin
+        in_pipe = clause.in_pipe
+        position = clause.pipeline_position
+    return in_pipe and position > 0 and bin_ in PIPELINE_DEPENDENT_CONSUMER_BINS
+
+
 def _clause_value(obs: ClauseObservation, source: str) -> float | None:
     if source.startswith("load:"):
         # A loop-aggregated or overlapping clause is not a standalone sample.
-        if obs.in_loop or obs.in_subst or obs.in_pipe:
+        if obs.in_loop or obs.in_subst or is_pipeline_dependent_consumer(obs):
             return None
         target = source.removeprefix("load:")
         values = {"duration_ms": obs.latency_ms, "cpu_peak_cores": obs.peak_cpu_cores,
@@ -862,23 +901,9 @@ def _clause_public_keys(bin_: str) -> list[NodeKey]:
     return [("bin", bin_), ("global", "")]
 
 
-# Trailing pipeline stages that only consume/present the upstream result
-# (tail, head, wc, cat, ...). In a pipeline every stage runs concurrently and
-# the trailing consumer's wall clock tracks the producer — the producer
-# usually closes the pipe or is SIGPIPE'd first — so a viewer's own prediction
-# adds no independent time. Composition drops trailing viewers instead of
-# double-counting them. Heavy transformers (grep/sed/awk/sort/...) are
-# intentionally NOT listed: they can be the pipeline bottleneck, so dropping
-# them would under-estimate the total.
-_PIPE_VIEWER_BINS = frozenset(
-    {
-        "cat", "comm", "column", "cut", "fold", "head", "hexdump", "less",
-        "more", "nl", "od", "paste", "rev", "tac", "tail", "tee", "tr",
-        "ts", "uniq", "wc", "xxd",
-    }
-)
-
-
+# Downstream pipeline stages that only select, count, or present upstream output
+# carry wall time dominated by waiting for that producer. Their standalone and
+# pipeline-position-zero executions remain normal model inputs.
 def _clause_in_pipe(clause: Mapping[str, Any]) -> bool:
     """Whether a parsed clause participates in a pipeline (``|``)."""
     return bool(clause.get("in_pipe", False))
@@ -899,10 +924,9 @@ def _compose_compound_latency_ms(
     clauses in source order; ``medians`` maps each clause index to its median
     latency. Serial connections (``;``, ``&&``, ``||``, newline) run one after
     another and sum; a pipeline (``|``) runs its stages concurrently and
-    contributes its slowest stage. Trailing pipeline stages whose bin is a
-    result-viewing consumer (``_PIPE_VIEWER_BINS``) are dropped first: they
-    run concurrently with the producer and their wall clock tracks it, so
-    their own prediction adds no independent time.
+    contributes its slowest stage. Configured downstream dependency consumers
+    are dropped: they run concurrently with the producer and their wall clock
+    tracks it, so their recorded label adds no independent time.
 
     Returns ``(total_ms, units)`` where each unit is ``{"kind": "single" |
     "pipeline", "bins": [...], "time_ms": float,
@@ -945,14 +969,16 @@ def _compose_compound_latency_ms(
             )
             total_ms += medians[index]
             continue
-        pipeline = list(group)
-        dropped_viewer_bins: list[str] = []
-        while (
-            len(pipeline) > 1
-            and str(clause_by_index[pipeline[-1]]["bin"]) in _PIPE_VIEWER_BINS
-        ):
-            dropped_viewer_bins.append(str(clause_by_index[pipeline[-1]]["bin"]))
-            pipeline.pop()
+        dropped_viewer_bins = [
+            str(clause_by_index[index]["bin"])
+            for index in group
+            if is_pipeline_dependent_consumer(clause_by_index[index])
+        ]
+        pipeline = [
+            index
+            for index in group
+            if not is_pipeline_dependent_consumer(clause_by_index[index])
+        ]
         stage_times = [medians[index] for index in pipeline if index in medians]
         if not stage_times:
             return None
@@ -1007,6 +1033,8 @@ class ClauseResourceKB(_ReplayHistory):
             source: {} for source in _CLAUSE_SOURCES
         }
         for obs in observations:
+            if is_pipeline_dependent_consumer(obs):
+                continue
             keys = _clause_public_keys(obs.bin)
             for source in _CLAUSE_SOURCES:
                 value = _clause_value(obs, source)
@@ -1028,6 +1056,8 @@ class ClauseResourceKB(_ReplayHistory):
 
         if self._frozen:
             return
+        if is_pipeline_dependent_consumer(obs):
+            return
         self._observed_counts[_history_identity(obs)] += 1
         heapq.heappush(self._pending, (obs.ts_end, self._pending_seq, obs))
         self._pending_seq += 1
@@ -1038,7 +1068,10 @@ class ClauseResourceKB(_ReplayHistory):
             return [_legacy_history_key(obs.repo, source, key, value)
                     for source in _CLAUSE_SOURCES
                     if (value := _clause_value(obs, source)) is not None]
-        return self._merge_historical(observations, project, self.observe_completed_clause)
+        eligible = (
+            obs for obs in observations if not is_pipeline_dependent_consumer(obs)
+        )
+        return self._merge_historical(eligible, project, self.observe_completed_clause)
 
     def _absorb_completed(self, ts_start: float) -> None:
         while self._pending and self._pending[0][0] < ts_start:
@@ -1082,6 +1115,8 @@ class ClauseResourceKB(_ReplayHistory):
             self._absorb_completed(ts_start)
         outcomes = []
         for clause in clauses:
+            if is_pipeline_dependent_consumer(clause):
+                continue
             targets = {}
             for target, source in _CLAUSE_LOAD_SOURCES.items():
                 selected = self._select(repo, source, str(clause["bin"]), clause["argv"])
@@ -1208,6 +1243,11 @@ class ClauseResourceKB(_ReplayHistory):
                 str(clause["argv"][0]) if clause.get("argv") else None,
             )
         ]
+        predictable = [
+            (index, clause)
+            for index, clause in executable
+            if not is_pipeline_dependent_consumer(clause)
+        ]
         clause_predictions: tuple[ClauseLatencyBucketOutcome, ...] = ()
         reason: str | None = None
         prediction: ClauseLatencyBucketPrediction | None = None
@@ -1218,16 +1258,16 @@ class ClauseResourceKB(_ReplayHistory):
             reason = "parse_failed"
             clause_predictions = tuple(
                 _unavailable_clause_outcome(index, clause, reason)
-                for index, clause in executable
+                for index, clause in predictable
             )
         elif len(effective) == 0:
             reason = "empty_command"
-        elif len(effective) == 1 and not executable:
+        elif len(effective) == 1 and not predictable:
             reason = "no_executable_clauses"
         else:
             clause_predictions = tuple(
                 self._predict_clause_outcome(repo, index, clause, buckets)
-                for index, clause in executable
+                for index, clause in predictable
             )
             if len(effective) == 1:
                 prediction = clause_predictions[0].prediction
@@ -1398,7 +1438,9 @@ __all__ = [
     "CommandLatencyBucketPrediction",
     "CompletedCall",
     "LatencyBuckets",
+    "PIPELINE_DEPENDENT_CONSUMER_BINS",
     "RuntimeToolResourceKB",
     "TargetPrediction",
     "ToolCallQuery",
+    "is_pipeline_dependent_consumer",
 ]

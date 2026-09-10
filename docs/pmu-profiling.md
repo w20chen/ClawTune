@@ -30,7 +30,8 @@ not substituted into a task-attributed profile. See the Linux
 the [arm PMUv3 mapping](https://github.com/torvalds/linux/blob/master/drivers/perf/arm_pmuv3.c),
 and the [HiSilicon uncore PMU documentation](https://www.kernel.org/doc/html/latest/admin-guide/perf/hisi-pmu.html).
 
-Derived values use scaled counts:
+Diagnostic derived values use scaled counts. Eligible training values are
+recomputed from raw counters (eligible events must have no multiplexing):
 
 - `IPC = instructions / cycles`
 - `LLC MPKI = 1000 * llc_read_misses / instructions`
@@ -39,6 +40,9 @@ Derived values use scaled counts:
 Raw counts and `time_enabled`/`time_running` are always retained separately.
 An undefined ratio remains `null`; other valid metrics from the same reliable
 profile remain usable.
+Miss rate is a fraction in `[0, 1]`, not a percentage. Misses greater than
+accesses indicate incompatible counters and invalidate training eligibility;
+the ratio is not clamped to hide the inconsistency.
 
 ## Concurrency and deployment scopes
 
@@ -72,13 +76,15 @@ wedged helper is marked unavailable and the Tool gate/result continues.
 
 Coverage is one of:
 
-- `reliable`: all four named events ran at or above the configured ratio and
+- `reliable`: all four named events have positive and equal enabled/running
+  times, the execution exited normally, no collector operation failed, and
   kernel counting was included;
 - `multiplexed`: all events exist, but at least one has
   `time_running < time_enabled`; scaled values remain diagnostic-only even
   when the ratio is above the configured severity threshold;
-- `partial`: an event is unsupported or permissions allow user-space-only
-  counting;
+- `partial`: an event is unsupported, permissions allow user-space-only
+  counting, disable/read failed, counters are inconsistent, or finalization
+  followed a signal, abort, lost exit callback or completion fallback;
 - `unavailable`: PMU is disabled, the platform/capability is absent, no event
   can be opened, the group cannot be scheduled, or the concurrency/FD budget
   is exhausted.
@@ -87,6 +93,22 @@ Unsupported, partial, and multiplexed profiles remain observable but have
 `eligible_for_kb=false`. Only reliable derived values enter RuntimeToolResourceKB
 PMU evidence used by online calibration. PMU evidence does not change current
 placement/admission semantics in this MVP.
+
+Online learning and v6 offline import additionally check execution-ID ownership,
+exact event semantics, raw integer counts, enabled/running times, and all
+coverage flags. They recompute ratios instead of trusting serialized `derived`
+values or a `reliable` label. Perf descriptors use `FD_CLOEXEC`.
+
+The unified offline runner evaluates `pmu_ipc`, `pmu_llc_mpki`, and
+`pmu_llc_miss_rate` through the KB's separate PMU evidence interface, with
+train-only baselines and frozen tests. Legacy v5 traces without a defined PMU
+profile carry no PMU labels. Unattributed BFCL/Terminal hook-only tool calls do
+not acquire synthetic PMU measurements.
+
+The counter ABI and multiplexing interpretation were checked against the
+[Linux perf_event_open manual](https://man7.org/linux/man-pages/man2/perf_event_open.2.html).
+Hardware accuracy and descendant inheritance still require the Linux acceptance
+test on each target CPU/VM; passing software tests alone is not that validation.
 
 ## Configuration
 

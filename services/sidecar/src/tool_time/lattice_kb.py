@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, replace
 from typing import Any, Iterable, Mapping, Sequence
 
 from tool_resource.features import shell_bin_requires_exec_evidence
-from tool_resource.runtime_kb import ClauseObservation
+from tool_resource.runtime_kb import ClauseObservation, is_pipeline_dependent_consumer
 from tool_time._lattice_vendor.features import estimate_node_count
 from tool_time._lattice_vendor.nodes import build_nodes
 from tool_time._lattice_vendor.normalize import FeatureSet, normalize_command
@@ -233,6 +233,8 @@ class LatticeTimeKB:
         self._advance(ts_start)
         outcomes: list[ClauseLatticeTimePredictions] = []
         for clause_index, clause in enumerate(clauses):
+            if is_pipeline_dependent_consumer(clause):
+                continue
             bin_ = str(clause["bin"])
             argv = tuple(str(value) for value in clause["argv"])
             if shell_command and not shell_bin_requires_exec_evidence(
@@ -278,6 +280,8 @@ class LatticeTimeKB:
         self._ensure_nodes()
         outcomes = []
         for index, clause in enumerate(clauses):
+            if is_pipeline_dependent_consumer(clause):
+                continue
             bin_ = str(clause["bin"])
             argv = tuple(str(value) for value in clause["argv"])
             if not argv or not bin_ or (shell_command and not shell_bin_requires_exec_evidence(bin_, argv[0])):
@@ -315,6 +319,8 @@ class LatticeTimeKB:
         self._ensure_nodes()
         outcomes = []
         for clause in clauses:
+            if is_pipeline_dependent_consumer(clause):
+                continue
             targets = {}
             for target, (_, scale) in LOAD_TARGETS.items():
                 state = self._resource_states.get("load:" + target)
@@ -657,6 +663,7 @@ def _sanitize_resources(observation: ClauseObservation) -> ClauseObservation:
 def _eligible_observation(observation: ClauseObservation) -> bool:
     return (
         bool(observation.argv) and bool(observation.bin)
+        and not is_pipeline_dependent_consumer(observation)
         and ((nonnegative(observation.latency_ms) and observation.latency_ms > 0)
              or bool(resource_values(observation)))
     )
@@ -673,6 +680,10 @@ def _observation_key(observation: ClauseObservation) -> _ObservationKey:
         observation.cpu_ns_cumulative,
         observation.peak_cpu_cores,
         observation.sampled_peak_rss_mb,
+        observation.in_loop,
+        observation.in_pipe,
+        observation.in_subst,
+        observation.pipeline_position,
     )
 
 

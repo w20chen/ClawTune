@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/offline-report.schema.json",
+  "type": "object",
+  "required": ["schema", "train_tasks", "test_tasks", "test_updates", "metrics"],
+  "properties": {
+    "schema": {"const": "clawtune.offline-report.v1"},
+    "train_tasks": {"type": "integer", "minimum": 0},
+    "test_tasks": {"type": "integer", "minimum": 0},
+    "test_updates": {"const": 0},
+    "metrics": {"type": "array", "items": {"type": "object", "required": ["benchmark", "target", "eligible", "predicted", "coverage", "mae", "wape"]}},
+    "scope": {"type": "string"},
+    "split_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "datasets": {"type": "object", "additionalProperties": {"$ref": "#"}}
+  },
+  "additionalProperties": false
+}

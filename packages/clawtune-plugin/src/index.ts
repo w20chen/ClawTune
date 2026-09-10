@@ -2,6 +2,7 @@ import {definePluginEntry, type HookApi} from "openclaw/plugin-sdk/plugin-entry"
 import {randomUUID} from "node:crypto";
 import {readFileSync} from "node:fs";
 import {SidecarClient} from "./client.js";
+import {registerBenchmarkTools} from "./benchmark-tools.js";
 import {formatCallLoadPrediction} from "./prediction-format.js";
 import {loadConfig, isRecord} from "./config.js";
 import {CorrelationMap} from "./correlation.js";
@@ -110,6 +111,7 @@ export default definePluginEntry({
     }
   },
   register(api: HookApi): void {
+  registerBenchmarkTools(api);
   const config = loadConfig(api.pluginConfig ?? {});
   const logger = api.logger ?? consoleLogger;
   const runtimeId = process.env.CLAWTUNE_RUNTIME_ID?.trim() || randomUUID();
@@ -152,8 +154,8 @@ export default definePluginEntry({
   }
 
   async function waitForAutoStartedSidecar(): Promise<void> {
-    if (sidecarLaunchPromise === null) return;
-    await sidecarLaunchPromise;
+    if (sidecarLaunchPromise === null && !process.env.CLAWTUNE_KB_OWNER) return;
+    if (sidecarLaunchPromise !== null) await sidecarLaunchPromise;
     if (sidecarLaunchError !== null) {
       throw new Error(`required sidecar auto-start failed: ${String(sidecarLaunchError)}`);
     }
@@ -186,6 +188,7 @@ export default definePluginEntry({
     cfg: PluginConfig,
     log: {warn?: (msg: string, data?: unknown) => void; error?: (msg: string, data?: unknown) => void},
   ): Promise<void> {
+    const expectedOwner = process.env.CLAWTUNE_KB_OWNER || (cfg.autoStartSidecar ? "daily" : undefined);
     let health: SidecarHealth | null = null;
     try {
       const controller = new AbortController();
@@ -204,9 +207,13 @@ export default definePluginEntry({
     } catch {
       // Health endpoint unreachable — the sidecar may still be starting.
       // The failOpen path will handle this gracefully on the first request.
+      if (expectedOwner) throw new Error("Cannot verify required knowledge base owner: sidecar health unavailable");
       return;
     }
 
+    if (expectedOwner && health?.kb_owner !== expectedOwner) {
+      throw new Error(`Knowledge base owner mismatch: expected ${expectedOwner}, received ${health?.kb_owner ?? "unknown"}`);
+    }
     if (!health) return;
 
     const version = health.sidecar_version;

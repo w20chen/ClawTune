@@ -13,7 +13,7 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass
 from typing import Any, Sequence
 
-from tool_resource.runtime_kb import ClauseObservation
+from tool_resource.runtime_kb import ClauseObservation, is_pipeline_dependent_consumer
 from tool_time._lattice_vendor.features import generate_context_nodes
 from tool_time._lattice_vendor.nodes import _compute_loso_risk, _loo_mse_log
 from tool_time._lattice_vendor.normalize import FeatureSet, normalize_command
@@ -148,7 +148,9 @@ builder. Risk remains log1p(value/scale); zero CPU/RSS is a valid measurement.
 
     states = {}
     def measured(row: ClauseObservation) -> dict[str, float]:
-        if load and (row.in_loop or row.in_pipe or row.in_subst):
+        if load and (
+            row.in_loop or row.in_subst or is_pipeline_dependent_consumer(row)
+        ):
             return {}
         values = resource_values(row)
         if load and nonnegative(row.latency_ms):

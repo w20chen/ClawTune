@@ -11,6 +11,8 @@ The root `.env` controls the long-running sidecar. Useful settings are:
 | Setting | Default | When to change it |
 | --- | --- | --- |
 | `CLAWTUNE_TRACE_DIR` | `traces` | Move OpenClaw trace output |
+| `CLAWTUNE_STATE_DIR` | invoking user's `~/.local/state/clawtune` | Move persistent daily KB state independently of traces |
+| `CLAWTUNE_KB_SEED` | bundled `seeds/demo-v1` | Seed a new daily KB; existing state is retained |
 | `CLAWTUNE_LLM_UPSTREAM_BASE_URL` | DeepSeek API | Use another OpenAI-compatible provider |
 | `CLAWTUNE_TOKEN` | unset | Require local sidecar authentication |
 | `CLAWTUNE_PMU_ENABLED` | `true` | Enable best-effort Tool-level hardware counting |
@@ -43,7 +45,7 @@ CPU time, average/peak cores, and memory. See [call-load prediction](call-load-p
 for defaults, units and `.env` variables; changing boundaries does not retrain a KB.
 
 
-The setup command copies `swe_rebench/config.example.yaml` once. Exporting a
+The setup command copies `configs/benchmark.example.yaml` once. Exporting a
 key in the launch shell is the simplest secret configuration:
 
 ```bash
@@ -59,7 +61,7 @@ The values a new user normally edits are:
 
 ```yaml
 llm:
-  api_key_file: "./swe_rebench/llm_api_key.txt"
+  api_key_file: "./configs/llm_api_key.txt"
   upstream_base_url: "https://api.deepseek.com"
   model: "your-model-name"
   openclaw_model_ref: "vllm/your-model-name"
@@ -76,17 +78,22 @@ shorter agent-only limit; `0` disables that separate limit. After either limit
 fires, process and sandbox termination use a small independent cleanup grace
 instead of reusing an already exhausted task budget.
 
-`parallelism` is the maximum number of benchmark cases executing at once.
-`--parallelism N` overrides it for one invocation. Keep `1` for the first
-acceptance run, then increase gradually. It is independent of `--sample`, which
-controls how many tasks are selected. Concurrent runtimes share one Sidecar and
-one batch KB.
+The demo accepts only `--parallelism 1`. Each run shares one sidecar and KB,
+and later tasks learn from earlier tasks. `--sample N` selects the first N
+tasks after filtering. Frozen train/test evaluation uses the `offline` command.
 
-The runner always writes the full batch report to `output.report_path`. It
-prints only compact progress by default; pass `--json` to also emit the full
-report on stdout.
+The common runner owns outputs under `.runtime/benchmarks/<benchmark>/<run>`
+or `--output`: `run.json`, `report.json`, per-task traces, and `kb/`. It records
+task order and KB generation changes. Old YAML output paths are superseded by
+this run-owned layout. See [the five peer adapters](MULTI_BENCHMARK_IMPLEMENTATION.md).
 
 ### Deep Research Bench
+
+The following legacy research configuration remains readable through `--config`.
+The common entry is `benchmark --benchmark deep-research-bench`; it forces online
+learning and uses the same run-owned layout as the other adapters. The current
+common runner requires tool spans and records learning status; the legacy
+`gate_required` and per-task-sidecar behavior below belong to the old runner.
 
 Setup also copies `deep_research_bench/config.example.yaml`. The Deep Research
 Bench config keeps the same `llm`, `batch`, `output`, and `runtime_assets` sections,
@@ -148,7 +155,9 @@ Each benchmark task uses three JSON knowledge bases under `tool-resource/`:
 - `runtime-tool-resource-kb.json` stores whole tool/command observations used
   to predict latency, CPU, and memory.
 - `clause-resource-kb.json` stores shell-clause observations used for
-  clause-level resource prediction.
+  clause-level resource prediction. Schema v5 excludes structurally identified
+  downstream pipeline consumers; older aggregated snapshots are rejected
+  because their polluted samples cannot be separated after aggregation.
 - `clause-lattice-time-kb.json` stores the eligible eBPF clause observations
   and pending causal updates shared by the `shrinkage`, `loso`, and
   `max_cardinality` clause-time predictors.

@@ -77,9 +77,9 @@ superiority. An unrelated global node is not a compatible canonical fallback.
 Existing repository-first/prefix matching remains a heuristic, not an
 environment-invariant similarity model.
 
-The initial composer explicitly supports only literal foreground simple
-commands and unconditional serial command lists. It checks clause spans and
-the text between them, not just the parser's pipeline flags:
+The composer supports literal foreground simple commands, unconditional serial
+command lists, and simple pipelines. It checks clause spans and the text
+between them as well as the parser's pipeline flags:
 
 - A single clause can supply all five targets as a **composed estimate**.
   Assumptions explicitly say that its foreground lineage covers the workload
@@ -89,15 +89,22 @@ the text between them, not just the parser's pipeline flags:
   durations within each draw, then computes all statistics. It never sums
   clause medians/p90s or creates a one-hot bucket from a point estimate.
   Independence and foreground completion are explicit, unvalidated assumptions.
+- Pipeline duration takes the maximum sampled duration within each concurrent
+  pipeline group. Downstream dependency-only consumers (`tail`, `head`, `wc`,
+  `grep`, `cat`, and the related configured set) are omitted before querying
+  evidence. The same binaries remain eligible standalone and at pipeline
+  position zero.
 - Multi-clause CPU totals/averages and resource peaks remain unavailable until
   joint execution ownership and time alignment can be established. Existing
   clause lineage samples cannot prove non-overlap or peak concurrency.
-- Pipelines, conditionals, shell loops, substitution, backgrounding, builtins,
+- Conditionals, shell loops, substitution, backgrounding, builtins, general
   redirects/expansions and unsupported syntax do not get heuristic composition.
+  The common stderr merge `2>&1` is accepted in a simple pipeline.
   Compatible direct call history can still predict such commands. Quoted
   metacharacters may conservatively disable composition too.
-- Loop-, pipeline- and substitution-associated historical clauses are excluded
-  from the new standalone clause views, independently of legacy diagnostics.
+- Loop- and substitution-associated historical clauses are excluded from the
+  standalone clause views. Pipeline producers remain eligible; configured
+  downstream consumers are excluded using `in_pipe` and `pipeline_position`.
 
 For asynchronous work, `tool_hook_interval` ends at hook completion; it does
 not promise a prediction of a detached workload's eventual lifetime. Full job

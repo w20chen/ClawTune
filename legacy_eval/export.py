@@ -4,7 +4,7 @@ Serializes the KBs trained on the legacy training split (default: the 80-task
 seed-42 split) into the exact snapshot format the project's runtime loads as
 its cold-start seed under ``traces/tool-resource/``:
 
-* ``clause-resource-kb.json``       (schema ``runtime_clause_resource_kb_v4``)
+* ``clause-resource-kb.json``       (schema ``runtime_clause_resource_kb_v5``)
 * ``clause-lattice-time-kb.json``   (schema ``clause_lattice_kb_v2``)
 * ``runtime-tool-resource-kb.json`` (schema ``runtime_tool_resource_kb_v2``)
 

@@ -86,10 +86,11 @@ predictors: `shrinkage`, `loso`, and `max_cardinality`. These algorithms share
 one independent, flat lattice KB; common nodes and nodes carrying a repository
 feature live in the same node map rather than separate public/repo layers.
 
-The lattice learns only from eligible eBPF `ClauseObservation` values. Results
-keep one independent prediction per exec-producing static clause: pipeline,
-conditional, and sequential clause times are never combined into a synthetic
-command duration. The lattice is prebuilt during cold start and updated as
+The lattice learns only from eligible eBPF `ClauseObservation` values.
+Configured downstream pipeline consumers are excluded because their wall time
+tracks upstream production; the same binaries remain eligible standalone or at
+pipeline position zero. Results keep one independent prediction per remaining
+exec-producing static clause. The lattice is prebuilt during cold start and updated as
 clauses complete; large corpora are bounded deterministically. Field-level
 details (including the `lattice_candidate_limit_exceeded` outcome) are
 documented in [trace-schema.md](trace-schema.md).

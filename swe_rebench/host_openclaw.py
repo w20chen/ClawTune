@@ -69,7 +69,7 @@ _BENCHMARK_GATEWAY_ID = "swe-rebench"
 
 _TOOL_RESOURCE_KB_SCHEMAS = {
     "runtime-tool-resource-kb.json": "runtime_tool_resource_kb_v2",
-    "clause-resource-kb.json": "runtime_clause_resource_kb_v4",
+    "clause-resource-kb.json": "runtime_clause_resource_kb_v5",
     "clause-lattice-time-kb.json": "clause_lattice_kb_v2",
 }
 
@@ -541,7 +541,7 @@ def run_host_openclaw_replay_task(
 
 
 def _task_workspace(config: RunnerConfig, task: TaskDef) -> Path:
-    safe_id = task.instance_id.replace("/", "_").replace(":", "_")
+    safe_id = getattr(config, "task_directory", None) or task.instance_id.replace("/", "_").replace(":", "_")
     return config.output.trace_root.parent / "workspaces" / safe_id
 
 
@@ -1004,7 +1004,7 @@ def _prepare_batch_tool_resource_kb(
 ) -> None:
     """Initialize one run-scoped shared KB from the tracked cold-start seed."""
 
-    source_dir = config.repo_root / "traces" / "tool-resource"
+    source_dir = config.repo_root / "seeds" / "demo-v1"
     try:
         _validate_kb_snapshot_pair(source_dir)
         shared_kb_dir.mkdir(parents=True, exist_ok=False)
@@ -1039,7 +1039,7 @@ def _seed_runtime_tool_resource_kb(
     """
     dest_dir = trace_dir / "tool-resource"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    source_dir = source_dir or config.repo_root / "traces" / "tool-resource"
+    source_dir = source_dir or config.repo_root / "seeds" / "demo-v1"
     try:
         _validate_kb_snapshot_pair(source_dir)
         for filename in _TOOL_RESOURCE_KB_SCHEMAS:
@@ -1652,7 +1652,8 @@ def _run_openclaw_agent(
             "CLAWTUNE_ENABLE_CGROUP": "1",
             "CLAWTUNE_LAUNCH_MODE": "fork-exec",
             "CLAWTUNE_LAUNCH_DEBUG": "1",
-            "CLAWTUNE_REPO_KEY": task_repo_key(task),
+            "CLAWTUNE_REPO_KEY": getattr(config, "kb_repo", task_repo_key(task)),
+            **({"CLAWTUNE_KB_OWNER": config.kb_owner} if getattr(config, "kb_owner", None) else {}),
         }
     )
     prompt_path = prompt_path or trace_dir / "agent_prompt.txt"

@@ -1,0 +1,33 @@
+# Shared configuration for all five peer adapters. No dataset selection here.
+# `benchmark` always uses serial online learning; `offline` owns frozen evaluation.
+runtime:
+  mode: host-openclaw
+  kb_frozen: false
+llm:
+  api_key: "${LLM_API_KEY}"
+  api_key_file: ./configs/llm_api_key.txt
+  upstream_base_url: https://api.deepseek.com
+  model: deepseek-v4-flash
+  openclaw_model_ref: vllm/deepseek-v4-flash
+batch:
+  parallelism: 1
+  retry_failed: 0
+  task_timeout_seconds: 1800
+  agent_timeout_seconds: 0
+docker:
+  pull_policy: missing
+  cpus: 4
+  memory_limit: 8g
+  privileged: true
+  cgroupns_mode: host
+  cgroup_mount_rw: true
+  cgroup_required: true
+# Used only by the research adapter.
+sandbox:
+  image: python:3.11-slim
+  workdir: /workspace
+web_search:
+  enabled: true
+  provider: tavily
+  api_key: "${TAVILY_API_KEY}"
+  api_key_file: ./configs/tavily_api_key.txt

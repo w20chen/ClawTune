@@ -361,7 +361,32 @@ class ToolResourcePredictor:
         )
 
     @classmethod
-    def from_traces(
+    def from_traces(cls, **kwargs) -> "ToolResourcePredictor":
+        from clawtune_kb import StateStore
+        artifact_dir = kwargs.get("artifact_dir")
+        if artifact_dir is not None and (artifact_dir / "manifest.json").is_file():
+            from clawtune_kb import validate_seed
+            validate_seed(artifact_dir)
+            if not kwargs.get("frozen", False):
+                raise ValueError("immutable seed cannot be opened for online learning; initialize a working KB")
+        store = None
+        if artifact_dir is not None and (artifact_dir / "state.json").is_file() and not kwargs.get("frozen", False):
+            store = StateStore(artifact_dir)
+            store.__enter__()
+            # Managed states never discover historical files at startup.
+            kwargs["openclaw_trace_paths"] = ()
+            kwargs["ebpf_trace_paths"] = ()
+        try:
+            result = cls._from_traces(**kwargs)
+            result._state_store = store
+            return result
+        except BaseException:
+            if store is not None:
+                store.__exit__(None, None, None)
+            raise
+
+    @classmethod
+    def _from_traces(
         cls,
         *,
         openclaw_trace_paths: Iterable[Path],
@@ -413,7 +438,7 @@ class ToolResourcePredictor:
         # When no explicit eBPF paths are configured, auto-discover
         # individual call artifacts that have accumulated in the artifact
         # directory across prior ``openclaw agent --local`` invocations.
-        if not ebpf_paths and artifact_dir is not None:
+        if not ebpf_paths and artifact_dir is not None and not (artifact_dir / "state.json").exists():
             ebpf_paths = _discover_artifact_call_files(artifact_dir)
         observations: list[ClauseObservation] = []
         continuous_observations: list[CompletedCall] = []
@@ -1156,7 +1181,13 @@ class ToolResourcePredictor:
     def close(self) -> None:
         """Make queued KB generations durable before sidecar shutdown."""
 
-        self.flush_kb_updates(timeout_seconds=30.0)
+        try:
+            self.flush_kb_updates(timeout_seconds=30.0)
+        finally:
+            store = getattr(self, "_state_store", None)
+            if store is not None:
+                store.__exit__(None, None, None)
+                self._state_store = None
 
     def kb_updates_pending(self) -> bool:
         """Return whether the single writer has queued or in-flight work."""
@@ -1259,6 +1290,10 @@ class ToolResourcePredictor:
 
         if errors:
             raise KnowledgeBaseFlushError("; ".join(errors))
+
+        store = getattr(self, "_state_store", None)
+        if store is not None:
+            store.checkpoint()
 
     def _capture_kb_snapshot_locked(
         self,
@@ -1616,7 +1651,8 @@ def completed_call_from_completion(
     peak_memory_mb = _rss_mb(sample.rss_bytes_peak)
     ambient_before_mb = _rss_mb(sample.rss_bytes_before)
     shared_resources = _completion_uses_shared_resources(event, start)
-    pmu = _quality_gated_pmu_metrics(sample.pmu_profile)
+    pmu = _quality_gated_pmu_metrics(sample.pmu_profile if event.execution_id else None,
+                                   execution_id=event.execution_id)
     return CompletedCall(
         repo=repo,
         tool_name=event.tool_name,
@@ -1735,7 +1771,8 @@ def _completed_call_from_tool_span(
     shared_resources = _uses_shared_resources(resources) or _uses_shared_resources(
         execution
     )
-    pmu = _quality_gated_pmu_metrics(resources.get("pmu"))
+    pmu = _quality_gated_pmu_metrics(resources.get("pmu") if execution.get("execution_id") else None,
+                                   execution_id=execution.get("execution_id"))
     return CompletedCall(
         repo=repo,
         tool_name=tool_name,
@@ -1767,55 +1804,11 @@ def _completed_call_from_tool_span(
     )
 
 
-def _quality_gated_pmu_metrics(profile: Any) -> dict[str, Any]:
-    unavailable = {
-        "ipc": None,
-        "llc_mpki": None,
-        "llc_miss_rate": None,
-        "eligible": False,
-    }
-    if not isinstance(profile, dict) or profile.get("schema") != "pmu_profile_v1":
-        return unavailable
-    coverage = profile.get("coverage")
-    derived = profile.get("derived")
-    events = profile.get("events")
-    if (
-        not isinstance(coverage, dict)
-        or coverage.get("status") != "reliable"
-        or coverage.get("eligible_for_kb") is not True
-        or profile.get("llc_semantics_confirmed") is not True
-        or not isinstance(derived, dict)
-        or not isinstance(events, dict)
-    ):
-        return unavailable
-    expected_semantics = {
-        "cycles": "PERF_COUNT_HW_CPU_CYCLES",
-        "instructions": "PERF_COUNT_HW_INSTRUCTIONS",
-        "llc_read_misses": "PERF_COUNT_HW_CACHE_LL:READ:MISS",
-        "llc_read_accesses": "PERF_COUNT_HW_CACHE_LL:READ:ACCESS",
-    }
-    if any(
-        not isinstance(events.get(name), dict)
-        or events[name].get("supported") is not True
-        or events[name].get("semantics") != semantics
-        for name, semantics in expected_semantics.items()
-    ):
-        return unavailable
-    values: dict[str, float | None] = {}
-    for name in ("ipc", "llc_mpki", "llc_miss_rate"):
-        value = derived.get(name)
-        if value is None:
-            values[name] = None
-        elif (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-            or value < 0
-        ):
-            values[name] = None
-        else:
-            values[name] = float(value)
-    return {**values, "eligible": True}
+def _quality_gated_pmu_metrics(profile: Any, *, execution_id: str | None = None) -> dict[str, Any]:
+    from clawtune_sidecar.monitoring.pmu import quality_gated_pmu_metrics
+    if execution_id is not None and (not isinstance(profile, dict) or profile.get("execution_id") != execution_id):
+        profile = None
+    return quality_gated_pmu_metrics(profile)
 
 
 def _completion_uses_shared_resources(
@@ -2231,7 +2224,17 @@ def _normalize_clause(value: Any) -> dict[str, Any] | None:
         return None
     if not argv:
         return None
-    return {"bin": bin_, "argv": argv}
+    position = value.get("pipeline_position", -1)
+    if isinstance(position, bool) or not isinstance(position, int):
+        position = -1
+    return {
+        "bin": bin_,
+        "argv": argv,
+        "in_loop": bool(value.get("in_loop", False)),
+        "in_pipe": bool(value.get("in_pipe", False)),
+        "in_subst": bool(value.get("in_subst", False)),
+        "pipeline_position": position,
+    }
 
 
 def _raw_params_from_start(start: dict[str, Any] | None) -> Any:

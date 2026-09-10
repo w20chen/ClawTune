@@ -46,6 +46,9 @@ PRIVILEGED_RUNTIME_PRESERVE_ENV = (
     "NODE_EXTRA_CA_CERTS",
 )
 BENCHMARK_PRESERVE_ENV = (
+    "BFCL_REPO_PATH",
+    "CLAWTUNE_STATE_DIR",
+    "CLAWTUNE_KB_SEED",
     "LLM_API_KEY",
     "LLM_API_KEY_FILE",
     "TAVILY_API_KEY",
@@ -284,10 +287,12 @@ def create_venv(system_python: Path) -> None:
 def copy_defaults() -> None:
     for source, target in (
         (ROOT / ".env.example", ROOT / ".env"),
+        (ROOT / "configs" / "benchmark.example.yaml", ROOT / "configs" / "benchmark.yaml"),
         (ROOT / "swe_rebench" / "config.example.yaml", ROOT / "swe_rebench" / "config.yaml"),
         (ROOT / "deep_research_bench" / "config.example.yaml", ROOT / "deep_research_bench" / "config.yaml"),
     ):
         if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
             log(f"Created {target.relative_to(ROOT)}")
 
@@ -884,12 +889,26 @@ def agent(extra: Sequence[str]) -> None:
 
 
 def benchmark(extra: Sequence[str]) -> None:
+    workflow("benchmark", extra)
+
+
+def workflow(command: str, extra: Sequence[str]) -> None:
+    """One public parser for all peer datasets and the offline/KB paths."""
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    if command != "benchmark" or any(flag in extra for flag in ("--help", "-h", "--list", "--dry-run")):
+        interpreter = VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        if interpreter.is_file() and interpreter.resolve() != Path(sys.executable).resolve():
+            run([interpreter, "-m", "benchmarks.cli", command, *extra])
+            return
+        from benchmarks.cli import main as workflow_main
+        status = workflow_main([command, *extra])
+        if status:
+            raise SetupError(f"{command} failed with exit {status}")
+        return
     require_linux()
     if not (VENV / "bin" / "python").exists():
         raise SetupError(".venv is missing; run setup first.")
-    config = ROOT / "swe_rebench" / "config.yaml"
-    if not config.exists():
-        raise SetupError("swe_rebench/config.yaml is missing; run setup first.")
     env_items: list[str] = []
     if (
         host_arch() in ARM_ARCHES
@@ -901,78 +920,8 @@ def benchmark(extra: Sequence[str]) -> None:
             *env_items,
             VENV / "bin" / "python",
             "-m",
-            "swe_rebench.runner",
-            "run",
-            "--config",
-            config,
-            "--prepare",
-            "--export",
-            *extra,
-        ],
-        preserve_env=(
-            *BENCHMARK_PRESERVE_ENV,
-            *(name for name in os.environ if name.startswith("LC_")),
-        ),
-    )
-    run(command)
-
-
-def drb(extra: Sequence[str]) -> None:
-    """Run Deep Research Bench; remaining options go to the runner."""
-    require_linux()
-    if not (VENV / "bin" / "python").exists():
-        raise SetupError(".venv is missing; run setup first.")
-    config = ROOT / "deep_research_bench" / "config.yaml"
-    if not config.exists():
-        raise SetupError(
-            "deep_research_bench/config.yaml is missing; run setup first."
-        )
-    # The basic sandbox image (python:3.11-slim) is multi-arch, so no
-    # linux/amd64 default is forced on ARM; SWE_REBENCH_DOCKER_PLATFORM still
-    # wins when the configured image needs it.
-    command = privileged_command(
-        [
-            VENV / "bin" / "python",
-            "-m",
-            "deep_research_bench.runner",
-            "run",
-            "--config",
-            config,
-            "--prepare",
-            "--export",
-            *extra,
-        ],
-        preserve_env=(
-            *BENCHMARK_PRESERVE_ENV,
-            *(name for name in os.environ if name.startswith("LC_")),
-        ),
-    )
-    run(command)
-
-
-def replay(extra: Sequence[str]) -> None:
-    """Run a SWE-Rebench v6 trace through the host sandbox replay path."""
-    require_linux()
-    if not (VENV / "bin" / "python").exists():
-        raise SetupError(".venv is missing; run setup first.")
-    config = ROOT / "swe_rebench" / "config.yaml"
-    if not config.exists():
-        raise SetupError("swe_rebench/config.yaml is missing; run setup first.")
-    env_items: list[str] = []
-    if (
-        host_arch() in ARM_ARCHES
-        and "SWE_REBENCH_DOCKER_PLATFORM" not in os.environ
-    ):
-        env_items.append("SWE_REBENCH_DOCKER_PLATFORM=linux/amd64")
-    command = privileged_command(
-        [
-            *env_items,
-            VENV / "bin" / "python",
-            "-m",
-            "swe_rebench.runner",
-            "replay",
-            "--config",
-            config,
+            "benchmarks.cli",
+            "benchmark",
             *extra,
         ],
         preserve_env=(
@@ -1011,15 +960,16 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("check", help="Run the real eBPF compile/attach/exec smoke test")
     sub.add_parser("sidecar", help="Start the privileged ClawTune sidecar")
     sub.add_parser("agent", help="Start eBPF sidecar, run OpenClaw agent, then clean up")
-    sub.add_parser("benchmark", help="Run SWE-Rebench; remaining options go to the runner")
-    sub.add_parser("replay", help="Replay one SWE-Rebench v6 trace; remaining options go to the runner")
-    sub.add_parser("drb", help="Run Deep Research Bench; remaining options go to the runner")
+    sub.add_parser("benchmark", add_help=False, help="Online simulation: five peer benchmark adapters")
+    sub.add_parser("offline", add_help=False, help="Fixed-trace training and frozen task-held-out evaluation")
+    sub.add_parser("kb", add_help=False, help="Inspect KB ownership and committed generation")
+    sub.add_parser("drb", add_help=False, help="Compatibility alias for benchmark --benchmark deep-research-bench")
     return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args, extra = parser().parse_known_args(argv)
-    if extra and args.command not in {"agent", "benchmark", "drb"}:
+    if extra and args.command not in {"agent", "benchmark", "drb", "offline", "kb"}:
         raise SetupError("Unrecognized arguments: " + " ".join(extra))
     try:
         if args.command == "setup":
@@ -1034,10 +984,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             agent(extra)
         elif args.command == "benchmark":
             benchmark(extra)
-        elif args.command == "replay":
-            replay(extra)
         elif args.command == "drb":
-            drb(extra)
+            workflow("benchmark", ["--benchmark", "deep-research-bench", *extra])
+        elif args.command in {"offline", "kb"}:
+            workflow(args.command, extra)
     except (SetupError, subprocess.CalledProcessError) as exc:
         log(f"Failed: {exc}")
         return 1

@@ -6,7 +6,7 @@
 ClawTune adds hardware-aware tracing and profiling to OpenClaw. It combines
 an OpenClaw plugin with a local sidecar and uses eBPF to measure the
 CPU, memory, process lifecycle, model calls, and tool calls of real agent work.
-It can also run agent benchmarks (SWE-Rebench and Deep Research Bench) and export the resulting traces. eBPF collection is enabled and required by default.
+The demo has three paths: daily OpenClaw learning, online benchmark simulation, and frozen offline trace evaluation. Five peer benchmark adapters share one run lifecycle; resource labels are accepted only when their attribution is valid.
 
 ## Supported Hosts
 
@@ -47,8 +47,7 @@ python3 scripts/clawtune.py doctor
 
 ### 2. Configure the model provider
 
-`setup` creates `.env` and `swe_rebench/config.yaml` without overwriting an
-existing file.
+`setup` creates `.env` and `configs/benchmark.yaml` without overwriting existing files. Older SWE/DRB configs remain readable through `--config`.
 
 For normal OpenClaw use, configure an OpenAI-compatible provider that points
 to ClawTune's local proxy:
@@ -61,19 +60,14 @@ openclaw onboard --non-interactive --accept-risk --skip-health \
   --custom-model-id "<model>"
 ```
 
-For SWE-Rebench, export the provider key in the shell that starts the run:
+For all benchmarks, export the provider key in the shell that starts the run:
 
 ```bash
 export LLM_API_KEY="<provider-api-key>"
 ```
 
-The benchmark wrapper preserves only an explicit allow-list through `sudo`, so
-the key reaches the runner without `sudo -E` and without being copied into a
-command-line argument. As a persistent alternative, put the key on one line in
-the ignored file `swe_rebench/llm_api_key.txt` (or
-`deep_research_bench/llm_api_key.txt` for Deep Research Bench). Then edit the
-model values in `swe_rebench/config.yaml` (or
-`deep_research_bench/config.yaml` for Deep Research Bench):
+The wrapper preserves the key through its explicit sudo allow-list. Alternatively,
+use the ignored `configs/llm_api_key.txt` file. Edit `configs/benchmark.yaml`:
 
 ```yaml
 llm:
@@ -134,55 +128,62 @@ and privileged launch arguments at runtime. It does not persist a generated
 absolute sidecar command that would become stale after the checkout moves.
 Traces are written under `traces/`.
 
-### 4. Run a benchmark
-
-#### SWE-Rebench
-
-The default runtime is `host-openclaw`; use `--runtime-mode
-container-openclaw` only when OpenClaw itself must run inside the task
-container. Start serially:
+### 4. Simulate users with a benchmark
 
 ```bash
-python3 scripts/clawtune.py benchmark --sample 1 --parallelism 1
+python3 scripts/clawtune.py benchmark --list
+python3 scripts/clawtune.py benchmark --sample 2 --dry-run
+python3 scripts/clawtune.py benchmark --benchmark swe-rebench --sample 2
+python3 scripts/clawtune.py benchmark --benchmark deep-research-bench --dataset /data/research.jsonl --sample 2
+python3 scripts/clawtune.py benchmark --benchmark swe-bench-verified --dataset /data/verified.jsonl --sample 2
+python3 scripts/clawtune.py benchmark --benchmark bfcl --category multi_turn_base --sample 2
+python3 scripts/clawtune.py benchmark --benchmark terminal-bench --dataset /data/terminal-bench/tasks --sample 2
 ```
 
-On Kunpeng, the wrapper defaults benchmark containers to `linux/amd64`; on
-x86_64 it uses the native platform. An explicit
-`SWE_REBENCH_DOCKER_PLATFORM` environment value always wins. ClawTune passes
-the selected platform to Docker without adding unsupported keys to OpenClaw's
-configuration. Results are kept in `swe_rebench/.runtime/`.
+`--sample N` selects the first N tasks after filtering. It is **serial online
+learning**, with one run-owned sidecar and KB. Each task gets a new workspace
+and conversation, while later tasks see earlier tasks' completed observations.
+A new invocation starts a new run from the immutable seed, independent of daily
+state and other runs. Only `--parallelism 1` is supported.
 
-Use `--dataset /path/to/tasks.json` to override the configured task source.
-After the first case passes, increase concurrency explicitly. One benchmark
-invocation owns one batch-local Sidecar; all concurrent OpenClaw runtimes reuse it and contribute
-to the same batch knowledge base:
+Outputs live in `.runtime/benchmarks/<benchmark>/<run>/`. `run.json` records
+selection order, per-task KB generations, errors and learning status.
+`--resume /path/to/run` resumes only at a saved task boundary with the original
+config and seed. An interrupted active task is rejected because it may have
+partially updated the KB. `--seed /path/to/offline/seed` selects another seed.
+`drb` remains a compatibility alias for the same benchmark command.
+
+BFCL needs its native dependencies and `BFCL_REPO_PATH` pointing to a Gorilla
+checkout; executable stateful categories retain native functions and state
+across turns. AST-only cases are rejected explicitly. Terminal Bench copies the
+native task Compose environment to the run directory and exposes `terminal_exec`
+inside its `client` container. This demo measures learning and prediction;
+`official_score` is null, not a task-solving leaderboard score. See the
+[implementation and input formats](docs/MULTI_BENCHMARK_IMPLEMENTATION.md).
+
+### 5. Train and evaluate fixed traces
 
 ```bash
-python3 scripts/clawtune.py benchmark --sample 8 --parallelism 4
+python3 scripts/clawtune.py offline --dataset /data/fixed-traces --rss-unit MiB
+# Legacy SWE traces without benchmark metadata:
+python3 scripts/clawtune.py offline --dataset /data/swe-traces --benchmark swe-rebench --rss-unit MiB
+python3 scripts/clawtune.py kb status
+python3 scripts/clawtune.py kb status --path /path/to/run/kb
 ```
 
-`--sample` selects how many cases run; `--parallelism` limits simultaneous
-cases. Parallelism defaults to `1`, so an upgrade never starts a large batch
-implicitly.
+The offline path supports task-scoped trace v5 and v6. It groups by dataset and
+repository (category for non-repository tasks), keeps all attempts/turns of a
+task together, and deterministically assigns about 80% to training. Singleton
+groups go to training; groups of two or more keep test tasks. Each dataset
+trains its **own** three-layer seed; tests never update it. Outputs contain
+`split.json`, `seed/`, `predictions.jsonl`, and `report.json` / `report.md`.
+Missing CPU/memory labels are unavailable, never zero-filled.
 
-#### Deep Research Bench
-
-Deep Research Bench runs research questions through OpenClaw while
-ClawTune records the same model/tool/resource telemetry. There is no per-task
-image: the agent's tools run in a very basic Docker sandbox
-(`python:3.11-slim` by default). Each task's trace, prompt, manifest, and
-the record-only reference answer are kept under `deep_research_bench/.runtime/`.
-
-```bash
-# One smoke task from the bundled deep_research_bench/tasks.json
-python3 scripts/clawtune.py drb --sample 1 --parallelism 1
-
-# A real task source downloaded from HuggingFace
-python3 -m deep_research_bench.discover --sample 32 --out deep_research_bench/tasks-32.json
-python3 scripts/clawtune.py drb --dataset deep_research_bench/tasks-32.json --sample 32
-```
-
-See [Deep Research Bench usage](deep_research_bench/README.md).
+Daily KB state defaults to `~/.local/state/clawtune/kb`; set `CLAWTUNE_STATE_DIR`
+to relocate it. Trace export directories do not select a KB. Three snapshots
+commit together through `CURRENT`; a single writer lock prevents simultaneous
+writers, and restarts restore the last committed generation. Uncommitted
+observations from an abrupt termination can be lost. Seeds are never writable.
 
 ## Documentation
 

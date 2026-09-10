@@ -1,8 +1,8 @@
-"""Common tool-call adapter and deliberately restricted distribution composer.
+"""Common tool-call adapter and restricted distribution composer.
 
-Only plain foreground commands / unconditional serial lists are composed.
-Serial duration uses independent marginal resampling (explicit, uncalibrated).
-Multi-clause resources need execution ownership/time alignment, so stay unknown.
+Plain foreground commands, unconditional serial lists, and simple pipelines are
+supported. Downstream dependency-only pipe consumers are excluded. Duration
+composition resamples clause marginals; multi-clause resources stay unknown.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from clawtune_sidecar.contracts.load_prediction import (
     CallLoadPrediction, LoadBuckets, LoadDiagnostics, LoadEstimate, TARGET_DEFINITIONS, TARGET_UNITS,
 )
 from tool_resource.features import parse_command_clauses, shell_bin_requires_exec_evidence
-from tool_resource.runtime_kb import ToolCallQuery
+from tool_resource.runtime_kb import ToolCallQuery, is_pipeline_dependent_consumer
 
 
 def summarize(target: str, edges: Sequence[float], backend: str,
@@ -43,7 +43,7 @@ def summarize(target: str, edges: Sequence[float], backend: str,
 
 
 def plain_execution(command: str | None) -> tuple[tuple[dict[str, Any], ...], str | None]:
-    """Whitelist literal simple clauses separated only by semicolon/newline.
+    """Whitelist literal simple clauses joined by pipes, semicolons, or newlines.
 
     Inspect gaps as well as clause spans: AST clause flags alone miss &&, &,
     subshells, assignments, redirects and conditionals. Quoted metacharacters
@@ -61,15 +61,25 @@ def plain_execution(command: str | None) -> tuple[tuple[dict[str, Any], ...], st
     for index, clause in enumerate(clauses):
         argv = clause["argv"]
         if (not argv or not shell_bin_requires_exec_evidence(clause["bin"], argv[0])
-                or any(clause.get(flag) for flag in ("in_loop", "in_pipe", "in_subst"))):
+                or any(clause.get(flag) for flag in ("in_loop", "in_subst"))):
             return clauses, "unsupported_execution_structure"
         start, end = clause["span"]
         gap = command[position:start]
-        if (index == 0 and gap.strip()) or (index and not re.fullmatch(r"[ \t\r]*[;\n][;\s]*", gap)):
+        previous = clauses[index - 1] if index else None
+        pipe_connected = bool(
+            previous
+            and previous.get("in_pipe")
+            and clause.get("in_pipe")
+            and int(clause.get("pipeline_position", -1))
+            == int(previous.get("pipeline_position", -1)) + 1
+        )
+        gap_pattern = r"[ \t\r]*\|&?[ \t\r]*" if pipe_connected else r"[ \t\r]*[;\n][;\s]*"
+        if (index == 0 and gap.strip()) or (index and not re.fullmatch(gap_pattern, gap)):
             return clauses, "unsupported_execution_structure"
         text = command[start:end]
         # No expansions, redirection, operators, assignments, braces or comments.
-        if re.search(r"[|&<>$`(){}=!#*?\[\]~]", text):
+        text_without_stderr_merge = re.sub(r"\s+2>&1(?=\s|$)", "", text)
+        if re.search(r"[|&<>$`(){}=!#*?\[\]~]", text_without_stderr_merge):
             return clauses, "unsupported_execution_structure"
         position = end
     if not re.fullmatch(r"[;\s]*", command[position:]):
@@ -78,7 +88,8 @@ def plain_execution(command: str | None) -> tuple[tuple[dict[str, Any], ...], st
 
 
 def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
-            edges: Mapping[str, Sequence[float]], *, reason: str | None = None) -> CallLoadPrediction:
+            edges: Mapping[str, Sequence[float]], *, reason: str | None = None,
+            clauses: Sequence[Mapping[str, Any]] = ()) -> CallLoadPrediction:
     targets = {}
     for target, boundaries in edges.items():
         why = reason
@@ -100,8 +111,38 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
             # Fixed seed: repeatable query results. Generated samples are not
             # counted as historical evidence. Never sum medians or p90 values.
             rng = random.Random(0)
-            samples = [sum(rng.choice(v) for v in values) for _ in range(2048)]
-            assumptions += ["independent_clause_durations", "foreground_completion_is_serial"]
+            if clauses:
+                groups: list[list[int]] = []
+                retained_index = 0
+                for clause_index, clause in enumerate(clauses):
+                    previous = clauses[clause_index - 1] if clause_index else None
+                    connected = bool(
+                        previous
+                        and previous.get("in_pipe")
+                        and clause.get("in_pipe")
+                        and int(clause.get("pipeline_position", -1))
+                        == int(previous.get("pipeline_position", -1)) + 1
+                    )
+                    if not connected:
+                        groups.append([])
+                    if not is_pipeline_dependent_consumer(clause):
+                        groups[-1].append(retained_index)
+                        retained_index += 1
+                groups = [group for group in groups if group]
+            else:
+                groups = [[index] for index in range(len(values))]
+            if sum(len(group) for group in groups) != len(values):
+                targets[target] = summarize(
+                    target, boundaries, backend, reason="clause_evidence_alignment_error"
+                )
+                continue
+            samples = [
+                sum(max(rng.choice(values[index]) for index in group) for group in groups)
+                for _ in range(2048)
+            ]
+            assumptions += ["independent_clause_durations", "serial_groups_sum"]
+            if any(len(group) > 1 for group in groups):
+                assumptions.append("pipeline_group_duration_is_stage_max")
         targets[target] = summarize(target, boundaries, backend, samples, method="composed",
                                     evidence_counts=[len(v) for v in values], context=contexts,
                                     assumptions=assumptions)
@@ -132,7 +173,9 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
     for backend, kb in (("trie", trie), ("lattice", lattice)):
         try:
             evidence = kb.predict_load_samples(query.repo, clauses, query.ts_start) if not reason else ()
-            backends[backend] = compose(backend, evidence, edges, reason=reason)
+            backends[backend] = compose(
+                backend, evidence, edges, reason=reason, clauses=clauses
+            )
         except Exception as exc:
             backends[backend] = compose(backend, (), edges, reason=f"backend_error:{type(exc).__name__}")
     selected = {}

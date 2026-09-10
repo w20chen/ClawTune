@@ -84,6 +84,10 @@ class SidecarConfig:
         tool_resource_traces = os.getenv("CLAWTUNE_TOOL_RESOURCE_TRACES")
         tool_resource_ebpf_traces = os.getenv("CLAWTUNE_TOOL_RESOURCE_EBPF_TRACES")
         tool_resource_artifact_dir = os.getenv("CLAWTUNE_TOOL_RESOURCE_ARTIFACT_DIR")
+        from clawtune_kb import user_state_dir
+        # Runtime KB ownership is independent of trace export configuration.
+        if not tool_resource_artifact_dir:
+            tool_resource_artifact_dir = str(user_state_dir() / "kb")
         tool_resource_ttl_by_bucket_raw = os.getenv(
             "CLAWTUNE_TOOL_RESOURCE_TTL_BY_BUCKET_S"
         )

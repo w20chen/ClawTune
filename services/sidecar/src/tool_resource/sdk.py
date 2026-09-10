@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from tool_resource.features import enrich_clause_structure
 from tool_resource.runtime_kb import (
     ClauseObservation,
     ClauseResourceKB,
@@ -564,6 +565,8 @@ def _observations_from_call(
     rows = call.get("clauses")
     if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
         raise ValueError("eligible telemetry has invalid clauses")
+    command = call.get("command")
+    rows = enrich_clause_structure(command if isinstance(command, str) else None, rows)
     observations: list[ClauseObservation] = []
     for row in rows:
         availability = row.get("availability")

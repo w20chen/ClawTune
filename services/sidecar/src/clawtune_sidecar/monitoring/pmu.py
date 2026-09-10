@@ -166,7 +166,7 @@ class LinuxPerfBackend:
             ctypes.c_int(pid),
             ctypes.c_int(-1),
             ctypes.c_int(group_fd),
-            ctypes.c_ulong(0),
+            ctypes.c_ulong(1 << 3),  # PERF_FLAG_FD_CLOEXEC
         ))
         if fd < 0:
             code = ctypes.get_errno()
@@ -503,7 +503,11 @@ class PmuCollector:
                         False, spec.semantics, error=error
                     )
                     continue
-                ratio = None if enabled <= 0 else min(1.0, running / enabled)
+                if any(type(value) is not int or value < 0 for value in (raw, enabled, running)) or running > enabled:
+                    errors[spec.name] = "invalid_counter_times_or_count"
+                    readings[spec.name] = PmuEventReading(False, spec.semantics, error=errors[spec.name])
+                    continue
+                ratio = None if enabled <= 0 else running / enabled
                 scaled = (
                     None if running <= 0
                     else float(raw) * (float(enabled) / float(running))
@@ -539,6 +543,10 @@ class PmuCollector:
                     else "time_running_below_time_enabled"
                 ),
             )
+        elif errors:
+            status, quality_reason = "partial", "collector_error"
+        elif reason != "execution_exited":
+            status, quality_reason = "partial", reason
         elif not group.kernel_included:
             status, quality_reason = "partial", "kernel_excluded"
         else:
@@ -553,6 +561,10 @@ class PmuCollector:
             "llc_mpki": _ratio(values.get("llc_read_misses"), values.get("instructions"), 1000.0),
             "llc_miss_rate": _ratio(values.get("llc_read_misses"), values.get("llc_read_accesses")),
         }
+        if derived["llc_miss_rate"] is not None and derived["llc_miss_rate"] > 1:
+            derived["llc_miss_rate"] = None
+            if status == "reliable":
+                status, quality_reason = "partial", "inconsistent_llc_counts"
         llc_confirmed = bool(
             readings["llc_read_misses"].supported
             and readings["llc_read_accesses"].supported
@@ -621,6 +633,46 @@ def _ratio(numerator: float | None, denominator: float | None,
         return None
     value = scale * numerator / denominator
     return value if math.isfinite(value) and value >= 0 else None
+
+
+def quality_gated_pmu_metrics(profile: Any) -> dict[str, Any]:
+    """Recheck raw evidence, not just a producer's reliability label."""
+    unavailable = {"ipc": None, "llc_mpki": None, "llc_miss_rate": None, "eligible": False}
+    if not isinstance(profile, dict) or any(profile.get(key) != value for key, value in {
+        "schema": _SCHEMA, "source": "perf_event_open", "mode": "counting",
+        "scope": "task-inherit-enable-on-exec", "llc_semantics_confirmed": True,
+    }.items()):
+        return unavailable
+    if profile.get("llc_semantics_confirmed") is not True:
+        return unavailable
+    coverage, events = profile.get("coverage"), profile.get("events")
+    # asdict() retains the collector's tuple before JSON serialization.
+    if not isinstance(coverage, dict) or not isinstance(events, dict) or profile.get("collector_errors") not in ([], ()):
+        return unavailable
+    expected = {"status": "reliable", "eligible_for_kb": True, "multiplexed": False,
+                "kernel_included": True, "root_and_future_descendants": True,
+                "running_ratio": 1.0, "reason": "execution_exited"}
+    if any(coverage.get(key) != value or (type(value) is bool and coverage.get(key) is not value)
+           for key, value in expected.items()) or isinstance(coverage.get("running_ratio"), bool):
+        return unavailable
+    counts = {}
+    for spec in EVENT_SPECS:
+        event = events.get(spec.name)
+        if not isinstance(event, dict) or event.get("supported") is not True or event.get("semantics") != spec.semantics or event.get("error") is not None:
+            return unavailable
+        raw, enabled, running = (event.get(key) for key in ("raw_count", "time_enabled_ns", "time_running_ns"))
+        if (type(raw) is not int or raw < 0 or type(enabled) is not int or enabled <= 0
+                or type(running) is not int or running != enabled or event.get("running_ratio") != 1.0
+                or isinstance(event.get("running_ratio"), bool)):
+            return unavailable
+        counts[spec.name] = raw
+    if counts["llc_read_misses"] > counts["llc_read_accesses"]:
+        return unavailable
+    # Eligible events have no multiplexing, so ratios use raw counts directly.
+    return {"ipc": _ratio(counts["instructions"], counts["cycles"]),
+            "llc_mpki": _ratio(counts["llc_read_misses"], counts["instructions"], 1000.),
+            "llc_miss_rate": _ratio(counts["llc_read_misses"], counts["llc_read_accesses"]),
+            "eligible": True}
 
 
 def _process_identity(pid: int) -> str | None:

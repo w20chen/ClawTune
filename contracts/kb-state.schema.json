@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/kb-state.schema.json",
+  "type": "object",
+  "required": ["schema", "owner", "seed_sha256", "generation", "snapshots"],
+  "properties": {
+    "schema": {"const": "clawtune.kb-state.v1"},
+    "owner": {"type": "string", "minLength": 1},
+    "seed_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "generation": {"type": "integer", "minimum": 0},
+    "snapshots": {"$ref": "kb-seed.schema.json#/properties/snapshots"}
+  },
+  "additionalProperties": false
+}

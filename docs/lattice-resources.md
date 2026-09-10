@@ -83,11 +83,12 @@ online ordering.
 Result: 239 train tasks and 38 test tasks among 277 tasks. The 177 singleton
 repositories explain why the overall train fraction exceeds 80%.
 
-The shipped seed contains 11,253 eligible clause observations:
+The shipped seed contains 7,800 eligible clause observations after excluding
+configured downstream pipeline consumers:
 
-- CPU time and average cores: 11,253 each.
-- Memory RSS peak: 5,053.
-- CPU 500 ms peak: 1,368.
+- CPU time and average cores: 7,800 each.
+- Memory RSS peak: 4,651.
+- CPU 500 ms peak: 1,189.
 
 The exporter checks artifact health, call/clause eligibility, exec/exit boundary
 coverage, exit signals, memory availability, and CPU peak window metadata. CPU

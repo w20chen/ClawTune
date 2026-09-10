@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import errno
+import copy
+import ctypes
+from types import SimpleNamespace
+import pytest
 
 import clawtune_sidecar.monitoring.pmu as pmu_module
 from clawtune_sidecar.monitoring.pmu import EVENT_SPECS, PmuCollector
@@ -47,6 +51,21 @@ class FakePerfBackend:
 
     def close(self, fd):
         self.closed.append(fd)
+
+
+def test_native_perf_attributes_preserve_inheritance_compatible_read_format():
+    backend = pmu_module.LinuxPerfBackend.__new__(pmu_module.LinuxPerfBackend)
+    backend._syscall_number = 298
+    captured = []
+    def syscall(number, pointer, pid, cpu, group, flags):
+        attr = ctypes.cast(pointer, ctypes.POINTER(pmu_module._PerfEventAttr)).contents
+        captured.append((attr.size, attr.read_format, attr.flags, pid.value, cpu.value, group.value, flags.value))
+        return 10
+    backend._libc = SimpleNamespace(syscall=syscall)
+    backend.open_event(EVENT_SPECS[0], 123, -1, leader=True, exclude_kernel=False)
+    backend.open_event(EVENT_SPECS[1], 123, 10, leader=False, exclude_kernel=False)
+    assert captured[0] == (112, 3, (1 << 0) | (1 << 1) | (1 << 6) | (1 << 12), 123, -1, -1, 8)
+    assert captured[1] == (112, 3, (1 << 1) | (1 << 6), 123, -1, 10, 8)
 
 
 def test_counting_group_attributes_four_events_and_derives_metrics() -> None:
@@ -204,3 +223,59 @@ def test_online_kb_rejects_generic_cache_miss_relabeling() -> None:
     profile["events"]["llc_read_misses"]["semantics"] = "PERF_COUNT_HW_CACHE_MISSES"
 
     assert _quality_gated_pmu_metrics(profile)["eligible"] is False
+
+
+@pytest.mark.parametrize("reason", ["aborted", "signal_terminated", "completion_fallback", "root_exited_before_callback"])
+def test_incomplete_lifecycle_never_produces_training_labels(reason):
+    collector = PmuCollector(backend=FakePerfBackend())
+    collector.begin("exec", 12)
+    profile = collector.finish("exec", reason=reason)
+    assert profile.coverage.status == "partial"
+    assert not _quality_gated_pmu_metrics(profile.to_dict())["eligible"]
+
+
+def test_failed_group_disable_is_not_reliable():
+    backend = FakePerfBackend()
+    def fail(fd):
+        raise OSError(errno.EIO, "failure")
+    backend.disable_group = fail
+    collector = PmuCollector(backend=backend)
+    collector.begin("exec", 12)
+    profile = collector.finish("exec")
+    assert profile.coverage.status == "partial"
+    assert profile.collector_errors and len(backend.closed) == 4
+
+
+def test_running_time_cannot_exceed_enabled_time():
+    collector = PmuCollector(backend=FakePerfBackend(ratio=1.1))
+    collector.begin("exec", 12)
+    profile = collector.finish("exec")
+    assert not profile.coverage.eligible_for_kb
+    assert profile.derived["ipc"] is None
+
+
+def test_kb_rechecks_raw_evidence_and_recomputes_ratios():
+    collector = PmuCollector(backend=FakePerfBackend())
+    collector.begin("exec", 12)
+    profile = collector.finish("exec").to_dict()
+    profile["derived"] = {"ipc": 999, "llc_mpki": 999, "llc_miss_rate": 999}
+    assert not _quality_gated_pmu_metrics(profile, execution_id="another-execution")["eligible"]
+    assert _quality_gated_pmu_metrics(profile) == {"ipc": .5, "llc_mpki": 1., "llc_miss_rate": .1, "eligible": True}
+    for field, value in (("raw_count", True), ("time_running_ns", 1), ("error", "EIO")):
+        corrupted = copy.deepcopy(profile)
+        corrupted["events"]["cycles"][field] = value
+        assert not _quality_gated_pmu_metrics(corrupted)["eligible"]
+    corrupted = copy.deepcopy(profile)
+    corrupted["coverage"]["multiplexed"] = True
+    assert not _quality_gated_pmu_metrics(corrupted)["eligible"]
+
+
+def test_impossible_llc_fraction_is_unavailable_not_clamped():
+    backend = FakePerfBackend()
+    backend.values["llc_read_misses"] = 20_000
+    collector = PmuCollector(backend=backend)
+    collector.begin("exec", 12)
+    profile = collector.finish("exec")
+    assert profile.derived["llc_miss_rate"] is None
+    assert profile.coverage.status == "partial"
+    assert not _quality_gated_pmu_metrics(profile.to_dict())["eligible"]

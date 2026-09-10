@@ -90,6 +90,16 @@ def build_state(config: SidecarConfig | None = None) -> AppState:
         cfg.lease_ttl_ms,
         cpu_budget_mcpu=cpu_budget_mcpu,
     )
+    if (cfg.tool_resource_artifact_dir is not None and not cfg.tool_resource_frozen
+            and not cfg.tool_resource_trace_paths and not cfg.tool_resource_ebpf_trace_paths):
+        from clawtune_kb import initialize_state
+        from clawtune_kb.contracts import data_root
+        from pathlib import Path
+        import os
+        kb_dir = cfg.tool_resource_artifact_dir
+        seed = Path(os.environ.get("CLAWTUNE_KB_SEED", str(data_root() / "seeds/demo-v1")))
+        if not kb_dir.exists():
+            initialize_state(kb_dir, seed, owner=os.environ.get("CLAWTUNE_KB_OWNER", "daily"))
     predictor = ToolResourcePredictor.from_traces(
         openclaw_trace_paths=cfg.tool_resource_trace_paths,
         ebpf_trace_paths=cfg.tool_resource_ebpf_trace_paths,

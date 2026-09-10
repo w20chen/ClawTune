@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/benchmark-run.schema.json",
+  "type": "object",
+  "required": ["schema", "benchmark", "mode", "status", "seed_sha256", "task_order", "results", "kb_path", "official_score"],
+  "properties": {
+    "schema": {"const": "clawtune.benchmark-run.v1"},
+    "benchmark": {"enum": ["swe-rebench", "deep-research-bench", "swe-bench-verified", "bfcl", "terminal-bench"]},
+    "mode": {"const": "online"},
+    "status": {"enum": ["preparing", "running", "completed", "failed", "interrupted"]},
+    "seed_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "task_order": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "results": {"type": "array", "items": {"type": "object"}},
+    "environment": {"type": "object"},
+    "kb_path": {"type": "string"},
+    "official_score": {"type": "null"},
+    "active_task": {"type": "string"},
+    "error": {"type": "string"},
+    "tasks": {"type": "array", "items": {"type": "object"}},
+    "config_sha256": {"type": "string"}
+  },
+  "additionalProperties": false
+}

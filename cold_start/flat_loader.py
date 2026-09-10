@@ -134,7 +134,8 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
                     or observation.get("telemetry_status") != "ok"):
                 result.counts["ineligible_resource_observation"] += 1
                 continue
-            for clause in observation.get("clauses", []):
+            from tool_resource.features import enrich_clause_structure
+            for clause in enrich_clause_structure(command, observation.get("clauses", [])):
                 availability = clause.get("availability") or {}
                 if clause.get("eligible_for_kb") is not True or clause.get("telemetry_quality") != "ok":
                     result.counts["ineligible_clause"] += 1

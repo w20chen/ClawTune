@@ -245,6 +245,47 @@ def parse_command_clauses(command: str) -> dict[str, Any]:
     }
 
 
+def enrich_clause_structure(
+    command: str | None,
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Backfill structural fields in older telemetry rows from the command AST."""
+
+    enriched = [dict(row) for row in rows]
+    if not command:
+        return tuple(enriched)
+    try:
+        parsed = parse_command_clauses(command)
+    except MvdanClientError:
+        parsed = {"clauses": _fallback_clauses(command), "parse_failed": True}
+    clauses = parsed.get("clauses", [])
+    used: set[int] = set()
+    for row in enriched:
+        argv = row.get("argv")
+        match = next(
+            (
+                (index, clause)
+                for index, clause in enumerate(clauses)
+                if index not in used
+                and clause.get("bin") == row.get("bin")
+                and list(clause.get("argv", ())) == argv
+            ),
+            None,
+        )
+        if match is None:
+            continue
+        index, clause = match
+        used.add(index)
+        for field, default in (
+            ("in_loop", False),
+            ("in_pipe", False),
+            ("in_subst", False),
+            ("pipeline_position", -1),
+        ):
+            row.setdefault(field, clause.get(field, default))
+    return tuple(enriched)
+
+
 def build_tabular_dataset(
     samples_by_task: Mapping[str, Sequence[ResourceCallSample]],
     prior: LatencyPrior,

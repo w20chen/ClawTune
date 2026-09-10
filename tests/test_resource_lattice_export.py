@@ -62,6 +62,32 @@ def test_metric_quality_and_peak_window_filter_independently():
     assert exporter.eligible_observations("org/repo", data)[0] == []
 
 
+def test_export_filters_only_downstream_dependency_consumers():
+    data = artifact()
+    base = data["calls"][0]["clauses"][0]
+    data["calls"][0]["clauses"] = [
+        base | {"bin": "grep", "argv": ["grep", "needle", "file"]},
+        base | {
+            "bin": "cat",
+            "argv": ["cat", "file"],
+            "in_pipe": True,
+            "pipeline_position": 0,
+        },
+        base | {
+            "bin": "grep",
+            "argv": ["grep", "needle"],
+            "in_pipe": True,
+            "pipeline_position": 1,
+        },
+    ]
+    observations, errors = exporter.eligible_observations("org/repo", data)
+    assert not errors
+    assert [(row.bin, row.pipeline_position) for row in observations] == [
+        ("grep", -1),
+        ("cat", 0),
+    ]
+
+
 @pytest.mark.parametrize("latency", [None, 0.0])
 def test_benchmark_handoff_accepts_resource_only_v2_observations(latency):
     from tool_resource.runtime_kb import ClauseObservation

@@ -42,6 +42,22 @@ from tool_resource.runtime_kb import (
 import tool_resource.runtime_kb as tool_resource_runtime_kb
 
 
+def test_normalize_clause_preserves_pipeline_structure() -> None:
+    clause = tool_resource_predictor._normalize_clause(
+        {
+            "bin": "grep",
+            "argv": ["grep", "needle"],
+            "in_loop": False,
+            "in_pipe": True,
+            "in_subst": False,
+            "pipeline_position": 1,
+        }
+    )
+    assert clause is not None
+    assert clause["in_pipe"] is True
+    assert clause["pipeline_position"] == 1
+
+
 def _test_parse_command(command: str) -> dict:
     clauses = []
     offset = 0
@@ -1598,8 +1614,8 @@ def test_compound_composition_drops_trailing_pipe_viewer() -> None:
     assert unit["kind"] == "pipeline"
     assert unit["bins"] == ["ls"]
     assert unit["dropped_viewer_bins"] == ["head"]
-    # The per-clause outcome for head is still reported transparently.
-    assert [item.bin for item in result.clause_predictions] == ["ls", "head"]
+    # The dependent consumer is excluded from prediction as well as composition.
+    assert [item.bin for item in result.clause_predictions] == ["ls"]
     assert all(item.prediction is not None for item in result.clause_predictions)
 
 

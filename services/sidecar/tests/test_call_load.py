@@ -25,10 +25,13 @@ def parser_response_fixture(monkeypatch):
     # native parser. Native parsing remains a separate Linux integration check.
     def parse(command):
         clauses = []
-        for match in re.finditer(r"python job\.py|sleep 1|cat|cd /tmp", command):
+        matches = list(re.finditer(r"python job\.py|sleep 1|cat|cd /tmp", command))
+        pipeline = "|" in command
+        for index, match in enumerate(matches):
             argv = match.group().split()
             clauses.append(dict(bin=argv[0], argv=argv, span=match.span(),
-                                in_loop=False, in_pipe=False, in_subst=False))
+                                in_loop=False, in_pipe=pipeline, in_subst=False,
+                                pipeline_position=index if pipeline else -1))
         return {"clauses": clauses, "parse_failed": False, "control_edges": []}
     monkeypatch.setattr("clawtune_sidecar.predictors.call_load.parse_command_clauses", parse)
 
@@ -62,7 +65,7 @@ def test_env_bucket_configuration(monkeypatch):
     assert cfg.tool_resource_latency_buckets_ms == (50, 300)
 
 
-@pytest.mark.parametrize("command", ["python job.py && sleep 1", "python job.py | cat", "python job.py &", "(python job.py)",
+@pytest.mark.parametrize("command", ["python job.py && sleep 1", "python job.py &", "(python job.py)",
                                      "for x in 1 2; do python job.py; done", "echo $(python job.py)", "cd /tmp; python job.py",
                                      "X=1 python job.py", "python job.py > out", "if true; then python job.py; fi"])
 def test_unsupported_structures_are_explicit(command):
@@ -80,6 +83,28 @@ def test_serial_duration_is_distribution_not_sum_of_quantiles():
     assert "independent_clause_durations" in duration.assumptions
     assert result == compose("trie", evidence, EDGES)
     assert result.targets["cpu_peak_cores"].status == "unavailable"
+
+
+def test_pipeline_consumer_is_ignored_and_other_stages_use_max():
+    clauses, reason = plain_execution("python job.py | cat")
+    assert reason is None
+    result = compose(
+        "trie",
+        [{"duration_ms": {"values": [100, 200]}}],
+        EDGES,
+        clauses=clauses,
+    )
+    assert result.targets["duration_ms"].p90 == 200
+
+    clauses, reason = plain_execution("python job.py | sleep 1")
+    assert reason is None
+    evidence = [
+        {"duration_ms": {"values": [100]}},
+        {"duration_ms": {"values": [300]}},
+    ]
+    result = compose("trie", evidence, EDGES, clauses=clauses)
+    assert result.targets["duration_ms"].p50 == 300
+    assert "pipeline_group_duration_is_stage_max" in result.targets["duration_ms"].assumptions
 
 
 def test_multi_clause_resources_not_added_even_with_evidence():
@@ -150,6 +175,29 @@ def test_loop_samples_not_reused_as_standalone():
     rows = [row(in_loop=True)]
     for kb in (ClauseResourceKB.fit_public(rows), LatticeTimeKB.fit(rows)):
         assert kb.predict_load_samples("repo", [{"bin": "python", "argv": ["python", "job.py"]}], 3) == ({},)
+
+
+def test_downstream_pipe_consumer_label_is_not_trained_as_standalone():
+    clean = row(bin="grep", argv=("grep", "needle", "file"), latency_ms=100)
+    polluted = row(
+        i=2,
+        bin="grep",
+        argv=("grep", "needle"),
+        latency_ms=90_000,
+        in_pipe=True,
+        pipeline_position=1,
+    )
+    query = [{"bin": "grep", "argv": ["grep", "needle", "file"]}]
+    for kb in (ClauseResourceKB.fit_public([clean, polluted]), LatticeTimeKB.fit([clean, polluted])):
+        values = kb.predict_load_samples("repo", query, 4)[0]["duration_ms"]["values"]
+        assert set(values) == {100.0}
+
+
+def test_pre_filter_aggregated_clause_snapshot_is_rejected():
+    snapshot = ClauseResourceKB.fit_public([row()]).to_json_obj()
+    snapshot["schema"] = "runtime_clause_resource_kb_v4"
+    with pytest.raises(ValueError, match="unsupported clause schema"):
+        ClauseResourceKB.from_json_obj(snapshot)
 
 
 def test_resource_only_training_and_per_target_fault_isolation(monkeypatch):
