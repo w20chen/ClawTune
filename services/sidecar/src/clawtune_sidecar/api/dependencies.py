@@ -9,6 +9,7 @@ from clawtune_sidecar.config import SidecarConfig
 from clawtune_sidecar.contracts.models import ResourceScope, ToolDecision
 from clawtune_sidecar.executions import ExecutionRegistry
 from clawtune_sidecar.monitoring.docker_exec import DockerExecObserver
+from clawtune_sidecar.monitoring.pmu import PmuCollector, auto_fd_budget
 from clawtune_sidecar.monitoring.tool_runtime import RealtimeToolMonitor
 from clawtune_sidecar.policies.base import SchedulingPolicy
 from clawtune_sidecar.policies.concurrency import ConcurrencyPolicy
@@ -27,6 +28,7 @@ class AppState:
     leases: LeaseManager
     policy: SchedulingPolicy
     tool_monitor: RealtimeToolMonitor
+    pmu_collector: PmuCollector
     docker_exec_observer: DockerExecObserver | None
     executions: ExecutionRegistry
     metrics: Metrics
@@ -116,6 +118,19 @@ def build_state(config: SidecarConfig | None = None) -> AppState:
         poll_interval_s=max(0.01, cfg.resource_poll_interval_ms / 1000),
         max_timeline_points=max(1, cfg.resource_timeline_max_points),
     )
+    pmu_max_active = cfg.pmu_max_active or max_active_tools
+    pmu_max_fds = (
+        cfg.pmu_max_fds
+        if cfg.pmu_max_fds is not None
+        else auto_fd_budget(pmu_max_active)
+    )
+    pmu_collector = PmuCollector(
+        enabled=cfg.pmu_enabled,
+        max_active=pmu_max_active,
+        max_fds=pmu_max_fds,
+        reliable_ratio=cfg.pmu_reliable_running_ratio,
+    )
+    topology["pmu"] = pmu_collector.diagnostics()
     docker_exec_observer = (
         DockerExecObserver(
             enabled=cfg.docker_exec_observer_enabled,
@@ -134,6 +149,7 @@ def build_state(config: SidecarConfig | None = None) -> AppState:
         leases=leases,
         policy=policy,
         tool_monitor=tool_monitor,
+        pmu_collector=pmu_collector,
         docker_exec_observer=docker_exec_observer,
         executions=ExecutionRegistry(),
         metrics=Metrics(),

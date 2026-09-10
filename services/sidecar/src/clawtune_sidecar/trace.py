@@ -18,6 +18,7 @@ from clawtune_sidecar.contracts.models import (
     ToolPrediction,
 )
 from clawtune_sidecar.monitoring.tool_runtime import ToolRuntimeSample
+from clawtune_sidecar.monitoring.pmu import write_pmu_profile
 from clawtune_sidecar.identity import (
     correlation_key,
     owner_key,
@@ -302,6 +303,13 @@ class AgentTestBenchTraceWriter:
             tool_name=event.tool_name,
             attribution_source=scope.attribution_source if scope is not None else None,
         )
+        _pmu_artifact_path = None
+        if event.execution_id and isinstance(sample.pmu_profile, dict):
+            _pmu_rel = Path("tool-resource") / (
+                f"pmu-profile-{_safe_filename(event.execution_id)}.json"
+            )
+            if write_pmu_profile(self.trace_dir / _pmu_rel, sample.pmu_profile):
+                _pmu_artifact_path = _pmu_rel.as_posix()
 
         # span_end
         self._append(filepath, {
@@ -352,6 +360,8 @@ class AgentTestBenchTraceWriter:
                 "completion_duration_ns": event.completion_duration_ns,
                 "sidecar_overhead_ns": event.sidecar_overhead_ns,
                 "cgroup_artifact_path": _cgroup_artifact_path,
+                "pmu_artifact_path": _pmu_artifact_path,
+                "pmu": sample.pmu_profile,
                 "coverage_ratio": _cov_ratio,
                 "coverage_reason": _cov_reason,
                 "cpu_time_s": sample.cpu_time_delta_s,

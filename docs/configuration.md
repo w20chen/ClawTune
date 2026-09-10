@@ -13,6 +13,9 @@ The root `.env` controls the long-running sidecar. Useful settings are:
 | `CLAWTUNE_TRACE_DIR` | `traces` | Move OpenClaw trace output |
 | `CLAWTUNE_LLM_UPSTREAM_BASE_URL` | DeepSeek API | Use another OpenAI-compatible provider |
 | `CLAWTUNE_TOKEN` | unset | Require local sidecar authentication |
+| `CLAWTUNE_PMU_ENABLED` | `true` | Enable best-effort Tool-level hardware counting |
+| `CLAWTUNE_PMU_MAX_ACTIVE` | global Tool limit | Cap simultaneous four-event PMU groups |
+| `CLAWTUNE_PMU_RELIABLE_RUNNING_RATIO` | `0.95` | Mark severe multiplexing; every multiplexed profile is excluded |
 
 For a provider other than the `.env` default, point the proxy at its upstream
 base URL in `.env` and restart the sidecar:
@@ -28,6 +31,10 @@ use a different credential than OpenClaw. Do not commit keys.
 
 The eBPF collector is required by default. Do not disable it for a result that
 will be treated as a valid ClawTune measurement.
+
+PMU counting is independent and always fail-open for Tool execution. See
+[Tool-level PMU profiling](pmu-profiling.md) for event semantics, quality gates,
+multi-session/CubeSandbox concurrency, and Linux acceptance commands.
 
 ## Benchmark Runs
 

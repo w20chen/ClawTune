@@ -195,3 +195,27 @@ def test_prepare_guest_mounts_requires_root(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="must run as root"):
         module._prepare_guest_mounts()
+
+
+def test_pmu_protocol_degrades_without_affecting_execution(tmp_path) -> None:
+    module = _module()
+    service = module.CollectorService(
+        token="t" * 32,
+        artifact_root=tmp_path / "artifacts",
+        max_active=2,
+        pmu_enabled=False,
+    )
+
+    begun = service.dispatch(_request(
+        "pmu_begin", execution_id="exec-pmu", trusted_root_pid=42,
+    ))
+    finished = service.dispatch(_request("pmu_finish", execution_id="exec-pmu"))
+
+    assert begun["ok"] is True
+    assert begun["state"] == "unavailable"
+    assert begun["pmu_profile"]["coverage"]["reason"] == "disabled"
+    assert finished["ok"] is True
+    assert finished["state"] == "complete"
+    assert finished["pmu_quality"] == "unavailable"
+    assert Path(finished["artifact_path"]).is_file()
+    assert finished["pmu_profile"]["coverage"]["eligible_for_kb"] is False

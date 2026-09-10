@@ -201,12 +201,18 @@ def test_build_state_applies_configured_capacity_overrides(
         )
     )
 
-    assert state.topology == {
+    assert {key: state.topology[key] for key in (
+        "available", "max_active_tools", "max_active_tools_source",
+        "tool_cpu_budget_mcpu",
+    )} == {
         "available": True,
         "max_active_tools": 1,
         "max_active_tools_source": "effective_cpu_budget",
         "tool_cpu_budget_mcpu": None,
     }
+    assert state.topology["pmu"]["mode"] == "counting"
+    assert state.topology["pmu"]["max_active"] == 1
+    assert state.topology["pmu"]["events_per_execution"] == 4
     assert captured == {
         "reserve_ratio": 0.125,
         "reserve_cores": 3,

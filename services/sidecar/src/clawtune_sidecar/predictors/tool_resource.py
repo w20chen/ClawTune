@@ -1616,6 +1616,7 @@ def completed_call_from_completion(
     peak_memory_mb = _rss_mb(sample.rss_bytes_peak)
     ambient_before_mb = _rss_mb(sample.rss_bytes_before)
     shared_resources = _completion_uses_shared_resources(event, start)
+    pmu = _quality_gated_pmu_metrics(sample.pmu_profile)
     return CompletedCall(
         repo=repo,
         tool_name=event.tool_name,
@@ -1637,6 +1638,10 @@ def completed_call_from_completion(
             and ambient_before_mb is not None
         ),
         ambient_before_mb=ambient_before_mb,
+        pmu_ipc=pmu["ipc"],
+        pmu_llc_mpki=pmu["llc_mpki"],
+        pmu_llc_miss_rate=pmu["llc_miss_rate"],
+        pmu_eligible=pmu["eligible"],
     )
 
 
@@ -1730,6 +1735,7 @@ def _completed_call_from_tool_span(
     shared_resources = _uses_shared_resources(resources) or _uses_shared_resources(
         execution
     )
+    pmu = _quality_gated_pmu_metrics(resources.get("pmu"))
     return CompletedCall(
         repo=repo,
         tool_name=tool_name,
@@ -1754,7 +1760,62 @@ def _completed_call_from_tool_span(
             and ambient_before_mb is not None
         ),
         ambient_before_mb=ambient_before_mb,
+        pmu_ipc=pmu["ipc"],
+        pmu_llc_mpki=pmu["llc_mpki"],
+        pmu_llc_miss_rate=pmu["llc_miss_rate"],
+        pmu_eligible=pmu["eligible"],
     )
+
+
+def _quality_gated_pmu_metrics(profile: Any) -> dict[str, Any]:
+    unavailable = {
+        "ipc": None,
+        "llc_mpki": None,
+        "llc_miss_rate": None,
+        "eligible": False,
+    }
+    if not isinstance(profile, dict) or profile.get("schema") != "pmu_profile_v1":
+        return unavailable
+    coverage = profile.get("coverage")
+    derived = profile.get("derived")
+    events = profile.get("events")
+    if (
+        not isinstance(coverage, dict)
+        or coverage.get("status") != "reliable"
+        or coverage.get("eligible_for_kb") is not True
+        or profile.get("llc_semantics_confirmed") is not True
+        or not isinstance(derived, dict)
+        or not isinstance(events, dict)
+    ):
+        return unavailable
+    expected_semantics = {
+        "cycles": "PERF_COUNT_HW_CPU_CYCLES",
+        "instructions": "PERF_COUNT_HW_INSTRUCTIONS",
+        "llc_read_misses": "PERF_COUNT_HW_CACHE_LL:READ:MISS",
+        "llc_read_accesses": "PERF_COUNT_HW_CACHE_LL:READ:ACCESS",
+    }
+    if any(
+        not isinstance(events.get(name), dict)
+        or events[name].get("supported") is not True
+        or events[name].get("semantics") != semantics
+        for name, semantics in expected_semantics.items()
+    ):
+        return unavailable
+    values: dict[str, float | None] = {}
+    for name in ("ipc", "llc_mpki", "llc_miss_rate"):
+        value = derived.get(name)
+        if value is None:
+            values[name] = None
+        elif (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or value < 0
+        ):
+            values[name] = None
+        else:
+            values[name] = float(value)
+    return {**values, "eligible": True}
 
 
 def _completion_uses_shared_resources(

@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/pmu-profile.schema.json",
+  "title": "ClawTune tool-level PMU profile",
+  "type": "object",
+  "required": [
+    "schema", "execution_id", "source", "mode", "scope", "root_pid",
+    "started_at", "ended_at", "architecture", "pmu_devices",
+    "llc_semantics", "llc_semantics_confirmed", "events", "derived",
+    "coverage", "collector_errors"
+  ],
+  "properties": {
+    "schema": {"const": "pmu_profile_v1"},
+    "execution_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "source": {"const": "perf_event_open"},
+    "mode": {"const": "counting"},
+    "scope": {"const": "task-inherit-enable-on-exec"},
+    "root_pid": {"type": ["integer", "null"], "minimum": 1},
+    "started_at": {"type": ["number", "null"], "minimum": 0},
+    "ended_at": {"type": ["number", "null"], "minimum": 0},
+    "architecture": {"type": "string"},
+    "pmu_devices": {"type": "array", "items": {"type": "string"}},
+    "llc_semantics": {"type": "string", "minLength": 1},
+    "llc_semantics_confirmed": {"type": "boolean"},
+    "events": {
+      "type": "object",
+      "required": ["cycles", "instructions", "llc_read_misses", "llc_read_accesses"],
+      "properties": {
+        "cycles": {
+          "allOf": [
+            {"$ref": "#/$defs/event"},
+            {"properties": {"semantics": {"const": "PERF_COUNT_HW_CPU_CYCLES"}}}
+          ]
+        },
+        "instructions": {
+          "allOf": [
+            {"$ref": "#/$defs/event"},
+            {"properties": {"semantics": {"const": "PERF_COUNT_HW_INSTRUCTIONS"}}}
+          ]
+        },
+        "llc_read_misses": {
+          "allOf": [
+            {"$ref": "#/$defs/event"},
+            {"properties": {"semantics": {"const": "PERF_COUNT_HW_CACHE_LL:READ:MISS"}}}
+          ]
+        },
+        "llc_read_accesses": {
+          "allOf": [
+            {"$ref": "#/$defs/event"},
+            {"properties": {"semantics": {"const": "PERF_COUNT_HW_CACHE_LL:READ:ACCESS"}}}
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "derived": {
+      "type": "object",
+      "required": ["ipc", "llc_mpki", "llc_miss_rate"],
+      "properties": {
+        "ipc": {"type": ["number", "null"], "minimum": 0},
+        "llc_mpki": {"type": ["number", "null"], "minimum": 0},
+        "llc_miss_rate": {"type": ["number", "null"], "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "coverage": {
+      "type": "object",
+      "required": [
+        "status", "reason", "running_ratio", "multiplexed",
+        "kernel_included", "root_and_future_descendants", "eligible_for_kb"
+      ],
+      "properties": {
+        "status": {"enum": ["reliable", "multiplexed", "partial", "unavailable"]},
+        "reason": {"type": "string", "minLength": 1},
+        "running_ratio": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "multiplexed": {"type": "boolean"},
+        "kernel_included": {"type": "boolean"},
+        "root_and_future_descendants": {"type": "boolean"},
+        "eligible_for_kb": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "collector_errors": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "event": {
+      "type": "object",
+      "required": [
+        "supported", "semantics", "raw_count", "scaled_count",
+        "time_enabled_ns", "time_running_ns", "running_ratio", "error"
+      ],
+      "properties": {
+        "supported": {"type": "boolean"},
+        "semantics": {"type": "string", "minLength": 1},
+        "raw_count": {"type": ["integer", "null"], "minimum": 0},
+        "scaled_count": {"type": ["number", "null"], "minimum": 0},
+        "time_enabled_ns": {"type": ["integer", "null"], "minimum": 0},
+        "time_running_ns": {"type": ["integer", "null"], "minimum": 0},
+        "running_ratio": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "error": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": {"status": {"const": "reliable"}},
+            "required": ["status"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "llc_semantics_confirmed": {"const": true},
+          "coverage": {
+            "properties": {
+              "eligible_for_kb": {"const": true},
+              "root_and_future_descendants": {"const": true},
+              "multiplexed": {"const": false}
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "coverage": {
+            "properties": {"eligible_for_kb": {"const": false}}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": {"status": {"const": "multiplexed"}},
+            "required": ["status"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "coverage": {"properties": {"multiplexed": {"const": true}}}
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

@@ -23,6 +23,11 @@ from tool_resource.telemetry import (  # noqa: E402
     ClauseTelemetryCollector,
     _bpf_runtime_diagnostics,
 )
+from clawtune_sidecar.monitoring.pmu import (  # noqa: E402
+    PmuCollector,
+    auto_fd_budget,
+    write_pmu_profile,
+)
 
 PROTOCOL_VERSION = 1
 MAX_REQUEST_BYTES = 256 * 1024
@@ -94,8 +99,26 @@ def _safe_execution_id(value: Any) -> str:
     return execution_id
 
 
+def _optional_positive_int_env(name: str) -> int | None:
+    try:
+        value = int(os.environ.get(name, ""))
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _ratio_env(name: str, default: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return value if 0.0 <= value <= 1.0 else default
+
+
 class CollectorService:
-    def __init__(self, *, token: str, artifact_root: Path, max_active: int) -> None:
+    def __init__(self, *, token: str, artifact_root: Path, max_active: int,
+                 pmu_enabled: bool = True, pmu_max_fds: int | None = None,
+                 pmu_reliable_ratio: float = 0.95) -> None:
         if len(token) < 32:
             raise ValueError("collector token must contain at least 32 characters")
         self._token = token
@@ -105,6 +128,13 @@ class CollectorService:
         self._lock = threading.RLock()
         self._active: dict[str, tuple[ClauseTelemetryCollector, Any, Path]] = {}
         self._closed = False
+        self._pmu = PmuCollector(
+            enabled=pmu_enabled,
+            max_active=max_active,
+            max_fds=(pmu_max_fds if pmu_max_fds is not None
+                     else auto_fd_budget(max_active)),
+            reliable_ratio=pmu_reliable_ratio,
+        )
 
     def _authenticate(self, request: Mapping[str, Any]) -> None:
         supplied = str(request.get("token") or "")
@@ -125,7 +155,14 @@ class CollectorService:
                     "active": len(self._active),
                     "max_active": self._max_active,
                     "bpf_runtime": _bpf_runtime_diagnostics(),
+                    "pmu": self._pmu.diagnostics(),
                 }
+        if op == "pmu_begin":
+            return self.pmu_begin(request)
+        if op == "pmu_finish":
+            return self.pmu_finish(request)
+        if op == "pmu_abort":
+            return self.pmu_abort(request)
         if op == "begin":
             return self.begin(request)
         if op == "finish":
@@ -136,6 +173,53 @@ class CollectorService:
             self.close()
             return {"ok": True, "v": PROTOCOL_VERSION, "state": "closed"}
         raise ValueError("unsupported_operation")
+
+    def pmu_begin(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        execution_id = _safe_execution_id(request.get("execution_id"))
+        trusted_root_pid = int(request.get("trusted_root_pid") or 0)
+        if trusted_root_pid <= 0:
+            raise ValueError("invalid_trusted_root_pid")
+        profile = self._pmu.begin(execution_id, trusted_root_pid)
+        return {
+            "ok": True,
+            "v": PROTOCOL_VERSION,
+            "execution_id": execution_id,
+            "state": (
+                "observing"
+                if profile is None
+                else profile.coverage.status
+            ),
+            "pmu_profile": None if profile is None else profile.to_dict(),
+        }
+
+    def pmu_finish(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        execution_id = _safe_execution_id(request.get("execution_id"))
+        profile = self._pmu.finish(execution_id)
+        artifact_path = self._artifact_root / f"pmu-profile-{execution_id}.json"
+        written = write_pmu_profile(artifact_path, profile)
+        self._pmu.take(execution_id)
+        return {
+            "ok": True,
+            "v": PROTOCOL_VERSION,
+            "execution_id": execution_id,
+            "state": "complete",
+            "pmu_quality": profile.coverage.status,
+            "artifact_path": str(artifact_path) if written else "",
+            "pmu_profile": profile.to_dict(),
+        }
+
+    def pmu_abort(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        execution_id = _safe_execution_id(request.get("execution_id"))
+        profile = self._pmu.abort(execution_id)
+        self._pmu.take(execution_id)
+        return {
+            "ok": True,
+            "v": PROTOCOL_VERSION,
+            "execution_id": execution_id,
+            "state": "aborted",
+            "pmu_quality": profile.coverage.status,
+            "pmu_profile": profile.to_dict(),
+        }
 
     def begin(self, request: Mapping[str, Any]) -> dict[str, Any]:
         execution_id = _safe_execution_id(request.get("execution_id"))
@@ -253,6 +337,7 @@ class CollectorService:
                 collector.finalize(replay_execution="incomplete")
             except BaseException:
                 pass
+        self._pmu.close()
 
 
 if hasattr(socketserver, "ThreadingUnixStreamServer"):
@@ -301,6 +386,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--socket", type=Path, required=True)
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--max-active", type=int, default=16)
+    parser.add_argument("--pmu-max-fds", type=int)
     args = parser.parse_args(argv)
     _prepare_guest_mounts()
     token = os.environ.get("CLAWTUNE_GUEST_COLLECTOR_TOKEN", "")
@@ -308,6 +394,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         token=token,
         artifact_root=args.artifact_root,
         max_active=max(1, args.max_active),
+        pmu_enabled=os.environ.get("CLAWTUNE_PMU_ENABLED", "true").lower()
+        in {"1", "true", "yes", "on"},
+        pmu_max_fds=(args.pmu_max_fds if args.pmu_max_fds is not None
+                     else _optional_positive_int_env("CLAWTUNE_PMU_MAX_FDS")),
+        pmu_reliable_ratio=_ratio_env(
+            "CLAWTUNE_PMU_RELIABLE_RUNNING_RATIO", 0.95
+        ),
     )
     args.socket.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:

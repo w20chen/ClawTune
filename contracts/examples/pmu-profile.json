@@ -1,0 +1,71 @@
+{
+  "schema": "pmu_profile_v1",
+  "execution_id": "exec-1",
+  "source": "perf_event_open",
+  "mode": "counting",
+  "scope": "task-inherit-enable-on-exec",
+  "root_pid": 4242,
+  "started_at": 1780000000.0,
+  "ended_at": 1780000001.0,
+  "architecture": "aarch64",
+  "pmu_devices": ["armv8_pmuv3_0"],
+  "llc_semantics": "Linux PERF_TYPE_HW_CACHE last-level cache read accesses/misses",
+  "llc_semantics_confirmed": true,
+  "events": {
+    "cycles": {
+      "supported": true,
+      "semantics": "PERF_COUNT_HW_CPU_CYCLES",
+      "raw_count": 2000000,
+      "scaled_count": 2000000.0,
+      "time_enabled_ns": 1000000000,
+      "time_running_ns": 1000000000,
+      "running_ratio": 1.0,
+      "error": null
+    },
+    "instructions": {
+      "supported": true,
+      "semantics": "PERF_COUNT_HW_INSTRUCTIONS",
+      "raw_count": 1000000,
+      "scaled_count": 1000000.0,
+      "time_enabled_ns": 1000000000,
+      "time_running_ns": 1000000000,
+      "running_ratio": 1.0,
+      "error": null
+    },
+    "llc_read_misses": {
+      "supported": true,
+      "semantics": "PERF_COUNT_HW_CACHE_LL:READ:MISS",
+      "raw_count": 1000,
+      "scaled_count": 1000.0,
+      "time_enabled_ns": 1000000000,
+      "time_running_ns": 1000000000,
+      "running_ratio": 1.0,
+      "error": null
+    },
+    "llc_read_accesses": {
+      "supported": true,
+      "semantics": "PERF_COUNT_HW_CACHE_LL:READ:ACCESS",
+      "raw_count": 10000,
+      "scaled_count": 10000.0,
+      "time_enabled_ns": 1000000000,
+      "time_running_ns": 1000000000,
+      "running_ratio": 1.0,
+      "error": null
+    }
+  },
+  "derived": {
+    "ipc": 0.5,
+    "llc_mpki": 1.0,
+    "llc_miss_rate": 0.1
+  },
+  "coverage": {
+    "status": "reliable",
+    "reason": "execution_exited",
+    "running_ratio": 1.0,
+    "multiplexed": false,
+    "kernel_included": true,
+    "root_and_future_descendants": true,
+    "eligible_for_kb": true
+  },
+  "collector_errors": []
+}

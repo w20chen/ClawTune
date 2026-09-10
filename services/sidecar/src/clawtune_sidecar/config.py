@@ -45,6 +45,13 @@ class SidecarConfig:
     trace_max_messages_bytes: int = 131_072  # 128 KiB, matches plugin default
     resource_poll_interval_ms: int = 50
     resource_timeline_max_points: int = 2_000
+    # Tool-level PMU counting is globally budgeted per sidecar, so all
+    # concurrent OpenClaw sessions share one bounded FD pool.  Zero derives
+    # the active limit from the same host-wide tool concurrency ceiling.
+    pmu_enabled: bool = True
+    pmu_max_active: int = 0
+    pmu_max_fds: int | None = None
+    pmu_reliable_running_ratio: float = 0.95
     sandbox_cgroup_path: str | None = None
     execution_cgroup_root: str | None = None
     sandbox_container_id: str | None = None
@@ -150,6 +157,17 @@ class SidecarConfig:
             trace_max_messages_bytes=int(os.getenv("CLAWTUNE_TRACE_MAX_MESSAGES_BYTES", "131072")),
             resource_poll_interval_ms=int(os.getenv("CLAWTUNE_RESOURCE_POLL_INTERVAL_MS", "50")),
             resource_timeline_max_points=int(os.getenv("CLAWTUNE_RESOURCE_TIMELINE_MAX_POINTS", "2000")),
+            pmu_enabled=os.getenv("CLAWTUNE_PMU_ENABLED", "true").lower()
+            in {"1", "true", "yes", "on"},
+            pmu_max_active=_nonnegative_int_from_env(
+                "CLAWTUNE_PMU_MAX_ACTIVE", 0
+            ),
+            pmu_max_fds=_optional_nonnegative_int_from_env(
+                "CLAWTUNE_PMU_MAX_FDS"
+            ),
+            pmu_reliable_running_ratio=_ratio_from_env(
+                "CLAWTUNE_PMU_RELIABLE_RUNNING_RATIO", 0.95
+            ),
             sandbox_cgroup_path=os.getenv("CLAWTUNE_SANDBOX_CGROUP_PATH"),
             execution_cgroup_root=os.getenv("CLAWTUNE_EXECUTION_CGROUP_ROOT"),
             sandbox_container_id=os.getenv("CLAWTUNE_SANDBOX_CONTAINER_ID"),

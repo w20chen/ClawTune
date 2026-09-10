@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import os
 import sys
 import time
@@ -53,6 +54,12 @@ _AUTHORITATIVE_EXECUTION_ATTRIBUTION_SOURCES = frozenset(
 
 def _sample_summary(sample: ToolRuntimeSample) -> dict[str, object]:
     """Convert a ToolRuntimeSample into a JSON-serializable summary dict."""
+    pmu_coverage = (
+        sample.pmu_profile.get("coverage")
+        if isinstance(sample.pmu_profile, dict)
+        and isinstance(sample.pmu_profile.get("coverage"), dict)
+        else {}
+    )
     return {
         "tool_call_id": sample.tool_call_id,
         "tool_name": sample.tool_name,
@@ -62,6 +69,7 @@ def _sample_summary(sample: ToolRuntimeSample) -> dict[str, object]:
         "target_pid": sample.target_pid,
         "cpu_time_delta_s": sample.cpu_time_delta_s,
         "rss_bytes_peak": sample.rss_bytes_peak,
+        "pmu_quality": pmu_coverage.get("status"),
     }
 
 
@@ -820,6 +828,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         if cleanup_tasks:
             await asyncio.gather(*cleanup_tasks, return_exceptions=True)
         app_state.tool_monitor.stop()
+        app_state.pmu_collector.close()
         if app_state.docker_exec_observer is not None:
             app_state.docker_exec_observer.stop()
             _write_trace_dir_json(
@@ -1732,6 +1741,22 @@ def create_app(state: AppState | None = None) -> FastAPI:
             )
             sample = s.tool_monitor.complete(event)
             if sample is not None:
+                if event.execution_id is not None:
+                    pmu_profile = s.pmu_collector.take(event.execution_id)
+                    if (
+                        pmu_profile is None
+                        and not _completion_reports_running(event.raw_result)
+                    ):
+                        pmu_profile = s.pmu_collector.finish(
+                            event.execution_id,
+                            reason="completion_fallback",
+                        )
+                        s.pmu_collector.take(event.execution_id)
+                    if pmu_profile is not None:
+                        sample = replace(
+                            sample,
+                            pmu_profile=pmu_profile.to_dict(),
+                        )
                 s.predictor.observe_completion(event, sample)
                 s.metrics.observe_tool_runtime(sample)
                 s._recent_samples.insert(0, _sample_summary(sample))
@@ -2113,6 +2138,13 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 runtime_id=record.request.runtime_id,
                 owner=record.request,
             )
+        # The launcher/Tool bridge keeps this root behind an exec gate until
+        # this endpoint returns.  PMU enable_on_exec therefore starts at the
+        # payload image, while inherit follows all subsequently created work.
+        # Any PMU failure is represented in pmu_profile_v1 and never rejects
+        # the execution path; the success path performs only four open calls.
+        if record is not None and trusted_root_pid is not None:
+            s.pmu_collector.begin(execution_id, trusted_root_pid)
         if record is not None:
             # The launcher runs inside the sandbox container.  Its
             # cgroup_path comes from the container's cgroup namespace
@@ -2164,6 +2196,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
         _: None = Depends(auth),
     ) -> ExecutionUpdateResponse:
         response = s.executions.exited(execution_id, request)
+        # Disable/read before any cgroup cleanup. perf task FDs retain counts
+        # after process exit, so this is a constant-cost, non-polling read.
+        s.pmu_collector.finish(execution_id)
         await s.leases.release_execution(execution_id)
         # The launcher knows process status first, but only OpenClaw's
         # subsequent completion event carries bounded stdout/stderr. Keep the

@@ -24,6 +24,7 @@ EXAMPLES = {
     "execution-claim.schema.json": "execution-claim.json",
     "execution-started.schema.json": "execution-started.json",
     "execution-exited.schema.json": "execution-exited.json",
+    "pmu-profile.schema.json": "pmu-profile.json",
 }
 
 

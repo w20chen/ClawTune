@@ -104,6 +104,10 @@ Useful fields:
   `resources.sampling_quality`: resource sampler cadence and quality.
 - `resources.resource_timeline`: per-sample resource timeline, capped by
   `CLAWTUNE_RESOURCE_TIMELINE_MAX_POINTS`.
+- `resources.pmu` and `resources.pmu_artifact_path`: the embedded
+  `pmu_profile_v1` counting result and its standalone artifact. Raw/scaled
+  counts and coverage are retained even when they are not KB-eligible; see
+  [Tool-level PMU profiling](pmu-profiling.md).
 
 Coverage reasons distinguish attribution failures from expected shared scopes:
 

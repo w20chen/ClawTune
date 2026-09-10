@@ -323,3 +323,26 @@ visually inspected. Results show limited predictive accuracy, not merely missing
 coverage: no lattice algorithm beats the repo/binary baseline on time or CPU peak
 MAE, and larger realized memory workloads remain poorly predicted. Full paired
 errors, tail losses, and raw prediction pairs are retained in the report folder.
+
+## Tool-level PMU counting (2026-09-10)
+
+ClawTune now arms one task-inherited four-event `perf_event_open` counting group
+at the existing gated Tool root. The public `pmu_profile_v1` contract preserves
+raw/scaled values, enabled/running time, event semantics, and coverage quality.
+Only reliable IPC, LLC MPKI, and LLC miss-rate values enter online Runtime KB
+evidence. The collector is process-wide, so one budget covers all concurrent
+sessions. ClawBox imports this same core into each Tool CubeSandbox VM and only
+changes guest execution scope/capabilities. See [pmu-profiling.md](pmu-profiling.md).
+
+Validation commands and environment limitations:
+
+- `python tools/validate_contracts.py`: passed from the repository root,
+  including `pmu_profile_v1`. One combined final check first invoked the same
+  relative path from `services/sidecar` and failed with file-not-found; rerunning
+  from the documented root working directory passed.
+- `python -m pytest tests -q -p no:cacheprovider` from `services/sidecar`: 393 passed, 2 POSIX skips.
+- `python -m pytest tests -q -p no:cacheprovider -o "pythonpath=services/sidecar/src ."` from the ClawTune root: 315 passed, 2 POSIX skips.
+- Focused ClawBox PMU/trace/cgroup/KB/online-signature/native-artifact tests passed; one unrelated platform test skipped.
+- `python tools/validate_pmu.py --require-reliable --concurrency 8 --max-active 8 --high-concurrency 64 --benchmark-count 40`: cannot run on this Windows workspace because `perf_event_open`, Linux task inheritance, and a hardware/vPMU are unavailable. It must run on production x86 Linux and Kunpeng/Cube guests; no live overhead or counter-accuracy claim is made from this host.
+- `gofmt -w toolbridge/collector.go toolbridge/guest_collector.go toolbridge/main.go` and `go test ./...` in ClawBox cannot run because Go/gofmt are not installed in this workspace. The files require Linux/Go CI validation before release.
+- The full ClawBox Python suite still has five pre-existing/environment failures: one Windows `/proc` snapshot path, one Windows HTTP disconnect behavior mismatch (502 versus `RemoteDisconnected`), and three assertions that still expect legacy `runtime_tool_resource_kb_v1` although the sibling ClawTune checkout already emits v2. The focused PMU paths pass and this change does not rewrite those unrelated baselines.

@@ -110,7 +110,16 @@ _LEGACY_RUNTIME_SCHEMA = "runtime_tool_resource_kb_v1"
 LOAD_TARGET_SOURCES = {"duration_ms": "latency_ms", "cpu_time_seconds": "cpu_time_seconds",
                        "cpu_avg_cores": "cpu_avg_cores", "cpu_peak_cores": "cpu_peak_cores",
                        "memory_peak_rss_bytes": "memory_peak_rss_bytes"}
-_ALL_TARGETS = (*TARGETS, *(t for t in LOAD_TARGET_SOURCES.values() if t not in TARGETS))
+PMU_TARGET_SOURCES = {
+    "ipc": "pmu_ipc",
+    "llc_mpki": "pmu_llc_mpki",
+    "llc_miss_rate": "pmu_llc_miss_rate",
+}
+_ALL_TARGETS = (
+    *TARGETS,
+    *(t for t in LOAD_TARGET_SOURCES.values() if t not in TARGETS),
+    *PMU_TARGET_SOURCES.values(),
+)
 
 # (kind, key) — kind is what provenance exposes; key stays internal.
 NodeKey = tuple[str, str]
@@ -137,6 +146,10 @@ class CompletedCall:
     memory_peak_rss_bytes: float | None = None
     memory_metric: str | None = None
     memory_rss_eligible: bool = False
+    pmu_ipc: float | None = None
+    pmu_llc_mpki: float | None = None
+    pmu_llc_miss_rate: float | None = None
+    pmu_eligible: bool = False
     outcome: str = "ok"
 
     def __post_init__(self) -> None:
@@ -216,6 +229,14 @@ def _target_values(call: CompletedCall) -> dict[str, float]:
     if (not call.censored and call.memory_rss_eligible and call.memory_metric == "sampled_distinct_mm_rss"
             and _valid_load_value(call.memory_peak_rss_bytes)):
         values["memory_peak_rss_bytes"] = float(call.memory_peak_rss_bytes)
+    if not call.censored and call.pmu_eligible:
+        for target, value in (
+            ("pmu_ipc", call.pmu_ipc),
+            ("pmu_llc_mpki", call.pmu_llc_mpki),
+            ("pmu_llc_miss_rate", call.pmu_llc_miss_rate),
+        ):
+            if _valid_load_value(value):
+                values[target] = float(value)
     return {target: value for target, value in values.items()
             if math.isfinite(value) and (value >= 0 or target == "peak_memory_mb")}
 
@@ -502,6 +523,33 @@ class RuntimeToolResourceKB(_ReplayHistory):
                 valid = tuple(float(v) for v in values if _valid_load_value(v))
                 if valid:
                     result[target] = {"values": valid, "context": (scope, kind)}
+                    break
+        return result
+
+    def predict_pmu_samples(self, query: ToolCallQuery) -> dict[str, dict[str, Any]]:
+        """Return only quality-gated PMU evidence for online calibration.
+
+        This deliberately stays outside ``call_load.v1``: PMU observations
+        calibrate the KB without changing placement/admission semantics in the
+        MVP.
+        """
+        if not math.isfinite(query.ts_start):
+            raise ValueError("query time must be finite")
+        if self._last_query_ts is not None and query.ts_start < self._last_query_ts:
+            raise ValueError("backdated PMU query")
+        if not self._frozen:
+            self._last_query_ts = query.ts_start
+            self._absorb_completed(query.ts_start)
+        result: dict[str, dict[str, Any]] = {}
+        for metric, source in PMU_TARGET_SOURCES.items():
+            for scope, (kind, _), values in self._levels(
+                query.repo, source, query.tool_name, query.command
+            ):
+                if kind == "global":
+                    continue
+                valid = tuple(float(value) for value in values if _valid_load_value(value))
+                if valid:
+                    result[metric] = {"values": valid, "context": (scope, kind)}
                     break
         return result
 

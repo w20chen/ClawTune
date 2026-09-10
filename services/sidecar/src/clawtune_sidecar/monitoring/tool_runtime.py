@@ -50,6 +50,7 @@ class ToolRuntimeSample:
     process_count_after: int | None
     attribution_status: str
     monitor_source: str
+    pmu_profile: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
