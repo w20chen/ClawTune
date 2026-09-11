@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import copy
 import json
-import subprocess
 import time
 from pathlib import Path
 
 from .bootstrap import ROOT
 from .adapters import Task
 from clawtune_kb.store import write_json
+from swe_rebench.cancellation import run_command
 
 
 def execute(task: Task, config, assets: Path, run_dir: Path, port: int):
@@ -44,15 +44,29 @@ def execute(task: Task, config, assets: Path, run_dir: Path, port: int):
     return _execute_bridged(task, config, run_dir, port, trace)
 
 
-def flush_all_kb_updates(port: int, *, timeout_seconds: float = 60.0) -> None:
-    """Place one durability barrier after all benchmark KB updates."""
+def flush_all_kb_updates(port: int, runtime_ids: list[str], *, timeout_seconds: float = 60.0) -> None:
+    """Drain every producer before placing one KB durability barrier.
+
+    A worker returning (possibly with a drain error) does not prove that its
+    sidecar finalizers have finished. Recheck the actual runtimes, not a
+    synthetic runtime with no activity. No workers may be running here.
+    """
     from swe_rebench import host_openclaw as host
 
+    if not runtime_ids:
+        raise ValueError("final KB barrier requires the task runtime IDs")
+    deadline = time.monotonic() + timeout_seconds
+    for runtime_id in dict.fromkeys(runtime_ids):
+        host._drain_runtime(
+            port, runtime_id, gateway_id="swe-rebench",
+            timeout_seconds=max(0.0, deadline - time.monotonic()),
+            flush_kb=False,
+        )
     host._drain_runtime(
         port,
-        "clawtune-benchmark-final-barrier",
+        runtime_ids[-1],
         gateway_id="swe-rebench",
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=max(0.0, deadline - time.monotonic()),
         flush_kb=True,
     )
 
@@ -87,7 +101,7 @@ def _execute_bridged(task, config, run_dir, port, trace):
             patch = {"agents": {"defaults": {"sandbox": {"mode": "off"}}},
                      "tools": {"allow": tool_names},
                      "plugins": {"entries": {"clawtune": {"config": {"executionBackend": "hook-only", "instrumentTools": []}}}}}
-            subprocess.run([host._require_executable("openclaw"), "config", "patch", "--stdin"],
+            run_command([host._require_executable("openclaw"), "config", "patch", "--stdin"],
                 input=json.dumps(patch), env=env, text=True, check=True, capture_output=True,
                 timeout=host._remaining_task_seconds(deadline, phase="task tools setup"))
             if backend.system:

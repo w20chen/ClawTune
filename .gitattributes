@@ -1,0 +1,2 @@
+# Seed manifests hash exact file bytes; checkout must preserve LF on Windows.
+/seeds/**/*.json text eol=lf

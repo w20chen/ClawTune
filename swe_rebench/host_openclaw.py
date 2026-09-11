@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from swe_rebench.config import RunnerConfig
+from swe_rebench.cancellation import TaskCancelled, check_cancelled, wait_process, run_command
 from swe_rebench.docker import ContainerCleanupError, ContainerResult
 from swe_rebench.sandbox import sandbox_container_prefix
 from swe_rebench.task_source import TaskDef, task_repo_key
@@ -96,6 +97,7 @@ def _remaining_task_seconds(
     *,
     phase: str,
 ) -> float | None:
+    check_cancelled()
     if deadline is None:
         return None
     remaining = deadline - time.monotonic()
@@ -697,7 +699,7 @@ def _verify_sandbox_launcher(
         f"{_sandbox_container_prefix(workspace)}launcher-preflight-"
         f"{os.getpid()}-{threading.get_ident()}"
     )
-    result = subprocess.run(
+    result = run_command(
         [
             docker,
             "run",
@@ -1402,7 +1404,7 @@ except Exception as exc:
     payload["ebpf_disabled_reason"] = f"{type(exc).__name__}: {exc}"
 print(json.dumps(payload, indent=2))
 """
-    result = subprocess.run(
+    result = run_command(
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
@@ -1528,7 +1530,7 @@ def _configure_openclaw(
             "plugin_enable",
             deadline,
         )
-        patch = subprocess.run(
+        patch = run_command(
             [openclaw, "config", "patch", "--stdin"],
             input=sandbox_config,
             stdout=log,
@@ -1758,7 +1760,7 @@ def _run_openclaw_agent(
             if effective_deadline is not None
             else None
         )
-        return process.wait(timeout=timeout)
+        return wait_process(process, timeout)
     except subprocess.TimeoutExpired:
         _kill_agent_process_and_confirm(process)
         scope = (
@@ -1784,7 +1786,7 @@ def _run_openclaw_agent(
             configured_seconds=configured_seconds,
         )
         return 124
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, TaskCancelled):
         # Ctrl-C is also fail-closed: do not publish a KB snapshot unless the
         # agent process group has definitely stopped.
         _kill_agent_process_and_confirm(process)
@@ -2027,7 +2029,7 @@ def _ensure_plugin_built(
         log_path = trace_dir / "plugin-build.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("w", encoding="utf-8") as log:
-            result = subprocess.run(
+            result = run_command(
                 [npm, "run", "build"],
                 cwd=str(plugin_dir),
                 stdout=log,
@@ -2986,7 +2988,7 @@ def _run_checked(
     *,
     timeout: float | None = None,
 ) -> None:
-    result = subprocess.run(
+    result = run_command(
         cmd,
         capture_output=True,
         text=True,
@@ -3026,7 +3028,7 @@ def _run_logged(
     timeout: float | None = None,
 ) -> None:
     log.write(f"=== {label} ===\n")
-    result = subprocess.run(
+    result = run_command(
         cmd,
         stdout=log,
         stderr=log,

@@ -54,6 +54,7 @@ def run(
     from swe_rebench.prepare import build_runtime_assets
     from swe_rebench import host_openclaw as host
     from swe_rebench.runner import _result_dict, _required_telemetry_error
+    from swe_rebench.cancellation import Cancellation, cancellation_scope
     from .runtime import execute, flush_all_kb_updates
     from clawtune_kb.contracts import validate
 
@@ -208,18 +209,26 @@ def run(
     )
 
     sidecar = None
+    cancellation = Cancellation()
+    runtime_ids = [
+        host._runtime_id(folder / "workspaces" / task.directory_name)
+        for task in tasks
+    ]
 
     def execute_task(task: Task):
         before = _observed_generation(folder / "kb")
+        failure = None
         try:
-            result = execute(task, config, assets, folder, port)
+            with cancellation_scope(cancellation):
+                result = execute(task, config, assets, folder, port)
         except Exception as exc:
             result = _failure_result(task, folder, exc)
+            failure = exc
         after = _observed_generation(folder / "kb")
-        return result, before, after
+        return result, before, after, failure
 
-    def record_result(task: Task, future) -> None:
-        result, before, after = future.result()
+    def record_result(task: Task, future, *, abort_on_failure=True) -> None:
+        result, before, after, failure = future.result()
         write_json(
             folder / "traces" / task.directory_name / "dataset-task.json",
             {
@@ -260,6 +269,11 @@ def run(
             f"observed KB {before} -> {after}",
             flush=True,
         )
+        if failure is not None and abort_on_failure:
+            # An executor exception can mean cleanup failed with producers
+            # still alive. Preserve the result, but do not retire ownership or
+            # schedule more tasks on the assumption that cleanup succeeded.
+            raise RuntimeError(f"task {task.task_id} did not finish safely: {failure}") from failure
 
     try:
         assets = build_runtime_assets(config)
@@ -280,10 +294,11 @@ def run(
 
         task_iter = iter(tasks)
         futures: dict[concurrent.futures.Future, Task] = {}
-        with concurrent.futures.ThreadPoolExecutor(
+        executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=selected_parallelism,
             thread_name_prefix="clawtune-benchmark",
-        ) as executor:
+        )
+        try:
             initial_tasks: list[Task] = []
             while len(initial_tasks) < selected_parallelism:
                 task = next(task_iter, None)
@@ -305,8 +320,9 @@ def run(
                 )
                 replacements: list[Task] = []
                 for future in done:
-                    task = futures.pop(future)
+                    task = futures[future]
                     record_result(task, future)
+                    futures.pop(future)
                     replacement = next(task_iter, None)
                     if replacement is not None:
                         replacements.append(replacement)
@@ -316,11 +332,31 @@ def run(
                 write_json(folder / "run.json", manifest)
                 for task in replacements:
                     futures[executor.submit(execute_task, task)] = task
+        except BaseException:
+            # Signal before joining: ThreadPoolExecutor.__exit__ would wait
+            # while agents in independent process groups continued running.
+            cancellation.cancel()
+            for future in futures:
+                future.cancel()
+            pending = {future for future in futures if not future.done()}
+            while pending:
+                try:
+                    _, pending = concurrent.futures.wait(pending, timeout=0.1)
+                except KeyboardInterrupt:
+                    # Repeated Ctrl-C must not abandon worker cleanup.
+                    continue
+            recorded = {row["task_id"] for row in manifest["results"]}
+            for future, task in futures.items():
+                if not future.cancelled() and task.task_id not in recorded:
+                    record_result(task, future, abort_on_failure=False)
+            raise
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
 
         # Per-task drains wait only for runtime-local finalizers. Persistence is
         # deliberately coalesced by the sidecar's single writer and forced once
         # here, after all producers have finished.
-        flush_all_kb_updates(port)
+        flush_all_kb_updates(port, runtime_ids)
         manifest["kb_flush_complete"] = True
         manifest["kb_final_generation"] = committed_state(
             folder / "kb"

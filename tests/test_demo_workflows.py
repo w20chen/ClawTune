@@ -355,7 +355,8 @@ def test_runner_runs_concurrently_and_flushes_async_kb_once(monkeypatch, tmp_pat
         with lock:
             active -= 1
         return SimpleNamespace(task_id=task.task_id, exit_code=0)
-    def flush_all_kb_updates(port):
+    def flush_all_kb_updates(port, runtime_ids):
+        assert len(set(runtime_ids)) == 4
         path = tmp_path / "run/kb"
         assert set(pending) == {"0", "1", "2", "3"}
         with StateStore(path) as store:
@@ -433,6 +434,113 @@ def test_concurrent_runtime_uses_task_local_config(monkeypatch, tmp_path):
     }
     assert all(row[3] is False for row in seen)
     assert not hasattr(shared, "kb_repo")
+
+
+@pytest.mark.parametrize("failure", ["interrupt", "executor", "barrier"])
+def test_runner_failure_cancels_workers_and_preserves_report(monkeypatch, tmp_path, failure):
+    import threading
+    import time
+    from types import SimpleNamespace
+    from benchmarks import runner, runtime
+    from swe_rebench import config, prepare, host_openclaw, runner as old_runner
+    from swe_rebench.cancellation import check_cancelled
+
+    seed = tmp_path / "seed"
+    make_seed(seed)
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text("llm: {}\n")
+    cfg = SimpleNamespace(llm=SimpleNamespace(api_key="test", model="test"),
+        runtime=SimpleNamespace(), batch=SimpleNamespace(parallelism=2), output=SimpleNamespace())
+    monkeypatch.setattr(config.RunnerConfig, "from_yaml", lambda *a, **k: cfg)
+    monkeypatch.setattr(runner.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(prepare, "build_runtime_assets", lambda cfg: tmp_path)
+    monkeypatch.setattr(host_openclaw, "_start_sidecar", lambda **k: "process")
+    monkeypatch.setattr(old_runner, "_result_dict", lambda result: {
+        "task_id": result.task_id, "exit_code": result.exit_code,
+        "error": result.error, "resource_summary": {"tool_span_ends": 1}})
+    entered = threading.Barrier(3 if failure == "interrupt" else 2)
+    cleaned = []
+    starts = []
+    stopped = []
+    barriers = []
+
+    def execute(task, *args):
+        starts.append(task.task_id)
+        try:
+            if failure != "barrier":
+                entered.wait(timeout=3)
+                if failure == "executor" and task.task_id == "0":
+                    raise RuntimeError("runtime cleanup failed")
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    check_cancelled()
+                    time.sleep(0.01)
+                pytest.fail("worker did not receive cancellation")
+            return SimpleNamespace(task_id=task.task_id, exit_code=0, error=None)
+        finally:
+            cleaned.append(task.task_id)
+
+    def stop(process):
+        assert set(cleaned) == set(starts)
+        stopped.append(process)
+
+    def flush(port, runtime_ids):
+        barriers.append(runtime_ids)
+        raise RuntimeError("real runtime did not drain")
+
+    monkeypatch.setattr(runtime, "execute", execute)
+    monkeypatch.setattr(runtime, "flush_all_kb_updates", flush)
+    monkeypatch.setattr(host_openclaw, "_stop_process", stop)
+    if failure == "interrupt":
+        wait = runner.concurrent.futures.wait
+        interrupted = False
+        def interrupt_once(*args, **kwargs):
+            nonlocal interrupted
+            if not interrupted:
+                interrupted = True
+                entered.wait(timeout=3)
+                raise KeyboardInterrupt()
+            return wait(*args, **kwargs)
+        monkeypatch.setattr(runner.concurrent.futures, "wait", interrupt_once)
+
+    tasks = [ADAPTERS["deep-research-bench"]({"id": i, "prompt": "work"}) for i in range(3)]
+    with pytest.raises(KeyboardInterrupt if failure == "interrupt" else RuntimeError):
+        runner.run(tasks, config_path=cfg_path, seed=seed, output=tmp_path / "run")
+    manifest = json.loads((tmp_path / "run/run.json").read_text())
+    assert manifest == json.loads((tmp_path / "run/report.json").read_text())
+    assert manifest["status"] == ("interrupted" if failure == "interrupt" else "failed")
+    assert manifest["kb_flush_complete"] is False
+    assert "kb_final_generation" not in manifest
+    assert {row["task_id"] for row in manifest["results"]} == set(starts)
+    assert len(manifest["results"]) == len(starts)
+    assert stopped == ["process"]
+    if failure != "barrier":
+        assert set(starts) == {"0", "1"}
+        assert manifest["active_tasks"]
+        assert not barriers
+    else:
+        assert len(barriers) == 1
+    with pytest.raises(ValueError, match="partial learning|durability barrier"):
+        runner.run(tasks, config_path=cfg_path, seed=seed, resume=tmp_path / "run")
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_final_barrier_drains_every_real_runtime_before_flush(monkeypatch, busy):
+    from benchmarks.runtime import flush_all_kb_updates
+    from swe_rebench import host_openclaw
+    drained = []
+    def drain(port, runtime_id, **kwargs):
+        drained.append((runtime_id, kwargs["flush_kb"]))
+        if busy and runtime_id == "task-b":
+            raise RuntimeError("active finalizer")
+    monkeypatch.setattr(host_openclaw, "_drain_runtime", drain)
+    if busy:
+        with pytest.raises(RuntimeError, match="active finalizer"):
+            flush_all_kb_updates(8765, ["task-a", "task-b"])
+        assert drained == [("task-a", False), ("task-b", False)]
+    else:
+        flush_all_kb_updates(8765, ["task-a", "task-b"])
+        assert drained == [("task-a", False), ("task-b", False), ("task-b", True)]
 
 
 def test_concurrent_bridge_manifests_stay_process_local(monkeypatch, tmp_path):

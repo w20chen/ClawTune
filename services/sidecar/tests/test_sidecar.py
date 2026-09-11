@@ -74,6 +74,32 @@ def test_runtime_drain_can_defer_global_kb_flush(monkeypatch, tmp_path) -> None:
         assert len(flushes) == 1
 
 
+def test_benchmark_final_barrier_waits_for_real_runtime(monkeypatch, tmp_path):
+    import io
+    import urllib.parse
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3]))
+    from benchmarks.runtime import flush_all_kb_updates
+    from swe_rebench import host_openclaw as host
+
+    state = build_state(SidecarConfig(trace_dir=tmp_path / "traces"))
+    flushes = []
+    monkeypatch.setattr(state.predictor, "flush_kb_updates", lambda *a, **k: flushes.append(True))
+    state._runtime_activity[("swe-rebench", "task-b")] = 1
+    with TestClient(create_app(state)) as client:
+        def urlopen(request, **kwargs):
+            url = urllib.parse.urlsplit(request.full_url)
+            response = client.post(url.path + "?" + url.query)
+            response.raise_for_status()
+            return io.BytesIO(response.content)
+        monkeypatch.setattr(host.urllib.request, "urlopen", urlopen)
+        with pytest.raises(RuntimeError, match="task-b did not drain"):
+            flush_all_kb_updates(8765, ["task-a", "task-b"], timeout_seconds=0)
+        assert flushes == []
+        state._runtime_activity.clear()
+        flush_all_kb_updates(8765, ["task-a", "task-b"])
+        assert flushes == [True]
+
+
 def test_v6_quality_is_honest_about_partial_sampling() -> None:
     from clawtune_sidecar.trace import _v6_quality
 

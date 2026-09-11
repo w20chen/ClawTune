@@ -2753,6 +2753,43 @@ def test_host_openclaw_agent_uses_smallest_timeout_and_kills_process(
     assert timeout_record["scope"] == expected_scope
 
 
+def test_host_agent_cancellation_kills_real_process_without_agent_timeout(monkeypatch, tmp_path):
+    import sys
+    from swe_rebench import host_openclaw as host
+    from swe_rebench.cancellation import Cancellation, TaskCancelled, cancellation_scope
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    config.batch.agent_timeout_seconds = 0
+    trace = tmp_path / "trace"
+    trace.mkdir()
+    cancellation = Cancellation()
+    processes = []
+    popen = subprocess.Popen
+
+    def launch(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        processes.append(process)
+        cancellation.cancel()
+        return process
+
+    monkeypatch.setattr(host, "_require_executable", lambda name: sys.executable)
+    monkeypatch.setattr(host, "_openclaw_agent_argv", lambda *a, **k: [
+        sys.executable, "-c", "import time; time.sleep(30)"])
+    monkeypatch.setattr(host.subprocess, "Popen", launch)
+    with cancellation_scope(cancellation), pytest.raises(TaskCancelled):
+        host._run_openclaw_agent(
+            trace_dir=trace, openclaw_home=tmp_path / "home",
+            workspace=tmp_path / "workspace", sidecar_port=8765,
+            task=TaskDef("task-1", "image", "work"), config=config,
+            task_deadline=time.monotonic() + 3, post_sandbox_scope=False,
+        )
+    assert len(processes) == 1
+    assert processes[0].poll() is not None
+    assert not (trace / "task-timeout.json").exists()
+
+
 def test_host_openclaw_cleanup_timeout_is_bounded_and_strict(
     monkeypatch,
     tmp_path: Path,
