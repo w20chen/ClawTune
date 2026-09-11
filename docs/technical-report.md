@@ -116,7 +116,7 @@ An exact full-feature match bypasses risk comparison and directly supplies the s
 Leave-one-signature-out (LOSO) evaluation groups observations by their complete normalized feature sets, treating repeated executions of one clause type as a group. For the $m$ types covered by a context, define
 
 $$
-z_q=\log\left(1+\operatorname{median}_{i\in q}(u_i)\right).
+z_q=\log\left(1+\text{median}_{i\in q}(u_i)\right).
 $$
 
 Hold out each type and predict its value using the mean of the remaining type values:
