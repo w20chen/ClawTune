@@ -25,7 +25,8 @@ sibling `../agent-test-bench`. These candidates are checked in order:
 | Terminal Bench | `<external>/data/terminal-bench/tasks.json`, then `<external>/data/terminal-bench/tasks/` |
 | BFCL | Native category loader from the separately installed BFCL package |
 
-The bundled SWE and research lists are small smoke sources, not full datasets.
+These are lookup conventions, not evidence of downloaded data. The bundled
+SWE and research lists are small smoke sources, not full datasets.
 Other layouts require `--dataset`; the runner does not guess paths from trace
 folders or fetch a whole benchmark implicitly. External inputs remain read-only.
 
@@ -121,8 +122,11 @@ and its dependencies into the runner's `.venv`. Keep the external checkout
 outside ClawTune outputs:
 
 ```bash
-export BFCL_REPO_PATH="/data/gorilla"
-.venv/bin/python -m pip install "$BFCL_REPO_PATH/berkeley-function-call-leaderboard"
+# Build from a copy so pip cannot write build metadata into read-only data.
+mkdir -p .runtime/dependencies
+cp -R /data/gorilla/berkeley-function-call-leaderboard .runtime/dependencies/bfcl
+export BFCL_REPO_PATH="$PWD/.runtime/dependencies/bfcl"
+.venv/bin/python -m pip install "$BFCL_REPO_PATH"
 python3 scripts/clawtune.py benchmark --benchmark bfcl \
   --category multi_turn_base --sample 2 --dry-run
 python3 scripts/clawtune.py benchmark --benchmark bfcl \
@@ -132,7 +136,9 @@ python3 scripts/clawtune.py benchmark --benchmark bfcl \
 `BFCL_REPO_PATH` accepts either the Gorilla root or its
 `berkeley-function-call-leaderboard` package directory. If omitted, the package
 must already be importable. BFCL import-time output/cache paths are redirected
-to `.runtime/bfcl`, not the external checkout. Record the BFCL revision used for
+to `.runtime/bfcl`, including Python bytecode caches, not the external checkout.
+Use a fresh dependency-copy destination when changing revisions.
+Record the BFCL revision used for
 an experiment; upstream interfaces and data are separate dependencies.
 
 A `--dataset` file must contain processed entries: `id`, `question` as a list
@@ -163,7 +169,9 @@ python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
   --dataset /data/terminal-bench/original-tasks --sample 1
 ```
 
-Alternatively: `[{"task_path":"tasks/my-task"}]` in a JSON list. The task is
+Alternatively: `[{"task_path":"tasks/my-task"}]` in a JSON list. Identity uses
+`instance_id`, `task_id` or `id` (in that order), otherwise the directory name.
+The task is
 copied into the run before Docker Compose is resolved. Dockerfile-only tasks
 get a single `client` service using their own build context. Compose must expose
 exactly one `client` container; standard `T_BENCH_*` variables are provided,
@@ -182,7 +190,11 @@ repository filter, ordered `--instance-ids a,b`, then `--skip`, then `--sample`.
 Insufficient or duplicate selections are errors. `--repo` applies to repository
 adapters. Set `--parallelism N`, or `batch.parallelism` in the configuration;
 `1` is serial. Task and agent timeout overrides accept seconds; `0` disables a
-limit. Cleanup has separate bounded waits.
+limit. Cleanup has separate bounded waits. Terminal additionally honors
+`task.yaml`'s positive `max_agent_timeout_sec` (v1 default 360) across the whole
+agent conversation after setup. The earlier of that budget and the configured
+task deadline wins; shell calls also have a 300-second cap. Disabling the CLI
+timeout does not disable the task's native agent budget.
 
 Each invocation starts a KB from `--seed` (default `seeds/demo-v1`). Workers have
 separate homes/workspaces and share one sidecar predictor. Learning follows

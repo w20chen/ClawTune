@@ -269,6 +269,8 @@ def test_bfcl_preserves_native_state_and_turns(monkeypatch, tmp_path):
     import sys
     from types import ModuleType, SimpleNamespace
     from benchmarks.backends import BFCLBackend
+    monkeypatch.setattr(sys, "pycache_prefix", sys.pycache_prefix)
+    monkeypatch.setenv("BFCL_PROJECT_ROOT", str(tmp_path))
     monkeypatch.delenv("BFCL_REPO_PATH", raising=False)
     class Counter:
         total = 4

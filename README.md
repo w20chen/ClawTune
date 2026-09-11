@@ -87,6 +87,7 @@ python -m pip install -e 'services/sidecar[dev]'
 python -m pytest tests -q
 (cd services/sidecar && python -m pytest -q)
 python tools/validate_contracts.py
+python tools/validate_docs.py
 (cd packages/clawtune-plugin && npm ci && npm test && npm run typecheck)
 ```
 

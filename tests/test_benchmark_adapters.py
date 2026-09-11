@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -86,9 +87,26 @@ def test_bfcl_bootstrap_accepts_repo_or_package_and_isolates_writes(monkeypatch,
     monkeypatch.setenv("BFCL_REPO_PATH", str(package if package_path else package.parent))
     monkeypatch.setenv("BFCL_PROJECT_ROOT", str(package))
     monkeypatch.setattr(backends, "ROOT", tmp_path / "clawtune")
+    monkeypatch.setattr(sys, "pycache_prefix", sys.pycache_prefix)
     monkeypatch.syspath_prepend(str(tmp_path))
     backends.ensure_bfcl()
     assert os.environ["BFCL_PROJECT_ROOT"] == str(tmp_path / "clawtune/.runtime/bfcl")
+    module = package / "bfcl_eval" / "readonly_probe.py"
+    module.write_text("value = 42\n")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("readonly_probe", module)
+    # Capture the actual importer's write destination without depending on
+    # Windows long-path support for an optional bytecode cache file.
+    writes = []
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(spec.loader, "set_data", lambda path, data, **kw: writes.append(Path(path)))
+    loaded = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(loaded)
+    assert loaded.value == 42
+    assert not (module.parent / "__pycache__").exists()
+    assert Path(importlib.util.cache_from_source(str(module))).is_relative_to(
+        tmp_path / "clawtune/.runtime/bfcl/pycache")
+    assert writes == [Path(importlib.util.cache_from_source(str(module)))]
 
 
 def test_research_key_is_task_local(monkeypatch, tmp_path):
@@ -119,3 +137,42 @@ def test_exported_llm_key_works_without_yaml_placeholder(monkeypatch, tmp_path):
     monkeypatch.setenv("LLM_API_KEY", "exported-key")
     config = LLMConfig.from_dict({"model": "test"}, tmp_path)
     assert config.api_key == "exported-key"
+
+
+@pytest.mark.parametrize("key", ["instance_id", "task_id", "id"])
+def test_terminal_preserves_manifest_identity(tmp_path, key):
+    source = terminal_task(tmp_path / "task")
+    manifest = tmp_path / "tasks.json"
+    manifest.write_text(json.dumps([{key: "dataset-identity", "task_path": "task"}]))
+    assert load("terminal-bench", manifest)[0].task_id == "dataset-identity"
+
+
+def test_terminal_harbor_parent_has_actionable_error(tmp_path):
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "task.toml").write_text("version = '1.0'")
+    with pytest.raises(ValueError, match="Harbor"):
+        load("terminal-bench", tmp_path)
+
+
+@pytest.mark.parametrize("timeout", [0, -1, True, ".inf", "invalid"])
+def test_terminal_rejects_invalid_native_timeout(tmp_path, timeout):
+    source = terminal_task(tmp_path / "task")
+    with (source / "task.yaml").open("a") as handle:
+        handle.write(f"max_agent_timeout_sec: {timeout}\n")
+    with pytest.raises(ValueError, match="finite positive"):
+        load("terminal-bench", source)
+
+
+@pytest.mark.parametrize("outer,expected", [(None, 460), (200, 200), (900, 460)])
+def test_terminal_native_budget_is_shared_across_calls(monkeypatch, outer, expected):
+    from benchmarks import backends
+    backend = backends.TerminalBackend.__new__(backends.TerminalBackend)
+    backend.deadline, backend.agent_timeout = outer, 360
+    monkeypatch.setattr(backends.time, "monotonic", lambda: 100)
+    assert backend.start_agent() == expected
+    monkeypatch.setattr(backends.time, "monotonic", lambda: expected - 10)
+    assert backend._remaining(300) == 10
+    monkeypatch.setattr(backends.time, "monotonic", lambda: expected + 1)
+    with pytest.raises(TimeoutError):
+        backend._remaining(300)

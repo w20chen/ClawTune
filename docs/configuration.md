@@ -86,7 +86,10 @@ unified workflow. The loader is `swe_rebench/config.py`.
 
 Keep the common template's Docker/cgroup settings for repository execution.
 `docker.platform` or `SWE_REBENCH_DOCKER_PLATFORM` selects architecture; the
-public wrapper defaults it to `linux/amd64` on arm64. OpenClaw receives
+public wrapper defaults it to `linux/amd64` on arm64, including research.
+The exported environment override takes precedence over YAML; export
+`SWE_REBENCH_DOCKER_PLATFORM=linux/arm64` for a native multi-arch research image.
+OpenClaw receives
 `DOCKER_DEFAULT_PLATFORM`, not the unsupported `sandbox.docker.platform` key.
 Terminal tasks use their own Compose settings rather than inheriting all
 repository sandbox limits. See [benchmark boundaries](benchmarks.md).

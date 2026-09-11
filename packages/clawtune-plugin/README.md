@@ -14,6 +14,8 @@ through a Gateway/TUI or `openclaw agent --local`.
 
 ## Developer build
 
+From `packages/clawtune-plugin`:
+
 ```bash
 npm install
 npm run build
@@ -23,7 +25,7 @@ npm run typecheck
 
 ## Manual plugin installation
 
-For plugin development only:
+For plugin development only, from the repository root after building:
 
 ```bash
 openclaw plugins install --link ./packages/clawtune-plugin

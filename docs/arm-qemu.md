@@ -22,10 +22,12 @@ remains native when it is unset. The selected platform is passed to Docker and
 the OpenClaw child environment, not written as the unsupported
 `agents.defaults.sandbox.docker.platform` configuration key.
 
-Deep Research Bench (`clawtune.py drb`) is the exception: its basic sandbox
-image (default `python:3.11-slim`) is multi-arch, so `drb` does **not** force
-`linux/amd64` on arm64. Export `SWE_REBENCH_DOCKER_PLATFORM` explicitly only
-when the configured `sandbox.image` is amd64-only.
+The unified wrapper applies this default to research as well, including the
+`drb` compatibility alias. To run its multi-architecture `python:3.11-slim`
+sandbox natively, explicitly export `SWE_REBENCH_DOCKER_PLATFORM=linux/arm64`.
+This environment override takes precedence over YAML `docker.platform`.
+Terminal tasks use their own Compose platform settings; the wrapper's
+repository platform setting does not select their client architecture.
 
 Do not run the eBPF sidecar in an amd64 emulation container—the collector must
 match the native host kernel.

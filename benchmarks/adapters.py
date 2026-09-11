@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -108,7 +109,11 @@ def _terminal(row: dict) -> Task:
         raise ValueError(f"Terminal Bench task has no instruction: {source}")
     if not any((source / name).is_file() for name in ("docker-compose.yaml", "docker-compose.yml", "compose.yaml", "compose.yml", "Dockerfile")):
         raise ValueError(f"Terminal Bench task requires a Dockerfile or Compose file: {source}")
-    return Task("terminal-bench", str(row.get("task_id") or source.name),
+    timeout = config.get("max_agent_timeout_sec", 360)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("Terminal Bench max_agent_timeout_sec must be a finite positive number")
+    task_id = _id(row) if any(row.get(key) is not None for key in ("instance_id", "task_id", "id")) else source.name
+    return Task("terminal-bench", task_id,
                 str(config.get("category") or "dataset"), "terminal", config["instruction"],
                 payload={"task_path": str(source), "config": config})
 
@@ -145,6 +150,8 @@ def load(name: str, source: Path) -> list[Task]:
         if (source / "task.toml").exists():
             raise ValueError("Terminal Bench 2/Harbor task.toml format is not supported; supply v1 task.yaml tasks")
         paths = [source] if (source / "task.yaml").is_file() else sorted(p.parent for p in source.glob("*/task.yaml"))
+        if not paths and any(source.glob("*/task.toml")):
+            raise ValueError("Terminal Bench 2/Harbor task.toml format is not supported; supply v1 task.yaml tasks")
         rows = [{"task_path": str(p)} for p in paths]
     else:
         rows = records(source)

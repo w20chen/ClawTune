@@ -33,6 +33,39 @@ def _config(gate_required: bool = True) -> DRBConfig:
     return config
 
 
+@pytest.mark.parametrize("failure", ["sandbox", "drain"])
+def test_research_cleanup_failure_propagates_after_preserving_traces(monkeypatch, tmp_path, failure):
+    from swe_rebench import host_openclaw as host
+    config = _config()
+    config.output.trace_root = tmp_path / "traces"
+    events = []
+    for name in ("_reset_directory", "_make_sandbox_workspace_writable",
+                 "_install_sandbox_runtime", "_write_drb_task_inputs", "_ensure_basic_image",
+                 "_verify_sandbox_launcher", "_configure_openclaw", "_pin_web_search_provider"):
+        monkeypatch.setattr(host_runner, name, lambda *a, **k: None)
+    monkeypatch.setattr(host_runner, "_run_openclaw_agent", lambda **k: 0)
+    calls = []
+    def cleanup(*a, **k):
+        calls.append(1)
+        if len(calls) == 2 and failure == "sandbox":
+            raise RuntimeError("sandbox cleanup failed")
+    def drain(*a, **k):
+        events.append("drain")
+        if failure == "drain":
+            raise RuntimeError("drain failed")
+    monkeypatch.setattr(host_runner, "_cleanup_openclaw_sandbox_containers", cleanup)
+    monkeypatch.setattr(host, "_write_runtime_case_map", lambda *a, **k: None)
+    monkeypatch.setattr(host, "_drain_runtime", drain)
+    monkeypatch.setattr(host, "_collect_runtime_traces", lambda *a, **k: events.append("traces"))
+    monkeypatch.setattr(host_runner, "_write_result_summary", lambda *a, **k: events.append("summary"))
+    with pytest.raises(RuntimeError, match=failure):
+        host_runner.run_drb_task(task=DRBTask("test", "question"), trace_dir=tmp_path / "trace",
+            config=config, swe_cfg=config.to_swe_runner_config(), runtime_assets_dir=tmp_path / "assets",
+            sidecar_port=8765, shared_sidecar_trace_dir=tmp_path / "sidecar")
+    assert len(calls) == 2
+    assert events == ["drain", "traces", "summary"]
+
+
 def _result(
     *,
     tool_spans: int = 1,

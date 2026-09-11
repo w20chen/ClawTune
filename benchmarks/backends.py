@@ -17,6 +17,9 @@ def ensure_bfcl():
     # BFCL creates result/score/lock directories at import time. Keep these
     # out of the external source checkout, including during --dry-run.
     os.environ["BFCL_PROJECT_ROOT"] = str(ROOT / ".runtime" / "bfcl")
+    # Imported source modules also write bytecode by default. Redirect it
+    # before any native import instead of touching the reference checkout.
+    sys.pycache_prefix = str(ROOT / ".runtime" / "bfcl" / "pycache")
     root = os.getenv("BFCL_REPO_PATH")
     if root:
         package = Path(root).expanduser().resolve()
@@ -133,7 +136,8 @@ class TerminalBackend:
             "T_BENCH_TASK_LOGS_PATH": str(logs), "T_BENCH_TASK_AGENT_LOGS_PATH": str(logs / "agent"),
             "T_BENCH_CONTAINER_LOGS_PATH": "/logs", "T_BENCH_CONTAINER_AGENT_LOGS_PATH": "/agent-logs",
             "T_BENCH_TEST_DIR": "/tests"})
-        self.timeout = min(300, float(task.payload["config"].get("max_agent_timeout_sec", 300)))
+        self.agent_timeout = float(task.payload["config"].get("max_agent_timeout_sec", 360))
+        self.timeout = 300
         self.turns = [task.prompt]
         self.system = []
         self.started = False
@@ -158,6 +162,12 @@ class TerminalBackend:
         except BaseException:
             self.close()
             raise
+
+    def start_agent(self):
+        """Apply the native whole-agent budget after environment setup."""
+        native_deadline = time.monotonic() + self.agent_timeout
+        self.deadline = min(self.deadline, native_deadline) if self.deadline is not None else native_deadline
+        return self.deadline
 
     def _remaining(self, timeout):
         if self.deadline is not None:

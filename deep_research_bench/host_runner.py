@@ -181,12 +181,14 @@ def run_drb_task(
         error = str(exc)
         _write_text(trace_dir / "drb_host_error.txt", traceback.format_exc())
     finally:
+        cleanup_error: BaseException | None = None
         try:
             _cleanup_openclaw_sandbox_containers(
                 trace_dir, workspace,
                 timeout_seconds=_TASK_CLEANUP_TIMEOUT_SECONDS, strict=True,
             )
-        except Exception as exc:
+        except BaseException as exc:
+            cleanup_error = exc
             error = error or f"sandbox cleanup failed: {exc}"
         if shared_sidecar_trace_dir is not None and sidecar_port is not None:
             from swe_rebench.host_openclaw import _drain_runtime, _runtime_id, _collect_runtime_traces
@@ -197,13 +199,19 @@ def run_drb_task(
                     gateway_id="swe-rebench",
                     flush_kb=getattr(swe_cfg, "flush_kb_on_task_drain", True),
                 )
-                _collect_runtime_traces(shared_sidecar_trace_dir, trace_dir, _runtime_id(workspace), task_label=task.instance_id)
-            except Exception as exc:
+            except BaseException as exc:
+                cleanup_error = cleanup_error or exc
                 error = error or f"shared sidecar finalization failed: {exc}"
+            try:
+                _collect_runtime_traces(shared_sidecar_trace_dir, trace_dir, _runtime_id(workspace), task_label=task.instance_id)
+            except BaseException as exc:
+                cleanup_error = cleanup_error or exc
+                error = error or f"trace collection failed: {exc}"
         if sidecar is not None:
             try:
                 _stop_process(sidecar)
-            except Exception as exc:
+            except BaseException as exc:
+                cleanup_error = cleanup_error or exc
                 if error is None:
                     error = f"sidecar cleanup failed: {exc}"
         _write_result_summary(
@@ -213,6 +221,10 @@ def run_drb_task(
             exit_code,
             error,
         )
+        # The coordinator must retain task ownership and stop dispatch if
+        # cleanup cannot prove that this task's producers have finished.
+        if cleanup_error is not None:
+            raise cleanup_error
     return ContainerResult(
         task_id=task.instance_id,
         image=config.sandbox.image,

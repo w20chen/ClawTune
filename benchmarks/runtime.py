@@ -109,6 +109,8 @@ def _execute_bridged(task, config, run_dir, port, trace):
             turn_cfg = copy.deepcopy(config)
             # Each process is a turn in the same persistent OpenClaw session.
             turn_cfg.agent.extra_args = [*config.agent.extra_args, "--session-id", task.directory_name]
+            if task.kind == "terminal":
+                deadline = backend.start_agent()
             for index, prompt in enumerate(backend.turns):
                 prompt_path = trace / f"turn-{index}.txt"
                 prompt_path.write_text(prompt, encoding="utf-8")

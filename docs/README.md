@@ -30,5 +30,4 @@ These retained reports describe fixed experiments, not the current CLI:
 - [Legacy evaluation results](legacy_eval_final_report.md)
 - [Lattice accuracy snapshot](lattice-accuracy/report.md)
 
-Superseded implementation plans and empty review logs are not operating guides;
-Git preserves their history.
+Git preserves superseded implementation plans and review history.

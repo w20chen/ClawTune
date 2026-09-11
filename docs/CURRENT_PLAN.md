@@ -66,104 +66,97 @@ JSONL uses format version 6 and API lifecycle events use `clawtune.v1` or
 - Legacy traces lack some causal timestamps and resource anchors. Missing
   labels remain unavailable rather than being synthesized.
 
-## Validation (2026-09-11)
+## Latest commit review (2026-09-11)
 
-Completed in this Windows workspace:
+Reviewed `f6bb4b6` (`update (not finished)`) from a clean working tree.
+The commit correctly consolidated operating guides and added the Verified
+historical directory alias, Terminal manifest-relative paths/Dockerfile support,
+BFCL unsupported-category checks, task-local research keys and exported LLM keys.
+Those changes are retained. The sibling reference checkout's source confirms
+its historical dataset directory names, but this Windows checkout contains no
+`data/` directory; default discovery here uses the bundled SWE/research lists.
+No external source or trace dataset was modified.
 
-- `python -m pytest tests -q -p no:cacheprovider ...`:
-  **337 passed, 2 platform skips**.
-- `python -m pytest` from `services/sidecar`:
-  **408 passed, 2 platform skips**.
-- Focused benchmark/sidecar/predictor concurrency suite:
-  **167 passed**.
-- `npm.cmd test` in `packages/clawtune-plugin`:
-  **99 passed**; `npm.cmd run typecheck` passed.
-- `python tools/validate_contracts.py`:
-  **14 examples passed**, including the concurrent benchmark-run manifest.
-- `python scripts/clawtune.py benchmark --sample 2 --parallelism 2 --dry-run`:
-  passed and selected two tasks.
-- The focused tests prove overlapping task execution, task-local config
-  isolation, no process-global BFCL/Terminal manifest race, runtime drain
-  without a persistence barrier, concurrent completion coalescing without lost
-  updates, one final durability barrier, and a final committed generation.
-- Source-only `py_compile`/`compileall` and `git diff --check` passed after
-  excluding inaccessible stale pytest directories from recursive discovery.
+Follow-up fixes:
 
-Validation commands that could not run or could not complete as issued:
+- Research cleanup failures now propagate to the coordinator after attempting
+  trace preservation and remaining cleanup. Failed drain no longer skips trace
+  copying. This retains unsafe task ownership instead of allowing new dispatch.
+- BFCL bytecode caches are redirected alongside its result/lock directories.
+  The installation example builds a local copy to avoid pip metadata writes in
+  a read-only reference checkout.
+- Terminal retains explicit manifest IDs, diagnoses Harbor parent directories,
+  rejects invalid native timeout values and applies the native agent budget
+  across the conversation after setup. Shell calls also retain a 300-second cap.
+- Corrected the obsolete ARM research exception and documented environment/YAML
+  precedence, native arm64 configuration, timeout boundaries and plugin command
+  working directories. Removed two superseded redirect-only plan files.
+- Root README, workflow guides and technical references now have a reproducible
+  local-link/heading check. Historical experiment reports remain explicitly
+  historical; they are not instructions for the unified runner.
 
-- `python3 scripts/clawtune.py setup`, `check`, and a live benchmark cannot run
-  on Windows because Linux BCC/eBPF, cgroup v2, Docker host behavior, OpenClaw,
-  and model credentials are not available here.
-- `python -m pytest -q` from the repository root also collected the separately
-  packaged sidecar suite without `services/sidecar/src` on `PYTHONPATH`, so it
-  stopped during import collection. The root and sidecar suites are validated
-  independently in their package contexts above.
-- An attempted explicit root-suite command named `swe_rebench/tests`,
-  `deep_research_bench/tests`, and `legacy_eval/tests`, but those directories
-  do not exist; all non-sidecar tests are under the root `tests/` directory.
-- `python -m ruff check ...` could not run because Ruff is not installed in
-  this Windows environment. Python compilation and both pytest suites passed.
-- The first recursive PowerShell Markdown-link scan used `Get-ChildItem
-  -Recurse` and hit access-denied stale pytest directories under
-  `services/sidecar/.pytest_cache` and `swe_rebench/.pytest-*-tmp`. The final
-  link validation uses only paths returned by `rg --files`.
-- A later `rg --files` link-check invocation mishandled root-level Markdown
-  paths and emitted `Join-Path` errors. Its success line is disregarded; the
-  corrected invocation uses `.` when a file has no parent directory.
-- A broad `python -m compileall ... swe_rebench ...` could not enumerate the
-  same inaccessible stale pytest directories. Source-only compilation is run
-  separately.
-- The first combined compile/help/contracts/diff command returned nonzero
-  because `git diff --check` found two extra EOF blank lines; those lines were
-  removed and the check was rerun.
+Upstream interface checks used the BFCL
+[output/cache configuration](https://github.com/ShishirPatil/gorilla/blob/main/berkeley-function-call-leaderboard/bfcl_eval/constants/eval_config.py),
+[native loader](https://github.com/ShishirPatil/gorilla/blob/main/berkeley-function-call-leaderboard/bfcl_eval/utils.py),
+and Terminal v1
+[task model](https://github.com/laude-institute/terminal-bench/blob/main/terminal_bench/handlers/trial_handler.py)
+and [Compose environment](https://github.com/laude-institute/terminal-bench/blob/main/terminal_bench/terminal/docker_compose_manager.py).
+These dependencies are not vendored or revision-pinned by ClawTune; record the
+installed revision with experiments. Static interface review is not a live run.
+
+## Validation (2026-09-11, current working tree)
+
+| Command / check | Result |
+| --- | --- |
+| `python -m pytest tests -q -p no:cacheprovider` | 376 passed, 2 platform skips |
+| `python -m pytest -q -p no:cacheprovider` in `services/sidecar` | 409 passed, 2 platform skips |
+| `npm.cmd test` in `packages/clawtune-plugin` | Build and 99 tests passed |
+| `npm.cmd run typecheck` in `packages/clawtune-plugin` | Passed |
+| `python tools/validate_contracts.py` | 14 examples passed |
+| `python tools/validate_docs.py` | 27 tracked Markdown files, 78 local inline links/anchors, no errors |
+| `python scripts/clawtune.py benchmark --sample 2 --parallelism 2 --dry-run` | Bundled SWE source passed |
+| `python scripts/clawtune.py benchmark --benchmark deep-research-bench --sample 1 --dry-run` | Bundled research source passed |
+| `benchmark --benchmark <name> --dataset <fixture.json> --sample 1 --dry-run` | Verified, processed BFCL and manifest-relative Terminal fixtures passed |
+| `--help` for setup/doctor/check/benchmark/offline/kb, both discovery modules and trace inspection | 9 commands passed |
+| `git diff --check` | Passed |
+
+Fixture dry-runs used temporary files under ClawTune `.runtime/`, then removed
+only those fixtures. BFCL backend state/turns and Terminal Compose setup are
+mock-backed tests; dry-run success does not certify a native backend. Existing
+mixed-benchmark offline tests exercise all five identities and frozen splitting.
+The Python environment emits an existing Requests dependency warning; sidecar
+tests also emit FastAPI lifecycle deprecation warnings. Neither failed a suite.
+
+Validation that failed or could not run:
+
+- The first focused adapter/research regression command returned 2 failures:
+  the cache test assumed Python would materialize a cache file under a long
+  Windows temporary path. It now verifies a real source import, redirected
+  cache write destination and absence of source-side cache writes without
+  requiring optional bytecode materialization. The focused rerun passed (53 tests); the later
+  full root suite includes the added Terminal timeout regressions above.
+- `python3 scripts/clawtune.py setup`, `check`, live benchmark commands and
+  `python3 tools/validate_pmu.py --require-reliable ...` cannot be accepted on
+  this Windows host: Linux BCC/eBPF, cgroup v2 and the supported privileged
+  Docker/OpenClaw/provider runtime are unavailable. No model call, live backend
+  or hardware PMU measurement was performed.
+- Native BFCL category loading and a real Terminal task checkout were not
+  executed here; the external data directory is absent and the required native
+  packages/runtime are not provisioned. Processed fixtures do not replace that
+  acceptance. The first attempted upstream Terminal default-Compose URL was
+  unavailable; its actual Compose-manager and task-model sources were checked.
+- Full upstream dataset downloads and historical experiment reruns were not
+  performed. They need their specified external inputs and are not established
+  by the checked-in smoke lists.
+
+Older validation attempts and resolved failures are preserved in Git history,
+not repeated as current failures here. Run root and sidecar pytest suites in
+their separate package contexts; root-wide recursive discovery is unsupported.
 
 ## Linux acceptance still required
 
-### Commit review validation (2026-09-11, 172f417)
-
-- `python -m pytest tests -q -p no:cacheprovider`: 337 passed, 2 skipped.
-- `python tools/validate_contracts.py`: 14 examples passed.
-- `python -m pytest -q -p no:cacheprovider` from `services/sidecar`:
-  407 passed, 2 skipped, 1 failed. The failure is
-  `test_build_state_applies_configured_capacity_overrides`, which cannot
-  initialize the checked-out seed because `clause-resource-kb.json` has a
-  snapshot hash mismatch. The isolated command
-  `python -m pytest tests/test_topology.py::test_build_state_applies_configured_capacity_overrides -q -p no:cacheprovider --tb=short`
-  reproduces it. Both HEAD and its parent contain the expected seed bytes;
-  the working-tree bytes differ, so this is not a regression in this commit.
-- Temporary fault-injection checks reproduced a final-barrier success while
-  another runtime still has an active request, and a coordinator interrupt
-  waiting for its worker to finish without recording that worker's result.
-  An initial reproduction script imported a nonexistent `initialize_seed`;
-  it was corrected to use the existing `make_seed` test helper and rerun.
-- Live Linux/OpenClaw/Docker/eBPF acceptance commands below remain unavailable
-  in this Windows workspace. No live model or container run was performed.
-
-### Review fixes validation (2026-09-11)
-
-- `python -m pytest tests -q -p no:cacheprovider`: 347 passed, 2 platform skips.
-- `python -m pytest -q -p no:cacheprovider` from `services/sidecar`:
-  409 passed, 2 platform skips.
-- `npm.cmd test` from `packages/clawtune-plugin`: TypeScript build and
-  all 99 tests passed.
-- `python tools/validate_contracts.py`: 14 examples passed.
-- `python scripts/clawtune.py benchmark --sample 2 --parallelism 2 --dry-run`:
-  passed with the checked-in seed.
-- Added regressions exercise real subprocess cancellation/timeout, setup
-  stdin preservation across polling, coordinator interruption, executor
-  cleanup failure, preservation of results and unsafe resume rejection, and
-  the real sidecar drain endpoint with another runtime still active.
-- `.gitattributes` fixes seed JSON checkout to LF. Working-tree seed bytes
-  were restored to their existing Git contents; snapshot hashes and logical
-  seed contents are unchanged.
-- The first focused command `python -m pytest tests/test_sidecar.py tests/test_topology.py -q -p no:cacheprovider`
-  failed because the new test's flush stub did not accept the shutdown
-  keyword argument. The stub was corrected; the full suite above passed.
-- Linux/OpenClaw/Docker/eBPF live acceptance is still unavailable here;
-  the commands below must run on a supported Linux host. Automated results
-  do not establish live process-group/container cleanup or eBPF correctness.
-
-On each supported deployment architecture:
+On each supported deployment architecture, after setting model credentials and
+preparing the documented sources:
 
 ```bash
 python3 scripts/clawtune.py setup
@@ -171,10 +164,21 @@ python3 scripts/clawtune.py check
 python3 scripts/clawtune.py benchmark --sample 4 --parallelism 2
 TAVILY_API_KEY="<key>" python3 scripts/clawtune.py benchmark \
   --benchmark deep-research-bench --sample 4 --parallelism 2
+python3 scripts/clawtune.py benchmark --benchmark swe-bench-verified \
+  --dataset /data/verified.jsonl --sample 2 --parallelism 2
+python3 scripts/clawtune.py benchmark --benchmark bfcl \
+  --category multi_turn_base --sample 2 --parallelism 2
+python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
+  --dataset /data/terminal-bench/original-tasks --sample 2 --parallelism 2
+python3 tools/validate_pmu.py --require-reliable \
+  --concurrency 8 --max-active 8 --high-concurrency 64 \
+  --benchmark-count 40 --output traces/pmu-validation.json
 ```
 
-Verify that no more than two tasks are in flight, runtime identities and
-workspaces remain distinct, repository tasks pass strict cgroup/eBPF gates,
-all results are recorded once, `active_tasks` is absent at completion,
-`kb_flush_complete` is true, and reopening `kb/` exposes
-`kb_final_generation` with observations from every eligible completion.
+Verify bounded concurrency, distinct runtimes/workspaces, strict repository
+cgroup/eBPF gates, one result per task, no `active_tasks` at successful completion,
+`kb_flush_complete: true`, and reopening `kb/` at `kb_final_generation`.
+Exercise timeout/Ctrl+C and container cleanup, BFCL state across turns, research
+provider selection, Terminal native timeout and source immutability. An unsafe
+cleanup must stop further dispatch and reject resume. Hook-only BFCL/Terminal
+traces must not claim attributed CPU/RSS/PMU observations or official scores.
