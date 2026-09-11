@@ -59,7 +59,7 @@ setup(
         "prometheus-client>=0.20",
     ],
     extras_require={
-        "dev": ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "jsonschema>=4"],
+        "dev": ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "jsonschema>=4", "setuptools>=68", "wheel"],
     },
     entry_points={
         "console_scripts": [

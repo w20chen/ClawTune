@@ -4,6 +4,41 @@ This file records current behavior, known limitations, and validation that
 cannot run in this workspace. User instructions live in the dedicated guides;
 implementation history lives in Git.
 
+## CI regression fixes (2026-09-11)
+
+The reported root-suite failures exposed a dependency on a deleted historical
+Git blob, an incomplete setuptools test double after adding the sdist hook,
+and a packaging subprocess whose captured stderr was hidden on failure.
+The development dependencies now explicitly include setuptools and wheel:
+PEP 517's isolated build requirements do not install these into the test
+interpreter. A new Python 3.12 venv reproduced `ModuleNotFoundError: setuptools`
+before installing the development extra. The original CI packaging stderr was
+not included in the supplied log, so its precise failure remains unconfirmed.
+
+The recipe regression now builds twice from explicit synthetic source data,
+checks selected median/quantile durations and identity removal, and compares
+all output bytes. Missing historical input has an actionable error and its own
+regression. The shipped seed is unchanged. A separate local reconstruction
+from the original historical object matched all four shipped files byte for
+byte; the command is documented in [bootstrap reproduction](bootstrap-kb.md).
+
+- `python -m pytest tests/test_bootstrap_seed.py tests/test_release_packaging.py
+  tests/test_clawtune_cli.py -q --basetemp .pytest-tmp-ci-fixes`: 41 passed.
+- `python -m pytest tests -q --basetemp .pytest-tmp-root`: 385 passed,
+  2 Windows platform skips.
+- `python -m pytest` in `services/sidecar`: 409 passed, 2 platform skips.
+  Existing FastAPI deprecation and Windows pytest-cache permission warnings
+  do not fail the suite.
+- `python -m venv .runtime/ci-clean-venv`, followed by that environment's
+  `python -m pip install -e services/sidecar[dev] jsonschema`: passed using
+  the same dependency installation command as CI, without system packages.
+  Its `python -m pytest tests -q --basetemp .pytest-tmp-clean-ci` also passed:
+  385 passed, 2 Windows platform skips, including source-release packaging.
+- `python tools/validate_docs.py`: 28 Markdown files, 87 local links, no errors.
+  `git diff --check`: passed.
+- The Ubuntu GitHub Actions job cannot be executed on this Windows host;
+  a remote CI rerun is still required. No Linux telemetry acceptance is claimed.
+
 ## Small release bootstrap (2026-09-11)
 
 Follow-up release audit: the original source distribution omitted both seed

@@ -35,11 +35,40 @@ def test_release_seed_is_small_and_has_no_repository_knowledge():
         assert row["peak_cpu_cores"] is None
 
 
-def test_rebuild_from_archived_source_is_byte_identical(tmp_path):
-    output = tmp_path / "rebuilt"
-    build(output)
+def test_rebuild_from_explicit_source_is_deterministic_and_sanitized(tmp_path):
+    # Exercise the recipe without requiring deleted blobs in shallow CI clones.
+    rows = [{"repo": f"private/project-{i}", "bin": bin_,
+             "argv": [bin_, "/private/task-specific-path"], "latency_ms": i + offset,
+             "cpu_ns_cumulative": 1_000_000, "sampled_peak_rss_mb": 1}
+            for bin_ in BINS for i in range(1, 17) for offset in (0, 20, 100)]
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps({"schema": "clause_lattice_kb_v2",
+                                  "pending": [], "observations": rows}))
+    output, repeated = tmp_path / "rebuilt", tmp_path / "repeated"
+    build(output, source)
+    build(repeated, source)
     for name in (*FILES, "manifest.json"):
-        assert (output / name).read_bytes() == (SEED / name).read_bytes()
+        assert (output / name).read_bytes() == (repeated / name).read_bytes()
+        assert b"private" not in (output / name).read_bytes()
+    lattice = json.loads((output / FILES[2]).read_text())
+    assert len(lattice["observations"]) == 40
+    for bin_ in BINS:
+        selected = [row for row in lattice["observations"] if row["bin"] == bin_]
+        assert [row["latency_ms"] for row in selected] == list(range(22, 37, 2))
+        assert all(row["repo"] == "" and row["argv"] == [bin_] for row in selected)
+    assert validate_seed(output)["provenance"]["source_snapshot_sha256"] == digest(source)
+
+
+def test_missing_archived_source_explains_explicit_input(tmp_path, monkeypatch):
+    import subprocess
+
+    def missing(*args, **kwargs):
+        raise subprocess.CalledProcessError(128, args[0], stderr=b"missing object")
+
+    monkeypatch.setattr("scripts.build_bootstrap_seed.subprocess.check_output", missing)
+    with pytest.raises(ValueError, match="Use --source"):
+        build(tmp_path / "missing")
+    assert not (tmp_path / "missing").exists()
 
 
 def test_bootstrap_predictions_are_identical_for_unrelated_repositories():

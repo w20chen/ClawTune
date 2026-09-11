@@ -28,7 +28,7 @@ clawtune-doctor = "clawtune_sidecar.cli:doctor_main"
 clawtune-check = "clawtune_sidecar.cli:check_main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "jsonschema>=4"]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "jsonschema>=4", "setuptools>=68", "wheel"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

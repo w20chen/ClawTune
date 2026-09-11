@@ -84,8 +84,19 @@ def select_observations(payload):
 
 
 def build(output: Path, source: Path | None = None):
-    raw = source.read_bytes() if source else subprocess.check_output(
-        ["git", "show", SOURCE_OBJECT], cwd=ROOT)
+    if source is not None:
+        raw = source.read_bytes()
+    else:
+        try:
+            raw = subprocess.check_output(
+                ["git", "show", SOURCE_OBJECT], cwd=ROOT, stderr=subprocess.PIPE)
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            raise ValueError(
+                "Historical source snapshot is unavailable in this checkout. "
+                "Use --source <original-finalized-snapshot.json> or a checkout "
+                f"containing {SOURCE_OBJECT}. Normal startup uses the bundled seed "
+                "and does not require this history."
+            ) from exc
     payload = json.loads(raw)
     if payload.get("schema") != "clause_lattice_kb_v2" or payload.get("pending"):
         raise ValueError("source must be a finalized clause lattice v2 snapshot")
@@ -123,5 +134,8 @@ if __name__ == "__main__":
     parser.add_argument("--source", type=Path, help="Optional finalized historical LatticeKB snapshot")
     parser.add_argument("--output", type=Path, required=True, help="New seed directory (never overwritten)")
     args = parser.parse_args()
-    manifest = build(args.output, args.source)
+    try:
+        manifest = build(args.output, args.source)
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
     print(json.dumps(manifest["provenance"], indent=2))

@@ -12,7 +12,8 @@ only from its training split.
 
 The source is the historical SWE-Rebench training-only clause corpus formerly
 packaged as `demo-v1`. The large historical bundle and the old snapshots under
-`traces/tool-resource/` are removed from the checkout; Git retains their history.
+`traces/tool-resource/` are removed from the checkout. The original repository's
+Git history retains them; shallow clones or rewritten histories may not.
 
 The reproducible recipe selects **40 observations**: eight each for `cat`,
 `find`, `grep`, `ls` and `which`. It excludes pipelines, loops, substitutions,
@@ -57,6 +58,7 @@ From a full Git checkout with the historical source commit available:
 
 ```bash
 python scripts/build_bootstrap_seed.py --output .runtime/bootstrap-rebuilt
+python -c "from pathlib import Path; a=Path('seeds/bootstrap-v1'); b=Path('.runtime/bootstrap-rebuilt'); assert all(p.read_bytes() == (b/p.name).read_bytes() for p in a.glob('*.json')); print('All four seed files match')"
 python3 scripts/clawtune.py benchmark --seed .runtime/bootstrap-rebuilt --sample 1 --dry-run
 ```
 
@@ -67,6 +69,15 @@ manifest records the source SHA-256, recipe, selection counts, quality policy,
 source CPU quota and hashes of all three snapshots. Rebuilding from the same
 source is byte-identical. No historical data download or training occurs at
 normal startup.
+
+The default historical object is
+`41e993395d82723deb7d4193467dc3bd5283574a:seeds/demo-v1/clause-lattice-time-kb.json`.
+If it is unavailable, supply the original snapshot with `--source`; fetching
+more history only helps if that object exists in the upstream history.
+Ordinary tests use synthetic source observations to verify deterministic
+selection, sanitization and rebuilding without Git history. The comparison
+above separately verifies exact reproduction of the shipped bundle from the
+original source. Neither installing nor testing the plugin requires that source.
 
 ## Existing installations and runs
 

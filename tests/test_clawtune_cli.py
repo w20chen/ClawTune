@@ -35,12 +35,17 @@ def test_legacy_scheduler_setup_declares_runtime_metadata(monkeypatch) -> None:
     fake_build = types.ModuleType("setuptools.command.build_py")
     fake_build.build_py = type("build_py", (), {})
     monkeypatch.setitem(sys.modules, "setuptools.command.build_py", fake_build)
+    fake_sdist = types.ModuleType("setuptools.command.sdist")
+    fake_sdist.sdist = type("sdist", (), {})
+    monkeypatch.setitem(sys.modules, "setuptools.command.sdist", fake_sdist)
 
     runpy.run_path(str(SCRIPT.parents[1] / "services" / "sidecar" / "setup.py"))
 
     assert captured["name"] == "clawtune-sidecar"
     assert "typing-extensions>=4.12" in captured["install_requires"]
     assert "dev" in captured["extras_require"]
+    assert "setuptools>=68" in captured["extras_require"]["dev"]
+    assert set(captured["cmdclass"]) == {"build_py", "sdist"}
     assert "tool_time" in captured["package_data"]
 
 

@@ -17,8 +17,9 @@ def test_source_release_includes_seed_and_public_contracts(tmp_path):
     shutil.copytree(root / "contracts", fixture / "contracts")
     shutil.copytree(root / "seeds/bootstrap-v1", fixture / "seeds/bootstrap-v1")
     output = tmp_path / "dist"
-    subprocess.run([sys.executable, "setup.py", "sdist", "--dist-dir", str(output)],
-                   cwd=package, check=True, capture_output=True, text=True)
+    result = subprocess.run([sys.executable, "setup.py", "sdist", "--dist-dir", str(output)],
+                            cwd=package, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
     with tarfile.open(next(output.glob("*.tar.gz"))) as archive:
         files = [member for member in archive.getmembers() if member.isfile()]
         seeds = [member for member in files if "/_data/seeds/" in member.name]
