@@ -1,13 +1,29 @@
 # ClawTune
 
 ClawTune is an OpenClaw plugin that records LLM/tool traces,
-measures resource usage of tool calls with Linux cgroup and eBPF, and learns tool call duration, CPU, memory, and micro-architecture metric predictions.
+measures resource usage of tool calls with Linux cgroup and eBPF,
+and learns tool call duration, CPU, memory, and micro-architecture metric predictions.
 
-| Workflow | Command | Knowledge base |
+| Workflow | Command | KB cold start and lifetime |
 | --- | --- | --- |
-| Daily OpenClaw use | `openclaw gateway run` | Persistent user KB |
-| Online benchmark simulation | `python3 scripts/clawtune.py benchmark ...` | New writable KB per run |
-| Fixed-trace evaluation | `python3 scripts/clawtune.py offline ...` | Train by task, freeze during testing |
+| Daily OpenClaw use | `openclaw gateway run` | On first use, copy the small bundled `seeds/bootstrap-v1` into the persistent user KB; learn online and reuse that state on later starts. Override the initial seed with `CLAWTUNE_KB_SEED`. |
+| Online benchmark simulation | `python3 scripts/clawtune.py benchmark ...` | Each new run copies `--seed <directory>` (default `seeds/bootstrap-v1`) into its own writable `<run>/kb/`; tasks share online learning within that run. No automatic inheritance from daily use or previous runs. |
+| Fixed-trace evaluation | `python3 scripts/clawtune.py offline ...` | Build ToolKB, TrieKB and LatticeKB from scratch using only the task-level training split; export `<experiment>/seed/`, then freeze for testing. Does not load the bundled seed or existing daily/online KBs. |
+
+The bundled **`bootstrap-v1` contains only 40 generic command observations**:
+eight each for `cat`, `find`, `grep`, `ls` and `which`, selected from historical
+SWE-Rebench training traces. TrieKB and LatticeKB retain executable-level priors
+with **no repo-specific knowledge, task IDs, paths or original arguments**.
+ToolKB starts empty because the source has no eligible whole-call/PMU labels;
+these are learned online. Short, unreliable CPU/RSS labels are withheld.
+This is a small starting prior, not a trained task corpus or a guarantee of
+prediction accuracy. See [selection, quality limits and reproduction](docs/bootstrap-kb.md)
+and the [KB naming reference](docs/architecture.md#knowledge-base-names).
+
+Daily startup copies a seed only when the user KB does not yet exist; changing
+`CLAWTUNE_KB_SEED` does not reset existing state. Benchmark `--resume` continues
+the saved run's KB. Offline `--seed 42` means the split's random seed, whereas
+online `--seed <directory>` selects a KB bundle.
 
 ## First run
 
@@ -73,7 +89,7 @@ defaults to `0.8`; complete tasks and all their attempts stay together. See
 
 The [documentation map](docs/README.md) links operational guides and technical
 references for configuration, sidecar APIs, traces, call-load predictions,
-lattice resources and PMU measurements. [Current validation](docs/CURRENT_PLAN.md)
+LatticeKB resources and PMU measurements. [Current validation](docs/CURRENT_PLAN.md)
 records the testing boundary and remaining Linux acceptance work.
 
 ## Development

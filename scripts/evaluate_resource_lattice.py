@@ -100,7 +100,7 @@ def evaluate(dataset: Path, snapshot: Path) -> dict:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, required=True)
-    parser.add_argument("--snapshot", type=Path, default=Path("traces/tool-resource/clause-lattice-time-kb.json"))
+    parser.add_argument("--snapshot", type=Path, default=Path(".runtime/lattice-export/clause-lattice-time-kb.json"))
     parser.add_argument("--output", type=Path, default=Path("docs/resource-lattice-evaluation.json"))
     args = parser.parse_args()
     if args.output.resolve().is_relative_to(args.dataset.resolve()):

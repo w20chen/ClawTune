@@ -49,7 +49,7 @@ a per-repo, observation-level static split:
    training;
 4. Clauses follow their corresponding calls into train or test via
    `tool_call_id`;
-5. Build `ClauseResourceKB`, `LatticeTimeKB`, and `RuntimeToolResourceKB` using
+5. Build TrieKB, LatticeKB, and ToolKB using
    only the train side;
 6. The test side only predicts and never writes back to the KB.
 

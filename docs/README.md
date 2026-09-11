@@ -6,16 +6,17 @@
 - [Online benchmarks](benchmarks.md): all five adapters, actual paths, dependencies and limits.
 - [Offline evaluation](offline.md): fixed traces, units, task splits and results.
 - [Configuration](configuration.md): provider keys, state ownership and runtime settings.
+- [Bundled bootstrap KB](bootstrap-kb.md): small generic priors, quality limits and reproduction.
 - [Troubleshooting](troubleshooting.md): failures and diagnostic artifacts.
 - [ARM/QEMU](arm-qemu.md): Kunpeng container compatibility.
 
 ## Understand the implementation
 
-- [Architecture](architecture.md)
+- [Architecture and ToolKB / TrieKB / LatticeKB naming](architecture.md)
 - [Sidecar APIs and lifecycle](sidecar.md)
 - [Trace and protocol reference](trace-schema.md)
 - [Call-load prediction](call-load-prediction.md)
-- [Lattice CPU and memory prediction](lattice-resources.md)
+- [LatticeKB CPU and memory prediction](lattice-resources.md)
 - [PMU profiling](pmu-profiling.md)
 - [Current validation and limitations](CURRENT_PLAN.md)
 
@@ -28,6 +29,6 @@ These retained reports describe fixed experiments, not the current CLI:
 
 - [Legacy evaluator reproduction](legacy-eval.md)
 - [Legacy evaluation results](legacy_eval_final_report.md)
-- [Lattice accuracy snapshot](lattice-accuracy/report.md)
+- [LatticeKB accuracy snapshot](lattice-accuracy/report.md)
 
 Git preserves superseded implementation plans and review history.

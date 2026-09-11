@@ -3,8 +3,8 @@
 The public source of truth is [`call-load.schema.json`](../contracts/call-load.schema.json),
 referenced by `tool-decision.schema.json`. The sidecar returns a versioned
 `prediction.call_prediction` describing **one complete tool invocation**, with
-optional `prediction.diagnostics.backends` containing comparable Runtime, Trie
-and Lattice call-level candidates. Each candidate always declares all five targets.
+optional `prediction.diagnostics.backends` containing comparable ToolKB, TrieKB
+and LatticeKB call-level candidates. Each candidate always declares all five targets.
 
 ## Targets and statistics
 
@@ -64,14 +64,14 @@ existing KV-TTL policy's bucket-count constraints.
 
 ## Backends and composition
 
-Runtime retrieves compatible call-level samples. Trie retrieves clause samples
-using exact/prefix/bin matching. Lattice selects a context independently for
+ToolKB retrieves compatible call-level samples. TrieKB retrieves clause samples
+using exact/prefix/bin matching. LatticeKB selects a context independently for
 each of the five targets (the adapter currently uses shrinkage; its evidence
 API also supports LOSO and max-cardinality). All pass samples to the same
 call adapter and statistics implementation; raw evidence is not serialized.
 
-The authoritative selector is per-target: compatible Runtime call evidence,
-then the Trie baseline, then Lattice. Each backend's own candidate remains in
+The authoritative selector is per-target: compatible ToolKB call evidence,
+then the TrieKB baseline, then LatticeKB. Each backend's own candidate remains in
 diagnostics, so this policy does not hide backend coverage or imply measured
 superiority. An unrelated global node is not a compatible canonical fallback.
 Existing repository-first/prefix matching remains a heuristic, not an
@@ -115,16 +115,16 @@ lifecycle prediction would require explicit execution-ownership support.
 Live monitor CPU averages are no longer stored as CPU peaks. CPU totals are
 preserved and average cores are derived from paired observations. Trace replay
 reads `resources.cpu_time_s` (and accepts `cpu_time_delta_s` as an alternative).
-The Runtime snapshot now writes `runtime_tool_resource_kb_v2`; v1 snapshots
+The ToolKB snapshot now writes `runtime_tool_resource_kb_v2`; v1 snapshots
 remain readable, but their potentially mislabeled CPU peak nodes are
 quarantined. Valid duration and legacy memory-residual diagnostics survive.
 The benchmark snapshot synchronizer accepts both versions. No trace dataset
 or shipped seed is rewritten by this source migration.
 
-Canonical Runtime peak CPU requires an explicitly eligible 500 ms measurement.
-Canonical Runtime memory requires eligible `sampled_distinct_mm_rss`. Current
+Canonical ToolKB peak CPU requires an explicitly eligible 500 ms measurement.
+Canonical ToolKB memory requires eligible `sampled_distinct_mm_rss`. Current
 coarse monitor memory may be cgroup `memory.current` or a process RSS sum;
-neither is silently converted to this target. Thus the current live Runtime
+neither is silently converted to this target. Thus the current live ToolKB
 path can lack these two targets even when legacy diagnostic memory exists.
 Native tools without compatible call resource measurements report unavailable.
 Clause eBPF evidence can supply canonical resources for supported exec calls.
@@ -155,7 +155,7 @@ p90, then a one-core **policy default**, never a fabricated prediction. It
 does not enforce memory placement; placement remains advisory. CPU empirical
 quantiles are not guarantees and admission still uses existing capacity caps.
 
-The single KB writer builds a Lattice successor from immutable observation
+The single KB writer builds a LatticeKB successor from immutable observation
 records outside the prediction lock, then publishes the prepared generation
 under that lock. Queries retain the last complete generation while building;
 strict `observation.end < query.start` visibility remains in each backend.
@@ -166,9 +166,13 @@ offline replay can still require rebuilding a causal subset.
 
 ### Console output
 
+The backend names below are ToolKB, TrieKB and LatticeKB. Current console
+labels may still display `Runtime`, `Trie` and `Lattice`, respectively; these
+are legacy labels for the same backends, not additional KBs.
+
 With plugin `consoleMode=verbose` (the default, also selectable with
 `CLAWTUNE_CONSOLE_MODE=verbose`), each successful decision prints the selected
-five-target prediction, a PMU section, then separate Runtime, Trie and Lattice
+five-target prediction, a PMU section, then separate ToolKB, TrieKB and LatticeKB
 candidates. The PMU section always contains IPC, LLC read MPKI, and LLC read
 miss rate. Each metric reports mean/p50/p90 and quality-gated ToolKB evidence,
 or an explicit unavailable reason when no compatible PMU history exists.
@@ -179,7 +183,7 @@ and configured edges. RSS statistics and histogram boundaries both display in
 MiB; the API/trace continues to use bytes.
 
 The following diagnostic section retains clause argv/index, legacy bucket and
-Runtime estimates, and every supplied Lattice time/resource algorithm, including
+ToolKB estimates, and every supplied LatticeKB time/resource algorithm, including
 selected features and risk. These diagnostics are labeled separately from the
 selected call prediction. Host SWE-Rebench tees the output to the terminal and
 `agent-stdout.txt`; quiet mode suppresses this console output.
@@ -192,11 +196,11 @@ silently omitting the metrics.
 
 ### Restart-safe history loading
 
-Runtime and Trie snapshots now include additive `observed_counts` and
+ToolKB and TrieKB snapshots now include additive `observed_counts` and
 `legacy_counts` metadata. Replay reconciles observation multiplicities against
 both pending and absorbed history; fresh online completions still append, and
 equal measurements from distinct executions are retained. Timestamp identity
-uses microsecond precision to tolerate JSON timestamp round trips. Lattice
+uses microsecond precision to tolerate JSON timestamp round trips. LatticeKB
 continues to use its raw-observation multiset reconciliation.
 
 Old aggregate snapshots lack execution identities. Their repository leaf
@@ -210,7 +214,7 @@ Frozen loading never merges history or mutates these counters.
 For required host SWE-Rebench telemetry, a run containing `call_prediction`
 must have a valid canonical prediction for every tool call and at least one
 available target somewhere in the run. Individual unavailable targets are
-allowed; old Runtime CPU/memory diagnostics and clause buckets are not required
+allowed; old ToolKB CPU/memory diagnostics and clause buckets are not required
 by this gate. Malformed or mixed incomplete canonical coverage fails even if
 legacy diagnostics are available. Entirely legacy traces keep their previous
 compatibility checks. Reports expose canonical presence, validity, availability

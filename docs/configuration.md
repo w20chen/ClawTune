@@ -14,7 +14,7 @@ environment values take precedence. Restart the sidecar after changes.
 | --- | --- |
 | `CLAWTUNE_TRACE_DIR` | `traces`; trace output, independent of KB ownership |
 | `CLAWTUNE_STATE_DIR` | Invoking user's state directory; daily KB is its `kb/` child |
-| `CLAWTUNE_KB_SEED` | Bundled `seeds/demo-v1`, used only to initialize new daily state |
+| `CLAWTUNE_KB_SEED` | Bundled `seeds/bootstrap-v1`, used only to initialize new daily state |
 | `CLAWTUNE_TOOL_RESOURCE_ARTIFACT_DIR` | Direct KB-directory override |
 | `CLAWTUNE_TOOL_RESOURCE_FROZEN` | `false`; true disables learning |
 | `CLAWTUNE_LLM_UPSTREAM_BASE_URL` | `https://api.deepseek.com` |
@@ -121,6 +121,9 @@ variables. See the [BFCL setup](benchmarks.md#bfcl) before running it.
 
 ## State and namespaces
 
+Each KB bundle contains ToolKB, TrieKB and LatticeKB. Their current class and
+snapshot identifiers are mapped in the [KB naming reference](architecture.md#knowledge-base-names).
+
 | Workflow | KB location |
 | --- | --- |
 | Daily | User state `kb/` |
@@ -132,3 +135,7 @@ Each owner writes independently; there is no automatic merge. `kb status
 queries use `<benchmark>:<group>` namespaces. Daily namespace selection uses
 `CLAWTUNE_REPO_KEY`, explicit plugin repo/environment configuration, then Git
 origin/workspace inference, with the sidecar fallback when identity is absent.
+
+The [bundled bootstrap](bootstrap-kb.md) has 40 executable-level observations
+for TrieKB/LatticeKB and an empty ToolKB. It contains no repo-specific knowledge.
+Changing the default seed does not reset an existing daily KB or saved run.

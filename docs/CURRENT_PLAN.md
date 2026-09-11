@@ -4,6 +4,79 @@ This file records current behavior, known limitations, and validation that
 cannot run in this workspace. User instructions live in the dedicated guides;
 implementation history lives in Git.
 
+## Small release bootstrap (2026-09-11)
+
+Follow-up release audit: the original source distribution omitted both seed
+and public contracts, despite direct checkout-to-wheel builds passing. The
+sdist hook now copies canonical runtime data into the source release before
+archiving; both packaging paths use the same bundle helper.
+
+- `python setup.py sdist --dist-dir ../../.runtime/bootstrap-sdist` in
+  `services/sidecar`: passed after the fix. Initial archive inspection found
+  zero seed/schema files and exposed the packaging omission.
+- `python -m pip wheel .runtime/bootstrap-sdist/clawtune_sidecar-0.1.0.tar.gz
+  --no-deps --no-build-isolation --wheel-dir .runtime/bootstrap-sdist-wheel`:
+  passed without access to the parent source checkout during the wheel build.
+- Independent extracted-wheel check in a system temporary directory: all four
+  seed files match the checkout, bundled schemas validate, actual sidecar state
+  initialization selects bootstrap-v1, and restart preserves that state even
+  with a subsequently invalid seed override. Collector execution was disabled;
+  this is initialization validation, not Linux telemetry acceptance.
+- `python -m pytest tests/test_release_packaging.py tests/test_bootstrap_seed.py
+  -q -p no:cacheprovider`: 8 passed, including an isolated source-release
+  packaging regression.
+- `python tools/validate_docs.py` and `git diff --check`: passed.
+
+Daily startup, the unified benchmark CLI, retained host helpers and sidecar
+wheel builds now default to `seeds/bootstrap-v1`. It contains 40 real,
+executable-only clause observations (eight per cat/find/grep/ls/which), with
+all repo names, task identities, paths and original arguments removed.
+TrieKB has public priors only; LatticeKB has no repo feature; ToolKB is empty.
+Six observations retain CPU time/average and sampled RSS. Short or unreliable
+resource labels are withheld; no peak CPU or PMU evidence is fabricated.
+The bundle totals 16,226 bytes. This is a small uncalibrated SWE-derived prior,
+not a claim of measured cross-benchmark or cross-hardware accuracy.
+
+Removed the four files in the retired `seeds/demo-v1` and four old KB/manifest
+files under `traces/tool-resource`. No raw/external trace data, existing daily
+state or prior run-owned KB was deleted. Historical export/evaluation tools
+now default to `.runtime/lattice-export` to keep generated KBs out of source.
+The cold-start split manifest is retained as experiment metadata, not a KB.
+
+`scripts/build_bootstrap_seed.py` reconstructs the bundle from an immutable
+historical Git object, or an explicit original snapshot. Tests confirm exact
+reproduction, source identity removal, small size, resource gates, identical
+predictions across unrelated repo names, no canonical prediction for an
+unknown executable, and ability to learn without modifying the seed. See
+[bootstrap contents and reproduction](bootstrap-kb.md).
+
+Validation for this change:
+
+- `python -m pytest tests -q -p no:cacheprovider`: 383 passed, 2 platform skips.
+- `python -m pytest -q -p no:cacheprovider` in `services/sidecar`:
+  409 passed, 2 platform skips.
+- `python tools/validate_contracts.py`: 14 examples passed.
+- `python tools/validate_docs.py`: 28 project Markdown files, 86 local
+  links/anchors passed, including new untracked guides.
+- `python scripts/clawtune.py benchmark --sample 2 --parallelism 2 --dry-run`:
+  selected the new release seed successfully.
+- `python -m pip wheel ./services/sidecar --no-deps --no-build-isolation
+  --wheel-dir .runtime/bootstrap-wheel`: passed. Archive inspection found
+  exactly four seed files, all in bootstrap-v1 and byte-identical to source.
+  Importing the extracted wheel outside the repository source validated its
+  bundled seed and public schemas successfully.
+- `git diff --check`: passed.
+
+Failed or unavailable validation:
+
+- The first sidecar suite returned 405 passed, 2 skipped, 4 failures because
+  old tests read the now-removed large/synthetic KB snapshots. Tests now verify
+  empty initial ToolKB, isolated online learning and the new public clause
+  priors. The complete rerun passed as recorded above.
+- Linux OpenClaw/Docker/eBPF live startup and measured online accuracy cannot
+  run in this Windows workspace. Unit and package checks do not establish
+  hardware accuracy or calibration; use the Linux acceptance commands below.
+
 ## Current state
 
 ClawTune supports three workflows:
@@ -113,7 +186,7 @@ installed revision with experiments. Static interface review is not a live run.
 | `npm.cmd test` in `packages/clawtune-plugin` | Build and 99 tests passed |
 | `npm.cmd run typecheck` in `packages/clawtune-plugin` | Passed |
 | `python tools/validate_contracts.py` | 14 examples passed |
-| `python tools/validate_docs.py` | 27 tracked Markdown files, 78 local inline links/anchors, no errors |
+| `python tools/validate_docs.py` | 27 tracked Markdown files, 81 local inline links/anchors, no errors |
 | `python scripts/clawtune.py benchmark --sample 2 --parallelism 2 --dry-run` | Bundled SWE source passed |
 | `python scripts/clawtune.py benchmark --benchmark deep-research-bench --sample 1 --dry-run` | Bundled research source passed |
 | `benchmark --benchmark <name> --dataset <fixture.json> --sample 1 --dry-run` | Verified, processed BFCL and manifest-relative Terminal fixtures passed |
@@ -152,6 +225,18 @@ Validation that failed or could not run:
 Older validation attempts and resolved failures are preserved in Git history,
 not repeated as current failures here. Run root and sidecar pytest suites in
 their separate package contexts; root-wide recursive discovery is unsupported.
+
+## Documentation naming update
+
+All maintained guides and historical reports use ToolKB, TrieKB and LatticeKB.
+Legacy Python identifiers appear only in the architecture naming map; existing
+filenames, schema keys and quoted console labels retain their actual values.
+A scan of all 27 tracked Markdown files confirms the old class names occur only
+in that map. `python tools/validate_docs.py` passes all 81 local links/anchors;
+`git diff --check` passes. This update changes documentation only. An additional check with
+`git -c core.autocrlf=false diff --check` initially reported CRLF characters as
+trailing whitespace in edited guides. Their line endings were normalized and
+both whitespace checks rerun successfully.
 
 ## Linux acceptance still required
 

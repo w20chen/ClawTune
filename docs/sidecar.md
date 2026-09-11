@@ -75,23 +75,23 @@ Missing evidence produces an explicit unavailable result. The main outputs are:
 
 - call-load distributions and continuous duration/CPU/memory estimates;
 - clause duration from `shrinkage`, `loso`, and `max_cardinality`;
-- lattice CPU and memory predictions;
+- LatticeKB CPU and memory predictions;
 - Tool-level IPC, LLC read MPKI, and LLC miss-rate predictions;
 - advisory admission and placement metadata.
 
 The detailed algorithms, units, bucket composition, and quality gates live in
 [call-load prediction](call-load-prediction.md),
-[lattice resources](lattice-resources.md), and
+[LatticeKB resources](lattice-resources.md), and
 [PMU profiling](pmu-profiling.md). They are not duplicated here.
 
 ### Asynchronous KB writer
 
-Completion handling updates accepted in-memory Runtime/Trie observations under
+Completion handling updates accepted in-memory ToolKB/TrieKB observations under
 one re-entrant KB lock, then enqueues a lightweight persistence notification.
-A dedicated single writer coalesces notifications, prepares lattice changes,
+A dedicated single writer coalesces notifications, prepares LatticeKB changes,
 writes changed snapshots atomically, and commits the three-file generation
-through `CURRENT`. Readers continue using the last prepared lattice while a
-new lattice is built.
+through `CURRENT`. Readers continue using the last prepared LatticeKB generation while a
+new generation is built.
 
 A runtime drain normally waits for active executions, deferred finalizers, and
 trace operations. Its `flush_kb=false` mode intentionally skips the global

@@ -1,4 +1,4 @@
-# Lattice held-out accuracy
+# LatticeKB held-out accuracy
 
 Train tasks: 239; test tasks: 38; seed: 42.
 
@@ -41,7 +41,7 @@ Their conditional p90 coverage is not expected to equal the overall 90% target.
 ## Tail loss vs paired baseline
 
 Pinball loss penalizes underestimation more strongly at p90; lower is better.
-Positive reduction means the lattice improves over the baseline on the same clauses.
+Positive reduction means LatticeKB improves over the baseline on the same clauses.
 
 | Resource | Algorithm | p90 pinball loss | Baseline loss | Loss reduction |
 |---|---|---:|---:|---:|

@@ -991,12 +991,14 @@ def test_host_openclaw_required_telemetry_requires_predictions(tmp_path):
 def _canonical_prediction():
     from clawtune_sidecar.prediction_config import load_bucket_edges
     from clawtune_sidecar.predictors.call_load import predict_call_load
-    from tool_resource.runtime_kb import ClauseResourceKB, RuntimeToolResourceKB, ToolCallQuery
+    from tool_resource.runtime_kb import ClauseResourceKB, RuntimeToolResourceKB, ToolCallQuery, CompletedCall
     from tool_time.lattice_kb import LatticeTimeKB
 
-    root = Path(__file__).resolve().parents[1]
-    snapshot = json.loads((root / "traces/tool-resource/runtime-tool-resource-kb.json").read_text())
-    runtime = RuntimeToolResourceKB.from_json_obj(snapshot)
+    # Explicit test-only call evidence; release bootstrap intentionally has
+    # no whole-call samples and must not carry a synthetic read_file prior.
+    runtime = RuntimeToolResourceKB.fit_public([
+        CompletedCall("", "read_file", None, 0, .1),
+    ])
     runtime.freeze()
     query = ToolCallQuery("review", "read_file", None, 1, ambient_before_mb=100)
     assert runtime.query(query)["peak_cpu_cores"].conditional_p90 is None

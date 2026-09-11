@@ -97,7 +97,7 @@ def build_state(config: SidecarConfig | None = None) -> AppState:
         from pathlib import Path
         import os
         kb_dir = cfg.tool_resource_artifact_dir
-        seed = Path(os.environ.get("CLAWTUNE_KB_SEED", str(data_root() / "seeds/demo-v1")))
+        seed = Path(os.environ.get("CLAWTUNE_KB_SEED", str(data_root() / "seeds/bootstrap-v1")))
         if not kb_dir.exists():
             initialize_state(kb_dir, seed, owner=os.environ.get("CLAWTUNE_KB_OWNER", "daily"))
     predictor = ToolResourcePredictor.from_traces(

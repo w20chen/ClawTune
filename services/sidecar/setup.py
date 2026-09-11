@@ -1,18 +1,38 @@
 from setuptools import find_packages, setup
 from setuptools.command.build_py import build_py
+from setuptools.command.sdist import sdist
 from pathlib import Path
 import shutil
+
+
+def bundle_data(target):
+    repo = Path(__file__).resolve().parents[2]
+    source = repo if (repo / "contracts").is_dir() else Path(__file__).resolve().parent / "src/clawtune_kb/_data"
+    for directory in ("contracts", "seeds/bootstrap-v1"):
+        shutil.copytree(source / directory, target / directory, dirs_exist_ok=True)
+
+
+class SourceWithContracts(sdist):
+    """Source releases must rebuild without the surrounding Git checkout."""
+
+    def make_release_tree(self, base_dir, files):
+        super().make_release_tree(base_dir, files)
+        bundle_data(Path(base_dir) / "src/clawtune_kb/_data")
 
 
 class BuildWithContracts(build_py):
     """Bundle canonical repo data when building a deployable sidecar wheel."""
     def run(self):
         super().run()
-        repo = Path(__file__).resolve().parents[2]
-        source = repo if (repo / "contracts").is_dir() else Path("src/clawtune_kb/_data")
-        for directory in ("contracts", "seeds/demo-v1"):
-            target = Path(self.build_lib) / "clawtune_kb/_data" / directory
-            shutil.copytree(source / directory, target, dirs_exist_ok=True)
+        # An incremental wheel build must not retain retired seeds from an
+        # earlier build directory. Only remove this build's generated data.
+        build_root = Path(self.build_lib).resolve()
+        seed_target = (build_root / "clawtune_kb/_data/seeds").resolve()
+        if not seed_target.is_relative_to(build_root):
+            raise ValueError("seed build target is outside build_lib")
+        if seed_target.exists():
+            shutil.rmtree(seed_target)
+        bundle_data(build_root / "clawtune_kb/_data")
 
 
 # Compatibility metadata for installers that fall back from PEP 660 editable
@@ -25,7 +45,7 @@ setup(
     python_requires=">=3.10",
     package_dir={"": "src"},
     packages=find_packages(where="src"),
-    cmdclass={"build_py": BuildWithContracts},
+    cmdclass={"build_py": BuildWithContracts, "sdist": SourceWithContracts},
     install_requires=[
         "fastapi>=0.110",
         "httpx>=0.27",

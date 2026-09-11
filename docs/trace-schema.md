@@ -70,7 +70,7 @@ Useful fields:
   `span_start` records. This mirrors the `/v1/decisions/tool` response
   `prediction`, including native `tool_resource` details when available.
   `prediction.tool_resource.continuous_predictions` contains best-effort
-  non-MLP `RuntimeToolResourceKB` conditional-p90 estimates for
+  non-MLP ToolKB conditional-p90 estimates for
   `latency_ms`, `peak_cpu_cores`, and `peak_memory_mb`; memory requires a
   pre-call ambient memory anchor and otherwise reports an unavailable note.
   `prediction.tool_resource.lattice_time_predictions` contains one record for
@@ -78,7 +78,7 @@ Useful fields:
   `shrinkage`, `loso`, and `max_cardinality` point estimates in milliseconds,
   together with selected-feature, evidence, risk, exact-match, fallback, or
   explicit unavailability metadata. All three algorithms read the same
-  independent, flat lattice KB; its time views use eligible
+  independent, flat LatticeKB; its time views use eligible
   eBPF `ClauseObservation` latency measurements. For compound commands these
   remain per-clause results. Configured downstream pipeline consumers are
   omitted; standalone occurrences and pipeline position zero remain eligible.
@@ -88,7 +88,7 @@ Useful fields:
   lattice context for each of the same three algorithms. Scope, units, sample
   count, selected features/risk, and explicit unavailable reasons accompany
   the values. These are not cgroup memory or composed whole-call estimates.
-  See [lattice resource semantics and evaluation](lattice-resources.md).
+  See [LatticeKB resource semantics and evaluation](lattice-resources.md).
   `prediction.tool_resource.prediction_algorithms` lists the enabled
   non-MLP predictors and records `tool_resource.mlp` as excluded.
 - `resources.attribution_status`: resource attribution status.

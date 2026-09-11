@@ -67,7 +67,7 @@ def parser():
     bench.add_argument("--skip", type=int, default=0)
     bench.add_argument("--repo")
     bench.add_argument("--instance-ids")
-    bench.add_argument("--seed", type=Path, default=ROOT / "seeds/demo-v1", help="Immutable seed bundle")
+    bench.add_argument("--seed", type=Path, default=ROOT / "seeds/bootstrap-v1", help="Immutable seed bundle")
     bench.add_argument("--config", type=Path, help="Runner YAML including model configuration")
     bench.add_argument("--output", type=Path, help="New run directory; existing directories are never overwritten")
     bench.add_argument(

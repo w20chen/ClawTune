@@ -36,6 +36,10 @@ files without attempt metadata can represent separate attempts.
 
 ## Split and state
 
+Training builds ToolKB, TrieKB and LatticeKB from the training observations;
+all three are frozen for testing. See the [KB naming reference](architecture.md#knowledge-base-names)
+for the current snapshot filenames and Python identifiers.
+
 The default `--train-fraction 0.8` must be strictly between 0 and 1. Within
 each benchmark/group, task names are deterministically hash-ordered using
 `--seed` (default 42). Training receives `max(1, floor(fraction*N))` tasks;

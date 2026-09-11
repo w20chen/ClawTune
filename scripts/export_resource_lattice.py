@@ -163,8 +163,8 @@ def export(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, required=True)
-    parser.add_argument("--output", type=Path, default=ROOT / "traces/tool-resource/clause-lattice-time-kb.json")
-    parser.add_argument("--clause-output", type=Path, default=ROOT / "traces/tool-resource/clause-resource-kb.json")
+    parser.add_argument("--output", type=Path, default=ROOT / ".runtime/lattice-export/clause-lattice-time-kb.json")
+    parser.add_argument("--clause-output", type=Path, default=ROOT / ".runtime/lattice-export/clause-resource-kb.json")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--train-fraction", type=float, default=0.8)
     args = parser.parse_args()

@@ -1007,7 +1007,7 @@ def _prepare_batch_tool_resource_kb(
 ) -> None:
     """Initialize one run-scoped shared KB from the tracked cold-start seed."""
 
-    source_dir = config.repo_root / "seeds" / "demo-v1"
+    source_dir = config.repo_root / "seeds" / "bootstrap-v1"
     try:
         _validate_kb_snapshot_pair(source_dir)
         shared_kb_dir.mkdir(parents=True, exist_ok=False)
@@ -1034,15 +1034,13 @@ def _seed_runtime_tool_resource_kb(
 ) -> None:
     """Copy the repo's pre-seeded predictor KBs to the task trace directory.
 
-    The RuntimeToolResourceKB predictor needs cold-start training data for
-    continuous p90 latency/CPU/memory estimates.  The repo ships a small
-    synthetic runtime snapshot and a clause-latency snapshot.  Without them,
-    continuous predictions and clause latency-bucket predictions have no
-    cold-start evidence.
+    The release seed contains small generic TrieKB/LatticeKB priors and an
+    empty ToolKB. Whole-call/PMU evidence accumulates online; clause priors
+    must not be relabeled as observed whole-call measurements.
     """
     dest_dir = trace_dir / "tool-resource"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    source_dir = source_dir or config.repo_root / "seeds" / "demo-v1"
+    source_dir = source_dir or config.repo_root / "seeds" / "bootstrap-v1"
     try:
         _validate_kb_snapshot_pair(source_dir)
         for filename in _TOOL_RESOURCE_KB_SCHEMAS:

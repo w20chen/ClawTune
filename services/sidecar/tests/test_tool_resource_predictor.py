@@ -977,15 +977,15 @@ def test_restarting_with_the_same_trace_does_not_duplicate_runtime_history(tmp_p
         predictor.close()
 
 
-def test_shipped_runtime_snapshot_produces_public_predictions_for_any_repo(
+def test_shipped_toolkb_starts_without_fabricated_whole_call_predictions(
     tmp_path: Path,
 ) -> None:
     artifact_dir = tmp_path / "tool-resource"
     artifact_dir.mkdir()
     source = (
         Path(__file__).resolve().parents[3]
-        / "traces"
-        / "tool-resource"
+        / "seeds"
+        / "bootstrap-v1"
         / "runtime-tool-resource-kb.json"
     )
     shutil.copyfile(source, artifact_dir / "runtime-tool-resource-kb.json")
@@ -999,15 +999,12 @@ def test_shipped_runtime_snapshot_produces_public_predictions_for_any_repo(
 
     result = predictor.predict(_tool_request("evt-public-runtime", "call-public-runtime", "git status"))
 
-    # The shipped seed is a real data-derived artifact; assert the mechanism
-    # (public predictions for any repo) rather than exact sample values.
+    # Clause seed data must not be fabricated into whole-call labels.
     continuous = result.tool_resource["continuous_predictions"]
     latency = continuous["latency_ms"]
-    assert latency["scope"] == "public"
-    assert latency["key_kind"] in {"global", "binary_head", "tool_name"}
-    assert latency["evidence_count"] > 0
-    assert latency["conditional_p90"] is not None
-    assert latency["conditional_p90"] > 0.0
+    assert latency["scope"] is None
+    assert latency["evidence_count"] == 0
+    assert latency["conditional_p90"] is None
     cpu = continuous["peak_cpu_cores"]
     assert cpu["scope"] is None
     assert cpu["evidence_count"] == 0
@@ -1016,7 +1013,7 @@ def test_shipped_runtime_snapshot_produces_public_predictions_for_any_repo(
 
 def test_shared_snapshots_reuse_same_repo_evidence_but_isolate_other_repos() -> None:
     snapshot_dir = (
-        Path(__file__).resolve().parents[3] / "traces" / "tool-resource"
+        Path(__file__).resolve().parents[3] / "seeds" / "bootstrap-v1"
     )
     runtime = RuntimeToolResourceKB.from_json_obj(
         json.loads(
@@ -1063,13 +1060,11 @@ def test_shared_snapshots_reuse_same_repo_evidence_but_isolate_other_repos() -> 
     assert same_repo["latency_ms"].scope == "repo"
     assert same_repo["latency_ms"].conditional_p90 == pytest.approx(200.0)
     assert same_repo["peak_memory_mb"].conditional_p90 == pytest.approx(74.0)
-    # The public layer is a real data-derived artifact; assert the isolation
-    # mechanism (other repos fall back to public) rather than exact values.
-    assert other_repo["latency_ms"].scope == "public"
-    assert other_repo["latency_ms"].conditional_p90 is not None
-    assert other_repo["latency_ms"].conditional_p90 > 0.0
-    assert other_repo["peak_memory_mb"].scope == "public"
-    assert other_repo["peak_memory_mb"].conditional_p90 is not None
+    # New repo history must not leak to another repo; ToolKB has no initial priors.
+    assert other_repo["latency_ms"].scope is None
+    assert other_repo["latency_ms"].conditional_p90 is None
+    assert other_repo["peak_memory_mb"].scope is None
+    assert other_repo["peak_memory_mb"].conditional_p90 is None
 
     clause = ClauseResourceKB.from_json_obj(
         json.loads(
@@ -1111,8 +1106,8 @@ def test_shipped_clause_snapshot_produces_public_global_single_clause_bucket(
     artifact_dir.mkdir()
     source = (
         Path(__file__).resolve().parents[3]
-        / "traces"
-        / "tool-resource"
+        / "seeds"
+        / "bootstrap-v1"
         / "clause-resource-kb.json"
     )
     shutil.copyfile(source, artifact_dir / "clause-resource-kb.json")
@@ -1151,8 +1146,8 @@ def test_shipped_clause_snapshot_predicts_exec_clause_in_real_compound_command(
     artifact_dir.mkdir()
     source = (
         Path(__file__).resolve().parents[3]
-        / "traces"
-        / "tool-resource"
+        / "seeds"
+        / "bootstrap-v1"
         / "clause-resource-kb.json"
     )
     shutil.copyfile(source, artifact_dir / "clause-resource-kb.json")

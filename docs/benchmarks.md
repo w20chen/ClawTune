@@ -196,7 +196,7 @@ agent conversation after setup. The earlier of that budget and the configured
 task deadline wins; shell calls also have a 300-second cap. Disabling the CLI
 timeout does not disable the task's native agent budget.
 
-Each invocation starts a KB from `--seed` (default `seeds/demo-v1`). Workers have
+Each invocation starts a KB from `--seed` (default `seeds/bootstrap-v1`). Workers have
 separate homes/workspaces and share one sidecar predictor. Learning follows
 actual completion order; exact concurrent interleaving is not reproducible.
 After workers finish, every real runtime is drained before one KB flush.

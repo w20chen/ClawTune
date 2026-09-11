@@ -1,5 +1,23 @@
 # Architecture
 
+## Knowledge base names
+
+All documentation uses **ToolKB**, **TrieKB**, and **LatticeKB**. Together they
+form the three-snapshot KB bundle used by daily use, online benchmarks and
+fixed-trace evaluation.
+
+| Name | Responsibility | Current Python class (legacy identifier) | Current snapshot filename |
+| --- | --- | --- | --- |
+| ToolKB | Whole-tool-call observations and predictions, including eligible PMU history | `RuntimeToolResourceKB` | `runtime-tool-resource-kb.json` |
+| TrieKB | Clause observations retrieved through exact/prefix/bin matching | `ClauseResourceKB` | `clause-resource-kb.json` |
+| LatticeKB | Clause time/resource predictions using lattice contexts | `LatticeTimeKB` | `clause-lattice-time-kb.json` |
+
+The Python classes, filenames, schema identifiers and serialized backend keys
+still use their existing code/protocol names. The table maps those identifiers
+to the documentation names; it does not imply that code identifiers were renamed.
+
+## Workflows
+
 ```text
 Daily OpenClaw Gateway or local agent
   -> ClawTune plugin: lifecycle hooks and managed execution

@@ -1,9 +1,9 @@
-# Lattice CPU and memory predictions
+# LatticeKB CPU and memory predictions
 
-The existing clause time lattice now keeps one raw observation log and builds
+LatticeKB keeps one raw observation log and builds
 independent resource views alongside its unchanged time predictors. It outputs
 all three algorithms (shrinkage, LOSO, max-cardinality) before an `exec` tool
-runs. This change does not remove the existing RuntimeKB or latency-bucket KB.
+runs. ToolKB and TrieKB remain separate prediction backends.
 
 ## Metrics and outputs
 
@@ -22,7 +22,7 @@ sandbox tools do not get these clause predictions.
 
 The response adds `prediction.tool_resource.lattice_resource_predictions`.
 Each clause has metric/scope metadata and twelve results: four targets times
-three algorithms. The plugin prints resource p50/p90 alongside lattice time
+three algorithms. The plugin prints resource p50/p90 alongside LatticeKB time
 estimates, and existing prediction traces retain the new payload.
 
 Each resource target selects its own lattice context using only its eligible
@@ -64,7 +64,7 @@ V2 permits resource-only observations with missing/zero wall duration, while
 average CPU needs positive wall duration. Node statistics are rebuilt from raw
 records; query thresholds never alter persisted observations.
 
-The single KB writer prepares a candidate lattice outside the shared lock;
+The single KB writer prepares a candidate LatticeKB generation outside the shared lock;
 queries keep using the previous prepared generation. Publication and snapshot
 capture use the lock. This does not imply constant-time updates or a latency
 guarantee.
@@ -86,7 +86,7 @@ online ordering.
 Result: 239 train tasks and 38 test tasks among 277 tasks. The 177 singleton
 repositories explain why the overall train fraction exceeds 80%.
 
-The shipped seed contains 7,800 eligible clause observations after excluding
+The historical training export contained 7,800 eligible clause observations after excluding
 configured downstream pipeline consumers:
 
 - CPU time and average cores: 7,800 each.
@@ -101,7 +101,9 @@ predictions describe observed execution under source conditions, not unrestricte
 CPU demand on arbitrary hardware. Environment-aware generalization remains future
 work. No external trace files are modified.
 
-Rebuild the seed and evaluate without feeding test observations back:
+These figures describe the retired large export, not the current
+[40-observation release bootstrap](bootstrap-kb.md). Rebuild the historical
+export and evaluate without feeding test observations back:
 
 ```powershell
 python scripts/export_resource_lattice.py --dataset D:/swe277-full-5be74da-20260726 --seed 42 --train-fraction 0.8

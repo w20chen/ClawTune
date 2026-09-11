@@ -1,4 +1,4 @@
-"""Check local inline Markdown links and heading anchors in tracked guides.
+"""Check local inline Markdown links and heading anchors in project guides.
 
 External URLs and code fences are excluded; this does not validate CLI behavior.
 Run from any directory with the checkout's Python interpreter.
@@ -12,7 +12,7 @@ from urllib.parse import unquote
 def main():
     root = Path(__file__).resolve().parents[1]
     files = [root / name for name in subprocess.check_output(
-        ["git", "ls-files", "*.md"], cwd=root, text=True).splitlines()
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*.md"], cwd=root, text=True).splitlines()
         if (root / name).is_file()]
     errors, checked = [], 0
     for source in files:

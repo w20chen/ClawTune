@@ -74,7 +74,7 @@ Coverage is one of:
   is exhausted.
 
 Unsupported, partial, and multiplexed profiles remain observable but have
-`eligible_for_kb=false`. Only reliable derived values enter RuntimeToolResourceKB
+`eligible_for_kb=false`. Only reliable derived values enter ToolKB
 PMU evidence used by online calibration. PMU evidence does not change current
 placement/admission semantics in this MVP.
 

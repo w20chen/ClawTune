@@ -21,7 +21,7 @@ results are in `docs/lattice-accuracy/report.md`.
 | Seed / split | `seed=42`, `train_frac=0.8` (deterministic, reproducible) |
 | Preprocessing | per-clause telemetry (clause_telemetry.json); **trivial pipe consumers excluded** (`tail/head/wc/cat/tee/cut/tr`); repo key = `<org>__<repo>` prefix |
 | Latency buckets | `[600, 2000, 10000, 60000]` ms → 5 buckets (b0<0.6s, b1 0.6–2s, b2 2–10s, b3 10–60s, b4 >60s) |
-| Algorithms | `clause_latency_bucket` (ClauseResourceKB), `shrinkage`/`loso`/`max_cardinality` (LatticeTimeKB), `continuous_latency_p90`/`cpu_p90`/`memory_p90` (RuntimeToolResourceKB) |
+| Algorithms | `clause_latency_bucket` (TrieKB), `shrinkage`/`loso`/`max_cardinality` (LatticeKB), `continuous_latency_p90`/`cpu_p90`/`memory_p90` (ToolKB) |
 | Hyperparameters | fixed defaults (no tuning): shrinkage `κ=5`, `α=0.03`, `δ=0.15`; loso `m_min=2`; estimator=median; `max_optional_features=6`; exact-match shortcut enabled for shrinkage |
 
 ### Data counts
@@ -53,7 +53,7 @@ results are in `docs/lattice-accuracy/report.md`.
 | b3 10–60s | 42 | 35.7% / .380 | 31.0% / .433 | 9.5% / .167 | 31.0% / .433 |
 | b4 >60s | 15 | 40.0% / .522 | 40.0% / .500 | 20.0% / .300 | 40.0% / .480 |
 
-### 2.3 Point metrics (lattice, ms)
+### 2.3 Point metrics (LatticeKB, ms)
 
 | Metric | shrinkage | loso | max_cardinality |
 | --- | --- | --- | --- |
@@ -93,7 +93,7 @@ Notes: CPU coverage is partial because only clauses ≥1 s carry peak-CPU sample
 
 1. **All four time algorithms reach ~80% top-1 bucket accuracy** with the `600/2000/10000/60000` buckets: 80.0–80.8% (loso 77.7%). Short-command bucket (b0) carries 73% of the test and is the best-predicted segment (88–93%).
 2. **shrinkage is strongest on short commands**: b0 accuracy 93.2% — the highest of all four methods. It is also robust on medium-evidence (3–10 samples) clauses where loso degrades (−3 pp). Head-to-head with max_cardinality is near-identical (41 vs 50 exclusive wins); shrinkage is more conservative on fast/failed calls, max_cardinality better on long pytest runs.
-3. **Trivial-pipe exclusion was the decisive data fix**: pipe-inherited latencies (e.g. a `tail` measured at 556 s) polluted 33.8% of clauses; excluding `tail/head/wc/cat/tee/cut/tr` lifted bucket accuracy from 73.0%→76.8% (previous edges) and lattice relative error from ~48–75%→3–7%.
+3. **Trivial-pipe exclusion was the decisive data fix**: pipe-inherited latencies (e.g. a `tail` measured at 556 s) polluted 33.8% of clauses; excluding `tail/head/wc/cat/tee/cut/tr` lifted bucket accuracy from 73.0%→76.8% (previous edges) and LatticeKB relative error from ~48–75%→3–7%.
 4. **Continuous latency p90** over-predicts the q0.9 tail (pred 4609 vs actual 1721 ms) — the long-runner tail is under-sampled in the empirical quantile.
 5. **Bucket boundary choice affects the headline number** (76.8% at 100/1000/10000/60000 → 80.0% at 600/2000/10000/60000): the 600 ms edge folds the well-predicted short commands into one large b0. This is a metric-definition effect, not a model change; the point predictions are identical across edge sets.
 
