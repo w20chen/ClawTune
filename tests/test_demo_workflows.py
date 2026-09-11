@@ -113,6 +113,11 @@ def test_all_datasets_offline_call_only_and_test_does_not_train(tmp_path):
     report = run(dataset, first)
     assert report["test_updates"] == 0
     assert {metric["benchmark"] for metric in report["metrics"]} == set(NAMES)
+    assert len(report["repositories"]) == len(NAMES)
+    assert all(repo["train_tasks"] == 4 and repo["test_tasks"] == 1
+               for repo in report["repositories"])
+    assert all(repo["metrics"][0]["bucket_metrics"]["accuracy"] == 1
+               for repo in report["repositories"])
     for task in manifest["test"]:
         entry = manifest["tasks"][task]
         for file in entry["files"]:
@@ -121,6 +126,95 @@ def test_all_datasets_offline_call_only_and_test_does_not_train(tmp_path):
     run(dataset, second)
     assert all(digest(first / benchmark / "seed" / name) == digest(second / benchmark / "seed" / name)
                for benchmark in NAMES for name in FILES)
+
+
+def test_nested_dataset_prefers_final_trace_and_keeps_raw_only_attempt(tmp_path):
+    from offline.runner import inventory
+    dataset = tmp_path / "nested"
+    final_attempt = dataset / "org__repo-1" / "attempt_1"
+    raw_dir = final_attempt / "_task_container_runtime" / "openclaw"
+    raw_dir.mkdir(parents=True)
+    write_trace(final_attempt / "trace.jsonl", "swe-rebench", "org__repo-1", 1000)
+    write_trace(raw_dir / "trace.raw.jsonl", "swe-rebench", "org__repo-1", 2000)
+    raw_only = dataset / "org__repo-2" / "attempt_1" / "_task_container_runtime" / "openclaw"
+    raw_only.mkdir(parents=True)
+    write_trace(raw_only / "trace.raw.jsonl", "swe-rebench", "org__repo-2", 3000)
+
+    excluded = []
+    tasks = inventory(dataset.resolve(), "swe-rebench", excluded)
+
+    assert len(tasks) == 2
+    assert tasks["swe-rebench:org__repo-1"]["files"][0]["path"] == "org__repo-1/attempt_1/trace.jsonl"
+    assert tasks["swe-rebench:org__repo-2"]["files"][0]["path"].endswith("trace.raw.jsonl")
+    assert excluded == [{
+        "path": "org__repo-1/attempt_1/_task_container_runtime/openclaw/trace.raw.jsonl",
+        "reason": "preferred canonical trace org__repo-1/attempt_1/trace.jsonl in this attempt",
+    }]
+
+
+def test_first_use_split_registry_is_reused_by_task_roster(tmp_path):
+    from offline.runner import inventory, load_or_create_split
+    first_source, moved_source = tmp_path / "first", tmp_path / "moved"
+    first_source.mkdir()
+    moved_source.mkdir()
+    for index in range(5):
+        write_trace(first_source / f"{index}.jsonl", "bfcl", f"task-{index}")
+        write_trace(moved_source / f"copy-{index}.jsonl", "bfcl", f"task-{index}", duration=9000)
+    cache = tmp_path / "split-cache"
+
+    first = load_or_create_split(inventory(first_source, None), first_source, 42, cache)
+    reused = load_or_create_split(inventory(moved_source, None), moved_source, 42, cache)
+    seventy = load_or_create_split(inventory(first_source, None), first_source, 42, cache, .7)
+
+    assert first["split_registry_status"] == "created"
+    assert reused["split_registry_status"] == "reused"
+    assert reused["train"] == first["train"] and reused["test"] == first["test"]
+    assert reused["registered_source_path"] == str(first_source)
+    assert reused["current_source_path"] == str(moved_source)
+    assert reused["split_registry_path"] == first["split_registry_path"]
+    assert reused["assignment_sha256"] == first["assignment_sha256"]
+    assert len(seventy["train"]) == 3 and len(seventy["test"]) == 2
+    assert seventy["split_registry_path"] != first["split_registry_path"]
+    assert seventy["assignment_sha256"] != first["assignment_sha256"]
+
+
+def test_split_rejects_invalid_train_fraction(tmp_path):
+    from offline.runner import split_tasks
+    with pytest.raises(ValueError, match="greater than 0 and less than 1"):
+        split_tasks({"bfcl:1": {"benchmark": "bfcl", "group": "dataset"}}, 42, 1.0)
+
+
+def test_offline_metric_summary_reports_continuous_errors_and_bucket_recall():
+    from offline.runner import _metric_summary
+    rows = [
+        {"task": "a", "unit": "ms", "actual": 50., "p50": 60., "p90": 80.,
+         "baseline_p50": 55., "actual_bucket": 0, "predicted_bucket": 0,
+         "bucket_probabilities": [.8, .1, .1]},
+        {"task": "b", "unit": "ms", "actual": 200., "p50": 600., "p90": 700.,
+         "baseline_p50": 250., "actual_bucket": 1, "predicted_bucket": 2,
+         "bucket_probabilities": [.1, .2, .7]},
+        {"task": "b", "unit": "ms", "actual": 300., "p50": 250., "p90": 350.,
+         "baseline_p50": 250., "actual_bucket": 1, "predicted_bucket": 1,
+         "bucket_probabilities": [.1, .8, .1]},
+    ]
+
+    result = _metric_summary("bfcl", "duration_ms", rows, (100., 500.))
+
+    assert result["mae"] == pytest.approx(460 / 3)
+    assert result["rmse"] == pytest.approx((10**2 + 400**2 + 50**2) ** .5 / 3**.5)
+    assert result["mean_error_bias"] == 120
+    assert result["bucket_metrics"]["accuracy"] == pytest.approx(2 / 3)
+    assert result["bucket_metrics"]["macro_recall"] == pytest.approx(.75)
+    assert result["bucket_metrics"]["per_bucket"][1]["recall"] == pytest.approx(.5)
+
+
+def test_recorded_single_clause_can_bypass_missing_offline_parser():
+    from offline.runner import _safe_recorded_clause
+    clause = ({"bin": "python", "argv": ("/usr/bin/python", "-m", "pytest"),
+               "in_loop": False, "in_pipe": False, "in_subst": False,
+               "pipeline_position": -1},)
+    assert _safe_recorded_clause("/usr/bin/python -m pytest", clause) == clause
+    assert _safe_recorded_clause("/usr/bin/python -m pytest | head", clause) is None
 
 
 def test_bridge_auth_and_duplicate_mutation(tmp_path):

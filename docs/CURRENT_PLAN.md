@@ -573,3 +573,94 @@ Validation:
   Run that same command with the target Linux host's privileged sidecar Python
   on both deployment CPU architectures. True counter accuracy, descendant
   inheritance and virtualized PMU behavior remain hardware acceptance items.
+
+## PMU prediction output integration (2026-09-11)
+
+- Added the versioned `pmu_prediction.v1` protocol. Every normal sidecar tool
+  decision now carries IPC, LLC read MPKI, and LLC read miss-rate estimates
+  from quality-gated ToolKB history. Missing evidence remains an explicit
+  unavailable result with no fabricated value.
+- Verbose daily and online benchmark output prints one aligned PMU table with
+  mean, p50, p90, units, evidence count, context, or unavailable reason. The
+  same payload is retained in prediction trace records.
+- Offline reports now always expose PMU query, available-prediction, and label
+  counts, including v5 datasets with no PMU observations.
+- `python tools/validate_contracts.py`: all 13 protocol examples passed.
+- From `packages/clawtune-plugin`, `npm.cmd test`: build and all 99 tests passed.
+- Root tests: 335 passed, 2 platform skips. Sidecar tests: 407 passed, 2
+  platform skips. One unrelated Windows loopback bridge test transiently failed
+  with `WinError 10053` in a combined run and passed immediately in isolation.
+- The full 644-file read-only SWE-Rebench dataset completed with 515 train and
+  116 test tasks. Its console/report explicitly showed 5,434 PMU queries and
+  zero predictions/labels for each PMU target, as expected for trace v5.
+- A live Linux benchmark PMU console run cannot execute on this Windows host;
+  the existing native benchmark and hardware PMU acceptance commands above
+  remain required on the deployment host.
+
+## Persistent offline splits and nested trace compatibility (2026-09-11)
+
+- Offline splitting now uses the fixed
+  `sha256-fixed-name-per-benchmark-group-task-v2` rule. Dataset identity is a
+  hash of benchmark, task name, group, and grouping semantics, independent of
+  absolute path and trace measurement contents.
+- The first assignment is stored under `.runtime/offline/splits/` by default;
+  subsequent runs with the same task roster and seed reuse it. The split
+  artifact records its first source path, current source path, registry path,
+  and whether it was created or reused. `--split-cache-dir` overrides the
+  registry location.
+- `--train-fraction` accepts a value strictly between 0 and 1 and defaults to
+  `0.8`. Each fraction has a separate registry; changing it causes the offline
+  run to train and write a new cold-start seed before evaluating the new frozen
+  test set. The existing default-80% registry filename remains compatible.
+- Nested task exports select `attempt_N/trace.jsonl` over the matching internal
+  `trace.raw.jsonl`, retain raw-only attempts, and ignore session JSONL files.
+  Flat `*.trace.jsonl` exports and multiple genuine task attempts remain
+  supported.
+- Declared v5 `resource_timeline.sample_interval_s` and v6
+  `resources.sampling_interval_ms` values are read per call and reported per
+  task; partial first/last sample durations are not treated as the configured
+  frequency.
+  CPU totals are not frequency-scaled; peak CPU still requires a verified fixed
+  500 ms window, and sampled peak RSS is labeled as frequency-dependent.
+- The nested read-only dataset completed with 199 selected task traces: 151
+  train and 48 test. It preferred 195 final traces over their raw copies,
+  retained four raw-only tasks, and reported sampling cadence unavailable
+  because those traces contain no declared resource timeline.
+- The flat read-only dataset completed with 631 tasks across 644 attempt files:
+  515 train and 116 test. A second run reused the same registry and assignment
+  SHA-256; 630 task summaries exposed a declared 500 ms cadence and one train
+  task had no cadence metadata.
+- A real nested-data `--train-fraction 0.7` run created its separate registry
+  and cold-start seed with 134 train and 65 test tasks.
+- `python -m pytest tests ...`: 335 passed, 2 platform skips. Running the
+  sidecar suite from the repository root with a quoted multi-path `pythonpath`
+  override could not collect its packages; running `python -m pytest` from
+  `services/sidecar` with its own `pyproject.toml` configuration passed 407
+  tests with 2 platform skips. Plugin tests passed 99 and all 13 protocol
+  examples validated.
+
+## Offline global and repository metrics (2026-09-11)
+
+- `report.json` now contains `bucket_edges`, expanded global `metrics`, and one
+  `repositories` record for every repository/category, including groups with
+  no test task. Each record contains train/test task counts, evaluated test
+  task count, and the same target summaries computed only from that group.
+- Duration classification uses the model's native bucket probabilities and
+  their argmax. It reports coverage, accuracy, macro recall over buckets with
+  observed support, per-bucket precision/recall/F1/support, confusion matrix,
+  and multiclass Brier score under right-open bucket boundaries.
+- Continuous duration, CPU, and memory targets report MAE, median and p90
+  absolute error, RMSE, signed mean bias, WAPE, sMAPE, within-2x rate, task
+  macro MAE, p90 coverage and p90 pinball loss. Missing predictions retain
+  explicit reason counts and are excluded from error values but included in
+  coverage denominators.
+- V5 call/resource alignment lifts clause-owned CPU and sampled RSS labels only
+  for a single independently owned clause. Recorded argv may bypass a missing
+  local parser only for an exact plain single command; compound commands,
+  pipelines, redirects, substitutions, loops, and ambiguous structures retain
+  the normal conservative unavailable behavior.
+- A complete 644-file run produced 271 repository records (61 with test tasks).
+  Duration bucket accuracy was 78.17% and macro recall 51.09% at 100% coverage.
+  Resource prediction coverage was 47.67% for CPU time/average cores, 42.62%
+  for fixed-window peak cores, and 50.31% for sampled RSS. Exact errors remain
+  in the generated report rather than being rounded in the protocol artifact.

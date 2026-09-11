@@ -168,7 +168,10 @@ offline replay can still require rebuilding a causal subset.
 
 With plugin `consoleMode=verbose` (the default, also selectable with
 `CLAWTUNE_CONSOLE_MODE=verbose`), each successful decision prints the selected
-five-target prediction, then separate Runtime, Trie and Lattice candidates.
+five-target prediction, a PMU section, then separate Runtime, Trie and Lattice
+candidates. The PMU section always contains IPC, LLC read MPKI, and LLC read
+miss rate. Each metric reports mean/p50/p90 and quality-gated ToolKB evidence,
+or an explicit unavailable reason when no compatible PMU history exists.
 Each group includes mean/p50/p90, units, backend/method, historical component
 counts versus summary sample count, labeled histogram intervals, selected
 context and composition assumptions. Unavailable targets include their reason
@@ -180,6 +183,12 @@ Runtime estimates, and every supplied Lattice time/resource algorithm, including
 selected features and risk. These diagnostics are labeled separately from the
 selected call prediction. Host SWE-Rebench tees the output to the terminal and
 `agent-stdout.txt`; quiet mode suppresses this console output.
+
+The API and trace use the versioned `pmu_prediction.v1` payload. PMU remains a
+ToolKB-only whole-call prediction and does not affect placement or admission.
+Offline reports always include PMU query, prediction-availability, and label
+counts; datasets without PMU labels therefore remain explicit rather than
+silently omitting the metrics.
 
 ### Restart-safe history loading
 

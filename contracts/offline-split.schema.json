@@ -4,15 +4,37 @@
   "type": "object",
   "required": ["schema", "seed", "train_fraction", "rule", "tasks", "train", "test", "groups"],
   "properties": {
-    "schema": {"const": "clawtune.split.v1"},
+    "schema": {"enum": ["clawtune.split.v1", "clawtune.split.v2"]},
     "seed": {"type": "integer"},
-    "train_fraction": {"const": 0.8},
-    "rule": {"const": "sha256-per-benchmark-group-task-v1"},
+    "train_fraction": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+    "rule": {"enum": ["sha256-per-benchmark-group-task-v1", "sha256-fixed-name-per-benchmark-group-task-v2"]},
     "tasks": {"type": "object"},
     "train": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
     "test": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
     "groups": {"type": "array", "items": {"type": "object"}},
-    "excluded_files": {"type": "array", "items": {"type": "object"}}
+    "excluded_files": {"type": "array", "items": {"type": "object"}},
+    "dataset_id": {"type": "string", "minLength": 1},
+    "dataset_name": {"type": "string", "minLength": 1},
+    "task_roster_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "assignment_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "registered_source_path": {"type": "string", "minLength": 1},
+    "current_source_path": {"type": "string", "minLength": 1},
+    "split_registry_path": {"type": "string", "minLength": 1},
+    "split_registry_status": {"enum": ["created", "reused"]}
   },
+  "allOf": [
+    {
+      "if": {"properties": {"schema": {"const": "clawtune.split.v1"}}},
+      "then": {"properties": {"rule": {"const": "sha256-per-benchmark-group-task-v1"}}},
+      "else": {
+        "required": [
+          "dataset_id", "dataset_name", "task_roster_sha256", "assignment_sha256",
+          "registered_source_path", "current_source_path", "split_registry_path",
+          "split_registry_status"
+        ],
+        "properties": {"rule": {"const": "sha256-fixed-name-per-benchmark-group-task-v2"}}
+      }
+    }
+  ],
   "additionalProperties": false
 }

@@ -143,6 +143,7 @@ export type ToolDecision = {
     resource_class: string;
     confidence: number | null;
     call_prediction?: CallLoadPrediction | null;
+    pmu_prediction?: PmuPrediction | null;
     diagnostics?: { backends: Partial<Record<LoadBackend, CallLoadPrediction>> } | null;
     tool_resource?: ToolResourceCommandPrediction | null;
   };
@@ -184,6 +185,28 @@ export type CallLoadPrediction = {
   cpu_peak_window_ms: 500;
   quantile_method: "median_p50_nearest_rank_p90";
   targets: Record<LoadTarget, LoadEstimate>;
+};
+export type PmuTarget = "ipc" | "llc_mpki" | "llc_miss_rate";
+export type PmuEstimate = {
+  status: "available" | "unavailable";
+  unit: "instructions_per_cycle" | "misses_per_kilo_instructions" | "ratio";
+  metric_definition: string;
+  avg: number | null;
+  p50: number | null;
+  p90: number | null;
+  backend: "runtime";
+  method: "direct" | "unavailable";
+  evidence_count: number;
+  context: string[];
+  calibration: "unvalidated";
+  unavailable_reason: string | null;
+};
+export type PmuPrediction = {
+  schema_version: "pmu_prediction.v1";
+  scope: "tool_call";
+  lifecycle: "completed_execution_profile";
+  quantile_method: "median_p50_nearest_rank_p90";
+  targets: Record<PmuTarget, PmuEstimate>;
 };
 
 export type ToolResourceCommandPrediction = {

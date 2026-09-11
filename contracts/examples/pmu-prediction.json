@@ -1,0 +1,11 @@
+{
+  "schema_version": "pmu_prediction.v1",
+  "scope": "tool_call",
+  "lifecycle": "completed_execution_profile",
+  "quantile_method": "median_p50_nearest_rank_p90",
+  "targets": {
+    "ipc": {"status": "available", "unit": "instructions_per_cycle", "metric_definition": "retired_instructions_over_cpu_cycles", "avg": 1.2, "p50": 1.1, "p90": 1.5, "backend": "runtime", "method": "direct", "evidence_count": 3, "context": ["repo", "exact"], "calibration": "unvalidated", "unavailable_reason": null},
+    "llc_mpki": {"status": "unavailable", "unit": "misses_per_kilo_instructions", "metric_definition": "llc_read_misses_per_kilo_retired_instructions", "avg": null, "p50": null, "p90": null, "backend": "runtime", "method": "unavailable", "evidence_count": 0, "context": [], "calibration": "unvalidated", "unavailable_reason": "no_compatible_quality_gated_pmu_evidence"},
+    "llc_miss_rate": {"status": "unavailable", "unit": "ratio", "metric_definition": "llc_read_misses_over_llc_read_accesses", "avg": null, "p50": null, "p90": null, "backend": "runtime", "method": "unavailable", "evidence_count": 0, "context": [], "calibration": "unvalidated", "unavailable_reason": "no_compatible_quality_gated_pmu_evidence"}
+  }
+}

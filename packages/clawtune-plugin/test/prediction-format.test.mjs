@@ -36,5 +36,16 @@ test("unavailable values, assumptions and absent diagnostics stay explicit", () 
   assert.ok(text.includes("histogram: unavailable; edges (cores)="));
   assert.ok(text.includes("assumptions: independent clause durations"));
   assert.equal(text.split("diagnostics not supplied").length - 1, 3);
-  assert.deepEqual(formatCallLoadPrediction({}), []);
+  assert.deepEqual(formatCallLoadPrediction({}), [
+    "  PMU - quality-gated ToolKB history, uncalibrated",
+    "    unavailable: prediction not supplied",
+  ]);
+});
+
+test("prints all three PMU targets with evidence and unavailable reasons", () => {
+  const pmu = JSON.parse(readFileSync(new URL("../../../contracts/examples/pmu-prediction.json", import.meta.url), "utf8"));
+  const text = formatCallLoadPrediction({pmu_prediction: pmu}).join("\n");
+  for (const label of ["IPC", "LLC MPKI", "LLC miss rate"]) assert.ok(text.includes(label));
+  assert.ok(text.includes("historical=3"));
+  assert.ok(text.includes("no_compatible_quality_gated_pmu_evidence"));
 });

@@ -199,6 +199,21 @@ def test_only_reliable_pmu_metrics_enter_online_kb() -> None:
     assert restored_evidence == evidence
 
 
+def test_quality_gated_pmu_evidence_has_complete_prediction_output() -> None:
+    from clawtune_sidecar.contracts.load_prediction import summarize_pmu_evidence
+
+    prediction = summarize_pmu_evidence({
+        "ipc": {"values": (0.5, 1.5), "context": ("repo", "exact")},
+    })
+
+    assert set(prediction.targets) == {"ipc", "llc_mpki", "llc_miss_rate"}
+    assert prediction.targets["ipc"].p50 == 1.0
+    assert prediction.targets["ipc"].p90 == 1.5
+    assert prediction.targets["ipc"].evidence_count == 2
+    assert prediction.targets["llc_mpki"].status == "unavailable"
+    assert prediction.targets["llc_mpki"].unavailable_reason == "no_compatible_quality_gated_pmu_evidence"
+
+
 def test_reliable_metrics_are_gated_independently_when_a_ratio_is_undefined() -> None:
     backend = FakePerfBackend()
     backend.values["llc_read_accesses"] = 0

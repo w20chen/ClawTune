@@ -454,6 +454,10 @@
           "description": "Authoritative versioned call-level output. Nullable only for legacy/custom predictors during migration.",
           "anyOf": [{"$ref": "call-load.schema.json"}, {"type": "null"}]
         },
+        "pmu_prediction": {
+          "description": "Quality-gated empirical PMU prediction from ToolKB. All three targets remain present when unavailable.",
+          "anyOf": [{"$ref": "pmu-prediction.schema.json"}, {"type": "null"}]
+        },
         "diagnostics": {
           "type": ["object", "null"], "additionalProperties": false,
           "required": ["backends"],

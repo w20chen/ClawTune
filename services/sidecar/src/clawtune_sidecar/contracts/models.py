@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from clawtune_sidecar.contracts.load_prediction import CallLoadPrediction, LoadDiagnostics
+from clawtune_sidecar.contracts.load_prediction import CallLoadPrediction, LoadDiagnostics, PmuPrediction
 
 SCHEMA_VERSION = "clawtune.v1"
 
@@ -73,6 +73,7 @@ class ToolPrediction(BaseModel):
     resource_class: str = "unknown"
     confidence: float | None = Field(default=None, ge=0, le=1)
     call_prediction: CallLoadPrediction | None = None
+    pmu_prediction: PmuPrediction | None = None
     diagnostics: LoadDiagnostics | None = None
     tool_resource: Any | None = None
 

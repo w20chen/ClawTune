@@ -150,7 +150,9 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
 
 
 def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQuery,
-                      edges: Mapping[str, Sequence[float]]) -> tuple[CallLoadPrediction, LoadDiagnostics]:
+                      edges: Mapping[str, Sequence[float]],
+                      parsed_clauses: Sequence[Mapping[str, Any]] | None = None,
+                      ) -> tuple[CallLoadPrediction, LoadDiagnostics]:
     """All three backends expose full call results; selection is per target.
 
     Prefer compatible observed call evidence, then trie baseline, then lattice.
@@ -166,10 +168,13 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
         })
     except Exception as exc:
         backends["runtime"] = compose("runtime", (), edges, reason=f"backend_error:{type(exc).__name__}")
-    try:
-        clauses, reason = plain_execution(query.command) if query.tool_name == "exec" else ((), "not_a_shell_command")
-    except Exception as exc:
-        clauses, reason = (), f"parse_error:{type(exc).__name__}"
+    if parsed_clauses is not None:
+        clauses, reason = tuple(parsed_clauses), None
+    else:
+        try:
+            clauses, reason = plain_execution(query.command) if query.tool_name == "exec" else ((), "not_a_shell_command")
+        except Exception as exc:
+            clauses, reason = (), f"parse_error:{type(exc).__name__}"
     for backend, kb in (("trie", trie), ("lattice", lattice)):
         try:
             evidence = kb.predict_load_samples(query.repo, clauses, query.ts_start) if not reason else ()

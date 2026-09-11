@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from cold_start.export import FILENAMES, export
-from cold_start.flat_loader import read_task
+from cold_start.flat_loader import declared_sampling_interval_ms, read_task
 from cold_start.manifest import build_manifest, task_identity, validate_manifest
 from tool_resource.runtime_kb import ClauseObservation, ClauseResourceKB, CompletedCall, LatencyBuckets, RuntimeToolResourceKB, ToolCallQuery
 from tool_time.lattice_kb import LatticeTimeKB
@@ -67,8 +67,33 @@ def test_flat_loader_units_and_unproven_call_resource_scope(tmp_path):
     assert loaded.clauses[0].sampled_peak_rss_mb * 1024**2 == pytest.approx(6213632)
     assert loaded.clauses[0].peak_cpu_cores == 3
     assert loaded.calls[0].cpu_time_eligible is False
+    assert loaded.call_actuals == [{
+        "duration_ms": 1000.0,
+        "cpu_time_seconds": 2.0,
+        "cpu_avg_cores": 2.0,
+        "cpu_peak_cores": 3.0,
+        "memory_peak_rss_bytes": pytest.approx(6213632),
+    }]
     trusted = read_task(path, repo="org/a", task_id="org__a-1", rss_unit="MB", trust_call_cgroup=True)
     assert trusted.calls[0].cpu_time_seconds == 2 and trusted.calls[0].cpu_time_eligible
+
+
+def test_flat_loader_records_declared_period_not_partial_sample_durations(tmp_path):
+    records = [json.loads(line) for line in trace("org__a-1").splitlines()]
+    records[1]["data"]["resource_timeline"]["sample_interval_s"] = .25
+    records[1]["data"]["resource_timeline"]["samples"] = [
+        {"dt_s": .2}, {"dt_s": .5}, {"dt_s": .8},
+    ]
+    path = tmp_path / "sampling.trace.jsonl"
+    path.write_text("\n".join(map(json.dumps, records)) + "\n", encoding="utf-8")
+
+    loaded = read_task(path, repo="org/a", task_id="org__a-1", rss_unit="MiB")
+
+    assert loaded.sample_periods_ms == [250.0]
+
+
+def test_v6_sampling_period_uses_millisecond_declaration():
+    assert declared_sampling_interval_ms({"sampling_interval_ms": 125}) == 125
 
 
 @pytest.mark.parametrize("metadata", [

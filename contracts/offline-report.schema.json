@@ -2,16 +2,109 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://openclaw.ai/schemas/clawtune/offline-report.schema.json",
   "type": "object",
-  "required": ["schema", "train_tasks", "test_tasks", "test_updates", "metrics"],
+  "required": ["schema", "train_tasks", "test_tasks", "test_updates", "metrics", "repositories"],
   "properties": {
     "schema": {"const": "clawtune.offline-report.v1"},
     "train_tasks": {"type": "integer", "minimum": 0},
     "test_tasks": {"type": "integer", "minimum": 0},
     "test_updates": {"const": 0},
     "metrics": {"type": "array", "items": {"type": "object", "required": ["benchmark", "target", "eligible", "predicted", "coverage", "mae", "wape"]}},
+    "pmu": {
+      "type": "object",
+      "description": "PMU prediction availability is reported even when a dataset has no PMU labels.",
+      "required": ["scope"],
+      "properties": {
+        "scope": {"type": "string"},
+        "targets": {
+          "type": "object",
+          "required": ["ipc", "llc_mpki", "llc_miss_rate"],
+          "additionalProperties": false,
+          "properties": {
+            "ipc": {"$ref": "#/$defs/pmuAvailability"},
+            "llc_mpki": {"$ref": "#/$defs/pmuAvailability"},
+            "llc_miss_rate": {"$ref": "#/$defs/pmuAvailability"}
+          }
+        },
+        "datasets": {"type": "object", "additionalProperties": {"type": "object"}}
+      },
+      "additionalProperties": false
+    },
+    "resource_sampling": {"$ref": "#/$defs/resourceSampling"},
+    "bucket_edges": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array", "minItems": 1, "items": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "repositories": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["benchmark", "repo", "grouping", "train_tasks", "test_tasks", "evaluated_test_tasks", "metrics"],
+        "properties": {
+          "benchmark": {"type": "string"},
+          "repo": {"type": "string"},
+          "grouping": {"enum": ["repository", "category", "dataset"]},
+          "train_tasks": {"type": "integer", "minimum": 0},
+          "test_tasks": {"type": "integer", "minimum": 0},
+          "evaluated_test_tasks": {"type": "integer", "minimum": 0},
+          "metrics": {"type": "array", "items": {"type": "object"}}
+        }
+      }
+    },
     "scope": {"type": "string"},
     "split_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "split_registry_path": {"type": "string", "minLength": 1},
+    "split_registry_status": {"enum": ["created", "reused"]},
     "datasets": {"type": "object", "additionalProperties": {"$ref": "#"}}
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {"not": {"required": ["datasets"]}},
+      "then": {
+        "required": [
+          "pmu", "resource_sampling", "bucket_edges", "scope", "split_sha256",
+          "split_registry_path", "split_registry_status"
+        ]
+      },
+      "else": {"required": ["pmu"]}
+    }
+  ],
+  "$defs": {
+    "pmuAvailability": {
+      "type": "object",
+      "required": ["queries", "available_predictions", "labeled"],
+      "properties": {
+        "queries": {"type": "integer", "minimum": 0},
+        "available_predictions": {"type": "integer", "minimum": 0},
+        "labeled": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "samplingSummary": {
+      "type": "object",
+      "required": ["available", "observed_calls", "min_ms", "p50_ms", "max_ms"],
+      "properties": {
+        "available": {"type": "boolean"},
+        "observed_calls": {"type": "integer", "minimum": 0},
+        "min_ms": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "p50_ms": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "max_ms": {"type": ["number", "null"], "exclusiveMinimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "resourceSampling": {
+      "type": "object",
+      "required": ["definition", "cpu_peak_rule", "memory_rule", "train", "test"],
+      "properties": {
+        "definition": {"type": "string", "minLength": 1},
+        "cpu_peak_rule": {"type": "string", "minLength": 1},
+        "memory_rule": {"type": "string", "minLength": 1},
+        "train": {"type": "object", "additionalProperties": {"$ref": "#/$defs/samplingSummary"}},
+        "test": {"type": "object", "additionalProperties": {"$ref": "#/$defs/samplingSummary"}}
+      },
+      "additionalProperties": false
+    }
+  }
 }

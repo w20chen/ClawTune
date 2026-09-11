@@ -165,11 +165,23 @@ inside its `client` container. This demo measures learning and prediction;
 
 ```bash
 python3 scripts/clawtune.py offline --dataset /data/fixed-traces --rss-unit MiB
+# Use a 70/30 split (the default is 80/20):
+python3 scripts/clawtune.py offline --dataset /data/fixed-traces --rss-unit MiB --train-fraction 0.7
 # Legacy SWE traces without benchmark metadata:
 python3 scripts/clawtune.py offline --dataset /data/swe-traces --benchmark swe-rebench --rss-unit MiB
 python3 scripts/clawtune.py kb status
 python3 scripts/clawtune.py kb status --path /path/to/run/kb
 ```
+
+The first use of a task roster creates a fixed name-hash split under
+`.runtime/offline/splits/`; later runs reuse that train/test list even when the
+dataset is copied to another path or trace contents are refreshed. Pass
+`--split-cache-dir` to place this registry elsewhere. Nested datasets prefer
+`attempt_N/trace.jsonl`, fall back to `trace.raw.jsonl` when necessary, and
+ignore internal OpenClaw session JSONL files.
+Changing `--train-fraction` creates a separate fixed split and a new cold-start
+seed in the new experiment output. It never reuses a seed trained from another
+fraction.
 
 The offline path supports task-scoped trace v5 and v6. It groups by dataset and
 repository (category for non-repository tasks), keeps all attempts/turns of a
@@ -178,6 +190,24 @@ groups go to training; groups of two or more keep test tasks. Each dataset
 trains its **own** three-layer seed; tests never update it. Outputs contain
 `split.json`, `seed/`, `predictions.jsonl`, and `report.json` / `report.md`.
 Missing CPU/memory labels are unavailable, never zero-filled.
+Global and per-repository reports include each repository's train/test task
+counts. Duration uses the configured right-open buckets and reports probability
+argmax accuracy, macro recall over buckets with observed support, per-bucket
+precision/recall/F1, a confusion matrix, and Brier score. Every continuous
+time/CPU/memory target reports coverage, MAE, median and p90 absolute error,
+RMSE, signed mean bias, WAPE, sMAPE, within-2x rate, and p90
+coverage/pinball loss. Accuracy and errors are conditional on available
+predictions; always read them together with coverage.
+Per-task declared resource sampling periods are read from each trace and
+recorded in the seed/report (`sample_interval_s` in v5 and
+`sampling_interval_ms` in v6). Partial first/last sample durations are not
+mistaken for the configured period. CPU totals are not rescaled by sampling
+rate; CPU peak requires a verified fixed 500 ms clause window, while sampled
+peak RSS remains explicitly sampling-frequency dependent.
+The report always includes IPC, LLC read MPKI, and LLC read miss-rate
+availability. Online daily and benchmark runs print the same three PMU targets
+for every tool prediction in verbose mode, including explicit unavailable
+reasons when ToolKB has no quality-gated history.
 
 Daily KB state defaults to `~/.local/state/clawtune/kb`; set `CLAWTUNE_STATE_DIR`
 to relocate it. Trace export directories do not select a KB. Three snapshots

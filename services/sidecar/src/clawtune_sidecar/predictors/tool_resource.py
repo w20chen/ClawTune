@@ -584,6 +584,11 @@ class ToolResourcePredictor:
                                   ambient_before_mb=ambient_before_mb)
             call, diagnostics = predict_call_load(runtime=self.continuous_kb, trie=self.kb,
                                                   lattice=self.lattice_kb, query=query, edges=self.load_buckets)
+            from clawtune_sidecar.contracts.load_prediction import summarize_pmu_evidence
+            try:
+                pmu = summarize_pmu_evidence(self.continuous_kb.predict_pmu_samples(query))
+            except Exception:
+                pmu = summarize_pmu_evidence({})
             duration = call.targets["duration_ms"]
             p50 = None if duration.p50 is None else int(round(duration.p50))
             p90 = None if duration.p90 is None else int(round(duration.p90))
@@ -601,7 +606,8 @@ class ToolResourcePredictor:
                     payload["kv_ttl_cost"] = self._kv_ttl_cost_payload(derived, reference_runtime_s=duration.p90 / 1000)
             return ToolPrediction(duration_p50_ms=p50, duration_p90_ms=p90,
                                   resource_class=_resource_class_for_duration_ms(p90), confidence=None,
-                                  call_prediction=call, diagnostics=diagnostics, tool_resource=payload)
+                                  call_prediction=call, pmu_prediction=pmu,
+                                  diagnostics=diagnostics, tool_resource=payload)
 
     def _predict_legacy(
         self,

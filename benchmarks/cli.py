@@ -11,6 +11,49 @@ from .bootstrap import ROOT
 from .adapters import NAMES, load, select
 
 
+def _offline_console_summary(report: dict, output: Path) -> dict:
+    if "datasets" in report:
+        return {
+            "schema": report["schema"],
+            "output": str(output),
+            "train_tasks": report["train_tasks"],
+            "test_tasks": report["test_tasks"],
+            "repository_count": len(report.get("repositories", ())),
+            "datasets": {
+                name: _offline_console_summary(value, output / name)
+                for name, value in report["datasets"].items()
+            },
+            "pmu": report["pmu"],
+        }
+    sampling = {}
+    for split in ("train", "test"):
+        rows = list(report.get("resource_sampling", {}).get(split, {}).values())
+        available = [row for row in rows if row.get("available")]
+        sampling[split] = {
+            "tasks": len(rows),
+            "available_tasks": len(available),
+            "unavailable_tasks": len(rows) - len(available),
+            "min_ms": min((row["min_ms"] for row in available), default=None),
+            "max_ms": max((row["max_ms"] for row in available), default=None),
+        }
+    return {
+        "schema": report["schema"],
+        "output": str(output),
+        "train_tasks": report["train_tasks"],
+        "test_tasks": report["test_tasks"],
+        "split_registry_path": report["split_registry_path"],
+        "split_registry_status": report["split_registry_status"],
+        "split_sha256": report["split_sha256"],
+        "repository_count": len(report.get("repositories", ())),
+        "repositories_with_test_tasks": sum(
+            repo.get("test_tasks", 0) > 0 for repo in report.get("repositories", ())
+        ),
+        "resource_sampling": sampling,
+        "metrics": report["metrics"],
+        "pmu": report["pmu"],
+    }
+
+
 def parser():
     cli = argparse.ArgumentParser(description="ClawTune: online benchmark simulation, fixed-trace offline evaluation, KB inspection")
     sub = cli.add_subparsers(dest="command", required=True)
@@ -35,8 +78,12 @@ def parser():
     off.add_argument("--dataset", type=Path, required=True)
     off.add_argument("--benchmark", choices=NAMES, help="Fallback identity for legacy traces, or select one dataset")
     off.add_argument("--seed", type=int, default=42)
+    off.add_argument("--train-fraction", type=float, default=.8,
+                     help="Per-group training fraction, greater than 0 and less than 1 (default: 0.8)")
     off.add_argument("--rss-unit", choices=("MB", "MiB"), required=True, help="Explicit historical trace RSS unit")
     off.add_argument("--output", type=Path)
+    off.add_argument("--split-cache-dir", type=Path,
+                     help="Persistent fixed split registry (default: .runtime/offline/splits)")
     kb = sub.add_parser("kb", help="Inspect committed KB ownership and generation")
     kb.add_argument("action", choices=("status",))
     kb.add_argument("--path", type=Path)
@@ -106,8 +153,10 @@ def main(argv=None):
         if args.command == "offline":
             from offline.runner import run
             output = args.output or ROOT / ".runtime/offline" / (time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
-            result = run(args.dataset, output, benchmark=args.benchmark, seed=args.seed, rss_unit=args.rss_unit)
-            print(json.dumps({**result, "output": str(output)}, indent=2))
+            result = run(args.dataset, output, benchmark=args.benchmark, seed=args.seed,
+                         rss_unit=args.rss_unit, split_cache_dir=args.split_cache_dir,
+                         train_fraction=args.train_fraction)
+            print(json.dumps(_offline_console_summary(result, output), indent=2))
             return 0
         from clawtune_kb import user_state_dir
         from clawtune_kb.store import committed_state

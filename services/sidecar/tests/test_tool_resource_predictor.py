@@ -2083,6 +2083,26 @@ def test_resource_lattice_predictions_reach_before_call_payload_and_fail_indepen
     assert result.tool_resource["lattice_resource_predictions"][0]["predictions"][0]["unavailable_reason"] == "lattice_resource_error:ValueError"
 
 
+def test_online_prediction_returns_quality_gated_pmu_history() -> None:
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(), ebpf_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)), repo="repo-1",
+    )
+    now = time.time()
+    predictor.continuous_kb.observe_completed_call(CompletedCall(
+        "repo-1", "exec", "python task.py", now - 2, now - 1,
+        pmu_ipc=1.25, pmu_llc_mpki=2.5,
+        pmu_llc_miss_rate=.125, pmu_eligible=True,
+    ))
+
+    result = predictor.predict(_tool_request("pmu-event", "pmu-call", "python task.py"))
+
+    assert result.pmu_prediction is not None
+    assert result.pmu_prediction.targets["ipc"].p50 == 1.25
+    assert result.pmu_prediction.targets["llc_mpki"].p90 == 2.5
+    assert result.pmu_prediction.targets["llc_miss_rate"].p50 == .125
+
+
 def test_finish_execution_feeds_and_persists_the_shared_lattice_kb(
     tmp_path: Path,
     monkeypatch,
@@ -2449,6 +2469,9 @@ def test_sidecar_uses_tool_resource_predictor_when_configured(tmp_path: Path) ->
     registry = Registry().with_resources((s["$id"], Resource.from_contents(s)) for s in schemas)
     Draft202012Validator(schema, registry=registry).validate(response.json())
     assert response.json()["prediction"]["resource_class"] == "latency_medium"
+    pmu = response.json()["prediction"]["pmu_prediction"]
+    assert set(pmu["targets"]) == {"ipc", "llc_mpki", "llc_miss_rate"}
+    assert all(value["status"] == "unavailable" for value in pmu["targets"].values())
 
 
 def test_sidecar_defaults_exec_memory_anchor_for_new_execution_cgroup(tmp_path: Path) -> None:
@@ -2581,6 +2604,9 @@ def test_trace_writes_tool_prediction_payload(tmp_path: Path) -> None:
     assert tool_start["prediction"] == decision["prediction"]
     assert tool_start["prediction"]["duration_p50_ms"] == 1200
     assert tool_start["prediction"]["duration_p90_ms"] == 1200
+    assert set(tool_start["prediction"]["pmu_prediction"]["targets"]) == {
+        "ipc", "llc_mpki", "llc_miss_rate",
+    }
     assert tool_start["prediction"]["tool_resource"]["prediction"] is None
     assert (
         tool_start["prediction"]["tool_resource"]["continuous_predictions"]["latency_ms"]["key_kind"]

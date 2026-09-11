@@ -1,4 +1,4 @@
-import type {CallLoadPrediction, LoadEstimate, LoadTarget, ToolDecision} from "./contracts.js";
+import type {CallLoadPrediction, LoadEstimate, LoadTarget, PmuTarget, ToolDecision} from "./contracts.js";
 
 const targets: LoadTarget[] = [
   "duration_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_peak_rss_bytes",
@@ -47,15 +47,40 @@ function formatBackend(title: string, prediction: CallLoadPrediction): string[] 
   return lines;
 }
 
-/** Canonical results followed by every backend, including unavailable targets. */
+function formatPmu(prediction: ToolDecision["prediction"]): string[] {
+  const lines = ["  PMU - quality-gated ToolKB history, uncalibrated"];
+  const pmu = prediction.pmu_prediction;
+  if (!pmu) return [...lines, "    unavailable: prediction not supplied"];
+  const labels: Record<PmuTarget, string> = {
+    ipc: "IPC", llc_mpki: "LLC MPKI", llc_miss_rate: "LLC miss rate",
+  };
+  const order: PmuTarget[] = ["ipc", "llc_mpki", "llc_miss_rate"];
+  lines.push(`    ${"Target".padEnd(14)} ${"Mean".padStart(12)} ${"P50".padStart(12)} ${"P90".padStart(12)}  Unit / source`);
+  for (const target of order) {
+    const estimate = pmu.targets[target];
+    if (estimate.status === "available") {
+      lines.push(`    ${labels[target].padEnd(14)} ${number(estimate.avg).padStart(12)} ${number(estimate.p50).padStart(12)} ${number(estimate.p90).padStart(12)}  ${estimate.unit}  runtime/direct`);
+      lines.push(`      evidence: historical=${estimate.evidence_count}; calibration=${estimate.calibration}`);
+      if (estimate.context.length) lines.push(`      context: ${estimate.context.map(clean).join(" / ")}`);
+    } else {
+      lines.push(`    ${labels[target].padEnd(14)} unavailable  [${estimate.unit}; runtime/unavailable]`);
+      lines.push(`      reason: ${clean(estimate.unavailable_reason ?? "unknown")}`);
+    }
+  }
+  return lines;
+}
+
+/** Canonical call-load and PMU results followed by every load backend. */
 export function formatCallLoadPrediction(prediction: ToolDecision["prediction"]): string[] {
-  if (!prediction.call_prediction) return [];
-  const lines = ["  CALL LOAD — empirical estimates, uncalibrated", ...formatBackend("Selected prediction", prediction.call_prediction)];
+  const pmuLines = formatPmu(prediction);
+  if (!prediction.call_prediction) return pmuLines;
+  const lines = ["  CALL LOAD - empirical estimates, uncalibrated", ...formatBackend("Selected prediction", prediction.call_prediction)];
+  lines.push("", ...pmuLines);
   for (const backend of ["runtime", "trie", "lattice"] as const) {
     lines.push("");
     const candidate = prediction.diagnostics?.backends[backend];
-    if (candidate) lines.push(...formatBackend(`${backend.toUpperCase()} — call-level candidate`, candidate));
-    else lines.push(`  ${backend.toUpperCase()} — diagnostics not supplied`);
+    if (candidate) lines.push(...formatBackend(`${backend.toUpperCase()} - call-level candidate`, candidate));
+    else lines.push(`  ${backend.toUpperCase()} - diagnostics not supplied`);
   }
   return lines;
 }
