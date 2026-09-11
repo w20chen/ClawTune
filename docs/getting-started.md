@@ -135,7 +135,7 @@ Expect model and tool events, pre-execution predictions, and post-execution meas
 | Online benchmark | A separate `<run>/kb/`, shared by tasks within that run |
 | Offline evaluation | Experiment-owned `seed/`, constructed from training data and frozen for testing |
 
-New daily state and online runs copy `seeds/bootstrap-v1` by default. Override with `CLAWTUNE_KB_SEED` for daily use or `--seed <directory>` for benchmarks. Changing the prior does not reset existing state. Resuming an old run requires its original prior. The offline command's `--seed` is instead an integer split seed.
+New daily state and online runs copy the bundled initialization prior by default. Override with `CLAWTUNE_KB_SEED` for daily use or `--seed <directory>` for benchmarks. Changing the prior does not reset existing state. Resuming an old run requires its original prior. The offline command's `--seed` is instead an integer split seed.
 
 Common settings belong in root `.env`; restart the service after changes:
 
@@ -165,6 +165,8 @@ The complete settings are maintained in [.env.example](../.env.example) and the 
 API liveness does not validate kernel collection. Repeat the collector check after kernel, BCC, or Clang changes.
 
 ## 5. Development checks
+
+The `scripts/` directory contains the main CLI, its ARM setup helper, and `build_bootstrap_seed.py`, which rebuilds the shipped initialization prior from an explicit archived source. Ordinary installation uses the bundled prior and does not run the builder. Use `python scripts/build_bootstrap_seed.py --help` for release maintenance.
 
 For development or offline processing only, install Python dependencies without performing Linux deployment. Run the two Python suites in their respective package contexts:
 

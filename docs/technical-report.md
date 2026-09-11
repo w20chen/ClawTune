@@ -164,7 +164,7 @@ This approximation assumes that foreground commands cover the workload, ignores 
 
 An online query may use an observation only when $t_i^{end}<t_q^{start}$. Concurrent tasks share evidence in actual completion order; fixed task selection does not ensure identical learning interleavings. Offline testing freezes all models and cannot incorporate test outcomes.
 
-The default initialization bundle at `seeds/bootstrap-v1` contains a small set of historical generic-command observations with source identities removed and resource labels filtered. Call-level history starts empty. The bundle is retained as a runtime resource. Its source workload and hardware conditions remain limitations; it is neither independent evaluation data nor evidence of cross-platform accuracy.
+The bundled initialization prior contains a small set of historical generic-command observations with source identities removed and resource labels filtered. Call-level history starts empty. The bundle is retained as a runtime resource. Its source workload and hardware conditions remain limitations; it is neither independent evaluation data nor evidence of cross-platform accuracy.
 
 Online execution evaluates collection and continuous learning behavior. Fixed-trace evaluation measures prediction error outside the training subset. The current offline protocol keeps each task and all its attempts on one side of a deterministic split, stratified by benchmark and project or category. Singleton groups are training-only. The resulting overall fraction can differ from the requested fraction, and within-project tests do not establish unseen-project performance.
 

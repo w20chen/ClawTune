@@ -128,7 +128,7 @@ With `--dataset`, provide processed entries containing `id`, turn-structured `qu
 
 ### Terminal Bench
 
-Supports [Terminal Bench v1](https://github.com/laude-institute/terminal-bench) `task.yaml` with Compose or a Dockerfile, not Harbor/v2 `task.toml`. Obtain a v1 task checkout and use its actual task directory:
+Supports [Terminal Bench](https://github.com/laude-institute/terminal-bench) tasks defined by `task.yaml` with Compose or a Dockerfile. Tasks defined by `task.toml` (the Harbor format) are unsupported. Obtain a checkout containing `task.yaml` files and use its actual task directory:
 
 ```bash
 python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
@@ -195,7 +195,7 @@ An exit code alone does not validate a run when no tools were called, search set
 
 ## 5. Fixed-trace offline evaluation
 
-Install the [development dependencies](getting-started.md#5-development-checks). No provider key, Docker execution, or running collector is needed. Inputs are v5/v6 JSONL traces with `trace_metadata`, **not online task lists**.
+Install the [development dependencies](getting-started.md#5-development-checks). No provider key, Docker execution, or running collector is needed. Use the JSONL execution traces produced by ClawTune, retaining their metadata and adjacent task identity files, **not online task lists**.
 
 For an online run, pass its task trace subtree:
 
@@ -225,4 +225,4 @@ The split methodology is in the [technical report](technical-report.md#6-learnin
 
 Mixed input is trained and evaluated separately per benchmark, with an aggregate report. Check train/test counts and `test_updates: 0` before interpreting metrics. All-singleton groups can leave no test set.
 
-Keep generated outputs locally or in external storage. For reproduction, archive the code revision, dependency versions, input hashes, split, configuration, and full command outside the code repository. The retained [legacy evaluator](../legacy_eval/README.md) uses an older observation-level protocol; use this section for new evaluations.
+Keep generated outputs locally or in external storage. For reproduction, archive the code revision, dependency versions, input hashes, split, configuration, and full command outside the code repository.
