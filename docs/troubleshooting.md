@@ -39,8 +39,7 @@ If it still fails, match the final error to a section below. Include the
 - [18. Kunpeng/ARM cannot run an amd64 image](#18-kunpengarm-cannot-run-an-amd64-image)
 - [19. Benchmark fails or produces no final report](#19-benchmark-fails-or-produces-no-final-report)
 - [20. A trace reports `mvdan adapter is missing` or repeated `analysis_failure`](#20-a-trace-reports-mvdan-adapter-is-missing-or-repeated-analysis_failure)
-- [21. Replay failures](#21-replay-failures)
-- [22. Standalone `web_search` uses DuckDuckGo or fails instead of Tavily](#22-standalone-web_search-uses-duckduckgo-or-fails-instead-of-tavily)
+- [21. Standalone `web_search` uses DuckDuckGo or fails instead of Tavily](#21-standalone-web_search-uses-duckduckgo-or-fails-instead-of-tavily)
 
 ## 1. `apt-get: command not found`
 
@@ -430,28 +429,28 @@ Only an absent or wrong-architecture image requires registry access.
 
 ## 19. Benchmark fails or produces no final report
 
-Look in the task directory under `swe_rebench/.runtime/traces/<task-id>/`:
+Start with `run.json` under
+`.runtime/benchmarks/<benchmark>/<run>/`. It records in-flight task IDs,
+per-task errors, observed KB generations, and whether the final durability
+barrier completed. Task artifacts are under
+`traces/<stable-task-digest>/`; shared sidecar logs are under `sidecar/`.
+
+For a repository task, useful files include:
 
 - `tool_resource_preflight_host.json`: kernel collector checks;
-- `sidecar-stderr.txt`: sidecar/BCC errors;
-- `openclaw-stderr.txt`: provider and agent errors;
+- `agent-stderr.txt`: provider and agent errors;
 - `sandbox-runtime-preflight.log`: task Python and pip selection;
-- `report.json`: batch summary and separated agent/telemetry diagnostics.
+- the run-level `report.json`: batch summary and diagnostics.
 
 Start with one task. On Kunpeng, increase `batch.task_timeout_seconds` only if
 QEMU execution genuinely reaches the current limit.
 
-For Deep Research Bench, the task directory is
-`deep_research_bench/.runtime/traces/<task-id>/` and the batch report is
-`deep_research_bench/.runtime/report.json`. If the relaxed telemetry gate fails
-with `required resource telemetry found no tool spans`, the agent answered
-without calling any instrumented tool. For Tavily web search, confirm
-`TAVILY_API_KEY` (or `deep_research_bench/tavily_api_key.txt`) is configured
-and reaches the runner through the `sudo` allow-list — `web_search` runs on the
-host, so the key does not need to reach the sandbox image. Otherwise check the
-sandbox image's network and the OpenClaw binary's built-in web tools, or use
-`--no-gate-required` for a best-effort run. If the basic sandbox image cannot
-be pulled, check `pull_policy` and registry access for `sandbox.image`.
+For Deep Research Bench, a `no tool spans` error means the agent answered
+without calling an instrumented tool. Confirm `TAVILY_API_KEY` or
+`configs/tavily_api_key.txt`; web search runs on the host, so the key does not
+need to enter the sandbox image. If the basic image cannot be pulled, check
+`docker.pull_policy`, registry access, and `sandbox.image` in
+`configs/benchmark.yaml`.
 
 If a DRB task fails during agent setup with
 `openclaw_web_search_config_patch_failed` and
@@ -468,8 +467,8 @@ openclaw plugin install tavily
 openclaw doctor --fix
 ```
 
-The auto-link / degradation notes and this hint are recorded in
-`deep_research_bench/.runtime/traces/<task-id>/web-search-config.log`.
+The auto-link/degradation notes are recorded in the task's
+`web-search-config.log`.
 
 ## 20. A trace reports `mvdan adapter is missing` or repeated `analysis_failure`
 
@@ -485,48 +484,7 @@ python3 scripts/clawtune.py setup
 ```
 
 
-## 21. Replay failures
-
-SWE-Rebench replay currently supports only a current-format JSONL trace and the
-`host-openclaw` runtime. It intentionally reuses the normal task-image
-export, OpenClaw sandbox, task environment, launcher, sidecar, cgroup, and
-eBPF path; it does not execute tools directly on the host.
-
-If replay rejects a trace, inspect `replay_error.txt`. Common causes are an
-older-format `action` trace, an incomplete LLM span, or a tool span whose
-`input.requested_args` was redacted or truncated. These cases are fail-closed
-because reconstructing a command from a prediction or launcher wrapper would
-be unsafe. If the replay has no resource artifact, inspect
-`tool_resource_preflight_host.json`, `sidecar-stderr.txt`, and
-  `replay_manifest.json`; the same Linux, Docker, cgroup v2, BCC/eBPF, and
-privilege requirements as a normal host-openclaw benchmark apply.
-
-Before troubleshooting the runtime, verify that the task dataset and source
-trace identify the same case. The dataset supplies the Docker image and the
-trace supplies the recorded interaction; a trace alone cannot recreate the
-SWE-Rebench filesystem or installed dependencies. Replay output is stored in
-`swe_rebench/replays/<task-id>/`.
-
-Typical commands and their causes:
-
-- `task id ... was not found uniquely`: pass the dataset containing the exact
-  `--task-id`, or use the correct instance ID from the trace directory.
-- `trace ... is not the current format`: the source is an older-format/action
-  trace; first export or collect a current ClawTune trace.
-- `has no replayable requested arguments`: raw tool arguments were disabled,
-  redacted, or truncated. Replay does not infer commands from predictions or
-  launcher wrappers.
-- no new JSONL or exec-clause artifact: inspect `phase3.log`,
-  `launcher-preflight.log`, `tool_resource_preflight_host.json`, and
-  `sidecar-stderr.txt` in the replay directory. The replay needs the same
-  Linux host privileges and eBPF readiness as a normal benchmark.
-
-Replay uses a separate workspace and does not modify the source trace. If a
-replay command is unsafe or unexpected, stop the run and remove the replay
-workspace and `swe_rebench/replays/<task-id>/` artifacts after collecting the
-diagnostic logs.
-
-## 22. Standalone `web_search` uses DuckDuckGo or fails instead of Tavily
+## 21. Standalone `web_search` uses DuckDuckGo or fails instead of Tavily
 
 The DRB harness pins `tools.web.search.provider: tavily` inside each task's
 isolated OpenClaw home automatically. Outside a benchmark (your own

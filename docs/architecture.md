@@ -35,30 +35,34 @@ OpenAI-compatible proxy:
 OpenClaw provider -> http://127.0.0.1:8765/v1 -> upstream LLM API
 ```
 
-SWE-Rebench path:
+Online benchmark path:
 
 ```text
-swe_rebench.runner
-  -> generated /clawtune runtime assets
-  -> Docker task container
-  -> sidecar + plugin + openclaw agent --local
-  -> swe_rebench/traces/<task_id>/*.jsonl
+scripts/clawtune.py benchmark
+  -> bounded worker pool + one run-owned sidecar/KB
+  -> selected peer adapter
+  -> OpenClaw + native task/tool backend
+  -> .runtime/benchmarks/<benchmark>/<run>/
 ```
 
-Deep Research Bench path:
+`parallelism=1` is serial; larger values bound tasks in flight. Tasks do not
+wait at a shared barrier. Runtime-local finalizers drain as each task exits,
+while the sidecar coalesces KB persistence asynchronously through one writer.
+One global durability barrier runs after all producers finish.
+
+Repository benchmark path:
 
 ```text
-deep_research_bench.runner
-  -> runtime assets (plugin + sidecar + clawtune-launch)
-  -> one very basic Docker sandbox image (python:3.11-slim by default)
-  -> host sidecar + plugin + openclaw agent --local
-  -> deep_research_bench/.runtime/traces/<task_id>/*.jsonl
+peer repository adapter
+  -> task image export + OpenClaw Docker sandbox
+  -> managed launcher + eBPF/cgroup telemetry
+  -> run-owned traces and shared KB
 ```
 
-Deep Research Bench has no per-task image or `/testbed` repository: the agent
-answers a research question and its tools are measured with the
-sandbox-container / per-PID scope, so its required-telemetry gate is relaxed
-(LLM + resource-sampled tool spans, no exec-clause artifacts).
+Deep Research Bench instead uses a basic sandbox image and has no `/testbed`.
+BFCL exposes native stateful functions through a tool bridge. Terminal Bench
+copies and uses the task-owned Compose environment. These are user simulations,
+not official leaderboard graders.
 
 User guides:
 
@@ -77,3 +81,4 @@ Developer references:
 - Public JSON Schemas: [`contracts/`](../contracts/)
 - Event format implementation notes: [trace-schema.md](trace-schema.md)
 - Current plan and validation: [CURRENT_PLAN.md](CURRENT_PLAN.md)
+- Documentation map: [README.md](README.md)

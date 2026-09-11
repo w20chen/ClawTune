@@ -1,5 +1,5 @@
 # Shared configuration for all five peer adapters. No dataset selection here.
-# `benchmark` always uses serial online learning; `offline` owns frozen evaluation.
+# `benchmark` uses asynchronous online learning; `offline` owns frozen evaluation.
 runtime:
   mode: host-openclaw
   kb_frozen: false
@@ -10,6 +10,8 @@ llm:
   model: deepseek-v4-flash
   openclaw_model_ref: vllm/deepseek-v4-flash
 batch:
+  # Maximum tasks in flight. Tasks do not wait for one another; the shared
+  # sidecar merges accepted observations through its asynchronous single writer.
   parallelism: 1
   retry_failed: 0
   task_timeout_seconds: 1800

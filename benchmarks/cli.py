@@ -70,7 +70,14 @@ def parser():
     bench.add_argument("--seed", type=Path, default=ROOT / "seeds/demo-v1", help="Immutable seed bundle")
     bench.add_argument("--config", type=Path, help="Runner YAML including model configuration")
     bench.add_argument("--output", type=Path, help="New run directory; existing directories are never overwritten")
-    bench.add_argument("--parallelism", type=int, choices=(1,), default=1, help="Serial online learning in this demo")
+    bench.add_argument(
+        "--parallelism",
+        type=int,
+        help=(
+            "Maximum concurrent tasks; defaults to batch.parallelism in the "
+            "runner config"
+        ),
+    )
     bench.add_argument("--task-timeout-seconds", type=int)
     bench.add_argument("--agent-timeout-seconds", type=int)
     bench.add_argument("--dry-run", action="store_true", help="Validate and show selected tasks/seed without Docker or an LLM")
@@ -95,12 +102,25 @@ def main(argv=None):
     args = cli.parse_args(argv)
     try:
         if args.command == "benchmark":
+            if args.parallelism is not None and args.parallelism < 1:
+                raise ValueError("parallelism must be a positive integer")
             if args.list:
                 print("\n".join(NAMES))
                 return 0
             if args.resume:
-                if args.dataset or args.sample is not None or args.skip or args.repo or args.instance_ids or args.output:
-                    raise ValueError("resume uses the saved task list; selection/output options cannot be combined")
+                if (
+                    args.dataset
+                    or args.sample is not None
+                    or args.skip
+                    or args.repo
+                    or args.instance_ids
+                    or args.output
+                    or args.parallelism is not None
+                ):
+                    raise ValueError(
+                        "resume uses its saved tasks and parallelism; "
+                        "selection/output options cannot be combined"
+                    )
                 manifest = json.loads((args.resume / "run.json").read_text(encoding="utf-8"))
                 from .adapters import Task
                 tasks = [Task(**item) for item in manifest["tasks"]]
@@ -138,6 +158,7 @@ def main(argv=None):
             validate_seed(args.seed)
             if args.dry_run:
                 print(json.dumps({"benchmark": args.benchmark, "mode": "online", "kb_frozen": False,
+                    "parallelism_override": args.parallelism,
                     "seed": str(args.seed.resolve()), "tasks": [{"id": task.task_id, "group": task.group,
                     "executor": task.kind, "image": task.image} for task in tasks]}, indent=2))
                 return 0
@@ -148,7 +169,8 @@ def main(argv=None):
             if not config.is_file():
                 raise ValueError(f"config missing: {config}; run setup or pass --config")
             result = run(tasks, config_path=config.resolve(), seed=args.seed.resolve(), output=args.output,
-                         resume=args.resume, task_timeout=args.task_timeout_seconds, agent_timeout=args.agent_timeout_seconds)
+                         resume=args.resume, task_timeout=args.task_timeout_seconds,
+                         agent_timeout=args.agent_timeout_seconds, parallelism=args.parallelism)
             return 0 if result["status"] == "completed" else 1
         if args.command == "offline":
             from offline.runner import run

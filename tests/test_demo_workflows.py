@@ -322,7 +322,8 @@ def test_terminal_copies_native_environment_and_rejects_external_bind(monkeypatc
     assert {p.name: digest(p) for p in taskdir.iterdir()} == before
 
 
-def test_runner_shares_one_kb_and_resumes_only_saved_boundaries(monkeypatch, tmp_path):
+def test_runner_runs_concurrently_and_flushes_async_kb_once(monkeypatch, tmp_path):
+    import threading
     from types import SimpleNamespace
     from benchmarks import runner, runtime
     from swe_rebench import config, prepare, host_openclaw, runner as old_runner
@@ -331,33 +332,132 @@ def test_runner_shares_one_kb_and_resumes_only_saved_boundaries(monkeypatch, tmp
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text("llm: {}\n")
     cfg = SimpleNamespace(llm=SimpleNamespace(api_key="test", model="test"),
-        runtime=SimpleNamespace(), batch=SimpleNamespace(), output=SimpleNamespace())
+        runtime=SimpleNamespace(), batch=SimpleNamespace(parallelism=1), output=SimpleNamespace())
     monkeypatch.setattr(config.RunnerConfig, "from_yaml", lambda *a, **k: cfg)
     monkeypatch.setattr(runner.platform, "system", lambda: "Linux")
     monkeypatch.setattr(prepare, "build_runtime_assets", lambda cfg: tmp_path)
-    starts, stops, observed = [], [], []
+    starts, stops, observed, pending, barriers = [], [], [], [], []
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+    overlap = threading.Barrier(2)
     monkeypatch.setattr(host_openclaw, "_start_sidecar", lambda **k: starts.append(k) or "process")
     monkeypatch.setattr(host_openclaw, "_stop_process", lambda p: stops.append(p))
     def execute(task, cfg, assets, folder, port):
+        nonlocal active, max_active
         path = folder / "kb"
-        with StateStore(path) as store:
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
             observed.append(json.loads((path / "state.json").read_text())["generation"])
+            pending.append(task.task_id)
+        overlap.wait(timeout=2)
+        with lock:
+            active -= 1
+        return SimpleNamespace(task_id=task.task_id, exit_code=0)
+    def flush_all_kb_updates(port):
+        path = tmp_path / "run/kb"
+        assert set(pending) == {"0", "1", "2", "3"}
+        with StateStore(path) as store:
             kb = RuntimeToolResourceKB()
-            kb.observe_completed_call(CompletedCall("repo", "read", None, 0, len(observed)))
+            for index, task_id in enumerate(sorted(pending), 1):
+                kb.observe_completed_call(CompletedCall("repo", f"read-{task_id}", None, 0, index))
             write_json(path / FILES[1], kb.to_json_obj())
             store.checkpoint()
-        return SimpleNamespace(task_id=task.task_id, exit_code=0)
+        barriers.append(json.loads((path / "state.json").read_text())["generation"])
     monkeypatch.setattr(runtime, "execute", execute)
+    monkeypatch.setattr(runtime, "flush_all_kb_updates", flush_all_kb_updates)
     monkeypatch.setattr(old_runner, "_result_dict", lambda result: {"task_id": result.task_id,
         "exit_code": result.exit_code, "error": None, "resource_summary": {"tool_span_ends": 1}})
-    tasks = [ADAPTERS["deep-research-bench"]({"id": i, "prompt": "work"}) for i in range(2)]
-    result = runner.run(tasks, config_path=cfg_path, seed=seed, output=tmp_path / "run")
-    assert result["status"] == "completed" and observed == [1, 2]
+    tasks = [ADAPTERS["deep-research-bench"]({"id": i, "prompt": "work"}) for i in range(4)]
+    result = runner.run(tasks, config_path=cfg_path, seed=seed,
+                        output=tmp_path / "run", parallelism=2)
+    assert result["status"] == "completed" and observed == [1, 1, 1, 1]
+    assert max_active == 2
+    assert barriers == [2]
+    assert result["parallelism"] == 2
+    assert result["kb_flush_complete"] is True
+    assert result["kb_final_generation"] == 2
     assert len(starts) == 1 and stops == ["process"]
-    assert all(row["learning_status"] == "updated" for row in result["results"])
+    assert all(row["learning_status"] == "no_shared_kb_commit_observed_during_task"
+               for row in result["results"])
     runner.run(tasks, config_path=cfg_path, seed=seed, resume=tmp_path / "run")
     assert len(starts) == 1
-    result["active_task"] = tasks[0].task_id
+    result["active_tasks"] = [tasks[0].task_id]
     write_json(tmp_path / "run/run.json", result)
     with pytest.raises(ValueError, match="partial learning"):
         runner.run(tasks, config_path=cfg_path, seed=seed, resume=tmp_path / "run")
+
+
+def test_concurrent_runtime_uses_task_local_config(monkeypatch, tmp_path):
+    import concurrent.futures
+    import threading
+    from types import SimpleNamespace
+    from benchmarks import runtime
+    from swe_rebench import host_openclaw
+    from swe_rebench.docker import ContainerResult
+
+    tasks = [
+        ADAPTERS["swe-rebench"]({
+            "instance_id": f"org__repo-{index}",
+            "repo": f"org/repo-{index}",
+            "problem_statement": "fix",
+            "docker_image": f"image-{index}",
+        })
+        for index in range(2)
+    ]
+    shared = SimpleNamespace()
+    overlap = threading.Barrier(2)
+    seen = []
+
+    def run_host_openclaw_task(**kwargs):
+        config = kwargs["config"]
+        seen.append((id(config), config.kb_repo, config.task_directory,
+                     config.flush_kb_on_task_drain))
+        overlap.wait(timeout=2)
+        return ContainerResult(task_id=kwargs["task"].instance_id,
+                               image=kwargs["task"].image, exit_code=0)
+
+    monkeypatch.setattr(host_openclaw, "run_host_openclaw_task", run_host_openclaw_task)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(
+            lambda task: runtime.execute(task, shared, tmp_path, tmp_path / "run", 8765),
+            tasks,
+        ))
+
+    assert [result.task_id for result in results] == [task.task_id for task in tasks]
+    assert len({row[0] for row in seen}) == 2
+    assert {(row[1], row[2]) for row in seen} == {
+        (f"swe-rebench:org/repo-{index}", tasks[index].directory_name)
+        for index in range(2)
+    }
+    assert all(row[3] is False for row in seen)
+    assert not hasattr(shared, "kb_repo")
+
+
+def test_concurrent_bridge_manifests_stay_process_local(monkeypatch, tmp_path):
+    import concurrent.futures
+    import os
+    from types import SimpleNamespace
+    from swe_rebench.host_openclaw import _openclaw_env
+
+    monkeypatch.setenv("CLAWTUNE_BENCHMARK_TOOLS", "stale-global-manifest")
+
+    def build(index):
+        config = SimpleNamespace(
+            docker=SimpleNamespace(cgroup_required=True, platform=""),
+            benchmark_tools_manifest=str(tmp_path / f"manifest-{index}.json"),
+        )
+        return _openclaw_env(
+            tmp_path / f"home-{index}", 8765 + index, config,
+            tmp_path / f"workspace-{index}",
+        )["CLAWTUNE_BENCHMARK_TOOLS"]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        values = list(executor.map(build, range(2)))
+
+    assert values == [
+        str(tmp_path / "manifest-0.json"),
+        str(tmp_path / "manifest-1.json"),
+    ]
+    assert os.environ["CLAWTUNE_BENCHMARK_TOOLS"] == "stale-global-manifest"

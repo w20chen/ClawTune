@@ -293,6 +293,7 @@ def run_host_openclaw_task(
                     sidecar_port,
                     runtime_id,
                     gateway_id=_BENCHMARK_GATEWAY_ID,
+                    flush_kb=getattr(config, "flush_kb_on_task_drain", True),
                 )
             except BaseException as exc:
                 # A failed drain means the snapshot may be incomplete, but it
@@ -2084,6 +2085,7 @@ def _openclaw_env(
         "CLAWTUNE_LAUNCHER_ENDPOINT",
         "CLAWTUNE_TRACE_DIR",
         "CLAWTUNE_PLUGIN_TRACE_DIR",
+        "CLAWTUNE_BENCHMARK_TOOLS",
     ):
         env.pop(name, None)
     # A sudo -E benchmark must not inherit credentials/targets for the user's
@@ -2145,6 +2147,9 @@ def _openclaw_env(
         # CLI subprocess inherits this standard Docker setting, while every
         # runner-owned pull/create/run still gets an explicit ``--platform``.
         env["DOCKER_DEFAULT_PLATFORM"] = config.docker.platform
+    benchmark_tools_manifest = getattr(config, "benchmark_tools_manifest", None)
+    if benchmark_tools_manifest:
+        env["CLAWTUNE_BENCHMARK_TOOLS"] = str(benchmark_tools_manifest)
     (openclaw_home / ".openclaw").mkdir(parents=True, exist_ok=True)
     return env
 
@@ -2318,6 +2323,7 @@ def _drain_runtime(
     *,
     timeout_seconds: float = 15.0,
     gateway_id: str | None = None,
+    flush_kb: bool = True,
 ) -> None:
     endpoint = (
         f"http://127.0.0.1:{sidecar_port}"
@@ -2332,6 +2338,12 @@ def _drain_runtime(
             + urllib.parse.quote(runtime_id, safe="")
             + "/drain"
         )
+    )
+    endpoint += (
+        "?timeout_seconds="
+        + urllib.parse.quote(str(timeout_seconds), safe="")
+        + "&flush_kb="
+        + ("true" if flush_kb else "false")
     )
     request = urllib.request.Request(endpoint, data=b"", method="POST")
     _add_sidecar_auth(request)

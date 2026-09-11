@@ -50,7 +50,7 @@ const pluginVersion = "0.1.0";
 
 // ── Plugin-wide state ──────────────────────────────────────────────────
 
-/** Unique instance ID generated once per plugin load (�?per CLI launch). */
+/** Unique instance ID generated once per plugin load (one per CLI launch). */
 const instanceId = randomUUID();
 
 export default definePluginEntry({

@@ -25,21 +25,16 @@ Main event families:
 traces/*.jsonl
 ```
 
-SWE-Rebench traces are written under:
+Online benchmark traces are written under the run owned by the common runner:
 
 ```text
-swe_rebench/traces/<task_id>/*.jsonl
+.runtime/benchmarks/<benchmark>/<run>/traces/<stable-task-digest>/*.jsonl
 ```
 
-Deep Research Bench traces are written under the same schema under:
-
-```text
-deep_research_bench/.runtime/traces/<task_id>/*.jsonl
-```
-
-Deep Research Bench uses the sandbox-container / per-PID scope for its
-read/edit/web tools and does not require exec-clause artifacts; the
-records themselves are identical.
+Every adapter uses the same JSONL format. Repository adapters require managed
+exec/cgroup/eBPF evidence. Research and bridged-tool adapters may have tool
+spans without exec-clause artifacts; absence is explicit rather than filled
+with synthetic resource values.
 
 Inspect traces:
 
@@ -131,10 +126,10 @@ registration window can lower span coverage without implying that the same
 duration of payload work was missed; it still means the complete tool span was
 not monitored from its initial boundary.
 
-For complete cgroup sampling in SWE-Rebench, each managed execution must enter
-its own cgroup. The container runtime uses the privileged/cgroup-v2 settings in
-`swe_rebench/config.yaml`. Host-OpenClaw's Docker sandbox does not consume those
-runner-owned Docker flags, so its fork-exec launcher requests a privileged
+For complete cgroup sampling in repository benchmarks, each managed execution
+must enter its own cgroup. The runner reads the privileged/cgroup-v2 settings
+from `configs/benchmark.yaml`. Host-OpenClaw's Docker sandbox does not consume
+those runner-owned Docker flags, so its fork-exec launcher requests a privileged
 host-side cgroup gate when the sandbox cgroupfs is read-only. With
 `cgroup_required=true`, launcher startup fails unless the resulting scope is
 `exclusive-execution-cgroup`; the runner also rejects a shared

@@ -1460,6 +1460,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         runtime_id: str,
         gateway_id: str | None,
         timeout_seconds: float,
+        flush_kb: bool,
     ) -> dict[str, object]:
         timeout_seconds = min(max(timeout_seconds, 0.0), 60.0)
         deadline = time.monotonic() + timeout_seconds
@@ -1506,7 +1507,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 and active_requests == 0
             ):
                 flush_shared_kb = getattr(s.predictor, "flush_kb_updates", None)
-                if callable(flush_shared_kb):
+                if flush_kb and callable(flush_shared_kb):
                     remaining = max(0.0, deadline - time.monotonic())
                     try:
                         await asyncio.to_thread(flush_shared_kb, remaining)
@@ -1524,6 +1525,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     "gateway_id": gateway_id,
                     "runtime_id": runtime_id,
                     "active_executions": 0,
+                    "kb_flushed": flush_kb,
                 }
             if time.monotonic() >= deadline:
                 return {
@@ -1541,16 +1543,20 @@ def create_app(state: AppState | None = None) -> FastAPI:
     async def drain_runtime(
         runtime_id: str,
         timeout_seconds: float = 15.0,
+        flush_kb: bool = True,
         s: AppState = Depends(get_state),
         _: None = Depends(auth),
     ) -> dict[str, object]:
-        return await drain_runtime_state(s, runtime_id, None, timeout_seconds)
+        return await drain_runtime_state(
+            s, runtime_id, None, timeout_seconds, flush_kb
+        )
 
     @app.post("/v1/gateways/{gateway_id}/runtimes/{runtime_id}/drain")
     async def drain_gateway_runtime(
         gateway_id: str,
         runtime_id: str,
         timeout_seconds: float = 15.0,
+        flush_kb: bool = True,
         s: AppState = Depends(get_state),
         _: None = Depends(auth),
     ) -> dict[str, object]:
@@ -1559,6 +1565,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             runtime_id,
             gateway_id,
             timeout_seconds,
+            flush_kb,
         )
 
     @app.get("/v1/models")

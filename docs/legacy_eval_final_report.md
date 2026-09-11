@@ -1,5 +1,8 @@
 # ClawTune Legacy Evaluation — Final Report
 
+Status: fixed historical result artifact. It does not describe the current
+task-held-out `scripts/clawtune.py offline` protocol.
+
 > Final results for the SWE-bench-style legacy dataset `swe277`.
 > Run: `legacy_eval/.runtime/2026-08-06T160709.445174_0000/` (report.json / report.md)
 

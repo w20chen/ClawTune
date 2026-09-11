@@ -184,7 +184,12 @@ def run_drb_task(
         if shared_sidecar_trace_dir is not None and sidecar_port is not None:
             from swe_rebench.host_openclaw import _drain_runtime, _runtime_id, _collect_runtime_traces
             try:
-                _drain_runtime(sidecar_port, _runtime_id(workspace), gateway_id="swe-rebench")
+                _drain_runtime(
+                    sidecar_port,
+                    _runtime_id(workspace),
+                    gateway_id="swe-rebench",
+                    flush_kb=getattr(swe_cfg, "flush_kb_on_task_drain", True),
+                )
                 _collect_runtime_traces(shared_sidecar_trace_dir, trace_dir, _runtime_id(workspace), task_label=task.instance_id)
             except Exception as exc:
                 error = error or f"shared sidecar finalization failed: {exc}"

@@ -1,4 +1,7 @@
-# Three paths, peer benchmark adapters
+# Three paths and peer benchmark adapters
+
+Status: current implementation reference. CLI syntax is summarized here;
+`python3 scripts/clawtune.py benchmark --help` remains authoritative.
 
 2026-09-11: supersedes the SWE-only and DRB-removal decisions in DEMO_SYSTEM_DESIGN.md.
 
@@ -18,7 +21,14 @@ utilities are implementation reuse, not parent benchmark types.
 `clawtune_kb` is a small sidecar-independent storage package. Immutable seeds
 live under `seeds/`; user state under the invoking user's state directory;
 simulation and offline outputs under `.runtime/`. No automatic cross-run or
-cross-dataset merge. Within one run tasks share a writer, sequentially.
+cross-dataset merge. Within one run tasks share one predictor and one
+asynchronous writer. `parallelism` bounds tasks in flight; `1` is serial.
+
+Concurrent tasks do not wait for one another. Accepted observations become
+visible under the predictor lock and enqueue a persistence notification. The
+single writer coalesces notifications without losing updates. Per-task drain
+waits for only that runtime's executions/finalizers, while one final durability
+barrier commits the complete queue before the sidecar stops.
 
 Offline identity is (benchmark, task ID), never filename alone. Repository
 datasets split within repo. Non-repository datasets split within an explicit

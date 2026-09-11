@@ -14,7 +14,11 @@
     "environment": {"type": "object"},
     "kb_path": {"type": "string"},
     "official_score": {"type": "null"},
+    "parallelism": {"type": "integer", "minimum": 1},
     "active_task": {"type": "string"},
+    "active_tasks": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "kb_flush_complete": {"type": "boolean"},
+    "kb_final_generation": {"type": "integer", "minimum": 0},
     "error": {"type": "string"},
     "tasks": {"type": "array", "items": {"type": "object"}},
     "config_sha256": {"type": "string"}

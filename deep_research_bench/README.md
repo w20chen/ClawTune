@@ -1,138 +1,88 @@
-# Running Deep Research Bench with ClawTune
+# Deep Research Bench with ClawTune
 
-The batch runner sends DeepResearchBench research questions through OpenClaw
-while ClawTune records model calls, tool calls, process lifecycle, CPU, and
-memory.  Unlike SWE-Rebench there is **no per-task Docker image**: the agent's
-tools execute in one very basic Docker sandbox image (default
-`python:3.11-slim`), and there is no `/testbed` repository to solve — the task
-is a research question answered with web-style tools.
+Deep Research Bench is one adapter behind the common online benchmark workflow.
+It sends research questions through OpenClaw and records the same model/tool
+trace protocol as other adapters. It has no per-task repository image or
+`/testbed`; tools use the configured basic sandbox image.
 
-## Configure Once
+Complete the root [installation guide](../docs/getting-started.md) first.
 
-`python3 scripts/clawtune.py setup` creates `deep_research_bench/config.yaml`
-from `deep_research_bench/config.example.yaml`.  Export the provider key in the
-shell that starts the run:
+## Configure
+
+The public runner reads `configs/benchmark.yaml`:
 
 ```bash
 export LLM_API_KEY="<provider-api-key>"
-```
-
-Or put the key on one line in the Git-ignored file
-`deep_research_bench/llm_api_key.txt`.  Edit the model section in
-`deep_research_bench/config.yaml`:
-
-```yaml
-llm:
-  api_key_file: "./deep_research_bench/llm_api_key.txt"
-  upstream_base_url: "https://api.deepseek.com"
-  model: "your-model-name"
-  openclaw_model_ref: "vllm/your-model-name"
-```
-
-## Web Search (Tavily)
-
-DeepResearchBench tasks are answered with OpenClaw's built-in `web_search`
-tool, which runs on the host (not inside the sandbox).  DRB defaults web
-search to **Tavily**.  Configure the key the same way as the model key:
-
-```bash
 export TAVILY_API_KEY="<tavily-api-key>"
 ```
 
-The wrapper preserves `TAVILY_API_KEY` (and `TAVILY_API_KEY_FILE`) through
-`sudo` by name.  Persistent alternatives: put the key on one line in the
-Git-ignored `deep_research_bench/tavily_api_key.txt`, or add a
-`TAVILY_API_KEY=...` line to the root `.env`.  Resolution order:
-`TAVILY_API_KEY` env, `web_search.api_key` (`${TAVILY_API_KEY}`),
-`web_search.api_key_file`, then the root `.env`.
-
-The `web_search` section of `deep_research_bench/config.yaml` controls the
-provider:
+Model settings live under `llm`; research-only settings live under `sandbox`
+and `web_search`. Key files `configs/llm_api_key.txt` and
+`configs/tavily_api_key.txt` are ignored by Git.
 
 ```yaml
+sandbox:
+  image: python:3.11-slim
+  workdir: /workspace
 web_search:
   enabled: true
-  provider: "tavily"   # set to "auto" to let OpenClaw auto-detect
+  provider: tavily
   api_key: "${TAVILY_API_KEY}"
-  api_key_file: "./deep_research_bench/tavily_api_key.txt"
+  api_key_file: ./configs/tavily_api_key.txt
 ```
 
-Each task pins `tools.web.search.provider` into its isolated OpenClaw config
-(OpenClaw auto-detection would otherwise prefer Brave over Tavily) and injects
-`TAVILY_API_KEY` into the `openclaw agent` process.  No key is required: web
-search is best-effort.  Without a key the agent answers from model knowledge
-and the trace still records LLM spans; use `--no-gate-required` if such a run
-should pass without any tool span.
+The files under `deep_research_bench/config*.yaml` configure the retained
+internal/legacy runner. They remain readable through explicit `--config`, but
+the common file above is the supported default.
 
-If the host's OpenClaw does not have the pinned provider's plugin installed,
-`openclaw config patch` rejects `tools.web.search.provider` with "provider is
-not available" (e.g. `tavily`).  The runner then tries to link a globally
-installed plugin for that provider (found under
-`~/.openclaw/npm/projects/<package>-*`) into the task's isolated OpenClaw home
-so web search can actually use it; if that is not possible it degrades to
-OpenClaw auto-detection instead of failing the task.  The warning and the host
-fix are recorded in `web-search-config.log`.  To pin a provider
-deterministically, install/enable its plugin on the host first:
+## Task source
 
-```bash
-openclaw plugin install tavily   # or the provider you pinned
-openclaw doctor --fix
-```
+A task needs a non-empty `id`/`task_id`/`instance_id` and one of
+`problem_statement`, `prompt`, or `question`. Optional `topic` or `domain`
+selects the KB/report group. `reference_answer` or `article` is recorded but
+not used as a live answer.
 
-## Select Tasks
+The source may be JSON, JSONL, or an object containing a `tasks`, `instances`,
+or `data` array. With no explicit source, the runner checks the read-only
+agent-test-bench dataset and then the bundled three-task smoke source.
 
-The runner uses this order (like SWE-Rebench):
-
-1. `--dataset <file>` — an explicit DeepResearchBench JSON/JSONL file always
-   wins.
-2. `--tasks <file>` — a simple JSON task list.
-3. The bundled `deep_research_bench/tasks.json` — three smoke-test tasks.
-
-To build a larger task source from the HuggingFace dataset
-(`muset-ai/DeepResearch-Bench-Dataset`,
-`generated_reports/openai-deepresearch.jsonl`):
+To create a source from the upstream Hugging Face dataset:
 
 ```bash
-# 32-task source (needs huggingface_hub)
-python3 -m deep_research_bench.discover --sample 32 --out deep_research_bench/tasks-32.json
-
-# Run it
-python3 scripts/clawtune.py drb \
-  --dataset deep_research_bench/tasks-32.json \
-  --sample 32 --parallelism 1
+python3 -m deep_research_bench.discover \
+  --sample 32 --out deep_research_bench/tasks-32.json
 ```
 
 ## Run
 
-Always start with one task:
+Validate selection without Docker, OpenClaw, or an LLM:
 
 ```bash
-python3 scripts/clawtune.py drb --sample 1
+python3 scripts/clawtune.py benchmark \
+  --benchmark deep-research-bench \
+  --dataset deep_research_bench/tasks-32.json --sample 2 --dry-run
 ```
 
-`clawtune.py drb` runs the `deep_research_bench.runner` under `sudo` (for the
-sidecar's privileged eBPF runtime), prepares the runtime assets, and exports
-traces.  Per-task output lands under
-`deep_research_bench/.runtime/traces/<task-id>/`, including the JSONL trace,
-`agent_prompt.txt`, `task_manifest.json`, `reference_answer.txt` (record-only),
-and `result_summary.json`.  A batch report is written to
-`deep_research_bench/.runtime/report.json`.
-
-### Telemetry gate
-
-Research tasks use read/edit/web tools measured with the sandbox-container /
-per-PID scope, so the swe-rebench eBPF exec-clause gate does not apply.
-The relaxed gate (`runtime.gate_required`, default `true`) fails a task only
-when its trace has no LLM span or no resource-sampled tool span.  Set
-`runtime.gate_required: false` (or `--no-gate-required`) for a best-effort run.
-
-## Direct runner usage
+Then start with one live task:
 
 ```bash
-python3 -m deep_research_bench.runner run \
-  --dataset deep_research_bench/tasks-32.json --sample 5 --export
-python3 -m deep_research_bench.runner prepare   # build the runtime assets once
+python3 scripts/clawtune.py benchmark \
+  --benchmark deep-research-bench --sample 1
 ```
 
-Requires a Linux host (same as the SWE-Rebench journey): Docker, Node.js/npm,
-OpenClaw 2026.7.1+, and the ClawTune `.venv` sidecar from `setup`.
+`python3 scripts/clawtune.py drb ...` is a compatibility alias.
+`--parallelism N` bounds in-flight tasks (`1` is serial). Tasks do not wait for
+one another; the sidecar coalesces their asynchronous KB updates through one
+writer and the run performs one durability barrier after all tasks finish.
+
+Outputs live under
+`.runtime/benchmarks/deep-research-bench/<run>/` and use the same `run.json`,
+`report.json`, `kb/`, `sidecar/`, and per-task trace layout as every adapter.
+`official_score` remains `null`.
+
+Research tasks do not require exec-clause telemetry. They still need at least
+one resource-sampled tool span to produce learning observations; a task with no
+tool span is reported as an error by the common runner.
+
+For all adapter fields, state ownership, and evaluation boundaries, see the
+[peer benchmark reference](../docs/MULTI_BENCHMARK_IMPLEMENTATION.md).

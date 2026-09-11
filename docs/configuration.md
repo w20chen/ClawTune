@@ -1,26 +1,35 @@
 # Configuration
 
-ClawTune creates sensible defaults during `python3 scripts/clawtune.py setup`.
-Most users only configure a provider key and model. Keep all paths relative to
-the repository unless you intentionally manage data elsewhere.
+Setup creates `.env` and `configs/benchmark.yaml` without overwriting existing
+files. Most users configure only a provider key and model. The canonical field
+definitions are:
 
-## Sidecar and OpenClaw
+- sidecar environment: `services/sidecar/src/clawtune_sidecar/config.py`;
+- plugin JSON: `packages/clawtune-plugin/openclaw.plugin.json`;
+- benchmark YAML loader: `swe_rebench/config.py`;
+- public protocol: JSON Schemas under `contracts/`.
 
-The root `.env` controls the long-running sidecar. Useful settings are:
+## Daily sidecar state
 
-| Setting | Default | When to change it |
+`.env` controls the sidecar. Common settings are:
+
+| Setting | Default | Purpose |
 | --- | --- | --- |
-| `CLAWTUNE_TRACE_DIR` | `traces` | Move OpenClaw trace output |
-| `CLAWTUNE_STATE_DIR` | invoking user's `~/.local/state/clawtune` | Move persistent daily KB state independently of traces |
-| `CLAWTUNE_KB_SEED` | bundled `seeds/demo-v1` | Seed a new daily KB; existing state is retained |
-| `CLAWTUNE_LLM_UPSTREAM_BASE_URL` | DeepSeek API | Use another OpenAI-compatible provider |
-| `CLAWTUNE_TOKEN` | unset | Require local sidecar authentication |
-| `CLAWTUNE_PMU_ENABLED` | `true` | Enable best-effort Tool-level hardware counting |
-| `CLAWTUNE_PMU_MAX_ACTIVE` | global Tool limit | Cap simultaneous four-event PMU groups |
-| `CLAWTUNE_PMU_RELIABLE_RUNNING_RATIO` | `0.95` | Mark severe multiplexing; every multiplexed profile is excluded |
+| `CLAWTUNE_TRACE_DIR` | `traces` | OpenClaw trace output |
+| `CLAWTUNE_STATE_DIR` | invoking user's state directory | Parent of the persistent daily KB |
+| `CLAWTUNE_KB_SEED` | `seeds/demo-v1` | Seed used only when creating new daily state |
+| `CLAWTUNE_LLM_UPSTREAM_BASE_URL` | DeepSeek API | OpenAI-compatible upstream |
+| `CLAWTUNE_TOKEN` | unset | Local sidecar authentication |
+| `CLAWTUNE_TOOL_RESOURCE_EBPF_REQUIRED` | `true` | Fail closed when strict eBPF telemetry is unavailable |
+| `CLAWTUNE_RESOURCE_POLL_INTERVAL_MS` | `50` | Resource sampling cadence |
+| `CLAWTUNE_PMU_ENABLED` | `true` | Best-effort tool-level PMU counting |
 
-For a provider other than the `.env` default, point the proxy at its upstream
-base URL in `.env` and restart the sidecar:
+`CLAWTUNE_TOOL_RESOURCE_ARTIFACT_DIR` overrides the KB directory directly.
+Trace output does not select a KB. `CLAWTUNE_TOOL_RESOURCE_FROZEN=true` is for
+read-only evaluation/diagnostics; daily and online benchmark learning use
+writable state.
+
+For a different provider:
 
 ```bash
 CLAWTUNE_LLM_UPSTREAM_BASE_URL=https://openrouter.ai/api/v1
@@ -28,185 +37,109 @@ CLAWTUNE_LLM_PROXY_EXPOSE_MODEL=your-visible-model
 CLAWTUNE_LLM_PROXY_UPSTREAM_MODEL=provider/real-model
 ```
 
-Only use the explicit upstream-key override when the proxy must intentionally
-use a different credential than OpenClaw. Do not commit keys.
+The proxy normally forwards OpenClaw's authorization header. Use
+`CLAWTUNE_LLM_UPSTREAM_API_KEY_OVERRIDE` only when the proxy intentionally
+needs a different credential.
 
-The eBPF collector is required by default. Do not disable it for a result that
-will be treated as a valid ClawTune measurement.
+CPU/memory histogram edges, KV-TTL settings, PMU limits, cgroup scopes, and
+advanced collector options are documented in [call-load prediction](call-load-prediction.md),
+[PMU profiling](pmu-profiling.md), and `.env.example`.
 
-PMU counting is independent and always fail-open for Tool execution. See
-[Tool-level PMU profiling](pmu-profiling.md) for event semantics, quality gates,
-multi-session/CubeSandbox concurrency, and Linux acceptance commands.
+## Benchmark configuration
 
-## Benchmark Runs
-
-Tool-call load histogram edges are configurable independently for duration,
-CPU time, average/peak cores, and memory. See [call-load prediction](call-load-prediction.md#bucket-configuration)
-for defaults, units and `.env` variables; changing boundaries does not retrain a KB.
-
-
-The setup command copies `configs/benchmark.example.yaml` once. Exporting a
-key in the launch shell is the simplest secret configuration:
-
-```bash
-export LLM_API_KEY="<provider-api-key>"
-```
-
-The unified benchmark wrapper preserves `LLM_API_KEY` through `sudo` by name
-only; it neither uses broad `sudo -E` nor puts the secret value in process
-arguments. If the environment variable is unset, the runner falls back to the
-configured key file and then to `LLM_API_KEY` in the root `.env`.
-
-The values a new user normally edits are:
-
-```yaml
-llm:
-  api_key_file: "./configs/llm_api_key.txt"
-  upstream_base_url: "https://api.deepseek.com"
-  model: "your-model-name"
-  openclaw_model_ref: "vllm/your-model-name"
-
-batch:
-  task_timeout_seconds: 1800
-  agent_timeout_seconds: 0
-  parallelism: 1
-```
-
-`task_timeout_seconds` is the whole-task wall-clock budget, beginning before
-repository export and preflight. `agent_timeout_seconds` optionally adds a
-shorter agent-only limit; `0` disables that separate limit. After either limit
-fires, process and sandbox termination use a small independent cleanup grace
-instead of reusing an already exhausted task budget.
-
-The demo accepts only `--parallelism 1`. Each run shares one sidecar and KB,
-and later tasks learn from earlier tasks. `--sample N` selects the first N
-tasks after filtering. Frozen train/test evaluation uses the `offline` command.
-
-The common runner owns outputs under `.runtime/benchmarks/<benchmark>/<run>`
-or `--output`: `run.json`, `report.json`, per-task traces, and `kb/`. It records
-task order and KB generation changes. Old YAML output paths are superseded by
-this run-owned layout. See [the five peer adapters](MULTI_BENCHMARK_IMPLEMENTATION.md).
-
-### Deep Research Bench
-
-The following legacy research configuration remains readable through `--config`.
-The common entry is `benchmark --benchmark deep-research-bench`; it forces online
-learning and uses the same run-owned layout as the other adapters. The current
-common runner requires tool spans and records learning status; the legacy
-`gate_required` and per-task-sidecar behavior below belong to the old runner.
-
-Setup also copies `deep_research_bench/config.example.yaml`. The Deep Research
-Bench config keeps the same `llm`, `batch`, `output`, and `runtime_assets` sections,
-but differs from SWE-Rebench in a few ways:
-
-- `runtime.ebpf_required` defaults to `false`. Research tools
-  (web/fetch/read/edit) never produce eBPF exec-clause telemetry.
-- `runtime.gate_required` (default `true`) is a **relaxed** required-telemetry
-  gate: a task fails only when its trace has no LLM span or no
-  resource-sampled tool span. Set it `false` for a best-effort run.
-- `sandbox.image` names the one very basic tool container (default
-  `python:3.11-slim`).
-- `web_search` configures OpenClaw's built-in `web_search` tool. DRB defaults
-  the provider to **Tavily** and pins `tools.web.search.provider` into each
-  task's isolated OpenClaw config (auto-detection would prefer Brave). The key
-  resolves from `TAVILY_API_KEY` env (allowed through `sudo`), `api_key` /
-  `${TAVILY_API_KEY}`, `api_key_file`
-  (`deep_research_bench/tavily_api_key.txt`), then the root `.env`. Web search
-  runs on the host, so the key does not need to reach the sandbox.
+The supported public runner reads `configs/benchmark.yaml`. The setup-created
+file is based on `configs/benchmark.example.yaml`:
 
 ```yaml
 runtime:
-  ebpf_required: false
-  gate_required: true
+  mode: host-openclaw
+  kb_frozen: false
+llm:
+  api_key: "${LLM_API_KEY}"
+  api_key_file: ./configs/llm_api_key.txt
+  upstream_base_url: https://api.deepseek.com
+  model: your-model-name
+  openclaw_model_ref: vllm/your-model-name
+batch:
+  parallelism: 1
+  retry_failed: 0
+  task_timeout_seconds: 1800
+  agent_timeout_seconds: 0
+docker:
+  pull_policy: missing
+  cpus: 4
+  memory_limit: 8g
+  privileged: true
+  cgroupns_mode: host
+  cgroup_mount_rw: true
+  cgroup_required: true
+```
+
+The common runner overrides `runtime.mode` to `host-openclaw`,
+`runtime.kb_frozen` to `false`, and `batch.retry_failed` to `0`.
+`batch.parallelism` is the default maximum number of in-flight tasks;
+`--parallelism N` overrides it, and `1` is serial.
+
+Tool completion handling is asynchronous inside the sidecar. Accepted
+observations become available to predictions under the predictor lock and
+enqueue persistence on a single writer, which coalesces concurrent updates.
+Task completion drains only that runtime's executions/finalizers, so it does
+not impose a global KB barrier or delay other tasks. After every producer has
+finished, the runner performs one global durability barrier and records the
+final committed generation before stopping the sidecar.
+
+The model-key resolution order is the YAML value/environment expansion, the
+configured key file, then `LLM_API_KEY` in the root `.env`. The wrapper passes
+only named variables through its narrow sudo allow-list; it does not use broad
+`sudo -E`.
+
+### Research-only settings
+
+Deep Research Bench also reads:
+
+```yaml
 sandbox:
-  image: "python:3.11-slim"
-dataset:
-  harness_dataset: "muset-ai/DeepResearch-Bench-Dataset"
-  harness_split: "test"
-  data_files: "generated_reports/openai-deepresearch.jsonl"
+  image: python:3.11-slim
+  workdir: /workspace
 web_search:
   enabled: true
-  provider: "tavily"
+  provider: tavily
   api_key: "${TAVILY_API_KEY}"
-  api_key_file: "./deep_research_bench/tavily_api_key.txt"
+  api_key_file: ./configs/tavily_api_key.txt
 ```
 
-The harness pins `tavily` only inside each task's isolated OpenClaw home. For
-**standalone OpenClaw** (your own `openclaw agent`/`~/.openclaw`, not DRB),
-`web_search` auto-detects the provider and may pick DuckDuckGo instead of
-Tavily — on restricted hosts DuckDuckGo is unreachable (timeout /
-`resolves to private/internal/special-use IP`), so pin Tavily manually:
+The older `swe_rebench/config*.yaml` and
+`deep_research_bench/config*.yaml` files configure retained internal runners.
+They may still be passed explicitly with `--config`, but their concurrency,
+output, gate, and frozen-KB fields do not override the unified runner's public
+semantics.
 
-```bash
-openclaw config set tools.web.search.provider tavily
-export TAVILY_API_KEY="<key>"   # or: openclaw config set plugins.entries.tavily.config.webSearch.apiKey "<key>"
-```
+### Output and state ownership
 
-Standalone launch and sidecar failures are covered in
-[troubleshooting.md](troubleshooting.md).
+| Workflow | KB | Output |
+| --- | --- | --- |
+| Daily OpenClaw | `$CLAWTUNE_STATE_DIR/kb` or user-state default | `traces/` |
+| Online benchmark | `<run>/kb`, initialized from `--seed` | `.runtime/benchmarks/<benchmark>/<run>/` |
+| Offline evaluation | trained seed inside experiment; frozen during test | `.runtime/offline/<experiment>/` |
 
-The knowledge bases below apply to SWE-Rebench exec clauses; Deep Research
-Bench does not update them.
+A benchmark run owns `run.json`, `report.json`, `kb/`, `sidecar/`, `traces/`,
+and `workspaces/`. Existing output directories are never overwritten. A new
+invocation never merges into daily state or another run.
 
-### Benchmark Knowledge Bases
+## OpenClaw plugin
 
-Each benchmark task uses three JSON knowledge bases under `tool-resource/`:
+Setup enables the plugin, points it at `http://127.0.0.1:8765`, installs the
+trusted managed-execution launcher, and enables automatic sidecar startup.
+OpenClaw provider traffic should use `http://127.0.0.1:8765/v1`.
 
-- `runtime-tool-resource-kb.json` stores whole tool/command observations used
-  to predict latency, CPU, and memory.
-- `clause-resource-kb.json` stores shell-clause observations used for
-  clause-level resource prediction. Schema v5 excludes structurally identified
-  downstream pipeline consumers; older aggregated snapshots are rejected
-  because their polluted samples cannot be separated after aggregation.
-- `clause-lattice-time-kb.json` stores the eligible eBPF clause observations
-  and pending causal updates shared by the `shrinkage`, `loso`, and
-  `max_cardinality` clause-time predictors.
+The package default for `autoStartSidecar` is `false`; setup changes the
+installed configuration to `true` after validating the privileged runtime.
+An empty `sidecarCommand` is intentional: the plugin resolves the checkout,
+`.venv`, kernel build tree, and sudo command at launch time. `launcherPath` is
+different—it is an absolute trusted execution boundary and setup refreshes it
+when the checkout moves.
 
-The three lattice algorithms are specified in
-[sidecar.md](sidecar.md#lattice-time-prediction); their field-level trace
-format is documented in [trace-schema.md](trace-schema.md).
-
-`kb-batches/<batch-id>/` contains the batch's shared, evolving snapshot.
-Each `traces/<task-id>/tool-resource/` directory contains that task's working
-snapshot. How generations propagate across serial and concurrent tasks is
-described in
-[SWE-Rebench usage](../swe_rebench/README.md#knowledge-sharing-within-a-batch).
-
-The runtime and clause-resource files contain a shared `public` namespace and
-repo-specific knowledge under `repo`, such as
-`repo["12rambau/sepal_ui"]`. The lattice-time file deliberately does not use
-that hierarchy; it stores one flat observation corpus shared by all three
-algorithms. Files named `call_*.json` are per-call eBPF telemetry evidence
-used to update the KBs; they are not additional knowledge bases.
-
-Keep the host-openclaw runtime, eBPF requirement, privileged cgroup access, and
-runtime asset paths at their defaults. The unified benchmark command defaults to
-`linux/amd64` on Kunpeng and leaves the platform native on x86. Export
-`SWE_REBENCH_DOCKER_PLATFORM` only when an explicit override is needed; an
-environment value takes priority over `docker.platform` in this file.
-
-OpenClaw 2026.7.x does not accept an
-`agents.defaults.sandbox.docker.platform` key. ClawTune therefore keeps that
-key out of OpenClaw JSON and passes the selected platform to its Docker calls
-and child environment instead. Setup validates the resulting OpenClaw config.
-
-The API key file, `.env`, generated runtime assets, traces, and reports are
-Git-ignored.
-
-## OpenClaw Plugin
-
-Setup installs and patches the plugin with:
-
-- local sidecar endpoint `http://127.0.0.1:8765`;
-- an absolute managed-execution launcher from the repository `.venv`;
-- cgroup tracking enabled;
-- `hooks.allowConversationAccess: true`, required by
-  [OpenClaw's external-plugin hook policy](https://docs.openclaw.ai/plugins/hooks)
-  for the plugin's `agent_end` lifecycle hook;
-- automatic sidecar startup with an empty `sidecarCommand`.
-
-The permission is deliberately placed beside `config` under the
-`clawtune` plugin entry, not inside the plugin-specific configuration:
+The configured entry includes the lifecycle permission beside `config`:
 
 ```json
 {
@@ -214,92 +147,28 @@ The permission is deliberately placed beside `config` under the
     "entries": {
       "clawtune": {
         "hooks": {"allowConversationAccess": true},
-        "config": {"endpoint": "http://127.0.0.1:8765"}
+        "config": {
+          "endpoint": "http://127.0.0.1:8765",
+          "autoStartSidecar": true
+        }
       }
     }
   }
 }
 ```
 
-OpenClaw gates `agent_end` by hook name even though ClawTune's handler uses
-only lifecycle identity and does not persist the final conversation payload.
+For all plugin fields and defaults, use
+`packages/clawtune-plugin/openclaw.plugin.json` rather than copying a second
+option list into operational docs.
 
-An empty `sidecarCommand` is intentional, not a missing configuration. At
-runtime the plugin finds the checkout relative to its loaded package and
-resolves `.venv`, `.env`, `BCC_KERNEL_SOURCE` (or the running kernel's build
-link), a conservative executable path, and `sudo` arguments. Moving the
-checkout therefore does not leave a persisted absolute sidecar shell command.
+## Repository namespace
 
-`launcherPath` serves a different purpose: it is the trusted absolute boundary
-for managed, instrumented tool execution. An absolute path is a security
-requirement, not a host-specific literal in source. Rerunning setup after a
-move refreshes it. The pre-agent gate waits for a health response with the
-expected ClawTune service and schema identity before OpenClaw can contact the
-local model proxy. Normal interactive use can therefore run
-`openclaw gateway run` and attach `openclaw tui --session main`; the Gateway
-keeps the plugin and sidecar available across turns. Use `openclaw chat` for an
-embedded local TUI, `agent --local` for one-shot execution, or the explicit
-ClawTune `agent`/`sidecar` wrappers where sudo cannot prompt on a controlling
-terminal.
+The KB repository key is resolved in this order:
 
-The default sidecar startup window is 60 seconds so a Kunpeng cold start and
-an interactive sudo prompt do not consume the old 15-second limit. Advanced
-deployments can set `plugins.entries.clawtune.config.sidecarStartupTimeoutMs`
-between 1,000 and 600,000 milliseconds; the pre-agent hook always receives an
-additional five-second margin.
+1. `CLAWTUNE_REPO_KEY` (benchmark tasks inject this);
+2. plugin `repo` or `CLAWTUNE_REPO`;
+3. Git remote `origin`, then working-directory basename;
+4. sidecar fallback `CLAWTUNE_TOOL_RESOURCE_REPO` (default `openclaw`).
 
-OpenClaw provider traffic should use `http://127.0.0.1:8765/v1`. The plugin's
-full schema is in `packages/clawtune-plugin/openclaw.plugin.json`; values not
-covered here are advanced/developer options.
-
-## KB Repo Namespace
-
-The scheduler keeps per-repository tool-resource knowledge under a `repo` key
-(the KB `repo` layer). Each OpenClaw event already carries a `repo` field; the
-plugin resolves that value once per runtime with this priority:
-
-1. `CLAWTUNE_REPO_KEY` environment variable — explicit override. The SWE-Rebench
-   runner injects this per task (`task_repo_key`), so benchmark runs keep their
-   exact per-repository namespaces and never hit the derivation path.
-2. Plugin config `repo`
-   (`plugins.entries.clawtune.config.repo`, or
-   `CLAWTUNE_REPO` env) — explicit user override for a gateway.
-3. Auto-derived from the process working directory:
-   - git remote `origin` → `owner/repo` (handles HTTPS, SSH, `ssh://`, `git://`
-     and scp-like URLs, preserves subgroup paths);
-   - otherwise the working-directory basename (non-git workspace).
-4. `null` — the sidecar falls back to `CLAWTUNE_TOOL_RESOURCE_REPO`
-   (default `openclaw`).
-
-Normal interactive use therefore needs no configuration: start the Gateway from
-inside the repository you are working on, and tool/model events are namespaced
-to that repository automatically.
-
-```bash
-# terminal 1 — from inside /path/to/acme/widgets
-cd /path/to/acme/widgets
-openclaw gateway run
-
-# terminal 2
-openclaw tui --session main
-```
-
-To pin a namespace explicitly (for example when one Gateway serves several
-repositories), set the plugin config or environment variable:
-
-```json
-{
-  "plugins": {
-    "entries": {
-      "clawtune": {
-        "config": {"repo": "acme/widgets"}
-      }
-    }
-  }
-}
-```
-
-The value is fixed for the lifetime of the Gateway process. Use a separate
-Gateway process (with its own working directory, `repo`, or `CLAWTUNE_REPO_KEY`) to
-keep distinct repositories in separate namespaces, or let the sidecar default
-`CLAWTUNE_TOOL_RESOURCE_REPO` absorb everything as a single fallback.
+Start a Gateway from the repository it should learn about, or set an explicit
+key when one Gateway must be pinned to a namespace.

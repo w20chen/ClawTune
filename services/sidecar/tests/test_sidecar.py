@@ -48,6 +48,32 @@ def test_coverage_ratio_is_defensively_bounded() -> None:
     assert reason == "full_window"
 
 
+def test_runtime_drain_can_defer_global_kb_flush(monkeypatch, tmp_path) -> None:
+    state = build_state(SidecarConfig(trace_dir=tmp_path / "traces"))
+    flushes: list[float | None] = []
+    monkeypatch.setattr(
+        state.predictor,
+        "flush_kb_updates",
+        lambda timeout_seconds=None: flushes.append(timeout_seconds),
+    )
+
+    with TestClient(create_app(state)) as client:
+        deferred = client.post(
+            "/v1/runtime/task-runtime/drain?flush_kb=false"
+        )
+        assert deferred.status_code == 200
+        assert deferred.json()["drained"] is True
+        assert deferred.json()["kb_flushed"] is False
+        assert flushes == []
+
+        durable = client.post(
+            "/v1/runtime/final-barrier/drain?flush_kb=true"
+        )
+        assert durable.status_code == 200
+        assert durable.json()["kb_flushed"] is True
+        assert len(flushes) == 1
+
+
 def test_v6_quality_is_honest_about_partial_sampling() -> None:
     from clawtune_sidecar.trace import _v6_quality
 

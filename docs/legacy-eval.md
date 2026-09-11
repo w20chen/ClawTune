@@ -1,5 +1,8 @@
 # Reproduction Guide for Offline Evaluation on the Legacy Dataset
 
+Status: historical experiment reproduction. This is not the current
+task-held-out `scripts/clawtune.py offline` workflow.
+
 This document explains how to reproduce the four types of ClawTune results on the
 legacy trace dataset:
 
@@ -8,8 +11,9 @@ legacy trace dataset:
 3. The residency cost `C_R` and invalidation metric `C_M` of dynamic KV-TTL;
 4. The offline sweep of the shrinkage hyperparameter `kappa`.
 
-For the base module documentation and all CLI options, see
-[`legacy_eval/README.md`](../legacy_eval/README.md).
+For the authoritative CLI options, run `python -m legacy_eval --help`. The
+[module README](../legacy_eval/README.md) summarizes how this historical path
+differs from the current offline workflow.
 
 ## 1. Environment and data
 

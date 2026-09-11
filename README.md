@@ -3,54 +3,50 @@
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-%E2%89%A52026.7.1-6e40c9.svg)](https://openclaw.ai/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-ClawTune adds hardware-aware tracing and profiling to OpenClaw. It combines
-an OpenClaw plugin with a local sidecar and uses eBPF to measure the
-CPU, memory, process lifecycle, model calls, and tool calls of real agent work.
-The demo has three paths: daily OpenClaw learning, online benchmark simulation, and frozen offline trace evaluation. Five peer benchmark adapters share one run lifecycle; resource labels are accepted only when their attribution is valid.
+ClawTune adds hardware-aware tracing and profiling to OpenClaw. The OpenClaw
+plugin sends lifecycle events to a local sidecar, which records model/tool
+traces and learns duration, CPU, memory, and PMU predictions from valid
+telemetry. Placement advice is advisory in this MVP.
 
-## Supported Hosts
+There are three supported workflows:
 
-| Host | Status | Notes |
+| Workflow | Entry point | State |
 | --- | --- | --- |
-| Kunpeng / arm64 + openEuler | Supported | eBPF runs natively; the setup command enables QEMU for amd64 benchmark images of SWE-Rebench |
-| x86_64 Linux | Supported | eBPF and benchmark images run natively |
+| Daily OpenClaw use | `openclaw gateway run` | Persistent user KB |
+| Online benchmark simulation | `python3 scripts/clawtune.py benchmark ...` | New run-owned, learning KB |
+| Frozen trace evaluation | `python3 scripts/clawtune.py offline ...` | Task-held-out, read-only test KB |
 
-The Linux host needs Docker, Node.js/npm, OpenClaw 2026.7.1 or newer, Python
-3.10 or newer, Linux 5.8 or newer, cgroup v2, and development files matching
-the running kernel. The setup command installs the BCC/Clang/kernel packages
-it can safely identify; it reports Docker, Node.js, or OpenClaw as one
-consolidated missing-software list instead of attempting to replace an
-existing installation.
+The supported hosts are Kunpeng/arm64 openEuler and x86_64 Linux. They need
+Docker, Node.js/npm, OpenClaw 2026.7.1 or newer, Python 3.10 or newer, Linux
+5.8 or newer, cgroup v2, and development files matching the running kernel.
 
 ## Quick Start
 
-Run these commands as a user from the repository root. An active Conda
-environment is harmless: the setup program deliberately selects the system
-Python that owns the distribution's `bcc` or `bpfcc` binding.
+Run commands as a normal user from the repository root. Setup elevates only
+the package, QEMU, ownership-repair, and eBPF operations that need it.
 
 ### 1. Prepare the host
 
 ```bash
 python3 scripts/clawtune.py setup
-```
-
-A successful collector check prints `Setup and eBPF validation passed; the
-validation process has exited.` If the collector check fails, setup completes
-but reports that resource attribution is unavailable; fix the host and run
-`python3 scripts/clawtune.py check` before treating a trace as valid. The plugin
-starts the real sidecar when OpenClaw needs it. You can rerun setup after an
-update because it reuses healthy state. To inspect detected paths, run:
-
-```bash
 python3 scripts/clawtune.py doctor
 ```
 
-### 2. Configure the model provider
+Setup creates `.env` and `configs/benchmark.yaml` without overwriting existing
+files, installs/builds the plugin and sidecar, and exercises the real eBPF
+collector. A valid collector check ends with:
 
-`setup` creates `.env` and `configs/benchmark.yaml` without overwriting existing files. Older SWE/DRB configs remain readable through `--config`.
+```text
+[ClawTune] Setup and eBPF validation passed; the validation process has exited.
+```
 
-For normal OpenClaw use, configure an OpenAI-compatible provider that points
-to ClawTune's local proxy:
+If it does not, correct the reported host issue and run
+`python3 scripts/clawtune.py check` before accepting a trace as valid.
+
+### 2. Configure the provider
+
+For normal OpenClaw use, point an OpenAI-compatible provider at ClawTune's
+local proxy:
 
 ```bash
 openclaw onboard --non-interactive --accept-risk --skip-health \
@@ -60,14 +56,12 @@ openclaw onboard --non-interactive --accept-risk --skip-health \
   --custom-model-id "<model>"
 ```
 
-For all benchmarks, export the provider key in the shell that starts the run:
+For benchmarks, export the key and edit the model values in
+`configs/benchmark.yaml`:
 
 ```bash
 export LLM_API_KEY="<provider-api-key>"
 ```
-
-The wrapper preserves the key through its explicit sudo allow-list. Alternatively,
-use the ignored `configs/llm_api_key.txt` file. Edit `configs/benchmark.yaml`:
 
 ```yaml
 llm:
@@ -76,57 +70,37 @@ llm:
   openclaw_model_ref: "vllm/your-model-name"
 ```
 
-Secrets are ignored by Git. Do not commit `.env`, OpenClaw credentials, or
-the `llm_api_key.txt` files.
+The ignored `configs/llm_api_key.txt` is the persistent alternative. Never
+commit `.env`, provider credentials, benchmark workspaces, or raw traces.
 
-### 3. Run ClawTune with OpenClaw
+### 3. Run OpenClaw
 
-For normal interactive CLI use, run one local Gateway and connect the TUI from
-a second terminal:
+For an ongoing conversation, run one Gateway and attach a TUI:
 
 ```bash
-# terminal 1: owns agents, sessions, runs, hooks, and the ClawTune plugin
+# terminal 1
 openclaw gateway run
 
-# terminal 2: reuse the default session, or choose another session key
+# terminal 2
 openclaw tui --session main
 ```
 
-For a single‑user production environment, the recommended setup comprises one Gateway and a small number of active sessions. A session contains repeated turns. ClawTune keeps the sidecar alive with the Gateway, finalizes trace
-state after each turn, and releases session fallback state when a session ends.
-Docker is an execution/isolation boundary for sandboxed tools and benchmark
-tasks; it is not another conversation owner and does not imply one container
-per Gateway turn.
+The Gateway owns sessions and runs; the plugin keeps one compatible sidecar
+available and finalizes trace state after each turn. Docker is the tool
+execution boundary, not another conversation owner.
 
-Use the following forms for narrower cases:
-
-| Need | Command | Lifetime |
-| --- | --- | --- |
-| Interactive use through the Gateway | `openclaw tui --session main` | Reuses Gateway-owned sessions and sidecar |
-| Interactive local use without a Gateway | `openclaw chat` | One embedded TUI process |
-| One non-interactive smoke turn | `openclaw agent --local ...` | One embedded run, then process cleanup |
-| Non-interactive sudo fallback | `python3 scripts/clawtune.py agent --local ...` | Wrapper starts and stops the sidecar for that invocation |
-
-The configured plugin starts the privileged eBPF sidecar and waits for
-readiness before the first model request. For example, this one-shot command
-is useful as an installation smoke test:
+For a one-shot installation smoke test:
 
 ```bash
 openclaw agent --local --agent main \
   --model "vllm/<model>" \
-  --message "Use the shell to run: python -c 'print(\"clawtune-ok\")'." \
-  --session-key "<set a session key>"
-# output "clawtune-ok"
+  --message "Use the shell to run: python -c 'print(\"clawtune-ok\")'."
 ```
 
-If a sidecar is already running, the plugin reuses it. The explicit
-`python3 scripts/clawtune.py agent ...` wrapper remains available for
-one-shot, non-interactive environments where plugin-spawned sudo cannot use a
-terminal. It is not the normal entry point for an ongoing CLI conversation.
-The plugin resolves the current checkout, `.venv`, matching kernel build tree,
-and privileged launch arguments at runtime. It does not persist a generated
-absolute sidecar command that would become stale after the checkout moves.
-Traces are written under `traces/`.
+Use `python3 scripts/clawtune.py sidecar` only when a service manager or a
+non-interactive environment must own the privileged sidecar explicitly.
+Traces are written below `traces/`; daily KB state defaults to
+`~/.local/state/clawtune/kb` and can be moved with `CLAWTUNE_STATE_DIR`.
 
 ### 4. Simulate users with a benchmark
 
@@ -140,95 +114,44 @@ python3 scripts/clawtune.py benchmark --benchmark bfcl --category multi_turn_bas
 python3 scripts/clawtune.py benchmark --benchmark terminal-bench --dataset /data/terminal-bench/tasks --sample 2
 ```
 
-`--sample N` selects the first N tasks after filtering. It is **serial online
-learning**, with one run-owned sidecar and KB. Each task gets a new workspace
-and conversation, while later tasks see earlier tasks' completed observations.
-A new invocation starts a new run from the immutable seed, independent of daily
-state and other runs. Only `--parallelism 1` is supported.
+`--sample N` takes the first N tasks after filtering; it is not random.
+`--parallelism N` bounds the number of tasks in flight (`1` is serial). Tasks
+do not wait for one another: accepted observations update the shared in-memory
+predictor and are coalesced by one asynchronous KB writer. Per-task cleanup
+waits only for that runtime's finalizers; one final durability barrier commits
+all queued updates before the run completes. Every invocation starts an
+independent KB from the immutable seed.
+Outputs live in `.runtime/benchmarks/<benchmark>/<run>/`; resume is allowed
+only at a fully saved task boundary. These runs measure prediction and
+learning, not official task solve scores (`official_score` is `null`).
 
-Outputs live in `.runtime/benchmarks/<benchmark>/<run>/`. `run.json` records
-selection order, per-task KB generations, errors and learning status.
-`--resume /path/to/run` resumes only at a saved task boundary with the original
-config and seed. An interrupted active task is rejected because it may have
-partially updated the KB. `--seed /path/to/offline/seed` selects another seed.
-`drb` remains a compatibility alias for the same benchmark command.
+See [benchmark adapters and input formats](docs/MULTI_BENCHMARK_IMPLEMENTATION.md).
 
-BFCL needs its native dependencies and `BFCL_REPO_PATH` pointing to a Gorilla
-checkout; executable stateful categories retain native functions and state
-across turns. AST-only cases are rejected explicitly. Terminal Bench copies the
-native task Compose environment to the run directory and exposes `terminal_exec`
-inside its `client` container. This demo measures learning and prediction;
-`official_score` is null, not a task-solving leaderboard score. See the
-[implementation and input formats](docs/MULTI_BENCHMARK_IMPLEMENTATION.md).
-
-### 5. Train and evaluate fixed traces
+### 5. Evaluate fixed traces
 
 ```bash
 python3 scripts/clawtune.py offline --dataset /data/fixed-traces --rss-unit MiB
-# Use a 70/30 split (the default is 80/20):
-python3 scripts/clawtune.py offline --dataset /data/fixed-traces --rss-unit MiB --train-fraction 0.7
-# Legacy SWE traces without benchmark metadata:
-python3 scripts/clawtune.py offline --dataset /data/swe-traces --benchmark swe-rebench --rss-unit MiB
+# Legacy traces without benchmark metadata need an explicit identity:
+python3 scripts/clawtune.py offline --dataset /data/swe-traces \
+  --benchmark swe-rebench --rss-unit MiB
 python3 scripts/clawtune.py kb status
-python3 scripts/clawtune.py kb status --path /path/to/run/kb
 ```
 
-The first use of a task roster creates a fixed name-hash split under
-`.runtime/offline/splits/`; later runs reuse that train/test list even when the
-dataset is copied to another path or trace contents are refreshed. Pass
-`--split-cache-dir` to place this registry elsewhere. Nested datasets prefer
-`attempt_N/trace.jsonl`, fall back to `trace.raw.jsonl` when necessary, and
-ignore internal OpenClaw session JSONL files.
-Changing `--train-fraction` creates a separate fixed split and a new cold-start
-seed in the new experiment output. It never reuses a seed trained from another
-fraction.
-
-The offline path supports task-scoped trace v5 and v6. It groups by dataset and
-repository (category for non-repository tasks), keeps all attempts/turns of a
-task together, and deterministically assigns about 80% to training. Singleton
-groups go to training; groups of two or more keep test tasks. Each dataset
-trains its **own** three-layer seed; tests never update it. Outputs contain
-`split.json`, `seed/`, `predictions.jsonl`, and `report.json` / `report.md`.
-Missing CPU/memory labels are unavailable, never zero-filled.
-Global and per-repository reports include each repository's train/test task
-counts. Duration uses the configured right-open buckets and reports probability
-argmax accuracy, macro recall over buckets with observed support, per-bucket
-precision/recall/F1, a confusion matrix, and Brier score. Every continuous
-time/CPU/memory target reports coverage, MAE, median and p90 absolute error,
-RMSE, signed mean bias, WAPE, sMAPE, within-2x rate, and p90
-coverage/pinball loss. Accuracy and errors are conditional on available
-predictions; always read them together with coverage.
-Per-task declared resource sampling periods are read from each trace and
-recorded in the seed/report (`sample_interval_s` in v5 and
-`sampling_interval_ms` in v6). Partial first/last sample durations are not
-mistaken for the configured period. CPU totals are not rescaled by sampling
-rate; CPU peak requires a verified fixed 500 ms clause window, while sampled
-peak RSS remains explicitly sampling-frequency dependent.
-The report always includes IPC, LLC read MPKI, and LLC read miss-rate
-availability. Online daily and benchmark runs print the same three PMU targets
-for every tool prediction in verbose mode, including explicit unavailable
-reasons when ToolKB has no quality-gated history.
-
-Daily KB state defaults to `~/.local/state/clawtune/kb`; set `CLAWTUNE_STATE_DIR`
-to relocate it. Trace export directories do not select a KB. Three snapshots
-commit together through `CURRENT`; a single writer lock prevents simultaneous
-writers, and restarts restore the last committed generation. Uncommitted
-observations from an abrupt termination can be lost. Seeds are never writable.
+Offline evaluation keeps complete tasks and attempts together, creates or
+reuses a deterministic per-benchmark/per-group split under
+`.runtime/offline/splits/`, trains one seed per dataset, and never updates it
+while testing. Outputs contain `split.json`, `seed/`, `predictions.jsonl`,
+`report.json`, and `report.md`. Missing CPU, memory, or PMU labels remain
+unavailable rather than being filled with zero.
 
 ## Documentation
 
-- [Complete installation and first run](docs/getting-started.md)
-- [Configuration](docs/configuration.md)
-- [ClawTune Sidecar reference](docs/sidecar.md)
-- [Kunpeng and arm64](docs/arm-qemu.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [Trace & protocol reference](docs/trace-schema.md)
-- [SWE-Rebench usage](swe_rebench/README.md)
-- [SWE-Rebench trace replay](swe_rebench/README.md#replay-a-case)
-- [Deep Research Bench usage](deep_research_bench/README.md)
-- [Offline dataset evaluation](docs/legacy-eval.md)
-- [Evaluation report](docs/legacy_eval_final_report.md)
-- [Architecture and developer references](docs/architecture.md)
+Start with the [documentation map](docs/README.md). The main operational guides
+are [installation](docs/getting-started.md),
+[configuration](docs/configuration.md),
+[sidecar reference](docs/sidecar.md),
+[trace and protocol reference](docs/trace-schema.md), and
+[troubleshooting](docs/troubleshooting.md).
 
 ## Development Checks
 
@@ -240,4 +163,3 @@ cd packages/clawtune-plugin && npm test && npm run typecheck
 ```
 
 The JSON Schemas in `contracts/` are the public protocol source of truth.
-Placement recommendations remain advisory in the current release.

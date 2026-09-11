@@ -1,15 +1,14 @@
 # Installation and First Run
 
-This guide expands the short path in the root README. It is written for a
-fresh Linux checkout and covers both Kunpeng/openEuler and x86_64 Linux.
+This guide covers a fresh Linux checkout on Kunpeng/openEuler or x86_64 Linux.
+See [configuration](configuration.md) for settings and
+[troubleshooting](troubleshooting.md) when a check fails.
 
-See [configuration.md](configuration.md) for the full option reference and
-[troubleshooting.md](troubleshooting.md) when a step fails.
+## Requirements
 
-## Before You Begin
-
-Use a normal login user with `sudo` access. Confirm that Docker, Node.js/npm,
-and OpenClaw are installed and usable by that user:
+Use a normal login user with `sudo` access. The host needs Linux 5.8 or newer,
+cgroup v2, and matching kernel development files. Confirm that site-managed
+dependencies are already installed:
 
 ```bash
 docker info
@@ -18,17 +17,11 @@ npm --version
 openclaw --version
 ```
 
-ClawTune does not install or replace these three applications because their
-repository, daemon, proxy, and security settings are site-specific. Everything
-kernel/eBPF-related is handled by the project setup command on systems using
-`dnf` or `apt`.
+ClawTune supports Python 3.10 or newer and OpenClaw 2026.7.1 or newer. It does
+not install or replace Docker, Node.js, or OpenClaw because their daemon,
+repository, proxy, and security settings are site-specific.
 
-Docker must use a Linux daemon. The host needs Linux 5.8 or newer with cgroup
-v2, and matching development files must be available in the distribution
-repository. ClawTune supports both `x86_64` and `aarch64`; Kunpeng/openEuler is
-the primary bring-up target.
-
-## Install ClawTune
+## Install
 
 From the repository root:
 
@@ -36,93 +29,68 @@ From the repository root:
 python3 scripts/clawtune.py setup
 ```
 
-This one command:
+Do not prefix the whole command with `sudo`. Setup elevates only the operations
+that need it. It:
 
-- detects openEuler/RHEL (`dnf`) or Debian/Ubuntu (`apt`);
-- installs missing eBPF compiler, BCC, and matching kernel packages;
-- creates one reusable `.venv` that can see the system BCC binding;
-- installs, builds, and configures the OpenClaw plugin;
-- repairs a stale ClawTune plugin link after the repository has moved;
-- configures automatic privileged sidecar startup with a readiness gate;
-- builds and validates the parser adapter for the privileged host runtime;
-- enables and tests amd64 Docker images automatically on Kunpeng;
-- compiles, attaches, and exercises the real eBPF collector.
+- installs identifiable eBPF compiler, BCC, and kernel packages;
+- creates the reusable `.venv` with access to the distribution BCC binding;
+- installs the sidecar and builds/configures the OpenClaw plugin;
+- builds the parser adapter for the privileged runtime;
+- enables and tests amd64 Docker images on Kunpeng;
+- compiles, attaches, and exercises the real eBPF collector;
+- creates `.env` and `configs/benchmark.yaml` if absent.
 
-Do not prefix the whole command with `sudo`. The script elevates only package,
-QEMU, ownership-repair, and eBPF validation operations. Running the complete
-setup as root would create files that your normal account cannot rebuild.
+Setup also keeps the older SWE/DRB config files for compatibility with their
+internal runners. The supported public benchmark command uses
+`configs/benchmark.yaml`.
 
-The setup command intentionally ignores the active Conda interpreter when it
-does not own BCC. On openEuler it can use the distribution module named
-`bpfcc`; on Debian/Ubuntu it can use `bcc`. Both expose the API ClawTune needs.
-No import symlink and no `PYTHONPATH` compatibility directory are required.
-
-The reusable environment is always `.venv`. If that directory already exists
-but was created from the wrong Python, setup asks you to rename or remove that
-single directory rather than attempting to combine incompatible interpreters.
-
-At the end, setup attempts a real validation: compile the complete BPF program,
-attach its probes, create a test cgroup, execute a process, and verify usable
-events. The report is saved at `data/ebpf-check.json`. Setup also runs
-`openclaw config validate` and builds the architecture-specific parser adapter
-as the same privileged identity used by the sidecar. An unsupported OpenClaw
-key or missing adapter is therefore rejected before the first agent run.
-
-A successful setup includes:
+A successful collector check includes:
 
 ```text
 [ClawTune] Setup and eBPF validation passed; the validation process has exited.
 ```
 
-The process that exited is only the temporary validation. The plugin starts
-the long-running sidecar on demand. An eBPF validation failure is currently
-non-fatal to setup, but strict `exec` collection and benchmark runs will still
-fail closed. Correct the reported host issue and run
-`python3 scripts/clawtune.py check` before accepting measurements.
+The exited process is only the temporary validation. An eBPF validation
+failure is non-fatal to installation but invalidates strict measurements.
+Correct the host and rerun:
 
-## Configure a Provider
+```bash
+python3 scripts/clawtune.py check
+```
 
-### Benchmark runs
+## Configure the provider
 
-The shortest-lived option is to export the provider key in the same shell that
-starts the benchmark:
+### Benchmarks
+
+Export the provider key in the shell that starts the run:
 
 ```bash
 export LLM_API_KEY="<provider-api-key>"
 ```
 
-The wrapper passes this value through `sudo` with a narrow environment
-allow-list; it does not use broad `sudo -E`. For a persistent local setup, put
-the raw key on one line in the Git-ignored file
-`swe_rebench/llm_api_key.txt` (or `deep_research_bench/llm_api_key.txt` for
-Deep Research Bench) instead. `LLM_API_KEY_FILE` can point to another
-file when a site already manages secrets that way.
+Alternatively, put the raw key on one line in the ignored
+`configs/llm_api_key.txt`. Edit `configs/benchmark.yaml`:
 
-Edit `swe_rebench/config.yaml` (or `deep_research_bench/config.yaml` for Deep
-Research Bench) and set the upstream URL and model names. Most
-users do not need to change the runtime, Docker privilege, cgroup, runtime assets, or
-output sections. On arm64, the SWE-Rebench wrapper defaults the Docker platform
-to `linux/amd64`. An explicitly exported `SWE_REBENCH_DOCKER_PLATFORM` takes
-priority; x86 stays native by default. Deep Research Bench uses a multi-arch
-basic sandbox image, so `drb` does not force a platform.
-
-### Normal OpenClaw Runs
-
-The plugin is installed and enabled by setup. It expects the sidecar at
-`http://127.0.0.1:8765`. Configure the OpenClaw model provider with proxy base
-URL:
-
-```text
-http://127.0.0.1:8765/v1
+```yaml
+llm:
+  upstream_base_url: "https://api.deepseek.com"
+  model: "your-model-name"
+  openclaw_model_ref: "vllm/your-model-name"
 ```
 
-ClawTune forwards the authorization header to the upstream provider. If the
-upstream URL is not DeepSeek-compatible, set
+Deep Research Bench also uses `TAVILY_API_KEY` when Tavily search is enabled.
+See its [benchmark guide](../deep_research_bench/README.md).
+
+### Normal OpenClaw runs
+
+Configure an OpenAI-compatible provider with the proxy base URL
+`http://127.0.0.1:8765/v1`. ClawTune forwards OpenClaw's authorization header
+upstream. For a provider other than the default, set
 `CLAWTUNE_LLM_UPSTREAM_BASE_URL` in `.env` and restart the sidecar.
 
-## Start and Verify
+## Start and verify
 
-For an ongoing CLI conversation, start one Gateway and attach the TUI:
+For an ongoing conversation:
 
 ```bash
 # terminal 1
@@ -132,106 +100,72 @@ openclaw gateway run
 openclaw tui --session main
 ```
 
-The Gateway owns the agent runtime and reusable sessions. Each submitted turn
-is a run; ClawTune closes that run's trace writers and clears its correlation
-state when the turn ends. One Gateway with a few sessions is the intended
-normal-user shape.
-
-For a quick one-shot verification instead, run:
+For a one-shot smoke test:
 
 ```bash
 openclaw agent --local --agent main --model "vllm/<model>" \
   --message "Use the shell to run uname -a, then summarize it."
 ```
 
-`--local` creates an embedded run and exits after the reply. It is appropriate
-for smoke tests and scripts, but it is not the primary entry point for a
-multi-turn CLI conversation. `openclaw chat` is the interactive embedded-TUI
-alternative when Gateway-only features are not needed.
-
-The plugin asks for sudo when needed, starts the eBPF sidecar with the verified
-`.venv` and kernel environment, and blocks the first agent turn until port 8765
-identifies itself as a compatible ClawTune sidecar. A pre-existing compatible
-sidecar is reused; an unrelated service on that port is rejected.
-
-The automatic sidecar command is deliberately not stored in OpenClaw's JSON.
-At each launch the plugin finds the current checkout from its own installed
-location, then resolves `.venv`, `.env`, the running kernel's build tree, and
-the required `sudo` arguments. The separate `launcherPath` remains absolute:
-it is the trusted managed-execution boundary used for instrumented tools, and
-setup refreshes it whenever the checkout moves.
-
-For a non-interactive service without a controlling terminal, either provide
-site-managed privilege or start the sidecar explicitly before OpenClaw:
+The plugin starts a compatible sidecar on demand and waits for readiness. A
+pre-existing compatible sidecar is reused; another service on port 8765 is
+rejected. Use the explicit sidecar command only when a service manager or a
+non-interactive environment owns its lifetime:
 
 ```bash
 python3 scripts/clawtune.py sidecar
 ```
 
-Use the consolidated environment report at any time:
+Inspect the environment at any time:
 
 ```bash
 python3 scripts/clawtune.py doctor
 ```
 
-Repeat the kernel-level collector test after a kernel/BCC update:
+## Run a benchmark
+
+List adapters and validate a small selection without Docker or an LLM:
 
 ```bash
-python3 scripts/clawtune.py check
+python3 scripts/clawtune.py benchmark --list
+python3 scripts/clawtune.py benchmark --sample 2 --dry-run
 ```
 
-## Run SWE-Rebench
-
-Start with one task:
+Then start with one live task:
 
 ```bash
-python3 scripts/clawtune.py benchmark --sample 1
+python3 scripts/clawtune.py benchmark --benchmark swe-rebench --sample 1
 ```
 
-On Kunpeng, QEMU runs are slower than native x86_64, so raise
-`batch.task_timeout_seconds` only when a real task reaches the default
-deadline. Task selection, concurrency, and batch semantics are described in
-[SWE-Rebench usage](../swe_rebench/README.md) and the root README's
-[Run a benchmark](../README.md#4-run-a-benchmark) section.
+The unified benchmark workflow uses `batch.parallelism` from the config or the
+`--parallelism N` override. `1` is serial; larger values are the maximum number
+of tasks in flight. Finished tasks are replaced immediately without a batch
+barrier. Tool completions update the shared in-memory predictor and enqueue
+coalesced persistence on one writer. Each task waits only for its own runtime
+finalizers, and the run performs one global durability barrier before it
+reports completion.
 
-## Run Deep Research Bench
+See the [adapter/input reference](MULTI_BENCHMARK_IMPLEMENTATION.md) and the
+[SWE-Rebench guide](../swe_rebench/README.md).
 
-Deep Research Bench runs research questions through OpenClaw while ClawTune
-records the same model/tool/resource telemetry. There is no per-task image and
-no `/testbed` repository; the agent's tools run in one very basic Docker
-sandbox image (default `python:3.11-slim`). A bundled three-task smoke source
-is used when no dataset is named:
+Deep Research Bench uses the same runner:
 
 ```bash
-python3 scripts/clawtune.py drb --sample 1 --parallelism 1
+TAVILY_API_KEY="<key>" python3 scripts/clawtune.py benchmark \
+  --benchmark deep-research-bench --sample 1
 ```
 
-Task selection, Tavily web-search configuration, output locations, and the
-relaxed telemetry gate are described in
-[Deep Research Bench usage](../deep_research_bench/README.md) and the root
-README's [Run a benchmark](../README.md#4-run-a-benchmark) section.
+`python3 scripts/clawtune.py drb ...` is a compatibility alias for the same
+command.
 
-## Updating the Checkout
+## Updating the checkout
 
-After pulling commits, rerun the same idempotent setup command:
+After pulling commits or moving the repository, rerun:
 
 ```bash
 python3 scripts/clawtune.py setup
 ```
 
-It rebuilds the plugin, refreshes the editable Sidecar installation, retains
-your existing `.env` and benchmark config, validates the current OpenClaw
-schema, and verifies eBPF again.
-
-If the repository moved or only its path capitalization changed, setup detects
-an invalid old ClawTune link before plugin installation. It backs up
-`~/.openclaw/openclaw.json`, runs OpenClaw's repair command, and links the
-current checkout. It also refreshes the absolute trusted `launcherPath`; the
-sidecar command stays empty and is rediscovered at runtime. Other valid plugin
-paths are retained by OpenClaw.
-
-## Replay a SWE-Rebench Trace
-
-Replay reproduces a recorded benchmark interaction without contacting the LLM
-provider. Commands, timing options, and output locations are documented in
-[SWE-Rebench usage](../swe_rebench/README.md#replay-a-case).
+Setup preserves existing secrets/configuration, refreshes the editable
+sidecar/plugin installation and trusted launcher path, validates the OpenClaw
+schema, and checks eBPF again.

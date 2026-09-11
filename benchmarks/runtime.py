@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import subprocess
 import time
 from pathlib import Path
@@ -16,8 +15,16 @@ from clawtune_kb.store import write_json
 def execute(task: Task, config, assets: Path, run_dir: Path, port: int):
     from swe_rebench.host_openclaw import run_host_openclaw_task
     from swe_rebench.task_source import TaskDef
+    # RunnerConfig carries task-local paths and namespace fields used by the
+    # retained host executors. Never mutate the shared instance: concurrent
+    # tasks would otherwise overwrite one another's workspace and repo key.
+    config = copy.deepcopy(config)
     config.kb_repo = task.benchmark + ":" + task.group
     config.task_directory = task.directory_name
+    # Runtime cleanup must wait for this task's executions/finalizers, but a
+    # per-task persistence barrier would serialize worker turnover. The common
+    # runner performs one global durability barrier after all tasks finish.
+    config.flush_kb_on_task_drain = False
     trace = run_dir / "traces" / task.directory_name
     trace.mkdir(parents=True, exist_ok=False)
     if task.kind == "repository":
@@ -37,6 +44,19 @@ def execute(task: Task, config, assets: Path, run_dir: Path, port: int):
     return _execute_bridged(task, config, run_dir, port, trace)
 
 
+def flush_all_kb_updates(port: int, *, timeout_seconds: float = 60.0) -> None:
+    """Place one durability barrier after all benchmark KB updates."""
+    from swe_rebench import host_openclaw as host
+
+    host._drain_runtime(
+        port,
+        "clawtune-benchmark-final-barrier",
+        gateway_id="swe-rebench",
+        timeout_seconds=timeout_seconds,
+        flush_kb=True,
+    )
+
+
 def _execute_bridged(task, config, run_dir, port, trace):
     from .backends import BFCLBackend, TerminalBackend
     from .tool_bridge import ToolBridge
@@ -52,12 +72,14 @@ def _execute_bridged(task, config, run_dir, port, trace):
     deadline = host._task_deadline(config, started)
     backend = BFCLBackend(task, run_dir) if task.kind == "functions" else TerminalBackend(task, run_dir, deadline=deadline)
     manifest = trace / "tool-bridge.json"
-    old = os.environ.get("CLAWTUNE_BENCHMARK_TOOLS")
     exit_code, error = -1, None
     try:
         with ToolBridge(backend) as bridge:
             bridge.manifest(manifest)
-            os.environ["CLAWTUNE_BENCHMARK_TOOLS"] = str(manifest)
+            # The manifest belongs to this OpenClaw process. Passing it through
+            # the task-local config avoids a process-global environment race
+            # when BFCL or Terminal tasks run concurrently.
+            config.benchmark_tools_manifest = str(manifest)
             host._configure_openclaw(trace_dir=trace, openclaw_home=home, sidecar_port=port,
                                      workspace=workspace, config=config, deadline=deadline)
             env = host._openclaw_env(home, port, config, workspace)
@@ -86,13 +108,14 @@ def _execute_bridged(task, config, run_dir, port, trace):
                 if exit_code != 0:
                     break
     finally:
-        if old is None:
-            os.environ.pop("CLAWTUNE_BENCHMARK_TOOLS", None)
-        else:
-            os.environ["CLAWTUNE_BENCHMARK_TOOLS"] = old
         manifest.unlink(missing_ok=True)
         try:
-            host._drain_runtime(port, runtime_id, gateway_id="swe-rebench")
+            host._drain_runtime(
+                port,
+                runtime_id,
+                gateway_id="swe-rebench",
+                flush_kb=False,
+            )
             host._collect_runtime_traces(run_dir / "sidecar", trace, runtime_id, task_label=task.directory_name)
         finally:
             backend.close()

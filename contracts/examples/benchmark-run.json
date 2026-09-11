@@ -1,0 +1,20 @@
+{
+  "schema": "clawtune.benchmark-run.v1",
+  "benchmark": "swe-rebench",
+  "mode": "online",
+  "status": "completed",
+  "seed_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "task_order": ["org__repo-1", "org__repo-2"],
+  "results": [
+    {"task_id": "org__repo-2", "exit_code": 0},
+    {"task_id": "org__repo-1", "exit_code": 0}
+  ],
+  "environment": {"platform": "Linux", "model": "example-model"},
+  "kb_path": "/runs/example/kb",
+  "kb_flush_complete": true,
+  "kb_final_generation": 7,
+  "official_score": null,
+  "parallelism": 2,
+  "tasks": [],
+  "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}

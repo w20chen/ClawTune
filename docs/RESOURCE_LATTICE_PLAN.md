@@ -1,5 +1,8 @@
 # CPU and memory lattice prediction plan
 
+Status: historical implementation plan. Current behavior is documented in
+[lattice-resources.md](lattice-resources.md) and the JSON Schemas.
+
 Status: superseded planning discussion. The user subsequently chose raw metric storage
 and query-time thresholds. See [implemented design](lattice-resources.md); the fixed
 heavy-score targets below are not implemented.
