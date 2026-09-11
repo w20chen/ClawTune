@@ -2,12 +2,16 @@
 
 ClawTune is an execution monitoring and resource prediction system for OpenClaw agents. It correlates model requests, tool calls, and operating-system measurements, then uses historical observations to estimate execution time, CPU use, and memory consumption before subsequent calls.
 
-The system consists of a plugin and a local service; it does not modify OpenClaw core. Resource placement recommendations are advisory.
+The system consists of a plugin and a local service; it does not modify OpenClaw core. It reports concurrency and resource information for deployment components.
 
-- [Technical report](docs/technical-report.md): system design, measurement definitions, prediction methods and equations.
-- [Installation and use](docs/getting-started.md): machine setup, configuration, daily operation, and development.
-- [Benchmarks and evaluation](docs/benchmarks.md): task preparation, five benchmark adapters, offline evaluation, and output interpretation.
+| Path | Purpose | Main command | Read next |
+| --- | --- | --- | --- |
+| Daily OpenClaw operation | Monitor normal agent conversations and learn from completed tool calls | `openclaw gateway run` | [Installation and use](docs/getting-started.md) |
+| Online benchmark | Execute benchmark tasks with a shared, run-local model that learns during the run | `python3 scripts/clawtune.py benchmark ...` | [Benchmarks and evaluation](docs/benchmarks.md#1-configure-a-first-run) |
+| Offline evaluation | Train on existing execution traces and evaluate on held-out tasks without model calls | `python3 scripts/clawtune.py offline ...` | [Offline evaluation](docs/benchmarks.md#5-fixed-trace-offline-evaluation) |
 
-Start with the installation guide on a new machine. The repository contains configuration templates, protocols, test fixtures, and a small initialization prior. Generated experimental results belong in local output directories or external storage.
+Read the [technical report](docs/technical-report.md) for the system design, measurement definitions, prediction methods, and equations. Set up a new machine with the [installation guide](docs/getting-started.md) before using any live path.
 
-[JSON Schemas](contracts/) define the public protocol. Outstanding environment checks are recorded in [CURRENT_PLAN.md](docs/CURRENT_PLAN.md).
+The repository contains configuration templates, protocols, test fixtures, and a small initialization prior.
+
+[JSON Schemas](contracts/) define the public protocol.

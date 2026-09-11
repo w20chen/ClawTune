@@ -2,7 +2,7 @@
 
 ## Abstract
 
-Agent tool calls vary substantially in execution time and resource consumption. Tool names and static resource limits alone provide an incomplete description of this variation. ClawTune combines call tracing, operating-system measurements, and empirical prediction to estimate execution time, CPU use, and memory consumption before a call, then update its statistical models after execution. This report describes the system and its assumptions. It contains no experimental results or performance claims.
+Agent tool calls vary substantially in execution time and resource consumption. Tool names and static resource limits alone provide an incomplete description of this variation. ClawTune combines call tracing, operating-system measurements, and empirical prediction to estimate execution time, CPU use, and memory consumption before a call, then update its statistical models after execution. This report describes the system architecture, measurement model, prediction methods, and evaluation protocol.
 
 ## 1. System design
 
@@ -15,13 +15,13 @@ OpenClaw -- plugin -- local service -- historical statistics and prediction
                +-- tool execution -- cgroup / eBPF / perf
 ```
 
-Docker supplies tool execution environments. Linux cgroups establish resource accounting boundaries, eBPF associates executable commands with their descendant processes, and perf hardware counters supply microarchitectural measurements. Correlated events form execution traces for subsequent analysis.
+Docker supplies tool execution environments. Linux cgroups establish resource accounting boundaries, eBPF associates executable clauses with their descendant processes, and perf hardware counters supply microarchitectural measurements. Correlated events form execution traces for subsequent analysis.
 
-Daily operation learns continuously. Online benchmarks share learning within each run. Offline evaluation trains on a fixed subset and freezes all models during testing. The system provides concurrency admission information and resource recommendations; it does not implement memory- or topology-based placement.
+Daily operation learns continuously. Online benchmarks share learning within each run. Offline evaluation trains on a fixed subset and freezes all models during testing. The system provides concurrency admission information and resource recommendations for deployment components.
 
 ## 2. Measurement scope and validity
 
-A tool call can contain several executable commands. Call-level duration covers the tool lifecycle, including its associated wrapper overhead; command-level duration covers the attributed execution interval. These quantities are not interchangeable.
+A tool call may contain a shell command, represented as text such as `grep pattern file | head`. Parsing that shell command can produce one or more executable clauses: in this example, the producer and the pipeline consumer are separate clauses. Call-level duration covers the complete tool lifecycle, including wrapper overhead. Clause-level duration covers the execution interval attributed to one executable clause. These quantities are not interchangeable.
 
 | Target | Definition | Unit |
 | --- | --- | --- |
@@ -29,13 +29,13 @@ A tool call can contain several executable commands. Call-level duration covers 
 | CPU time | Cumulative CPU time of the attributed workload | core-s |
 | Average CPU use | CPU time divided by duration for the same observation | cores |
 | Peak CPU use | Maximum CPU use over fixed 500 ms windows | cores |
-| Peak resident memory | Maximum sampled sum of RSS across distinct address spaces | bytes |
+| Peak resident memory | Maximum sampled sum of resident set size (RSS) across distinct address spaces | bytes |
 
 For observation $i$, average CPU use is $a_i=c_i/t_i$. Its predicted mean averages these per-observation ratios, rather than dividing the separate means of CPU time and duration. Sampled RSS differs from total cgroup-accounted memory and is not an allocation that guarantees avoidance of out-of-memory failures.
 
 Resource labels require identifiable execution ownership and sufficient collection quality for the target. Shared-container totals cannot serve as individual tool labels. Timeout and cancellation observations are censored and excluded from complete-execution labels. Missing values remain distinct from valid zeros, and each target has its own validity mask.
 
-Selected downstream pipeline consumers are excluded from independent command modeling because their duration depends on upstream input. The same executables remain eligible when run independently or at the start of a pipeline.
+Selected downstream pipeline consumers are excluded from independent clause modeling because their duration depends on upstream input. The same executables remain eligible when run independently or at the start of a pipeline.
 
 Hardware profiling records cycles $C$, instructions $I$, last-level-cache read accesses $A$, and read misses $M$:
 
@@ -49,15 +49,15 @@ A zero denominator makes the corresponding ratio unavailable. Only complete, cor
 
 ## 3. Historical evidence and empirical predictions
 
-The knowledge bases are statistical sample indexes, not vector databases or retrieval-augmented language models. Three existing interface names distinguish their scope:
+The implementation maintains three complementary statistical indexes:
 
-| Interface name | Description used here | Observation scope |
+| Index | Description | Observation scope |
 | --- | --- | --- |
 | ToolKB | Call-level history | Complete tool calls, including eligible hardware-counter metrics |
-| TrieKB | Command-prefix index | Executable commands and ordered argument prefixes |
-| LatticeKB | Feature-subset index | Command contexts ordered by feature-set inclusion |
+| TrieKB | Clause-prefix index | Executable clauses and ordered argument prefixes |
+| LatticeKB | Feature-subset index | Clause contexts ordered by feature-set inclusion |
 
-Call history first retrieves a project's exact normalized command, then shorter prefixes, executable identity, or an applicable tool category. The command-prefix index similarly backs off from exact commands to prefixes and executable names. When local evidence is absent, compatible public priors provide coarser executable- or tool-level evidence. Current call-level predictions do not fill missing targets from unrelated global samples.
+Whole-call history first retrieves a project's exact normalized call representation, then shorter prefixes, executable identity, or an applicable tool category. The clause-prefix index similarly backs off from an exact clause to argument prefixes and executable identity. When local evidence is absent, compatible public priors provide coarser executable- or tool-level evidence. Current call-level predictions do not fill missing targets from unrelated global samples.
 
 Given the selected valid samples $y_1,\ldots,y_n$ for a target, the empirical distribution and mean are
 
@@ -73,7 +73,7 @@ Outputs include the mean, median, empirical p90, and a histogram. The p90 is the
 
 ### 4.1 Context construction
 
-Normalize a command into a feature set $F(x)$ containing its executable, target, options, and available project identity. A context $S$ aggregates historical observations satisfying $S\subseteq F(x_i)$. The active contexts for query $x$ are
+Normalize each executable clause into a feature set $F(x)$ containing its executable, target, options, and available project identity. A context $S$ aggregates historical clause observations satisfying $S\subseteq F(x_i)$. The active contexts for query $x$ are
 
 $$
 \mathcal A(x)=\{S:S\subseteq F(x),\ n_S>0\}.
@@ -113,7 +113,7 @@ An exact full-feature match bypasses risk comparison and directly supplies the s
 
 ### 4.3 Leave-one-signature-out selection
 
-LOSO groups observations by their complete normalized feature sets, treating repeated executions of one command type as a group. For the $m$ types covered by a context, define
+Leave-one-signature-out (LOSO) evaluation groups observations by their complete normalized feature sets, treating repeated executions of one clause type as a group. For the $m$ types covered by a context, define
 
 $$
 z_q=\log\left(1+\operatorname{median}_{i\in q}(u_i)\right).
@@ -144,27 +144,27 @@ $$
 S^*=\arg\max_{S\in\mathcal A(x)}|S|.
 $$
 
-Ties prefer more observations. This method does not estimate generalization risk. Resource targets with no matching context are unavailable. Historical command-duration diagnostics retain broader fallbacks, which do not establish compatible call-level resource evidence.
+Ties prefer more observations. This specificity baseline has no cross-validation risk term. Resource targets with no matching context are unavailable. Historical whole-call duration diagnostics retain broader fallbacks, which do not establish compatible call-level resource evidence.
 
 ## 5. From commands to tool calls
 
-For each target, the system prefers compatible complete-call evidence, followed by command-prefix estimates and feature-subset estimates. The latter use shrinkage by default. This fixed policy is not an empirical ranking of the methods.
+For each target, the system prefers compatible complete-call evidence, followed by clause-prefix estimates and feature-subset estimates. The latter use shrinkage by default.
 
-For supported foreground commands, unconditional serial lists, and simple pipelines, the composer independently samples command distributions. Let $g$ index serial groups and $j$ index commands within a pipeline group:
+For supported foreground shell commands, unconditional serial lists, and simple pipelines, the composer independently samples clause distributions. Let $g$ index serial groups and $j$ index clauses within a pipeline group:
 
 $$
 T^{(b)}=\sum_g\max_{j\in g}T_j^{(b)}.
 $$
 
-A standalone serial command forms a one-element group. A fixed random seed generates 2048 draws, from which summary statistics are computed. Command medians or p90s are not added directly, and generated draws are not counted as historical observations.
+A standalone clause forms a one-element group. A fixed random seed generates 2048 draws, from which summary statistics are computed. Clause medians or p90s are not added directly, and generated draws are not counted as historical observations.
 
-This approximation assumes that foreground commands cover the workload, ignores shell and hook overhead, and treats command durations as independent. General conditionals, loops, substitutions, and background jobs are not composed. Multi-command CPU and memory estimates require aligned execution ownership and timelines and are currently unavailable from independent command labels. Even a single-command substitution is explicitly a composed estimate.
+This approximation assumes that foreground clauses cover the workload, ignores shell and hook overhead, and treats clause durations as independent. General conditionals, loops, substitutions, and background jobs are not composed. Multi-clause CPU and memory estimates require aligned execution ownership and timelines and are currently unavailable from independent clause labels. A single-clause shell command also uses the composition path when its estimate is reconstructed from clause evidence.
 
 ## 6. Learning, initialization, and evaluation
 
 An online query may use an observation only when $t_i^{end}<t_q^{start}$. Concurrent tasks share evidence in actual completion order; fixed task selection does not ensure identical learning interleavings. Offline testing freezes all models and cannot incorporate test outcomes.
 
-The bundled initialization prior contains a small set of historical generic-command observations with source identities removed and resource labels filtered. Call-level history starts empty. The bundle is retained as a runtime resource. Its source workload and hardware conditions remain limitations; it is neither independent evaluation data nor evidence of cross-platform accuracy.
+The bundled initialization prior contains a small set of historical executable-clause observations with source identities removed and resource labels filtered. Call-level history starts empty. The bundle is retained as a runtime resource; its source workload and hardware conditions limit cross-platform interpretation.
 
 Online execution evaluates collection and continuous learning behavior. Fixed-trace evaluation measures prediction error outside the training subset. The current offline protocol keeps each task and all its attempts on one side of a deterministic split, stratified by benchmark and project or category. Singleton groups are training-only. The resulting overall fraction can differ from the requested fraction, and within-project tests do not establish unseen-project performance.
 

@@ -71,7 +71,7 @@ python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
   --dataset .runtime/swe-tasks.json --sample 1
 ```
 
-Discovery first attempts the external task source, then Hugging Face. Use the dataset-provided image, not a generic Python image. Execution requires an exclusive cgroup and valid command-level eBPF measurements.
+Discovery first attempts the external task source, then Hugging Face. Use the dataset-provided image, not a generic Python image. Execution requires an exclusive cgroup and valid clause-level eBPF measurements.
 
 ### SWE-bench Verified
 
@@ -103,7 +103,7 @@ python3 scripts/clawtune.py benchmark --benchmark deep-research-bench \
 
 The template uses `python:3.11-slim` and the required `/workspace` mount. Search uses the [Tavily plugin](https://docs.openclaw.ai/tools/tavily). Credentials can also be stored in `configs/tavily_api_key.txt`. If OpenClaw has a `plugins.allow` list, add `tavily` while preserving other trusted plugins. Inspect the task's `web-search-config.log` to confirm provider setup.
 
-`web_search.enabled: false` disables search. Research tasks require tool events but do not guarantee repository-style command, CPU, or RSS attribution.
+`web_search.enabled: false` disables search. Research tasks require tool events but do not guarantee shell-command, CPU, or RSS attribution.
 
 ### BFCL
 
@@ -139,7 +139,7 @@ python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
 
 A single task directory or `task.yaml` is also accepted. In JSON lists, `task_path` resolves relative to the list file, for example `[{"task_path":"tasks/my-task"}]`.
 
-Tasks are copied into the run before container creation. Compose must provide exactly one `client` container, and host mounts/build contexts must remain within allowed run paths. Each tool invocation uses a fresh shell: use explicit `cd` and files for persistent state. Persistent interactive TTYs are unsupported. This adapter provides hook duration, not attributed command-level CPU/RSS.
+Tasks are copied into the run before container creation. Compose must provide exactly one `client` container, and host mounts/build contexts must remain within allowed run paths. Each tool invocation uses a fresh shell: use explicit `cd` and files for persistent state. Persistent interactive TTYs are unsupported. This adapter provides hook duration, not attributed clause-level CPU/RSS.
 
 ## 3. Selection, concurrency, and resume
 
@@ -181,7 +181,7 @@ Defaults are under `.runtime/benchmarks/<benchmark>/<run>/`:
 | `run.json`, `report.json` | Task status, errors, and execution summary |
 | `traces/<task-digest>/` | Per-task traces, model output, and logs |
 | `kb/` | Learned statistics for the run |
-| `sidecar/` | Shared monitoring-service logs |
+| `sidecar/` | Shared local-service logs |
 | `workspaces/` | Task workspaces |
 
 Check `status`, each result's `error` and `exit_code`, and `kb_flush_complete: true`, which indicates completed persistence:
@@ -224,5 +224,3 @@ The split methodology is in the [technical report](technical-report.md#6-learnin
 | `report.json`, `report.md` | Availability, errors, baselines, and exclusions |
 
 Mixed input is trained and evaluated separately per benchmark, with an aggregate report. Check train/test counts and `test_updates: 0` before interpreting metrics. All-singleton groups can leave no test set.
-
-Keep generated outputs locally or in external storage. For reproduction, archive the code revision, dependency versions, input hashes, split, configuration, and full command outside the code repository.

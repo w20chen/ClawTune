@@ -12,4 +12,4 @@ This file records checks that cannot run in the current environment. Operational
 - Dataset download commands, native BFCL category loading, and Terminal Compose execution: external data and dependencies are not provisioned locally.
 - The Ubuntu GitHub Actions workflow requires a remote CI run; local Windows checks are not equivalent.
 
-Linux acceptance should also cover parallel task isolation, timeout/Ctrl+C cleanup, completed persistence, and resume eligibility. Experimental outputs, test logs, and resolved implementation history are not retained here.
+Linux acceptance should also cover parallel task isolation, timeout/Ctrl+C cleanup, completed persistence, and resume eligibility.

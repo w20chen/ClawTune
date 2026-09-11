@@ -35,11 +35,12 @@ artifact counts, eligible/withheld call coverage, and rejection reasons in
 usable or no valid clause latency remains. Partial artifacts contribute only
 their `eligible_for_kb=True` calls; withheld telemetry never enters the KB.
 
-The sidecar's OpenClaw fallback observations preserve action latency when the
+The local service's OpenClaw fallback observations preserve action latency when the
 resource scope is attributed to `shared-sandbox-container` or
 `shared-runtime-process`, but mark continuous CPU and memory targets
-ineligible. Clause fallback observations likewise omit CPU, RSS, and cumulative
-CPU from such shared scopes. Independently attributed, eligible eBPF clause
+ineligible. Clause fallback observations likewise omit CPU, resident set size
+(RSS), and cumulative CPU from such shared scopes. Independently attributed,
+eligible eBPF clause
 artifacts are unaffected.
 
 `run.prediction` is the pre-execution command bucket. `finish_command` first

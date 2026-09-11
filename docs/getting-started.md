@@ -109,7 +109,7 @@ openclaw gateway run
 openclaw tui --session main
 ```
 
-Ask the agent to execute a shell command, such as “Run uname -a and explain the output.” The plugin starts or reuses the local service. For a one-shot invocation:
+Ask the agent to execute a shell command, such as “Run `uname -a` and explain the output.” The plugin starts or reuses the local service. For a one-shot invocation:
 
 ```bash
 python3 scripts/clawtune.py agent --local --agent main \
@@ -155,7 +155,7 @@ The complete settings are maintained in [.env.example](../.env.example) and the 
 | --- | --- |
 | Missing BCC/headers or eBPF compilation failure | Check `uname -r` and `/lib/modules/$(uname -r)/build`; rerun setup with its selected system Python |
 | Failure after moving or updating the checkout | Rerun setup from the current path |
-| Connection refused on 8765, or sudo cannot prompt | Start the sidecar explicitly to expose errors; run `sudo -v` first if needed |
+| Connection refused on 8765, or sudo cannot prompt | Start the local service explicitly to expose errors; run `sudo -v` first if needed |
 | No model events | Check the local `/v1` proxy address, upstream URL, model, and credential |
 | Conversation hook rejected | Check `openclaw config get plugins.entries.clawtune.hooks`; rerun setup and restart OpenClaw |
 | Image fails on ARM | Run the QEMU check above and verify image architecture |
@@ -165,8 +165,6 @@ The complete settings are maintained in [.env.example](../.env.example) and the 
 API liveness does not validate kernel collection. Repeat the collector check after kernel, BCC, or Clang changes.
 
 ## 5. Development checks
-
-The `scripts/` directory contains the main CLI, its ARM setup helper, and `build_bootstrap_seed.py`, which rebuilds the shipped initialization prior from an explicit archived source. Ordinary installation uses the bundled prior and does not run the builder. Use `python scripts/build_bootstrap_seed.py --help` for release maintenance.
 
 For development or offline processing only, install Python dependencies without performing Linux deployment. Run the two Python suites in their respective package contexts:
 
@@ -189,4 +187,4 @@ On each target Linux architecture, also run:
   --benchmark-count 40 --output .runtime/validation/pmu.json
 ```
 
-Use the deployment's required perf permissions. Software tests do not establish hardware measurement accuracy. Outstanding checks are maintained in [CURRENT_PLAN.md](CURRENT_PLAN.md).
+Use the deployment's required perf permissions. Software tests do not establish hardware measurement accuracy.
