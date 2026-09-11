@@ -101,10 +101,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--snapshot", type=Path, default=Path(".runtime/lattice-export/clause-lattice-time-kb.json"))
-    parser.add_argument("--output", type=Path, default=Path("docs/resource-lattice-evaluation.json"))
+    parser.add_argument("--output", type=Path, default=Path(".runtime/resource-lattice-evaluation.json"))
     args = parser.parse_args()
     if args.output.resolve().is_relative_to(args.dataset.resolve()):
         raise ValueError("evaluation output must be outside the read-only dataset")
     result = evaluate(args.dataset, args.snapshot)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({key: result[key] for key in ("train_tasks", "test_tasks", "unique_queries", "query_p95_ms")}))

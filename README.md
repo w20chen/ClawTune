@@ -1,110 +1,13 @@
 # ClawTune
 
-ClawTune is an OpenClaw plugin that records LLM/tool traces,
-measures resource usage of tool calls with Linux cgroup and eBPF,
-and learns tool call duration, CPU, memory, and micro-architecture metric predictions.
+ClawTune is an execution monitoring and resource prediction system for OpenClaw agents. It correlates model requests, tool calls, and operating-system measurements, then uses historical observations to estimate execution time, CPU use, and memory consumption before subsequent calls.
 
-| Workflow | Command | KB cold start and lifetime |
-| --- | --- | --- |
-| Daily OpenClaw use | `openclaw gateway run` | On first use, copy the small bundled `seeds/bootstrap-v1` into the persistent user KB; learn online and reuse that state on later starts. Override the initial seed with `CLAWTUNE_KB_SEED`. |
-| Online benchmark simulation | `python3 scripts/clawtune.py benchmark ...` | Each new run copies `--seed <directory>` (default `seeds/bootstrap-v1`) into its own writable `<run>/kb/`; tasks share online learning within that run. No automatic inheritance from daily use or previous runs. |
-| Fixed-trace evaluation | `python3 scripts/clawtune.py offline ...` | Build ToolKB, TrieKB and LatticeKB from scratch using only the task-level training split; export `<experiment>/seed/`, then freeze for testing. Does not load the bundled seed or existing daily/online KBs. |
+The system consists of a plugin and a local service; it does not modify OpenClaw core. Resource placement recommendations are advisory.
 
-The bundled **`bootstrap-v1` contains only 40 generic command observations**:
-eight each for `cat`, `find`, `grep`, `ls` and `which`, selected from historical
-SWE-Rebench training traces. TrieKB and LatticeKB retain executable-level priors
-with **no repo-specific knowledge, task IDs, paths or original arguments**.
-ToolKB starts empty because the source has no eligible whole-call/PMU labels;
-these are learned online. Short, unreliable CPU/RSS labels are withheld.
-This is a small starting prior, not a trained task corpus or a guarantee of
-prediction accuracy. See [selection, quality limits and reproduction](docs/bootstrap-kb.md)
-and the [KB naming reference](docs/architecture.md#knowledge-base-names).
+- [Technical report](docs/technical-report.md): system design, measurement definitions, prediction methods and equations.
+- [Installation and use](docs/getting-started.md): machine setup, configuration, daily operation, and development.
+- [Benchmarks and evaluation](docs/benchmarks.md): task preparation, five benchmark adapters, offline evaluation, and output interpretation.
 
-Daily startup copies a seed only when the user KB does not yet exist; changing
-`CLAWTUNE_KB_SEED` does not reset existing state. Benchmark `--resume` continues
-the saved run's KB. Offline `--seed 42` means the split's random seed, whereas
-online `--seed <directory>` selects a KB bundle.
+Start with the installation guide on a new machine. The repository contains configuration templates, protocols, test fixtures, and a small initialization prior. Generated experimental results belong in local output directories or external storage.
 
-## First run
-
-From a checkout on x86_64 Linux or Kunpeng/arm64 openEuler, with Python 3.10+,
-Docker, Node.js/npm, OpenClaw 2026.7.1, cgroup v2 and matching kernel headers:
-
-```bash
-python3 scripts/clawtune.py setup
-python3 scripts/clawtune.py doctor
-```
-
-Run setup as a normal user with sudo access. It creates `.venv`, `.env` and
-`configs/benchmark.yaml`, installs the sidecar/plugin, and tests the collector.
-It preserves existing configuration and secrets. Follow the
-[installation guide](docs/getting-started.md) for prerequisites, provider setup,
-Gateway/TUI use, and verification. Windows supports development and dry-runs;
-live collection requires Linux.
-
-For a first benchmark, put your provider key in the ignored
-`configs/llm_api_key.txt` or export it, then set `llm.model`,
-`llm.openclaw_model_ref` and `llm.upstream_base_url` in `configs/benchmark.yaml`:
-
-```bash
-export LLM_API_KEY="<provider-api-key>"
-python3 scripts/clawtune.py benchmark --list
-python3 scripts/clawtune.py benchmark --sample 1 --dry-run
-python3 scripts/clawtune.py benchmark --sample 1
-```
-
-The default source is the prepared external SWE-Rebench task list if present,
-otherwise the bundled smoke list. Use an explicit `--dataset` for experiments.
-A dry-run validates task input and seed, not Docker images, provider access or
-live telemetry.
-
-## Benchmarks
-
-These are instrumented user simulations, **not official leaderboard graders**.
-`official_score` is always `null`; successful execution does not prove a solved task.
-
-| `--benchmark` | Supported input/execution |
-| --- | --- |
-| `swe-rebench` | Repository tasks with dataset-provided Docker images |
-| `swe-bench-verified` | Repository tasks; official x86_64 image name inferred if absent |
-| `deep-research-bench` | Research questions, OpenClaw web tools and a basic sandbox |
-| `bfcl` | Independent stateful function tasks, including base/long-context and web search; no memory dependencies or dynamic tool additions |
-| `terminal-bench` | v1 `task.yaml` tasks with Compose or a Dockerfile; no Harbor/v2 task format or persistent TTY |
-
-[Benchmark guide](docs/benchmarks.md): exact paths, dependencies, examples,
-selection, timeouts, concurrency, resume rules and output checks.
-
-## Offline evaluation
-
-```bash
-python3 scripts/clawtune.py offline --dataset /data/fixed-traces --rss-unit MiB
-```
-
-The input is a directory of v5/v6 **traces**, not online task JSON. Specify
-`--benchmark` when legacy traces omit dataset identity. `--train-fraction`
-defaults to `0.8`; complete tasks and all their attempts stay together. See
-[offline evaluation](docs/offline.md) for identity, units, split reuse and results.
-
-## Documentation
-
-The [documentation map](docs/README.md) links operational guides and technical
-references for configuration, sidecar APIs, traces, call-load predictions,
-LatticeKB resources and PMU measurements. [Current validation](docs/CURRENT_PLAN.md)
-records the testing boundary and remaining Linux acceptance work.
-
-## Development
-
-With development dependencies installed in the active Python environment:
-
-```bash
-python -m pip install -e 'services/sidecar[dev]'
-python -m pytest tests -q
-(cd services/sidecar && python -m pytest -q)
-python tools/validate_contracts.py
-python tools/validate_docs.py
-(cd packages/clawtune-plugin && npm ci && npm test && npm run typecheck)
-```
-
-Run the two Python suites in their respective contexts. JSON Schemas in
-`contracts/` are the public protocol source of truth. Do not commit secrets,
-raw traces or runtime workspaces.
+[JSON Schemas](contracts/) define the public protocol. Outstanding environment checks are recorded in [CURRENT_PLAN.md](docs/CURRENT_PLAN.md).

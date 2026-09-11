@@ -277,7 +277,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--snapshot", type=Path, default=ROOT / ".runtime/lattice-export/clause-lattice-time-kb.json")
-    parser.add_argument("--output", type=Path, default=ROOT / "docs/lattice-accuracy")
+    parser.add_argument("--output", type=Path, default=ROOT / ".runtime/lattice-accuracy")
     args = parser.parse_args()
     result = run(args.dataset, args.snapshot, args.output)
     print(json.dumps({k: result[k] for k in ("test_tasks", "test_repositories", "unique_queries", "query_p95_ms")}))

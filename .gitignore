@@ -35,3 +35,11 @@ legacy_eval/.runtime/
 /services/sidecar/traces/tool-resource/
 .npm-review-cache/
 .review-dist-sidecar/
+
+# Generated measurements and reports; keep fixtures and release seeds tracked.
+/traces/
+/data/ebpf-check.json
+/docs/lattice-accuracy/
+/docs/resource-lattice-evaluation.json
+/cold_start/manifests/flat-644-seed42-v1.json
+/services/sidecar/sidecar-test-out.txt

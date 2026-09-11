@@ -1,58 +1,90 @@
-# Installation and first run
+# Installation and Use
 
-Run shell examples from the repository root on Linux. Commands containing
-`<...>` require your own value. For Windows development use the commands in
-[the root README](../README.md#development); live benchmarks require Linux.
+Commands below run in Bash on Linux, from the repository root unless stated otherwise. Replace `<...>` with actual values. Windows supports source development and offline checks; live resource collection requires Linux.
 
-## Prerequisites
+## 1. Prepare a new machine
 
-Use Python 3.10+ and a normal login user with sudo access. Install Docker,
-Node.js/npm and OpenClaw 2026.7.1+ through your host's supported installation
-method; ClawTune does not install these applications. Check:
+Install Python 3.10+, Git, Docker Engine, Node.js/npm, and OpenClaw. Use a normal account with sudo access. The host needs cgroup v2 and development headers matching the running kernel; Linux 5.8+ is the intended baseline. Deployment targets include x86_64 Linux and arm64 openEuler.
+
+For example, install basic tools on Ubuntu/Debian:
 
 ```bash
-docker info
+sudo apt-get update
+sudo apt-get install -y git curl python3 python3-venv python3-pip
+```
+
+On openEuler, use the corresponding distribution packages through dnf. Install [Docker Engine](https://docs.docker.com/engine/install/) for the host distribution; Terminal Bench also requires Compose v2. The [OpenClaw installer](https://docs.openclaw.ai/install) can provision Node.js and skip onboarding:
+
+```bash
+curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard
+```
+
+The project's existing integration targets the OpenClaw 2026.7.1 interface. The installer may supply a newer version; use its local help and the checks below to establish compatibility.
+
+Verify prerequisites:
+
+```bash
+python3 --version
 node --version
 npm --version
 openclaw --version
+docker info
+docker compose version
+stat -fc %T /sys/fs/cgroup
 ```
 
-The host needs Linux 5.8+, cgroup v2 and development headers matching the
-running kernel. Setup locates the system Python with BCC bindings, installs
-identifiable BCC/Clang/kernel packages using apt or dnf, and enables amd64
-containers on arm64. See [ARM/QEMU](arm-qemu.md) for that platform.
+The last command should print `cgroup2fs`. Docker must reach a running daemon.
 
-## Setup and collector verification
+Obtain the source and install:
 
 ```bash
+git clone https://github.com/w20chen/claw.git ClawTune
+cd ClawTune
 python3 scripts/clawtune.py setup
 python3 scripts/clawtune.py doctor
 ```
 
-Do not sudo the whole setup command. Setup elevates the necessary operations,
-creates `.venv`, installs/builds the sidecar and plugin, configures the trusted
-launcher, and creates `.env` and `configs/benchmark.yaml` if absent.
-A successful collector check prints:
+For an existing checkout, enter that directory instead. Do not sudo the entire setup command. It elevates individual operations, selects a system Python with BCC, creates `.venv`, installs collector dependencies, builds and enables the plugin, and creates `.env` and `configs/benchmark.yaml`. Existing configuration and credentials are preserved.
+
+Successful collector validation prints:
 
 ```text
 [ClawTune] Setup and eBPF validation passed; the validation process has exited.
 ```
 
-This process is the temporary check, not the runtime sidecar. Installation can
-finish after a collector failure; that does not validate strict measurements.
-Correct the reported issue and run `python3 scripts/clawtune.py check`.
+This refers to the temporary validation process. Installation can finish even if collection validation fails; correct the reported error and rerun:
 
-`setup --help` lists opt-outs for system-package installation, QEMU and the
-collector check. Skipping a check does not make the corresponding runtime
-requirement optional. Rerun setup after updating or moving the checkout; it
-preserves configuration and refreshes installation paths.
+```bash
+python3 scripts/clawtune.py check
+```
 
-## Choose a workflow
+### ARM hosts
 
-### Daily OpenClaw use
+Setup configures QEMU/binfmt for amd64 task containers. The monitoring service remains native to the host. Verify container execution separately:
 
-Set `CLAWTUNE_LLM_UPSTREAM_BASE_URL` in `.env` if using a provider other than
-DeepSeek. Configure OpenClaw to send model requests through ClawTune:
+```bash
+sudo bash scripts/setup/arm_qemu_setup.sh check
+```
+
+On arm64, repository benchmarks default to `linux/amd64`. To run a research image with native ARM support:
+
+```bash
+export SWE_REBENCH_DOCKER_PLATFORM=linux/arm64
+```
+
+This environment value overrides YAML platform configuration. Terminal tasks use their own Compose platform settings.
+
+## 2. Daily OpenClaw operation
+
+For benchmark-only use, skip this section and continue with the [benchmark guide](benchmarks.md).
+
+Set the upstream model address in root `.env` when using a provider other than the default DeepSeek:
+
+```dotenv
+CLAWTUNE_LLM_UPSTREAM_BASE_URL=https://your-provider.example
+```
+
+Route OpenClaw model requests through the local proxy:
 
 ```bash
 openclaw onboard --non-interactive --accept-risk --skip-health \
@@ -60,53 +92,99 @@ openclaw onboard --non-interactive --accept-risk --skip-health \
   --custom-base-url "http://127.0.0.1:8765/v1" \
   --custom-api-key "<provider-api-key>" \
   --custom-model-id "<model>"
+openclaw config validate
 ```
 
-The proxy forwards the provider credential unless an upstream key override is
-configured. If you enable `CLAWTUNE_TOKEN`, export the same token to OpenClaw
-and the sidecar. It is a separate local authentication token.
+The proxy forwards the provider credential supplied by OpenClaw. If your version rejects these onboarding flags, use `openclaw onboard --help` to configure the same local endpoint, model, and provider key.
+
+Start two terminals:
 
 ```bash
-# terminal 1
+# Terminal 1
 openclaw gateway run
-# terminal 2
+```
+
+```bash
+# Terminal 2
 openclaw tui --session main
 ```
 
-Setup configures the plugin to start/reuse a compatible sidecar. For a one-shot
-smoke turn:
+Ask the agent to execute a shell command, such as “Run uname -a and explain the output.” The plugin starts or reuses the local service. For a one-shot invocation:
 
 ```bash
-openclaw agent --local --agent main --model "vllm/<model>" \
-  --message "Use the shell to run uname -a and summarize it."
+python3 scripts/clawtune.py agent --local --agent main \
+  --model "vllm/<model>" --message "Use the shell to run uname -a and summarize it."
 ```
 
-CLI syntax can vary across OpenClaw releases; use its installed `agent --help`
-if it rejects the agent selector. The benchmark runner probes this difference.
+The wrapper forwards arguments to OpenClaw; consult `openclaw agent --help` for version-specific agent selection. If a service manager must own the privileged process, start `python3 scripts/clawtune.py sidecar` explicitly before OpenClaw.
 
-For a service manager, or when automatic privileged startup cannot prompt,
-start `python3 scripts/clawtune.py sidecar` explicitly and then launch OpenClaw.
-The `python3 scripts/clawtune.py agent ...` wrapper owns a temporary sidecar
-when needed and forwards its remaining arguments to OpenClaw's agent command.
+## 3. Output and persistent state
 
-Inspect one resulting trace and the daily KB:
+Daily traces are JSONL files under `traces/`. Inspect a generated file and the saved prediction state:
 
 ```bash
-python tools/inspect_trace.py traces/<file>.jsonl --all --details
+.venv/bin/python tools/inspect_trace.py traces/<file>.jsonl --all --details
 python3 scripts/clawtune.py kb status
 ```
 
-A healthy HTTP endpoint alone does not establish collector or prediction
-quality. See [trace interpretation](trace-schema.md) and [troubleshooting](troubleshooting.md).
+Expect model and tool events, pre-execution predictions, and post-execution measurements. Missing historical evidence or ineligible measurements produce unavailable targets; definitions are in the [technical report](technical-report.md).
 
-### Online benchmark
+| Workflow | State location and lifetime |
+| --- | --- |
+| Daily operation | `~/.local/state/clawtune/kb/` by default, respecting `XDG_STATE_HOME`; persists across restarts |
+| Online benchmark | A separate `<run>/kb/`, shared by tasks within that run |
+| Offline evaluation | Experiment-owned `seed/`, constructed from training data and frozen for testing |
 
-Set model and provider values in `configs/benchmark.yaml`, and supply
-`LLM_API_KEY` or the raw key in `configs/llm_api_key.txt`. Then follow the
-[benchmark guide](benchmarks.md) for your dataset. Benchmark provider settings
-are independent of the daily OpenClaw provider configuration.
+New daily state and online runs copy `seeds/bootstrap-v1` by default. Override with `CLAWTUNE_KB_SEED` for daily use or `--seed <directory>` for benchmarks. Changing the prior does not reset existing state. Resuming an old run requires its original prior. The offline command's `--seed` is instead an integer split seed.
 
-### Fixed-trace evaluation
+Common settings belong in root `.env`; restart the service after changes:
 
-No model provider or running Docker/sidecar is needed. Use the
-[offline guide](offline.md) with an existing trace directory and its RSS unit.
+| Setting | Purpose |
+| --- | --- |
+| `CLAWTUNE_TRACE_DIR` | Daily trace output |
+| `CLAWTUNE_STATE_DIR` | Daily state root; a new directory starts an independent state |
+| `CLAWTUNE_TOKEN` | Optional local API token; export the same value to OpenClaw and the service, separately from the provider key |
+| `CLAWTUNE_PMU_ENABLED` | Enable best-effort hardware counting |
+| `CLAWTUNE_TOOL_RESOURCE_FROZEN` | Freeze daily learning |
+
+The complete settings are maintained in [.env.example](../.env.example) and the [plugin configuration schema](../packages/clawtune-plugin/openclaw.plugin.json). Existing environment variables take precedence over `.env`. The service binds to loopback and is not configured for public exposure.
+
+## 4. Troubleshooting
+
+| Symptom | Action |
+| --- | --- |
+| Missing BCC/headers or eBPF compilation failure | Check `uname -r` and `/lib/modules/$(uname -r)/build`; rerun setup with its selected system Python |
+| Failure after moving or updating the checkout | Rerun setup from the current path |
+| Connection refused on 8765, or sudo cannot prompt | Start the sidecar explicitly to expose errors; run `sudo -v` first if needed |
+| No model events | Check the local `/v1` proxy address, upstream URL, model, and credential |
+| Conversation hook rejected | Check `openclaw config get plugins.entries.clawtune.hooks`; rerun setup and restart OpenClaw |
+| Image fails on ARM | Run the QEMU check above and verify image architecture |
+| PMU unavailable | Inspect the reason: event support, permissions, and multiplexing affect eligibility |
+| Benchmark input, search, or resume failure | Use the relevant section of the [benchmark guide](benchmarks.md) |
+
+API liveness does not validate kernel collection. Repeat the collector check after kernel, BCC, or Clang changes.
+
+## 5. Development checks
+
+For development or offline processing only, install Python dependencies without performing Linux deployment. Run the two Python suites in their respective package contexts:
+
+```bash
+python -m pip install -e 'services/sidecar[dev]'
+python -m pytest tests -q
+(cd services/sidecar && python -m pytest -q)
+python tools/validate_contracts.py
+python tools/validate_docs.py
+(cd packages/clawtune-plugin && npm ci && npm test && npm run typecheck)
+```
+
+In PowerShell, enter the directories separately instead of using the parenthesized Bash commands. Root-wide recursive Python test discovery is unsupported.
+
+On each target Linux architecture, also run:
+
+```bash
+.venv/bin/python tools/validate_pmu.py --require-reliable \
+  --concurrency 8 --max-active 8 --high-concurrency 64 \
+  --benchmark-count 40 --output .runtime/validation/pmu.json
+```
+
+Use the deployment's required perf permissions. Software tests do not establish hardware measurement accuracy. Outstanding checks are maintained in [CURRENT_PLAN.md](CURRENT_PLAN.md).

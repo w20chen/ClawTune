@@ -1,17 +1,5 @@
-# ClawTune sidecar
+# ClawTune Local Service
 
-The sidecar owns model proxying, lifecycle APIs, tracing, resource collection
-and prediction KBs. For production setup, use the repository's
-[installation guide](../../docs/getting-started.md).
+Provides model proxying, execution tracing, resource collection, and historical-sample prediction. See the [technical report](../../docs/technical-report.md) for methods and the [installation guide](../../docs/getting-started.md) for deployment and development.
 
-For development, from this directory:
-
-```bash
-python -m pip install -e '.[dev]'
-python -m pytest -q
-```
-
-[Sidecar reference](../../docs/sidecar.md) covers APIs, startup and collection.
-[Configuration](../../docs/configuration.md) covers environment and credentials.
-A plain unprivileged launch does not validate strict eBPF measurement; use the
-root `scripts/clawtune.py setup`, `check` and `sidecar` commands on Linux.
+Public payloads are defined in [contracts](../../contracts/). The running service's `/openapi.json` describes HTTP routes.

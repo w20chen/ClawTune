@@ -1,55 +1,16 @@
-# legacy_eval
+# Legacy Evaluation
 
-`legacy_eval` is the retained evaluator for historical trace layouts and the
-published SWE277 experiment. It is not the current task-held-out `offline`
-workflow.
+`legacy_eval` retains observation-level splitting for older traces and dynamic cache-TTL analysis. Calls from the same task can appear on both sides of its split; this protocol must not be conflated with current task-held-out evaluation. Use the [benchmark guide](../docs/benchmarks.md#5-fixed-trace-offline-evaluation) for new experiments.
 
-Use it when reproducing the historical observation-level split, four
-clause-time algorithms, or dynamic KV-TTL results. For new fixed-trace
-experiments, use:
-
-```bash
-python3 scripts/clawtune.py offline --dataset <trace-root> --rss-unit MiB
-```
-
-## Historical protocol
-
-The evaluator reads task directories containing `attempt_N/trace.jsonl` and
-`clause_telemetry.json`. It groups tool calls by repository and uses the
-deterministic `static_train_test_obs_per_repo` observation split. A single task
-may therefore contribute calls to both train and test. Test observations never
-update the three prediction KBs.
-
-This differs intentionally from the current `offline` command, which keeps
-every task and all its attempts on only one side of a persistent task-level
-split.
-
-## Commands
-
-Show the authoritative option list:
+From the repository root:
 
 ```bash
 python -m legacy_eval --help
+python -m legacy_eval --dataset /data/legacy-traces \
+  --train-frac 0.8 --seed 42 \
+  --out .runtime/legacy/report.json --markdown .runtime/legacy/report.md
+python scripts/evaluate_legacy_ttl_cost.py --help
+python scripts/tune_legacy_shrinkage_kappa.py --help
 ```
 
-Typical smoke test:
-
-```powershell
-python -m legacy_eval --dataset <dataset-root> `
-  --max-train-tasks 10 --max-test-tasks 5 --print-summary
-```
-
-Export the historical training side as a seed candidate:
-
-```powershell
-python -m legacy_eval --dataset <dataset-root> `
-  --export-kb "legacy_eval\.runtime\coldstart" --skip-eval
-```
-
-Review staged exports before using them; this command does not select or
-replace the default runtime seed.
-
-The canonical reproduction commands, expected fixed-snapshot metrics, TTL
-policy, and kappa sweep are in
-[`docs/legacy-eval.md`](../docs/legacy-eval.md). The fixed result artifact is
-[`docs/legacy_eval_final_report.md`](../docs/legacy_eval_final_report.md).
+Tune parameters within training data. Generated reports, per-observation records, and exported state belong in output directories, not in the source repository.
