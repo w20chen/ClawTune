@@ -24,7 +24,8 @@ from tool_time.lattice_kb import LatticeTimeKB
 def canonical_benchmark(name: str) -> str:
     if name.startswith("bfcl-"):
         return "bfcl"
-    return {"deepresearchbench": "deep-research-bench", "terminalbench": "terminal-bench"}.get(name, name)
+    return {"deepresearchbench": "deep-research-bench", "terminalbench": "terminal-bench",
+            "swebench_verified": "swe-bench-verified"}.get(name, name)
 
 
 def _trace_priority(path: Path) -> int:

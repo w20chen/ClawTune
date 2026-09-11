@@ -210,11 +210,9 @@ def test_apply_web_search_key_injects_env(monkeypatch) -> None:
     config = _config()
     config.web_search.enabled = True
     config.web_search.api_key = "tvly-key"
-    _apply_web_search_key(config)
-    assert os.environ.get("TAVILY_API_KEY") == "tvly-key"
-    # _apply_web_search_key mutates the global env directly; restore the
-    # pre-test state so later tests do not see the leaked key.
-    os.environ.pop("TAVILY_API_KEY", None)
+    _apply_web_search_key(config, config)
+    assert config.web_search_env == {"TAVILY_API_KEY": "tvly-key"}
+    assert "TAVILY_API_KEY" not in os.environ
 
 
 def test_apply_web_search_key_skips_when_disabled(monkeypatch) -> None:
@@ -222,7 +220,7 @@ def test_apply_web_search_key_skips_when_disabled(monkeypatch) -> None:
     config = _config()
     config.web_search.enabled = False
     config.web_search.api_key = "tvly-key"
-    _apply_web_search_key(config)
+    _apply_web_search_key(config, config)
     assert "TAVILY_API_KEY" not in os.environ
 
 
@@ -230,7 +228,7 @@ def test_apply_web_search_key_keeps_existing_env(monkeypatch) -> None:
     monkeypatch.setenv("TAVILY_API_KEY", "existing")
     config = _config()
     config.web_search.api_key = "tvly-key"
-    _apply_web_search_key(config)
+    _apply_web_search_key(config, config)
     assert os.environ.get("TAVILY_API_KEY") == "existing"
 
 
@@ -252,7 +250,7 @@ def test_web_search_config_patch_pins_tavily() -> None:
 def test_web_search_config_patch_none_when_disabled() -> None:
     config = _config()
     config.web_search.enabled = False
-    assert _web_search_config_patch(config) is None
+    assert _web_search_config_patch(config) == {"tools": {"web": {"search": {"enabled": False}}}}
 
 
 def test_web_search_config_patch_auto_keeps_detection() -> None:
@@ -387,7 +385,7 @@ def test_pin_web_search_provider_raises_on_auto_failure(tmp_path, monkeypatch) -
     assert len(calls) == 1
 
 
-def test_pin_web_search_provider_skips_when_disabled(tmp_path, monkeypatch) -> None:
+def test_pin_web_search_provider_disables_search(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(host_runner, "_openclaw_env", lambda *a, **k: {})
     monkeypatch.setattr(host_runner, "_require_executable", lambda name: "openclaw")
     calls: list[str] = []
@@ -400,7 +398,7 @@ def test_pin_web_search_provider_skips_when_disabled(tmp_path, monkeypatch) -> N
     config = _config()
     config.web_search.enabled = False
     _pin_provider(config, tmp_path)
-    assert calls == []
+    assert [json.loads(call) for call in calls] == [{"tools": {"web": {"search": {"enabled": False}}}}]
 
 
 def test_discover_web_search_provider_plugin_finds_global_install(

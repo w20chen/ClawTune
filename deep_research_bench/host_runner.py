@@ -92,7 +92,7 @@ def run_drb_task(
         # container; install the launcher runtime into the host workspace.
         _install_sandbox_runtime(workspace, runtime_assets_dir)
         _write_drb_task_inputs(trace_dir, task, config, workspace)
-        _apply_web_search_key(config)
+        _apply_web_search_key(config, swe_cfg)
         _ensure_basic_image(config, swe_cfg)
         # Managed-wrapper exec runs through clawtune-launch in the basic sandbox
         # container.  Preflight it so a launcher that is unreadable or not
@@ -181,6 +181,13 @@ def run_drb_task(
         error = str(exc)
         _write_text(trace_dir / "drb_host_error.txt", traceback.format_exc())
     finally:
+        try:
+            _cleanup_openclaw_sandbox_containers(
+                trace_dir, workspace,
+                timeout_seconds=_TASK_CLEANUP_TIMEOUT_SECONDS, strict=True,
+            )
+        except Exception as exc:
+            error = error or f"sandbox cleanup failed: {exc}"
         if shared_sidecar_trace_dir is not None and sidecar_port is not None:
             from swe_rebench.host_openclaw import _drain_runtime, _runtime_id, _collect_runtime_traces
             try:
@@ -222,32 +229,30 @@ def _drb_workspace(config: DRBConfig, task: DRBTask) -> Path:
     return config.output.trace_root.parent / "workspaces" / safe_id
 
 
-def _apply_web_search_key(config: DRBConfig) -> None:
+def _apply_web_search_key(config: DRBConfig, swe_cfg: RunnerConfig) -> None:
     """Expose the configured web-search key to the ``openclaw agent`` process.
 
     OpenClaw's built-in ``web_search`` runs in the agent runtime on the host,
-    not inside the sandbox.  ``_openclaw_env`` copies ``os.environ`` when the
-    agent is spawned, so setting ``TAVILY_API_KEY`` here (when one is
-    configured and not already present) is sufficient.
+    not inside the sandbox. Keep the resolved key on this task's config,
+    never in the parent process environment shared by concurrent runs.
     """
-    if not config.web_search.enabled or not config.web_search.api_key:
-        return
-    if not os.environ.get("TAVILY_API_KEY"):
-        os.environ["TAVILY_API_KEY"] = config.web_search.api_key
+    swe_cfg.web_search_env = {}
+    if config.web_search.enabled and config.web_search.api_key:
+        swe_cfg.web_search_env["TAVILY_API_KEY"] = config.web_search.api_key
 
 
 def _web_search_config_patch(config: DRBConfig) -> dict[str, Any] | None:
-    """Return the web-search config and tool-policy patch, or ``None``.
+    """Return the web-search config and tool-policy patch.
 
-    ``None`` (web search disabled) leaves OpenClaw's config untouched.  A
-    ``provider`` of ``""`` or ``"auto"`` enables search but keeps
+    Disabled search is explicit; leaving config untouched would retain
+    OpenClaw's enabled default. A ``provider`` of ``""`` or ``"auto"`` keeps
     auto-detection. DRB agents run with ``sandbox.mode=all``, so web tools
     must pass both the normal profile policy and the sandbox's second tool
     gate. ``alsoAllow`` extends OpenClaw's defaults without replacing the
     runtime/filesystem tools needed by the benchmark.
     """
     if not config.web_search.enabled:
-        return None
+        return {"tools": {"web": {"search": {"enabled": False}}}}
     search: dict[str, Any] = {"enabled": True}
     if config.web_search.provider and config.web_search.provider != "auto":
         search["provider"] = config.web_search.provider
@@ -525,7 +530,7 @@ def _pin_web_search_provider(
     log_path = trace_dir / "web-search-config.log"
     log_path.write_text("", encoding="utf-8")
     pinned_provider = config.web_search.provider
-    pinned = bool(pinned_provider and pinned_provider != "auto")
+    pinned = config.web_search.enabled and bool(pinned_provider and pinned_provider != "auto")
     result = _run_web_search_config_patch(openclaw, patch, env, log_path)
     if result.returncode == 0:
         return

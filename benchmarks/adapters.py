@@ -74,20 +74,40 @@ def _research(row: dict) -> Task:
 
 def _bfcl(row: dict) -> Task:
     entry = row.get("_bfcl_entry", row)
+    if not isinstance(entry, dict):
+        raise ValueError("BFCL entry must be a JSON object")
     if not isinstance(entry.get("question"), list) or not isinstance(entry.get("function"), list):
         raise ValueError("BFCL requires processed entries with question turns and function schemas")
     if not entry.get("involved_classes"):
         raise ValueError("BFCL online simulation requires executable stateful entries (involved_classes); AST-only rows have no tool backend")
     category = str(row.get("_bfcl_category") or row.get("category") or str(entry.get("id", "")).rsplit("_", 1)[0])
+    if "memory" in category or entry.get("depends_on"):
+        raise ValueError("BFCL memory/dependent entries require prerequisite scheduling; this runner supports independent stateful tasks only")
+    if entry.get("missed_function"):
+        raise ValueError("BFCL missed_function entries require per-turn tool changes and are not supported")
+    if not entry["question"] or any(
+        not isinstance(turn, list) or not turn or any(
+            not isinstance(message, dict) or message.get("role") not in {"system", "user"}
+            or not isinstance(message.get("content"), str) for message in turn
+        ) for turn in entry["question"]
+    ):
+        raise ValueError("BFCL question must contain nonempty turns of system/user text messages")
     return Task("bfcl", _id(entry), category, "functions", "", payload={"entry": entry, "category": category})
 
 
 def _terminal(row: dict) -> Task:
-    source = Path(str(row.get("task_source_path") or row.get("task_path") or "")).resolve(strict=True)
+    raw = row.get("task_source_path") or row.get("task_path")
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("Terminal Bench task requires task_path or task_source_path")
+    source = Path(raw).expanduser().resolve(strict=True)
     import yaml
+    if not (source / "task.yaml").is_file():
+        raise ValueError(f"Terminal Bench supports the task.yaml (v1) format, not Harbor task.toml: {source}")
     config = yaml.safe_load((source / "task.yaml").read_text(encoding="utf-8"))
-    if not isinstance(config.get("instruction"), str):
+    if not isinstance(config, dict) or not isinstance(config.get("instruction"), str) or not config["instruction"].strip():
         raise ValueError(f"Terminal Bench task has no instruction: {source}")
+    if not any((source / name).is_file() for name in ("docker-compose.yaml", "docker-compose.yml", "compose.yaml", "compose.yml", "Dockerfile")):
+        raise ValueError(f"Terminal Bench task requires a Dockerfile or Compose file: {source}")
     return Task("terminal-bench", str(row.get("task_id") or source.name),
                 str(config.get("category") or "dataset"), "terminal", config["instruction"],
                 payload={"task_path": str(source), "config": config})
@@ -118,17 +138,46 @@ def records(path: Path) -> list[dict]:
 def load(name: str, source: Path) -> list[Task]:
     if name not in ADAPTERS:
         raise ValueError(f"unknown benchmark: {name}")
+    source = source.expanduser().resolve(strict=True)
+    if source.name == "task.yaml" and name == "terminal-bench":
+        source = source.parent
     if source.is_dir() and name == "terminal-bench":
+        if (source / "task.toml").exists():
+            raise ValueError("Terminal Bench 2/Harbor task.toml format is not supported; supply v1 task.yaml tasks")
         paths = [source] if (source / "task.yaml").is_file() else sorted(p.parent for p in source.glob("*/task.yaml"))
         rows = [{"task_path": str(p)} for p in paths]
     else:
         rows = records(source)
+        if name == "terminal-bench":
+            for row in rows:
+                for key in ("task_path", "task_source_path"):
+                    if row.get(key):
+                        path = Path(row[key]).expanduser()
+                        row[key] = str(path if path.is_absolute() else source.parent / path)
     tasks = [ADAPTERS[name](row) for row in rows]
     if len({task.key for task in tasks}) != len(tasks):
         raise ValueError("duplicate task IDs in benchmark source")
     if not tasks:
         raise ValueError("task source is empty")
     return tasks
+
+
+def default_source(name: str, external: Path, root: Path) -> Path | None:
+    """Known on-disk names are not necessarily benchmark registry slugs."""
+    directories = {
+        "swe-rebench": ("swe-rebench",),
+        "deep-research-bench": ("deep-research-bench",),
+        "swe-bench-verified": ("swe-bench-verified", "swebench_verified"),
+        "terminal-bench": ("terminal-bench",),
+    }.get(name, ())
+    candidates = [external / "data" / directory / "tasks.json" for directory in directories]
+    if name == "terminal-bench":
+        candidates += [external / "data/terminal-bench/tasks"]
+    if name in {"swe-rebench", "deep-research-bench"}:
+        candidates.append(root / name.replace("-", "_") / "tasks.json")
+    return next((path for path in candidates if path.is_file() or (
+        name == "terminal-bench" and path.is_dir()
+    )), None)
 
 
 def select(tasks: list[Task], *, sample: int | None, skip: int = 0, repo: str | None = None, ids: str | None = None) -> list[Task]:

@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 
 from .bootstrap import ROOT
-from .adapters import NAMES, load, select
+from .adapters import NAMES, default_source, load, select
 
 
 def _offline_console_summary(report: dict, output: Path) -> dict:
@@ -131,14 +131,11 @@ def main(argv=None):
                 source = args.dataset
             if source is None and tasks is None and args.benchmark != "bfcl":
                 external = Path(os.getenv("AGENT_TEST_BENCH_ROOT", str(ROOT.parent / "agent-test-bench")))
-                candidates = [external / "data" / args.benchmark / "tasks.json"]
-                if args.benchmark == "swe-rebench":
-                    candidates.append(ROOT / "swe_rebench/tasks.json")
-                elif args.benchmark == "deep-research-bench":
-                    candidates.append(ROOT / "deep_research_bench/tasks.json")
-                source = next((path for path in candidates if path.is_file()), None)
+                source = default_source(args.benchmark, external.expanduser(), ROOT)
             if tasks is None:
                 if source is None and args.benchmark == "bfcl":
+                    if "memory" in args.category:
+                        raise ValueError("BFCL memory categories require prerequisite scheduling and are not supported; use multi_turn_base or multi_turn_long_context")
                     from .backends import ensure_bfcl
                     ensure_bfcl()
                     try:
@@ -148,7 +145,7 @@ def main(argv=None):
                     from .adapters import ADAPTERS
                     tasks = [ADAPTERS["bfcl"]({"_bfcl_entry": entry, "_bfcl_category": args.category}) for entry in load_dataset_entry(args.category)]
                 elif source is not None:
-                    tasks = load(args.benchmark, source.resolve())
+                    tasks = load(args.benchmark, source.expanduser().resolve())
                 else:
                     raise ValueError(f"{args.benchmark}: supply --dataset with the task source")
                 tasks = select(tasks, sample=args.sample, skip=args.skip, repo=args.repo, ids=args.instance_ids)
@@ -159,6 +156,7 @@ def main(argv=None):
             if args.dry_run:
                 print(json.dumps({"benchmark": args.benchmark, "mode": "online", "kb_frozen": False,
                     "parallelism_override": args.parallelism,
+                    "dataset": str(source.expanduser().resolve()) if source else None,
                     "seed": str(args.seed.resolve()), "tasks": [{"id": task.task_id, "group": task.group,
                     "executor": task.kind, "image": task.image} for task in tasks]}, indent=2))
                 return 0

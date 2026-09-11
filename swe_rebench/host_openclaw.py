@@ -2152,6 +2152,7 @@ def _openclaw_env(
     benchmark_tools_manifest = getattr(config, "benchmark_tools_manifest", None)
     if benchmark_tools_manifest:
         env["CLAWTUNE_BENCHMARK_TOOLS"] = str(benchmark_tools_manifest)
+    env.update(getattr(config, "web_search_env", {}))
     (openclaw_home / ".openclaw").mkdir(parents=True, exist_ok=True)
     return env
 

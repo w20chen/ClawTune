@@ -9,12 +9,19 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from .bootstrap import ROOT
+from swe_rebench.cancellation import run_command
 
 
 def ensure_bfcl():
+    # BFCL creates result/score/lock directories at import time. Keep these
+    # out of the external source checkout, including during --dry-run.
+    os.environ["BFCL_PROJECT_ROOT"] = str(ROOT / ".runtime" / "bfcl")
     root = os.getenv("BFCL_REPO_PATH")
     if root:
-        package = Path(root).resolve() / "berkeley-function-call-leaderboard"
+        package = Path(root).expanduser().resolve()
+        if not (package / "bfcl_eval").is_dir():
+            package = package / "berkeley-function-call-leaderboard"
         if not (package / "bfcl_eval").is_dir():
             raise ValueError(f"BFCL package missing: {package}")
         if str(package) not in sys.path:
@@ -34,21 +41,16 @@ class BFCLBackend:
             raise RuntimeError("Install BFCL dependencies and set BFCL_REPO_PATH to the gorilla checkout") from exc
         entry = copy.deepcopy(task.payload["entry"])
         category = task.payload["category"]
-        if "memory" in category:
-            from bfcl_eval.utils import populate_initial_settings_for_memory_test_cases
-            folder = run_dir / "bfcl-memory"
-            folder.mkdir(exist_ok=True)
-            populate_initial_settings_for_memory_test_cases([entry], folder)
+        if "memory" in category or entry.get("depends_on") or entry.get("missed_function"):
+            raise ValueError("BFCL dependency scheduling and per-turn tool changes are not supported")
         if "web_search" in category:
+            if not os.getenv("SERPAPI_API_KEY"):
+                raise ValueError("BFCL web_search requires SERPAPI_API_KEY (not TAVILY_API_KEY)")
             from bfcl_eval.utils import populate_initial_settings_for_web_search_test_cases
             populate_initial_settings_for_web_search_test_cases([entry])
         _, self.instances = execute_multi_turn_func_call([], entry.get("initial_config", {}),
             entry["involved_classes"], "clawtune_" + uuid.uuid4().hex, entry["id"],
             long_context="long_context" in category or "composite" in category, is_evaL_run=False)
-        if "memory" in category:
-            from bfcl_eval.model_handler.utils import add_memory_instruction_system_prompt
-            entry["question"] = add_memory_instruction_system_prompt(entry["question"], category,
-                entry["scenario"], next(iter(self.instances.values())))
         self.tools, self.methods = [], {}
         schemas = convert_to_tool(entry["function"], GORILLA_TO_OPENAPI, ModelStyle.OPENAI_COMPLETIONS)
         if len(schemas) != len(entry["function"]):
@@ -103,9 +105,23 @@ class TerminalBackend:
         self.project = "ct-" + uuid.uuid4().hex[:16]
         self.root = run_dir / "terminal-environments" / task.directory_name
         shutil.copytree(task.payload["task_path"], self.root)
-        compose = next((self.root / name for name in ("docker-compose.yaml", "docker-compose.yml", "compose.yaml") if (self.root / name).exists()), None)
+        compose = next((self.root / name for name in ("docker-compose.yaml", "docker-compose.yml", "compose.yaml", "compose.yml") if (self.root / name).exists()), None)
         if compose is None:
-            raise ValueError("Terminal Bench task requires a Compose file; use the task's native environment")
+            if not (self.root / "Dockerfile").is_file():
+                raise ValueError("Terminal Bench task requires a Dockerfile or Compose file")
+            # v1 tasks may rely on the harness's default single client
+            # Compose service. Preserve their own Dockerfile/build context.
+            import yaml
+            compose = self.root / "docker-compose.yaml"
+            compose.write_text(yaml.safe_dump({"services": {"client": {
+                "build": {"context": ".", "dockerfile": "Dockerfile"},
+                "image": "${T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME}",
+                "container_name": "${T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME}",
+                "command": ["sh", "-c", "sleep infinity"],
+                "environment": {"TEST_DIR": "${T_BENCH_TEST_DIR}"},
+                "volumes": ["${T_BENCH_TASK_LOGS_PATH}:${T_BENCH_CONTAINER_LOGS_PATH}",
+                            "${T_BENCH_TASK_AGENT_LOGS_PATH}:${T_BENCH_CONTAINER_AGENT_LOGS_PATH}"],
+            }}}), encoding="utf-8")
         self.command = ["docker", "compose", "-p", self.project, "-f", str(compose)]
         self.env = dict(os.environ)
         logs = run_dir / "terminal-logs" / task.directory_name
@@ -113,6 +129,7 @@ class TerminalBackend:
         (logs / "agent").mkdir()
         self.env.update({"T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME": self.project + "-image",
             "T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME": self.project + "-client",
+            "T_BENCH_TASK_DOCKER_NAME_PREFIX": self.project,
             "T_BENCH_TASK_LOGS_PATH": str(logs), "T_BENCH_TASK_AGENT_LOGS_PATH": str(logs / "agent"),
             "T_BENCH_CONTAINER_LOGS_PATH": "/logs", "T_BENCH_CONTAINER_AGENT_LOGS_PATH": "/agent-logs",
             "T_BENCH_TEST_DIR": "/tests"})
@@ -150,7 +167,8 @@ class TerminalBackend:
         return timeout
 
     def _run(self, args, *, timeout, cleanup=False):
-        return subprocess.run([*self.command, *args], cwd=self.root, env=self.env,
+        invoke = subprocess.run if cleanup else run_command
+        return invoke([*self.command, *args], cwd=self.root, env=self.env,
                               text=True, capture_output=True, check=True,
                               timeout=timeout if cleanup else self._remaining(timeout))
 

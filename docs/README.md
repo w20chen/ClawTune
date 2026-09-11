@@ -1,40 +1,34 @@
 # Documentation map
 
-The documents are grouped by purpose so that historical design notes are not
-mistaken for current behavior. JSON Schemas in [`contracts/`](../contracts/)
-remain the public protocol source of truth.
+## Run ClawTune
 
-## Start here
+- [Installation and first run](getting-started.md): prerequisites, setup, daily use.
+- [Online benchmarks](benchmarks.md): all five adapters, actual paths, dependencies and limits.
+- [Offline evaluation](offline.md): fixed traces, units, task splits and results.
+- [Configuration](configuration.md): provider keys, state ownership and runtime settings.
+- [Troubleshooting](troubleshooting.md): failures and diagnostic artifacts.
+- [ARM/QEMU](arm-qemu.md): Kunpeng container compatibility.
 
-- [Installation and first run](getting-started.md)
-- [Configuration](configuration.md)
-- [Troubleshooting](troubleshooting.md)
+## Understand the implementation
+
 - [Architecture](architecture.md)
-- [Sidecar reference](sidecar.md)
+- [Sidecar APIs and lifecycle](sidecar.md)
 - [Trace and protocol reference](trace-schema.md)
-- [Kunpeng and arm64 hosts](arm-qemu.md)
-
-## Current workflows
-
-- [Peer benchmark adapters and input formats](MULTI_BENCHMARK_IMPLEMENTATION.md)
-- [SWE-Rebench input and operation](../swe_rebench/README.md)
-- [Deep Research Bench input and operation](../deep_research_bench/README.md)
 - [Call-load prediction](call-load-prediction.md)
 - [Lattice CPU and memory prediction](lattice-resources.md)
-- [Tool-level PMU profiling](pmu-profiling.md)
-- [Current limitations and validation](CURRENT_PLAN.md)
+- [PMU profiling](pmu-profiling.md)
+- [Current validation and limitations](CURRENT_PLAN.md)
 
-## Historical and experimental material
+JSON Schemas in [contracts](../contracts/) define the public protocol. CLI help
+and checked-in configuration schemas define available options.
 
-These files document earlier designs or fixed experiment results. They are
-useful for provenance, but they do not define current CLI behavior:
+## Historical experiments
 
-- [Superseded three-path design](DEMO_SYSTEM_DESIGN.md)
-- [Resource-lattice implementation plan](RESOURCE_LATTICE_PLAN.md)
-- [Legacy evaluator reproduction guide](legacy-eval.md)
-- [Legacy fixed evaluation report](legacy_eval_final_report.md)
+These retained reports describe fixed experiments, not the current CLI:
+
+- [Legacy evaluator reproduction](legacy-eval.md)
+- [Legacy evaluation results](legacy_eval_final_report.md)
 - [Lattice accuracy snapshot](lattice-accuracy/report.md)
 
-The short [review log](REVIEW_LOG.md) records policy-level review decisions;
-detailed implementation history belongs in Git.
-
+Superseded implementation plans and empty review logs are not operating guides;
+Git preserves their history.

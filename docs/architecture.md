@@ -1,84 +1,55 @@
 # Architecture
 
-Runtime path:
-
 ```text
-OpenClaw CLI / TUI / chat channel
-  -> one Gateway (normal long-lived owner)
-    -> agent
-      -> session
-        -> run (one submitted turn)
-          -> ClawTune plugin hooks
-            -> ClawTune Sidecar + eBPF collector
-              -> JSONL traces + SQLite state + recent metrics
+Daily OpenClaw Gateway or local agent
+  -> ClawTune plugin: lifecycle hooks and managed execution
+  -> local sidecar: model proxy, collector, predictor and trace writer
+  -> JSONL traces + three-snapshot persistent user KB
+
+benchmark CLI -> task adapters -> bounded worker pool
+  -> separate OpenClaw homes/workspaces and task backends
+  -> one shared sidecar and run-owned online KB
+
+offline CLI -> existing task traces -> grouped task split
+  -> training seed -> frozen evaluation
 ```
 
-For ordinary use, a single Gateway serves one user and a small number of
-sessions. The Gateway and sidecar can remain alive, but plugin trace writers,
-span registries, sequence counters, and parent mappings are finalized per run;
-session-level cleanup is the fallback when a run ID is unavailable.
+The Gateway owns conversations; a local `openclaw agent --local` embeds its own
+runtime. The plugin finalizes per-run trace/span state and can reuse a compatible
+sidecar across sessions. Docker isolates tool execution; it does not own the
+conversation. Model content is traced through the OpenAI-compatible sidecar
+proxy at `/v1`, not by inspecting provider traffic elsewhere.
 
-`openclaw agent --local` bypasses the Gateway and owns one embedded run. It is
-useful for smoke tests and automation, not the default multi-turn CLI shape.
-`openclaw chat` similarly uses an embedded runtime but keeps an interactive TUI
-open for its process lifetime.
+## Benchmark ownership
 
-Docker sits beside this ownership chain rather than inside it. When OpenClaw
-sandboxing is enabled, containers isolate tool execution; ClawTune correlates
-their cgroups and processes back to the owning run. A Docker container is not
-a session, and normal use does not require creating one container per turn.
+`benchmarks/adapters.py` normalizes input while preserving benchmark identity.
+`benchmarks/runner.py` owns selection results, scheduling, run state and KB
+lifetime. `benchmarks/runtime.py` routes repository tasks to the SWE host
+executor, research to its web/sandbox executor, and BFCL/Terminal to native
+backends behind an authenticated loopback tool bridge.
 
-Full LLM content is captured when OpenClaw uses the sidecar as an
-OpenAI-compatible proxy:
+Each task has a stable digest directory and runtime identity. Only the
+coordinator writes `run.json`. No official graders run. Adapter limitations
+and actual input paths are documented in the [benchmark guide](benchmarks.md).
 
-```text
-OpenClaw provider -> http://127.0.0.1:8765/v1 -> upstream LLM API
-```
+## Learning and durability
 
-Online benchmark path:
+Accepted observations update in-memory prediction state under a KB lock.
+One background writer coalesces persistence and atomically publishes the three
+snapshots through `CURRENT`; storage retains current and preceding generations.
+There is no SQLite KB. Daily state, each online run and each offline experiment
+have distinct owners and do not merge automatically.
 
-```text
-scripts/clawtune.py benchmark
-  -> bounded worker pool + one run-owned sidecar/KB
-  -> selected peer adapter
-  -> OpenClaw + native task/tool backend
-  -> .runtime/benchmarks/<benchmark>/<run>/
-```
+Task drains wait for runtime-local executions/finalizers without forcing a
+KB flush. Once workers finish, the coordinator drains every real runtime and
+then forces persistence. Failure leaves the durability flag false. Cancellation
+signals workers before joining them; uncertain cleanup preserves ownership and
+prevents unsafe resume. Exact concurrent learning interleaving is not promised.
 
-`parallelism=1` is serial; larger values bound tasks in flight. Tasks do not
-wait at a shared barrier. Runtime-local finalizers drain as each task exits,
-while the sidecar coalesces KB persistence asynchronously through one writer.
-One global durability barrier runs after all producers finish.
+Resource attribution is quality-gated. Repository exec paths require exclusive
+cgroups and clause telemetry; research/bridged tools may only have eligible
+latency observations. Missing labels remain unavailable. Admission metadata and
+placement recommendations do not constitute a placement actuator in this MVP.
 
-Repository benchmark path:
-
-```text
-peer repository adapter
-  -> task image export + OpenClaw Docker sandbox
-  -> managed launcher + eBPF/cgroup telemetry
-  -> run-owned traces and shared KB
-```
-
-Deep Research Bench instead uses a basic sandbox image and has no `/testbed`.
-BFCL exposes native stateful functions through a tool bridge. Terminal Bench
-copies and uses the task-owned Compose environment. These are user simulations,
-not official leaderboard graders.
-
-User guides:
-
-- Getting started: [getting-started.md](getting-started.md)
-- Configuration: [configuration.md](configuration.md)
-- Sidecar: [sidecar.md](sidecar.md)
-- ARM/QEMU: [arm-qemu.md](arm-qemu.md)
-- Troubleshooting: [troubleshooting.md](troubleshooting.md)
-- SWE-Rebench: [../swe_rebench/README.md](../swe_rebench/README.md)
-- Deep Research Bench: [../deep_research_bench/README.md](../deep_research_bench/README.md)
-- Offline evaluation: [legacy-eval.md](legacy-eval.md) ·
-  [legacy_eval_final_report.md](legacy_eval_final_report.md)
-
-Developer references:
-
-- Public JSON Schemas: [`contracts/`](../contracts/)
-- Event format implementation notes: [trace-schema.md](trace-schema.md)
-- Current plan and validation: [CURRENT_PLAN.md](CURRENT_PLAN.md)
-- Documentation map: [README.md](README.md)
+See [sidecar](sidecar.md), [protocol](trace-schema.md), [offline](offline.md) and
+[current validation](CURRENT_PLAN.md) for the remaining boundaries.

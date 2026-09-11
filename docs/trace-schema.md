@@ -40,10 +40,11 @@ Inspect traces:
 
 ```bash
 python tools/inspect_trace.py traces/<trace-file>.jsonl --all --details
-python tools/inspect_trace.py traces/<trace-file>.jsonl --all --timeline
+python tools/inspect_trace.py traces/<trace-file>.jsonl --all --details --timeline
 ```
 
-A successful instrumented run has a model span, a managed tool execution, an
+A strictly instrumented repository run requires a model span, a managed tool
+execution, an
 attached cgroup/process scope, a finalized eBPF command artifact with
 executable/argv data, and no collector loss. API health alone proves only that
 the process is listening; `setup`/`check` prove kernel collection.

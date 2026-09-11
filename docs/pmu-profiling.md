@@ -55,22 +55,6 @@ avoids the `events x online CPUs` growth of cgroup-mode perf collection.
   single PMU collector and budget cover the aggregate concurrency of every
   session, not a per-session limit. The default follows the sidecar's global
   Tool concurrency ceiling.
-- In ClawBox, the same `pmu.py` is copied from the sibling ClawTune build
-  context and runs inside each Tool CubeSandbox VM. The Tool bridge supplies
-  the guest-local root PID and execution ID. Each VM budget follows
-  `TOOL_MAX_CONCURRENCY`; experiment workers currently use one active Tool per
-  VM. Across VMs the minimum exact-attribution cost is four guest FDs per
-  actively profiled Tool. Host session/VM admission remains the system-wide
-  concurrency bound.
-
-The guest's `time_running / time_enabled` ratio reports PMU scheduling visible
-inside that guest. It must not be treated as proof that the host PMU was free
-of cross-VM contention; acceptance runs must examine the ratio and host-level
-throughput together.
-
-ClawBox bounds each guest-local PMU begin/finish RPC to 100 ms. Normal calls
-perform only four opens or four reads and return far below that ceiling; a
-wedged helper is marked unavailable and the Tool gate/result continues.
 
 ## Quality and graceful degradation
 
@@ -119,11 +103,6 @@ test on each target CPU/VM; passing software tests alone is not that validation.
 | `CLAWTUNE_PMU_MAX_FDS` | automatic | Hard FD budget, reserving 64 process FDs |
 | `CLAWTUNE_PMU_RELIABLE_RUNNING_RATIO` | `0.95` | Diagnostic boundary for severe multiplexing; all multiplexing remains KB-ineligible |
 
-The CubeSandbox Tool container needs a guest vPMU exposed by its hypervisor and
-permission to call `perf_event_open`; its manifest requests `PERFMON`. Kernel
-policy may still require a different `perf_event_paranoid` value or guest
-configuration. Failure is reported through coverage and never changes the Tool
-exit status.
 
 ## Linux acceptance and overhead check
 

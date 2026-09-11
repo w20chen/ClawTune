@@ -64,12 +64,15 @@ V2 permits resource-only observations with missing/zero wall duration, while
 average CPU needs positive wall duration. Node statistics are rebuilt from raw
 records; query thresholds never alter persisted observations.
 
-Preparation still follows the existing full-rebuild lifecycle. It is performed
-by the KB writer, but currently under the shared lock; large rebuilds can delay
-concurrent queries. This change does not claim constant-time online updates or
-an end-to-end scheduling latency guarantee.
+The single KB writer prepares a candidate lattice outside the shared lock;
+queries keep using the previous prepared generation. Publication and snapshot
+capture use the lock. This does not imply constant-time updates or a latency
+guarantee.
 
-## Cold start and held-out evaluation
+## Historical seed provenance and evaluation
+
+This section describes a fixed experiment. New experiments use the
+[current offline workflow](offline.md), whose split rule is defined there.
 
 Source: the user-supplied `D:/swe277-full-5be74da-20260726` dataset, read-only.
 Tasks are grouped by repository; within each repository a deterministic shuffle

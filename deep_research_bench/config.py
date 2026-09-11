@@ -94,6 +94,8 @@ class SandboxConfig:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "SandboxConfig":
+        if d.get("workdir", "/workspace") != "/workspace":
+            raise ValueError("research sandbox.workdir must be /workspace (the OpenClaw mount)")
         return cls(
             image=str(d.get("image", "python:3.11-slim")),
             workdir=str(d.get("workdir", "/workspace")),

@@ -35,6 +35,7 @@ def test_peer_task_identity_and_verified_image(tmp_path):
     tb = tmp_path / "terminal-task"
     tb.mkdir()
     (tb / "task.yaml").write_text("instruction: solve this\ncategory: system\n")
+    (tb / "Dockerfile").write_text("FROM alpine\n")
     terminal = load("terminal-bench", tb)[0]
     assert terminal.kind == "terminal" and terminal.group == "system"
 

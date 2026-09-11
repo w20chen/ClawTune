@@ -28,7 +28,8 @@ must own its privileged lifetime:
 python3 scripts/clawtune.py sidecar
 ```
 
-All supported paths load `.env` and bind to `127.0.0.1:8765` by default. The
+Daily launch paths load `.env` and default to `127.0.0.1:8765`.
+Benchmarks start their own sidecar on an allocated loopback port. The
 plugin keeps `sidecarCommand` empty and resolves the current checkout, `.venv`,
 kernel build tree, and sudo launch command at runtime.
 
@@ -49,9 +50,10 @@ kernel build tree, and sudo launch command at runtime.
 | `POST /v2/executions` | Managed-execution registration |
 
 Managed-execution claim, scope, telemetry, exit, runtime-scope, and drain
-routes are also versioned under `/v1` or `/v2` and are consumed by the plugin
-and launcher. Their request/response schemas under `contracts/` are
-authoritative.
+routes are versioned under `/v1` or `/v2` and consumed by the plugin and
+launcher. JSON payload contracts live under `contracts/`; runtime OpenAPI
+(`/openapi.json`) also lists routes and query parameters, including drain
+`timeout_seconds` and `flush_kb`.
 
 Both health responses include `service: clawtune-sidecar` and
 `schema_version: clawtune.health.v1`. The launcher checks those values rather
@@ -95,8 +97,8 @@ A runtime drain normally waits for active executions, deferred finalizers, and
 trace operations. Its `flush_kb=false` mode intentionally skips the global
 persistence barrier; the common concurrent benchmark uses this at task
 boundaries so one completed task does not stall its peers. After all benchmark
-workers finish, one `flush_kb=true` drain places a barrier after all queued
-updates. Failure of that barrier fails the run; the sidecar is not reported as
+workers finish, the coordinator rechecks every real runtime with
+`flush_kb=false`, then one `flush_kb=true` drain persists all queued updates. Failure of that barrier fails the run; the sidecar is not reported as
 durably complete.
 
 ## Collection boundaries

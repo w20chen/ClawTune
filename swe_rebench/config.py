@@ -306,6 +306,9 @@ def _resolve_api_key(d: dict[str, Any], repo_root: Path, api_key_file: Path | No
     configured = _env_subst(str(d.get("api_key", ""))).strip()
     if configured:
         return configured
+    env_key = os.getenv("LLM_API_KEY", "").strip()
+    if env_key:
+        return env_key
     from_file = _read_api_key_file(api_key_file)
     if from_file:
         return from_file
