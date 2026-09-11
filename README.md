@@ -1,9 +1,7 @@
 # ClawTune
 
-ClawTune connects OpenClaw to a local sidecar that records model/tool traces,
-measures Linux process and eBPF resource usage, and learns duration, CPU, memory
-and PMU predictions. Placement advice is advisory; this project does not modify
-OpenClaw core.
+ClawTune is an OpenClaw plugin that records LLM/tool traces,
+measures resource usage of tool calls with Linux cgroup and eBPF, and learns tool call duration, CPU, memory, and micro-architecture metric predictions.
 
 | Workflow | Command | Knowledge base |
 | --- | --- | --- |
@@ -14,7 +12,7 @@ OpenClaw core.
 ## First run
 
 From a checkout on x86_64 Linux or Kunpeng/arm64 openEuler, with Python 3.10+,
-Docker, Node.js/npm, OpenClaw 2026.7.1+, cgroup v2 and matching kernel headers:
+Docker, Node.js/npm, OpenClaw 2026.7.1, cgroup v2 and matching kernel headers:
 
 ```bash
 python3 scripts/clawtune.py setup
