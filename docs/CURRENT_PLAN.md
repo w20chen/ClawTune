@@ -28,3 +28,11 @@ Linux acceptance should also cover parallel task isolation, timeout/Ctrl+C clean
 - The initial unprivileged run could not use the configured `/home/.pytest-tmp`; an explicit writable `--basetemp` resolves this. The existing read-only trace-cleanup test still fails as an unprivileged user; it passes in the privileged benchmark context. This change does not fix that separate unprivileged cleanup limitation.
 - Live kunpeng checks verified 25/64 arguments captured fully, 65 arguments marked capped, a 25-argument expanded glob aligned successfully, incomplete evidence still rejected, and cached amd64 image export without a pull. These checks do not replace a full model-backed benchmark run.
 - Terminal 30-task launch preflight: Compose 5.5.1 `up -d --build` cannot use the installed Buildx 0.15.1 (requires >=0.17). `DOCKER_BUILDKIT=0` bypasses that check but the legacy Compose build ignored the requested architecture and exceeded a 120-second smoke budget while reinstalling dependencies. Build-cache reuse through this path remains unverified. The detached test batch instead uses separate task copies pinned to the 30 previously built image IDs; original task files remain untouched. A cached task's real up/exec/down passed. Nested sudo in the privileged launch reset the invoking user, so the launcher invokes `python -m benchmarks.cli` directly in that already privileged context.
+
+## Remaining model-backed regression runs
+
+These runs remain unexecuted; they require configured model access and task datasets. Shell/PMU acceptance tests do not replace them.
+
+- Terminal: `python -m benchmarks.cli benchmark --benchmark terminal-bench --dataset <tasks-dir> --sample 4 --parallelism 4 --output <run-dir>`.
+- SWE-Rebench: `python -m benchmarks.cli benchmark --benchmark swe-rebench --sample 2`.
+- Full BFCL and Deep Research runs also require their function dependencies and provider credentials; see [benchmark setup](benchmarks.md).

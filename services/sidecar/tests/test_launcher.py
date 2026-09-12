@@ -550,6 +550,7 @@ def test_started_report_allows_bounded_ebpf_cold_start(monkeypatch) -> None:
 
 
 def test_launcher_claims_starts_and_returns_child_exit_code(monkeypatch) -> None:
+    monkeypatch.setattr(launcher, "_detect_container_id", lambda: None)
     posts: list[tuple[str, dict[str, Any]]] = []
 
     def fake_post_json(_endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1167,6 +1168,7 @@ def test_launcher_terminates_gated_payload_when_started_is_rejected(
 
 
 def test_launcher_join_failure_restarts_in_systemd_scope(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(launcher, "_detect_container_id", lambda: None)
     posts: list[tuple[str, dict[str, Any]]] = []
     original_cgroup = tmp_path / "exec-1"
     original_cgroup.mkdir()

@@ -74,7 +74,10 @@ class DockerExecObserver:
         self._matched: dict[tuple[str | None, ...], DockerExecRecord] = {}
         self._records: list[DockerExecRecord] = []
         self._consumed_exec_ids: set[str] = set()
-        self._cgroup_baseline: dict[tuple[str | None, ...], set[int]] = {}
+        # Baselines are keyed per tool and carry the cgroup they were read
+        # from: parallel benchmark tasks own separate containers, so a single
+        # global path would attribute another task's processes to this tool.
+        self._cgroup_baseline: dict[tuple[str | None, ...], tuple[str, set[int]]] = {}
         self._cgroup_seen: dict[tuple[str | None, ...], set[int]] = {}
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -165,10 +168,14 @@ class DockerExecObserver:
                 started_wall_s=time.time(),
             )
             self._active[key] = active
-            if self.cgroup_path:
-                baseline = _read_cgroup_procs(self.cgroup_path)
+            # Prefer the tool's own runtime scope: with parallelism > 1 each
+            # task owns a container, and the request scope is the only
+            # per-tool source of that container's cgroup.
+            path = _scope_cgroup_path(request.resource_scope) or self.cgroup_path
+            if path:
+                baseline = _read_cgroup_procs(path)
                 if baseline is not None:
-                    self._cgroup_baseline[key] = baseline
+                    self._cgroup_baseline[key] = (path, baseline)
                     self._diag["cgroup_diff_baselines"] += 1
             record = self._match_record(active, None)
             if record is not None:
@@ -348,7 +355,11 @@ class DockerExecObserver:
                 return True
         if self.container_prefix and container_name:
             return container_name.startswith(self.container_prefix)
-        return self.container_id is None and self.container_prefix is None
+        # An empty string means "no prefix configured" (the shared benchmark
+        # runner passes "" because each parallel task owns its own container).
+        # Per-task attribution is enforced later by _record_matches_active
+        # through the request scope's container id.
+        return self.container_id is None and not self.container_prefix
 
     def _record_matches_active(
         self,
@@ -412,8 +423,8 @@ class DockerExecObserver:
         key: tuple[str | None, ...],
         active: _ActiveTool,
     ) -> ResourceScope | None:
-        """Per-PID scope from pids newly seen in the sandbox cgroup window."""
-        baseline = self._cgroup_baseline.pop(key, None)
+        """Per-PID scope from pids newly seen in the tool's cgroup window."""
+        self._cgroup_baseline.pop(key, None)
         seen = self._cgroup_seen.pop(key, None)
         if not seen:
             return None
@@ -443,15 +454,19 @@ class DockerExecObserver:
             self._stop.wait(0.02)
 
     def _poll_cgroup_once(self) -> None:
-        """One cgroup.procs sample: union newly-appeared pids for active tools."""
-        path = self.cgroup_path
-        if not path:
-            return
-        procs = _read_cgroup_procs(path)
-        if procs is None:
-            return
+        """One cgroup.procs sample per distinct target of the active tools."""
         with self._lock:
-            for key, baseline in list(self._cgroup_baseline.items()):
+            paths = {path for path, _baseline in self._cgroup_baseline.values()}
+        if self.cgroup_path:
+            paths.add(self.cgroup_path)
+        if not paths:
+            return
+        procs_by_path = {path: _read_cgroup_procs(path) for path in paths}
+        with self._lock:
+            for key, (path, baseline) in list(self._cgroup_baseline.items()):
+                procs = procs_by_path.get(path)
+                if procs is None:
+                    continue
                 seen = self._cgroup_seen.setdefault(key, set())
                 for pid in procs:
                     if pid not in baseline:
@@ -487,6 +502,7 @@ class DockerExecObserver:
             self._stop.wait(1.0)
 
     def _handle_event_line(self, line: str) -> None:
+        self._diag["event_lines_seen"] += 1
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
@@ -739,6 +755,14 @@ def _short_container_id(value: str | None) -> str | None:
     if not value:
         return None
     return value.strip().lstrip("/")[:12]
+
+
+def _scope_cgroup_path(scope: ResourceScope | None) -> str | None:
+    """Return a usable per-tool cgroup target from a request scope."""
+
+    if scope is None or not isinstance(scope.cgroup_path, str) or not scope.cgroup_path:
+        return None
+    return scope.cgroup_path.rstrip("/")
 
 
 def _as_str(value: Any) -> str | None:

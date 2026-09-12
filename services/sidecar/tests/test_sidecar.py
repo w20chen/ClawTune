@@ -2836,7 +2836,9 @@ def test_required_ebpf_defers_claim_without_container_id(tmp_path: Path) -> None
 
 def test_required_ebpf_rejects_unavailable_collector_during_started(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    monkeypatch.setattr("clawtune_sidecar.api.app._resolve_host_pid", lambda *a, **kw: os.getpid())
     state = build_state(SidecarConfig(trace_dir=tmp_path / "traces"))
     client = TestClient(create_app(state))
     state.predictor.begin_execution = lambda **kwargs: False  # type: ignore[method-assign]
@@ -2937,7 +2939,8 @@ def test_required_ebpf_starts_during_claim_with_sandbox_container_id(tmp_path: P
     ]
 
 
-def test_exec_completion_uses_registered_launcher_scope(tmp_path: Path) -> None:
+def test_exec_completion_uses_registered_launcher_scope(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("clawtune_sidecar.api.app._resolve_host_pid", lambda *a, **kw: os.getpid())
     cgroup = tmp_path / "launcher-cgroup"
     cgroup.mkdir()
     (cgroup / "cpu.stat").write_text("usage_usec 100000\n", encoding="utf-8")

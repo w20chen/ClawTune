@@ -71,6 +71,23 @@ def flush_all_kb_updates(port: int, runtime_ids: list[str], *, timeout_seconds: 
     )
 
 
+def _required_terminal_preflight(config, task, trace: Path, deadline: float | None) -> None:
+    """Fail closed before a Terminal agent runs when eBPF telemetry is required.
+
+    The bridged executor has no OpenClaw sandbox entrypoint, so this host
+    preflight is the only place that proves the eBPF clause collector works
+    before the task's tool calls depend on it.  It writes
+    ``tool_resource_preflight_host.json`` into the task trace directory and
+    raises when the required collector is unavailable.
+    """
+
+    if not (config.runtime.ebpf_required and task.kind == "terminal"):
+        return
+    from swe_rebench.host_openclaw import _write_host_tool_resource_preflight
+
+    _write_host_tool_resource_preflight(trace, config, deadline=deadline)
+
+
 def _execute_bridged(task, config, run_dir, port, trace):
     from .backends import BFCLBackend, TerminalBackend
     from .tool_bridge import ToolBridge
@@ -84,7 +101,11 @@ def _execute_bridged(task, config, run_dir, port, trace):
     runtime_id = host._runtime_id(workspace)
     host._write_runtime_case_map(run_dir / "sidecar", runtime_id, task.task_id)
     deadline = host._task_deadline(config, started)
-    backend = BFCLBackend(task, run_dir) if task.kind == "functions" else TerminalBackend(task, run_dir, deadline=deadline, platform=config.docker.platform)
+    _required_terminal_preflight(config, task, trace, deadline)
+    backend = BFCLBackend(task, run_dir) if task.kind == "functions" else TerminalBackend(
+        task, run_dir, deadline=deadline, platform=config.docker.platform,
+        sidecar_port=port, runtime_id=runtime_id, repo=config.kb_repo,
+        telemetry_required=config.runtime.ebpf_required)
     manifest = trace / "tool-bridge.json"
     exit_code, error = -1, None
     try:

@@ -378,7 +378,13 @@ class PmuCollector:
                 return None
             if execution_id in self._completed:
                 return self._completed[execution_id]
-            self._reap_exited_locked()
+            # Exit reports can queue behind another tool's collector startup.
+            # A dead root alone does not mean its callback was lost. Preserve
+            # its counters for /exited while there is still admission capacity.
+            if len(self._active) >= self.max_active or (
+                len(self._active) + 1
+            ) * _EVENT_FDS > self.max_fds:
+                self._reap_exited_locked()
             if not self.enabled:
                 profile = _unavailable_profile(execution_id, "disabled", root_pid=root_pid)
                 self._remember_completed_locked(profile)

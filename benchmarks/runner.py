@@ -48,6 +48,18 @@ def _result_summary(task_id: str, row: dict, before: int | None, after: int | No
     return summary
 
 
+def _benchmark_requires_ebpf(task: Task) -> bool:
+    """Repository and terminal tasks run an authenticated execution lifecycle.
+
+    Repository tasks launch every tool through clawtune-launch inside the task
+    sandbox and terminal tasks run the gated execution lifecycle in their own
+    Compose container, so both must fail closed when the required eBPF
+    collector cannot be armed. Research and function tasks stay advisory.
+    """
+
+    return task.kind in {"repository", "terminal"}
+
+
 def run(
     tasks: list[Task],
     *,
@@ -84,7 +96,7 @@ def run(
 
     config.runtime.mode = "host-openclaw"
     config.runtime.kb_frozen = False
-    config.runtime.ebpf_required = tasks[0].kind == "repository"
+    config.runtime.ebpf_required = _benchmark_requires_ebpf(tasks[0])
     config.batch.retry_failed = 0
     selected_parallelism = (
         config.batch.parallelism if parallelism is None else parallelism

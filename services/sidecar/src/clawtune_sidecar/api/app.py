@@ -1688,6 +1688,17 @@ def create_app(state: AppState | None = None) -> FastAPI:
         s: AppState = Depends(get_state),
         _: None = Depends(auth),
     ) -> dict[str, bool]:
+        adopted_execution_id: str | None = None
+        if event.execution_id is None:
+            # Bridge-executed tools (Terminal Bench) register their execution
+            # from the host harness, so the plugin completion arrives without
+            # the id.  Adopt the uniquely matching authenticated execution
+            # before any scope, PMU or eBPF finalization depends on it.
+            adopted_execution_id = s.executions.unique_tool_call_execution_id(event)
+            if adopted_execution_id is not None:
+                event = event.model_copy(
+                    update={"execution_id": adopted_execution_id}
+                )
         if event.execution_id is not None:
             execution_record = s.executions.get(event.execution_id)
             if (
@@ -1733,9 +1744,19 @@ def create_app(state: AppState | None = None) -> FastAPI:
             # as explicitly incomplete, never as an inferred success.
             await finalize_ebpf_from_completion(s, event)
 
+            # Observer inference is defined for events without an execution id;
+            # an adopted harness execution keeps the authoritative execution
+            # scope but still allows the per-PID docker-exec upgrade.  Build
+            # the observer view before the scope lookup overwrites the shared
+            # runtime scope the observer requires.
+            observer_event = (
+                event.model_copy(update={"execution_id": None})
+                if adopted_execution_id is not None
+                else event
+            )
             event = await completed_with_execution_scope(event, s)
             inferred_scope = (
-                s.docker_exec_observer.infer_scope(event)
+                s.docker_exec_observer.infer_scope(observer_event)
                 if s.docker_exec_observer is not None
                 else None
             )
@@ -2000,6 +2021,18 @@ def create_app(state: AppState | None = None) -> FastAPI:
             and request.process_starttime_ticks is not None
             else None
         )
+        if (
+            record is not None
+            and record.request.backend == "managed-wrapper"
+            and request.pid_namespace_inode is not None
+            and request.process_starttime_ticks is not None
+            and trusted_root_pid is None
+        ):
+            # A supplied identity that cannot be verified must never release
+            # an exec gate or fall back to sampling a raw container PID.
+            if record is not None:
+                record.scope = None
+            raise HTTPException(status_code=422, detail="invalid_execution_root_identity")
         if record is not None and trusted_root_pid is not None:
             s.executions.bind_trusted_root(execution_id, trusted_root_pid)
         host_cgroup_gate_failed = False

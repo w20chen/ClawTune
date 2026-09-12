@@ -39,7 +39,7 @@ class ToolBridge:
                             if signature != prior:
                                 raise ValueError("conflicting duplicate tool call")
                         else:
-                            result = owner.backend.call(body["name"], body["arguments"])
+                            result = owner.backend.call(body["name"], body["arguments"], call_id=key)
                             owner.results[key] = (signature, result)
                     data = json.dumps({"result": result}, default=str, allow_nan=False).encode()
                     self.send_response(200)

@@ -223,7 +223,7 @@ def test_bridge_auth_and_duplicate_mutation(tmp_path):
     class Backend:
         tools = [{"name": "increment", "parameters": {"type": "object"}}]
         count = 0
-        def call(self, name, args):
+        def call(self, name, args, *, call_id=""):
             self.count += 1
             return self.count
     backend = Backend()

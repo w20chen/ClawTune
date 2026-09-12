@@ -148,9 +148,15 @@ python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
 
 A single task directory or `task.yaml` is also accepted. In JSON lists, `task_path` resolves relative to the list file, for example `[{"task_path":"tasks/my-task"}]`.
 
-Tasks are copied into the run before container creation. Compose must provide exactly one `client` container, and host mounts/build contexts must remain within allowed run paths. Each tool invocation uses a fresh shell: use explicit `cd` and files for persistent state. Persistent interactive TTYs are unsupported. This adapter provides hook duration, not attributed clause-level CPU/RSS.
+Tasks are copied into the run before container creation. Compose must provide exactly one `client` container, and host mounts/build contexts must remain within allowed run paths. Each tool invocation uses a fresh shell: use explicit `cd` and files for persistent state. Persistent interactive TTYs are unsupported. Terminal execution requires working telemetry; if it is unavailable, the command will not run. See `terminal-logs/<task>/terminal-gate.log` for diagnostics.
 
 Compose startup/build and cleanup logs are written live to `terminal-logs/<task>/compose-up.log` and `compose-down.log` under the run directory. Agent logs for this adapter are `traces/<task>/turn-0-agent-stdout.txt` and `turn-0-agent-stderr.txt` after the turn finishes. `docker.platform` supplies the default service platform; explicit task platforms take precedence.
+
+### PMU results
+
+PMU data is supported for Terminal commands and shell commands in SWE-Rebench, SWE-Bench Verified, and Deep Research. BFCL functions and non-shell research tools currently have no per-call PMU data; missing values are not zero.
+
+Only profiles with `coverage.eligible_for_kb=true` are used for learning. Predictions marked `calibration=unvalidated` have not been validated for accuracy. When running amd64 images on arm64, counters include QEMU overhead.
 
 ## 3. Selection, concurrency, and resume
 

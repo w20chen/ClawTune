@@ -143,6 +143,33 @@ class ExecutionRegistry:
             )
         ]
 
+    def unique_tool_call_execution_id(self, event: object) -> str | None:
+        """Resolve one authenticated execution for an unlabeled completion.
+
+        Bridge-executed task tools (Terminal Bench) run inside the task's own
+        Compose container instead of an OpenClaw launcher, so their completion
+        hook carries no execution id even though the host harness registered
+        one with the identical gateway/runtime/tool-call identity.  Adopt it
+        only when exactly one claimed record matches: an ambiguous or foreign
+        replay must never attach another payload's telemetry to this
+        completion.
+        """
+
+        self._sweep()
+        tool_call_id = getattr(event, "tool_call_id", None)
+        if not tool_call_id:
+            return None
+        matches = [
+            record
+            for record in self._by_execution_id.values()
+            if record.claimed
+            and record.request.tool_call_id == tool_call_id
+            and owners_compatible(record.request, event)
+        ]
+        if len(matches) != 1:
+            return None
+        return matches[0].request.execution_id
+
     def mark_completed(self, execution_id: str) -> None:
         record = self._by_execution_id.get(execution_id)
         if record is None:

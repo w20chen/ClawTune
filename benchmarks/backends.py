@@ -4,13 +4,29 @@ import copy
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
 from .bootstrap import ROOT
+from .exec_control import (
+    ABORT_SCRIPT,
+    GATEWAY_ID,
+    GATE_CONTAINER_PATH,
+    GATE_SCRIPT,
+    ExecutionStartRejected,
+    SidecarExecutions,
+    SidecarUnavailable,
+    parse_gate_identity,
+)
 from swe_rebench.cancellation import run_command
+
+
+class _GateDegrade(RuntimeError):
+    """The in-container gate could not provide a trustable process identity."""
 
 
 def ensure_bfcl():
@@ -83,7 +99,7 @@ class BFCLBackend:
         if not self.turns:
             raise ValueError("BFCL entry contains no user turns")
 
-    def call(self, name: str, arguments: dict):
+    def call(self, name: str, arguments: dict, *, call_id: str = ""):
         if name not in self.methods:
             raise ValueError("unknown BFCL function")
         try:
@@ -103,8 +119,20 @@ class TerminalBackend:
     tools = [{"name": "terminal_exec", "description": "Run a shell command inside this Terminal Bench task's client container. Use explicit cd when needed.",
               "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"], "additionalProperties": False}}]
 
-    def __init__(self, task, run_dir: Path, *, deadline: float | None = None, platform: str = ""):
+    def __init__(self, task, run_dir: Path, *, deadline: float | None = None, platform: str = "",
+                 sidecar_port: int | None = None, runtime_id: str = "",
+                 gateway_id: str = GATEWAY_ID, repo: str = "terminal-bench",
+                 telemetry_required: bool = False):
         self.deadline = deadline
+        self.telemetry_required = telemetry_required
+        # Sidecar execution lifecycle.  Without a port the backend keeps the
+        # legacy plain `docker exec` path (no PMU evidence for those calls).
+        self.runtime_id = runtime_id
+        self.gateway_id = gateway_id or GATEWAY_ID
+        self.repo = repo
+        self.sidecar = SidecarExecutions(sidecar_port) if sidecar_port else None
+        self.gate_available = False
+        self.gate_install_error: str | None = None
         self.project = "ct-" + uuid.uuid4().hex[:16]
         self.root = run_dir / "terminal-environments" / task.directory_name
         shutil.copytree(task.payload["task_path"], self.root)
@@ -172,6 +200,11 @@ class TerminalBackend:
         except BaseException:
             self.close()
             raise
+        if self.sidecar is not None:
+            # Both steps must exist before the first tool call; each degrades
+            # explicitly instead of failing the task on an exotic image.
+            self._install_exec_gate()
+            self._register_container_scope()
 
     def start_agent(self):
         """Apply the native whole-agent budget after environment setup."""
@@ -202,14 +235,268 @@ class TerminalBackend:
                               text=True, capture_output=True, check=True,
                               timeout=timeout if cleanup else self._remaining(timeout))
 
-    def call(self, name: str, arguments: dict):
+    def call(self, name: str, arguments: dict, *, call_id: str = ""):
         if name != "terminal_exec" or not isinstance(arguments.get("command"), str):
             raise ValueError("terminal_exec requires command")
-        completed = subprocess.run(["docker", "exec", self.container, "sh", "-lc", arguments["command"]],
-                                   text=True, capture_output=True, timeout=self._remaining(self.timeout))
-        return {"exit_code": completed.returncode, "stdout": completed.stdout[-65536:], "stderr": completed.stderr[-65536:]}
+        command = arguments["command"]
+        if self.sidecar is None or not self.gate_available or not call_id:
+            if self.telemetry_required:
+                raise ExecutionStartRejected("required terminal execution gate is unavailable")
+            return self._result(self._plain_exec(command))
+        return self._gated_exec(command, call_id)
+
+    def _result(self, completed) -> dict:
+        return {
+            "exit_code": completed.returncode,
+            "stdout": completed.stdout[-65536:],
+            "stderr": completed.stderr[-65536:],
+        }
+
+    def _plain_exec(self, command: str):
+        return subprocess.run(
+            ["docker", "exec", self.container, "sh", "-lc", command],
+            text=True, capture_output=True, timeout=self._remaining(self.timeout),
+        )
+
+    def _gated_exec(self, command: str, call_id: str) -> dict:
+        """Run one command behind the gate with a real execution lifecycle.
+
+        The sidecar arms PMU counters on the verified host PID while the gate
+        is still blocked, so the counting window starts exactly at the payload
+        exec.  A missing identity or an unreachable sidecar degrades to a plain
+        exec (no PMU evidence is invented); an explicit start rejection fails
+        the tool call closed because the required collector was not armed.
+        """
+
+        remaining = self._remaining(self.timeout)
+        execution_id = "terminal-" + uuid.uuid4().hex[:24]
+        process = self._start_gated_process(command)
+        update_token: str | None = None
+        try:
+            identity = self._read_gate_identity(process, timeout=min(30.0, remaining))
+            if identity is None:
+                raise _GateDegrade("gate identity unavailable")
+            container_pid, namespace_inode, starttime_ticks = identity
+            assert self.sidecar is not None
+            token = self.sidecar.register(
+                execution_id=execution_id,
+                runtime_id=self.runtime_id,
+                tool_call_id=call_id,
+                command=command,
+                repo=self.repo,
+                gateway_id=self.gateway_id,
+            )
+            update_token = self.sidecar.claim(
+                execution_id, token, launcher_pid=os.getpid()
+            )
+            self.sidecar.started(
+                execution_id,
+                update_token,
+                launcher_pid=os.getpid(),
+                container_pid=container_pid,
+                namespace_inode=namespace_inode,
+                starttime_ticks=starttime_ticks,
+                container_id=self.container,
+            )
+        except (_GateDegrade, SidecarUnavailable) as exc:
+            if isinstance(exc, _GateDegrade):
+                self._disable_gate(str(exc))
+            else:
+                self._gate_log(f"execution {execution_id} degraded: {exc}")
+            self._terminate(process)
+            self._report_exit(execution_id, update_token, exit_code=None, term_signal=signal.SIGTERM)
+            if self.telemetry_required:
+                raise ExecutionStartRejected(f"required terminal telemetry unavailable: {exc}") from exc
+            return self._result(self._plain_exec(command))
+        except BaseException:
+            self._terminate(process)
+            self._report_exit(execution_id, update_token, exit_code=None, term_signal=signal.SIGTERM)
+            raise
+        try:
+            # communicate owns stdin, including EOF. Closing it manually first
+            # makes CPython 3.10-3.12 on POSIX flush a closed stream. Check the
+            # budget before releasing; never retry a released payload.
+            deadline_budget = self._remaining(self.timeout)
+            stdout, stderr = process.communicate(input="go\n", timeout=deadline_budget)
+            exit_code = process.returncode
+        except BaseException:
+            self._abort_payload(identity)
+            self._terminate(process)
+            self._report_exit(
+                execution_id, update_token, exit_code=None, term_signal=signal.SIGKILL
+            )
+            raise
+        self._report_exit(execution_id, update_token, exit_code=exit_code, term_signal=None)
+        return {
+            "exit_code": exit_code,
+            "stdout": (stdout or "")[-65536:],
+            "stderr": (stderr or "")[-65536:],
+        }
+
+    def _abort_payload(self, identity: tuple[int, int, int]) -> None:
+        try:
+            result = subprocess.run(
+                ["docker", "exec", self.container, "/bin/sh", "-c", ABORT_SCRIPT,
+                 "clawtune-abort", *(str(value) for value in identity)],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode:
+                self._gate_log(f"payload cleanup failed: {result.stderr[-1000:]}")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self._gate_log(f"payload cleanup failed: {exc}")
+
+    def _start_gated_process(self, command: str) -> subprocess.Popen:
+        # `-i` keeps stdin open for the release token.  The harness closes it
+        # once released, so the payload sees a closed stdin like a plain exec.
+        return subprocess.Popen(
+            [
+                "docker", "exec", "-i", self.container,
+                "/bin/sh", GATE_CONTAINER_PATH, "/bin/sh", "-lc", command,
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+    def _read_gate_identity(self, process: subprocess.Popen, *, timeout: float):
+        """Read the gate's identity line, killing the gate on timeout."""
+
+        if process.stdout is None:
+            return None
+        timer = threading.Timer(max(0.1, timeout), process.kill)
+        timer.daemon = True
+        timer.start()
+        try:
+            line = process.stdout.readline()
+        except (OSError, ValueError):
+            return None
+        finally:
+            timer.cancel()
+        if process.returncode is not None:
+            return None
+        return parse_gate_identity(line)
+
+    @staticmethod
+    def _terminate(process: subprocess.Popen) -> None:
+        # EOF aborts an unreleased in-container gate. Killing only the Docker
+        # client can leave the remote shell blocked on its stdin indefinitely.
+        if process.stdin is not None:
+            try:
+                process.stdin.close()
+            except (OSError, ValueError):
+                pass
+        try:
+            process.wait(timeout=1)
+        except (subprocess.TimeoutExpired, OSError):
+            try:
+                process.kill()
+                process.wait(timeout=5)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+        finally:
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except (OSError, ValueError):
+                        pass
+
+    def _report_exit(
+        self,
+        execution_id: str,
+        update_token: str | None,
+        *,
+        exit_code: int | None,
+        term_signal: int | None,
+    ) -> None:
+        if self.sidecar is None or update_token is None:
+            return
+        try:
+            self.sidecar.exited(
+                execution_id, update_token, exit_code=exit_code, term_signal=term_signal
+            )
+        except SidecarUnavailable as exc:
+            self._gate_log(f"execution {execution_id} exit report failed: {exc}")
+
+    def _disable_gate(self, reason: str) -> None:
+        if self.gate_available:
+            self._gate_log(f"exec gate disabled for this task: {reason}")
+        self.gate_available = False
+        self.gate_install_error = reason
+
+    def _install_exec_gate(self) -> None:
+        """Inject the POSIX gate into the client container and probe it once."""
+
+        script = self.log_dir / "clawtune-exec-gate.sh"
+        try:
+            script.write_text(GATE_SCRIPT, encoding="utf-8", newline="\n")
+            copied = run_command(
+                ["docker", "cp", str(script), f"{self.container}:{GATE_CONTAINER_PATH}"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if copied.returncode != 0:
+                raise RuntimeError((copied.stderr or "").strip() or "docker cp failed")
+            probe = run_command(
+                [
+                    "docker", "exec", "-i", self.container,
+                    "/bin/sh", GATE_CONTAINER_PATH, "/bin/sh", "-c", ":",
+                ],
+                input="go\n", capture_output=True, text=True, timeout=60,
+            )
+            lines = (probe.stdout or "").splitlines()
+            if probe.returncode != 0 or not lines or parse_gate_identity(lines[0]) is None:
+                raise RuntimeError(
+                    f"gate probe exit={probe.returncode} stdout={probe.stdout!r} "
+                    f"stderr={probe.stderr!r}"
+                )
+        except Exception as exc:  # capability probe: degrade, never fail the task
+            self._disable_gate(f"{type(exc).__name__}: {exc}")
+            return
+        self.gate_available = True
+        self._gate_log("exec gate ready")
+
+    def _register_container_scope(self) -> None:
+        """Publish the task's client container as this runtime's sampling scope.
+
+        Parallel tasks each own one Compose project, so binding container id,
+        host PID and cgroup per runtime keeps container/cgroup/PMU spans
+        one-to-one at any parallelism.
+        """
+
+        if self.sidecar is None or not self.runtime_id:
+            return
+        try:
+            from swe_rebench.host_openclaw import _docker_container_scope
+
+            scope = _docker_container_scope(
+                shutil.which("docker") or "docker", self.container
+            )
+            if scope is None:
+                raise RuntimeError("client container scope could not be derived")
+            self.sidecar.store_container_scope(
+                self.runtime_id, scope, gateway_id=self.gateway_id
+            )
+        except Exception as exc:
+            self._gate_log(
+                f"container scope registration failed: {type(exc).__name__}: {exc}"
+            )
+
+    def _gate_log(self, message: str) -> None:
+        try:
+            with (self.log_dir / "terminal-gate.log").open("a", encoding="utf-8") as log:
+                log.write(message.rstrip() + "\n")
+        except OSError:
+            pass
 
     def close(self):
         if self.started:
             self._run(["down", "--volumes", "--remove-orphans"], timeout=60, cleanup=True)
             self.started = False
+        if self.sidecar is not None and self.runtime_id:
+            try:
+                self.sidecar.delete_container_scope(
+                    self.runtime_id, gateway_id=self.gateway_id
+                )
+            except SidecarUnavailable as exc:
+                self._gate_log(f"container scope cleanup failed: {exc}")

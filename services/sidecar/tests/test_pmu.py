@@ -163,6 +163,22 @@ def test_next_begin_reaps_a_dead_root_after_a_lost_exit_callback(monkeypatch) ->
     assert collector.diagnostics()["active"] == 1
 
 
+def test_parallel_begin_preserves_a_queued_exit_report(monkeypatch) -> None:
+    identities = {101: "start-a", 102: "start-b"}
+    monkeypatch.setattr(pmu_module, "_process_identity", identities.get)
+    collector = PmuCollector(max_active=2, backend=FakePerfBackend())
+    collector.begin("exec-1", 101)
+    identities.pop(101)
+    collector.begin("exec-2", 102)
+    # There is no capacity pressure: /exited is allowed to finish its profile
+    # even if a concurrent /started was processed first on the HTTP server.
+    assert collector.take("exec-1") is None
+    profile = collector.finish("exec-1", reason="execution_exited")
+    assert profile.coverage.status == "reliable"
+    assert profile.coverage.eligible_for_kb
+    collector.finish("exec-2")
+
+
 def test_consumed_profile_remains_idempotent_for_a_delayed_exit() -> None:
     collector = PmuCollector(max_active=1, backend=FakePerfBackend())
     collector.begin("exec", 12)

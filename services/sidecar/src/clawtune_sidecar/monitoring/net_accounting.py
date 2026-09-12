@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ctypes
 import threading
+from tool_resource.bcc_runtime import BCC_COMPILE_LOCK
 from typing import Any, Iterable
 
 _BPF_SOURCE = r"""
@@ -165,7 +166,8 @@ class ProcessNetAccounting:
         try:
             bcc = _ensure_bcc_importable()
             BPF = bcc.BPF
-            bpf = BPF(text=_BPF_SOURCE)
+            with BCC_COMPILE_LOCK:
+                bpf = BPF(text=_BPF_SOURCE)
             bpf.attach_kretprobe(
                 event="tcp_sendmsg", fn_name="claw_net_send_ret"
             )

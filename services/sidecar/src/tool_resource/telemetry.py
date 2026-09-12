@@ -42,6 +42,7 @@ import socket
 import subprocess
 import sys
 import threading
+from tool_resource.bcc_runtime import BCC_COMPILE_LOCK
 import time
 from functools import wraps
 from urllib.parse import quote
@@ -1293,7 +1294,8 @@ def collect_case(command: str, tag: str, *, marker: str = "") -> RawRun:
 
     cg = _new_cgroup(tag)
     cgroup_id = cg.stat().st_ino
-    bpf = BPF(text=BPF_PROGRAM)
+    with BCC_COMPILE_LOCK:
+        bpf = BPF(text=BPF_PROGRAM)
     _attach_first_kprobe(
         bpf,
         BPF,
@@ -3506,7 +3508,8 @@ class _SharedBpfSource:
         self.generation = time.monotonic_ns()
         self._perf_type = PerfType
         self._perf_config = PerfSWConfig
-        self.bpf = BPF(text=BPF_PROGRAM)
+        with BCC_COMPILE_LOCK:
+            self.bpf = BPF(text=BPF_PROGRAM)
         try:
             _attach_first_kprobe(
                 self.bpf,
