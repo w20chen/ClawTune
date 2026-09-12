@@ -6,6 +6,7 @@ import queue
 import re
 import time
 import threading
+from dataclasses import replace
 from uuid import uuid4
 from datetime import datetime, timezone
 from pathlib import Path
@@ -292,6 +293,16 @@ class AgentTestBenchTraceWriter:
             shared_runtime_process=shared_runtime,
             shared_sandbox_container=shared_sandbox,
         )
+
+        if _cov_dur_ns == 0:
+            # Preserve the raw timeline for diagnosis, but never export a
+            # snapshot outside the action as its aggregate resource usage.
+            sample = replace(sample, **dict.fromkeys((
+                "cpu_time_delta_s", "rss_bytes_before", "rss_bytes_after", "rss_bytes_peak",
+                "read_bytes_delta", "write_bytes_delta", "net_rx_bytes_delta", "net_tx_bytes_delta",
+                "ctx_switches_delta", "cpu_utilization_avg_cores", "cpu_utilization_avg_pct",
+                "disk_read_bytes_per_s", "disk_write_bytes_per_s", "net_rx_bytes_per_s", "net_tx_bytes_per_s",
+            )))
 
         # Independent per-execution cgroup artifact (cpu/mem/disk/network),
         # written next to the trace and referenced from the span resources.

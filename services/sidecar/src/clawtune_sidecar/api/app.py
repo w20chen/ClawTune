@@ -1159,6 +1159,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
             )
 
     def with_sandbox_fallback(request: ToolBeforeRequest, s: AppState) -> ToolBeforeRequest:
+        if request.tool_name in {"web_search", "web_fetch"}:
+            return request
         if (
             request.resource_scope is not None
             and not _is_shared_runtime_scope(request.resource_scope)
@@ -1177,6 +1179,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
         event: ToolCompletedEvent,
         s: AppState,
     ) -> ToolCompletedEvent:
+        if event.tool_name in {"web_search", "web_fetch"}:
+            return event
         scope = sandbox_fallback_scope(s, event.runtime_id, event.gateway_id)
         if scope is None:
             return event
@@ -1681,7 +1685,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 s._tool_decisions_by_event_id.pop(oldest, None)
             if decision.action == "allow":
                 s.tool_monitor.begin(request, prediction.resource_class)
-                if s.docker_exec_observer is not None:
+                if s.docker_exec_observer is not None and request.tool_name not in {"web_search", "web_fetch"}:
                     s.docker_exec_observer.begin_tool(request)
             s.metrics.inc("scheduler_tool_decisions_total")
             s.metrics.decision_latencies.append(time.monotonic() - start)
@@ -1796,7 +1800,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             event = await completed_with_execution_scope(event, s)
             inferred_scope = (
                 s.docker_exec_observer.infer_scope(observer_event)
-                if s.docker_exec_observer is not None
+                if s.docker_exec_observer is not None and event.tool_name not in {"web_search", "web_fetch"}
                 else None
             )
             if inferred_scope is not None:

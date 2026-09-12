@@ -1621,7 +1621,7 @@ def observation_from_completion(
     ts_end = sample.ended_at
     if ts_end < ts_start:
         ts_end = ts_start
-    shared_resources = _completion_uses_shared_resources(event, start)
+    exclude_resource_labels = _completion_uses_shared_resources(event, start) or not _sample_resources_usable(sample)
     return ClauseObservation(
         repo=repo,
         bin=str(clause["bin"]),
@@ -1632,7 +1632,7 @@ def observation_from_completion(
         peak_cpu_cores=None,  # legacy helper cannot turn averages into peaks
         sampled_peak_rss_mb=None,  # process/cgroup memory is not clause distinct-mm RSS
         cpu_ns_cumulative=(
-            None if shared_resources else _cpu_ns(sample.cpu_time_delta_s)
+            None if exclude_resource_labels else _cpu_ns(sample.cpu_time_delta_s)
         ),
         in_loop=False,
         in_pipe=False,
@@ -1656,7 +1656,7 @@ def completed_call_from_completion(
         ts_end = ts_start
     peak_memory_mb = _rss_mb(sample.rss_bytes_peak)
     ambient_before_mb = _rss_mb(sample.rss_bytes_before)
-    shared_resources = _completion_uses_shared_resources(event, start)
+    exclude_resource_labels = _completion_uses_shared_resources(event, start) or not _sample_resources_usable(sample)
     pmu = _quality_gated_pmu_metrics(sample.pmu_profile if event.execution_id else None,
                                    execution_id=event.execution_id)
     return CompletedCall(
@@ -1672,10 +1672,10 @@ def completed_call_from_completion(
         peak_cpu_cores=None,
         peak_cpu_cores_eligible=False,
         cpu_time_seconds=sample.cpu_time_delta_s,
-        cpu_time_eligible=not shared_resources and sample.cpu_time_delta_s is not None,
+        cpu_time_eligible=not exclude_resource_labels and sample.cpu_time_delta_s is not None,
         peak_memory_mb=peak_memory_mb,
         peak_memory_mb_eligible=(
-            not shared_resources
+            not exclude_resource_labels
             and peak_memory_mb is not None
             and ambient_before_mb is not None
         ),
@@ -1724,7 +1724,7 @@ def _observation_from_tool_span(
     ts_start, ts_end = _span_times(end, duration_ms)
     resources = end.get("resources") if isinstance(end.get("resources"), dict) else {}
     execution = end.get("execution") if isinstance(end.get("execution"), dict) else {}
-    shared_resources = _uses_shared_resources(resources) or _uses_shared_resources(
+    exclude_resource_labels = not _trace_resources_usable(resources) or _uses_shared_resources(resources) or _uses_shared_resources(
         execution
     )
     return ClauseObservation(
@@ -1737,7 +1737,7 @@ def _observation_from_tool_span(
         peak_cpu_cores=None,
         sampled_peak_rss_mb=None,
         cpu_ns_cumulative=(
-            None if shared_resources else _cpu_ns(resources.get("cpu_time_s"))
+            None if exclude_resource_labels else _cpu_ns(resources.get("cpu_time_s"))
         ),
         in_loop=False,
         in_pipe=False,
@@ -1774,7 +1774,7 @@ def _completed_call_from_tool_span(
     ambient_before_mb = _rss_mb(resources.get("memory_rss_bytes_before"))
     peak_cpu_cores = _optional_float(resources.get("cpu_peak_cores"))
     execution = end.get("execution") if isinstance(end.get("execution"), dict) else {}
-    shared_resources = _uses_shared_resources(resources) or _uses_shared_resources(
+    exclude_resource_labels = not _trace_resources_usable(resources) or _uses_shared_resources(resources) or _uses_shared_resources(
         execution
     )
     pmu = _quality_gated_pmu_metrics(resources.get("pmu") if execution.get("execution_id") else None,
@@ -1788,17 +1788,17 @@ def _completed_call_from_tool_span(
         censored=_truncated_outcome(status.get("message")) or resources.get("censored") is True,
         outcome=str(status.get("code", "unknown")),
         peak_cpu_cores=peak_cpu_cores,
-        peak_cpu_cores_eligible=(not shared_resources and peak_cpu_cores is not None
+        peak_cpu_cores_eligible=(not exclude_resource_labels and peak_cpu_cores is not None
                                  and resources.get("cpu_peak_window_ms") == 500),
         cpu_peak_window_ms=resources.get("cpu_peak_window_ms"),
         cpu_time_seconds=_optional_float(resources.get("cpu_time_s", resources.get("cpu_time_delta_s"))),
-        cpu_time_eligible=not shared_resources,
+        cpu_time_eligible=not exclude_resource_labels,
         memory_peak_rss_bytes=_optional_float(resources.get("memory_peak_rss_bytes")),
         memory_metric=resources.get("memory_metric"),
-        memory_rss_eligible=not shared_resources,
+        memory_rss_eligible=not exclude_resource_labels,
         peak_memory_mb=peak_memory_mb,
         peak_memory_mb_eligible=(
-            not shared_resources
+            not exclude_resource_labels
             and peak_memory_mb is not None
             and ambient_before_mb is not None
         ),
@@ -1807,6 +1807,30 @@ def _completed_call_from_tool_span(
         pmu_llc_mpki=pmu["llc_mpki"],
         pmu_llc_miss_rate=pmu["llc_miss_rate"],
         pmu_eligible=pmu["eligible"],
+    )
+
+
+def _sample_resources_usable(sample: ToolRuntimeSample) -> bool:
+    # A numeric zero from one late snapshot is not a measured tool CPU label.
+    return (
+        sample.sampling_quality == "ok"
+        and sample.sampling_point_count >= 2
+        and sample.monitor_duration_ms > 0
+        and min(sample.ended_at, sample.monitor_end_wall_s)
+        > max(sample.started_at, sample.monitor_start_wall_s)
+    )
+
+
+def _trace_resources_usable(resources: dict[str, Any]) -> bool:
+    # Fail closed for legacy records without quality evidence. Keep latency
+    # and independently validated PMU even when resource labels are rejected.
+    ratio = _optional_float(resources.get("coverage_ratio"))
+    return (
+        resources.get("sampling_quality") == "ok"
+        and isinstance(resources.get("sampling_point_count"), int)
+        and resources["sampling_point_count"] >= 2
+        and ratio is not None and ratio > 0
+        and resources.get("coverage_reason") != "monitor_window_no_overlap"
     )
 
 

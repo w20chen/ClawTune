@@ -6,6 +6,8 @@ Online runs execute tasks through OpenClaw and collect predictions and measureme
 
 Complete machine preparation in the [installation guide](getting-started.md). Setup creates `configs/benchmark.yaml`; copy the [configuration template](../configs/benchmark.example.yaml) to create another configuration.
 
+Run the commands below from the ClawTune repository root on the configured Linux machine. The online wrapper selects the collector's `.venv` and requests sudo when needed. Each benchmark section includes a **3-task, parallelism-3** example. Start with `--sample 1 --parallelism 1` if machine resources are limited.
+
 Edit the model settings, keeping the template's Docker and cgroup settings initially:
 
 ```yaml
@@ -28,8 +30,10 @@ Supply a key, validate selection, and run one task:
 ```bash
 export LLM_API_KEY="<provider-api-key>"
 python3 scripts/clawtune.py benchmark --list
-python3 scripts/clawtune.py benchmark --sample 1 --dry-run
-python3 scripts/clawtune.py benchmark --sample 1
+python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
+  --config configs/benchmark.yaml --sample 1 --parallelism 1 --dry-run
+python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
+  --config configs/benchmark.yaml --sample 1 --parallelism 1
 ```
 
 Alternatively, place the raw key in the Git-ignored `configs/llm_api_key.txt`. Do not commit keys in YAML. Resolution order is: nonempty YAML value or environment expansion, exported `LLM_API_KEY`, configured key file, then root `.env`. `LLM_API_KEY_FILE` overrides the file path.
@@ -73,11 +77,13 @@ Prepare an input list and run:
 
 ```bash
 .venv/bin/python -m pip install datasets
-.venv/bin/python -m swe_rebench.discover --sample 2 --out .runtime/swe-tasks.json
+.venv/bin/python -m swe_rebench.discover --sample 3 --out .runtime/swe-tasks.json
 python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
-  --dataset .runtime/swe-tasks.json --sample 1 --dry-run
+  --config configs/benchmark.yaml --dataset .runtime/swe-tasks.json \
+  --sample 3 --parallelism 3 --dry-run
 python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
-  --dataset .runtime/swe-tasks.json --sample 1
+  --config configs/benchmark.yaml --dataset .runtime/swe-tasks.json \
+  --sample 3 --parallelism 3
 ```
 
 Discovery first attempts the external task source, then Hugging Face. Use the dataset-provided image, not a generic Python image. Execution requires an exclusive cgroup and valid clause-level eBPF measurements.
@@ -91,7 +97,11 @@ Uses the same repository fields with a separate dataset identity. Export upstrea
 mkdir -p .runtime/datasets
 .venv/bin/python -c "from datasets import load_dataset; load_dataset('princeton-nlp/SWE-bench_Verified', split='test').to_json('.runtime/datasets/verified.jsonl')"
 python3 scripts/clawtune.py benchmark --benchmark swe-bench-verified \
-  --dataset .runtime/datasets/verified.jsonl --sample 1
+  --config configs/benchmark.yaml --dataset .runtime/datasets/verified.jsonl \
+  --sample 3 --parallelism 3 --dry-run
+python3 scripts/clawtune.py benchmark --benchmark swe-bench-verified \
+  --config configs/benchmark.yaml --dataset .runtime/datasets/verified.jsonl \
+  --sample 3 --parallelism 3
 ```
 
 Without an explicit image, the adapter derives the official x86_64 image name from the task ID. ARM hosts require the emulation setup described in the installation guide.
@@ -104,15 +114,25 @@ Supply an ID and nonempty `problem_statement`, `prompt`, or `question`. Optional
 .venv/bin/python -m pip install huggingface_hub
 openclaw plugins install @openclaw/tavily-plugin
 .venv/bin/python -m deep_research_bench.discover --source hf \
-  --sample 2 --out .runtime/research-tasks.json
+  --sample 3 --out .runtime/research-tasks.json
 export TAVILY_API_KEY="<tavily-key>"
 python3 scripts/clawtune.py benchmark --benchmark deep-research-bench \
-  --dataset .runtime/research-tasks.json --sample 1
+  --config configs/benchmark.yaml --dataset .runtime/research-tasks.json \
+  --sample 3 --parallelism 3 --dry-run
+python3 scripts/clawtune.py benchmark --benchmark deep-research-bench \
+  --config configs/benchmark.yaml --dataset .runtime/research-tasks.json \
+  --sample 3 --parallelism 3
 ```
 
 The template uses `python:3.11-slim` and the required `/workspace` mount. Search uses the [Tavily plugin](https://docs.openclaw.ai/tools/tavily). Credentials can also be stored in `configs/tavily_api_key.txt`. If OpenClaw has a `plugins.allow` list, add `tavily` while preserving other trusted plugins. Inspect the task's `web-search-config.log` to confirm provider setup.
 
-`web_search.enabled: false` disables search. Research tasks require tool events but do not guarantee shell-command, CPU, or RSS attribution.
+For a key stored elsewhere, use `export TAVILY_API_KEY_FILE=/absolute/path/to/key.txt` instead of exporting the key. OpenClaw's HTTP proxy must use an `http://` or `https://` endpoint, not `socks5://` or `socks5h://`. If the machine can access HTTPS directly, clear incompatible proxy variables in the current shell before running Research:
+
+```bash
+unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+```
+
+`web_search.enabled: false` disables search. A model can still answer without calling tools; such a task fails the learning-observation check. Verify successful `web_search`/`web_fetch` spans before treating a run as online research. Their local resources belong to the shared OpenClaw host process, not the sandbox or the remote search service.
 
 ### BFCL
 
@@ -124,12 +144,16 @@ cp -R /data/gorilla/berkeley-function-call-leaderboard .runtime/dependencies/bfc
 export BFCL_REPO_PATH="$PWD/.runtime/dependencies/bfcl"
 .venv/bin/python -m pip install "$BFCL_REPO_PATH"
 python3 scripts/clawtune.py benchmark --benchmark bfcl \
-  --category multi_turn_base --sample 2 --dry-run
+  --config configs/benchmark.yaml --category multi_turn_base \
+  --sample 3 --parallelism 3 --dry-run
 python3 scripts/clawtune.py benchmark --benchmark bfcl \
-  --category multi_turn_long_context --sample 2
+  --config configs/benchmark.yaml --category multi_turn_base \
+  --sample 3 --parallelism 3
 ```
 
 Replace `/data/gorilla` with the actual checkout. Use a fresh copy when changing revisions. Native category loading needs these dependencies even in dry-run.
+
+To run long-context tasks instead, use `--category multi_turn_long_context` in both commands. Install BFCL dependencies into ClawTune's `.venv`; installing them only in another virtual environment does not make them available to the benchmark wrapper.
 
 Function state persists across turns of one task; tasks are independent. Supported cases include base, long-context, and applicable search categories. Memory/prerequisite chains, dependent tasks, dynamic function additions, and AST-only inputs are unsupported. Search categories use `SERPAPI_API_KEY`, not Tavily credentials.
 
@@ -141,12 +165,16 @@ Supports [Terminal Bench](https://github.com/laude-institute/terminal-bench) tas
 
 ```bash
 python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
-  --dataset /data/terminal-bench/original-tasks --sample 2 --dry-run
+  --config configs/benchmark.yaml --dataset /data/terminal-bench/original-tasks \
+  --sample 3 --parallelism 3 --dry-run
 python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
-  --dataset /data/terminal-bench/original-tasks --sample 1
+  --config configs/benchmark.yaml --dataset /data/terminal-bench/original-tasks \
+  --sample 3 --parallelism 3
 ```
 
-A single task directory or `task.yaml` is also accepted. In JSON lists, `task_path` resolves relative to the list file, for example `[{"task_path":"tasks/my-task"}]`.
+Replace `/data/terminal-bench/original-tasks` with your task directory containing at least three tasks. A single task directory or `task.yaml` is also accepted. In JSON lists, `task_path` resolves relative to the list file, for example `[{"task_path":"tasks/my-task"}]`.
+
+For tasks that build images, install compatible Docker Compose and Buildx plugins before starting. Check both with `docker compose version` and `docker buildx version`; a successful dry-run does not test the build. If startup reports that Buildx is too old, upgrade it to the version required by Compose.
 
 Tasks are copied into the run before container creation. Compose must provide exactly one `client` container, and host mounts/build contexts must remain within allowed run paths. Each tool invocation uses a fresh shell: use explicit `cd` and files for persistent state. Persistent interactive TTYs are unsupported. Terminal execution requires working telemetry; if it is unavailable, the command will not run. See `terminal-logs/<task>/terminal-gate.log` for diagnostics.
 
@@ -155,6 +183,8 @@ Compose startup/build and cleanup logs are written live to `terminal-logs/<task>
 ### PMU results
 
 PMU data is supported for Terminal commands and shell commands in SWE-Rebench, SWE-Bench Verified, and Deep Research. BFCL functions and non-shell research tools currently have no per-call PMU data; missing values are not zero.
+
+The standard Research workflow uses native web tools, not shell commands. Shared-process measurements describe local runtime activity, not an individual function's exclusive CPU/memory. Exclude `partial` and zero-overlap resource samples from CPU/memory labels; valid call duration and independently eligible PMU can still be used. Use a new run/KB, or rebuild from raw traces, when applying updated collection-quality rules; resuming an old KB does not clean previously learned labels.
 
 Only profiles with `coverage.eligible_for_kb=true` are used for learning. Predictions marked `calibration=unvalidated` have not been validated for accuracy. When running amd64 images on arm64, counters include QEMU overhead.
 

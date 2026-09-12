@@ -129,6 +129,9 @@ def _write_trace(
     resources = {
         "cpu_utilization_avg_cores": 1.5,
         "rss_peak_bytes": 104857600,
+        "sampling_quality": "ok",
+        "sampling_point_count": 2,
+        "coverage_ratio": 1.0,
     }
     if memory_rss_bytes_before is not None:
         resources["memory_rss_bytes_before"] = memory_rss_bytes_before
@@ -2467,6 +2470,52 @@ def test_sidecar_uses_tool_resource_predictor_when_configured(tmp_path: Path) ->
     pmu = response.json()["prediction"]["pmu_prediction"]
     assert set(pmu["targets"]) == {"ipc", "llc_mpki", "llc_miss_rate"}
     assert all(value["status"] == "unavailable" for value in pmu["targets"].values())
+
+
+@pytest.mark.parametrize("quality,points,overlap", [("ok", 2, True), ("partial", 2, True), ("ok", 1, True), ("ok", 2, False)])
+def test_resource_label_quality_online_offline_parity(quality, points, overlap):
+    from dataclasses import replace
+    sample = replace(_runtime_sample("evt", "call"), sampling_quality=quality,
+        sampling_point_count=points, monitor_start_wall_s=1000.0 if overlap else 1002.0,
+        monitor_end_wall_s=1001.2 if overlap else 1003.0)
+    event = _tool_completion("evt", "call")
+    online = tool_resource_predictor.completed_call_from_completion(event, sample, repo="repo")
+    end = {"name": "exec", "status": {"code": "ok"}, "duration_ns": "1200000000",
+        "wall_time_ns": "1001200000000", "resources": {"sampling_quality": quality,
+        "sampling_point_count": points, "coverage_ratio": 1.0 if overlap else 0.0,
+        "cpu_time_s": 1.0, "rss_peak_bytes": 104857600, "memory_rss_bytes_before": 10}}
+    offline = tool_resource_predictor._completed_call_from_tool_span(None, end, repo="repo")
+    usable = quality == "ok" and points >= 2 and overlap
+    assert online.cpu_time_eligible is usable
+    assert offline.cpu_time_eligible is usable
+    assert online.peak_memory_mb_eligible is usable
+    assert offline.peak_memory_mb_eligible is usable
+    assert online.ts_end - online.ts_start == pytest.approx(1.2)
+    assert offline.ts_end - offline.ts_start == pytest.approx(1.2)
+    assert tool_resource_predictor.observation_from_completion(event, sample, repo="repo").cpu_ns_cumulative == (1000000000 if usable else None)
+    assert tool_resource_predictor._observation_from_tool_span(None, end, repo="repo").cpu_ns_cumulative == (1000000000 if usable else None)
+
+
+def test_trace_does_not_export_out_of_window_snapshots_as_tool_usage(tmp_path):
+    from dataclasses import replace
+    from clawtune_sidecar.trace import AgentTestBenchTraceWriter
+    sample = replace(_runtime_sample("evt", "call"), sampling_quality="partial",
+        sampling_point_count=1, monitor_duration_ms=0,
+        monitor_start_wall_s=1002.0, monitor_end_wall_s=1002.0)
+    event = _tool_completion("evt", "call").model_copy(update={
+        "resource_scope": ResourceScope(pid=123, source="docker-exec", attribution_source="docker-exec-pid")})
+    writer = AgentTestBenchTraceWriter(tmp_path)
+    try:
+        writer.record_tool(event, sample)
+        assert writer.flush()
+        rows = [json.loads(line) for p in tmp_path.glob("*.jsonl") for line in p.read_text().splitlines()]
+        end = next(r for r in rows if r.get("record_type") == "span_end")
+        assert end["resources"]["coverage_reason"] == "monitor_window_no_overlap"
+        for name in ["cpu_time_s", "rss_peak_bytes", "disk_read_bytes_delta", "net_rx_bytes_delta", "cpu_utilization_avg_cores"]:
+            assert end["resources"][name] is None
+        assert end["duration_ns"] == "1200000000"
+    finally:
+        writer.close()
 
 
 def test_sidecar_defaults_exec_memory_anchor_for_new_execution_cgroup(tmp_path: Path) -> None:

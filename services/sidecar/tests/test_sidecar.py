@@ -895,8 +895,9 @@ def test_metrics_endpoint(tmp_path: Path) -> None:
     assert "scheduler_tool_net_tx_bytes_per_second" in response.text
 
 
+@pytest.mark.parametrize("tool_name", ["read", "web_search", "web_fetch"])
 def test_internal_tool_prefers_shared_sandbox_over_shared_runtime_scope(
-    tmp_path: Path,
+    tmp_path: Path, tool_name: str,
 ) -> None:
     cgroup = tmp_path / "cgroup"
     runtime_cgroup = tmp_path / "runtime-cgroup"
@@ -953,6 +954,7 @@ def test_internal_tool_prefers_shared_sandbox_over_shared_runtime_scope(
         "raw_params": {"path": "README.md"},
         "resource_scope": shared_runtime_scope,
     }
+    request["tool_name"] = tool_name
     decision = client.post("/v1/decisions/tool", json=request).json()
     (cgroup / "cpu.stat").write_text("usage_usec 200000\n", encoding="utf-8")
     completion = {
@@ -978,6 +980,7 @@ def test_internal_tool_prefers_shared_sandbox_over_shared_runtime_scope(
         "resource_scope": shared_runtime_scope,
     }
 
+    completion["tool_name"] = tool_name
     assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
 
     trace_records = _read_trace_records(trace_dir)
@@ -991,10 +994,11 @@ def test_internal_tool_prefers_shared_sandbox_over_shared_runtime_scope(
         for record in trace_records
         if record.get("record_type") == "span_end" and record.get("kind") == "tool"
     ][0]
-    assert tool_end["execution"]["cgroup_path"] == str(cgroup)
+    expected_cgroup = runtime_cgroup if tool_name in {"web_search", "web_fetch"} else cgroup
+    assert tool_end["execution"]["cgroup_path"] == str(expected_cgroup)
     assert tool_end["resources"]["attribution_status"] == "partially_attributed"
     assert tool_end["resources"]["scope"] == "cgroup"
-    assert tool_end["resources"]["coverage_reason"] == "shared_sandbox_container"
+    assert tool_end["resources"]["coverage_reason"] == ("shared_runtime_process" if tool_name in {"web_search", "web_fetch"} else "shared_sandbox_container")
     assert tool_end["resources"]["monitor_duration_ns"] is not None
     assert tool_end["resources"]["cgroup_cpu_time_s"] is not None
     assert (

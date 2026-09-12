@@ -747,7 +747,7 @@ export default definePluginEntry({
 
     // Original sidecar logic
     const payload = buildToolBefore(event, context, config, runtimeId, gatewayId, runtimeRepo);
-    payload.resource_scope = buildTrustedResourceScope(event, context) ?? buildRuntimeResourceScope(toolName);
+    payload.resource_scope = buildToolResourceScope(event, context, toolName);
     let decisionOverheadNs = 0n;
     try {
       const tDecide = monotonicNowNs();
@@ -908,7 +908,7 @@ export default definePluginEntry({
       gatewayId,
       runtimeRepo,
     );
-    completion.resource_scope = buildTrustedResourceScope(event, context) ?? buildRuntimeResourceScope(toolName);
+    completion.resource_scope = buildToolResourceScope(event, context, toolName);
     try {
       completion.resource_scope = await preferExecutionResourceScope(
         completion.resource_scope,
@@ -1712,11 +1712,17 @@ function buildCompletion(
   };
 }
 
+function buildToolResourceScope(event: unknown, context: unknown, toolName: string): ResourceScope | null {
+  // Native web tools execute in this Node process, even in a sandboxed session.
+  if (toolName === "web_search" || toolName === "web_fetch") return buildRuntimeResourceScope(toolName);
+  return buildTrustedResourceScope(event, context) ?? buildRuntimeResourceScope(toolName);
+}
+
 function buildRuntimeResourceScope(toolName: string): ResourceScope | null {
   if (toolName === "exec") return null;
   if (typeof process.pid !== "number" || process.pid <= 0) return null;
   const processStartTime = Math.max(0, Date.now() / 1000 - process.uptime());
-  const cgroupPath = readSelfCgroupPath();
+  const cgroupPath = toolName === "web_search" || toolName === "web_fetch" ? null : readSelfCgroupPath();
   return {
     kind: cgroupPath === null ? "pid" : "cgroup-v2",
     execution_id: null,
