@@ -103,7 +103,7 @@ class TerminalBackend:
     tools = [{"name": "terminal_exec", "description": "Run a shell command inside this Terminal Bench task's client container. Use explicit cd when needed.",
               "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"], "additionalProperties": False}}]
 
-    def __init__(self, task, run_dir: Path, *, deadline: float | None = None):
+    def __init__(self, task, run_dir: Path, *, deadline: float | None = None, platform: str = ""):
         self.deadline = deadline
         self.project = "ct-" + uuid.uuid4().hex[:16]
         self.root = run_dir / "terminal-environments" / task.directory_name
@@ -129,6 +129,7 @@ class TerminalBackend:
         self.command = [*compose_argv(timeout=self._remaining(30)), "-p", self.project, "-f", str(compose)]
         self.env = dict(os.environ)
         logs = run_dir / "terminal-logs" / task.directory_name
+        self.log_dir = logs
         logs.mkdir(parents=True)
         (logs / "agent").mkdir()
         self.env.update({"T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME": self.project + "-image",
@@ -146,6 +147,14 @@ class TerminalBackend:
         # the read-only dataset directory or reuse a user's compose project.
         try:
             resolved = json.loads(self._run(["config", "--format", "json"], timeout=30).stdout)
+            # Compose's legacy builder does not honor DOCKER_DEFAULT_PLATFORM.
+            # Apply the configured default explicitly, preserving task overrides.
+            defaults = {name: {"platform": platform} for name, service in resolved.get("services", {}).items()
+                        if platform and not service.get("platform")}
+            if defaults:
+                platform_file = logs / "compose-platform.json"
+                platform_file.write_text(json.dumps({"services": defaults}), encoding="utf-8")
+                self.command.extend(["-f", str(platform_file)])
             for service in resolved.get("services", {}).values():
                 for mount in service.get("volumes", []):
                     if mount.get("type") == "bind":
@@ -179,6 +188,16 @@ class TerminalBackend:
 
     def _run(self, args, *, timeout, cleanup=False):
         invoke = subprocess.run if cleanup else run_command
+        if args[0] in {"up", "down"}:
+            # Persist build/startup diagnostics while Compose is running, too.
+            log_path = self.log_dir / f"compose-{args[0]}.log"
+            with log_path.open("a", encoding="utf-8") as log:
+                try:
+                    return invoke([*self.command, *args], cwd=self.root, env=self.env,
+                                  text=True, stdout=log, stderr=subprocess.STDOUT, check=True,
+                                  timeout=timeout if cleanup else self._remaining(timeout))
+                except subprocess.CalledProcessError as exc:
+                    raise RuntimeError(f"Terminal Compose {args[0]} failed (exit {exc.returncode}); see {log_path}") from exc
         return invoke([*self.command, *args], cwd=self.root, env=self.env,
                               text=True, capture_output=True, check=True,
                               timeout=timeout if cleanup else self._remaining(timeout))

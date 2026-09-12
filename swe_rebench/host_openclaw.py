@@ -1475,6 +1475,12 @@ def _configure_openclaw(
         trace_dir=trace_dir,
         plugin_dir=plugin_dir,
     )
+    tools_manifest = getattr(config, "benchmark_tools_manifest", None)
+    if tools_manifest:
+        plugin_install_dir = _stage_benchmark_tool_contracts(
+            plugin_dir=plugin_install_dir, trace_dir=trace_dir,
+            tools_manifest=Path(tools_manifest),
+        )
     _remaining_task_seconds(deadline, phase="plugin staging")
     endpoint_host = f"http://127.0.0.1:{sidecar_port}"
     endpoint_sandbox = f"http://host.docker.internal:{sidecar_port}"
@@ -1825,6 +1831,10 @@ def _openclaw_config(
                 },
             },
             "tools": {
+                # Task-owned bridge tools are registered by the ClawTune
+                # plugin. The default coding profile filters unknown tools
+                # before the explicit allowlist is applied.
+                "profile": "full",
                 # Background process sessions split one logical command across
                 # exec/process calls and therefore cannot provide an exact
                 # one-call/one-process resource lifecycle.  Keep this required
@@ -2043,6 +2053,20 @@ def _stage_plugin_for_openclaw_if_needed(*, trace_dir: Path, plugin_dir: Path) -
     if staged.exists():
         shutil.rmtree(staged, onerror=_chmod_and_retry)
     shutil.copytree(plugin_dir, staged, ignore=shutil.ignore_patterns("node_modules"))
+    return staged
+
+
+def _stage_benchmark_tool_contracts(*, plugin_dir: Path, trace_dir: Path, tools_manifest: Path) -> Path:
+    """Declare task-owned dynamic tools without mutating the shared plugin."""
+    from clawtune_kb.contracts import validate
+    bridge = json.loads(tools_manifest.read_text(encoding="utf-8"))
+    validate(bridge, "tool-bridge.schema.json")
+    staged = trace_dir / "clawtune-benchmark-plugin"
+    shutil.copytree(plugin_dir, staged, ignore=shutil.ignore_patterns("node_modules"))
+    manifest_path = staged / "openclaw.plugin.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.setdefault("contracts", {})["tools"] = [tool["name"] for tool in bridge["tools"]]
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return staged
 
 

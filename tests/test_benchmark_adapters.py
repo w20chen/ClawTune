@@ -45,7 +45,8 @@ def test_terminal_rejects_missing_path_and_harbor_format(tmp_path):
         load("terminal-bench", tmp_path)
 
 
-def test_terminal_dockerfile_uses_native_build_context(monkeypatch, tmp_path):
+@pytest.mark.parametrize("task_platform", ["", "linux/arm64"])
+def test_terminal_dockerfile_uses_native_build_context(monkeypatch, tmp_path, task_platform):
     from benchmarks.backends import TerminalBackend
     source = terminal_task(tmp_path / "input/task")
     original = {p.name: p.read_bytes() for p in source.iterdir()}
@@ -57,10 +58,16 @@ def test_terminal_dockerfile_uses_native_build_context(monkeypatch, tmp_path):
         assert self.env["T_BENCH_TASK_DOCKER_NAME_PREFIX"] == self.project
         if args[0] == "config":
             return SimpleNamespace(stdout=json.dumps({"services": {"client": {
-                "build": {"context": str(self.root)}, "volumes": []}}}))
+                "build": {"context": str(self.root)}, "volumes": [], "platform": task_platform}}}))
         return SimpleNamespace(stdout="container-id" if args[0] == "ps" else "")
     monkeypatch.setattr(TerminalBackend, "_run", invoke)
-    backend = TerminalBackend(load("terminal-bench", source)[0], output)
+    monkeypatch.setattr("benchmarks.compose.compose_argv", lambda **kwargs: ["docker", "compose"])
+    backend = TerminalBackend(load("terminal-bench", source)[0], output, platform="linux/amd64")
+    override = backend.log_dir / "compose-platform.json"
+    assert override.exists() == (not task_platform)
+    if not task_platform:
+        assert json.loads(override.read_text()) == {"services": {"client": {"platform": "linux/amd64"}}}
+        assert backend.command[-2:] == ["-f", str(override)]
     assert (backend.root / "docker-compose.yaml").exists()
     assert backend.container == "container-id"
     backend.close()

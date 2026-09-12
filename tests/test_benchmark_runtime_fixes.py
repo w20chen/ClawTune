@@ -7,6 +7,43 @@ from benchmarks.runner import _result_summary
 from swe_rebench.docker import local_image_available, pull_image
 
 
+def test_task_tool_contracts_are_isolated_and_preserve_source(tmp_path):
+    import json
+    from swe_rebench.host_openclaw import _stage_benchmark_tool_contracts
+    source = tmp_path / "plugin"
+    source.mkdir()
+    original = {"id": "clawtune", "contracts": {"other": ["preserved"]}}
+    (source / "openclaw.plugin.json").write_text(json.dumps(original))
+    for name in ("terminal_exec", "bfcl_function"):
+        trace = tmp_path / name
+        trace.mkdir()
+        bridge = trace / "bridge.json"
+        bridge.write_text(json.dumps({"schema": "clawtune.tool-bridge.v1",
+            "endpoint": "http://127.0.0.1:1234/call", "token": "x" * 32,
+            "tools": [{"name": name, "parameters": {"type": "object"}}]}))
+        staged = _stage_benchmark_tool_contracts(plugin_dir=source, trace_dir=trace, tools_manifest=bridge)
+        manifest = json.loads((staged / "openclaw.plugin.json").read_text())
+        assert manifest["contracts"] == {"other": ["preserved"], "tools": [name]}
+    assert json.loads((source / "openclaw.plugin.json").read_text()) == original
+
+
+def test_terminal_compose_failure_preserves_live_diagnostics(monkeypatch, tmp_path):
+    import subprocess
+    from benchmarks import backends
+    backend = backends.TerminalBackend.__new__(backends.TerminalBackend)
+    backend.root, backend.env, backend.command, backend.deadline = tmp_path, {}, ["compose"], None
+    backend.log_dir = tmp_path
+    def fail(argv, **kwargs):
+        kwargs["stdout"].write("compose build requires buildx 0.17.0 or later\n")
+        kwargs["stdout"].flush()
+        assert "requires buildx" in (tmp_path / "compose-up.log").read_text()
+        raise subprocess.CalledProcessError(1, argv)
+    monkeypatch.setattr(backends, "run_command", fail)
+    with pytest.raises(RuntimeError, match="compose-up.log"):
+        backend._run(["up", "-d", "--build"], timeout=30)
+    assert "requires buildx" in (tmp_path / "compose-up.log").read_text()
+
+
 def test_compose_prefers_working_native_plugin(monkeypatch):
     monkeypatch.setattr(compose.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0))
     monkeypatch.setattr(compose, "_invoking_home", lambda: pytest.fail("unneeded user fallback"))

@@ -84,7 +84,7 @@ def _execute_bridged(task, config, run_dir, port, trace):
     runtime_id = host._runtime_id(workspace)
     host._write_runtime_case_map(run_dir / "sidecar", runtime_id, task.task_id)
     deadline = host._task_deadline(config, started)
-    backend = BFCLBackend(task, run_dir) if task.kind == "functions" else TerminalBackend(task, run_dir, deadline=deadline)
+    backend = BFCLBackend(task, run_dir) if task.kind == "functions" else TerminalBackend(task, run_dir, deadline=deadline, platform=config.docker.platform)
     manifest = trace / "tool-bridge.json"
     exit_code, error = -1, None
     try:

@@ -150,6 +150,8 @@ A single task directory or `task.yaml` is also accepted. In JSON lists, `task_pa
 
 Tasks are copied into the run before container creation. Compose must provide exactly one `client` container, and host mounts/build contexts must remain within allowed run paths. Each tool invocation uses a fresh shell: use explicit `cd` and files for persistent state. Persistent interactive TTYs are unsupported. This adapter provides hook duration, not attributed clause-level CPU/RSS.
 
+Compose startup/build and cleanup logs are written live to `terminal-logs/<task>/compose-up.log` and `compose-down.log` under the run directory. Agent logs for this adapter are `traces/<task>/turn-0-agent-stdout.txt` and `turn-0-agent-stderr.txt` after the turn finishes. `docker.platform` supplies the default service platform; explicit task platforms take precedence.
+
 ## 3. Selection, concurrency, and resume
 
 `--sample N` selects the first N tasks, not a random sample. Processing order is repository filtering, explicit IDs, skip, then sample:
