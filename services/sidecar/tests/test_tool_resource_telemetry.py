@@ -1079,3 +1079,32 @@ def test_trusted_root_pre_exec_sample_is_structural_without_missing_generation()
         "trusted_root_pre_exec_structural_setup"
     ]
     assert all("fork_resolution_failure" not in gap for gap in gaps)
+
+
+def test_thread_samples_use_strict_later_endpoint_without_quadratic_scans():
+    class CountedEvents(list):
+        visits = 0
+        def __iter__(self):
+            for item in super().__iter__():
+                self.visits += 1
+                yield item
+
+    events = CountedEvents([
+        _event("exec_arg", 1, 42, arg="python"),
+        _event("exec_boundary", 2, 42),
+        _event("fork", 3, 42, child_host_pid=43),
+        *[dict(_event("perf", 10 + i, 43, exec_seq=SENTINEL), cpu_ns=i) for i in range(4000)],
+        dict(_event("exit_boundary", 4010, 43, exec_seq=SENTINEL), cpu_ns=99),
+        dict(_event("exit_boundary", 4010, 43, exec_seq=SENTINEL), cpu_ns=100),
+        dict(_event("exit_boundary", 5000, 42), cpu_ns=200),
+    ])
+    clauses, parents = _clauses_and_lineage(events)
+    events.visits = 0
+    attributed, gaps = _attribute(events, clauses, parents, entry_pid=42)
+    assert not gaps
+    samples = [e for e in attributed[(42, 1)] if e["type"] == "perf"]
+    assert len(samples) == 4000
+    assert all(e['attribution']['cpu_counter_support']['endpoint']['cpu_ns'] == 99 for e in samples)
+    last = [e for e in attributed[(42, 1)] if e['host_tid'] == 43 and e['type'] == 'exit_boundary']
+    assert all(e['attribution']['cpu_counter_support']['endpoint'] is None for e in last)
+    assert events.visits <= 5 * len(events)

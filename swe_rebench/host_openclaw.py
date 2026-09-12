@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from swe_rebench.config import RunnerConfig
-from swe_rebench.console import tee_agent_output
+from swe_rebench.console import follow_agent_output
 from swe_rebench.cancellation import TaskCancelled, check_cancelled, wait_process, run_command
 from swe_rebench.docker import ContainerCleanupError, ContainerResult, local_image_available
 from swe_rebench.sandbox import sandbox_container_prefix
@@ -1694,8 +1694,8 @@ def _run_openclaw_agent(
             ),
             cwd=str(config.repo_root),
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=stdout_file,
+            stderr=stderr_file,
             text=True,
             start_new_session=(os.name == "posix"),
         )
@@ -1708,20 +1708,22 @@ def _run_openclaw_agent(
 
     # 鈹€鈹€ Tee agent output to trace files + console 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     # Persist complete streams; only compact time-bucket rows reach the console.
-    def _tee(pipe: Any, log_file: Any, tag: str) -> None:
+    stop_output = threading.Event()
+
+    def _tee(log_file: Any, tag: str) -> None:
         try:
-            tee_agent_output(pipe, log_file, lambda line: _log(f"[{tag}] {line}"))
+            follow_agent_output(Path(log_file.name), stop_output, lambda line: _log(f"[{tag}] {line}"))
         except (ValueError, OSError):
             pass
 
     tee_stdout = threading.Thread(
         target=_tee,
-        args=(process.stdout, stdout_file, "agent"),
+        args=(stdout_file, "agent"),
         daemon=True,
     )
     tee_stderr = threading.Thread(
         target=_tee,
-        args=(process.stderr, stderr_file, "agent:err"),
+        args=(stderr_file, "agent:err"),
         daemon=True,
     )
     tee_stdout.start()
@@ -1781,15 +1783,9 @@ def _run_openclaw_agent(
         if discovery is not None:
             _join_thread_safe(discovery, timeout=2)
 
-        # Close process pipes so tee threads exit their read loops
-        for pipe_attr in ("stdout", "stderr"):
-            pipe = getattr(process, pipe_attr, None)
-            if pipe is not None:
-                try:
-                    pipe.close()
-                except OSError:
-                    pass
-
+        # Descendants may inherit stdout/stderr. Regular log files avoid a
+        # buffered pipe close waiting forever on a reader's lock or on EOF.
+        stop_output.set()
         _join_thread_safe(tee_stdout, timeout=2)
         _join_thread_safe(tee_stderr, timeout=2)
 
@@ -2886,6 +2882,13 @@ def _reset_directory(
 
 
 def _chmod_and_retry(function: Any, path: str, _exc_info: Any) -> None:
+    if function is os.unlink:
+        # POSIX unlink needs write permission on the containing directory;
+        # making a read-only artifact writable does not permit its removal.
+        try:
+            os.chmod(os.path.dirname(path), 0o700)
+        except OSError:
+            pass
     try:
         os.chmod(path, 0o700)
     except OSError:

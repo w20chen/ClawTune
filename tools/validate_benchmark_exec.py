@@ -38,6 +38,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--require-ebpf", action="store_true")
+    parser.add_argument("--thread-stress", action="store_true")
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=False)
@@ -68,6 +69,16 @@ def main() -> int:
     profiles = []
     failures = []
     command = "python3 -c 'print(sum(i*i for i in range(500000)))'"
+    if args.thread_stress:
+        command = "python3 -c '" + "\n".join([
+            "import concurrent.futures, time",
+            "def busy(_):",
+            "    end = time.monotonic() + 2",
+            "    while time.monotonic() < end: sum(range(1000))",
+            "with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:",
+            "    list(pool.map(busy, range(32)))",
+            "print(sum(i*i for i in range(500000)))",
+        ]) + "'"
 
     def execute(index: int, mode: str, container: str):
         runtime_id = f"{mode}-{index}"

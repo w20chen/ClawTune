@@ -817,6 +817,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
     app_state = state or build_state()
     app = FastAPI(title="ClawTune Sidecar", version="0.1.0")
     app.state.sidecar = app_state
+    finishing_tasks: dict[str, asyncio.Task[None]] = {}
     kb_owner = None
     kb_store = getattr(app_state.predictor, "_state_store", None)
     if kb_store is not None:
@@ -825,6 +826,13 @@ def create_app(state: AppState | None = None) -> FastAPI:
 
     @app.on_event("shutdown")
     async def shutdown_state() -> None:
+        fallbacks = list(app_state._ebpf_finalize_tasks.values())
+        for task in fallbacks:
+            task.cancel()
+        if fallbacks:
+            await asyncio.gather(*fallbacks, return_exceptions=True)
+        if finishing_tasks:
+            await asyncio.gather(*list(finishing_tasks.values()), return_exceptions=True)
         cleanup_tasks = list(app_state._owned_cgroup_cleanup_tasks.values())
         app_state._owned_cgroup_cleanup_tasks.clear()
         for task in cleanup_tasks:
@@ -986,7 +994,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 finalizer = s._ebpf_finalize_tasks.get(execution_id)
                 if s.predictor.execution_active(execution_id) or (
                     finalizer is not None and not finalizer.done()
-                ):
+                ) or execution_id in finishing_tasks:
                     # /exited schedules the eBPF fallback and cgroup GC at
                     # nearly the same time. Do not remove the collector's
                     # scope while it is still producing its final artifact.
@@ -1024,7 +1032,24 @@ def create_app(state: AppState | None = None) -> FastAPI:
         # Summary status alone is ambiguous: ``unavailable`` can describe
         # either an active collector or an already finalized failure.  The
         # predictor's active-run registry is the exactly-once authority.
-        return s.predictor.execution_active(execution_id)
+        return execution_id in finishing_tasks or s.predictor.execution_active(execution_id)
+
+    async def finish_ebpf(s: AppState, execution_id: str, **kwargs: Any) -> None:
+        # A disconnected completion or cancelled fallback must not cancel a
+        # running worker, publish a placeholder, or let drain/GC race it.
+        task = finishing_tasks.get(execution_id)
+        if task is None:
+            async def finish() -> None:
+                try:
+                    telemetry = await asyncio.to_thread(
+                        s.predictor.finish_execution, execution_id=execution_id, **kwargs
+                    )
+                    record_ebpf_telemetry(s, execution_id, telemetry)
+                finally:
+                    finishing_tasks.pop(execution_id, None)
+            task = asyncio.create_task(finish())
+            finishing_tasks[execution_id] = task
+        await asyncio.shield(task)
 
     async def finalize_ebpf_after_grace(
         s: AppState,
@@ -1036,12 +1061,11 @@ def create_app(state: AppState | None = None) -> FastAPI:
 
         try:
             await asyncio.sleep(_EBPF_COMPLETION_GRACE_SECONDS)
-            telemetry = s.predictor.finish_execution(
-                execution_id=execution_id,
+            await finish_ebpf(
+                s, execution_id,
                 exit_code=exit_code,
                 signal=signal,
             )
-            record_ebpf_telemetry(s, execution_id, telemetry)
         finally:
             current = s._ebpf_finalize_tasks.get(execution_id)
             if current is asyncio.current_task():
@@ -1058,7 +1082,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             finalize_ebpf_after_grace(s, execution_id, exit_code, signal)
         )
 
-    def finish_ebpf_from_completion(
+    async def finish_ebpf_from_completion(
         s: AppState,
         event: ToolCompletedEvent,
         *,
@@ -1087,8 +1111,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         }
         if incomplete_reason is not None:
             finish_kwargs["incomplete_reason"] = incomplete_reason
-        telemetry = s.predictor.finish_execution(**finish_kwargs)
-        record_ebpf_telemetry(s, execution_id, telemetry)
+        await finish_ebpf(s, **finish_kwargs)
 
     async def finalize_ebpf_from_completion(
         s: AppState,
@@ -1099,7 +1122,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             return
         record = s.executions.get(execution_id)
         if record is not None and record.exited:
-            finish_ebpf_from_completion(s, event, record=record)
+            await finish_ebpf_from_completion(s, event, record=record)
             return
         if not ebpf_needs_finalization(s, execution_id):
             return
@@ -1112,9 +1135,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
         await asyncio.sleep(_EBPF_ORPHAN_GRACE_SECONDS)
         record = s.executions.get(execution_id)
         if record is not None and record.exited:
-            finish_ebpf_from_completion(s, event, record=record)
+            await finish_ebpf_from_completion(s, event, record=record)
         elif ebpf_needs_finalization(s, execution_id):
-            finish_ebpf_from_completion(
+            await finish_ebpf_from_completion(
                 s,
                 event,
                 record=record,
@@ -1483,8 +1506,10 @@ def create_app(state: AppState | None = None) -> FastAPI:
             pending_finalizers = [
                 execution_id
                 for execution_id in record_ids
-                if execution_id in s._ebpf_finalize_tasks
-                and not s._ebpf_finalize_tasks[execution_id].done()
+                if execution_id in finishing_tasks or (
+                    execution_id in s._ebpf_finalize_tasks
+                    and not s._ebpf_finalize_tasks[execution_id].done()
+                )
             ]
             active_requests = sum(
                 count

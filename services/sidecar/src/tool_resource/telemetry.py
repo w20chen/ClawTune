@@ -30,6 +30,7 @@ teardown semantics remain a Stage-1b concern). Root required.
 from __future__ import annotations
 
 import atexit
+from bisect import bisect_right
 import ctypes
 import http.client
 import importlib
@@ -1733,8 +1734,11 @@ def _attribute(
         if event["type"] == "fork" and event.get("child_host_pid"):
             fork_records.setdefault(event["child_host_pid"], []).append(event)
     exec_boundaries_by_tid: dict[int, list[dict[str, Any]]] = {}
+    endpoints_by_tid: dict[int, list[dict[str, Any]]] = {}
     exec_arg_start_by_tid_seq: dict[tuple[int, int], int] = {}
     for event in events:
+        if event["type"] in {"exec_boundary", "exit_boundary"}:
+            endpoints_by_tid.setdefault(event["host_tid"], []).append(event)
         if event["type"] == "exec_boundary":
             exec_boundaries_by_tid.setdefault(event["host_tid"], []).append(event)
         elif event["type"] == "exec_arg" and event["arg_index"] == 0:
@@ -1743,6 +1747,13 @@ def _attribute(
                 exec_arg_start_by_tid_seq.get(key, event["ts_ns"]),
                 event["ts_ns"],
             )
+
+    # Stable sorting preserves the former min() tie-breaking rule. Each sample
+    # needs the first strictly later boundary, not another scan of all samples.
+    endpoint_times = {}
+    for tid, boundaries in endpoints_by_tid.items():
+        boundaries.sort(key=lambda candidate: candidate["ts_ns"])
+        endpoint_times[tid] = [candidate["ts_ns"] for candidate in boundaries]
 
     def pre_exec_owner(
         event: dict[str, Any],
@@ -1931,17 +1942,9 @@ def _attribute(
             None,
         )
         if match is not None:
-            endpoint = min(
-                (
-                    candidate
-                    for candidate in events
-                    if candidate["host_tid"] == tid
-                    and candidate["type"] in {"exec_boundary", "exit_boundary"}
-                    and candidate["ts_ns"] > ts
-                ),
-                key=lambda candidate: candidate["ts_ns"],
-                default=None,
-            )
+            boundaries = endpoints_by_tid.get(tid, ())
+            index = bisect_right(endpoint_times.get(tid, ()), ts)
+            endpoint = boundaries[index] if index < len(boundaries) else None
             provenance = {
                 "kind": "inherited_active_exec_owner",
                 "original_type": event["type"],
@@ -2256,11 +2259,25 @@ def _fork_io_baselines(
     return baselines
 
 
+def _io_boundary_index(events):
+    by_tid, by_image = {}, {}
+    for event in events:
+        if event["type"] not in {"exec_boundary", "exit_boundary"}:
+            continue
+        by_tid.setdefault(event["host_tid"], []).append(event)
+        if event["type"] == "exec_boundary":
+            key = (event["host_pid"], event["exec_seq"], event["ts_ns"])
+            by_image.setdefault(key, []).append(event)
+    return by_tid, by_image
+
+
 def _task_io_totals(
     events: list[dict[str, Any]],
     samples: list[dict[str, Any]],
     clause: Clause,
     fork_baselines: dict[int, int],
+    *,
+    boundary_index=None,
 ) -> tuple[tuple[int, int, int] | None, str, dict[str, Any]]:
     """Exact task-I/O-accounting deltas for one exec image.
 
@@ -2270,19 +2287,8 @@ def _task_io_totals(
     owned descendants remain disjoint; perf samples are diagnostic only.
     """
 
-    counter_events = [
-        event
-        for event in events
-        if event["type"] in {"perf", "exec_boundary", "exit_boundary"}
-    ]
-    exec_baselines = [
-        event
-        for event in counter_events
-        if event["type"] == "exec_boundary"
-        and event["host_pid"] == clause.host_pid
-        and event["exec_seq"] == clause.exec_seq
-        and event["ts_ns"] == clause.t_exec_ns
-    ]
+    by_tid, by_image = boundary_index if boundary_index is not None else _io_boundary_index(events)
+    exec_baselines = by_image.get((clause.host_pid, clause.exec_seq, clause.t_exec_ns), ())
     provenance: dict[str, Any] = {
         "source": "linux_task_io_accounting",
         "reduction": "nonnegative_per_tid_deltas_then_sum",
@@ -2325,10 +2331,8 @@ def _task_io_totals(
     for tid, (baseline_ts, baseline) in baselines.items():
         endpoints = [
             event
-            for event in counter_events
-            if event["host_tid"] == tid
-            and baseline_ts < event["ts_ns"] <= clause.t_end_ns
-            and event["type"] in {"exec_boundary", "exit_boundary"}
+            for event in by_tid.get(tid, ())
+            if baseline_ts < event["ts_ns"] <= clause.t_end_ns
         ]
         if not endpoints:
             provenance["missing_endpoint_tids"] = sorted(
@@ -2375,6 +2379,13 @@ def analyze(
         entry_pid=entry_pid,
     )
     fork_io_baselines = _fork_io_baselines(run.events, clauses, fork_parent)
+    boundary_index = _io_boundary_index(run.events)
+    events_by_pid: dict[int, list[dict[str, Any]]] = {}
+    exits_by_pid: dict[int, list[dict[str, Any]]] = {}
+    for event in run.events:
+        events_by_pid.setdefault(event["host_pid"], []).append(event)
+        if event["type"] == "exit_boundary":
+            exits_by_pid.setdefault(event["host_pid"], []).append(event)
     metrics: list[ClauseMetrics] = []
     for c in clauses:
         attributed_samples = per_clause[(c.host_pid, c.exec_seq)]
@@ -2395,7 +2406,7 @@ def analyze(
         ]
         in_window = sum(
             1
-            for e in run.events
+            for e in events_by_pid.get(c.host_pid, ())
             if e["type"] in {"perf", "exec_boundary", "exit_boundary"}
             and c.t_exec_ns <= e["ts_ns"] <= c.t_end_ns
             and e["host_pid"] == c.host_pid
@@ -2407,19 +2418,13 @@ def analyze(
             samples,
             c,
             fork_io_baselines[(c.host_pid, c.exec_seq)],
+            boundary_index=boundary_index,
         )
-        has_exit = any(
-            e["type"] == "exit_boundary" and e["host_pid"] == c.host_pid
-            for e in run.events
-        )
+        has_exit = bool(exits_by_pid.get(c.host_pid))
         # Raw cumulative CPU (preserved separately, never used for the peak):
         # deterministic group sum across the terminal process's threads.
         if c.terminal:
-            exits = [
-                e
-                for e in run.events
-                if e["type"] == "exit_boundary" and e["host_pid"] == c.host_pid
-            ]
+            exits = exits_by_pid.get(c.host_pid, [])
             cpu_cum = sum(e["cpu_ns"] for e in exits)
             leader = next(
                 (e for e in exits if e["host_tid"] == e["host_pid"]),

@@ -4186,3 +4186,59 @@ def test_execution_registration_round_trip(tmp_path: Path) -> None:
     )
     assert exited.status_code == 200
     assert exited.json() == {"stored": True}
+
+
+@pytest.mark.parametrize("parallelism", [1, 4])
+def test_slow_completion_keeps_event_loop_responsive(tmp_path, parallelism):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, Lock
+    state = build_state(SidecarConfig(trace_dir=tmp_path / "traces", tool_resource_ebpf_required=False))
+    entered, release, lock = Event(), Event(), Lock()
+    calls = []
+    def finish(**kwargs):
+        with lock:
+            calls.append(kwargs["execution_id"])
+            if len(calls) == parallelism:
+                entered.set()
+        assert release.wait(5)
+        return {"execution_id": kwargs["execution_id"], "started": True, "status": "ok"}
+    state.predictor.finish_execution = finish
+    with TestClient(create_app(state)) as client, ThreadPoolExecutor(max_workers=parallelism + 1) as pool:
+        completions = []
+        for i in range(parallelism):
+            eid = f"slow-{i}"
+            registration = client.post("/v2/executions", json={
+                "execution_id": eid, "tool_call_id": eid, "run_id": "run-slow",
+                "session_key_hash": None, "command_digest": "sha256:" + "d" * 64,
+                "command": "echo hi", "workdir": "/workspace", "host": "gateway",
+                "placement": None, "profiling": {"mode": "off"}, "backend": "managed-wrapper",
+            }).json()
+            claim = client.post("/v2/executions/claim", json={"execution_id": eid,
+                "token": registration["one_time_token"], "launcher_pid": 100}).json()
+            client.post(f"/v2/executions/{eid}/exited", json={
+                "update_token": claim["update_token"], "exit_code": 0, "signal": None})
+            completions.append({
+                "schema_version": "clawtune.v1", "event_id": "evt-" + eid,
+                "occurred_at": "2026-07-29T00:00:00Z", "plugin_version": "0.1.0",
+                "run_id": "run-slow", "session_id": "session-slow", "session_key": None,
+                "agent_id": None, "tool_call_id": eid, "decision_id": None, "lease_id": None,
+                "execution_id": eid, "tool_name": "exec", "duration_ms": 100,
+                "succeeded": True, "error_type": None, "error_digest": None,
+                "result_size_bytes": None, "resource_scope": None,
+            })
+        futures = [pool.submit(client.post, "/v1/events/tool-completed", json=c) for c in completions]
+        try:
+            assert entered.wait(2), "finalization serialized the event loop"
+            health = pool.submit(client.get, "/health/live")
+            assert health.result(timeout=1).status_code == 200
+            assert not any(f.done() for f in futures)
+            duplicate = pool.submit(client.post, "/v1/events/tool-completed", json={
+                **completions[0], "event_id": "evt-duplicate-completion",
+            })
+            with pytest.raises(TimeoutError):
+                duplicate.result(timeout=0.1)
+        finally:
+            release.set()
+        assert all(f.result(timeout=3).status_code == 200 for f in futures)
+        assert duplicate.result(timeout=3).status_code == 200
+        assert len(calls) == parallelism

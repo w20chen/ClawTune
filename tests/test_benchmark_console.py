@@ -20,3 +20,17 @@ def test_unmarked_stderr_and_partial_last_line_are_retained():
     tee_agent_output(StringIO("warning\nerror without newline"), saved, visible.append)
     assert saved.getvalue() == "warning\nerror without newline"
     assert not visible
+
+
+def test_file_projection_drains_existing_bytes_and_ignores_long_unmarked_lines(tmp_path):
+    from threading import Event
+    from swe_rebench.console import follow_agent_output
+    path = tmp_path / "output.txt"
+    raw = "x" * (65536 * 3) + PREFIX + "not a new line\n" + PREFIX + "final row"
+    path.write_text(raw, encoding="utf-8")
+    stop = Event()
+    stop.set()
+    visible = []
+    follow_agent_output(path, stop, visible.append)
+    assert visible == ["final row"]
+    assert path.read_text(encoding="utf-8") == raw

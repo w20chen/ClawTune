@@ -2796,6 +2796,47 @@ def test_host_agent_cancellation_kills_real_process_without_agent_timeout(monkey
     assert not (trace / "task-timeout.json").exists()
 
 
+@pytest.mark.parametrize("parallelism", [1, 4])
+@pytest.mark.parametrize("timed_out", [False, True])
+def test_host_agent_cleanup_does_not_wait_for_inherited_output(monkeypatch, tmp_path, parallelism, timed_out):
+    import sys
+    from concurrent.futures import ThreadPoolExecutor
+    from swe_rebench import host_openclaw as host
+
+    child = tmp_path / "child.py"
+    child.write_text("import time; time.sleep(5)")
+    agent = tmp_path / "agent.py"
+    agent.write_text(
+        "import subprocess,sys,time\n"
+        "print('output before detached child', flush=True)\n"
+        f"subprocess.Popen([sys.executable, {str(child)!r}], start_new_session=True)\n"
+        + ("time.sleep(30)\n" if timed_out else "")
+    )
+    monkeypatch.setattr(host, "_require_executable", lambda name: sys.executable)
+    monkeypatch.setattr(host, "_openclaw_agent_argv", lambda *a, **k: [sys.executable, str(agent)])
+
+    def run(index):
+        folder = tmp_path / str(index)
+        folder.mkdir()
+        config_path = folder / "config.yaml"
+        config_path.write_text("")
+        config = RunnerConfig.from_yaml(config_path, repo_root=folder)
+        config.batch.agent_timeout_seconds = 0
+        start = time.monotonic()
+        result = host._run_openclaw_agent(
+            trace_dir=folder, openclaw_home=folder / "home", workspace=folder,
+            sidecar_port=8765, task=TaskDef(str(index), "image", "work"),
+            config=config, task_deadline=start + (1 if timed_out else 10),
+            post_sandbox_scope=False,
+        )
+        assert time.monotonic() - start < 3
+        assert result == (124 if timed_out else 0)
+        assert "output before detached child" in (folder / "agent-stdout.txt").read_text()
+
+    with ThreadPoolExecutor(max_workers=parallelism) as executor:
+        list(executor.map(run, range(parallelism)))
+
+
 def test_host_openclaw_cleanup_timeout_is_bounded_and_strict(
     monkeypatch,
     tmp_path: Path,
