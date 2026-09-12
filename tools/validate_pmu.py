@@ -26,7 +26,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SIDECAR_SRC = ROOT / "services" / "sidecar" / "src"
 sys.path.insert(0, str(SIDECAR_SRC))
 
-from clawtune_sidecar.monitoring.pmu import PmuCollector, auto_fd_budget  # noqa: E402
+from clawtune_sidecar.monitoring.pmu import (  # noqa: E402
+    PmuCollector, auto_fd_budget, quality_gated_pmu_metrics,
+)
 
 
 _GATED_EXEC = """
@@ -136,6 +138,19 @@ def _run_batch(*, count: int, concurrency: int, collector: PmuCollector,
                         "execution_id": execution_id,
                         "error": "profile event set mismatch",
                     })
+                metrics = quality_gated_pmu_metrics(profile)
+                for event_name in ("llc_read_accesses", "llc_read_misses"):
+                    metric_name = f"{event_name}_per_cpu_second"
+                    actual = profile.get("derived", {}).get(metric_name)
+                    expected = metrics[metric_name]
+                    if actual != expected or (
+                        profile.get("coverage", {}).get("status") == "reliable"
+                        and expected is None
+                    ):
+                        failures.append({
+                            "execution_id": execution_id,
+                            "error": f"invalid {metric_name}",
+                        })
 
     elapsed = time.perf_counter() - batch_started
     status_counts = Counter(

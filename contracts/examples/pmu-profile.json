@@ -56,7 +56,9 @@
   "derived": {
     "ipc": 0.5,
     "llc_mpki": 1.0,
-    "llc_miss_rate": 0.1
+    "llc_miss_rate": 0.1,
+    "llc_read_accesses_per_cpu_second": 10000.0,
+    "llc_read_misses_per_cpu_second": 1000.0
   },
   "coverage": {
     "status": "reliable",

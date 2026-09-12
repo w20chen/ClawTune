@@ -290,7 +290,9 @@ def _unavailable_profile(execution_id: str, reason: str, *, root_pid: int | None
         ),
         llc_semantics_confirmed=False,
         events=readings,
-        derived={"ipc": None, "llc_mpki": None, "llc_miss_rate": None},
+        derived={"ipc": None, "llc_mpki": None, "llc_miss_rate": None,
+                 "llc_read_accesses_per_cpu_second": None,
+                 "llc_read_misses_per_cpu_second": None},
         coverage=PmuCoverage(
             status="unavailable",
             reason=reason,
@@ -577,6 +579,17 @@ class PmuCollector:
             and readings["llc_read_misses"].semantics.startswith("PERF_COUNT_HW_CACHE_LL")
             and readings["llc_read_accesses"].semantics.startswith("PERF_COUNT_HW_CACHE_LL")
         )
+        # Task-scoped perf times advance with the monitored CPU context, and
+        # inherit aggregates descendants' counts AND times. This is intensity
+        # per on-CPU second, not wall-time bandwidth. In particular, neither
+        # collection timestamps nor the tool span include the right window.
+        # Reuse existing reads: no additional event, FD, polling or syscall.
+        for name in ("llc_read_accesses", "llc_read_misses"):
+            event = readings[name]
+            derived[f"{name}_per_cpu_second"] = (
+                _ratio(event.raw_count, event.time_running_ns, 1e9)
+                if status == "reliable" and llc_confirmed else None
+            )
         return PmuProfile(
             schema=_SCHEMA,
             execution_id=group.execution_id,
@@ -643,7 +656,9 @@ def _ratio(numerator: float | None, denominator: float | None,
 
 def quality_gated_pmu_metrics(profile: Any) -> dict[str, Any]:
     """Recheck raw evidence, not just a producer's reliability label."""
-    unavailable = {"ipc": None, "llc_mpki": None, "llc_miss_rate": None, "eligible": False}
+    unavailable = {"ipc": None, "llc_mpki": None, "llc_miss_rate": None,
+                   "llc_read_accesses_per_cpu_second": None,
+                   "llc_read_misses_per_cpu_second": None, "eligible": False}
     if not isinstance(profile, dict) or any(profile.get(key) != value for key, value in {
         "schema": _SCHEMA, "source": "perf_event_open", "mode": "counting",
         "scope": "task-inherit-enable-on-exec", "llc_semantics_confirmed": True,
@@ -678,6 +693,10 @@ def quality_gated_pmu_metrics(profile: Any) -> dict[str, Any]:
     return {"ipc": _ratio(counts["instructions"], counts["cycles"]),
             "llc_mpki": _ratio(counts["llc_read_misses"], counts["instructions"], 1000.),
             "llc_miss_rate": _ratio(counts["llc_read_misses"], counts["llc_read_accesses"]),
+            "llc_read_accesses_per_cpu_second": _ratio(
+                counts["llc_read_accesses"], events["llc_read_accesses"]["time_running_ns"], 1e9),
+            "llc_read_misses_per_cpu_second": _ratio(
+                counts["llc_read_misses"], events["llc_read_misses"]["time_running_ns"], 1e9),
             "eligible": True}
 
 

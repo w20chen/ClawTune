@@ -208,9 +208,13 @@ Compose startup/build and cleanup logs are written live to `terminal-logs/<task>
 
 PMU data is supported for Terminal commands and shell commands in SWE-Rebench, SWE-Bench Verified, and Deep Research. BFCL functions and non-shell research tools currently have no per-call PMU data; missing values are not zero.
 
+All PMU microarchitecture metrics are **tool-level, not clause-level**: for a compound command such as `pip install … && pytest …`, counts and derived metrics cover the whole execution tree, not each clause separately.
+
 The standard Research workflow uses native web tools, not shell commands. Shared-process measurements describe local runtime activity, not an individual function's exclusive CPU/memory. Exclude `partial` and zero-overlap resource samples from CPU/memory labels; valid call duration and independently eligible PMU can still be used. Use a new run/KB, or rebuild from raw traces, when applying updated collection-quality rules; resuming an old KB does not clean previously learned labels.
 
 Only profiles with `coverage.eligible_for_kb=true` are used for learning. Predictions marked `calibration=unvalidated` have not been validated for accuracy. When running amd64 images on arm64, counters include QEMU overhead.
+
+For attributed exec calls, `resources.pmu.events.llc_read_accesses.raw_count` and `llc_read_misses.raw_count` contain the execution tree's LLC read counts. `resources.pmu.derived.llc_read_accesses_per_cpu_second` and `llc_read_misses_per_cpu_second` divide those counts by the corresponding event's `time_running_ns / 1e9`. This measures LLC read intensity per monitored **on-CPU second**, including inherited threads/processes; it excludes blocked time, and parallel threads contribute their accumulated CPU time. It is not wall-time throughput, total memory-access frequency, or DRAM bandwidth. These rates reuse the four existing PMU events with no added polling or hardware counters, and are null for partial/multiplexed/unavailable profiles. Shared-process tools have no exclusive rates. The rates are monitoring outputs; they are not additional prediction targets.
 
 ## 3. Selection, concurrency, and resume
 

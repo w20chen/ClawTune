@@ -59,7 +59,15 @@
       "properties": {
         "ipc": {"type": ["number", "null"], "minimum": 0},
         "llc_mpki": {"type": ["number", "null"], "minimum": 0},
-        "llc_miss_rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+        "llc_miss_rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "llc_read_accesses_per_cpu_second": {
+          "type": ["number", "null"], "minimum": 0,
+          "description": "Reliable task-scoped LLC read accesses divided by this event's time_running_ns / 1e9, summed over the execution root and inherited descendants. Per monitored on-CPU second, not per wall second or DRAM bytes/second. Null unless the complete PMU profile is eligible. Optional for older profiles."
+        },
+        "llc_read_misses_per_cpu_second": {
+          "type": ["number", "null"], "minimum": 0,
+          "description": "Reliable task-scoped LLC read misses divided by this event's time_running_ns / 1e9, summed over the execution root and inherited descendants. Per monitored on-CPU second, not per wall second or DRAM bytes/second. Null unless the complete PMU profile is eligible. Optional for older profiles."
+        }
       },
       "additionalProperties": false
     },

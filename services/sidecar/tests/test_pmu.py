@@ -83,7 +83,9 @@ def test_counting_group_attributes_four_events_and_derives_metrics() -> None:
     assert profile.coverage.status == "reliable"
     assert profile.coverage.eligible_for_kb is True
     assert profile.events["cycles"].raw_count == 2_000_000
-    assert profile.derived == {"ipc": 0.5, "llc_mpki": 1.0, "llc_miss_rate": 0.1}
+    assert profile.derived == {"ipc": 0.5, "llc_mpki": 1.0, "llc_miss_rate": 0.1,
+                               "llc_read_accesses_per_cpu_second": 10000.,
+                               "llc_read_misses_per_cpu_second": 1000.}
     assert profile.llc_semantics_confirmed is True
     assert "CACHE_LL:READ" in profile.events["llc_read_misses"].semantics
 
@@ -244,6 +246,8 @@ def test_reliable_metrics_are_gated_independently_when_a_ratio_is_undefined() ->
         "llc_mpki": 0.0,
         "llc_miss_rate": None,
         "eligible": True,
+        "llc_read_accesses_per_cpu_second": 0.,
+        "llc_read_misses_per_cpu_second": 0.,
     }
 
 
@@ -291,7 +295,10 @@ def test_kb_rechecks_raw_evidence_and_recomputes_ratios():
     profile = collector.finish("exec").to_dict()
     profile["derived"] = {"ipc": 999, "llc_mpki": 999, "llc_miss_rate": 999}
     assert not _quality_gated_pmu_metrics(profile, execution_id="another-execution")["eligible"]
-    assert _quality_gated_pmu_metrics(profile) == {"ipc": .5, "llc_mpki": 1., "llc_miss_rate": .1, "eligible": True}
+    assert _quality_gated_pmu_metrics(profile) == {
+        "ipc": .5, "llc_mpki": 1., "llc_miss_rate": .1, "eligible": True,
+        "llc_read_accesses_per_cpu_second": 10000.,
+        "llc_read_misses_per_cpu_second": 1000.}
     for field, value in (("raw_count", True), ("time_running_ns", 1), ("error", "EIO")):
         corrupted = copy.deepcopy(profile)
         corrupted["events"]["cycles"][field] = value
@@ -310,3 +317,62 @@ def test_impossible_llc_fraction_is_unavailable_not_clamped():
     assert profile.derived["llc_miss_rate"] is None
     assert profile.coverage.status == "partial"
     assert not _quality_gated_pmu_metrics(profile.to_dict())["eligible"]
+
+
+def test_llc_intensity_uses_inherited_perf_time_not_reporting_wall_time():
+    class TwoCpuSeconds(FakePerfBackend):
+        def read_event(self, fd):
+            # Two descendants may accumulate two monitored CPU seconds in
+            # one wall second. Dividing by wall time would double intensity.
+            return self.values[self.names[fd]], 2_000_000_000, 2_000_000_000
+
+    backend = TwoCpuSeconds()
+    collector = PmuCollector(backend=backend)
+    collector.begin("intensity", 12)
+    profile = collector.finish("intensity").to_dict()
+    assert len(backend.opens) == len(backend.closed) == 4
+    assert profile["derived"]["llc_read_accesses_per_cpu_second"] == 5000.
+    assert profile["derived"]["llc_read_misses_per_cpu_second"] == 500.
+    profile.update(started_at=10., ended_at=3610.)
+    profile["derived"]["llc_read_accesses_per_cpu_second"] = 999999.
+    assert _quality_gated_pmu_metrics(profile)["llc_read_accesses_per_cpu_second"] == 5000.
+
+
+@pytest.mark.parametrize("case", ["multiplex", "kernel", "missing", "aborted", "zero_time", "invalid_llc"])
+def test_unreliable_llc_intensity_is_null(case):
+    backend = FakePerfBackend(ratio=.99 if case == "multiplex" else 1.,
+                              deny_kernel=case == "kernel",
+                              unsupported={"llc_read_accesses"} if case == "missing" else set())
+    if case == "zero_time":
+        backend.read_event = lambda fd: (100, 0, 0)
+    if case == "invalid_llc":
+        backend.values["llc_read_misses"] = 20000
+    collector = PmuCollector(backend=backend)
+    collector.begin("bad", 12)
+    profile = collector.finish("bad", reason="aborted" if case == "aborted" else "execution_exited")
+    metrics = _quality_gated_pmu_metrics(profile.to_dict())
+    for name in ("llc_read_accesses_per_cpu_second", "llc_read_misses_per_cpu_second"):
+        assert profile.derived[name] is None
+        assert metrics[name] is None
+
+
+def test_llc_intensity_artifact_schema_and_old_profile_compatibility(tmp_path):
+    import json
+    from pathlib import Path
+    import jsonschema
+
+    collector = PmuCollector(backend=FakePerfBackend())
+    collector.begin("artifact", 12)
+    profile = collector.finish("artifact").to_dict()
+    path = tmp_path / "profile.json"
+    assert pmu_module.write_pmu_profile(path, profile)
+    exported = json.loads(path.read_text())
+    schema_path = Path(__file__).resolve().parents[3] / "contracts/pmu-profile.schema.json"
+    schema = json.loads(schema_path.read_text())
+    jsonschema.validate(exported, schema)
+    assert exported["derived"]["llc_read_accesses_per_cpu_second"] == 10000.
+    for name in ("llc_read_accesses_per_cpu_second", "llc_read_misses_per_cpu_second"):
+        del exported["derived"][name]
+    jsonschema.validate(exported, schema)
+    # Older reliable artifacts already contain the required raw evidence.
+    assert _quality_gated_pmu_metrics(exported)["llc_read_accesses_per_cpu_second"] == 10000.
