@@ -368,11 +368,17 @@ def test_required_telemetry_never_degrades_to_unobserved_execution(monkeypatch, 
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="requires Linux procfs and POSIX shell")
-def test_abort_script_verifies_identity_and_stops_descendants(tmp_path):
+@pytest.mark.parametrize("slow_kill", [False, True])
+def test_abort_script_verifies_identity_and_stops_descendants(tmp_path, slow_kill):
     from pathlib import Path
     from benchmarks.exec_control import ABORT_SCRIPT
+    # Force a scheduling gap after killing a child so the parent's wait can
+    # resume if the abort implementation has not frozen it first.
+    script = ABORT_SCRIPT.replace('kill -KILL "$target" 2>/dev/null || :',
+        'kill -KILL "$target" 2>/dev/null || :\nsleep 0.05') if slow_kill else ABORT_SCRIPT
     child_file = tmp_path / "child"
-    process = subprocess.Popen(["/bin/sh", "-c", 'sleep 60 & echo $! > "$1"; wait', "sh", str(child_file)])
+    resumed_file = tmp_path / "resumed"
+    process = subprocess.Popen(["/bin/sh", "-c", 'sleep 60 & echo $! > "$1"; wait; echo resumed > "$2"', "sh", str(child_file), str(resumed_file)])
     try:
         import time
         deadline = time.monotonic() + 5
@@ -382,11 +388,13 @@ def test_abort_script_verifies_identity_and_stops_descendants(tmp_path):
         ticks = int(Path(f"/proc/{process.pid}/stat").read_text().rsplit(")", 1)[1].split()[19])
         namespace = int(os.readlink(f"/proc/{process.pid}/ns/pid")[5:-1])
         def abort(starttime):
-            subprocess.run(["/bin/sh", "-c", ABORT_SCRIPT, "abort", str(process.pid), str(namespace), str(starttime)], check=True, timeout=5)
+            subprocess.run(["/bin/sh", "-c", script, "abort", str(process.pid), str(namespace), str(starttime)], check=True, timeout=5)
         abort(ticks + 1)
         assert process.poll() is None
+        assert Path(f"/proc/{child}").exists()
         abort(ticks)
         assert process.wait(timeout=5) == -9
+        assert not resumed_file.exists()
         stat = Path(f"/proc/{child}/stat")
         assert not stat.exists() or stat.read_text().rsplit(")", 1)[1].split()[0] == "Z"
     finally:

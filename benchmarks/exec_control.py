@@ -77,8 +77,15 @@ starttime=$(cut -d')' -f2 /proc/$pid/stat 2>/dev/null | awk '{print $20}')
 [ "$starttime" = "$3" ] || exit 0
 kill_tree() (
   target=$1
+  # Freeze the parent before killing children. Otherwise its wait can finish
+  # and execute the next command (or exit) before we reach its own SIGKILL.
+  kill -STOP "$target" 2>/dev/null || exit 0
   children=
-  read -r children < /proc/$target/task/$target/children 2>/dev/null || :
+  for task in /proc/$target/task/*; do
+    thread_children=
+    { read -r thread_children < "$task/children"; } 2>/dev/null || :
+    children="$children $thread_children"
+  done
   for child in $children; do kill_tree "$child"; done
   kill -KILL "$target" 2>/dev/null || :
 )
