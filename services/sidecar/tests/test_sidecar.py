@@ -4242,3 +4242,38 @@ def test_slow_completion_keeps_event_loop_responsive(tmp_path, parallelism):
         assert all(f.result(timeout=3).status_code == 200 for f in futures)
         assert duplicate.result(timeout=3).status_code == 200
         assert len(calls) == parallelism
+
+
+@pytest.mark.parametrize("parallelism", [1, 4])
+def test_slow_start_keeps_event_loop_responsive(tmp_path, parallelism):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, Lock
+    scope = tmp_path / "cgroup"
+    _write_cgroup_fixture(scope)
+    state = build_state(SidecarConfig(trace_dir=tmp_path / "traces", tool_resource_ebpf_required=False,
+        sandbox_cgroup_path=str(scope), sandbox_container_id="b" * 64))
+    entered, release, lock = Event(), Event(), Lock()
+    calls = []
+    def begin(**kwargs):
+        with lock:
+            calls.append(kwargs['execution_id'])
+            if len(calls) == parallelism:
+                entered.set()
+        assert release.wait(5)
+        return True
+    state.predictor.begin_execution = begin
+    with TestClient(create_app(state)) as client, ThreadPoolExecutor(parallelism + 1) as pool:
+        claims=[]
+        for i in range(parallelism):
+            eid=f'slow-start-{i}'
+            r=client.post('/v2/executions',json={'execution_id':eid,'tool_call_id':eid,'run_id':'run-start',
+                'session_key_hash':None,'command_digest':'sha256:'+'d'*64,'command':'echo hi',
+                'workdir':'/workspace','host':'gateway','placement':None,'profiling':{'mode':'off'},'backend':'managed-wrapper'}).json()
+            claims.append({'execution_id':eid,'token':r['one_time_token'],'launcher_pid':100})
+        futures=[pool.submit(client.post,'/v2/executions/claim',json=c) for c in claims]
+        try:
+            assert entered.wait(2)
+            assert pool.submit(client.get,'/health/live').result(timeout=1).status_code==200
+        finally:
+            release.set()
+        assert all(f.result(timeout=3).status_code==200 for f in futures)

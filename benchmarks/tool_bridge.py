@@ -13,6 +13,7 @@ class ToolBridge:
         self.backend = backend
         self.token = secrets.token_urlsafe(32)
         self.lock = threading.Lock()
+        self.closing = threading.Event()
         self.results = {}
         owner = self
 
@@ -33,6 +34,8 @@ class ToolBridge:
                         raise ValueError("invalid tool call")
                     signature = json.dumps([body["name"], body["arguments"]], sort_keys=True)
                     with owner.lock:
+                        if owner.closing.is_set():
+                            raise RuntimeError("tool bridge is shutting down")
                         key = body["call_id"]
                         if key in owner.results:
                             prior, result = owner.results[key]
@@ -47,8 +50,20 @@ class ToolBridge:
                     self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
                     self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
                 except Exception as exc:
-                    self.send_error(400, str(exc))
+                    # Keep untrusted command/error text out of the HTTP status
+                    # line; it can contain non-ASCII, newlines or large payloads.
+                    data = json.dumps({"error": str(exc)[-8192:]}).encode()
+                    try:
+                        self.send_response(400)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.server.daemon_threads = True
@@ -68,6 +83,13 @@ class ToolBridge:
         path.chmod(0o600)
 
     def __exit__(self, *args):
+        self.closing.set()
+        cancel = getattr(self.backend, "cancel", None)
+        if cancel is not None:
+            cancel()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=2)
+        if not self.lock.acquire(timeout=120):
+            raise RuntimeError("tool bridge backend did not stop; unsafe to drain")
+        self.lock.release()

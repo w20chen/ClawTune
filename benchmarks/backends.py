@@ -22,7 +22,7 @@ from .exec_control import (
     SidecarUnavailable,
     parse_gate_identity,
 )
-from swe_rebench.cancellation import run_command
+from swe_rebench.cancellation import run_command, TaskCancelled
 
 
 class _GateDegrade(RuntimeError):
@@ -47,7 +47,7 @@ def ensure_bfcl():
             sys.path.insert(0, str(package))
 
 
-class BFCLBackend:
+class _BFCLImplementation:
     """BFCL owns function schemas and backend state; ClawTune owns execution."""
     def __init__(self, task, run_dir: Path):
         ensure_bfcl()
@@ -114,6 +114,114 @@ class BFCLBackend:
                 flush()
 
 
+def _bfcl_worker(connection, task, run_dir, factory):
+    backend = None
+    if sys.platform == "linux":
+        import ctypes
+        if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
+            raise OSError("cannot establish BFCL subreaper")
+        def terminate(_signal, _frame):
+            raise SystemExit(143)
+        signal.signal(signal.SIGTERM, terminate)
+    try:
+        backend = factory(task, run_dir)
+        connection.send((True, {k: getattr(backend, k) for k in ("tools", "system", "turns")}))
+        while True:
+            request = connection.recv()
+            if request is None:
+                backend.close()
+                connection.send((True, None))
+                return
+            try:
+                name, arguments, call_id = request
+                connection.send((True, backend.call(name, arguments, call_id=call_id)))
+            except Exception as exc:
+                connection.send((False, str(exc)))
+    except (EOFError, BrokenPipeError):
+        pass
+    except Exception as exc:
+        connection.send((False, str(exc)))
+    finally:
+        connection.close()
+        if sys.platform == "linux":
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            from swe_rebench.process_supervisor import cleanup
+            try:
+                clean = cleanup()
+            except Exception:
+                clean = False
+            if not clean:
+                raise SystemExit(125)
+
+
+class BFCLBackend:
+    """Keep BFCL's state in one killable worker, not a daemon HTTP thread."""
+    def __init__(self, task, run_dir, *, _factory=_BFCLImplementation):
+        import multiprocessing
+        context = multiprocessing.get_context("spawn")
+        self._connection, child = context.Pipe()
+        self._cancelled = threading.Event()
+        self._worker = context.Process(target=_bfcl_worker, args=(child, task, run_dir, _factory))
+        self._worker.start()
+        child.close()
+        try:
+            for key, value in self._receive(timeout=60).items():
+                setattr(self, key, value)
+        except BaseException:
+            self._stop()
+            raise
+
+    def _stop(self):
+        if self._worker.is_alive():
+            self._worker.terminate()
+        self._worker.join(timeout=8)
+        if self._worker.is_alive():
+            self._worker.kill()
+            self._worker.join(timeout=5)
+            raise RuntimeError("BFCL worker required forced termination; cleanup unconfirmed")
+        if self._worker.is_alive():
+            raise RuntimeError("BFCL worker did not stop")
+        if self._worker.exitcode == 125:
+            raise RuntimeError("BFCL descendants did not stop")
+
+    def _receive(self, timeout=300):
+        deadline = time.monotonic() + timeout
+        while not self._connection.poll(0.1):
+            if self._cancelled.is_set() or time.monotonic() >= deadline:
+                self._stop()
+                raise TaskCancelled("BFCL call cancelled or timed out")
+            if not self._worker.is_alive():
+                raise RuntimeError("BFCL worker exited without a result")
+        ok, value = self._connection.recv()
+        if not ok:
+            raise RuntimeError(value)
+        return value
+
+    def call(self, name, arguments, *, call_id=""):
+        if self._cancelled.is_set():
+            raise TaskCancelled("BFCL call cancelled")
+        self._connection.send((name, arguments, call_id))
+        return self._receive()
+
+    def cancel(self):
+        self._cancelled.set()
+
+    def close(self):
+        try:
+            if self._worker.is_alive():
+                self._connection.send(None)
+                # Normal completion still flushes persistent BFCL memory.
+                if self._connection.poll(5):
+                    self._connection.recv()
+                    self._worker.join(timeout=6)
+        finally:
+            self._stop()
+            self._connection.close()
+
+    def quiesce(self):
+        self.close()
+
+
 class TerminalBackend:
     """Task-owned Compose environment. No transplant into a generic SWE image."""
     tools = [{"name": "terminal_exec", "description": "Run a shell command inside this Terminal Bench task's client container. Use explicit cd when needed.",
@@ -124,6 +232,7 @@ class TerminalBackend:
                  gateway_id: str = GATEWAY_ID, repo: str = "terminal-bench",
                  telemetry_required: bool = False):
         self.deadline = deadline
+        self._cancelled = threading.Event()
         self.telemetry_required = telemetry_required
         # Sidecar execution lifecycle.  Without a port the backend keeps the
         # legacy plain `docker exec` path (no PMU evidence for those calls).
@@ -236,6 +345,7 @@ class TerminalBackend:
                               timeout=timeout if cleanup else self._remaining(timeout))
 
     def call(self, name: str, arguments: dict, *, call_id: str = ""):
+        self._check_cancelled()
         if name != "terminal_exec" or not isinstance(arguments.get("command"), str):
             raise ValueError("terminal_exec requires command")
         command = arguments["command"]
@@ -244,6 +354,27 @@ class TerminalBackend:
                 raise ExecutionStartRejected("required terminal execution gate is unavailable")
             return self._result(self._plain_exec(command))
         return self._gated_exec(command, call_id)
+
+    def cancel(self):
+        if not hasattr(self, "_cancelled"):
+            self._cancelled = threading.Event()
+        self._cancelled.set()
+
+    def _check_cancelled(self):
+        if getattr(self, "_cancelled", None) is not None and self._cancelled.is_set():
+            raise TaskCancelled("terminal execution cancelled")
+
+    def _communicate(self, process, *, timeout, input=None):
+        deadline = time.monotonic() + timeout
+        while True:
+            self._check_cancelled()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(process.args, timeout)
+            try:
+                return process.communicate(input=input, timeout=min(0.2, remaining))
+            except subprocess.TimeoutExpired:
+                input = None
 
     def _result(self, completed) -> dict:
         return {
@@ -255,10 +386,16 @@ class TerminalBackend:
     def _plain_exec(self, command: str):
         # Login profiles execute extra programs outside the requested command,
         # polluting PMU counts and invalidating clause attribution.
-        return subprocess.run(
+        process = subprocess.Popen(
             ["docker", "exec", self.container, "sh", "-c", command],
-            text=True, capture_output=True, timeout=self._remaining(self.timeout),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
+        try:
+            stdout, stderr = self._communicate(process, timeout=self._remaining(self.timeout))
+            return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
+        except BaseException:
+            self._terminate(process)
+            raise
 
     def _gated_exec(self, command: str, call_id: str) -> dict:
         """Run one command behind the gate with a real execution lifecycle.
@@ -319,7 +456,8 @@ class TerminalBackend:
             # makes CPython 3.10-3.12 on POSIX flush a closed stream. Check the
             # budget before releasing; never retry a released payload.
             deadline_budget = self._remaining(self.timeout)
-            stdout, stderr = process.communicate(input="go\n", timeout=deadline_budget)
+            self._check_cancelled()
+            stdout, stderr = self._communicate(process, input="go\n", timeout=deadline_budget)
             exit_code = process.returncode
         except BaseException:
             self._abort_payload(identity)
@@ -414,12 +552,19 @@ class TerminalBackend:
     ) -> None:
         if self.sidecar is None or update_token is None:
             return
-        try:
-            self.sidecar.exited(
-                execution_id, update_token, exit_code=exit_code, term_signal=term_signal
-            )
-        except SidecarUnavailable as exc:
-            self._gate_log(f"execution {execution_id} exit report failed: {exc}")
+        for attempt in range(3):
+            try:
+                self.sidecar.exited(
+                    execution_id, update_token, exit_code=exit_code, term_signal=term_signal
+                )
+                return
+            except SidecarUnavailable as exc:
+                self._gate_log(f"execution {execution_id} exit report failed: {exc}")
+                if attempt == 2:
+                    if self.telemetry_required:
+                        raise ExecutionStartRejected(f"execution exit was not acknowledged: {execution_id}") from exc
+                    return
+                time.sleep(0.1 * (attempt + 1))
 
     def _disable_gate(self, reason: str) -> None:
         if self.gate_available:
@@ -490,6 +635,11 @@ class TerminalBackend:
                 log.write(message.rstrip() + "\n")
         except OSError:
             pass
+
+    def quiesce(self):
+        self.cancel()
+        if self.started:
+            self._run(["stop", "-t", "5"], timeout=30, cleanup=True)
 
     def close(self):
         if self.started:

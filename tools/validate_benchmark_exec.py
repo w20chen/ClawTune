@@ -177,6 +177,36 @@ def main() -> int:
             timed = next(r for r in records if r.request.tool_call_id == "timeout-call")
             assert timed.exited and timed.signal, "timeout lifecycle was not finalized"
             assert state.pmu_collector.take(timed.request.execution_id).coverage.eligible_for_kb is False
+            backend.timeout = 120
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(backend.call, "terminal_exec", {
+                    "command": "sleep 60 & echo $! > /tmp/clawtune-cancel-child; wait"
+                }, call_id="cancel-call")
+                for _ in range(100):
+                    ready = subprocess.run(["docker", "exec", container, "test", "-s",
+                        "/tmp/clawtune-cancel-child"], capture_output=True, timeout=5)
+                    if ready.returncode == 0:
+                        break
+                    time.sleep(.1)
+                assert ready.returncode == 0, "cancellation payload did not start"
+                backend.cancel()
+                from swe_rebench.cancellation import TaskCancelled
+                try:
+                    future.result(timeout=25)
+                    raise AssertionError("cancelled execution returned success")
+                except TaskCancelled:
+                    pass
+            status = subprocess.check_output([
+                "docker", "exec", container, "sh", "-c",
+                "pid=$(cat /tmp/clawtune-cancel-child); cat /proc/$pid/stat 2>/dev/null || true",
+            ], text=True, timeout=5).strip()
+            assert not status or status.rsplit(")", 1)[1].split()[0] == "Z", "cancel descendant still running"
+            cancelled = next(r for r in state.executions.for_runtime(runtime_id, "swe-rebench")
+                             if r.request.tool_call_id == "cancel-call")
+            assert cancelled.exited and cancelled.signal
+            assert not state.pmu_collector.take(cancelled.request.execution_id).coverage.eligible_for_kb
+            drained = client._request("POST", f"/v1/gateways/swe-rebench/runtimes/{runtime_id}/drain?timeout_seconds=15&flush_kb=false", {}, timeout=20)
+            assert drained["drained"], drained
         return runtime_id
 
     try:

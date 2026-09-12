@@ -147,14 +147,19 @@ def _execute_bridged(task, config, run_dir, port, trace):
     finally:
         manifest.unlink(missing_ok=True)
         try:
+            quiesce = getattr(backend, "quiesce", None)
+            if quiesce is not None:
+                quiesce()
             host._drain_runtime(
                 port,
                 runtime_id,
                 gateway_id="swe-rebench",
                 flush_kb=False,
             )
-            host._collect_runtime_traces(run_dir / "sidecar", trace, runtime_id, task_label=task.directory_name)
         finally:
-            backend.close()
+            try:
+                host._collect_runtime_traces(run_dir / "sidecar", trace, runtime_id, task_label=task.directory_name)
+            finally:
+                backend.close()
     return ContainerResult(task_id=task.task_id, image=task.image, exit_code=exit_code, error=error,
         trace_dir=trace, trace_files=sorted(trace.glob("*.jsonl")), duration_seconds=time.monotonic() - started)

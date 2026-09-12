@@ -22,7 +22,9 @@ export function registerBenchmarkTools(api: HookApi): void {
           method: "POST",
           headers: {"Content-Type": "application/json", Authorization: `Bearer ${bridge.token}`},
           body: JSON.stringify({name: tool.name, arguments: params, call_id: id}),
-          signal: AbortSignal.timeout(300_000),
+          // The backend's 300 s payload budget excludes gate setup and exit
+          // acknowledgement. Allow it to return its authoritative result.
+          signal: AbortSignal.timeout(600_000),
         });
         if (!response.ok) throw new Error(`Benchmark tool failed: ${response.status} ${await response.text()}`);
         const data = await response.json() as {result: unknown};

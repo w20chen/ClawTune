@@ -818,6 +818,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
     app = FastAPI(title="ClawTune Sidecar", version="0.1.0")
     app.state.sidecar = app_state
     finishing_tasks: dict[str, asyncio.Task[None]] = {}
+    starting_tasks: dict[str, asyncio.Task[bool]] = {}
     kb_owner = None
     kb_store = getattr(app_state.predictor, "_state_store", None)
     if kb_store is not None:
@@ -831,6 +832,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
             task.cancel()
         if fallbacks:
             await asyncio.gather(*fallbacks, return_exceptions=True)
+        if starting_tasks:
+            await asyncio.gather(*list(starting_tasks.values()), return_exceptions=True)
         if finishing_tasks:
             await asyncio.gather(*list(finishing_tasks.values()), return_exceptions=True)
         cleanup_tasks = list(app_state._owned_cgroup_cleanup_tasks.values())
@@ -903,7 +906,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             return s.config.sandbox_container_id
         return None
 
-    def begin_ebpf_for_record(
+    async def begin_ebpf_for_record(
         s: AppState,
         execution_id: str,
         container_id: str | None,
@@ -931,10 +934,18 @@ def create_app(state: AppState | None = None) -> FastAPI:
             ebpf_kwargs["runtime_id"] = record.request.runtime_id
         if root_pid is not None:
             ebpf_kwargs["trusted_root_pid"] = root_pid
-        if cgroup_path is None:
-            return s.predictor.begin_execution(**ebpf_kwargs)
-        ebpf_kwargs["cgroup_path"] = cgroup_path
-        return s.predictor.begin_execution(**ebpf_kwargs)
+        if cgroup_path is not None:
+            ebpf_kwargs["cgroup_path"] = cgroup_path
+        task = starting_tasks.get(execution_id)
+        if task is None:
+            async def start() -> bool:
+                try:
+                    return await asyncio.to_thread(s.predictor.begin_execution, **ebpf_kwargs)
+                finally:
+                    starting_tasks.pop(execution_id, None)
+            task = asyncio.create_task(start())
+            starting_tasks[execution_id] = task
+        return await asyncio.shield(task)
 
     def ebpf_failure_detail(s: AppState, execution_id: str) -> dict[str, object]:
         telemetry = s.predictor.execution_telemetry(execution_id)
@@ -994,7 +1005,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 finalizer = s._ebpf_finalize_tasks.get(execution_id)
                 if s.predictor.execution_active(execution_id) or (
                     finalizer is not None and not finalizer.done()
-                ) or execution_id in finishing_tasks:
+                ) or execution_id in finishing_tasks or execution_id in starting_tasks:
                     # /exited schedules the eBPF fallback and cgroup GC at
                     # nearly the same time. Do not remove the collector's
                     # scope while it is still producing its final artifact.
@@ -1032,7 +1043,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         # Summary status alone is ambiguous: ``unavailable`` can describe
         # either an active collector or an already finalized failure.  The
         # predictor's active-run registry is the exactly-once authority.
-        return execution_id in finishing_tasks or s.predictor.execution_active(execution_id)
+        return execution_id in starting_tasks or execution_id in finishing_tasks or s.predictor.execution_active(execution_id)
 
     async def finish_ebpf(s: AppState, execution_id: str, **kwargs: Any) -> None:
         # A disconnected completion or cancelled fallback must not cancel a
@@ -1041,6 +1052,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
         if task is None:
             async def finish() -> None:
                 try:
+                    starting = starting_tasks.get(execution_id)
+                    if starting is not None:
+                        await asyncio.shield(starting)
                     telemetry = await asyncio.to_thread(
                         s.predictor.finish_execution, execution_id=execution_id, **kwargs
                     )
@@ -1267,7 +1281,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
     ) -> dict[str, object]:
         return {"samples": s._recent_samples[:limit]}
 
-    def store_sandbox_scope(
+    async def store_sandbox_scope(
         s: AppState,
         scope: ResourceScope,
         runtime_id: str | None,
@@ -1310,7 +1324,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 and record.request.gateway_id != gateway_id
             ):
                 continue
-            started = begin_ebpf_for_record(
+            started = await begin_ebpf_for_record(
                 s,
                 record.request.execution_id,
                 scope.container_id,
@@ -1353,7 +1367,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 and record.request.gateway_id != gateway_id
             ):
                 continue
-            begin_ebpf_for_record(
+            await begin_ebpf_for_record(
                 s,
                 record.request.execution_id,
                 scope.container_id,
@@ -1370,7 +1384,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         s: AppState = Depends(get_state),
         _: None = Depends(auth),
     ) -> dict[str, bool]:
-        store_sandbox_scope(s, scope, None)
+        await store_sandbox_scope(s, scope, None)
         return {"stored": True}
 
     @app.post("/v1/runtime/{runtime_id}/sandbox-scope")
@@ -1382,7 +1396,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
     ) -> dict[str, bool]:
         if not runtime_id.strip() or len(runtime_id) > 128:
             raise HTTPException(status_code=422, detail="invalid_runtime_id")
-        store_sandbox_scope(s, scope, runtime_id)
+        await store_sandbox_scope(s, scope, runtime_id)
         return {"stored": True}
 
     @app.post(
@@ -1399,7 +1413,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail="invalid_gateway_id")
         if not runtime_id.strip() or len(runtime_id) > 128:
             raise HTTPException(status_code=422, detail="invalid_runtime_id")
-        store_sandbox_scope(s, scope, runtime_id, gateway_id)
+        await store_sandbox_scope(s, scope, runtime_id, gateway_id)
         return {"stored": True}
 
     @app.delete("/v1/runtime/{runtime_id}/sandbox-scope")
@@ -1506,7 +1520,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             pending_finalizers = [
                 execution_id
                 for execution_id in record_ids
-                if execution_id in finishing_tasks or (
+                if execution_id in starting_tasks or execution_id in finishing_tasks or (
                     execution_id in s._ebpf_finalize_tasks
                     and not s._ebpf_finalize_tasks[execution_id].done()
                 )
@@ -1817,7 +1831,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                             sample,
                             pmu_profile=pmu_profile.to_dict(),
                         )
-                s.predictor.observe_completion(event, sample)
+                await asyncio.to_thread(s.predictor.observe_completion, event, sample)
                 s.metrics.observe_tool_runtime(sample)
                 s._recent_samples.insert(0, _sample_summary(sample))
                 if len(s._recent_samples) > s._max_recent_samples:
@@ -1935,7 +1949,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 request.gateway_id,
             )
             if container_id:
-                begin_ebpf_for_record(s, request.execution_id, container_id)
+                await begin_ebpf_for_record(s, request.execution_id, container_id)
         return response
 
     @app.get("/v2/executions/{execution_id}/scope", response_model=ExecutionScopeResponse)
@@ -2001,7 +2015,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     )
                 )
             ):
-                started = begin_ebpf_for_record(s, request.execution_id, container_id)
+                started = await begin_ebpf_for_record(s, request.execution_id, container_id)
                 if (
                     s.config.tool_resource_ebpf_required
                     and record.request.backend == "managed-wrapper"
@@ -2231,7 +2245,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 )
             )
             started = (
-                begin_ebpf_for_record(
+                await begin_ebpf_for_record(
                     s,
                     execution_id,
                     container_id,

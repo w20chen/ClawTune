@@ -289,6 +289,14 @@ def run_host_openclaw_task(
         raise
     finally:
         cleanup_error: BaseException | None = None
+        sandbox_stopped = False
+        try:
+            _cleanup_openclaw_sandbox_containers(
+                trace_dir, workspace, timeout_seconds=_TASK_CLEANUP_TIMEOUT_SECONDS, strict=True,
+            )
+            sandbox_stopped = True
+        except BaseException as exc:
+            cleanup_error = exc
         if not manage_sidecar and shared_sidecar_trace_dir is not None:
             runtime_id = _runtime_id(workspace)
             try:
@@ -325,12 +333,10 @@ def run_host_openclaw_task(
                     gateway_id=_BENCHMARK_GATEWAY_ID,
                 )
         try:
-            _cleanup_openclaw_sandbox_containers(
-                trace_dir,
-                workspace,
-                timeout_seconds=_TASK_CLEANUP_TIMEOUT_SECONDS,
-                strict=True,
-            )
+            if not sandbox_stopped:
+                _cleanup_openclaw_sandbox_containers(
+                    trace_dir, workspace, timeout_seconds=_TASK_CLEANUP_TIMEOUT_SECONDS, strict=True,
+                )
         except BaseException as exc:
             cleanup_error = cleanup_error or exc
         finally:
@@ -1685,13 +1691,15 @@ def _run_openclaw_agent(
         else None
     )
     try:
+        agent_argv = _openclaw_agent_argv(
+            openclaw, model_ref=model_ref or config.llm.openclaw_model_ref,
+            prompt_path=prompt_path, extra_args=config.agent.extra_args,
+        )
+        supervised = sys.platform == "linux"
+        if supervised:
+            agent_argv = [sys.executable, str(Path(__file__).with_name("process_supervisor.py")), "--", *agent_argv]
         process = subprocess.Popen(
-            _openclaw_agent_argv(
-                openclaw,
-                model_ref=model_ref or config.llm.openclaw_model_ref,
-                prompt_path=prompt_path,
-                extra_args=config.agent.extra_args,
-            ),
+            agent_argv,
             cwd=str(config.repo_root),
             env=env,
             stdout=stdout_file,
@@ -1699,6 +1707,8 @@ def _run_openclaw_agent(
             text=True,
             start_new_session=(os.name == "posix"),
         )
+        if supervised and isinstance(process, _SUBPROCESS_POPEN_TYPE):
+            process._clawtune_supervised = True
     except BaseException:
         stdout_file.close()
         stderr_file.close()
@@ -3073,6 +3083,15 @@ def _join_thread_safe(thread: threading.Thread, *, timeout: float | None = None)
 
 
 def _kill_agent_process_and_confirm(process: subprocess.Popen[str]) -> None:
+    if getattr(process, "_clawtune_supervised", False):
+        process.terminate()
+        try:
+            code = process.wait(timeout=8)
+        except subprocess.TimeoutExpired as exc:
+            raise ContainerCleanupError("agent supervisor could not confirm descendant cleanup") from exc
+        if code == 125:
+            raise ContainerCleanupError("agent supervisor reported incomplete descendant cleanup")
+        return
     try:
         if os.name == "posix" and isinstance(process, _SUBPROCESS_POPEN_TYPE):
             os.killpg(process.pid, signal.SIGKILL)
