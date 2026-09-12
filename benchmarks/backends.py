@@ -253,8 +253,10 @@ class TerminalBackend:
         }
 
     def _plain_exec(self, command: str):
+        # Login profiles execute extra programs outside the requested command,
+        # polluting PMU counts and invalidating clause attribution.
         return subprocess.run(
-            ["docker", "exec", self.container, "sh", "-lc", command],
+            ["docker", "exec", self.container, "sh", "-c", command],
             text=True, capture_output=True, timeout=self._remaining(self.timeout),
         )
 
@@ -351,7 +353,7 @@ class TerminalBackend:
         return subprocess.Popen(
             [
                 "docker", "exec", "-i", self.container,
-                "/bin/sh", GATE_CONTAINER_PATH, "/bin/sh", "-lc", command,
+                "/bin/sh", GATE_CONTAINER_PATH, "/bin/sh", "-c", command,
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,

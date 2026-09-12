@@ -176,6 +176,11 @@ def main() -> int:
                 "-v", f"{ROOT}:/clawtune:ro", args.image, "sleep", "600",
             ], text=True).strip()
             containers.append(container)
+            # Reproduce task images whose login profile launches extra programs.
+            subprocess.run([
+                "docker", "exec", container, "sh", "-c",
+                "printf '\\nid >/dev/null\\n' >> /etc/profile",
+            ], check=True, timeout=10)
         for mode in ("terminal", "fork-exec", "subprocess"):
             with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
                 futures = [pool.submit(execute, i, mode, c) for i, c in enumerate(containers)]
@@ -193,6 +198,10 @@ def main() -> int:
                 execution = row.get("execution") or {}
                 if execution.get("execution_id"):
                     traced.add(execution["execution_id"])
+                    if args.require_ebpf and row.get("record_type") == "span_end":
+                        telemetry = (execution.get("tool_resource") or {}).get("call_telemetry") or {}
+                        if not telemetry.get("eligible_for_kb") or telemetry.get("telemetry_quality") != "ok":
+                            failures.append(f"invalid clause telemetry: {execution['execution_id']}")
         expected = {item["profile"]["execution_id"] for item in profiles}
         if not expected <= traced:
             failures.append(f"missing final execution traces: {expected - traced}")
