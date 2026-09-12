@@ -4,6 +4,8 @@ This file records checks that cannot run in the current environment. Operational
 
 ## Windows workspace limitations
 
+- PowerShell `npm run typecheck --prefix packages/clawtune-plugin` is blocked by the local script execution policy; use `npm.cmd` to run the same validation.
+
 - `python3 scripts/clawtune.py setup` and `python3 scripts/clawtune.py check`: require Linux BCC/eBPF, cgroup v2, matching kernel headers, and privileges; not run here.
 - OpenClaw onboarding, Gateway/TUI, and live agent commands in the installation guide: require the Linux deployment and provider configuration; fresh-machine end-to-end acceptance remains outstanding.
 - Live commands for all five benchmark adapters: require Docker, task inputs/images, credentials, and applicable search/function dependencies. Dry-runs do not replace execution.
@@ -13,3 +15,15 @@ This file records checks that cannot run in the current environment. Operational
 - The Ubuntu GitHub Actions workflow requires a remote CI run; local Windows checks are not equivalent.
 
 Linux acceptance should also cover parallel task isolation, timeout/Ctrl+C cleanup, completed persistence, and resume eligibility.
+
+## Optional image-cache preparation on kunpeng
+
+- `sudo -n docker compose version` could not run because root has no Compose plugin. The adapter now falls back to the invoking user's installed Compose executable; real root-context Compose up/exec/down passed on kunpeng without changing root's configuration.
+- The optional cache helper was checked against the original two kunpeng preparation manifests: selected task IDs, 68 image references, 30 Dockerfile contents and build options matched. Unit/adapter tests, registry probes, a real Docker pull, and a detached amd64 build smoke check passed on kunpeng. Usage is included in [benchmark task preparation](benchmarks.md#2-prepare-tasks).
+- Full five-benchmark end-to-end commands were not run by this cache validation: they require the runtime prerequisites above, credentials, and potentially lengthy upstream builds. Background cache-job completion is tracked separately and must not be presented as benchmark correctness or scoring validation.
+
+## Runtime-fix regression validation
+
+- On kunpeng, `.venv/bin/python -m pytest tests/test_benchmark_runtime_fixes.py tests/test_swe_rebench_selection.py tests/test_demo_workflows.py services/sidecar/tests/test_tool_resource_telemetry.py -q -p no:cacheprovider --basetemp /home/weitianc/clawtune-image-prepull/runtime-fixes/pytest-final-root` passed all 212 tests in the privileged host context used by benchmarks. The corresponding Windows run passed 210 tests with two POSIX-only skips.
+- The initial unprivileged run could not use the configured `/home/.pytest-tmp`; an explicit writable `--basetemp` resolves this. The existing read-only trace-cleanup test still fails as an unprivileged user; it passes in the privileged benchmark context. This change does not fix that separate unprivileged cleanup limitation.
+- Live kunpeng checks verified 25/64 arguments captured fully, 65 arguments marked capped, a 25-argument expanded glob aligned successfully, incomplete evidence still rejected, and cached amd64 image export without a pull. These checks do not replace a full model-backed benchmark run.

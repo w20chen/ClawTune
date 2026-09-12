@@ -2214,6 +2214,9 @@ def test_run_batch_aborts_before_next_task_on_kb_sync_failure(
         lambda *_args, **_kwargs: None,
     )
 
+    # This test exercises publish-failure scheduling, not host architecture policy.
+    monkeypatch.setattr(runner, "_validate_runtime_architecture", lambda _config: None)
+
     def fail_first_task(_client, task, *_args, **_kwargs):
         attempted.append(task.instance_id)
         raise KnowledgeBaseSyncError("simulated publish failure")
@@ -2386,7 +2389,8 @@ def test_host_openclaw_exports_testbed_with_docker_platform(monkeypatch, tmp_pat
     assert ["/usr/bin/docker", "create", "--platform", "linux/amd64", "image:latest"] in calls
 
 
-def test_host_openclaw_missing_pull_policy_pulls_when_platform_is_set(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("inspected,should_pull", [("linux/amd64\n", False), ("linux/arm64\n", True), (None, True)])
+def test_host_openclaw_missing_pull_policy_checks_local_platform(monkeypatch, tmp_path: Path, inspected, should_pull) -> None:
     calls: list[list[str]] = []
 
     class Result:
@@ -2397,6 +2401,8 @@ def test_host_openclaw_missing_pull_policy_pulls_when_platform_is_set(monkeypatc
 
     def fake_run(cmd, **kwargs):
         calls.append(list(cmd))
+        if cmd[:3] == ["/usr/bin/docker", "image", "inspect"]:
+            return Result(1 if inspected is None else 0, stdout=inspected or "")
         if cmd[:2] == ["/usr/bin/docker", "create"]:
             return Result(0, stdout="container-id\n")
         if cmd[:2] == ["/usr/bin/docker", "rm"]:
@@ -2412,8 +2418,8 @@ def test_host_openclaw_missing_pull_policy_pulls_when_platform_is_set(monkeypatc
 
     _export_testbed_from_image("image:latest", tmp_path / "workspace", "missing", "linux/amd64")
 
-    assert ["/usr/bin/docker", "pull", "--platform", "linux/amd64", "image:latest"] in calls
-    assert not any(call[:3] == ["/usr/bin/docker", "image", "inspect"] for call in calls)
+    assert (["/usr/bin/docker", "pull", "--platform", "linux/amd64", "image:latest"] in calls) is should_pull
+    assert any(call[:3] == ["/usr/bin/docker", "image", "inspect"] for call in calls)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not represented on Windows")

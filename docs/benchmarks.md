@@ -36,6 +36,8 @@ Alternatively, place the raw key in the Git-ignored `configs/llm_api_key.txt`. D
 
 Defaults use external task lists when available; SWE and research otherwise use bundled smoke inputs. Use explicit dataset paths for experiments. Dry-run checks task structure, selection, and initialization data, not image availability, credentials, or live collection.
 
+Full predictions and agent output are saved in `.runtime/benchmarks/<benchmark>/<run>/traces/<task>/agent-stdout.txt`; errors are in `agent-stderr.txt` (under `--output` when set). Use `less <path>` to inspect them. The live agent stream shows only baseline time buckets: `mode` denotes the most probable bucket (ties retained), `p90` denotes the bucket containing that estimate; clause results remain separate.
+
 ## 2. Prepare tasks
 
 Common inputs are a JSON array, JSONL, or a JSON object containing a `tasks`, `instances`, or `data` array. Task IDs must be unique. Datasets and traces are read-only inputs; prepare exports and execution outputs elsewhere.
@@ -51,6 +53,13 @@ The external root is `$AGENT_TEST_BENCH_ROOT`, defaulting to the sibling `../age
 | Terminal Bench | `data/terminal-bench/tasks.json` or `data/terminal-bench/tasks/` |
 
 These are lookup conventions. Setup does not download complete benchmarks.
+
+Optional **image preparation** reduces startup waiting without changing benchmark execution or configuration:
+
+- Install optional dependencies: `bash scripts/setup/benchmark_cache_dependencies.sh`.
+- Prepare a new cache directory: `.venv/bin/python scripts/benchmark_cache.py prepare --directory ~/benchmark-cache --swe-rebench 30 --swe-bench-verified 20 --download-missing`; set each dataset's count with `--<benchmark> N`, supply inputs with `--dataset NAME=PATH`, and add `--build-terminal` to warm Terminal build layers.
+- Start in the background: `.venv/bin/python scripts/benchmark_cache.py run --directory ~/benchmark-cache --detach`.
+- Check progress: `.venv/bin/python scripts/benchmark_cache.py status --directory ~/benchmark-cache`.
 
 ### SWE-Rebench
 

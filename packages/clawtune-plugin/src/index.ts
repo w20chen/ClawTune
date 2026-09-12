@@ -3,7 +3,7 @@ import {randomUUID} from "node:crypto";
 import {readFileSync} from "node:fs";
 import {SidecarClient} from "./client.js";
 import {registerBenchmarkTools} from "./benchmark-tools.js";
-import {formatCallLoadPrediction} from "./prediction-format.js";
+import {formatCallLoadPrediction, formatTimeBuckets} from "./prediction-format.js";
 import {loadConfig, isRecord} from "./config.js";
 import {CorrelationMap} from "./correlation.js";
 import type {CommonEvent, ModelEvent, PluginConfig, SidecarHealth, ToolBeforeRequest, ToolCompletedEvent, ToolDecision} from "./contracts.js";
@@ -754,6 +754,9 @@ export default definePluginEntry({
       const decision = await client.decide(payload);
       decisionOverheadNs += monotonicNowNs() - tDecide;
       consoleVerbose(summarizePrediction(decision));
+      for (const line of formatTimeBuckets(decision.prediction, toolCallId ?? toolName)) {
+        consoleVerbose(`[clawtune-time-buckets] ${line}`);
+      }
       if (config.mode === "enforce" && decision.action === "block") {
         return {
           block: true,

@@ -111,7 +111,7 @@ def test_all_datasets_offline_call_only_and_test_does_not_train(tmp_path):
     manifest = split_tasks(inventory(dataset.resolve(), None), 42)
     assert len(manifest["train"]) == 20 and len(manifest["test"]) == 5
     first = tmp_path / "first"
-    report = run(dataset, first)
+    report = run(dataset, first, split_cache_dir=tmp_path / "splits")
     assert report["test_updates"] == 0
     assert {metric["benchmark"] for metric in report["metrics"]} == set(NAMES)
     assert len(report["repositories"]) == len(NAMES)
@@ -258,7 +258,7 @@ def test_offline_scores_pmu_separately_from_call_load(monkeypatch, tmp_path):
         return LoadedTask(calls=[CompletedCall("bfcl:dataset", "lookup", None, 0, 1,
             pmu_eligible=True, pmu_ipc=.5, pmu_llc_mpki=1., pmu_llc_miss_rate=.1)])
     monkeypatch.setattr(runner, "load_task", load)
-    report = runner.run(source, tmp_path / "output")
+    report = runner.run(source, tmp_path / "output", split_cache_dir=tmp_path / "splits")
     metrics = {row["target"]: row for row in report["metrics"]}
     assert {"pmu_ipc", "pmu_llc_mpki", "pmu_llc_miss_rate"} <= metrics.keys()
     assert all(row["mae"] == 0 for row in metrics.values())
@@ -306,6 +306,7 @@ def test_bfcl_preserves_native_state_and_turns(monkeypatch, tmp_path):
 def test_terminal_copies_native_environment_and_rejects_external_bind(monkeypatch, tmp_path):
     from types import SimpleNamespace
     from benchmarks.backends import TerminalBackend
+    monkeypatch.setattr("benchmarks.compose.compose_argv", lambda **_kwargs: ["docker", "compose"])
     taskdir = tmp_path / "input/task"
     taskdir.mkdir(parents=True)
     (taskdir / "task.yaml").write_text("instruction: work\n")

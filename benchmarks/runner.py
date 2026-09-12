@@ -39,6 +39,15 @@ def _observed_generation(path: Path) -> int | None:
         return None
 
 
+def _result_summary(task_id: str, row: dict, before: int | None, after: int | None) -> str:
+    failed = row["exit_code"] != 0 or bool(row.get("error"))
+    summary = (f"{task_id}: status={'failed' if failed else 'completed'}, "
+               f"agent_exit={row['exit_code']}, observed KB {before} -> {after}")
+    if row.get("error"):
+        summary += "; error=" + " ".join(str(row["error"]).split())
+    return summary
+
+
 def run(
     tasks: list[Task],
     *,
@@ -264,11 +273,7 @@ def run(
             else "no_shared_kb_commit_observed_during_task"
         )
         manifest["results"].append(row)
-        print(
-            f"{task.task_id}: exit={result.exit_code}, "
-            f"observed KB {before} -> {after}",
-            flush=True,
-        )
+        print(_result_summary(task.task_id, row, before, after), flush=True)
         if failure is not None and abort_on_failure:
             # An executor exception can mean cleanup failed with producers
             # still alive. Preserve the result, but do not retire ownership or

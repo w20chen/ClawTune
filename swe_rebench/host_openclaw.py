@@ -28,8 +28,9 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from swe_rebench.config import RunnerConfig
+from swe_rebench.console import tee_agent_output
 from swe_rebench.cancellation import TaskCancelled, check_cancelled, wait_process, run_command
-from swe_rebench.docker import ContainerCleanupError, ContainerResult
+from swe_rebench.docker import ContainerCleanupError, ContainerResult, local_image_available
 from swe_rebench.sandbox import sandbox_container_prefix
 from swe_rebench.task_source import TaskDef, task_repo_key
 
@@ -559,15 +560,11 @@ def _export_testbed_from_image(
     docker = _require_executable("docker")
     if pull_policy != "never":
         pull = [docker, "pull", *_docker_platform_args(platform), image]
-        if pull_policy == "missing" and not platform:
-            inspect = subprocess.run(
-                [docker, "image", "inspect", image],
-                capture_output=True,
-                text=True,
-                timeout=_remaining_task_seconds(deadline, phase="task image inspection"),
-            )
-            if inspect.returncode == 0:
-                pull = []
+        if pull_policy == "missing" and local_image_available(
+            None, image, platform, docker_executable=docker,
+            timeout=_remaining_task_seconds(deadline, phase="task image inspection"),
+        ):
+            pull = []
         if pull:
             if deadline is None:
                 _run_checked(pull, "docker_pull")
@@ -1704,28 +1701,10 @@ def _run_openclaw_agent(
         discovery.start()
 
     # 鈹€鈹€ Tee agent output to trace files + console 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    _write_lock = threading.Lock()
-
-    # 鈹€鈹€ Patterns to suppress from console (still written to log file) 鈹€鈹€
-    # These are OpenClaw internal operational logs that add noise without
-    # meaningful per-turn information.  The plugin's consoleMode=verbose
-    # provides the structured turn-by-turn output.
-    _NOISY_PATTERNS = [
-        "[provider-transport-fetch]",
-        "[model-fetch]",
-    ]
-
-    def _is_noisy(line: str) -> bool:
-        return any(p in line for p in _NOISY_PATTERNS)
-
+    # Persist complete streams; only compact time-bucket rows reach the console.
     def _tee(pipe: Any, log_file: Any, tag: str) -> None:
         try:
-            for line in pipe:
-                with _write_lock:
-                    log_file.write(line)
-                    log_file.flush()
-                if not _is_noisy(line):
-                    _log(f"[{tag}] {line.rstrip()}")
+            tee_agent_output(pipe, log_file, lambda line: _log(f"[{tag}] {line}"))
         except (ValueError, OSError):
             pass
 

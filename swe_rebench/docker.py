@@ -181,33 +181,27 @@ def pull_image(client: Any, image: str, policy: str = "missing", platform: str =
     """Pull a Docker image.  Returns True on success."""
     if policy == "never":
         return True
+    if policy == "missing" and local_image_available(client, image, platform):
+        return True
     if client is not None:
         try:
             if policy == "always":
                 client.images.pull(image, platform=platform or None)
             elif policy == "missing":
-                if platform:
-                    client.images.pull(image, platform=platform or None)
-                else:
-                    try:
-                        client.images.get(image)
-                    except Exception:
-                        client.images.pull(image)
+                client.images.pull(image, platform=platform or None)
             return True
         except Exception as exc:
             _log(f"[error] pull {image}: {exc}")
             return False
     else:
-        flag = "--always" if policy == "always" else ""
         cmd = ["docker", "pull", *_docker_platform_args(platform)]
-        if flag:
-            cmd.append(flag)
         cmd.append(image)
         result = subprocess.run(cmd, capture_output=True, text=True)
         return result.returncode == 0
 
 
-def local_image_available(client: Any, image: str, platform: str = "") -> bool:
+def local_image_available(client: Any, image: str, platform: str = "", *,
+                          docker_executable: str = "docker", timeout: float | None = None) -> bool:
     """Return whether a local image exists and matches the requested platform."""
 
     expected = _normalized_image_platform(platform)
@@ -217,32 +211,34 @@ def local_image_available(client: Any, image: str, platform: str = "") -> bool:
             if expected is None:
                 return True
             actual = _normalized_image_platform(
-                f"{attrs.get('Os', '')}/{attrs.get('Architecture', '')}"
+                f"{attrs.get('Os', '')}/{attrs.get('Architecture', '')}/{attrs.get('Variant', '')}"
             )
-            return actual == expected
+            return actual is not None and actual[:len(expected)] == expected
 
         result = subprocess.run(
             [
-                "docker",
+                docker_executable,
                 "image",
                 "inspect",
                 "--format",
-                "{{.Os}}/{{.Architecture}}",
+                "{{.Os}}/{{.Architecture}}" + ("/{{.Variant}}" if expected and len(expected) == 3 else ""),
                 image,
             ],
             capture_output=True,
             text=True,
+            timeout=timeout,
         )
         if result.returncode != 0:
             return False
         if expected is None:
             return True
-        return _normalized_image_platform(result.stdout.strip()) == expected
+        actual = _normalized_image_platform(result.stdout.strip())
+        return actual is not None and actual[:len(expected)] == expected
     except Exception:
         return False
 
 
-def _normalized_image_platform(value: str) -> tuple[str, str] | None:
+def _normalized_image_platform(value: str) -> tuple[str, ...] | None:
     parts = value.strip().lower().split("/")
     if len(parts) < 2 or not parts[0] or not parts[1]:
         return None
@@ -251,7 +247,8 @@ def _normalized_image_platform(value: str) -> tuple[str, str] | None:
         "x64": "amd64",
         "aarch64": "arm64",
     }
-    return parts[0], aliases.get(parts[1], parts[1])
+    base = (parts[0], aliases.get(parts[1], parts[1]))
+    return (*base, parts[2]) if len(parts) > 2 and parts[2] else base
 
 
 def run_container(

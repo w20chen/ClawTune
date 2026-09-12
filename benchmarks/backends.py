@@ -125,7 +125,8 @@ class TerminalBackend:
                 "volumes": ["${T_BENCH_TASK_LOGS_PATH}:${T_BENCH_CONTAINER_LOGS_PATH}",
                             "${T_BENCH_TASK_AGENT_LOGS_PATH}:${T_BENCH_CONTAINER_AGENT_LOGS_PATH}"],
             }}}), encoding="utf-8")
-        self.command = ["docker", "compose", "-p", self.project, "-f", str(compose)]
+        from .compose import compose_argv
+        self.command = [*compose_argv(timeout=self._remaining(30)), "-p", self.project, "-f", str(compose)]
         self.env = dict(os.environ)
         logs = run_dir / "terminal-logs" / task.directory_name
         logs.mkdir(parents=True)

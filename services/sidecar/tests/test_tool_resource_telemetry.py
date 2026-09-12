@@ -36,6 +36,23 @@ from tool_resource.telemetry import (
 from tool_resource.mvdan_client import MvdanClientError
 
 
+def test_argv_capture_covers_glob_expansion_and_keeps_old_cap_markers():
+    count = 25
+    assert telemetry_module.MAX_ARGS >= count
+    assert f"#define MAX_ARGS {telemetry_module.MAX_ARGS}" in BPF_PROGRAM
+    events = [{"type": "exec_arg", "host_pid": 7, "exec_seq": 9,
+               "arg_index": i, "arg": f"arg-{i}"} for i in range(count)]
+    words, flags = telemetry_module._captured_argv(events)
+    assert words[(7, 9)] == {i: f"arg-{i}" for i in range(count)}
+    assert flags.get((7, 9), 0) == 0
+    # Both old raw traces and new over-limit executions must stay incomplete.
+    for limit in (16, telemetry_module.MAX_ARGS):
+        capped = events[:min(limit, count)] + [{"type": "exec_arg", "host_pid": 7,
+                  "exec_seq": 9, "arg_index": limit, "arg_flags": telemetry_module.ARG_FLAG_ARGV_CAPPED}]
+        _, flags = telemetry_module._captured_argv(capped)
+        assert flags[(7, 9)] & (1 << telemetry_module.MAX_ARGS)
+
+
 class _FakeBpfMap:
     def __init__(self) -> None:
         self.values: dict[int, object] = {}

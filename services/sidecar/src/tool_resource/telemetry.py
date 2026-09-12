@@ -270,7 +270,10 @@ SAMPLE_PERIOD_NS = 10_000_000  # ~10 ms CPU-time per perf callback
 WINDOW_NS = 500_000_000  # 500 ms wall label window (resource_timeline semantics)
 ALIGN_BIN_NS = 20_000_000  # 20 ms aligned bins for RSS summation
 SENTINEL = 2**64 - 1
-MAX_ARGS = 16
+# Bounded argv capture must cover ordinary glob expansion (the observed grep
+# case has argc=25). Larger calls still carry ARG_FLAG_ARGV_CAPPED and remain
+# ineligible for semantic learning; never treat a prefix as complete evidence.
+MAX_ARGS = 64
 ARG_BYTES = 512
 MAX_ARG_CHUNKS = 8
 MAX_ARG_WORD_BYTES = (ARG_BYTES - 1) * MAX_ARG_CHUNKS
@@ -316,7 +319,7 @@ BPF_PROGRAM = r"""
 #define TYPE_EXEC_META 7
 #define TYPE_BPRM_META 8
 #define TYPE_INTERP_META 9
-#define MAX_ARGS 16
+#define MAX_ARGS 64
 #define ARG_BYTES 512
 #define MAX_ARG_CHUNKS 8
 #define ARG_FLAG_TRUNCATED 1
@@ -1501,7 +1504,9 @@ def _captured_argv(
         key = (int(event["host_pid"]), int(event["exec_seq"]))
         index = int(event["arg_index"])
         event_flags = int(event.get("arg_flags", 0))
-        if index == MAX_ARGS and event_flags & ARG_FLAG_ARGV_CAPPED:
+        # Older recordings put this marker at their own capture limit (16).
+        # The marker, not its index, is authoritative about incompleteness.
+        if event_flags & ARG_FLAG_ARGV_CAPPED:
             capture_flags[key] = capture_flags.get(key, 0) | (1 << MAX_ARGS)
             continue
         if index >= MAX_ARGS:

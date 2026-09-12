@@ -8,6 +8,50 @@ const labels: Record<LoadTarget, string> = {
   cpu_peak_cores: "CPU peak", memory_peak_rss_bytes: "Peak RSS",
 };
 const clean = (value: string): string => value.replace(/[\x00-\x1f\x7f]/g, " ");
+
+const timeEdges = [100, 500, 2000, 10000];
+const timeRanges = ["[0,100ms)", "[100,500ms)", "[500ms,2s)", "[2,10s)", "[10s,+inf)"];
+function bucket(id: number | null | undefined): string {
+  return id != null && Number.isInteger(id) && id >= 0 && id < timeRanges.length
+    ? `#${id} ${timeRanges[id]}` : "unavailable";
+}
+function pointBucket(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "unavailable";
+  const id = timeEdges.findIndex(edge => ms < edge);
+  return bucket(id < 0 ? timeEdges.length : id);
+}
+function modalBucket(estimate: LoadEstimate | undefined): string {
+  if (estimate?.status !== "available") return "unavailable";
+  const {edges, probabilities} = estimate.buckets;
+  if (edges.length !== timeEdges.length || edges.some((v, i) => v !== timeEdges[i]) ||
+      !probabilities || probabilities.length !== timeRanges.length ||
+      probabilities.some(v => !Number.isFinite(v) || v < 0) || !probabilities.some(v => v > 0)) return "unavailable";
+  const max = Math.max(...probabilities);
+  return probabilities.flatMap((p, i) => p === max ? [bucket(i)] : []).join(" / ");
+}
+
+/** Display each baseline's scope; never sum clause point estimates into a call prediction. */
+export function formatTimeBuckets(prediction: ToolDecision["prediction"], callId: string): string[] {
+  const lines = [`Time buckets | ${clean(callId)}`, `${"Baseline".padEnd(26)} ${"Scope".padEnd(10)} Bucket`];
+  const row = (name: string, scope: string, value: string): void => {
+    lines.push(`${name.padEnd(26)} ${scope.padEnd(10)} ${value}`);
+  };
+  for (const backend of ["runtime", "trie", "lattice"] as const) {
+    row(`${backend} (mode)`, "call", modalBucket(prediction.diagnostics?.backends[backend]?.targets.duration_ms));
+  }
+  const resource = prediction.tool_resource;
+  row("clause_latency_bucket", "command", bucket(resource?.prediction?.bucket_id));
+  row("runtime (p90)", "call", pointBucket(resource?.continuous_predictions?.latency_ms?.conditional_p90));
+  const clauses = resource?.lattice_time_predictions ?? [];
+  for (const algorithm of ["shrinkage", "loso", "max_cardinality"] as const) {
+    if (!clauses.length) row(`lattice_${algorithm}`, "clause", "unavailable");
+    for (const clause of clauses) {
+      const value = clause.predictions.find(p => p.algorithm === algorithm)?.prediction_ms;
+      row(`lattice_${algorithm}`, `clause ${clause.clause_index}`, pointBucket(value));
+    }
+  }
+  return lines;
+}
 const number = (value: number | null, scale = 1): string =>
   value === null ? "-" : Number((value / scale).toPrecision(6)).toString();
 
