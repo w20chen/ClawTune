@@ -7,3 +7,4 @@ This file records checks that still require a suitable environment. Usage and co
 - Terminal tasks requiring fresh image builds: rerun the documented live command after installing compatible Compose/Buildx plugins. The existing kunpeng versions could not build through Compose; cached-image execution does not validate this path.
 - `python tools/validate_pmu.py --require-reliable --concurrency 8 --max-active 8 --high-concurrency 64 --benchmark-count 40 --output .runtime/validation/pmu.json`: the full high-concurrency matrix still requires target hardware validation; small-scale checks do not establish these limits.
 - The Ubuntu GitHub Actions workflow requires a remote CI run; local Windows checks are not equivalent.
+- `ssh kunpeng 'git -C <checkout> rev-parse HEAD'`: remote checkout verification is pending because SSH timed out. The linked upstream snapshots do not establish existing-run provenance.

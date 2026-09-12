@@ -58,6 +58,18 @@ The external root is `$AGENT_TEST_BENCH_ROOT`, defaulting to the sibling `../age
 
 These are lookup conventions. Setup does not download complete benchmarks.
 
+### Upstream sources and versions
+
+| Benchmark | Version / source snapshot | Input used by ClawTune |
+| --- | --- | --- |
+| SWE-Rebench | [Hugging Face, revision `89cdfba`](https://huggingface.co/datasets/nebius/SWE-rebench/tree/89cdfbab4ab1bd8f5a658bb212d1b63624f4f881) | `nebius/SWE-rebench`, `filtered` split; dataset-provided task images |
+| SWE-bench Verified | [Hugging Face, revision `c104f84`](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified/tree/c104f840cc67f8b6eec6f759ebc8b2693d585d4a) | Verified edition, `test` split (500 tasks) |
+| Deep Research Bench | [Hugging Face, revision `f7d27cd`](https://huggingface.co/datasets/muset-ai/DeepResearch-Bench-Dataset/tree/f7d27cdd3930dd1eaf67a217821e616cc62e9f8e) | `generated_reports/openai-deepresearch.jsonl`; questions are agent inputs, reports are references only |
+| BFCL | [Gorilla BFCL v4, commit `6ea5797`](https://github.com/ShishirPatil/gorilla/tree/6ea57973c7a6097fd7c5915698c54c17c5b1b6c8/berkeley-function-call-leaderboard) | Selected executable categories listed [below](#bfcl), not the complete BFCL suite |
+| Terminal Bench | [Terminal-Bench 1 repository, commit `d28711d`](https://github.com/harbor-framework/terminal-bench-1/tree/d28711d0da2675d0bb1d56de45ae5df6082438a3/original-tasks) | Legacy `task.yaml` tasks in `original-tasks`; not Terminal-Bench 2.0 / Harbor `task.toml` |
+
+These links identify exact reference snapshots, not automatic version pins or the provenance of every existing run. SWE-Rebench and Research discovery currently fetch the upstream default revision; retain the exported task file and use `--dataset` to repeat a selection. For Git sources, obtain the linked commit before preparing tasks and retain `git rev-parse HEAD` with your experiment inputs. The Terminal directory is a repository task collection, not a pinned `terminal-bench-core` leaderboard release.
+
 Optional **image preparation** reduces startup waiting without changing benchmark execution or configuration:
 
 - Install optional dependencies: `bash scripts/setup/benchmark_cache_dependencies.sh`.
@@ -95,7 +107,7 @@ Uses the same repository fields with a separate dataset identity. Export upstrea
 ```bash
 .venv/bin/python -m pip install datasets
 mkdir -p .runtime/datasets
-.venv/bin/python -c "from datasets import load_dataset; load_dataset('princeton-nlp/SWE-bench_Verified', split='test').to_json('.runtime/datasets/verified.jsonl')"
+.venv/bin/python -c "from datasets import load_dataset; load_dataset('princeton-nlp/SWE-bench_Verified', revision='c104f840cc67f8b6eec6f759ebc8b2693d585d4a', split='test').to_json('.runtime/datasets/verified.jsonl')"
 python3 scripts/clawtune.py benchmark --benchmark swe-bench-verified \
   --config configs/benchmark.yaml --dataset .runtime/datasets/verified.jsonl \
   --sample 3 --parallelism 3 --dry-run
@@ -136,7 +148,7 @@ unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
 
 ### BFCL
 
-Prepare the [Gorilla BFCL package](https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard) and its dependencies. If using an existing read-only checkout, copy it before installation so build metadata stays outside the source dataset:
+Prepare the [Gorilla BFCL v4 package](https://github.com/ShishirPatil/gorilla/tree/6ea57973c7a6097fd7c5915698c54c17c5b1b6c8/berkeley-function-call-leaderboard) and its dependencies. If using an existing read-only checkout, copy it before installation so build metadata stays outside the source dataset:
 
 ```bash
 mkdir -p .runtime/dependencies
@@ -155,13 +167,25 @@ Replace `/data/gorilla` with the actual checkout. Use a fresh copy when changing
 
 To run long-context tasks instead, use `--category multi_turn_long_context` in both commands. Install BFCL dependencies into ClawTune's `.venv`; installing them only in another virtual environment does not make them available to the benchmark wrapper.
 
-Function state persists across turns of one task; tasks are independent. Supported cases include base, long-context, and applicable search categories. Memory/prerequisite chains, dependent tasks, dynamic function additions, and AST-only inputs are unsupported. Search categories use `SERPAPI_API_KEY`, not Tavily credentials.
+Function state persists across turns of one task; tasks are independent. **This is a partial BFCL v4 integration.** The scope below follows the upstream [v4 category definitions](https://github.com/ShishirPatil/gorilla/blob/6ea57973c7a6097fd7c5915698c54c17c5b1b6c8/berkeley-function-call-leaderboard/bfcl_eval/constants/category_mapping.py) and ClawTune's executable-task constraints:
+
+| Category (`--category`) | ClawTune support |
+| --- | --- |
+| `multi_turn_base` | Supported; default example |
+| `multi_turn_long_context` | Supported; uses the long-context backend state |
+| `multi_turn_miss_param` | Supported; missing parameters are resolved through the supplied user turns |
+| `web_search_base`, `web_search_no_snippet` | Conditional support through BFCL's search backend; requires `SERPAPI_API_KEY` and network access, not the OpenClaw Tavily tool |
+| `multi_turn_miss_func` | Unsupported: requires adding missing functions between turns |
+| `memory_kv`, `memory_vector`, `memory_rec_sum` | Unsupported: requires prerequisite/dependent-task scheduling |
+| Single-turn `simple_*`, `multiple`, `parallel*`, `irrelevance`; `live_*`; `format_sensitivity` | Outside this integration: no general AST-only execution or official format-sensitivity evaluation |
+
+Use a concrete category name, not upstream collection aliases such as `all`, `multi_turn`, or `agentic`. Support here describes the execution adapter; ClawTune does not compute official BFCL scores or claim full-category model validation.
 
 With `--dataset`, provide processed entries containing `id`, turn-structured `question`, `function` documentation, and `involved_classes`, optionally `initial_config`. Raw category files missing function documentation are not equivalent to loader output.
 
 ### Terminal Bench
 
-Supports [Terminal Bench](https://github.com/laude-institute/terminal-bench) tasks defined by `task.yaml` with Compose or a Dockerfile. Tasks defined by `task.toml` (the Harbor format) are unsupported. Obtain a checkout containing `task.yaml` files and use its actual task directory:
+Supports [Terminal-Bench 1 tasks](https://github.com/harbor-framework/terminal-bench-1/tree/d28711d0da2675d0bb1d56de45ae5df6082438a3/original-tasks) defined by `task.yaml` with Compose or a Dockerfile. Tasks defined by `task.toml` (the Harbor format) are unsupported. Obtain a checkout containing `task.yaml` files and use its actual task directory:
 
 ```bash
 python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
