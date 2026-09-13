@@ -184,18 +184,23 @@ With `--dataset`, provide processed entries containing `id`, turn-structured `qu
 
 ### Terminal Bench
 
-Supports [Terminal-Bench 1 tasks](https://github.com/harbor-framework/terminal-bench-1/tree/d28711d0da2675d0bb1d56de45ae5df6082438a3/original-tasks) defined by `task.yaml` with Compose or a Dockerfile. Tasks defined by `task.toml` (the Harbor format) are unsupported. Obtain a checkout containing `task.yaml` files and use its actual task directory:
+Supports [Terminal-Bench 1 tasks](https://github.com/harbor-framework/terminal-bench-1/tree/d28711d0da2675d0bb1d56de45ae5df6082438a3/original-tasks) defined by `task.yaml` with Compose or a Dockerfile. Tasks defined by `task.toml` (the Harbor format) are unsupported. Obtain the pinned task checkout outside your run outputs, then use its `original-tasks` directory:
 
 ```bash
+mkdir -p .runtime/datasets
+git clone --no-checkout --depth 1 https://github.com/harbor-framework/terminal-bench-1.git .runtime/datasets/terminal-bench-1
+git -C .runtime/datasets/terminal-bench-1 fetch --depth 1 origin d28711d0da2675d0bb1d56de45ae5df6082438a3
+git -C .runtime/datasets/terminal-bench-1 checkout --detach FETCH_HEAD
+git -C .runtime/datasets/terminal-bench-1 rev-parse HEAD
 python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
-  --config configs/benchmark.yaml --dataset /data/terminal-bench/original-tasks \
+  --config configs/benchmark.yaml --dataset .runtime/datasets/terminal-bench-1/original-tasks \
   --sample 3 --parallelism 3 --dry-run
 python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
-  --config configs/benchmark.yaml --dataset /data/terminal-bench/original-tasks \
+  --config configs/benchmark.yaml --dataset .runtime/datasets/terminal-bench-1/original-tasks \
   --sample 3 --parallelism 3
 ```
 
-Replace `/data/terminal-bench/original-tasks` with your task directory containing at least three tasks. A single task directory or `task.yaml` is also accepted. In JSON lists, `task_path` resolves relative to the list file, for example `[{"task_path":"tasks/my-task"}]`.
+If you already have a task checkout, replace `.runtime/datasets/terminal-bench-1/original-tasks` with its directory containing at least three tasks. A single task directory or `task.yaml` is also accepted. In JSON lists, `task_path` resolves relative to the list file, for example `[{"task_path":"tasks/my-task"}]`.
 
 Setup installs a matched Compose/Buildx pair into the invoking user's Docker plugin directory. The wrapper preserves that Docker configuration during elevation. `python3 scripts/clawtune.py check` tests an actual Compose build; a benchmark dry-run only validates task selection.
 
@@ -228,6 +233,39 @@ python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
 ```
 
 `--output` must name a new directory outside datasets and immutable priors. `--config <file>` selects another configuration. Initialization and state ownership are described once in [Output and persistent state](getting-started.md#3-output-and-persistent-state).
+
+To run the first 30 SWE-Rebench tasks followed by the first 30 Terminal Bench tasks in the background, use the dataset checkout above. Each stage runs at most eight tasks concurrently; the stages run sequentially so total task concurrency stays at eight. The online model configuration described in section 1 is required. Background execution also needs sudo configured for noninteractive use; `sudo -n true` must succeed before starting.
+
+```bash
+sudo -n true
+mkdir -p .runtime/benchmarks
+RUN_ROOT="$(mktemp -d "$PWD/.runtime/benchmarks/pair-XXXXXXXX")"
+.venv/bin/python -m swe_rebench.discover --sample 30 --out "$RUN_ROOT/swe-tasks.json"
+python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
+  --config configs/benchmark.yaml --dataset "$RUN_ROOT/swe-tasks.json" \
+  --sample 30 --parallelism 8 --dry-run
+python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
+  --config configs/benchmark.yaml --dataset .runtime/datasets/terminal-bench-1/original-tasks \
+  --sample 30 --parallelism 8 --dry-run
+nohup bash -c '
+  set -u
+  cd "$1"
+  run_root="$2"
+  python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
+    --config configs/benchmark.yaml --dataset "$run_root/swe-tasks.json" \
+    --sample 30 --parallelism 8 --output "$run_root/swe"
+  swe_status=$?
+  python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
+    --config configs/benchmark.yaml --dataset .runtime/datasets/terminal-bench-1/original-tasks \
+    --sample 30 --parallelism 8 --output "$run_root/terminal"
+  terminal_status=$?
+  printf "swe_exit=%s terminal_exit=%s\n" "$swe_status" "$terminal_status" > "$run_root/exit-status.txt"
+' bash "$PWD" "$RUN_ROOT" > "$RUN_ROOT/nohup.log" 2>&1 < /dev/null &
+echo $! > "$RUN_ROOT/pid"
+printf 'Run directory: %s\n' "$RUN_ROOT"
+```
+
+`nohup.log` contains live output. Each stage writes its `run.json` and traces under `$RUN_ROOT/swe` or `$RUN_ROOT/terminal`; `exit-status.txt` appears after both stages finish. If the SWE-Rebench stage reports failures, the Terminal Bench stage still runs.
 
 | Option | Meaning |
 | --- | --- |
