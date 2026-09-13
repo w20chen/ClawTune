@@ -172,7 +172,15 @@ class RealtimeToolMonitor:
         # subtracted.  Rebase the baseline to the first timeline sample that
         # shares the end snapshot's source; if none exists, fall back to an
         # empty baseline so the deltas read as unavailable instead of garbage.
-        if start.source != end.source:
+        scope_changed = active is not None and _counter_scope(active.request.resource_scope) != _counter_scope(completion_scope)
+        if scope_changed:
+            # Two cgroups (or two PIDs) share a source name but not a counter
+            # epoch. No bind_scope established a baseline for this new target.
+            timeline = [_timeline_point(end)]
+            snapshot_count = 1
+            rss_bytes_peak = end.rss_bytes
+            timeline_truncated = False
+        if scope_changed or start.source != end.source:
             rebased_point = _first_timeline_point_of_source(
                 timeline, end.source, before=end.captured_at
             )
@@ -180,6 +188,7 @@ class RealtimeToolMonitor:
                 start = _snapshot_from_point(
                     rebased_point, target_pid=end.target_pid
                 )
+
             else:
                 start = _snapshot_from_point(
                     {
@@ -197,6 +206,10 @@ class RealtimeToolMonitor:
                     },
                     target_pid=end.target_pid,
                 )
+
+            timeline = [point for point in timeline if point.get("source") == end.source]
+            rss_bytes_peak = max((point["rss_bytes"] for point in timeline
+                                  if point.get("rss_bytes") is not None), default=None)
 
         wall_started_at, wall_ended_at = _wall_times_from_duration(
             start.captured_at,
@@ -480,6 +493,14 @@ def _rate(delta: float | int | None, duration_s: float | None) -> float | None:
     if delta is None or duration_s is None or duration_s <= 0:
         return None
     return max(0.0, float(delta) / duration_s)
+
+
+def _counter_scope(scope: ResourceScope | None) -> tuple[Any, ...] | None:
+    if scope is None:
+        return None
+    if scope.kind == "cgroup-v2" and scope.attribution_source != "trusted-execution-root-pid":
+        return ("cgroup-v2", scope.cgroup_path)
+    return ("pid", scope.root_pid or scope.pid, scope.root_starttime_ticks, scope.process_start_time)
 
 
 def _net_window_delta(

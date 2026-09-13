@@ -392,7 +392,8 @@ def test_trusted_exec_pid_binding_rebases_shared_cgroup_baseline() -> None:
     assert sample.rss_bytes_peak == 8192
 
 
-def test_complete_cross_source_guard_emits_none_not_garbage() -> None:
+@pytest.mark.parametrize("same_source", [False, True])
+def test_complete_cross_source_guard_emits_none_not_garbage(same_source: bool) -> None:
     # No bind_scope ran: the baseline stays on the container cgroup while the
     # completion resolves to a per-pid scope.  complete() must not subtract the
     # foreign cgroup baseline; it should emit None deltas instead of 0.0.
@@ -407,10 +408,10 @@ def test_complete_cross_source_guard_emits_none_not_garbage() -> None:
             ),
             _snapshot(
                 captured_at=40.3,
-                cpu_s=1.2,
+                cpu_s=380000 if same_source else 1.2,
                 rss=8192,
                 available=True,
-                source="psutil-process-tree",
+                source="cgroup-v2" if same_source else "psutil-process-tree",
             ),
         ]
     )
@@ -429,11 +430,12 @@ def test_complete_cross_source_guard_emits_none_not_garbage() -> None:
         "unknown",
     )
     pid_scope = ResourceScope(
-        kind="pid",
+        kind="cgroup-v2" if same_source else "pid",
+        cgroup_path="/sys/fs/cgroup/other-runtime" if same_source else None,
         pid=123,
         root_pid=123,
         source="clawtune-sidecar-host-derived",
-        attribution_source="trusted-execution-root-pid",
+        attribution_source="shared-runtime-process" if same_source else "trusted-execution-root-pid",
     )
 
     sample = monitor.complete(
@@ -460,7 +462,7 @@ def test_complete_cross_source_guard_emits_none_not_garbage() -> None:
         )
     )
 
-    assert sample.monitor_source == "psutil-process-tree"
+    assert sample.monitor_source == ("cgroup-v2" if same_source else "psutil-process-tree")
     assert sample.cpu_time_delta_s is None
     assert sample.rss_bytes_before is None
     assert sample.rss_bytes_after == 8192
