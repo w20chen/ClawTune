@@ -1283,9 +1283,8 @@ def test_shared_sidecar_trace_snapshot_survives_drain_failure(
 
     task_label = task.instance_id.replace("/", "_").replace(":", "_")
     destination = trace_dir / f"{task_label}__{source.name}"
-    assert destination.read_bytes() == (
-        b'{"schema_version":6,"record_type":"trace_metadata"}\n'
-    )
+    assert not destination.exists()
+    assert source.read_bytes().startswith(b'{"schema_version":6,"record_type":"trace_metadata"}\n')
     assert deleted == [(19090, runtime_id)]
 
 
@@ -1350,9 +1349,10 @@ def test_collect_runtime_ebpf_artifacts_copies_only_referenced_clause_files(
     artifact_dir = trace_dir / "tool-resource"
     assert [path.name for path in copied] == ["exec-good.json"]
     assert (
-        json.loads((artifact_dir / "exec-good.json").read_text(encoding="utf-8"))
+        json.loads(copied[0].read_text(encoding="utf-8"))
         == clause
     )
+    assert not artifact_dir.exists()
     # Corrupt payloads, non-clause payloads, and missing sources are skipped.
     for name in ("exec-corrupt.json", "exec-missing.json", "exec-nonclause.json"):
         assert not (artifact_dir / name).exists()
@@ -1485,10 +1485,12 @@ def test_shared_sidecar_ebpf_artifacts_collected_into_task_trace(
 
     assert result.exit_code == 0
     collected = trace_dir / "tool-resource" / "exec-abc123.json"
-    assert json.loads(collected.read_text(encoding="utf-8")) == artifact
+    assert not collected.exists()
+    assert json.loads((shared_kb_dir / "exec-abc123.json").read_text(encoding="utf-8")) == artifact
     assert not (trace_dir / "tool-resource" / "clause-resource-kb.json").exists()
     task_label = task.instance_id.replace("/", "_").replace(":", "_")
-    assert (trace_dir / f"{task_label}__{source.name}").exists()
+    assert not (trace_dir / f"{task_label}__{source.name}").exists()
+    assert source.exists()
 
 
 def test_export_traces_does_not_double_prefix_case_labeled_traces(
@@ -2831,7 +2833,7 @@ def test_host_agent_cleanup_does_not_wait_for_inherited_output(monkeypatch, tmp_
         )
         assert time.monotonic() - start < 3
         assert result == (124 if timed_out else 0)
-        assert "output before detached child" in (folder / "agent-stdout.txt").read_text()
+        assert not (folder / "agent-stdout.txt").exists()
 
     with ThreadPoolExecutor(max_workers=parallelism) as executor:
         list(executor.map(run, range(parallelism)))

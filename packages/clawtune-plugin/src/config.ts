@@ -154,7 +154,7 @@ function envOverrides(): Partial<PluginConfig> {
   setString(output, "repo", clawtuneEnv("REPO"));
   const trace: Record<string, unknown> = {};
   const traceDir = clawtuneEnv("PLUGIN_TRACE_DIR");
-  if (traceDir !== undefined && traceDir.length > 0) trace.trace_dir = traceDir;
+  if (traceDir !== undefined) trace.trace_dir = traceDir;
   if (Object.keys(trace).length > 0) {
     (output as Record<string, unknown>).trace = trace;
   }

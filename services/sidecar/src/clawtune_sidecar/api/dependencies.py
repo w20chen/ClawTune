@@ -166,6 +166,7 @@ def build_state(config: SidecarConfig | None = None) -> AppState:
         topology=topology,
         trace_writer=AgentTestBenchTraceWriter(
             cfg.trace_dir,
+            runtime_paths=cfg.trace_runtime_paths,
             max_messages_bytes=cfg.trace_max_messages_bytes,
             default_repo=cfg.tool_resource_repo,
         ),

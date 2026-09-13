@@ -1258,6 +1258,19 @@ def _new_cgroup(tag: str) -> Path:
     return cg
 
 
+def _wait_for_lifecycle_maps(bpf: Any, timeout_s: float = 2.0) -> dict[str, int]:
+    # waitpid confirms exit, but sched_process_free follows deferred task_struct
+    # release. Keep the probes attached until that release, with a strict bound.
+    # Never delete entries here: a persistent leak must still fail preflight.
+    deadline = time.monotonic() + timeout_s
+    while True:
+        entries = {name: sum(1 for _ in bpf[name].items())
+                   for name in ("current_seq", "pending_seq")}
+        if not any(entries.values()) or time.monotonic() >= deadline:
+            return entries
+        time.sleep(0.02)
+
+
 def _rmdir_with_retry(cg: Path, attempts: int = 25, delay_s: float = 0.02) -> None:
     """Remove an emptied cgroup, retrying transient EBUSY; never hide failure.
 
@@ -1385,10 +1398,7 @@ def collect_case(command: str, tag: str, *, marker: str = "") -> RawRun:
     usage_delta = _read_usage_usec(cg) - usage_before
     loss_counts = _loss_counts(bpf)
     perf_count = bpf["perf_sample_count"][ctypes.c_int(0)].value
-    lifecycle_map_entries = {
-        name: sum(1 for _ in bpf[name].items())
-        for name in ("current_seq", "pending_seq")
-    }
+    lifecycle_map_entries = _wait_for_lifecycle_maps(bpf)
     quota = observed_quota_cores(cg)
     bpf.detach_perf_event(ev_type=PerfType.SOFTWARE, ev_config=PerfSWConfig.CPU_CLOCK)
     bpf.cleanup()

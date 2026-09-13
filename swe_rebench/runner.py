@@ -207,6 +207,7 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         "shared_sandbox_tool_span_ends": 0,
         "attributed_tool_span_ends": 0,
         "resource_sampled_tool_span_ends": 0,
+        "launcher_resource_sampled_tool_span_ends": 0,
         "cgroup_sampled_tool_span_ends": 0,
         "failed_tool_span_ends": 0,
         "invalid_coverage_ratio_span_ends": 0,
@@ -349,6 +350,8 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                     and resources["resource_timeline"]
                 ):
                     report["resource_sampled_tool_span_ends"] += 1
+                    if _nested_get(record, ("execution", "mode")) == "launcher":
+                        report["launcher_resource_sampled_tool_span_ends"] += 1
                     if resources.get("monitor_source") == "cgroup-v2":
                         report["cgroup_sampled_tool_span_ends"] += 1
                 if resources.get("scope") == "cgroup":
@@ -645,6 +648,10 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         int(item.get("resource_sampled_tool_span_ends", 0))
         for item in trace_inspection
     )
+    launcher_resource_sampled_tool_span_ends = sum(
+        int(item.get("launcher_resource_sampled_tool_span_ends", 0))
+        for item in trace_inspection
+    )
     cgroup_sampled_tool_span_ends = sum(
         int(item.get("cgroup_sampled_tool_span_ends", 0))
         for item in trace_inspection
@@ -810,6 +817,7 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "attributed_tool_span_ends": attributed_tool_span_ends,
         "resource_sampled_tool_span_ends": resource_sampled_tool_span_ends,
+        "launcher_resource_sampled_tool_span_ends": launcher_resource_sampled_tool_span_ends,
         "cgroup_sampled_tool_span_ends": cgroup_sampled_tool_span_ends,
         "cgroup_tool_span_ends": cgroup_tool_span_ends,
         "docker_exec_pid_tool_span_ends": docker_exec_pid_tool_span_ends,
@@ -1037,7 +1045,22 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
             )
         ):
             artifact_dir = trace_dir
-    for path in sorted(artifact_dir.glob("*.json")):
+    sources: list[tuple[Path, dict | None]] = []
+    for trace_file in sorted(trace_dir.glob("*.jsonl")):
+        for line in trace_file.read_text(encoding="utf-8").splitlines():
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (record.get("record_type") == "trace_event"
+                    and record.get("event_type") == "execution_telemetry"
+                    and isinstance(record.get("artifact"), dict)):
+                sources.append((Path(str(record["execution_id"]) + ".json"), record["artifact"]))
+    sources.extend((path, None) for path in sorted(artifact_dir.glob("*.json")))
+    seen_artifacts: set[str] = set()
+    for path, inline_artifact in sources:
+        if path.stem in seen_artifacts:
+            continue
         if path.name in {
             "clause-resource-kb.json",
             "clause-kb.json",
@@ -1046,13 +1069,14 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
             continue
         report["json_file_count"] += 1
         try:
-            artifact = json.loads(path.read_text(encoding="utf-8"))
+            artifact = inline_artifact if inline_artifact is not None else json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             report["warnings"].append(f"{path.name}: cannot parse artifact: {exc}")
             continue
         if not isinstance(artifact, dict) or artifact.get("mode") != "clause":
             report["warnings"].append(f"{path.name}: not a clause telemetry artifact")
             continue
+        seen_artifacts.add(path.stem)
         report["artifact_count"] += 1
         envelope_issues = _ebpf_artifact_envelope_issues(artifact)
         if not envelope_issues:
@@ -1468,17 +1492,17 @@ def _required_telemetry_error(
     if not isinstance(artifacts, dict):
         return "required resource telemetry audit is missing"
     tool_spans = int(resources.get("tool_span_ends", 0))
-    sampled_spans = int(resources.get("resource_sampled_tool_span_ends", 0))
     launcher_spans = int(resources.get("launcher_tool_span_ends", 0))
+    sampled_launcher_spans = int(resources.get("launcher_resource_sampled_tool_span_ends", 0))
     launcher_cgroup_spans = int(resources.get("launcher_cgroup_tool_span_ends", 0))
     launcher_attributed_spans = int(resources.get("launcher_attributed_tool_span_ends", 0))
     unattributed_launcher_spans = int(resources.get("unattributed_launcher_tool_span_ends", 0))
     if tool_spans == 0:
         return "required resource telemetry found no tool spans"
-    if sampled_spans != tool_spans:
+    if sampled_launcher_spans != launcher_spans:
         return (
             "required resource telemetry is incomplete: "
-            f"sampled {sampled_spans}/{tool_spans} tool spans"
+            f"sampled {sampled_launcher_spans}/{launcher_spans} launcher tool spans"
         )
     if launcher_cgroup_spans != launcher_spans:
         # Per-PID process-tree attribution (trusted-execution-root-pid /
@@ -2042,7 +2066,7 @@ def run_batch(
         _log("Task images will be checked/pulled inside each task timeout")
 
     if normalize_runtime_mode(config.runtime.mode) == HOST_OPENCLAW_MODE:
-        from swe_rebench.host_openclaw import _free_port, _start_sidecar
+        from swe_rebench.host_openclaw import _free_port, _start_sidecar, _runtime_id, _task_workspace
 
         shared_sidecar_port = _free_port()
         shared_sidecar_trace_dir = shared_kb_dir / "_sidecar"
@@ -2063,6 +2087,8 @@ def run_batch(
             repo="swe-rebench-batch",
             artifact_dir=shared_kb_dir,
             sandbox_container_prefix="",
+            trace_paths={_runtime_id(_task_workspace(config, task)): _task_trace_dir(config, task) / "trace.jsonl"
+                         for task in tasks},
         )
         _log(f"Batch sidecar endpoint: http://127.0.0.1:{shared_sidecar_port}")
 

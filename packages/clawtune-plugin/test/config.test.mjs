@@ -177,3 +177,15 @@ test("loadConfig does not treat sidecar trace dir env as plugin trace output", (
     }
   }
 });
+
+
+test("empty plugin trace override disables a configured duplicate writer", () => {
+  const previous = process.env.CLAWTUNE_PLUGIN_TRACE_DIR;
+  process.env.CLAWTUNE_PLUGIN_TRACE_DIR = "";
+  try {
+    assert.equal(loadConfig({trace: {trace_dir: "/duplicate"}}).trace.trace_dir, "");
+  } finally {
+    if (previous === undefined) delete process.env.CLAWTUNE_PLUGIN_TRACE_DIR;
+    else process.env.CLAWTUNE_PLUGIN_TRACE_DIR = previous;
+  }
+});

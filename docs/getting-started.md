@@ -13,7 +13,7 @@ sudo apt-get update
 sudo apt-get install -y git curl python3 python3-venv python3-pip
 ```
 
-On openEuler, use the corresponding distribution packages through dnf. Install [Docker Engine](https://docs.docker.com/engine/install/) for the host distribution; Terminal Bench also requires Compose v2. The [OpenClaw installer](https://docs.openclaw.ai/install) can provision Node.js and skip onboarding:
+On openEuler, use the corresponding distribution packages through dnf. Install [Docker Engine](https://docs.docker.com/engine/install/) for the host distribution; Setup installs the Compose and Buildx CLI plugins. The [OpenClaw installer](https://docs.openclaw.ai/install) can provision Node.js and skip onboarding:
 
 ```bash
 curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard
@@ -28,12 +28,11 @@ python3 --version
 node --version
 npm --version
 openclaw --version
-docker info
-docker compose version
+sudo docker info
 stat -fc %T /sys/fs/cgroup
 ```
 
-The last command should print `cgroup2fs`. Docker must reach a running daemon.
+The last command should print `cgroup2fs`. Docker must reach a running daemon. These are host prerequisites; setup manages the project dependencies and runtime configuration. Setup needs network access to package registries and release downloads, and your account must be allowed to use sudo.
 
 Obtain the source and install:
 
@@ -44,15 +43,15 @@ python3 scripts/clawtune.py setup
 python3 scripts/clawtune.py doctor
 ```
 
-For an existing checkout, enter that directory instead. Do not sudo the entire setup command. It elevates individual operations, selects a system Python with BCC, creates `.venv`, installs collector dependencies, builds and enables the plugin, and creates `.env` and `configs/benchmark.yaml`. Existing configuration and credentials are preserved.
+For an existing checkout, enter that directory instead. Do not sudo the entire setup command. It elevates individual operations, selects a system Python with BCC, creates `.venv`, installs collector dependencies, builds and enables the plugin, and creates `.env` and `configs/benchmark.yaml`. Existing configuration and credentials are preserved. Setup installs a pinned Compose/Buildx pair (backing up replaced user plugin binaries), then tests an actual image build with the same Docker configuration used after sudo.
 
 Successful collector validation prints:
 
 ```text
-[ClawTune] Setup and eBPF validation passed; the validation process has exited.
+[ClawTune] Setup, Docker build, and eBPF validation passed; validation processes have exited.
 ```
 
-This refers to the temporary validation process. Installation can finish even if collection validation fails; correct the reported error and rerun:
+Setup returns a failure if required validation fails. Correct the reported error and rerun setup, or recheck an installed environment with:
 
 ```bash
 python3 scripts/clawtune.py check
@@ -60,13 +59,13 @@ python3 scripts/clawtune.py check
 
 ### ARM hosts
 
-Setup configures QEMU/binfmt for amd64 task containers. The monitoring service remains native to the host. Verify container execution separately:
+Setup configures QEMU/binfmt for amd64 task containers. The monitoring service remains native to the host. Benchmark startup and `check` restore a missing handler, including after a reboot. To verify container execution separately:
 
 ```bash
 sudo bash scripts/setup/arm_qemu_setup.sh check
 ```
 
-On arm64, repository benchmarks default to `linux/amd64`. To run a research image with native ARM support:
+On arm64, repository benchmarks default to `linux/amd64` when no platform is configured. Set `docker.platform: linux/arm64` in your benchmark YAML for native ARM images, or override it for one shell:
 
 ```bash
 export SWE_REBENCH_DOCKER_PLATFORM=linux/arm64

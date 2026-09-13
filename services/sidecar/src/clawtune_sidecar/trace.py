@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import queue
+import os
 import re
 import time
 import threading
 from dataclasses import replace
+from functools import wraps
 from uuid import uuid4
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,14 +21,13 @@ from clawtune_sidecar.contracts.models import (
     ToolPrediction,
 )
 from clawtune_sidecar.monitoring.tool_runtime import ToolRuntimeSample
-from clawtune_sidecar.monitoring.pmu import write_pmu_profile
 from clawtune_sidecar.identity import (
     correlation_key,
     owner_key,
     owner_prefix_matches,
     owners_compatible,
 )
-from clawtune_sidecar.telemetry.cgroup_resource import write_cgroup_resource
+from clawtune_sidecar.telemetry.cgroup_resource import build_cgroup_resource
 
 
 def _safe_filename(segment: str | None) -> str:
@@ -44,17 +45,23 @@ class _FlushMarker:
     ``{"stored": True}`` acknowledgement durable.
     """
 
-    __slots__ = ("event",)
+    __slots__ = ("event", "version")
 
-    def __init__(self, event: threading.Event) -> None:
+    def __init__(self, event: threading.Event, version: int = 0) -> None:
         self.event = event
+        self.version = version
+
+
+def _locked(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return call
 
 
 class AgentTestBenchTraceWriter:
-    """Per-run trace writer. Creates one JSONL file per run under trace_dir.
-
-    Files are named: {agent_id}_{session_id}_{run_id}.jsonl
-    """
+    """One canonical JSONL per owned runtime; sessions/runs stay in records."""
 
     def __init__(
         self,
@@ -63,17 +70,34 @@ class AgentTestBenchTraceWriter:
         scaffold: str = "openclaw",
         max_messages_bytes: int = 131_072,
         default_repo: str = "openclaw",
+        runtime_paths: dict[str, str] | None = None,
     ) -> None:
         self.trace_dir = trace_dir.resolve()
+        self._runtime_paths: dict[str, Path] = {}
+        if runtime_paths is not None and not isinstance(runtime_paths, dict):
+            raise ValueError("trace runtime paths must be an object")
+        for key, path in (runtime_paths or {}).items():
+            owner = json.loads(key)
+            if not isinstance(owner, list) or len(owner) != 2 or not all(isinstance(v, str) and v for v in owner):
+                raise ValueError("trace route must identify gateway and runtime")
+            target = Path(path).resolve()
+            if target in self._runtime_paths.values():
+                raise ValueError("different runtimes cannot share a task trace")
+            self._runtime_paths[json.dumps(owner, separators=(",", ":"))] = target
         self.scaffold = scaffold
         self._max_messages_bytes = max_messages_bytes
         self._default_repo = default_repo
         self._instance_id = str(uuid4())
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._write_error: Exception | None = None
+        self._closed = False
+        self._queued_version = 0
+        self._flushed_version = 0
         self._model_starts: dict[tuple[str | None, ...], ModelEvent] = {}
         self._tool_starts: dict[tuple[str | None, ...], ToolBeforeRequest] = {}
         self._tool_predictions: dict[tuple[str | None, ...], dict[str, Any]] = {}
         self._tool_resource_telemetry: dict[str, dict[str, Any]] = {}
+        self._telemetry_written: set[str] = set()
         self._recent_proxy_calls: list[dict[str, Any]] = []
         self._proxy_activity: dict[str, int] = {}
         self._seq_counters: dict[tuple[str | None, ...], int] = {}
@@ -91,6 +115,7 @@ class AgentTestBenchTraceWriter:
         self._writer_thread.start()
         self.trace_dir.mkdir(parents=True, exist_ok=True)
 
+    @_locked
     def _file_for_run(
         self,
         gateway_id: str | None,
@@ -99,54 +124,44 @@ class AgentTestBenchTraceWriter:
         session_id: str | None,
         agent_id: str | None,
     ) -> Path | None:
-        """Return the trace file for a run.
-
-        Keys writers by run_id (primary) or session_id (fallback).
-        Uses instance_id only as a last-resort key to prevent data loss,
-        but logs a warning since it can cause cross-run accumulation.
-
-        Returns None when no identifiable key is available at all.
-        """
-        run_key = run_id or session_id
-        if not run_key:
-            # Last resort: instance_id. Log a warning so operators
-            # can detect when the plugin isn't sending run_id/session_id.
-            import logging
-            _log = logging.getLogger(__name__)
-            _log.warning(
-                "trace: no run_id or session_id, falling back to instance_id "
-                "(may cause cross-run accumulation). run_id=%s session_id=%s agent_id=%s",
-                run_id, session_id, agent_id,
-            )
-            run_key = self._instance_id
+        """Resolve the canonical task file independently of session/run changes."""
+        run_key = run_id or session_id or self._instance_id
         runtime_key = runtime_id or "legacy"
-        key = (gateway_id, runtime_id, agent_id, session_id, run_key)
+        # A benchmark runtime owns a task, including all turns, agents and
+        # compaction runs. Preserve those identities in records, not filenames.
+        key = (gateway_id, runtime_id) if runtime_id else (gateway_id, runtime_id, agent_id, session_id, run_key)
         if key in self._files:
             return self._files[key]
-        session = _safe_filename(session_id)
-        run = _safe_filename(run_id)
         # Note: agent_id is included per-record in the JSONL content.
         # It is omitted from the filename because model hooks do not
         # expose agent_id — an OpenClaw limitation.
         identity_digest = _identity_digest(key)
-        filename = (
-            f"{_safe_filename(runtime_key)}__{session}_{run}"
-            f"__{identity_digest}.jsonl"
-        )
-        filepath = self.trace_dir / filename
+        filename = f"{_safe_filename(runtime_key)}__{identity_digest}.jsonl"
+        route_key = json.dumps([gateway_id, runtime_id], separators=(",", ":"))
+        filepath = self._runtime_paths.get(route_key, self.trace_dir / filename)
         self._files[key] = filepath
         return filepath
 
     def _next_seq(self, event: ToolBeforeRequest | ToolCompletedEvent | ModelEvent) -> int:
-        key = (*owner_key(event), event.run_id or self._instance_id)
+        key = (event.gateway_id, event.runtime_id) if event.runtime_id else (*owner_key(event), event.run_id or self._instance_id)
         current = self._seq_counters.get(key, 0)
         current += 1
         self._seq_counters[key] = current
         return current
 
+    @_locked
+    def record_runtime_finalization(self, gateway_id: str, runtime_id: str, payload: dict[str, Any]) -> None:
+        path = self._file_for_run(gateway_id, runtime_id, None, None, None)
+        self._ensure_metadata(path)
+        self._append(path, {"schema_version": 6, "record_type": "trace_event",
+            "event_type": "runtime_finalization", "gateway_id": gateway_id,
+            "runtime_id": runtime_id, "payload": payload})
+
+    @_locked
     def record_tool_started(self, event: ToolBeforeRequest) -> None:
         self._tool_starts[correlation_key(event)] = event
 
+    @_locked
     def record_tool_prediction(
         self,
         event: ToolBeforeRequest,
@@ -156,10 +171,12 @@ class AgentTestBenchTraceWriter:
             prediction.model_dump(mode="json")
         )
 
+    @_locked
     def record_tool_resource_telemetry(
         self,
         execution_id: str | None,
         telemetry: Any,
+        *, gateway_id: str | None = None, runtime_id: str | None = None,
     ) -> None:
         if execution_id is None or telemetry is None:
             return
@@ -175,7 +192,18 @@ class AgentTestBenchTraceWriter:
         else:
             return
         self._tool_resource_telemetry[execution_id] = payload
+        if runtime_id is not None and execution_id not in self._telemetry_written:
+            path = self._file_for_run(gateway_id, runtime_id, None, None, None)
+            self._ensure_metadata(path)
+            self._append(path, {
+                "schema_version": 6, "record_type": "trace_event",
+                "event_type": "execution_telemetry", "gateway_id": gateway_id,
+                "runtime_id": runtime_id, "execution_id": execution_id,
+                "payload": payload, "_artifact_path": payload.get("artifact_path"),
+            })
+            self._telemetry_written.add(execution_id)
 
+    @_locked
     def record_tool(self, event: ToolCompletedEvent, sample: ToolRuntimeSample) -> None:
         start_key, start = self._pop_tool_start(event)
         prediction = self._pop_tool_prediction(event, start_key)
@@ -304,24 +332,13 @@ class AgentTestBenchTraceWriter:
                 "disk_read_bytes_per_s", "disk_write_bytes_per_s", "net_rx_bytes_per_s", "net_tx_bytes_per_s",
             )))
 
-        # Independent per-execution cgroup artifact (cpu/mem/disk/network),
-        # written next to the trace and referenced from the span resources.
-        _cgroup_artifact_path = write_cgroup_resource(
-            self.trace_dir,
-            sample,
-            execution_id=event.execution_id,
-            tool_call_id=event.tool_call_id,
+        # Inline the independent sampler view; it is no longer written to a
+        # second JSON artifact beside the same trace.
+        cgroup_resource = build_cgroup_resource(
+            sample, execution_id=event.execution_id, tool_call_id=event.tool_call_id,
             tool_name=event.tool_name,
             attribution_source=scope.attribution_source if scope is not None else None,
-        )
-        _pmu_artifact_path = None
-        if event.execution_id and isinstance(sample.pmu_profile, dict):
-            _pmu_rel = Path("tool-resource") / (
-                f"pmu-profile-{_safe_filename(event.execution_id)}.json"
-            )
-            if write_pmu_profile(self.trace_dir / _pmu_rel, sample.pmu_profile):
-                _pmu_artifact_path = _pmu_rel.as_posix()
-
+        ).to_dict()
         # span_end
         self._append(filepath, {
             "schema_version": 6,
@@ -370,8 +387,8 @@ class AgentTestBenchTraceWriter:
                 "decision_duration_ns": event.decision_duration_ns,
                 "completion_duration_ns": event.completion_duration_ns,
                 "sidecar_overhead_ns": event.sidecar_overhead_ns,
-                "cgroup_artifact_path": _cgroup_artifact_path,
-                "pmu_artifact_path": _pmu_artifact_path,
+                "cgroup_resource": cgroup_resource,
+
                 "pmu": sample.pmu_profile,
                 "coverage_ratio": _cov_ratio,
                 "coverage_reason": _cov_reason,
@@ -404,6 +421,7 @@ class AgentTestBenchTraceWriter:
             },
         })
 
+    @_locked
     def record_model(self, event: ModelEvent) -> None:
         key = correlation_key(event, event.call_id)
         if event.event_type == "model_call_started":
@@ -449,10 +467,10 @@ class AgentTestBenchTraceWriter:
         status_code = "ok" if event.outcome in ("completed", "ok", "success") else ("error" if event.outcome == "error" else "unknown")
 
         raw_messages = _first_present(
-            None if start is None else start.raw_input,
             proxy_data.get("messages_in"),
+            None if start is None else start.raw_input,
         )
-        messages = _truncate_messages(raw_messages, self._max_messages_bytes)
+        messages = raw_messages if self._runtime_paths else _truncate_messages(raw_messages, self._max_messages_bytes)
 
         filepath = self._file_for_run(
             event.gateway_id,
@@ -480,11 +498,16 @@ class AgentTestBenchTraceWriter:
             "name": event.model or "unknown-model",
             "wall_time_ns": wall_start_ns,
             "monotonic_time_ns": mono_start_ns,
-            "input": {"requested_args": None, "messages": messages},
+            "input": {"requested_args": None, "messages": messages,
+                      "request_options": {k: v for k, v in (proxy_data.get("raw_request") or {}).items()
+                                          if k != "messages"}},
             "execution": {"mode": None, "execution_id": None},
         })
 
-        output_content = _llm_output_content(event.raw_output, proxy_data)
+        output_content = _llm_output_content(
+            _first_present(proxy_data.get("content"), event.raw_output) if self._runtime_paths else event.raw_output,
+            proxy_data,
+        )
 
         self._append(filepath, {
             "schema_version": 6,
@@ -505,7 +528,9 @@ class AgentTestBenchTraceWriter:
             "monotonic_time_ns": mono_end_ns,
             "duration_ns": duration_ns,
             "status": {"code": status_code, "message": None},
-            "output": {"content": output_content},
+            "output": {"content": output_content,
+                       "provider_metadata": _provider_metadata(proxy_data.get("raw_response")),
+                       "proxy": proxy_data.get("proxy")},
             "execution": {"mode": None, "execution_id": None},
             "resources": {
                 "attribution_status": "not_applicable",
@@ -531,6 +556,7 @@ class AgentTestBenchTraceWriter:
                     correlation_key(event, tc_id)
                 ] = span_id
 
+    @_locked
     def record_llm_proxy_call(
         self,
         *,
@@ -600,64 +626,142 @@ class AgentTestBenchTraceWriter:
         with self._lock:
             return self._proxy_activity.get(runtime_id, 0)
 
+    @_locked
     def _ensure_metadata(self, filepath: Path) -> None:
         """Write metadata once per file. Never truncates existing data."""
         key = str(filepath)
         if key in self._metadata_written:
             return
         # Write first, then mark as written — so a failed write can be retried.
-        self._append(filepath, self._metadata_record())
+        if not filepath.exists() or filepath.stat().st_size == 0:
+            self._append(filepath, self._metadata_record())
         self._metadata_written.add(key)
 
+    @_locked
     def _append(self, filepath: Path, record: dict[str, Any]) -> None:
-        """Enqueue a serialised record for asynchronous disk write.
-
-        JSON serialisation runs on the calling thread; the blocking disk
-        write is performed by the dedicated trace-writer thread so that
-        the FastAPI event loop is never blocked on filesystem I/O.
-        """
-        line = json.dumps(record, sort_keys=True, separators=(",", ":"))
-        self._write_queue.put((filepath, line))
+        """Queue records; serialize and write on the dedicated writer thread."""
+        if self._closed:
+            raise RuntimeError("trace writer is closed")
+        self._queued_version += 1
+        self._write_queue.put((filepath, record))
 
     def _writer_loop(self) -> None:
-        """Dedicated thread that drains the write queue to disk."""
-        while True:
-            item = self._write_queue.get()
-            if item is None:  # graceful shutdown sentinel
-                break
-            if isinstance(item, _FlushMarker):
-                item.event.set()
-                continue
-            filepath, line = item
-            try:
-                filepath.parent.mkdir(parents=True, exist_ok=True)
-                with filepath.open("a", encoding="utf-8") as fh:
+        """One buffered handle per task; flush/fsync only at explicit barriers."""
+        handles: dict[Path, Any] = {}
+        dirty: set[Path] = set()
+        def flush_handles() -> None:
+            for path in tuple(dirty):
+                fh = handles[path]
+                try:
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                    dirty.discard(path)
+                except Exception as exc:
+                    self._write_error = exc
+        try:
+            while True:
+                item = self._write_queue.get()
+                if item is None:
+                    flush_handles()
+                    break
+                if isinstance(item, _FlushMarker):
+                    flush_handles()
+                    self._flushed_version = item.version
+                    item.event.set()
+                    continue
+                filepath, record = item
+                try:
+                    record = dict(record)
+                    artifact_path = record.pop("_artifact_path", None)
+                    if artifact_path:
+                        record["artifact"] = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
+                    line = json.dumps(record, sort_keys=True, separators=(",", ":"))
+                    fh = handles.get(filepath)
+                    if fh is None:
+                        filepath.parent.mkdir(parents=True, exist_ok=True)
+                        fh = filepath.open("a", encoding="utf-8", buffering=65536)
+                        handles[filepath] = fh
                     fh.write(line + "\n")
-            except Exception:
-                # Trace persistence is best-effort; a lost span_end is
-                # preferable to a crashed sidecar.
-                pass
+                    dirty.add(filepath)
+                except Exception as exc:
+                    self._write_error = exc
+        finally:
+            for fh in handles.values():
+                try:
+                    fh.close()
+                except Exception as exc:
+                    self._write_error = exc
 
     def flush(self, timeout: float = 10.0) -> bool:
-        """Block until every record enqueued so far is written to disk.
-
-        The write queue is FIFO, so enqueueing a flush marker behind the
-        pending records and waiting for the writer thread to reach it makes
-        the earlier records durable.  Returns ``False`` if the writer thread
-        could not drain within *timeout* seconds.
-        """
-        event = threading.Event()
-        self._write_queue.put(_FlushMarker(event))
-        return event.wait(timeout)
+        """A successful barrier means all preceding records reached storage."""
+        with self._lock:
+            if self._closed:
+                return not self._writer_thread.is_alive() and self._write_error is None
+            if self._flushed_version == self._queued_version:
+                return self._write_error is None
+            event = threading.Event()
+            self._write_queue.put(_FlushMarker(event, self._queued_version))
+        return event.wait(timeout) and self._write_error is None
 
     def close(self) -> None:
-        """Drain pending writes and stop the writer thread."""
-        self._write_queue.put(None)
+        with self._lock:
+            if self._closed:
+                return
+            self.finalize_pending(reason="writer_shutdown")
+            for path in self._runtime_paths.values():
+                self._ensure_metadata(path)
+            self._closed = True
+            self._write_queue.put(None)
         self._writer_thread.join(timeout=10.0)
-        if self._writer_thread.is_alive():
-            # Thread may be stuck on a slow / hung filesystem; it is a
-            # daemon thread so the process can still exit.
-            pass
+        if self._writer_thread.is_alive() or self._write_error is not None:
+            raise RuntimeError("task trace persistence failed") from self._write_error
+
+    @_locked
+    def finalize_pending(self, runtime_id: str | None = None, gateway_id: str | None = None,
+                         *, reason: str, proxy_only: bool = False) -> None:
+        """Retain missing hooks as incomplete records, never invented samples."""
+        for pending, kind in (() if proxy_only else ((self._tool_starts, "tool"), (self._model_starts, "llm"))):
+            for key, event in list(pending.items()):
+                if runtime_id is not None and event.runtime_id != runtime_id:
+                    continue
+                if gateway_id is not None and event.gateway_id != gateway_id:
+                    continue
+                path = self._file_for_run(event.gateway_id, event.runtime_id, event.run_id,
+                                          event.session_id, event.agent_id)
+                self._ensure_metadata(path)
+                self._append(path, {
+                    "schema_version": 6, "record_type": "trace_event",
+                    "event_type": "incomplete_span", "gateway_id": event.gateway_id,
+                    "runtime_id": event.runtime_id, "kind": kind, "reason": reason,
+                    "payload": event.model_dump(mode="json"),
+                    "prediction": self._tool_predictions.pop(key, None) if kind == "tool" else None,
+                })
+                pending.pop(key, None)
+        for record in list(self._recent_proxy_calls):
+            if runtime_id is not None and record.get("runtime_id") != runtime_id:
+                continue
+            owner_runtime = record.get("runtime_id")
+            owner_gateway = gateway_id
+            if owner_gateway is None:
+                matches = [json.loads(key)[0] for key in self._runtime_paths
+                           if json.loads(key)[1] == owner_runtime]
+                if len(matches) == 1:
+                    owner_gateway = matches[0]
+            path = self._file_for_run(owner_gateway, owner_runtime, None, None, None)
+            self._ensure_metadata(path)
+            persisted = dict(record)
+            data = dict(record.get("data") or {})
+            raw_request = data.get("raw_request")
+            if isinstance(raw_request, dict) and "messages" in raw_request:
+                data.pop("messages_in", None)
+            raw_response = data.get("raw_response")
+            if isinstance(raw_response, dict) and raw_response.get("choices"):
+                data.pop("content", None)
+            persisted["data"] = data
+            self._append(path, {"schema_version": 6, "record_type": "trace_event",
+                "event_type": "llm_proxy_unmatched", "gateway_id": owner_gateway,
+                "runtime_id": owner_runtime, "reason": reason, "payload": persisted})
+            self._recent_proxy_calls.remove(record)
 
     def _metadata_record(self) -> dict[str, Any]:
         return {
@@ -714,14 +818,18 @@ class AgentTestBenchTraceWriter:
     def _remember_proxy_call(self, record: dict[str, Any]) -> None:
         self._recent_proxy_calls.append(record)
         if len(self._recent_proxy_calls) > 2_048:
-            del self._recent_proxy_calls[:-2_048]
+            # Persist unmatched captures before evicting correlation state.
+            oldest_runtime = self._recent_proxy_calls[0].get("runtime_id")
+            self.finalize_pending(oldest_runtime, reason="proxy_correlation_capacity", proxy_only=True)
 
+    @_locked
     def release_runtime(
         self,
         runtime_id: str,
         gateway_id: str | None = None,
     ) -> None:
         """Release in-memory routing state after a runtime has drained."""
+        self.finalize_pending(runtime_id, gateway_id, reason="runtime_finished_without_completion_hook")
 
         runtime_files = {
             str(path)
@@ -733,7 +841,6 @@ class AgentTestBenchTraceWriter:
             self._model_starts,
             self._tool_starts,
             self._tool_predictions,
-            self._seq_counters,
             self._files,
             self._tool_parent_map,
         ):
@@ -744,7 +851,8 @@ class AgentTestBenchTraceWriter:
                 and (gateway_id is None or key[0] == gateway_id)
             ]:
                 mapping.pop(key, None)
-        self._metadata_written.difference_update(runtime_files)
+        # The canonical file survives release; do not append a second metadata
+        # header if a late observation resolves to that same file.
         self._recent_proxy_calls = [
             record
             for record in self._recent_proxy_calls
@@ -930,6 +1038,27 @@ def _first_present(*values: Any) -> Any | None:
         if value is not None and value != "":
             return value
     return None
+
+
+def _provider_metadata(response: Any) -> Any:
+    """Keep usage, reasoning and provider fields without repeating output text."""
+    if not isinstance(response, dict):
+        return response
+    result = {key: value for key, value in response.items() if key != "choices"}
+    if isinstance(response.get("choices"), list):
+        choices = []
+        for index, choice in enumerate(response["choices"]):
+            if not isinstance(choice, dict) or index != 0:
+                choices.append(choice)
+                continue
+            item = dict(choice)
+            for field in ("message", "delta"):
+                if isinstance(item.get(field), dict):
+                    item[field] = {key: value for key, value in item[field].items()
+                                   if key not in ("content", "tool_calls")}
+            choices.append(item)
+        result["choices"] = choices
+    return result
 
 
 def _llm_output_content(raw_output: Any | None, proxy_data: dict[str, Any]) -> Any | None:

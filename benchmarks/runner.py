@@ -306,6 +306,8 @@ def run(
             repo=manifest["benchmark"],
             artifact_dir=folder / "kb",
             sandbox_container_prefix="",
+            trace_paths={host._runtime_id(folder / "workspaces" / task.directory_name):
+                         folder / "traces" / task.directory_name / "trace.jsonl" for task in tasks},
         )
         manifest["status"] = "running"
 

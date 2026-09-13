@@ -18,9 +18,13 @@ from typing import Any
 
 
 _SUBPROCESS_EXIT_REPORT_TIMEOUTS_SECONDS = (0.75, 10.0)
-_FORK_EXEC_EXIT_REPORT_TIMEOUTS_SECONDS = (0.75, 0.75, 0.75)
+_FORK_EXEC_EXIT_REPORT_TIMEOUTS_SECONDS = (0.75, 3.0, 10.0)
 _EXIT_REPORT_RETRY_DELAY_SECONDS = 0.05
 _START_REPORT_TIMEOUT_SECONDS = 60.0
+
+
+class _CleanupUnconfirmed(RuntimeError):
+    """Keep the sidecar claim active when payload termination is unconfirmed."""
 
 
 def main() -> None:
@@ -124,6 +128,23 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
         endpoint, "/v2/executions/claim",
         {"execution_id": execution_id, "token": token, "launcher_pid": launcher_pid},
     )
+    try:
+        return _run_forkexec_claimed(endpoint, execution_id, claim, launcher_pid)
+    except _CleanupUnconfirmed:
+        raise
+    except Exception:
+        # The gated child is reaped before a setup error escapes. Close its
+        # sidecar claim even when cgroup setup or /started failed.
+        _post_json_best_effort(
+            endpoint, f"/v2/executions/{execution_id}/exited",
+            {"update_token": str(claim["update_token"]), "exit_code": 125, "signal": None},
+        )
+        raise
+
+
+def _run_forkexec_claimed(
+    endpoint: str, execution_id: str, claim: dict[str, Any], launcher_pid: int,
+) -> int:
     command = str(claim["command"])
     workdir = claim.get("workdir")
     cwd = str(workdir) if isinstance(workdir, str) and workdir else None
@@ -228,7 +249,8 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
             os.close(write_fd)
         except OSError:
             pass
-        _waitpid_nointr(pid)
+        if _waitpid_nointr(pid) is None:
+            raise _CleanupUnconfirmed("forked payload exit unconfirmed")
         if local_cgroup_owned:
             _cleanup_cgroup(cgroup_path)
         raise
@@ -324,6 +346,21 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
         "/v2/executions/claim",
         {"execution_id": execution_id, "token": token, "launcher_pid": launcher_pid},
     )
+    try:
+        return _run_subprocess_claimed(endpoint, execution_id, claim, launcher_pid)
+    except _CleanupUnconfirmed:
+        raise
+    except Exception:
+        _post_json_best_effort(
+            endpoint, f"/v2/executions/{execution_id}/exited",
+            {"update_token": str(claim["update_token"]), "exit_code": 125, "signal": None},
+        )
+        raise
+
+
+def _run_subprocess_claimed(
+    endpoint: str, execution_id: str, claim: dict[str, Any], launcher_pid: int,
+) -> int:
     command = str(claim["command"])
     workdir = claim.get("workdir")
     cwd = str(workdir) if isinstance(workdir, str) and workdir else None
@@ -425,7 +462,7 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
         if release_gate is not None:
             release_gate(False)
             release_gate = None
-        _terminate_child_best_effort(child)
+        _terminate_child_and_confirm(child)
         if cgroup_owned:
             _cleanup_cgroup(cgroup_path)
         raise
@@ -457,11 +494,15 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
         if release_gate is not None:
             release_gate(False)
             release_gate = None
-        _terminate_child_best_effort(child)
+        _terminate_child_and_confirm(child)
         if cgroup_owned:
             _cleanup_cgroup(cgroup_path)
         raise
-    returncode = child.wait()
+    try:
+        returncode = child.wait()
+    except Exception:
+        _terminate_child_and_confirm(child)
+        raise
     exit_code = returncode if returncode >= 0 else None
     term_signal = -returncode if returncode < 0 else None
     _post_json_best_effort(
@@ -969,15 +1010,18 @@ def _post_json_best_effort(endpoint: str, path: str, payload: dict[str, Any]) ->
         )
         for attempt, timeout_seconds in enumerate(timeout_budget):
             try:
-                return _post_json_with_timeout(
+                response = _post_json_with_timeout(
                     endpoint,
                     path,
                     payload,
                     timeout_seconds=timeout_seconds,
                 )
+                if response.get("stored") is True:
+                    return response
             except Exception:
-                if attempt + 1 < len(timeout_budget):
-                    time.sleep(_EXIT_REPORT_RETRY_DELAY_SECONDS)
+                pass
+            if attempt + 1 < len(timeout_budget):
+                time.sleep(_EXIT_REPORT_RETRY_DELAY_SECONDS)
         return {}
     try:
         return _post_json(endpoint, path, payload)
@@ -1392,7 +1436,12 @@ def _verify_child_cgroup(child_pid: int, cgroup_path: str | None) -> None:
         raise RuntimeError(f"cgroup_join_missing path={cgroup_path} child_pid={child_pid}; {details}")
 
 
-def _terminate_child_best_effort(child: subprocess.Popen[bytes]) -> None:
+def _terminate_child_and_confirm(child: subprocess.Popen[bytes]) -> None:
+    if not _terminate_child_best_effort(child):
+        raise _CleanupUnconfirmed("payload exit unconfirmed")
+
+
+def _terminate_child_best_effort(child: subprocess.Popen[bytes]) -> bool:
     try:
         child_pgid = _exclusive_child_pgid(child)
         if child_pgid is not None:
@@ -1400,6 +1449,7 @@ def _terminate_child_best_effort(child: subprocess.Popen[bytes]) -> None:
         else:
             child.terminate()
         child.wait(timeout=1)
+        return True
     except Exception:
         try:
             child_pgid = _exclusive_child_pgid(child)
@@ -1411,8 +1461,9 @@ def _terminate_child_best_effort(child: subprocess.Popen[bytes]) -> None:
             pass
         try:
             child.wait(timeout=1)
+            return True
         except Exception:
-            pass
+            return False
 
 
 def _exclusive_child_pgid(child: subprocess.Popen[bytes]) -> int | None:

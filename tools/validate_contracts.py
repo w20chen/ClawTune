@@ -13,6 +13,9 @@ CONTRACTS = ROOT / "contracts"
 
 
 EXAMPLES = {
+    "trace-event.schema.json": "trace-event.json",
+    "runtime-abort.schema.json": "runtime-abort.json",
+    "runtime-abort-response.schema.json": "runtime-abort-response.json",
     "benchmark-run.schema.json": "benchmark-run.json",
     "call-load.schema.json": "call-load.json",
     "pmu-prediction.schema.json": "pmu-prediction.json",

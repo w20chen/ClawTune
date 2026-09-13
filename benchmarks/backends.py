@@ -29,6 +29,10 @@ class _GateDegrade(RuntimeError):
     """The in-container gate could not provide a trustable process identity."""
 
 
+class TerminalCaseBuildFailure(RuntimeError):
+    """Compose startup failed; the constructor must remove its project."""
+
+
 def ensure_bfcl():
     # BFCL creates result/score/lock directories at import time. Keep these
     # out of the external source checkout, including during --dry-run.
@@ -339,7 +343,16 @@ class TerminalBackend:
                                   text=True, stdout=log, stderr=subprocess.STDOUT, check=True,
                                   timeout=timeout if cleanup else self._remaining(timeout))
                 except subprocess.CalledProcessError as exc:
-                    raise RuntimeError(f"Terminal Compose {args[0]} failed (exit {exc.returncode}); see {log_path}") from exc
+                    error = f"Terminal Compose {args[0]} failed (exit {exc.returncode}); see {log_path}"
+                    if args[0] == "up":
+                        raise TerminalCaseBuildFailure(error) from exc
+                    raise RuntimeError(error) from exc
+                except subprocess.TimeoutExpired as exc:
+                    if args[0] == "up":
+                        raise TerminalCaseBuildFailure(
+                            f"Terminal Compose up timed out after {timeout} seconds; see {log_path}"
+                        ) from exc
+                    raise
         return invoke([*self.command, *args], cwd=self.root, env=self.env,
                               text=True, capture_output=True, check=True,
                               timeout=timeout if cleanup else self._remaining(timeout))

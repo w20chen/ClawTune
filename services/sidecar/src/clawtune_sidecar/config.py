@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +43,7 @@ class SidecarConfig:
     tool_resource_ebpf_required: bool = True
     auth_token: str | None = None
     trace_dir: Path = Path("traces")
+    trace_runtime_paths: dict[str, str] = field(default_factory=dict)
     trace_max_messages_bytes: int = 131_072  # 128 KiB, matches plugin default
     resource_poll_interval_ms: int = 50
     resource_timeline_max_points: int = 2_000
@@ -158,6 +160,7 @@ class SidecarConfig:
             in {"1", "true", "yes", "on"},
             auth_token=os.getenv("CLAWTUNE_TOKEN"),
             trace_dir=_resolve_path(trace, env_base) if trace else Path("traces"),
+            trace_runtime_paths=json.loads(os.getenv("CLAWTUNE_TRACE_RUNTIME_PATHS", "{}")),
             trace_max_messages_bytes=int(os.getenv("CLAWTUNE_TRACE_MAX_MESSAGES_BYTES", "131072")),
             resource_poll_interval_ms=int(os.getenv("CLAWTUNE_RESOURCE_POLL_INTERVAL_MS", "50")),
             resource_timeline_max_points=int(os.getenv("CLAWTUNE_RESOURCE_TIMELINE_MAX_POINTS", "2000")),

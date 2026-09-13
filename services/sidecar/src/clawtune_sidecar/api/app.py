@@ -26,6 +26,7 @@ from clawtune_sidecar.contracts.models import (
     ModelEvent,
     PlacementAdvice,
     ResourceScope,
+    RuntimeAbortRequest,
     StatusResponse,
     ToolBeforeRequest,
     ToolCompletedEvent,
@@ -827,6 +828,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
 
     @app.on_event("shutdown")
     async def shutdown_state() -> None:
+        if runtime_abort_tasks:
+            await asyncio.gather(*list(runtime_abort_tasks.values()), return_exceptions=True)
         fallbacks = list(app_state._ebpf_finalize_tasks.values())
         for task in fallbacks:
             task.cancel()
@@ -916,6 +919,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         record = s.executions.get(execution_id)
         if record is None:
             return False
+        s.executions.require_runtime_open(record.request.gateway_id, record.request.runtime_id)
         root_pid = (
             trusted_root_pid
             if trusted_root_pid is not None
@@ -1035,9 +1039,11 @@ def create_app(state: AppState | None = None) -> FastAPI:
         s: AppState,
         execution_id: str,
         telemetry: object,
+        *, gateway_id: str | None = None, runtime_id: str | None = None,
     ) -> None:
         if s.trace_writer is not None:
-            s.trace_writer.record_tool_resource_telemetry(execution_id, telemetry)
+            s.trace_writer.record_tool_resource_telemetry(execution_id, telemetry,
+                gateway_id=gateway_id, runtime_id=runtime_id)
 
     def ebpf_needs_finalization(s: AppState, execution_id: str) -> bool:
         # Summary status alone is ambiguous: ``unavailable`` can describe
@@ -1045,20 +1051,25 @@ def create_app(state: AppState | None = None) -> FastAPI:
         # predictor's active-run registry is the exactly-once authority.
         return execution_id in starting_tasks or execution_id in finishing_tasks or s.predictor.execution_active(execution_id)
 
-    async def finish_ebpf(s: AppState, execution_id: str, **kwargs: Any) -> None:
+    async def finish_ebpf(s: AppState, execution_id: str, *,
+                          trace_owner: tuple[str | None, str | None] | None = None, **kwargs: Any) -> None:
         # A disconnected completion or cancelled fallback must not cancel a
         # running worker, publish a placeholder, or let drain/GC race it.
         task = finishing_tasks.get(execution_id)
         if task is None:
             async def finish() -> None:
                 try:
+                    record = s.executions.get(execution_id)
+                    owner = trace_owner or ((record.request.gateway_id, record.request.runtime_id)
+                                             if record is not None else (None, None))
                     starting = starting_tasks.get(execution_id)
                     if starting is not None:
                         await asyncio.shield(starting)
                     telemetry = await asyncio.to_thread(
                         s.predictor.finish_execution, execution_id=execution_id, **kwargs
                     )
-                    record_ebpf_telemetry(s, execution_id, telemetry)
+                    record_ebpf_telemetry(s, execution_id, telemetry,
+                                          gateway_id=owner[0], runtime_id=owner[1])
                 finally:
                     finishing_tasks.pop(execution_id, None)
             task = asyncio.create_task(finish())
@@ -1508,19 +1519,22 @@ def create_app(state: AppState | None = None) -> FastAPI:
         while True:
             records = s.executions.for_runtime(runtime_id, gateway_id)
             record_ids = {record.request.execution_id for record in records}
-            active_execution_ids = [
+            claimed_unexited_ids = [
                 record.request.execution_id
                 for record in records
-                if (record.claimed and not record.exited)
-                or s.predictor.execution_active(record.request.execution_id)
+                if record.claimed and not record.exited
+            ]
+            active_collector_ids = [
+                record.request.execution_id
+                for record in records
+                if s.predictor.execution_active(record.request.execution_id)
             ]
             active_by_owner = getattr(s.predictor, "active_execution_ids", None)
             if callable(active_by_owner):
-                active_execution_ids = sorted(
-                    set(active_execution_ids).union(
-                        active_by_owner(runtime_id, gateway_id)
-                    )
+                active_collector_ids = sorted(
+                    set(active_collector_ids).union(active_by_owner(runtime_id, gateway_id))
                 )
+            active_execution_ids = sorted(set(claimed_unexited_ids).union(active_collector_ids))
             pending_finalizers = [
                 execution_id
                 for execution_id in record_ids
@@ -1544,12 +1558,23 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 active_requests += s.trace_writer.active_runtime_operations(
                     runtime_id
                 )
+            active_requests += sum(
+                (not task.done() or task.cancelled() or task.exception() is not None)
+                for (gateway, runtime), task in runtime_abort_tasks.items()
+                if runtime == runtime_id and gateway_id in (None, gateway)
+            )
             if (
                 not active_execution_ids
                 and not pending_finalizers
                 and active_requests == 0
             ):
                 flush_shared_kb = getattr(s.predictor, "flush_kb_updates", None)
+                if s.trace_writer is not None:
+                    s.trace_writer.finalize_pending(runtime_id, gateway_id, reason="runtime_drained_without_completion_hook")
+                    if not await asyncio.to_thread(s.trace_writer.flush, max(0.0, deadline - time.monotonic())):
+                        return {"drained": False, "gateway_id": gateway_id, "runtime_id": runtime_id,
+                                "active_executions": 0, "pending_finalizers": 0,
+                                "kb_flushed": False, "trace_flushed": False}
                 if flush_kb and callable(flush_shared_kb):
                     remaining = max(0.0, deadline - time.monotonic())
                     try:
@@ -1576,11 +1601,113 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     "gateway_id": gateway_id,
                     "runtime_id": runtime_id,
                     "active_executions": len(active_execution_ids),
+                    "claimed_unexited_ids": sorted(claimed_unexited_ids),
+                    "active_collector_ids": sorted(active_collector_ids),
                     "pending_finalizers": len(pending_finalizers),
                     "active_requests": active_requests,
                     "kb_flushed": False,
                 }
             await asyncio.sleep(0.025)
+
+    runtime_abort_tasks: dict[tuple[str, str], asyncio.Task[dict[str, Any]]] = {}
+    runtime_abort_execution_ids: dict[tuple[str, str], set[str]] = {}
+
+    @app.post("/v1/gateways/{gateway_id}/runtimes/{runtime_id}/abort")
+    async def abort_runtime(
+        gateway_id: str,
+        runtime_id: str,
+        request: RuntimeAbortRequest,
+        s: AppState = Depends(get_state),
+        _: None = Depends(auth),
+    ) -> dict[str, Any]:
+        key = (gateway_id, runtime_id)
+        previous = runtime_abort_tasks.get(key)
+        if previous is not None and not previous.cancelled():
+            if not previous.done() or previous.exception() is None:
+                return await asyncio.shield(previous)
+        records = s.executions.for_runtime(runtime_id, gateway_id)
+        # Legacy records without an explicit gateway cannot be safely retired
+        # by an owner-scoped request.
+        if any(record.request.gateway_id != gateway_id for record in records):
+            raise HTTPException(status_code=409, detail="ambiguous_runtime_owner")
+        if any(count for (gateway, runtime), count in s._runtime_activity.items()
+               if runtime == runtime_id and gateway in (None, gateway_id)) or any(
+            record.request.execution_id in starting_tasks for record in records
+        ):
+            raise HTTPException(status_code=409, detail="runtime_requests_active")
+        if s.trace_writer is not None and s.trace_writer.active_runtime_operations(runtime_id):
+            raise HTTPException(status_code=409, detail="runtime_requests_active")
+        for record in records:
+            if record.exited:
+                continue
+            cgroup = record.owned_cgroup_path
+            if cgroup and Path(cgroup).exists():
+                try:
+                    events = (Path(cgroup) / "cgroup.events").read_text()
+                except OSError as exc:
+                    raise HTTPException(status_code=409, detail="execution_liveness_unknown") from exc
+                if "populated 0" not in events.splitlines():
+                    raise HTTPException(status_code=409, detail="execution_still_alive")
+            elif record.trusted_root_pid and (_PROC_ROOT / str(record.trusted_root_pid)).exists():
+                raise HTTPException(status_code=409, detail="execution_still_alive")
+        # Fence producers before the first await. Late reports must not turn an
+        # aborted measurement into a successful completion or start a collector.
+        s.executions.close_runtime(gateway_id, runtime_id)
+
+        async def finalize() -> dict[str, Any]:
+            aborted_ids: list[str] = []
+            pmu_profiles: dict[str, Any] = {}
+            by_id = {record.request.execution_id: record for record in records}
+            active_by_owner = getattr(s.predictor, "active_execution_ids", None)
+            collector_ids = active_by_owner(runtime_id, gateway_id) if callable(active_by_owner) else ()
+            # Retain targets across a failed attempt even if finishing consumed
+            # the last collector handle; retries must still check its error.
+            targets = runtime_abort_execution_ids.setdefault(key, set())
+            targets.update(by_id)
+            targets.update(collector_ids)
+            for execution_id in sorted(targets):
+                record = by_id.get(execution_id)
+                if (record is not None and record.exited and record.aborted_reason is None
+                        and (record.exit_code is not None or record.signal is not None)):
+                    # A launcher exit can precede its completion hook. Retain
+                    # that authoritative status when finishing its collector.
+                    if ebpf_needs_finalization(s, execution_id):
+                        cancel_ebpf_fallback(s, execution_id)
+                        await finish_ebpf(s, execution_id, exit_code=record.exit_code, signal=record.signal,
+                                          trace_owner=(gateway_id, runtime_id))
+                        telemetry = s.predictor.execution_telemetry(execution_id)
+                        if getattr(telemetry, "kb_update_error", None):
+                            raise HTTPException(status_code=503, detail="runtime_finalization_failed")
+                    continue
+                # A retained collector may outlive its registry record. Its
+                # owner is still known; absent exit evidence it stays incomplete.
+                if record is not None:
+                    s.executions.abort(execution_id, request.reason)
+                aborted_ids.append(execution_id)
+                cancel_ebpf_fallback(s, execution_id)
+                pmu_profiles[execution_id] = s.pmu_collector.abort(execution_id).to_dict()
+                await s.leases.release_execution(execution_id)
+                if ebpf_needs_finalization(s, execution_id):
+                    await finish_ebpf(s, execution_id, exit_code=None, signal=None,
+                                      incomplete_reason=request.reason, trace_owner=(gateway_id, runtime_id))
+                telemetry = s.predictor.execution_telemetry(execution_id)
+                if getattr(telemetry, "kb_update_error", None):
+                    raise HTTPException(status_code=503, detail="runtime_finalization_failed")
+                if not await cleanup_owned_cgroup(s, execution_id):
+                    schedule_owned_cgroup_cleanup(s, execution_id)
+            response = {"finalized": True, "gateway_id": gateway_id, "runtime_id": runtime_id,
+                        "reason": request.reason, "aborted_execution_ids": sorted(aborted_ids),
+                        "pmu_profiles": pmu_profiles}
+            if s.trace_writer is not None:
+                s.trace_writer.finalize_pending(runtime_id, gateway_id, reason=request.reason)
+                s.trace_writer.record_runtime_finalization(gateway_id, runtime_id, response)
+                if not await asyncio.to_thread(s.trace_writer.flush):
+                    raise HTTPException(status_code=503, detail="trace_persistence_failed")
+            return response
+
+        task = asyncio.create_task(finalize())
+        runtime_abort_tasks[key] = task
+        return await asyncio.shield(task)
 
     @app.post("/v1/runtime/{runtime_id}/drain")
     async def drain_runtime(
@@ -1632,6 +1759,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             getattr(value, "gateway_id", None),
             getattr(value, "runtime_id", None),
         )
+        app_state.executions.require_runtime_open(*key)
         app_state._runtime_activity[key] = app_state._runtime_activity.get(key, 0) + 1
         return key
 
@@ -1845,7 +1973,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     # Make the {"stored": True} acknowledgement durable: the
                     # trace writer persists asynchronously on a dedicated
                     # thread, so drain its queue before responding.
-                    await asyncio.to_thread(s.trace_writer.flush)
+                    if not await asyncio.to_thread(s.trace_writer.flush):
+                        raise HTTPException(status_code=503, detail="trace_persistence_failed")
             if event.execution_id is not None:
                 s.executions.mark_completed(event.execution_id)
                 if not await cleanup_owned_cgroup(s, event.execution_id):
@@ -1896,7 +2025,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 s.trace_writer.record_model(event)
                 # Drain the asynchronous writer so the stored acknowledgement
                 # is durable before the plugin proceeds.
-                await asyncio.to_thread(s.trace_writer.flush)
+                if not await asyncio.to_thread(s.trace_writer.flush):
+                    raise HTTPException(status_code=503, detail="trace_persistence_failed")
             return {"stored": True}
         except BaseException:
             s._model_event_ids.discard(model_key)
@@ -1910,51 +2040,56 @@ def create_app(state: AppState | None = None) -> FastAPI:
         s: AppState = Depends(get_state),
         _: None = Depends(auth),
     ) -> ExecutionRegistrationResponse:
-        previous = s.executions.get(request.execution_id)
-        if previous is not None:
-            # Validate an idempotent retry before touching its existing lease.
-            response = s.executions.register(request)
-            if request.lease_id is not None and not await s.leases.bind_execution(
-                request.lease_id,
-                request.execution_id,
-                owner=owner_key(request),
-            ):
-                raise HTTPException(
-                    status_code=409,
-                    detail="invalid_or_expired_execution_lease",
-                )
-        else:
-            if request.lease_id is not None and not await s.leases.bind_execution(
-                request.lease_id,
-                request.execution_id,
-                owner=owner_key(request),
-            ):
-                raise HTTPException(
-                    status_code=409,
-                    detail="invalid_or_expired_execution_lease",
-                )
-            try:
+        activity_record = request
+        activity_key = begin_runtime_activity(activity_record)
+        try:
+            previous = s.executions.get(request.execution_id)
+            if previous is not None:
+                # Validate an idempotent retry before touching its existing lease.
                 response = s.executions.register(request)
-            except BaseException:
-                await s.leases.release(
+                if request.lease_id is not None and not await s.leases.bind_execution(
                     request.lease_id,
+                    request.execution_id,
                     owner=owner_key(request),
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="invalid_or_expired_execution_lease",
+                    )
+            else:
+                if request.lease_id is not None and not await s.leases.bind_execution(
+                    request.lease_id,
+                    request.execution_id,
+                    owner=owner_key(request),
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="invalid_or_expired_execution_lease",
+                    )
+                try:
+                    response = s.executions.register(request)
+                except BaseException:
+                    await s.leases.release(
+                        request.lease_id,
+                        owner=owner_key(request),
+                    )
+                    raise
+            # For marker-backend executions, start eBPF eBPF telemetry
+            # immediately if the sandbox container is already known.  (For
+            # managed-wrapper, telemetry starts at claim/started time.)
+            if (
+                getattr(request, "backend", None) == "marker"
+            ):
+                container_id = sandbox_container_id(
+                    s,
+                    request.runtime_id,
+                    request.gateway_id,
                 )
-                raise
-        # For marker-backend executions, start eBPF eBPF telemetry
-        # immediately if the sandbox container is already known.  (For
-        # managed-wrapper, telemetry starts at claim/started time.)
-        if (
-            getattr(request, "backend", None) == "marker"
-        ):
-            container_id = sandbox_container_id(
-                s,
-                request.runtime_id,
-                request.gateway_id,
-            )
-            if container_id:
-                await begin_ebpf_for_record(s, request.execution_id, container_id)
-        return response
+                if container_id:
+                    await begin_ebpf_for_record(s, request.execution_id, container_id)
+            return response
+        finally:
+            end_runtime_activity(activity_key)
 
     @app.get("/v2/executions/{execution_id}/scope", response_model=ExecutionScopeResponse)
     async def execution_scope(
@@ -1985,53 +2120,59 @@ def create_app(state: AppState | None = None) -> FastAPI:
         s: AppState = Depends(get_state),
         _: None = Depends(auth),
     ) -> ExecutionClaimResponse:
-        response = s.executions.claim(request)
-        record = s.executions.get(request.execution_id)
-        if record is not None:
-            container_id = sandbox_container_id(
-                s,
-                record.request.runtime_id,
-                record.request.gateway_id,
-            )
-            # In host-openclaw-sandbox mode the sandbox container is often
-            # discovered just after the launcher claims the execution.  Do not
-            # consume the eBPF observer opportunity with a permanent
-            # container_id_unavailable record; /started will retry once the
-            # launcher or sandbox-scope discovery supplies the container id.
-            #
-            # When ebpf is required but the container id is not yet
-            # available (host-openclaw race), defer rather than failing:
-            # /v1/runtime/sandbox-scope will retry begin_ebpf_for_record
-            # for all active executions once the sandbox container is
-            # discovered.
-            fallback_scope = sandbox_fallback_scope(
-                s,
-                record.request.runtime_id,
-                record.request.gateway_id,
-            )
-            if (
-                container_id
-                and (
-                    not _defer_ebpf_until_started(record)
-                    or (
-                        s.config.execution_cgroup_root is None
-                        and _has_usable_cgroup_scope(fallback_scope)
-                    )
+        activity_record = s.executions.get(request.execution_id)
+        activity_record = activity_record.request if activity_record is not None else request
+        activity_key = begin_runtime_activity(activity_record)
+        try:
+            response = s.executions.claim(request)
+            record = s.executions.get(request.execution_id)
+            if record is not None:
+                container_id = sandbox_container_id(
+                    s,
+                    record.request.runtime_id,
+                    record.request.gateway_id,
                 )
-            ):
-                started = await begin_ebpf_for_record(s, request.execution_id, container_id)
+                # In host-openclaw-sandbox mode the sandbox container is often
+                # discovered just after the launcher claims the execution.  Do not
+                # consume the eBPF observer opportunity with a permanent
+                # container_id_unavailable record; /started will retry once the
+                # launcher or sandbox-scope discovery supplies the container id.
+                #
+                # When ebpf is required but the container id is not yet
+                # available (host-openclaw race), defer rather than failing:
+                # /v1/runtime/sandbox-scope will retry begin_ebpf_for_record
+                # for all active executions once the sandbox container is
+                # discovered.
+                fallback_scope = sandbox_fallback_scope(
+                    s,
+                    record.request.runtime_id,
+                    record.request.gateway_id,
+                )
                 if (
-                    s.config.tool_resource_ebpf_required
-                    and record.request.backend == "managed-wrapper"
-                    and not started
-                ):
-                    raise HTTPException(
-                        status_code=503,
-                        detail=ebpf_failure_detail(s, request.execution_id),
+                    container_id
+                    and (
+                        not _defer_ebpf_until_started(record)
+                        or (
+                            s.config.execution_cgroup_root is None
+                            and _has_usable_cgroup_scope(fallback_scope)
+                        )
                     )
-            # else: container_id not yet known — ebpf start is deferred to
-            # execution_started / sandbox-scope discovery (see above).
-        return response
+                ):
+                    started = await begin_ebpf_for_record(s, request.execution_id, container_id)
+                    if (
+                        s.config.tool_resource_ebpf_required
+                        and record.request.backend == "managed-wrapper"
+                        and not started
+                    ):
+                        raise HTTPException(
+                            status_code=503,
+                            detail=ebpf_failure_detail(s, request.execution_id),
+                        )
+                # else: container_id not yet known — ebpf start is deferred to
+                # execution_started / sandbox-scope discovery (see above).
+            return response
+        finally:
+            end_runtime_activity(activity_key)
 
     @app.post(
         "/v2/executions/{execution_id}/started",
@@ -2044,93 +2185,121 @@ def create_app(state: AppState | None = None) -> FastAPI:
         s: AppState = Depends(get_state),
         _: None = Depends(auth),
     ) -> ExecutionUpdateResponse:
-        response = s.executions.started(execution_id, request)
-        record = s.executions.get(execution_id)
-        runtime_id = record.request.runtime_id if record is not None else None
-        gateway_id = record.request.gateway_id if record is not None else None
-        fallback_scope = sandbox_fallback_scope(s, runtime_id, gateway_id)
-        container_id = request.container_id or sandbox_container_id(
-            s,
-            runtime_id,
-            gateway_id,
-        )
-        trusted_root_pid = (
-            _resolve_host_pid(
-                request.child_pid,
-                pid_namespace_inode=request.pid_namespace_inode,
-                starttime_ticks=request.process_starttime_ticks,
+        activity_record = s.executions.get(execution_id)
+        activity_record = activity_record.request if activity_record is not None else request
+        activity_key = begin_runtime_activity(activity_record)
+        try:
+            response = s.executions.started(execution_id, request)
+            record = s.executions.get(execution_id)
+            runtime_id = record.request.runtime_id if record is not None else None
+            gateway_id = record.request.gateway_id if record is not None else None
+            fallback_scope = sandbox_fallback_scope(s, runtime_id, gateway_id)
+            container_id = request.container_id or sandbox_container_id(
+                s,
+                runtime_id,
+                gateway_id,
             )
-            if request.pid_namespace_inode is not None
-            and request.process_starttime_ticks is not None
-            else None
-        )
-        if (
-            record is not None
-            and record.request.backend == "managed-wrapper"
-            and request.pid_namespace_inode is not None
-            and request.process_starttime_ticks is not None
-            and trusted_root_pid is None
-        ):
-            # A supplied identity that cannot be verified must never release
-            # an exec gate or fall back to sampling a raw container PID.
-            if record is not None:
-                record.scope = None
-            raise HTTPException(status_code=422, detail="invalid_execution_root_identity")
-        if record is not None and trusted_root_pid is not None:
-            s.executions.bind_trusted_root(execution_id, trusted_root_pid)
-        host_cgroup_gate_failed = False
-        if record is not None and request.host_cgroup_gate:
-            cgroup_diagnostics: list[str] = []
-            host_scope = _prepare_host_execution_cgroup(
-                execution_id,
-                request,
-                fallback_scope,
-                s.config.execution_cgroup_root,
-                diagnostics=cgroup_diagnostics,
+            trusted_root_pid = (
+                _resolve_host_pid(
+                    request.child_pid,
+                    pid_namespace_inode=request.pid_namespace_inode,
+                    starttime_ticks=request.process_starttime_ticks,
+                )
+                if request.pid_namespace_inode is not None
+                and request.process_starttime_ticks is not None
+                else None
             )
-            if host_scope is not None:
-                s.executions.update_scope(
-                    execution_id,
-                    host_scope,
-                    owned_cgroup_path=host_scope.cgroup_path,
-                )
-                if host_scope.cgroup_path is not None:
-                    s._owned_cgroup_paths[execution_id] = host_scope.cgroup_path
-                record = s.executions.get(execution_id)
-                response = ExecutionUpdateResponse(
-                    stored=True,
-                    cgroup_path=host_scope.cgroup_path,
-                )
-            else:
-                # Some systemd/openEuler hosts do not delegate creation of a
-                # child cgroup even to this privileged service. Keep eBPF
-                # mandatory, but fall back to the authenticated root PID and
-                # its sidecar-derived current cgroup. Telemetry then isolates
-                # only that PID's fork/exec descendants rather than treating
-                # the shared session cgroup as an identity boundary.
-                # Surface exactly which candidate root/step failed so the
-                # operator can distinguish "no delegation" from a code issue.
-                if cgroup_diagnostics:
-                    _write_trace_dir_diag(
-                        s,
-                        "host_cgroup_provision_last_error.txt",
-                        cgroup_diagnostics,
-                    )
-                if request.cgroup_required:
-                    host_cgroup_gate_failed = True
+            if (
+                record is not None
+                and record.request.backend == "managed-wrapper"
+                and request.pid_namespace_inode is not None
+                and request.process_starttime_ticks is not None
+                and trusted_root_pid is None
+            ):
+                # A supplied identity that cannot be verified must never release
+                # an exec gate or fall back to sampling a raw container PID.
+                if record is not None:
                     record.scope = None
-                    _log_execution_started_decision(
+                raise HTTPException(status_code=422, detail="invalid_execution_root_identity")
+            if record is not None and trusted_root_pid is not None:
+                s.executions.bind_trusted_root(execution_id, trusted_root_pid)
+            host_cgroup_gate_failed = False
+            if record is not None and request.host_cgroup_gate:
+                cgroup_diagnostics: list[str] = []
+                host_scope = _prepare_host_execution_cgroup(
+                    execution_id,
+                    request,
+                    fallback_scope,
+                    s.config.execution_cgroup_root,
+                    diagnostics=cgroup_diagnostics,
+                )
+                if host_scope is not None:
+                    s.executions.update_scope(
                         execution_id,
-                        request,
-                        trusted_root_pid,
-                        record.scope,
-                        host_cgroup_gate_failed,
-                        record.request.backend,
+                        host_scope,
+                        owned_cgroup_path=host_scope.cgroup_path,
                     )
-                    raise HTTPException(
-                        status_code=503,
-                        detail="exclusive_execution_cgroup_unavailable",
+                    if host_scope.cgroup_path is not None:
+                        s._owned_cgroup_paths[execution_id] = host_scope.cgroup_path
+                    record = s.executions.get(execution_id)
+                    response = ExecutionUpdateResponse(
+                        stored=True,
+                        cgroup_path=host_scope.cgroup_path,
                     )
+                else:
+                    # Some systemd/openEuler hosts do not delegate creation of a
+                    # child cgroup even to this privileged service. Keep eBPF
+                    # mandatory, but fall back to the authenticated root PID and
+                    # its sidecar-derived current cgroup. Telemetry then isolates
+                    # only that PID's fork/exec descendants rather than treating
+                    # the shared session cgroup as an identity boundary.
+                    # Surface exactly which candidate root/step failed so the
+                    # operator can distinguish "no delegation" from a code issue.
+                    if cgroup_diagnostics:
+                        _write_trace_dir_diag(
+                            s,
+                            "host_cgroup_provision_last_error.txt",
+                            cgroup_diagnostics,
+                        )
+                    if request.cgroup_required:
+                        host_cgroup_gate_failed = True
+                        record.scope = None
+                        _log_execution_started_decision(
+                            execution_id,
+                            request,
+                            trusted_root_pid,
+                            record.scope,
+                            host_cgroup_gate_failed,
+                            record.request.backend,
+                        )
+                        raise HTTPException(
+                            status_code=503,
+                            detail="exclusive_execution_cgroup_unavailable",
+                        )
+                    host_scope = (
+                        _verified_host_execution_scope(
+                            execution_id,
+                            request,
+                            trusted_root_pid,
+                        )
+                        if trusted_root_pid is not None
+                        else None
+                    )
+                    if host_scope is not None:
+                        s.executions.update_scope(execution_id, host_scope)
+                        record = s.executions.get(execution_id)
+                        response = ExecutionUpdateResponse(
+                            stored=True,
+                            cgroup_path=host_scope.cgroup_path,
+                        )
+                    else:
+                        host_cgroup_gate_failed = True
+                        record.scope = None
+            elif (
+                record is not None
+                and container_id is None
+                and record.request.backend == "managed-wrapper"
+            ):
                 host_scope = (
                     _verified_host_execution_scope(
                         execution_id,
@@ -2148,131 +2317,109 @@ def create_app(state: AppState | None = None) -> FastAPI:
                         cgroup_path=host_scope.cgroup_path,
                     )
                 else:
-                    host_cgroup_gate_failed = True
+                    # A direct-host claim is usable only when the sidecar itself
+                    # resolves both PID identity and cgroup membership. The
+                    # launcher-supplied path is never an attribution authority.
                     record.scope = None
-        elif (
-            record is not None
-            and container_id is None
-            and record.request.backend == "managed-wrapper"
-        ):
-            host_scope = (
-                _verified_host_execution_scope(
+            # Host-backed fallback: when no per-execution cgroup could be created
+            # on the host (read-only-cgroupfs sandbox, or a launcher-side container
+            # cgroup that is not host-valid) but the launcher PID was resolved to a
+            # verified host PID, first derive the process's ACTUAL host cgroup from
+            # /proc/<host_pid>/cgroup (cgroup-backed), and only if that is not
+            # usable fall back to per-PID process-tree attribution.
+            if (
+                record is not None
+                and trusted_root_pid is not None
+                and (record.scope is None or not _has_usable_cgroup_scope(record.scope))
+            ):
+                host_scope = _verified_host_execution_scope(
                     execution_id,
                     request,
                     trusted_root_pid,
                 )
-                if trusted_root_pid is not None
-                else None
-            )
-            if host_scope is not None:
+                if host_scope is None:
+                    host_scope = _verified_host_pid_scope(
+                        execution_id,
+                        trusted_root_pid,
+                        request.process_starttime_ticks,
+                    )
                 s.executions.update_scope(execution_id, host_scope)
                 record = s.executions.get(execution_id)
-                response = ExecutionUpdateResponse(
-                    stored=True,
-                    cgroup_path=host_scope.cgroup_path,
-                )
-            else:
-                # A direct-host claim is usable only when the sidecar itself
-                # resolves both PID identity and cgroup membership. The
-                # launcher-supplied path is never an attribution authority.
-                record.scope = None
-        # Host-backed fallback: when no per-execution cgroup could be created
-        # on the host (read-only-cgroupfs sandbox, or a launcher-side container
-        # cgroup that is not host-valid) but the launcher PID was resolved to a
-        # verified host PID, first derive the process's ACTUAL host cgroup from
-        # /proc/<host_pid>/cgroup (cgroup-backed), and only if that is not
-        # usable fall back to per-PID process-tree attribution.
-        if (
-            record is not None
-            and trusted_root_pid is not None
-            and (record.scope is None or not _has_usable_cgroup_scope(record.scope))
-        ):
-            host_scope = _verified_host_execution_scope(
-                execution_id,
-                request,
-                trusted_root_pid,
-            )
-            if host_scope is None:
-                host_scope = _verified_host_pid_scope(
+            if record is not None:
+                _log_execution_started_decision(
                     execution_id,
+                    request,
                     trusted_root_pid,
-                    request.process_starttime_ticks,
+                    record.scope,
+                    host_cgroup_gate_failed,
+                    record.request.backend,
                 )
-            s.executions.update_scope(execution_id, host_scope)
-            record = s.executions.get(execution_id)
-        if record is not None:
-            _log_execution_started_decision(
-                execution_id,
-                request,
-                trusted_root_pid,
-                record.scope,
-                host_cgroup_gate_failed,
-                record.request.backend,
-            )
-        if record is not None and record.scope is not None:
-            monitor_scope = record.scope
-            if (
-                fallback_scope is not None
-                and not _has_usable_cgroup_scope(monitor_scope)
-                and not _is_verified_host_pid_scope(monitor_scope)
-            ):
-                # In host-openclaw-sandbox mode launcher PIDs belong to the
-                # container PID namespace.  Sampling the same numeric PID on
-                # the host can silently attribute an unrelated host process.
-                # Keep the already discovered host-side sandbox cgroup unless
-                # the launcher supplies a real cgroup-v2 child scope.
-                monitor_scope = fallback_scope
-            s.tool_monitor.bind_scope(
-                record.request.tool_call_id,
-                monitor_scope,
-                runtime_id=record.request.runtime_id,
-                owner=record.request,
-            )
-        # The launcher/Tool bridge keeps this root behind an exec gate until
-        # this endpoint returns.  PMU enable_on_exec therefore starts at the
-        # payload image, while inherit follows all subsequently created work.
-        # Any PMU failure is represented in pmu_profile_v1 and never rejects
-        # the execution path; the success path performs only four open calls.
-        if record is not None and trusted_root_pid is not None:
-            s.pmu_collector.begin(execution_id, trusted_root_pid)
-        if record is not None:
-            # The launcher runs inside the sandbox container.  Its
-            # cgroup_path comes from the container's cgroup namespace
-            # and may be the host root (/sys/fs/cgroup) when cgroupfs
-            # is read-only inside the container.  Only pass through
-            # paths that are actual sub-cgroups, not the root fallback.
-            host_scope_ready = bool(
-                container_id is not None
-                or (
-                    trusted_root_pid is not None
-                    and _has_usable_cgroup_scope(record.scope)
+            if record is not None and record.scope is not None:
+                monitor_scope = record.scope
+                if (
+                    fallback_scope is not None
+                    and not _has_usable_cgroup_scope(monitor_scope)
+                    and not _is_verified_host_pid_scope(monitor_scope)
+                ):
+                    # In host-openclaw-sandbox mode launcher PIDs belong to the
+                    # container PID namespace.  Sampling the same numeric PID on
+                    # the host can silently attribute an unrelated host process.
+                    # Keep the already discovered host-side sandbox cgroup unless
+                    # the launcher supplies a real cgroup-v2 child scope.
+                    monitor_scope = fallback_scope
+                s.tool_monitor.bind_scope(
+                    record.request.tool_call_id,
+                    monitor_scope,
+                    runtime_id=record.request.runtime_id,
+                    owner=record.request,
                 )
-            )
-            started = (
-                await begin_ebpf_for_record(
-                    s,
-                    execution_id,
-                    container_id,
-                    cgroup_path=_trusted_cgroup_path(
-                        record.scope.cgroup_path
-                        if record.scope is not None
-                        else None
-                    ),
-                    trusted_root_pid=trusted_root_pid,
+            # The launcher/Tool bridge keeps this root behind an exec gate until
+            # this endpoint returns.  PMU enable_on_exec therefore starts at the
+            # payload image, while inherit follows all subsequently created work.
+            # Any PMU failure is represented in pmu_profile_v1 and never rejects
+            # the execution path; the success path performs only four open calls.
+            if record is not None and trusted_root_pid is not None:
+                s.pmu_collector.begin(execution_id, trusted_root_pid)
+            if record is not None:
+                # The launcher runs inside the sandbox container.  Its
+                # cgroup_path comes from the container's cgroup namespace
+                # and may be the host root (/sys/fs/cgroup) when cgroupfs
+                # is read-only inside the container.  Only pass through
+                # paths that are actual sub-cgroups, not the root fallback.
+                host_scope_ready = bool(
+                    container_id is not None
+                    or (
+                        trusted_root_pid is not None
+                        and _has_usable_cgroup_scope(record.scope)
+                    )
                 )
-                if host_scope_ready and not host_cgroup_gate_failed
-                else False
-            )
-            if (
-                s.config.tool_resource_ebpf_required
-                and record.request.backend == "managed-wrapper"
-                and not started
-            ):
-                raise HTTPException(
-                    status_code=503,
-                    detail=ebpf_failure_detail(s, execution_id),
+                started = (
+                    await begin_ebpf_for_record(
+                        s,
+                        execution_id,
+                        container_id,
+                        cgroup_path=_trusted_cgroup_path(
+                            record.scope.cgroup_path
+                            if record.scope is not None
+                            else None
+                        ),
+                        trusted_root_pid=trusted_root_pid,
+                    )
+                    if host_scope_ready and not host_cgroup_gate_failed
+                    else False
                 )
-        return response
+                if (
+                    s.config.tool_resource_ebpf_required
+                    and record.request.backend == "managed-wrapper"
+                    and not started
+                ):
+                    raise HTTPException(
+                        status_code=503,
+                        detail=ebpf_failure_detail(s, execution_id),
+                    )
+            return response
+        finally:
+            end_runtime_activity(activity_key)
 
     @app.post(
         "/v2/executions/{execution_id}/exited",
@@ -2285,27 +2432,33 @@ def create_app(state: AppState | None = None) -> FastAPI:
         s: AppState = Depends(get_state),
         _: None = Depends(auth),
     ) -> ExecutionUpdateResponse:
-        response = s.executions.exited(execution_id, request)
-        # Disable/read before any cgroup cleanup. perf task FDs retain counts
-        # after process exit, so this is a constant-cost, non-polling read.
-        s.pmu_collector.finish(execution_id, reason="signal_terminated" if request.signal else "execution_exited")
-        await s.leases.release_execution(execution_id)
-        # The launcher knows process status first, but only OpenClaw's
-        # subsequent completion event carries bounded stdout/stderr. Keep the
-        # collector open briefly so a masked lookup failure such as
-        # ``missing | tail`` can be classified exactly. The timeout preserves
-        # finalization if the completion hook is lost.
-        if ebpf_needs_finalization(s, execution_id):
-            schedule_ebpf_fallback(
-                s,
-                execution_id,
-                request.exit_code,
-                request.signal,
-            )
-        # The launcher waits for this response before OpenClaw can emit the
-        # completion hook. Keep the empty cgroup alive for that hook's final
-        # cpu/memory/io snapshot, with delayed collection if the hook is lost.
-        schedule_owned_cgroup_cleanup(s, execution_id)
-        return response
+        activity_record = s.executions.get(execution_id)
+        activity_record = activity_record.request if activity_record is not None else request
+        activity_key = begin_runtime_activity(activity_record)
+        try:
+            response = s.executions.exited(execution_id, request)
+            # Disable/read before any cgroup cleanup. perf task FDs retain counts
+            # after process exit, so this is a constant-cost, non-polling read.
+            s.pmu_collector.finish(execution_id, reason="signal_terminated" if request.signal else "execution_exited")
+            await s.leases.release_execution(execution_id)
+            # The launcher knows process status first, but only OpenClaw's
+            # subsequent completion event carries bounded stdout/stderr. Keep the
+            # collector open briefly so a masked lookup failure such as
+            # ``missing | tail`` can be classified exactly. The timeout preserves
+            # finalization if the completion hook is lost.
+            if ebpf_needs_finalization(s, execution_id):
+                schedule_ebpf_fallback(
+                    s,
+                    execution_id,
+                    request.exit_code,
+                    request.signal,
+                )
+            # The launcher waits for this response before OpenClaw can emit the
+            # completion hook. Keep the empty cgroup alive for that hook's final
+            # cpu/memory/io snapshot, with delayed collection if the hook is lost.
+            schedule_owned_cgroup_cleanup(s, execution_id)
+            return response
+        finally:
+            end_runtime_activity(activity_key)
 
     return app

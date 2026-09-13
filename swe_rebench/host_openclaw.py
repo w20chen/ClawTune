@@ -143,12 +143,14 @@ def run_host_openclaw_task(
             _runtime_id(workspace),
             task.instance_id,
         )
-    openclaw_home = trace_dir / "openclaw-home"
+    openclaw_home = _task_openclaw_home(trace_dir)
     sidecar_port = sidecar_port or _free_port()
     sidecar = None
     sandbox_image: str | None = None
     exit_code = -1
     error: str | None = None
+    agent_stopped = threading.Event()
+    agent_cancelled = False
 
     try:
         _write_host_tool_resource_preflight(trace_dir, config, deadline=deadline)
@@ -249,7 +251,9 @@ def run_host_openclaw_task(
             config=config,
             task_deadline=deadline,
             post_sandbox_scope=post_sandbox_scope,
+            stopped_event=agent_stopped,
         )
+        agent_stopped.set()
         timeout_record = _read_json_object(trace_dir / "task-timeout.json")
         if exit_code == 124 and isinstance(timeout_record, dict):
             error = str(timeout_record.get("message") or "task timed out")
@@ -277,6 +281,10 @@ def run_host_openclaw_task(
             message=error,
             configured_seconds=config.batch.task_timeout_seconds,
         )
+    except TaskCancelled as exc:
+        agent_cancelled = True
+        error = str(exc)
+        _write_text(trace_dir / "host_openclaw_error.txt", traceback.format_exc())
     except ContainerCleanupError:
         # The task-local sidecar/agent may still be able to mutate its KB.
         # Propagate instead of returning a result that _run_one would publish.
@@ -285,6 +293,7 @@ def run_host_openclaw_task(
         error = str(exc)
         _write_text(trace_dir / "host_openclaw_error.txt", traceback.format_exc())
     except KeyboardInterrupt:
+        agent_cancelled = True
         error = "interrupted by user"
         raise
     finally:
@@ -297,6 +306,17 @@ def run_host_openclaw_task(
             sandbox_stopped = True
         except BaseException as exc:
             cleanup_error = exc
+        if sandbox_stopped and agent_stopped.is_set() and (exit_code == 124 or agent_cancelled):
+            try:
+                timeout_record = _read_json_object(trace_dir / "task-timeout.json") or {}
+                _abort_runtime(
+                    sidecar_port, _runtime_id(workspace), gateway_id=_BENCHMARK_GATEWAY_ID,
+                    reason=("cancelled" if agent_cancelled else
+                            "agent_timeout" if timeout_record.get("scope") == "agent" else "task_timeout"),
+                    trace_dir=trace_dir,
+                )
+            except BaseException as exc:
+                cleanup_error = cleanup_error or exc
         if not manage_sidecar and shared_sidecar_trace_dir is not None:
             runtime_id = _runtime_id(workspace)
             try:
@@ -312,7 +332,7 @@ def run_host_openclaw_task(
                 # especially important when one shared sidecar serves many
                 # concurrent runtimes: the batch owner remains alive and the
                 # per-runtime JSONL files are still the best diagnostic record.
-                cleanup_error = exc
+                cleanup_error = cleanup_error or exc
             try:
                 _collect_runtime_traces(
                     shared_sidecar_trace_dir,
@@ -389,7 +409,7 @@ def run_host_openclaw_replay_task(
     workspace = _task_workspace(config, task).with_name(
         _task_workspace(config, task).name + "-replay"
     )
-    openclaw_home = trace_dir / "openclaw-home"
+    openclaw_home = _task_openclaw_home(trace_dir)
     sidecar = None
     sandbox_image: str | None = None
     server = None
@@ -912,6 +932,11 @@ def _make_sandbox_runtime_readable(runtime_root: Path, sidecar_src: Path) -> Non
             path.chmod(path.stat().st_mode | 0o444)
 
 
+def _task_openclaw_home(trace_dir: Path) -> Path:
+    """Keep agent session state outside exported experiment traces."""
+    return trace_dir.parent.parent / "runtime" / trace_dir.name / "openclaw-home"
+
+
 def _start_sidecar(
     *,
     trace_dir: Path,
@@ -922,8 +947,15 @@ def _start_sidecar(
     artifact_dir: Path | None = None,
     sandbox_container_prefix: str | None = None,
     deadline: float | None = None,
+    trace_paths: dict[str, Path] | None = None,
 ) -> subprocess.Popen[str]:
     env = os.environ.copy()
+    if trace_paths is None and sandbox_container_prefix != "":
+        trace_paths = {_runtime_id(workspace): trace_dir / "trace.jsonl"}
+    env["CLAWTUNE_TRACE_RUNTIME_PATHS"] = json.dumps({
+        json.dumps([_BENCHMARK_GATEWAY_ID, runtime], separators=(",", ":")): str(path.resolve())
+        for runtime, path in (trace_paths or {}).items()
+    })
     scheduler_src = str(config.repo_root / "services" / "sidecar" / "src")
     existing_pythonpath = env.get("PYTHONPATH")
     env.update(
@@ -1645,10 +1677,15 @@ def _run_openclaw_agent(
     post_sandbox_scope: bool = True,
     prompt_path: Path | None = None,
     model_ref: str | None = None,
+    stopped_event: threading.Event | None = None,
 ) -> int:
     _remaining_task_seconds(task_deadline, phase="agent startup")
     openclaw = _require_executable("openclaw")
     env = _openclaw_env(openclaw_home, sidecar_port, config, workspace)
+    env["OPENCLAW_TRAJECTORY"] = "0"
+    env["OPENCLAW_CACHE_TRACE"] = "0"
+    env["CLAWTUNE_PLUGIN_TRACE_DIR"] = ""
+    env["CLAWTUNE_CONSOLE_MODE"] = "quiet"
     env.update(
         {
             "TASK_INSTANCE_ID": task.instance_id,
@@ -1661,15 +1698,15 @@ def _run_openclaw_agent(
             "CLAWTUNE_SANDBOX_CONTAINER_WORKSPACE": "/workspace",
             "CLAWTUNE_ENABLE_CGROUP": "1",
             "CLAWTUNE_LAUNCH_MODE": "fork-exec",
-            "CLAWTUNE_LAUNCH_DEBUG": "1",
+            "CLAWTUNE_LAUNCH_DEBUG": "0",
             "CLAWTUNE_REPO_KEY": getattr(config, "kb_repo", task_repo_key(task)),
             **({"CLAWTUNE_KB_OWNER": config.kb_owner} if getattr(config, "kb_owner", None) else {}),
         }
     )
     prompt_path = prompt_path or trace_dir / "agent_prompt.txt"
-    stdout_path = trace_dir / "agent-stdout.txt"
     stderr_path = trace_dir / "agent-stderr.txt"
-    stdout_file = stdout_path.open("w", encoding="utf-8")
+    # Final model content is already in the canonical trace.
+    stdout_file = open(os.devnull, "w", encoding="utf-8")
     stderr_file = stderr_path.open("w", encoding="utf-8")
     _log(f"[agent] starting (trace: {trace_dir})")
 
@@ -1726,17 +1763,11 @@ def _run_openclaw_agent(
         except (ValueError, OSError):
             pass
 
-    tee_stdout = threading.Thread(
-        target=_tee,
-        args=(stdout_file, "agent"),
-        daemon=True,
-    )
     tee_stderr = threading.Thread(
         target=_tee,
         args=(stderr_file, "agent:err"),
         daemon=True,
     )
-    tee_stdout.start()
     tee_stderr.start()
 
     try:
@@ -1755,9 +1786,16 @@ def _run_openclaw_agent(
             if effective_deadline is not None
             else None
         )
-        return wait_process(process, timeout)
+        code = wait_process(process, timeout)
+        if getattr(process, "_clawtune_supervised", False) and code == 125:
+            raise ContainerCleanupError("agent supervisor reported incomplete descendant cleanup")
+        if stopped_event is not None:
+            stopped_event.set()
+        return code
     except subprocess.TimeoutExpired:
         _kill_agent_process_and_confirm(process)
+        if stopped_event is not None:
+            stopped_event.set()
         scope = (
             "task"
             if task_deadline is not None
@@ -1785,6 +1823,8 @@ def _run_openclaw_agent(
         # Ctrl-C is also fail-closed: do not publish a KB snapshot unless the
         # agent process group has definitely stopped.
         _kill_agent_process_and_confirm(process)
+        if stopped_event is not None:
+            stopped_event.set()
         raise
     finally:
         # All cleanup steps are protected from secondary interrupts so
@@ -1796,7 +1836,6 @@ def _run_openclaw_agent(
         # Descendants may inherit stdout/stderr. Regular log files avoid a
         # buffered pipe close waiting forever on a reader's lock or on EOF.
         stop_output.set()
-        _join_thread_safe(tee_stdout, timeout=2)
         _join_thread_safe(tee_stderr, timeout=2)
 
         for f in (stdout_file, stderr_file):
@@ -1874,7 +1913,7 @@ def _openclaw_config(
                             "reportTimeoutMs": 10000,
                             "failOpen": True,
                             "logLevel": "warn",
-                            "consoleMode": "verbose",
+                            "consoleMode": "quiet",
                             "executionBackend": "managed-wrapper",
                             "launcherPath": "/workspace/.clawtune/bin/clawtune-launch",
                             "launcherInterpreter": "/bin/sh",
@@ -1911,7 +1950,7 @@ def _openclaw_config(
                     "1" if config.docker.cgroup_required else "0"
                 ),
                 "CLAWTUNE_LAUNCH_MODE": "fork-exec",
-                "CLAWTUNE_LAUNCH_DEBUG": "1",
+                "CLAWTUNE_LAUNCH_DEBUG": "0",
             },
         },
         indent=2,
@@ -2058,7 +2097,7 @@ def _stage_plugin_for_openclaw_if_needed(*, trace_dir: Path, plugin_dir: Path) -
     staged = trace_dir / "clawtune-plugin-root-owned"
     if staged.exists():
         shutil.rmtree(staged, onerror=_chmod_and_retry)
-    shutil.copytree(plugin_dir, staged, ignore=shutil.ignore_patterns("node_modules"))
+    shutil.copytree(plugin_dir, staged, ignore=shutil.ignore_patterns("node_modules", "test", "tests", ".git"))
     return staged
 
 
@@ -2068,7 +2107,7 @@ def _stage_benchmark_tool_contracts(*, plugin_dir: Path, trace_dir: Path, tools_
     bridge = json.loads(tools_manifest.read_text(encoding="utf-8"))
     validate(bridge, "tool-bridge.schema.json")
     staged = trace_dir / "clawtune-benchmark-plugin"
-    shutil.copytree(plugin_dir, staged, ignore=shutil.ignore_patterns("node_modules"))
+    shutil.copytree(plugin_dir, staged, ignore=shutil.ignore_patterns("node_modules", "test", "tests", ".git"))
     manifest_path = staged / "openclaw.plugin.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest.setdefault("contracts", {})["tools"] = [tool["name"] for tool in bridge["tools"]]
@@ -2145,7 +2184,7 @@ def _openclaw_env(
                 "1" if config.docker.cgroup_required else "0"
             ),
             "CLAWTUNE_LAUNCH_MODE": "fork-exec",
-            "CLAWTUNE_LAUNCH_DEBUG": "1",
+            "CLAWTUNE_LAUNCH_DEBUG": "0",
             "CLAWTUNE_RUNTIME_ID": _runtime_id(workspace) if workspace is not None else "",
             "CLAWTUNE_GATEWAY_ID": _BENCHMARK_GATEWAY_ID,
             "CLAWTUNE_REPO_KEY": _runtime_id(workspace) if workspace is not None else "openclaw",
@@ -2327,6 +2366,37 @@ def _post_sandbox_scope(
         pass
 
 
+def _abort_runtime(
+    sidecar_port: int,
+    runtime_id: str,
+    *,
+    gateway_id: str,
+    reason: str,
+    trace_dir: Path,
+) -> None:
+    """Called only after the owner confirms agent exit and sandbox cleanup."""
+    endpoint = (
+        f"http://127.0.0.1:{sidecar_port}/v1/gateways/"
+        + urllib.parse.quote(gateway_id, safe="") + "/runtimes/"
+        + urllib.parse.quote(runtime_id, safe="") + "/abort"
+    )
+    request = urllib.request.Request(
+        endpoint, method="POST", headers={"Content-Type": "application/json"},
+        data=json.dumps({"reason": reason, "agent_stopped": True, "sandbox_cleaned": True}).encode(),
+    )
+    _add_sidecar_auth(request)
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict) or payload.get("finalized") is not True:
+            raise ValueError(f"unexpected finalization response: {payload!r}")
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"failed to finalize stopped runtime {runtime_id}: {exc}") from exc
+    summary = {key: value for key, value in payload.items() if key != "pmu_profiles"}
+    summary["trace_file"] = "trace.jsonl"
+    _write_text(trace_dir / "runtime-finalization.json", json.dumps(summary, indent=2) + "\n")
+
+
 def _drain_runtime(
     sidecar_port: int,
     runtime_id: str,
@@ -2357,13 +2427,20 @@ def _drain_runtime(
     )
     request = urllib.request.Request(endpoint, data=b"", method="POST")
     _add_sidecar_auth(request)
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds + 2.0) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (OSError, ValueError) as exc:
-        raise RuntimeError(
-            f"failed to drain shared sidecar runtime {runtime_id}: {exc}"
-        ) from exc
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_seconds + 2.0) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            break
+        except (OSError, ValueError) as exc:
+            # A transport timeout does not say whether the server drained. The
+            # request is idempotent; retry once, keeping the same strict barrier.
+            if isinstance(exc, TimeoutError) and attempt == 0:
+                _log(f"[drain] runtime {runtime_id}: transport timeout; retrying once")
+                continue
+            raise RuntimeError(
+                f"failed to drain shared sidecar runtime {runtime_id}: {exc}"
+            ) from exc
     if not isinstance(payload, dict) or payload.get("drained") is not True:
         raise RuntimeError(
             f"shared sidecar runtime {runtime_id} did not drain: {payload!r}"
@@ -2436,48 +2513,22 @@ def _collect_runtime_traces(
     runtime_id: str,
     task_label: str | None = None,
 ) -> list[Path]:
-    """Snapshot a runtime's JSONL traces into its task trace directory.
-
-    ``task_label`` (the SWE-Rebench case id) is prefixed to the copied filename
-    so the resulting traces are identifiable by case, e.g.
-    ``<task_id>__<runtime_id>__<session>_<run>__<digest>.jsonl``.
-    """
-    sources = sorted(sidecar_trace_dir.glob(f"{runtime_id}__*.jsonl"))
-    copied: list[Path] = []
-    for source in sources:
-        destination = task_trace_dir / source.name
-        if task_label:
-            destination = task_trace_dir / f"{task_label}__{source.name}"
-        temporary = task_trace_dir / f".{source.name}.tmp-{os.getpid()}"
-        # The happy path drains the runtime before this snapshot.  When drain
-        # fails, the shared sidecar may still be appending a record.  Snapshot
-        # only newline-terminated JSONL records so a partial final write cannot
-        # corrupt the task trace and mask all telemetry during inspection.
-        data = source.read_bytes()
-        complete_length = data.rfind(b"\n") + 1
-        temporary.write_bytes(data[:complete_length])
-        os.replace(temporary, destination)
-        copied.append(destination)
-    return copied
+    """Return the canonical trace; never copy a second experiment log."""
+    canonical = task_trace_dir / "trace.jsonl"
+    if canonical.exists():
+        return [canonical]
+    # Read-only compatibility with older sidecars. Their originals remain in
+    # place, rather than being duplicated into the task directory.
+    return sorted(sidecar_trace_dir.glob(f"{runtime_id}__*.jsonl"))
 
 
 def _collect_runtime_ebpf_artifacts(
     shared_kb_dir: Path | None,
     task_trace_dir: Path,
 ) -> list[Path]:
-    """Copy a shared-sidecar runtime's eBPF clause artifacts into its trace dir.
-
-    With a shared sidecar, the sidecar writes one per-execution clause
-    telemetry artifact (``<execution_id>.json``) into the shared KB directory.
-    Every per-runtime trace record carries the exact artifact path under
-    ``execution.tool_resource.artifact_path``.  Copying those files into
-    ``task_trace_dir/tool-resource/`` mirrors the layout a per-task sidecar
-    produces, keeps each task trace self-contained, and lets the
-    required-telemetry gate audit the per-task artifacts on disk.
-    """
+    """Resolve legacy KB artifacts without copying experiment data."""
     if shared_kb_dir is None:
         return []
-    artifact_dir = task_trace_dir / "tool-resource"
     copied: list[Path] = []
     referenced: dict[str, Path] = {}
     for trace_file in sorted(task_trace_dir.glob("*.jsonl")):
@@ -2514,12 +2565,9 @@ def _collect_runtime_ebpf_artifacts(
             continue
         if not isinstance(payload, dict) or payload.get("mode") != "clause":
             continue
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        destination = artifact_dir / name
-        temporary = artifact_dir / f".{name}.tmp-{os.getpid()}"
-        temporary.write_bytes(data)
-        os.replace(temporary, destination)
-        copied.append(destination)
+        # The canonical JSONL already embeds this artifact. Keep its original
+        # KB path available to legacy callers without making a second copy.
+        copied.append(source)
     return copied
 
 

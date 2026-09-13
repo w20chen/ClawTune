@@ -48,7 +48,7 @@ setup(
     cmdclass={"build_py": BuildWithContracts, "sdist": SourceWithContracts},
     install_requires=[
         "fastapi>=0.110",
-        "httpx>=0.27",
+        "httpx[socks]>=0.27",
         "pydantic>=2",
         "psutil>=5.9",
         "numpy>=1.26",

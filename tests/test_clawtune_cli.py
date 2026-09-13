@@ -871,6 +871,7 @@ def test_benchmark_preserves_narrow_environment_without_secret_in_argv(
     monkeypatch.setenv("LLM_API_KEY", "super-secret-value")
     monkeypatch.setenv("AGENT_TEST_BENCH_ROOT", "/data/bench")
     monkeypatch.delenv("SWE_REBENCH_DOCKER_PLATFORM", raising=False)
+    monkeypatch.setattr(clawtune, "ensure_runtime_emulation", lambda *a: None)
     commands = []
     monkeypatch.setattr(
         clawtune,
@@ -881,7 +882,7 @@ def test_benchmark_preserves_narrow_environment_without_secret_in_argv(
     clawtune.benchmark(["--sample", "1"])
 
     assert len(commands) == 1
-    command = commands[0]
+    command = commands[-1]
     preserve = next(item for item in command if item.startswith("--preserve-env="))
     names = preserve.split("=", 1)[1].split(",")
     assert "LLM_API_KEY" in names
@@ -946,3 +947,83 @@ def test_openclaw_config_enables_gated_privileged_sidecar(monkeypatch) -> None:
     assert entry["config"]["sidecarCommand"] == ""
     assert str(clawtune.ROOT) not in entry["config"]["sidecarCommand"]
     assert ("/usr/bin/openclaw", "config", "validate") in commands
+
+
+def test_privileged_runtime_keeps_default_user_docker_config(tmp_path, monkeypatch):
+    monkeypatch.delenv("DOCKER_CONFIG", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    command = clawtune.privileged_command(["python", "-m", "example"])
+    assert f"DOCKER_CONFIG={(tmp_path / '.docker').resolve()}" in command
+
+
+def test_key_file_alone_works_with_shipped_benchmark_template(tmp_path, monkeypatch):
+    from swe_rebench.config import RunnerConfig
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_API_KEY_FILE", raising=False)
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "llm_api_key.txt").write_text("test-key-only-in-file\n")
+    template = SCRIPT.parents[1] / "configs" / "benchmark.example.yaml"
+    config = RunnerConfig.from_yaml(template, repo_root=tmp_path)
+    assert config.llm.api_key == "test-key-only-in-file"
+
+
+def test_setup_fails_when_collector_check_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(clawtune, "require_linux", lambda: None)
+    monkeypatch.setattr(clawtune.os, "geteuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(clawtune, "kernel_build", lambda: tmp_path)
+    monkeypatch.setattr(clawtune, "bcc_pythons", lambda: [Path("/usr/bin/python3")])
+    monkeypatch.setattr(clawtune, "find_bcc_python", lambda **kw: Path("/usr/bin/python3"))
+    monkeypatch.setattr(clawtune.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(clawtune, "cgroup_v2_available", lambda: True)
+    for name in ("create_venv", "copy_defaults", "build_plugin", "check_docker", "setup_qemu_if_needed", "configure_openclaw", "check_mvdan_adapter", "run"):
+        monkeypatch.setattr(clawtune, name, lambda *a, **kw: None)
+    def fail(*a):
+        raise subprocess.CalledProcessError(1, ["collector-check"])
+    monkeypatch.setattr(clawtune, "check_ebpf", fail)
+    with pytest.raises(subprocess.CalledProcessError):
+        clawtune.setup(types.SimpleNamespace(no_system_install=True, skip_qemu=False, skip_ebpf_check=False))
+
+
+def test_setup_uses_checkout_launcher_instead_of_old_path_install(tmp_path, monkeypatch):
+    venv = tmp_path / ".venv"
+    launcher = venv / "bin/clawtune-launch"
+    launcher.parent.mkdir(parents=True)
+    launcher.touch()
+    monkeypatch.setattr(clawtune, "VENV", venv)
+    monkeypatch.setattr(clawtune, "ROOT", tmp_path)
+    monkeypatch.setattr(clawtune.shutil, "which", lambda name: "/old/bin/" + name)
+    monkeypatch.setattr(clawtune, "install_openclaw_plugin", lambda *a: None)
+    inputs = []
+    monkeypatch.setattr(clawtune, "run", lambda *a, **kw: inputs.append(kw.get("input_text")))
+    clawtune.configure_openclaw()
+    patch = json.loads(next(text for text in inputs if text))
+    assert patch["plugins"]["entries"]["clawtune"]["config"]["launcherPath"] == str(launcher.resolve())
+
+
+def test_benchmark_does_not_override_explicit_yaml_platform(tmp_path, monkeypatch):
+    venv = tmp_path / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin/python").touch()
+    config = tmp_path / "native.yaml"
+    config.write_text("docker:\n  platform: linux/arm64\n")
+    monkeypatch.setattr(clawtune, "ROOT", tmp_path)
+    monkeypatch.setattr(clawtune, "VENV", venv)
+    monkeypatch.setattr(clawtune, "require_linux", lambda: None)
+    monkeypatch.setattr(clawtune, "host_arch", lambda: "aarch64")
+    monkeypatch.delenv("SWE_REBENCH_DOCKER_PLATFORM", raising=False)
+    commands = []
+    monkeypatch.setattr(clawtune, "run", lambda command, **kw: commands.append(list(map(str, command))))
+    clawtune.benchmark(["--config", str(config)])
+    assert len(commands) == 1
+    assert not any(value.startswith("SWE_REBENCH_DOCKER_PLATFORM=") for value in commands[0])
+
+
+@pytest.mark.parametrize("status,repair", [("", True), ("enabled\nflags: POC", True), ("enabled\nflags: POCF", False)])
+def test_runtime_repairs_missing_or_incomplete_binfmt(monkeypatch, status, repair):
+    monkeypatch.setattr(clawtune, "host_arch", lambda: "aarch64")
+    monkeypatch.delenv("SWE_REBENCH_DOCKER_PLATFORM", raising=False)
+    monkeypatch.setattr(clawtune, "Path", lambda *a: types.SimpleNamespace(exists=lambda: bool(status), read_text=lambda: status))
+    calls = []
+    monkeypatch.setattr(clawtune, "setup_qemu_if_needed", lambda skip: calls.append(skip))
+    clawtune.ensure_runtime_emulation()
+    assert calls == ([False] if repair else [])

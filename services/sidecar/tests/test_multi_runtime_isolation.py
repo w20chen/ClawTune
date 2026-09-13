@@ -498,7 +498,7 @@ def test_shared_sidecar_isolates_128_overlapping_sessions_across_gateways(
         assert state.tool_monitor.active_count() == 0
 
     trace_paths = sorted(trace_dir.glob("*.jsonl"))
-    assert len(trace_paths) == 128
+    assert len(trace_paths) == 8
     expected = {
         (
             str(case["gateway_id"]),
@@ -510,30 +510,34 @@ def test_shared_sidecar_isolates_128_overlapping_sessions_across_gateways(
     seen: set[tuple[str, str, str]] = set()
     for path in trace_paths:
         records = _records(path)
-        start = _tool_record(records, "span_start")
-        end = _tool_record(records, "span_end")
-        runtime_id = start.get("runtime_id")
-        gateway_id = start.get("gateway_id")
-        session_id = start.get("session_id")
-        assert isinstance(runtime_id, str)
-        assert isinstance(gateway_id, str)
-        assert isinstance(session_id, str)
-        owner = (gateway_id, runtime_id, session_id)
-        case = expected[owner]
-        seen.add(owner)
+        sessions = {r["session_id"] for r in records if r.get("record_type") == "span_start"}
+        assert len(sessions) == 16
+        for session in sessions:
+            own_records = [r for r in records if r.get("session_id") == session]
+            start = _tool_record(own_records, "span_start")
+            end = _tool_record(own_records, "span_end")
+            runtime_id = start.get("runtime_id")
+            gateway_id = start.get("gateway_id")
+            session_id = start.get("session_id")
+            assert isinstance(runtime_id, str)
+            assert isinstance(gateway_id, str)
+            assert isinstance(session_id, str)
+            owner = (gateway_id, runtime_id, session_id)
+            case = expected[owner]
+            seen.add(owner)
 
-        assert start["gateway_id"] == case["gateway_id"]
-        assert end["gateway_id"] == case["gateway_id"]
-        assert start["session_id"] == case["session_id"]
-        assert end["session_id"] == case["session_id"]
-        assert start["run_id"] == "shared-run"
-        assert end["run_id"] == "shared-run"
-        assert start["span_id"] == "shared-tool-call"
-        assert end["span_id"] == "shared-tool-call"
-        assert start["input"] == {
-            "requested_args": {"path": case["marker"]}
-        }
-        assert end["execution"]["cgroup_path"] == str(case["cgroup"])
-        assert end["resources"]["scope"] == "cgroup"
+            assert start["gateway_id"] == case["gateway_id"]
+            assert end["gateway_id"] == case["gateway_id"]
+            assert start["session_id"] == case["session_id"]
+            assert end["session_id"] == case["session_id"]
+            assert start["run_id"] == "shared-run"
+            assert end["run_id"] == "shared-run"
+            assert start["span_id"] == "shared-tool-call"
+            assert end["span_id"] == "shared-tool-call"
+            assert start["input"] == {
+                "requested_args": {"path": case["marker"]}
+            }
+            assert end["execution"]["cgroup_path"] == str(case["cgroup"])
+            assert end["resources"]["scope"] == "cgroup"
 
     assert seen == set(expected)

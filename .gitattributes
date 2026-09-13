@@ -1,2 +1,5 @@
 # Seed manifests hash exact file bytes; checkout must preserve LF on Windows.
 /seeds/**/*.json text eol=lf
+
+# Shell entry points must remain executable by Bash after cross-platform checkout.
+*.sh text eol=lf

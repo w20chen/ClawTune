@@ -25,10 +25,9 @@ batch:
 
 `model` is the upstream model name; `openclaw_model_ref` is its corresponding `vllm/` reference. These settings are independent of daily OpenClaw configuration. Relative credential-file paths resolve against the repository root.
 
-Supply a key, validate selection, and run one task:
+Place the raw provider key on one line in the Git-ignored `configs/llm_api_key.txt` (no quotes and no `LLM_API_KEY=` prefix). With the template configuration, this is sufficient: **you do not need to export `LLM_API_KEY`**. Then validate selection and run one task:
 
 ```bash
-export LLM_API_KEY="<provider-api-key>"
 python3 scripts/clawtune.py benchmark --list
 python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
   --config configs/benchmark.yaml --sample 1 --parallelism 1 --dry-run
@@ -36,7 +35,7 @@ python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
   --config configs/benchmark.yaml --sample 1 --parallelism 1
 ```
 
-Alternatively, place the raw key in the Git-ignored `configs/llm_api_key.txt`. Do not commit keys in YAML. Resolution order is: nonempty YAML value or environment expansion, exported `LLM_API_KEY`, configured key file, then root `.env`. `LLM_API_KEY_FILE` overrides the file path.
+For an existing key file elsewhere, set `llm.api_key_file` to its path; `swe_rebench/llm_api_key.txt` is the legacy default when no file is configured. Environment-based credentials remain optional. Do not commit keys in YAML. Resolution order is: nonempty YAML value or environment expansion, exported `LLM_API_KEY`, configured key file, then root `.env`. `LLM_API_KEY_FILE` overrides the file path. If switching from an old environment-based setup to the configured file, clear stale overrides with `unset LLM_API_KEY LLM_API_KEY_FILE`.
 
 Defaults use external task lists when available; SWE and research otherwise use bundled smoke inputs. Use explicit dataset paths for experiments. Dry-run checks task structure, selection, and initialization data, not image availability, credentials, or live collection.
 
@@ -198,11 +197,13 @@ python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
 
 Replace `/data/terminal-bench/original-tasks` with your task directory containing at least three tasks. A single task directory or `task.yaml` is also accepted. In JSON lists, `task_path` resolves relative to the list file, for example `[{"task_path":"tasks/my-task"}]`.
 
-For tasks that build images, install compatible Docker Compose and Buildx plugins before starting. Check both with `docker compose version` and `docker buildx version`; a successful dry-run does not test the build. If startup reports that Buildx is too old, upgrade it to the version required by Compose.
+Setup installs a matched Compose/Buildx pair into the invoking user's Docker plugin directory. The wrapper preserves that Docker configuration during elevation. `python3 scripts/clawtune.py check` tests an actual Compose build; a benchmark dry-run only validates task selection.
 
 Tasks are copied into the run before container creation. Compose must provide exactly one `client` container, and host mounts/build contexts must remain within allowed run paths. Each tool invocation uses a fresh shell: use explicit `cd` and files for persistent state. Persistent interactive TTYs are unsupported. Terminal execution requires working telemetry; if it is unavailable, the command will not run. See `terminal-logs/<task>/terminal-gate.log` for diagnostics.
 
-Compose startup/build and cleanup logs are written live to `terminal-logs/<task>/compose-up.log` and `compose-down.log` under the run directory. Agent logs for this adapter are `traces/<task>/turn-0-agent-stdout.txt` and `turn-0-agent-stderr.txt` after the turn finishes. `docker.platform` supplies the default service platform; explicit task platforms take precedence.
+Compose startup/build and cleanup logs are written live to `terminal-logs/<task>/compose-up.log` and `compose-down.log` under the run directory. Agent diagnostics for this adapter are `traces/<task>/turn-0-agent-stderr.txt` after the turn finishes. Model output is stored only in `trace.jsonl`; stdout is not duplicated into another content log. `docker.platform` supplies the default service platform; explicit task platforms take precedence.
+
+A Compose build failure fails that case and allows the batch to continue after successful cleanup. A cleanup failure stops the batch.
 
 ### PMU results
 
@@ -254,12 +255,17 @@ Defaults are under `.runtime/benchmarks/<benchmark>/<run>/`:
 | Location | Purpose |
 | --- | --- |
 | `run.json`, `report.json` | Task status, errors, and execution summary |
-| `traces/<task-digest>/` | Per-task traces, model output, and logs |
+| `traces/<task-digest>/trace.jsonl` | Canonical task trace: LLM/tool spans, predictions, resource timelines, PMU and eBPF data |
+| `runtime/<task-digest>/openclaw-home/` | OpenClaw session state required for runtime operation; not an experiment trace export |
 | `kb/` | Learned statistics for the run |
 | `sidecar/` | Shared local-service logs |
 | `workspaces/` | Task workspaces |
 
-Check `status`, each result's `error` and `exit_code`, and `kb_flush_complete: true`, which indicates completed persistence:
+Check `status`, each result's `error` and `exit_code`, and `kb_flush_complete: true`, which indicates completed persistence.
+
+Each task writes directly to one `trace.jsonl`, including all sessions and turns. No post-run trace or telemetry-artifact copies are produced. Benchmark launches disable OpenClaw trajectory capture and the plugin standalone trace writer. LLM messages are retained without trace truncation. Supplemental records follow `contracts/trace-event.schema.json`: join `execution_telemetry` to tool spans by `execution_id`; its `artifact` contains the full eBPF result. Aborted PMU profiles are retained in `runtime_finalization` events. Missing completion hooks are explicitly recorded as `incomplete_span`; unmatched proxy captures are retained as `llm_proxy_unmatched`. Do not count these incomplete records as successful measurements. A successful drain requires trace persistence; abrupt process or machine failure can still lose unacknowledged in-memory events. KB files and OpenClaw session state remain operational data, not additional task trace exports.
+
+For SWE timeouts/cancellations and interrupted Terminal agents, `traces/<task-digest>/runtime-finalization.json` records executions finalized after confirmed agent and sandbox shutdown. Measurements without confirmed tool exit remain incomplete and are withheld from learning; observations from previously completed tools remain available. Finalization does not turn a failed task into a successful task, even when `kb_flush_complete` is true.
 
 ```bash
 .venv/bin/python tools/inspect_trace.py /path/to/run/traces/<task>/<file>.jsonl --all --details

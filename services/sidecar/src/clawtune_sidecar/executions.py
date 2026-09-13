@@ -38,6 +38,7 @@ class ExecutionRecord:
     trusted_root_pid: int | None = None
     completed_at: datetime | None = None
     created_at: datetime | None = None
+    aborted_reason: str | None = None
 
 
 class ExecutionRegistry:
@@ -52,8 +53,24 @@ class ExecutionRegistry:
         self.marker_retention_s = marker_retention_s
         self._by_execution_id: dict[str, ExecutionRecord] = {}
         self._by_token: dict[str, str] = {}
+        self._closed_runtimes: set[tuple[str, str]] = set()
+
+    def require_runtime_open(self, gateway_id: str | None, runtime_id: str | None) -> None:
+        if any(runtime == runtime_id and (gateway_id is None or gateway == gateway_id)
+               for gateway, runtime in self._closed_runtimes):
+            raise HTTPException(status_code=409, detail="runtime_finalized")
+
+    def close_runtime(self, gateway_id: str, runtime_id: str) -> None:
+        self._closed_runtimes.add((gateway_id, runtime_id))
+
+    def abort(self, execution_id: str, reason: str) -> None:
+        record = self._by_execution_id[execution_id]
+        if not record.exited:
+            record.aborted_reason = reason
+            self.mark_completed(execution_id)
 
     def register(self, request: ExecutionRegistrationRequest) -> ExecutionRegistrationResponse:
+        self.require_runtime_open(request.gateway_id, request.runtime_id)
         self._sweep()
         previous = self._by_execution_id.get(request.execution_id)
         if previous is not None and previous.request != request:
@@ -182,6 +199,7 @@ class ExecutionRegistry:
         record = self._by_execution_id.get(request.execution_id)
         if record is None:
             raise HTTPException(status_code=404, detail="execution_not_found")
+        self.require_runtime_open(record.request.gateway_id, record.request.runtime_id)
         if record.claimed:
             raise HTTPException(status_code=409, detail="execution_already_claimed")
         if record.token != request.token:
@@ -267,6 +285,7 @@ class ExecutionRegistry:
             raise HTTPException(status_code=409, detail="execution_not_claimed")
         if record.update_token != update_token:
             raise HTTPException(status_code=403, detail="invalid_execution_update_token")
+        self.require_runtime_open(record.request.gateway_id, record.request.runtime_id)
         return record
 
     def _sweep(self) -> None:

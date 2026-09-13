@@ -561,7 +561,7 @@ def test_trace_inspection_accepts_honest_compound_clause_bucket(tmp_path):
     assert inspected["clause_bucket_prediction_available_span_starts"] == 1
 
 
-def test_required_telemetry_audits_all_tool_samples_and_async_artifacts(tmp_path):
+def test_required_telemetry_audits_launcher_samples_and_async_artifacts(tmp_path):
     trace_dir = tmp_path / "trace"
     artifact_dir = trace_dir / "tool-resource"
     artifact_dir.mkdir(parents=True)
@@ -590,7 +590,8 @@ def test_required_telemetry_audits_all_tool_samples_and_async_artifacts(tmp_path
     result = {
         "resource_summary": {
             "tool_span_ends": 2,
-            "resource_sampled_tool_span_ends": 2,
+            "resource_sampled_tool_span_ends": 1,
+            "launcher_resource_sampled_tool_span_ends": 1,
             "cgroup_sampled_tool_span_ends": 2,
             "launcher_tool_span_ends": 1,
             "launcher_cgroup_tool_span_ends": 1,
@@ -652,8 +653,10 @@ def test_required_telemetry_audits_all_tool_samples_and_async_artifacts(tmp_path
     result["resource_summary"]["launcher_tool_resource_span_ends"] = 1
     result["resource_summary"]["launcher_ebpf_lifecycle_span_ends"] = 1
     result["resource_summary"]["launcher_ebpf_artifact_envelope_span_ends"] = 1
-    result["resource_summary"]["resource_sampled_tool_span_ends"] = 1
-    assert "sampled 1/2" in (_required_telemetry_error(config, result) or "")
+    result["resource_summary"]["launcher_resource_sampled_tool_span_ends"] = 0
+    assert "sampled 0/1 launcher tool spans" in (
+        _required_telemetry_error(config, result) or ""
+    )
 
 
 def test_trace_prediction_availability_requires_usable_contract_values(tmp_path):
@@ -915,6 +918,7 @@ def _host_prediction_result():
     resources = {
         "tool_span_ends": 1,
         "resource_sampled_tool_span_ends": 1,
+        "launcher_resource_sampled_tool_span_ends": 1,
         "launcher_tool_span_ends": 1,
         "launcher_cgroup_tool_span_ends": 1,
         "launcher_ebpf_expected_span_ends": 1,
@@ -1103,6 +1107,8 @@ def test_container_mode_honors_explicit_ebpf_requirement(tmp_path):
             "resource_summary": {
                 "tool_span_ends": 1,
                 "resource_sampled_tool_span_ends": 0,
+                "launcher_resource_sampled_tool_span_ends": 0,
+                "launcher_tool_span_ends": 1,
                 "cgroup_sampled_tool_span_ends": 0,
                 "launcher_ebpf_expected_span_ends": 1,
             },
@@ -1115,7 +1121,7 @@ def test_container_mode_honors_explicit_ebpf_requirement(tmp_path):
                 "clauses_with_status": 0,
             },
         },
-    ) == "required resource telemetry is incomplete: sampled 0/1 tool spans"
+    ) == "required resource telemetry is incomplete: sampled 0/1 launcher tool spans"
 
     assert _required_telemetry_error(
         config,
@@ -1123,6 +1129,7 @@ def test_container_mode_honors_explicit_ebpf_requirement(tmp_path):
             "resource_summary": {
                 "tool_span_ends": 1,
                 "resource_sampled_tool_span_ends": 1,
+                "launcher_resource_sampled_tool_span_ends": 1,
                 "launcher_tool_span_ends": 1,
                 "launcher_cgroup_tool_span_ends": 1,
                 "launcher_ebpf_expected_span_ends": 1,
@@ -1169,6 +1176,7 @@ def test_launcher_per_pid_attribution_passes_gate(tmp_path):
     resources = {
         "tool_span_ends": 1,
         "resource_sampled_tool_span_ends": 1,
+        "launcher_resource_sampled_tool_span_ends": 1,
         "launcher_tool_span_ends": 1,
         "launcher_cgroup_tool_span_ends": 0,
         "launcher_attributed_tool_span_ends": 1,
@@ -1335,6 +1343,7 @@ def test_launcher_unattributed_spans_fail_gate_with_diagnostics(tmp_path):
             "resource_summary": {
                 "tool_span_ends": 2,
                 "resource_sampled_tool_span_ends": 2,
+                "launcher_resource_sampled_tool_span_ends": 2,
                 "launcher_tool_span_ends": 2,
                 "launcher_cgroup_tool_span_ends": 0,
                 "launcher_attributed_tool_span_ends": 1,

@@ -8,6 +8,16 @@ from clawtune_sidecar.contracts.load_prediction import CallLoadPrediction, LoadD
 SCHEMA_VERSION = "clawtune.v1"
 
 
+class RuntimeAbortRequest(BaseModel):
+    """Mirror contracts/runtime-abort.schema.json; assertions come from the owner."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: Literal["task_timeout", "agent_timeout", "cancelled", "runtime_stopped"]
+    agent_stopped: Literal[True]
+    sandbox_cleaned: Literal[True]
+
+
 class CommonEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

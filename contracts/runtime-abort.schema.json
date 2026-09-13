@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/runtime-abort.schema.json",
+  "description": "Authenticated runtime owner confirms that the agent and sandbox have stopped before aborting unfinished executions. Ordinary drain never makes these assertions.",
+  "type": "object",
+  "required": ["reason", "agent_stopped", "sandbox_cleaned"],
+  "properties": {
+    "reason": {"enum": ["task_timeout", "agent_timeout", "cancelled", "runtime_stopped"]},
+    "agent_stopped": {"const": true},
+    "sandbox_cleaned": {"const": true}
+  },
+  "additionalProperties": false
+}

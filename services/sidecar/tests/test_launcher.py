@@ -126,6 +126,27 @@ def test_launcher_retries_exit_report_with_bounded_cold_start_timeout(
     assert update_token not in captured.err
 
 
+def test_fork_exec_exit_report_waits_for_busy_sidecar(monkeypatch) -> None:
+    attempts: list[float] = []
+    monkeypatch.setenv("CLAWTUNE_LAUNCH_MODE", "fork-exec")
+    monkeypatch.setattr(launcher.time, "sleep", lambda _seconds: None)
+
+    def post(_endpoint, _path, _payload, *, timeout_seconds):
+        attempts.append(timeout_seconds)
+        if len(attempts) < 3:
+            raise TimeoutError("sidecar busy")
+        return {"stored": True}
+
+    monkeypatch.setattr(launcher, "_post_json_with_timeout", post)
+    result = launcher._post_json_best_effort(
+        "http://sidecar",
+        "/v2/executions/exec-1/exited",
+        {"update_token": "private", "exit_code": 0, "signal": None},
+    )
+    assert result == {"stored": True}
+    assert attempts == list(launcher._FORK_EXEC_EXIT_REPORT_TIMEOUTS_SECONDS)
+
+
 def test_launcher_exhausts_bounded_exit_report_timeouts_without_raising(
     monkeypatch,
     capsys,
@@ -478,6 +499,7 @@ def test_fork_exec_reaps_child_without_release_when_started_fails(
 ) -> None:
     writes: list[bytes] = []
     waits: list[int] = []
+    exits: list[dict[str, Any]] = []
 
     def fake_post(_endpoint: str, path: str, _payload: dict[str, Any]) -> dict[str, Any]:
         if path.endswith("/started"):
@@ -500,6 +522,11 @@ def test_fork_exec_reaps_child_without_release_when_started_fails(
         lambda pid, _flags: waits.append(pid) or (pid, 126 << 8),
     )
     monkeypatch.setattr(launcher, "_post_json", fake_post)
+    monkeypatch.setattr(
+        launcher,
+        "_post_json_best_effort",
+        lambda _endpoint, _path, payload: exits.append(payload) or {"stored": True},
+    )
     monkeypatch.setattr(launcher, "_read_pid_starttime_ticks", lambda _pid: 99)
     monkeypatch.setattr(launcher, "_pid_namespace_inode", lambda _pid: 123)
 
@@ -508,6 +535,123 @@ def test_fork_exec_reaps_child_without_release_when_started_fails(
 
     assert writes == []
     assert waits == [4242]
+    assert exits == [{"update_token": "update-1", "exit_code": 125, "signal": None}]
+
+
+def test_fork_exec_closes_claim_when_cgroup_setup_fails(monkeypatch) -> None:
+    waits: list[int] = []
+    exits: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        launcher,
+        "_post_json",
+        lambda *_args: {"command": "true", "update_token": "update-1"},
+    )
+    monkeypatch.setattr(launcher.os, "fork", lambda: 4242, raising=False)
+    monkeypatch.setattr(
+        launcher.os,
+        "waitpid",
+        lambda pid, _flags: waits.append(pid) or (pid, 126 << 8),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_prepare_cgroup_with_host_fallback",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("cgroup unavailable")),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_post_json_best_effort",
+        lambda _endpoint, _path, payload: exits.append(payload) or {"stored": True},
+    )
+
+    with pytest.raises(RuntimeError, match="cgroup unavailable"):
+        launcher._run_forkexec("http://sidecar", "exec-1", "token-1")
+
+    assert waits == [4242]
+    assert exits == [{"update_token": "update-1", "exit_code": 125, "signal": None}]
+
+
+@pytest.mark.parametrize("mode", ["forkexec", "subprocess"])
+def test_launcher_does_not_report_exit_after_unconfirmed_cleanup(monkeypatch, mode):
+    monkeypatch.setattr(launcher, "_post_json", lambda *a: {"update_token": "update"})
+    def unconfirmed(*args):
+        raise launcher._CleanupUnconfirmed("payload still running")
+    monkeypatch.setattr(launcher, "_run_" + mode + "_claimed", unconfirmed)
+    monkeypatch.setattr(launcher, "_post_json_best_effort", lambda *a: pytest.fail("false exit report"))
+    with pytest.raises(launcher._CleanupUnconfirmed):
+        getattr(launcher, "_run_" + mode)("http://sidecar", "exec-1", "token")
+
+
+def test_subprocess_cleanup_requires_a_successful_wait(monkeypatch):
+    class Child:
+        def terminate(self):
+            pass
+        def kill(self):
+            pass
+        def wait(self, **kwargs):
+            raise subprocess.TimeoutExpired("payload", 1)
+    monkeypatch.setattr(launcher, "_exclusive_child_pgid", lambda child: None)
+    with pytest.raises(launcher._CleanupUnconfirmed):
+        launcher._terminate_child_and_confirm(Child())
+
+
+def test_failed_fork_exec_claim_allows_runtime_drain(monkeypatch, tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    from clawtune_sidecar.api.app import create_app
+    from clawtune_sidecar.api.dependencies import build_state
+    from clawtune_sidecar.config import SidecarConfig
+
+    state = build_state(SidecarConfig(trace_dir=tmp_path / "traces"))
+    with TestClient(create_app(state)) as client:
+        registration = client.post(
+            "/v2/executions",
+            json={
+                "execution_id": "exec-failed-setup",
+                "tool_call_id": "call-failed-setup",
+                "run_id": "run-failed-setup",
+                "session_key_hash": None,
+                "runtime_id": "task-a",
+                "gateway_id": "swe-rebench",
+                "command_digest": "sha256:" + "a" * 64,
+                "command": "true",
+                "workdir": "/workspace",
+                "host": "gateway",
+                "placement": None,
+                "profiling": None,
+                "backend": "managed-wrapper",
+            },
+        )
+        assert registration.status_code == 200
+
+        def post(_endpoint, path, payload):
+            response = client.post(path, json=payload)
+            response.raise_for_status()
+            return response.json()
+
+        monkeypatch.setattr(launcher, "_post_json", post)
+        monkeypatch.setattr(launcher, "_post_json_best_effort", post)
+        monkeypatch.setattr(launcher.os, "fork", lambda: 4242, raising=False)
+        monkeypatch.setattr(launcher.os, "waitpid", lambda pid, _flags: (pid, 126 << 8))
+        monkeypatch.setattr(
+            launcher,
+            "_prepare_cgroup_with_host_fallback",
+            lambda *_args: (_ for _ in ()).throw(RuntimeError("cgroup unavailable")),
+        )
+
+        with pytest.raises(RuntimeError, match="cgroup unavailable"):
+            launcher._run_forkexec(
+                "http://sidecar",
+                "exec-failed-setup",
+                registration.json()["one_time_token"],
+            )
+
+        record = state.executions.get("exec-failed-setup")
+        assert record is not None and record.exited and record.exit_code == 125
+        drained = client.post(
+            "/v1/gateways/swe-rebench/runtimes/task-a/drain?timeout_seconds=0&flush_kb=false"
+        )
+        assert drained.status_code == 200
+        assert drained.json()["drained"] is True
 
 
 def test_exec_gate_requires_explicit_success_byte() -> None:
@@ -1112,6 +1256,7 @@ def test_launcher_terminates_gated_payload_when_started_is_rejected(
     monkeypatch,
 ) -> None:
     released: list[bool] = []
+    exits: list[dict[str, Any]] = []
 
     class GatedChild:
         pid = 4242
@@ -1145,6 +1290,11 @@ def test_launcher_terminates_gated_payload_when_started_is_rejected(
         raise RuntimeError("tool_resource_ebpf_start_failed")
 
     monkeypatch.setattr(launcher, "_post_json", fake_post_json)
+    monkeypatch.setattr(
+        launcher,
+        "_post_json_best_effort",
+        lambda _endpoint, _path, payload: exits.append(payload) or {"stored": True},
+    )
     monkeypatch.setattr(launcher, "_prepare_cgroup", lambda *_args: None)
     monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
     monkeypatch.setattr(
@@ -1165,6 +1315,7 @@ def test_launcher_terminates_gated_payload_when_started_is_rejected(
 
     assert child.terminated is True
     assert released == [False]
+    assert exits == [{"update_token": "update-1", "exit_code": 125, "signal": None}]
 
 
 def test_launcher_join_failure_restarts_in_systemd_scope(monkeypatch, tmp_path) -> None:

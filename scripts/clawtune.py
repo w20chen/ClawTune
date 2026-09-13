@@ -268,7 +268,7 @@ def create_venv(system_python: Path) -> None:
             (
                 "from importlib.metadata import version\n"
                 "import clawtune_sidecar, fastapi, httpx, numpy, pydantic, "
-                "prometheus_client, psutil, typing_extensions, uvicorn\n"
+                "prometheus_client, psutil, socksio, typing_extensions, uvicorn\n"
                 "pkg_ver = version('clawtune-sidecar')\n"
                 "assert pkg_ver == '0.1.0'"
             ),
@@ -514,11 +514,11 @@ def configure_openclaw() -> None:
     plugin = ROOT / "packages" / "clawtune-plugin"
     install_openclaw_plugin(openclaw, plugin)
     run([openclaw, "plugins", "enable", "clawtune"])
-    # Resolve clawtune-launch: prefer the one on PATH (pip-installed), fall back
-    # to the repo .venv (dev checkout).
-    launcher = shutil.which("clawtune-launch")
+    # A checkout setup must use the launcher installed into this checkout.
+    local_launcher = VENV / "bin" / "clawtune-launch"
+    launcher = str(local_launcher.resolve()) if local_launcher.is_file() else shutil.which("clawtune-launch")
     if launcher is None:
-        launcher = str((VENV / "bin" / "clawtune-launch").resolve())
+        raise SetupError("clawtune-launch is missing; rerun setup to install the sidecar.")
     patch = {
         "plugins": {
             "entries": {
@@ -558,7 +558,8 @@ def setup_qemu_if_needed(skip_qemu: bool) -> None:
     if host_arch() not in ARM_ARCHES or skip_qemu:
         return
     log("Kunpeng/ARM host: enabling and testing linux/amd64 container emulation")
-    run(["sudo", "bash", "scripts/setup/arm_qemu_setup.sh", "install"])
+    run(privileged_command(["bash", "scripts/setup/arm_qemu_setup.sh", "install"],
+                           preserve_env=PRIVILEGED_RUNTIME_PRESERVE_ENV))
 
 
 def privileged_command(
@@ -596,8 +597,24 @@ def privileged_command(
         "PYTHONNOUSERSITE=1",
         f"PYTHONPATH={ROOT}{os.pathsep}{ROOT / 'services' / 'sidecar' / 'src'}",
         f"BCC_KERNEL_SOURCE={build}",
+        f"DOCKER_CONFIG={Path(os.getenv('DOCKER_CONFIG') or Path.home() / '.docker').expanduser().resolve()}",
         *[str(item) for item in module_args],
     ]
+
+
+def check_docker() -> None:
+    run(privileged_command([VENV / "bin" / "python", "scripts/setup/docker_tools.py", "check"],
+                           preserve_env=PRIVILEGED_RUNTIME_PRESERVE_ENV))
+
+
+def ensure_runtime_emulation(requested_platform: str = "") -> None:
+    if host_arch() not in ARM_ARCHES or (os.getenv("SWE_REBENCH_DOCKER_PLATFORM") or requested_platform) == "linux/arm64":
+        return
+    handler = Path("/proc/sys/fs/binfmt_misc/qemu-x86_64")
+    status = handler.read_text() if handler.exists() else ""
+    fixed = any(line.startswith("flags:") and "F" in line for line in status.splitlines())
+    if "enabled" not in status or not fixed:
+        setup_qemu_if_needed(False)
 
 
 def check_ebpf(output: Path | None = None) -> None:
@@ -695,7 +712,7 @@ def doctor() -> int:
     if healthy:
         log(
             "Base environment is ready. Run `python3 scripts/clawtune.py check` "
-            "for the eBPF check."
+            "for runtime validation."
         )
         if not report["sidecar"]["running"]:
             log(
@@ -742,6 +759,8 @@ def setup(args: argparse.Namespace) -> None:
     create_venv(system_python)
     copy_defaults()
     build_plugin()
+    run([sys.executable, "scripts/setup/docker_tools.py", "install"])
+    check_docker()
     setup_qemu_if_needed(args.skip_qemu)
     configure_openclaw()
     check_mvdan_adapter()
@@ -750,14 +769,8 @@ def setup(args: argparse.Namespace) -> None:
         log("Resource attribution (per-clause metrics) will be unavailable.")
         log("Runtime-level tool-span predictions will still work.")
     else:
-        try:
-            check_ebpf(ROOT / "data" / "ebpf-check.json")
-            log("Setup and eBPF validation passed; the validation process has exited.")
-        except (subprocess.CalledProcessError, SetupError) as exc:
-            log(f"eBPF check failed (non-fatal): {exc}")
-            log("Resource attribution (per-clause metrics) will be unavailable.")
-            log("Runtime-level tool-span predictions will still work.")
-            log("To suppress this check: python3 scripts/clawtune.py setup --skip-ebpf-check")
+        check_ebpf(ROOT / "data" / "ebpf-check.json")
+        log("Setup, Docker build, and eBPF validation passed; validation processes have exited.")
     log("The OpenClaw plugin starts and waits for the eBPF sidecar automatically.")
     log("For normal CLI use: run `openclaw gateway run`, then `openclaw tui --session main`.")
     log("For a one-shot smoke turn: openclaw agent --local <options>")
@@ -893,6 +906,21 @@ def benchmark(extra: Sequence[str]) -> None:
     workflow("benchmark", extra)
 
 
+def configured_docker_platform(extra: Sequence[str]) -> str:
+    path = ROOT / "configs" / "benchmark.yaml"
+    for index, item in enumerate(extra):
+        if item == "--config" and index + 1 < len(extra):
+            path = Path(extra[index + 1])
+        elif item.startswith("--config="):
+            path = Path(item.split("=", 1)[1])
+    if not path.is_absolute():
+        path = ROOT / path
+    if not path.is_file():
+        return ""
+    from swe_rebench.config import RunnerConfig
+    return RunnerConfig.from_yaml(path, repo_root=ROOT).docker.platform
+
+
 def workflow(command: str, extra: Sequence[str]) -> None:
     """One public parser for all peer datasets and the offline/KB paths."""
     if str(ROOT) not in sys.path:
@@ -910,10 +938,13 @@ def workflow(command: str, extra: Sequence[str]) -> None:
     require_linux()
     if not (VENV / "bin" / "python").exists():
         raise SetupError(".venv is missing; run setup first.")
+    requested_platform = configured_docker_platform(extra)
+    ensure_runtime_emulation(requested_platform)
     env_items: list[str] = []
     if (
         host_arch() in ARM_ARCHES
         and "SWE_REBENCH_DOCKER_PLATFORM" not in os.environ
+        and not requested_platform
     ):
         env_items.append("SWE_REBENCH_DOCKER_PLATFORM=linux/amd64")
     command = privileged_command(
@@ -958,7 +989,7 @@ def parser() -> argparse.ArgumentParser:
         help="Skip the eBPF compile/attach/smoke test (use when clang/LLVM/kernel headers are incompatible)",
     )
     sub.add_parser("doctor", help="Show one consolidated environment report")
-    sub.add_parser("check", help="Run the real eBPF compile/attach/exec smoke test")
+    sub.add_parser("check", help="Validate Docker builds, ARM emulation, parser, and eBPF collection")
     sub.add_parser("sidecar", help="Start the privileged ClawTune sidecar")
     sub.add_parser("agent", help="Start eBPF sidecar, run OpenClaw agent, then clean up")
     sub.add_parser("benchmark", add_help=False, help="Online simulation: five peer benchmark adapters")
@@ -978,6 +1009,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "doctor":
             return doctor()
         elif args.command == "check":
+            check_docker()
+            ensure_runtime_emulation()
+            if host_arch() in ARM_ARCHES and os.getenv("SWE_REBENCH_DOCKER_PLATFORM") != "linux/arm64":
+                run(privileged_command(["bash", "scripts/setup/arm_qemu_setup.sh", "check"],
+                                       preserve_env=PRIVILEGED_RUNTIME_PRESERVE_ENV))
+            check_mvdan_adapter()
             check_ebpf(ROOT / "data" / "ebpf-check.json")
         elif args.command == "sidecar":
             sidecar()

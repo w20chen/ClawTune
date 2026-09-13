@@ -10,6 +10,26 @@ from types import SimpleNamespace
 import pytest
 
 import tool_resource.telemetry as telemetry_module
+
+
+@pytest.mark.parametrize("released", [True, False])
+def test_preflight_waits_for_deferred_task_free_but_keeps_real_leaks(monkeypatch, released):
+    clock = [0.0]
+    current = {1: 1}
+    pending = {}
+    def sleep(seconds):
+        clock[0] += seconds
+        if released and clock[0] >= .4:
+            current.clear()
+    monkeypatch.setattr(telemetry_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(telemetry_module.time, "sleep", sleep)
+    counts = telemetry_module._wait_for_lifecycle_maps(
+        {"current_seq": current, "pending_seq": pending}, timeout_s=.6)
+    assert counts == {"current_seq": 0 if released else 1, "pending_seq": 0}
+    assert .4 <= clock[0] < .63
+    if not released:
+        assert current == {1: 1}  # The preflight must not erase a leak to pass.
+
 from tool_resource.clause_bridge import ExecImageRecord, _clause_status, bridge_command
 from tool_resource.telemetry import (
     BPF_PROGRAM,

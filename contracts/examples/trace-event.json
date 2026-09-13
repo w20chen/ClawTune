@@ -1,0 +1,11 @@
+{
+  "schema_version": 6,
+  "record_type": "trace_event",
+  "event_type": "execution_telemetry",
+  "gateway_id": "benchmark",
+  "runtime_id": "task-1",
+  "execution_id": "exec-1",
+  "payload": {
+    "incomplete": true
+  }
+}

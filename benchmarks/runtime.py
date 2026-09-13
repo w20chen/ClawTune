@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -89,7 +90,7 @@ def _required_terminal_preflight(config, task, trace: Path, deadline: float | No
 
 
 def _execute_bridged(task, config, run_dir, port, trace):
-    from .backends import BFCLBackend, TerminalBackend
+    from .backends import BFCLBackend, TerminalBackend, TerminalCaseBuildFailure
     from .tool_bridge import ToolBridge
     from swe_rebench import host_openclaw as host
     from swe_rebench.task_source import TaskDef
@@ -97,17 +98,24 @@ def _execute_bridged(task, config, run_dir, port, trace):
     started = time.monotonic()
     workspace = run_dir / "workspaces" / task.directory_name
     workspace.mkdir(parents=True)
-    home = trace / "openclaw-home"
+    home = host._task_openclaw_home(trace)
     runtime_id = host._runtime_id(workspace)
     host._write_runtime_case_map(run_dir / "sidecar", runtime_id, task.task_id)
     deadline = host._task_deadline(config, started)
     _required_terminal_preflight(config, task, trace, deadline)
-    backend = BFCLBackend(task, run_dir) if task.kind == "functions" else TerminalBackend(
-        task, run_dir, deadline=deadline, platform=config.docker.platform,
-        sidecar_port=port, runtime_id=runtime_id, repo=config.kb_repo,
-        telemetry_required=config.runtime.ebpf_required)
+    try:
+        backend = BFCLBackend(task, run_dir) if task.kind == "functions" else TerminalBackend(
+            task, run_dir, deadline=deadline, platform=config.docker.platform,
+            sidecar_port=port, runtime_id=runtime_id, repo=config.kb_repo,
+            telemetry_required=config.runtime.ebpf_required)
+    except TerminalCaseBuildFailure as exc:
+        # The constructor only re-raises this error after close() succeeds.
+        # No agent or tool producer has started; this case may fail independently.
+        return ContainerResult(task_id=task.task_id, image=task.image, exit_code=1, error=str(exc),
+            trace_dir=trace, trace_files=[], duration_seconds=time.monotonic() - started)
     manifest = trace / "tool-bridge.json"
     exit_code, error = -1, None
+    agent_stopped = threading.Event()
     try:
         with ToolBridge(backend) as bridge:
             bridge.manifest(manifest)
@@ -133,11 +141,15 @@ def _execute_bridged(task, config, run_dir, port, trace):
             if task.kind == "terminal":
                 deadline = backend.start_agent()
             for index, prompt in enumerate(backend.turns):
+                agent_stopped.clear()
+                exit_code = -1
                 prompt_path = trace / f"turn-{index}.txt"
                 prompt_path.write_text(prompt, encoding="utf-8")
                 exit_code = host._run_openclaw_agent(trace_dir=trace, openclaw_home=home, workspace=workspace,
                     sidecar_port=port, task=TaskDef(task.task_id, "", prompt, f"{task.benchmark}:{task.group}"),
-                    config=turn_cfg, task_deadline=deadline, post_sandbox_scope=False, prompt_path=prompt_path)
+                    config=turn_cfg, task_deadline=deadline, post_sandbox_scope=False, prompt_path=prompt_path,
+                    stopped_event=agent_stopped)
+                agent_stopped.set()
                 # The runtime logger uses fixed names; preserve each turn's logs.
                 for name in ("agent-stdout.txt", "agent-stderr.txt"):
                     if (trace / name).exists():
@@ -150,6 +162,15 @@ def _execute_bridged(task, config, run_dir, port, trace):
             quiesce = getattr(backend, "quiesce", None)
             if quiesce is not None:
                 quiesce()
+            if task.kind == "terminal" and agent_stopped.is_set() and exit_code != 0:
+                # Only assert sandbox cleanup after Compose down succeeds.
+                backend.close()
+                host._abort_runtime(
+                    port, runtime_id, gateway_id="swe-rebench",
+                    reason=("agent_timeout" if exit_code == 124 else
+                            "cancelled" if exit_code == -1 else "runtime_stopped"),
+                    trace_dir=trace,
+                )
             host._drain_runtime(
                 port,
                 runtime_id,

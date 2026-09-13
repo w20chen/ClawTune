@@ -230,7 +230,7 @@ def test_verified_host_pid_scope_helpers() -> None:
     assert not _is_verified_host_pid_scope(None)
 
 
-def test_trace_writer_emits_cgroup_artifact_path(tmp_path: Path) -> None:
+def test_trace_writer_inlines_cgroup_data_without_duplicate_file(tmp_path: Path) -> None:
     writer = AgentTestBenchTraceWriter(tmp_path)
     writer.record_tool_started(_before_event())
     writer.record_tool(_completed_event(), _sample())
@@ -246,9 +246,11 @@ def test_trace_writer_emits_cgroup_artifact_path(tmp_path: Path) -> None:
     ends = [r for r in records if r.get("record_type") == "span_end"]
     assert ends
     res = ends[0]["resources"]
-    assert res["cgroup_artifact_path"] == "tool-resource/cgroup-resource-exec-abc.json"
+    assert res["cgroup_resource"]["execution_id"] == "exec-abc"
+    assert res["cgroup_resource"]["cpu_time_s"] == _sample().cpu_time_delta_s
     artifact = tmp_path / "tool-resource" / "cgroup-resource-exec-abc.json"
-    assert artifact.exists()
+    assert not artifact.exists()
+    writer.close()
 
 
 def test_compact_clauses_maps_artifact_resource_keys(tmp_path: Path) -> None:

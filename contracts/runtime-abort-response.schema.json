@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/runtime-abort-response.schema.json",
+  "type": "object",
+  "required": ["finalized", "gateway_id", "runtime_id", "reason", "aborted_execution_ids", "pmu_profiles"],
+  "properties": {
+    "finalized": {"const": true},
+    "gateway_id": {"type": "string", "minLength": 1},
+    "runtime_id": {"type": "string", "minLength": 1},
+    "reason": {"enum": ["task_timeout", "agent_timeout", "cancelled", "runtime_stopped"]},
+    "aborted_execution_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "pmu_profiles": {"type": "object", "additionalProperties": {"$ref": "pmu-profile.schema.json"}}
+  },
+  "additionalProperties": false
+}

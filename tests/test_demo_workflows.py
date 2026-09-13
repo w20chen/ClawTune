@@ -573,3 +573,37 @@ def test_concurrent_bridge_manifests_stay_process_local(monkeypatch, tmp_path):
         str(tmp_path / "manifest-1.json"),
     ]
     assert os.environ["CLAWTUNE_BENCHMARK_TOOLS"] == "stale-global-manifest"
+
+
+def test_terminal_build_failures_do_not_abort_the_batch(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from benchmarks import runner, runtime, backends
+    from benchmarks.adapters import Task
+    from swe_rebench import config, prepare, host_openclaw
+    seed = tmp_path / "seed"
+    make_seed(seed)
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text("llm: {}\n")
+    cfg = SimpleNamespace(llm=SimpleNamespace(api_key="test", model="test"),
+        runtime=SimpleNamespace(), batch=SimpleNamespace(parallelism=1, task_timeout_seconds=0),
+        docker=SimpleNamespace(platform="linux/amd64"), output=SimpleNamespace())
+    monkeypatch.setattr(config.RunnerConfig, "from_yaml", lambda *a, **k: cfg)
+    monkeypatch.setattr(runner.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(prepare, "build_runtime_assets", lambda cfg: tmp_path)
+    monkeypatch.setattr(host_openclaw, "_start_sidecar", lambda **k: "process")
+    monkeypatch.setattr(host_openclaw, "_stop_process", lambda p: None)
+    monkeypatch.setattr(runtime, "_required_terminal_preflight", lambda *a: None)
+    started, barriers = [], []
+    def build(task, *args, **kwargs):
+        started.append(task.task_id)
+        raise backends.TerminalCaseBuildFailure("compose up failed; cleanup succeeded")
+    monkeypatch.setattr(backends, "TerminalBackend", build)
+    monkeypatch.setattr(runtime, "flush_all_kb_updates", lambda port, ids: barriers.append(ids))
+    tasks = [Task("terminal-bench", name, "system", "terminal", "work",
+                  payload={"task_path": str(tmp_path / "inputs" / name)})
+             for name in ("first", "second")]
+    result = runner.run(tasks, config_path=cfg_path, seed=seed, output=tmp_path / "run")
+    assert started == ["first", "second"]
+    assert len(result["results"]) == 2
+    assert all(row["exit_code"] == 1 and "compose up failed" in row["error"] for row in result["results"])
+    assert result["kb_flush_complete"] and len(barriers) == 1

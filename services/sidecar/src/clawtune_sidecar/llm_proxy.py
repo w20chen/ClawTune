@@ -393,6 +393,9 @@ def _write_proxy_debug(
     raw_preview: bytes,
     error: str | None,
 ) -> None:
+    # Task traces already retain proxy errors and provider responses.
+    if config.trace_runtime_paths:
+        return
     automatic_empty_diagnostic = error == "upstream_empty_response"
     if not config.llm_proxy_debug_dump and not automatic_empty_diagnostic:
         return

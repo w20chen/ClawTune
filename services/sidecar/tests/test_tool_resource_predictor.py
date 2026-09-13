@@ -3014,3 +3014,29 @@ def test_sidecar_response_includes_kv_ttl_cost_key(tmp_path: Path) -> None:
     assert "kv_ttl_cost" in tr
     # Compatible runtime evidence now also supplies duration buckets for TTL.
     assert tr["kv_ttl_cost"]["reference_runtime_s"] == pytest.approx(1.2)
+
+
+@pytest.mark.parametrize("cleanup,error_kind", [("ok", "incomplete"), ("failed", "incomplete"), ("ok", "io")])
+def test_incomplete_finalization_distinguishes_expected_withholding_from_failure(tmp_path, monkeypatch, cleanup, error_kind):
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(), ebpf_trace_paths=(), buckets=LatencyBuckets((100.0, 500.0)),
+        repo="repo-1", artifact_dir=tmp_path,
+    )
+    artifact_path = tmp_path / "interrupted.json"
+    run = SimpleNamespace(tool_call_id="call", _observer=SimpleNamespace(
+        context=SimpleNamespace(artifact_path=artifact_path)))
+    predictor._runs_by_execution_id["interrupted"] = run
+    error = f"ValueError: {artifact_path}: replay execution is incomplete" if error_kind == "incomplete" else "OSError: write failed"
+    monkeypatch.setattr(predictor._sdk, "finish_command", lambda *a, **k: SimpleNamespace(
+        kb_observations=(), kb_observations_added=0, kb_update_error=error,
+        call_telemetry={}, telemetry_artifact={"replay_execution": "incomplete", "cleanup": cleanup},
+    ))
+    try:
+        summary = predictor.finish_execution(execution_id="interrupted", exit_code=None,
+                                             signal=None, incomplete_reason="task_timeout")
+        assert summary.kb_observations_added == 0
+        assert summary.unavailable_reason == "task_timeout"
+        assert (summary.kb_update_error is None) == (cleanup == "ok" and error_kind == "incomplete")
+        assert not predictor.execution_active("interrupted")
+    finally:
+        predictor.close()

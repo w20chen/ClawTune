@@ -98,6 +98,9 @@ def test_sidecar_config_reads_ebpf_trace_paths(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    env_file = tmp_path / ".env"
+    env_file.write_text("", encoding="utf8")
+    monkeypatch.setenv("CLAWTUNE_ENV_FILE", str(env_file))
     monkeypatch.setenv(
         "CLAWTUNE_TOOL_RESOURCE_EBPF_TRACES",
         "data/ebpf-a,data/ebpf-b",

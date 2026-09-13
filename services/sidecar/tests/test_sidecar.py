@@ -74,6 +74,50 @@ def test_runtime_drain_can_defer_global_kb_flush(monkeypatch, tmp_path) -> None:
         assert len(flushes) == 1
 
 
+def test_runtime_drain_keeps_claimed_execution_out_of_kb_barrier(monkeypatch, tmp_path) -> None:
+    state = build_state(SidecarConfig(trace_dir=tmp_path / "traces"))
+    flushes: list[bool] = []
+    monkeypatch.setattr(state.predictor, "flush_kb_updates", lambda *_args, **_kwargs: flushes.append(True))
+    with TestClient(create_app(state)) as client:
+        registration = client.post(
+            "/v2/executions",
+            json={
+                "execution_id": "exec-a",
+                "tool_call_id": "call-a",
+                "run_id": "run-a",
+                "session_key_hash": None,
+                "runtime_id": "task-a",
+                "gateway_id": "swe-rebench",
+                "command_digest": "sha256:" + "a" * 64,
+                "command": "true",
+                "backend": "managed-wrapper",
+            },
+        )
+        assert registration.status_code == 200
+        claim = client.post(
+            "/v2/executions/claim",
+            json={
+                "execution_id": "exec-a",
+                "token": registration.json()["one_time_token"],
+                "launcher_pid": 1234,
+            },
+        )
+        assert claim.status_code == 200
+        path = "/v1/gateways/swe-rebench/runtimes/task-a/drain?timeout_seconds=0"
+        waiting = client.post(path)
+        assert waiting.status_code == 200
+        assert waiting.json()["drained"] is False
+        assert waiting.json()["claimed_unexited_ids"] == ["exec-a"]
+        assert flushes == []
+        exited = client.post(
+            "/v2/executions/exec-a/exited",
+            json={"update_token": claim.json()["update_token"], "exit_code": 125, "signal": None},
+        )
+        assert exited.status_code == 200
+        assert client.post(path).json()["drained"] is True
+        assert flushes == [True]
+
+
 def test_benchmark_final_barrier_waits_for_real_runtime(monkeypatch, tmp_path):
     import io
     import urllib.parse
@@ -956,7 +1000,11 @@ def test_internal_tool_prefers_shared_sandbox_over_shared_runtime_scope(
     }
     request["tool_name"] = tool_name
     decision = client.post("/v1/decisions/tool", json=request).json()
-    (cgroup / "cpu.stat").write_text("usage_usec 200000\n", encoding="utf-8")
+    time.sleep(0.03)  # Allow the background sampler to establish its initial sample.
+    update = cgroup / "cpu.stat.next"
+    update.write_text("usage_usec 200000\n", encoding="utf-8")
+    update.replace(cgroup / "cpu.stat")
+    time.sleep(0.03)
     completion = {
         "schema_version": "clawtune.v1",
         "event_id": "evt-read-end",

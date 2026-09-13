@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "trace-event.schema.json",
+  "title": "Task trace supplemental event",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "record_type",
+    "event_type",
+    "gateway_id",
+    "runtime_id",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 6
+    },
+    "record_type": {
+      "const": "trace_event"
+    },
+    "event_type": {
+      "enum": [
+        "execution_telemetry",
+        "incomplete_span",
+        "llm_proxy_unmatched",
+        "runtime_finalization"
+      ]
+    },
+    "gateway_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "runtime_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "execution_id": {
+      "type": "string"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "artifact": {
+      "type": "object"
+    },
+    "kind": {
+      "enum": [
+        "tool",
+        "llm"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "prediction": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false
+}
