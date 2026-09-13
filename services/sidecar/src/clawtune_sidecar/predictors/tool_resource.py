@@ -1096,7 +1096,15 @@ class ToolResourcePredictor:
         )
         kb_update_errors = (
             [result.kb_update_error]
-            if result.kb_update_error is not None and not expected_incomplete_rejection else []
+            if result.kb_update_error is not None and not expected_incomplete_rejection
+            and not (
+                isinstance(result.telemetry_artifact, dict)
+                and result.telemetry_artifact.get("cleanup") == "ok"
+                and result.kb_update_error == (
+                    f"ValueError: {run._observer.context.artifact_path}: artifact telemetry quality is "
+                    f"{result.telemetry_artifact.get('telemetry_quality')!r}; not eligible for KB"
+                )
+            ) else []
         )
         accepted_observations: list[ClauseObservation] = []
         if result.kb_observations_added and not self.frozen:

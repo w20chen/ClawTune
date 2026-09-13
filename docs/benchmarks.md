@@ -97,7 +97,7 @@ python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
   --sample 3 --parallelism 3
 ```
 
-Discovery first attempts the external task source, then Hugging Face. Use the dataset-provided image, not a generic Python image. Execution requires an exclusive cgroup and valid clause-level eBPF measurements.
+Discovery first attempts the external task source, then Hugging Face. Use the dataset-provided image, not a generic Python image. Startup checks exclusive cgroup and eBPF support. Individual collection failures are recorded separately from task outcomes.
 
 ### SWE-bench Verified
 
@@ -143,7 +143,7 @@ For a key stored elsewhere, use `export TAVILY_API_KEY_FILE=/absolute/path/to/ke
 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
 ```
 
-`web_search.enabled: false` disables search. A model can still answer without calling tools; such a task fails the learning-observation check. Verify successful `web_search`/`web_fetch` spans before treating a run as online research. Their local resources belong to the shared OpenClaw host process, not the sandbox or the remote search service.
+`web_search.enabled: false` disables search. A model can still answer without calling tools; such a task has no learning observations. Verify successful `web_search`/`web_fetch` spans before treating a run as online research. Their local resources belong to the shared OpenClaw host process, not the sandbox or the remote search service.
 
 ### BFCL
 
@@ -199,7 +199,7 @@ Replace `/data/terminal-bench/original-tasks` with your task directory containin
 
 Setup installs a matched Compose/Buildx pair into the invoking user's Docker plugin directory. The wrapper preserves that Docker configuration during elevation. `python3 scripts/clawtune.py check` tests an actual Compose build; a benchmark dry-run only validates task selection.
 
-Tasks are copied into the run before container creation. Compose must provide exactly one `client` container, and host mounts/build contexts must remain within allowed run paths. Each tool invocation uses a fresh shell: use explicit `cd` and files for persistent state. Persistent interactive TTYs are unsupported. Terminal execution requires working telemetry; if it is unavailable, the command will not run. See `terminal-logs/<task>/terminal-gate.log` for diagnostics.
+Tasks are copied into the run before container creation. Compose must provide exactly one `client` container, and host mounts/build contexts must remain within allowed run paths. Each tool invocation uses a fresh shell: use explicit `cd` and files for persistent state. Persistent interactive TTYs are unsupported. Individual telemetry failures do not prevent command execution. See `terminal-logs/<task>/terminal-gate.log` for diagnostics.
 
 Compose startup/build and cleanup logs are written live to `terminal-logs/<task>/compose-up.log` and `compose-down.log` under the run directory. Agent diagnostics for this adapter are `traces/<task>/turn-0-agent-stderr.txt` after the turn finishes. Model output is stored only in `trace.jsonl`; stdout is not duplicated into another content log. `docker.platform` supplies the default service platform; explicit task platforms take precedence.
 
@@ -239,6 +239,8 @@ python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
 
 A timeout value of 0 disables that layer. Terminal also enforces its task's `max_agent_timeout_sec` and a 300-second shell-call limit; disabling a CLI timeout does not disable the native task budget.
 
+Terminal Compose build/start has a separate `docker.build_timeout_seconds` budget (default 1800 seconds, minimum 1). Increase it for slow image downloads or package mirrors, or prepare build layers with the cache commands above. This setup time does not consume the native agent budget.
+
 Resume with:
 
 ```bash
@@ -266,6 +268,8 @@ Check `status`, each result's `error` and `exit_code`, and `kb_flush_complete: t
 Each task writes directly to one `trace.jsonl`, including all sessions and turns. No post-run trace or telemetry-artifact copies are produced. Benchmark launches disable OpenClaw trajectory capture and the plugin standalone trace writer. LLM messages are retained without trace truncation. Supplemental records follow `contracts/trace-event.schema.json`: join `execution_telemetry` to tool spans by `execution_id`; its `artifact` contains the full eBPF result. Aborted PMU profiles are retained in `runtime_finalization` events. Missing completion hooks are explicitly recorded as `incomplete_span`; unmatched proxy captures are retained as `llm_proxy_unmatched`. Do not count these incomplete records as successful measurements. A successful drain requires trace persistence; abrupt process or machine failure can still lose unacknowledged in-memory events. KB files and OpenClaw session state remain operational data, not additional task trace exports.
 
 For SWE timeouts/cancellations and interrupted Terminal agents, `traces/<task-digest>/runtime-finalization.json` records executions finalized after confirmed agent and sandbox shutdown. Measurements without confirmed tool exit remain incomplete and are withheld from learning; observations from previously completed tools remain available. Finalization does not turn a failed task into a successful task, even when `kb_flush_complete` is true.
+
+Task status reflects execution errors and timeouts. `observation_issues`, `runtime-finalization.json.observation_errors`, and collector logs report monitoring or KB failures separately; an isolated failure does not cancel the batch. Very short or incomplete samples may be excluded from learning without being task failures. Check eBPF quality and PMU coverage before using a sample. `trace_flushed: false` or `kb_flush_complete: false` means persistence is incomplete, even if tasks completed; retain the run for diagnosis and do not treat it as a fully saved learning state.
 
 ```bash
 .venv/bin/python tools/inspect_trace.py /path/to/run/traces/<task>/<file>.jsonl --all --details

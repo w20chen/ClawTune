@@ -53,8 +53,8 @@ def _benchmark_requires_ebpf(task: Task) -> bool:
 
     Repository tasks launch every tool through clawtune-launch inside the task
     sandbox and terminal tasks run the gated execution lifecycle in their own
-    Compose container, so both must fail closed when the required eBPF
-    collector cannot be armed. Research and function tasks stay advisory.
+    Compose container. Require the capability at preflight, while individual
+    collection failures remain observation issues. Research and function tasks stay advisory.
     """
 
     return task.kind in {"repository", "terminal"}
@@ -260,18 +260,22 @@ def run(
             },
         )
         row = _result_dict(result)
+        row["observation_issues"] = []
         if task.kind == "repository":
             error = _required_telemetry_error(config, row)
             if error:
-                row["error"] = row.get("error") or error
+                row["observation_issues"].append({"stage": "telemetry_audit", "error": error})
         else:
             row.pop("smoke", None)
             row.pop("agent_diagnostics", None)
             if not row["resource_summary"].get("tool_span_ends"):
-                row["error"] = (
-                    row.get("error")
-                    or "no tool spans: simulation produced no learning observations"
-                )
+                row["observation_issues"].append({"stage": "telemetry_audit", "error": "no tool spans: no learning observations"})
+        diagnostics = folder / "traces" / task.directory_name / "observation-issues.jsonl"
+        if diagnostics.exists():
+            try:
+                row["observation_issues"].extend(json.loads(line) for line in diagnostics.read_text().splitlines() if line)
+            except (OSError, ValueError) as exc:
+                row["observation_issues"].append({"stage": "diagnostic_read", "error": str(exc)})
         row.update(
             benchmark=task.benchmark,
             group=task.group,
@@ -375,11 +379,13 @@ def run(
         # Per-task drains wait only for runtime-local finalizers. Persistence is
         # deliberately coalesced by the sidecar's single writer and forced once
         # here, after all producers have finished.
-        flush_all_kb_updates(port, runtime_ids)
-        manifest["kb_flush_complete"] = True
-        manifest["kb_final_generation"] = committed_state(
-            folder / "kb"
-        )["generation"]
+        try:
+            flush_all_kb_updates(port, runtime_ids)
+            manifest["kb_flush_complete"] = True
+            manifest["kb_final_generation"] = committed_state(folder / "kb")["generation"]
+        except Exception as exc:
+            manifest["kb_flush_complete"] = False
+            manifest["observation_issues"] = [{"stage": "kb_flush", "error": str(exc)}]
         manifest.pop("active_tasks", None)
         manifest["status"] = (
             "completed"

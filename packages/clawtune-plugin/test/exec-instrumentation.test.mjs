@@ -55,6 +55,20 @@ const payload = {
   resource_scope: null
 };
 
+test("managed launch retains fallback payload and policy after successful registration", async () => {
+  for (const [mode, failOpen, expected] of [["observe", false, "1"], ["enforce", true, "1"], ["enforce", false, "0"]]) {
+    const result = await instrumentExecParams(
+      {toolName: "exec", params: {command: "printf original", host: "gateway"}},
+      {}, payload, null,
+      {async registerExecution() { return {one_time_token: "registered"}; }},
+      {...baseConfig, executionBackend: "managed-wrapper", mode, failOpen},
+    );
+    assert.equal(result.params.env.CLAWTUNE_EXECUTION_TOKEN, "registered");
+    assert.equal(result.params.env.CLAWTUNE_PAYLOAD_COMMAND, "printf original");
+    assert.equal(result.params.env.CLAWTUNE_TELEMETRY_FAIL_OPEN, expected);
+  }
+});
+
 test("completion prefers the execution scope over shared OpenClaw scopes", async (t) => {
   const executionScope = {
     kind: "cgroup-v2",

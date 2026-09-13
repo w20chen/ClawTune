@@ -234,7 +234,7 @@ class TerminalBackend:
     def __init__(self, task, run_dir: Path, *, deadline: float | None = None, platform: str = "",
                  sidecar_port: int | None = None, runtime_id: str = "",
                  gateway_id: str = GATEWAY_ID, repo: str = "terminal-bench",
-                 telemetry_required: bool = False):
+                 telemetry_required: bool = False, build_timeout_seconds: float = 1800):
         self.deadline = deadline
         self._cancelled = threading.Event()
         self.telemetry_required = telemetry_required
@@ -306,7 +306,7 @@ class TerminalBackend:
                 if isinstance(build, dict) and not Path(build["context"]).resolve().is_relative_to(self.root.resolve()):
                     raise ValueError("Terminal task build context is outside its copied task")
             self.started = True
-            self._run(["up", "-d", "--build"], timeout=600)
+            self._run(["up", "-d", "--build"], timeout=build_timeout_seconds)
             self.container = self._run(["ps", "-q", "client"], timeout=30).stdout.strip()
             if not self.container or "\n" in self.container:
                 raise ValueError("Terminal Bench Compose must expose exactly one client container")
@@ -363,8 +363,6 @@ class TerminalBackend:
             raise ValueError("terminal_exec requires command")
         command = arguments["command"]
         if self.sidecar is None or not self.gate_available or not call_id:
-            if self.telemetry_required:
-                raise ExecutionStartRejected("required terminal execution gate is unavailable")
             return self._result(self._plain_exec(command))
         return self._gated_exec(command, call_id)
 
@@ -408,6 +406,10 @@ class TerminalBackend:
             return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
         except BaseException:
             self._terminate(process)
+            # Killing the Docker client does not stop its container payload.
+            # Without a gate identity the owned container is the cleanup boundary.
+            subprocess.run(["docker", "stop", "--time", "1", self.container],
+                           check=True, capture_output=True, timeout=10)
             raise
 
     def _gated_exec(self, command: str, call_id: str) -> dict:
@@ -415,15 +417,16 @@ class TerminalBackend:
 
         The sidecar arms PMU counters on the verified host PID while the gate
         is still blocked, so the counting window starts exactly at the payload
-        exec.  A missing identity or an unreachable sidecar degrades to a plain
-        exec (no PMU evidence is invented); an explicit start rejection fails
-        the tool call closed because the required collector was not armed.
+        exec. A missing identity degrades before releasing any payload. With
+        a valid identity, telemetry failure releases the same gated child;
+        its exit status and cancellation boundary remain authoritative.
         """
 
         remaining = self._remaining(self.timeout)
         execution_id = "terminal-" + uuid.uuid4().hex[:24]
         process = self._start_gated_process(command)
         update_token: str | None = None
+        identity = None
         try:
             identity = self._read_gate_identity(process, timeout=min(30.0, remaining))
             if identity is None:
@@ -450,16 +453,18 @@ class TerminalBackend:
                 starttime_ticks=starttime_ticks,
                 container_id=self.container,
             )
-        except (_GateDegrade, SidecarUnavailable) as exc:
+        except (_GateDegrade, SidecarUnavailable, ExecutionStartRejected) as exc:
             if isinstance(exc, _GateDegrade):
                 self._disable_gate(str(exc))
             else:
                 self._gate_log(f"execution {execution_id} degraded: {exc}")
-            self._terminate(process)
-            self._report_exit(execution_id, update_token, exit_code=None, term_signal=signal.SIGTERM)
-            if self.telemetry_required:
-                raise ExecutionStartRejected(f"required terminal telemetry unavailable: {exc}") from exc
-            return self._result(self._plain_exec(command))
+            if identity is None:
+                self._terminate(process)
+                self._report_exit(execution_id, update_token, exit_code=None, term_signal=signal.SIGTERM)
+                return self._result(self._plain_exec(command))
+            # Keep the same gated payload and its verified cleanup identity.
+            # Losing telemetry must neither retry the command nor lose the
+            # ability to kill its process tree on a later timeout.
         except BaseException:
             self._terminate(process)
             self._report_exit(execution_id, update_token, exit_code=None, term_signal=signal.SIGTERM)
@@ -574,8 +579,6 @@ class TerminalBackend:
             except SidecarUnavailable as exc:
                 self._gate_log(f"execution {execution_id} exit report failed: {exc}")
                 if attempt == 2:
-                    if self.telemetry_required:
-                        raise ExecutionStartRejected(f"execution exit was not acknowledged: {execution_id}") from exc
                     return
                 time.sleep(0.1 * (attempt + 1))
 

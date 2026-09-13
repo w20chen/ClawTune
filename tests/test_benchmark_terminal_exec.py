@@ -53,6 +53,19 @@ def test_gate_script_releases_only_after_the_host_token():
     assert "exit 126" in GATE_SCRIPT
 
 
+def test_plain_exec_timeout_stops_owned_container(monkeypatch, tmp_path):
+    backend = _terminal_backend(tmp_path, _FakeSidecar())
+    process = SimpleNamespace(args=["docker", "exec"])
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: process)
+    monkeypatch.setattr(backend, "_communicate", lambda *a, **k: (_ for _ in ()).throw(subprocess.TimeoutExpired("payload", 1)))
+    stopped = []
+    monkeypatch.setattr(backend, "_terminate", lambda p: stopped.append(p))
+    monkeypatch.setattr(subprocess, "run", lambda command, **kwargs: stopped.append(command))
+    with pytest.raises(subprocess.TimeoutExpired):
+        backend._plain_exec("payload")
+    assert stopped == [process, ["docker", "stop", "--time", "1", backend.container]]
+
+
 @pytest.mark.parametrize(
     "kind,required",
     [
@@ -232,17 +245,14 @@ def test_terminal_backend_degrades_when_gate_identity_is_unavailable(monkeypatch
     assert "terminal-gate.log" in [path.name for path in tmp_path.iterdir()]
 
 
-def test_terminal_backend_fails_closed_when_the_start_is_rejected(monkeypatch, tmp_path):
+def test_terminal_backend_runs_once_when_monitoring_start_is_rejected(monkeypatch, tmp_path):
     sidecar = _FakeSidecar(reject_start=True)
     backend = _terminal_backend(tmp_path, sidecar)
     process = _FakeProcess()
     monkeypatch.setattr(backend, "_start_gated_process", lambda command: process)
 
-    with pytest.raises(ExecutionStartRejected):
-        backend.call("terminal_exec", {"command": "echo hi"}, call_id="call-1")
-
-    assert process.stdin.closed is True
-    assert process.stdin.written == ""
+    backend.call("terminal_exec", {"command": "echo hi"}, call_id="call-1")
+    assert process.stdin.written == "go\n"
     assert [name for name, _ in sidecar.calls] == ["register", "claim", "started", "exited"]
 
 
@@ -288,7 +298,7 @@ def test_real_subprocess_releases_and_preserves_result(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("phase", ["register", "claim", "started"])
-def test_real_gate_aborts_on_http_failure(monkeypatch, tmp_path, phase):
+def test_real_gate_releases_once_on_monitor_http_failure(monkeypatch, tmp_path, phase):
     sidecar = _FakeSidecar()
     client = SidecarExecutions(1)
     def fail(*args, **kwargs):
@@ -305,8 +315,8 @@ def test_real_gate_aborts_on_http_failure(monkeypatch, tmp_path, phase):
         return SimpleNamespace(returncode=0, stdout="fallback", stderr="")
     monkeypatch.setattr(backend, "_plain_exec", plain)
     try:
-        assert backend.call("terminal_exec", {"command": "payload"}, call_id="real")["stdout"] == "fallback"
-        assert plain_calls == ["payload"]
+        assert backend.call("terminal_exec", {"command": "payload"}, call_id="real")["stdout"] == "payload out\n"
+        assert plain_calls == []
         if phase == "started":
             assert sidecar.calls[-1][0] == "exited"
     finally:
@@ -329,7 +339,7 @@ def test_http_exit_failure_does_not_turn_success_into_retry(monkeypatch, tmp_pat
 
 
 @pytest.mark.parametrize("phase,status", [("register", 403), ("claim", 409), ("claim", 503), ("started", 503)])
-def test_protocol_rejection_never_runs_payload(monkeypatch, tmp_path, phase, status):
+def test_monitor_protocol_rejection_preserves_payload(monkeypatch, tmp_path, phase, status):
     sidecar = _FakeSidecar()
     client = SidecarExecutions(1)
     def fail(*args, **kwargs):
@@ -340,14 +350,13 @@ def test_protocol_rejection_never_runs_payload(monkeypatch, tmp_path, phase, sta
     process = _real_gate()
     monkeypatch.setattr(backend, "_start_gated_process", lambda command: process)
     try:
-        with pytest.raises(ExecutionStartRejected):
-            backend.call("terminal_exec", {"command": "payload"}, call_id="real")
-        assert process.poll() == 125
+        assert backend.call("terminal_exec", {"command": "payload"}, call_id="real")["stdout"] == "payload out\n"
+        assert process.poll() == 0
     finally:
         backend._terminate(process)
 
 
-def test_required_telemetry_never_degrades_to_unobserved_execution(monkeypatch, tmp_path):
+def test_requested_telemetry_does_not_prevent_unobserved_execution(monkeypatch, tmp_path):
     sidecar = _FakeSidecar()
     def unavailable(**kwargs):
         raise SidecarUnavailable("connection refused")
@@ -357,12 +366,11 @@ def test_required_telemetry_never_degrades_to_unobserved_execution(monkeypatch, 
     process = _real_gate()
     monkeypatch.setattr(backend, "_start_gated_process", lambda command: process)
     try:
-        with pytest.raises(ExecutionStartRejected, match="required terminal telemetry"):
-            backend.call("terminal_exec", {"command": "payload"}, call_id="real")
-        assert process.poll() == 125
+        assert backend.call("terminal_exec", {"command": "payload"}, call_id="real")["stdout"] == "payload out\n"
+        assert process.poll() == 0
         backend.gate_available = False
-        with pytest.raises(ExecutionStartRejected, match="gate is unavailable"):
-            backend.call("terminal_exec", {"command": "payload"}, call_id="next")
+        monkeypatch.setattr(backend, "_plain_exec", lambda command: SimpleNamespace(returncode=7, stdout="fallback", stderr=""))
+        assert backend.call("terminal_exec", {"command": "payload"}, call_id="next")["exit_code"] == 7
     finally:
         backend._terminate(process)
 

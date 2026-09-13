@@ -50,7 +50,7 @@ def test_timeout_finalizes_only_after_confirmed_cleanup(monkeypatch, tmp_path, f
     kwargs = dict(task=TaskDef(instance_id="org__repo-1", image="cached"), trace_dir=trace,
                   config=config, runtime_assets_dir=tmp_path / "assets", sidecar_port=19090,
                   shared_sidecar_trace_dir=tmp_path / "shared", manage_sidecar=False)
-    if failure:
+    if failure in ("agent", "sandbox"):
         with pytest.raises(RuntimeError, match="unconfirmed|cleanup failed|abort failed"):
             host.run_host_openclaw_task(**kwargs)
     else:
@@ -58,6 +58,8 @@ def test_timeout_finalizes_only_after_confirmed_cleanup(monkeypatch, tmp_path, f
         assert result.exit_code == (-1 if outcome == "cancelled" else 124)
         assert result.error == ("benchmark cancelled" if outcome == "cancelled" else "task timed out after 1800s")
         assert calls == ["agent", "sandbox", "abort", "drain"]
+        if failure == "abort":
+            assert "abort failed" in (trace / "observation-issues.jsonl").read_text()
     if failure in ("agent", "sandbox"):
         assert "abort" not in calls
 

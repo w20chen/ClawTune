@@ -326,7 +326,8 @@ def test_terminal_copies_native_environment_and_rejects_external_bind(monkeypatc
     assert {p.name: digest(p) for p in taskdir.iterdir()} == before
 
 
-def test_runner_runs_concurrently_and_flushes_async_kb_once(monkeypatch, tmp_path):
+@pytest.mark.parametrize("parallelism", [2, 8])
+def test_runner_runs_concurrently_and_flushes_async_kb_once(monkeypatch, tmp_path, parallelism):
     import threading
     from types import SimpleNamespace
     from benchmarks import runner, runtime
@@ -344,7 +345,7 @@ def test_runner_runs_concurrently_and_flushes_async_kb_once(monkeypatch, tmp_pat
     active = 0
     max_active = 0
     lock = threading.Lock()
-    overlap = threading.Barrier(2)
+    overlap = threading.Barrier(parallelism)
     monkeypatch.setattr(host_openclaw, "_start_sidecar", lambda **k: starts.append(k) or "process")
     monkeypatch.setattr(host_openclaw, "_stop_process", lambda p: stops.append(p))
     def execute(task, cfg, assets, folder, port):
@@ -360,9 +361,9 @@ def test_runner_runs_concurrently_and_flushes_async_kb_once(monkeypatch, tmp_pat
             active -= 1
         return SimpleNamespace(task_id=task.task_id, exit_code=0)
     def flush_all_kb_updates(port, runtime_ids):
-        assert len(set(runtime_ids)) == 4
+        assert len(set(runtime_ids)) == 2 * parallelism
         path = tmp_path / "run/kb"
-        assert set(pending) == {"0", "1", "2", "3"}
+        assert set(pending) == {str(i) for i in range(2 * parallelism)}
         with StateStore(path) as store:
             kb = RuntimeToolResourceKB()
             for index, task_id in enumerate(sorted(pending), 1):
@@ -374,13 +375,13 @@ def test_runner_runs_concurrently_and_flushes_async_kb_once(monkeypatch, tmp_pat
     monkeypatch.setattr(runtime, "flush_all_kb_updates", flush_all_kb_updates)
     monkeypatch.setattr(old_runner, "_result_dict", lambda result: {"task_id": result.task_id,
         "exit_code": result.exit_code, "error": None, "resource_summary": {"tool_span_ends": 1}})
-    tasks = [ADAPTERS["deep-research-bench"]({"id": i, "prompt": "work"}) for i in range(4)]
+    tasks = [ADAPTERS["deep-research-bench"]({"id": i, "prompt": "work"}) for i in range(2 * parallelism)]
     result = runner.run(tasks, config_path=cfg_path, seed=seed,
-                        output=tmp_path / "run", parallelism=2)
-    assert result["status"] == "completed" and observed == [1, 1, 1, 1]
-    assert max_active == 2
+                        output=tmp_path / "run", parallelism=parallelism)
+    assert result["status"] == "completed" and observed == [1] * (2 * parallelism)
+    assert max_active == parallelism
     assert barriers == [2]
-    assert result["parallelism"] == 2
+    assert result["parallelism"] == parallelism
     assert result["kb_flush_complete"] is True
     assert result["kb_final_generation"] == 2
     assert len(starts) == 1 and stops == ["process"]
@@ -394,7 +395,8 @@ def test_runner_runs_concurrently_and_flushes_async_kb_once(monkeypatch, tmp_pat
         runner.run(tasks, config_path=cfg_path, seed=seed, resume=tmp_path / "run")
 
 
-def test_concurrent_runtime_uses_task_local_config(monkeypatch, tmp_path):
+@pytest.mark.parametrize("workers", [2, 8])
+def test_concurrent_runtime_uses_task_local_config(monkeypatch, tmp_path, workers):
     import concurrent.futures
     import threading
     from types import SimpleNamespace
@@ -409,10 +411,10 @@ def test_concurrent_runtime_uses_task_local_config(monkeypatch, tmp_path):
             "problem_statement": "fix",
             "docker_image": f"image-{index}",
         })
-        for index in range(2)
+        for index in range(workers)
     ]
     shared = SimpleNamespace()
-    overlap = threading.Barrier(2)
+    overlap = threading.Barrier(workers)
     seen = []
 
     def run_host_openclaw_task(**kwargs):
@@ -424,17 +426,17 @@ def test_concurrent_runtime_uses_task_local_config(monkeypatch, tmp_path):
                                image=kwargs["task"].image, exit_code=0)
 
     monkeypatch.setattr(host_openclaw, "run_host_openclaw_task", run_host_openclaw_task)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         results = list(executor.map(
             lambda task: runtime.execute(task, shared, tmp_path, tmp_path / "run", 8765),
             tasks,
         ))
 
     assert [result.task_id for result in results] == [task.task_id for task in tasks]
-    assert len({row[0] for row in seen}) == 2
+    assert len({row[0] for row in seen}) == workers
     assert {(row[1], row[2]) for row in seen} == {
         (f"swe-rebench:org/repo-{index}", tasks[index].directory_name)
-        for index in range(2)
+        for index in range(workers)
     }
     assert all(row[3] is False for row in seen)
     assert not hasattr(shared, "kb_repo")
@@ -508,11 +510,14 @@ def test_runner_failure_cancels_workers_and_preserves_report(monkeypatch, tmp_pa
         monkeypatch.setattr(runner.concurrent.futures, "wait", interrupt_once)
 
     tasks = [ADAPTERS["deep-research-bench"]({"id": i, "prompt": "work"}) for i in range(3)]
-    with pytest.raises(KeyboardInterrupt if failure == "interrupt" else RuntimeError):
+    if failure == "barrier":
         runner.run(tasks, config_path=cfg_path, seed=seed, output=tmp_path / "run")
+    else:
+        with pytest.raises(KeyboardInterrupt if failure == "interrupt" else RuntimeError):
+            runner.run(tasks, config_path=cfg_path, seed=seed, output=tmp_path / "run")
     manifest = json.loads((tmp_path / "run/run.json").read_text())
     assert manifest == json.loads((tmp_path / "run/report.json").read_text())
-    assert manifest["status"] == ("interrupted" if failure == "interrupt" else "failed")
+    assert manifest["status"] == {"interrupt": "interrupted", "executor": "failed", "barrier": "completed"}[failure]
     assert manifest["kb_flush_complete"] is False
     assert "kb_final_generation" not in manifest
     assert {row["task_id"] for row in manifest["results"]} == set(starts)
@@ -524,6 +529,7 @@ def test_runner_failure_cancels_workers_and_preserves_report(monkeypatch, tmp_pa
         assert not barriers
     else:
         assert len(barriers) == 1
+        assert manifest["observation_issues"]
     with pytest.raises(ValueError, match="partial learning|durability barrier"):
         runner.run(tasks, config_path=cfg_path, seed=seed, resume=tmp_path / "run")
 

@@ -126,6 +126,7 @@ class DockerConfig:
     cgroupns_mode: str = ""
     cgroup_mount_rw: bool = False
     cgroup_required: bool = False
+    build_timeout_seconds: float = 1800
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DockerConfig":
@@ -142,6 +143,7 @@ class DockerConfig:
             cgroupns_mode=str(d.get("cgroupns_mode", "")),
             cgroup_mount_rw=_as_bool(d.get("cgroup_mount_rw", False)),
             cgroup_required=_as_bool(d.get("cgroup_required", False)),
+            build_timeout_seconds=max(1.0, float(d.get("build_timeout_seconds", 1800))),
         )
 
 

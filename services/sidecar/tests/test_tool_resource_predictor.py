@@ -2277,9 +2277,13 @@ def test_tool_resource_predictor_persists_clause_kb_prefixes(tmp_path: Path) -> 
     assert result.tool_resource["continuous_predictions"]["latency_ms"]["key_kind"] == "command_prefix_depth_3"
 
 
+@pytest.mark.parametrize("workers", [2, 8])
+@pytest.mark.parametrize("fail_once", [False, True])
 def test_tool_resource_predictor_concurrent_completions_persist_without_lost_update(
     tmp_path: Path,
     monkeypatch,
+    workers,
+    fail_once,
 ) -> None:
     artifact_dir = tmp_path / "tool-resource"
     predictor = ToolResourcePredictor.from_traces(
@@ -2298,13 +2302,17 @@ def test_tool_resource_predictor_concurrent_completions_persist_without_lost_upd
 
     def track_write(path: Path, obj) -> None:
         writes.append((path, threading.current_thread().name))
+        if fail_once and path.name == "runtime-tool-resource-kb.json" and sum(p == path for p, _ in writes) == 1:
+            raise OSError("injected transient snapshot write failure")
         original_write(path, obj)
 
     monkeypatch.setattr(tool_resource_predictor, "_write_json_atomic", track_write)
-    predictor.record_tool_started(_tool_request("evt-1", "call-1", "python task_a.py"))
-    predictor.record_tool_started(_tool_request("evt-2", "call-2", "python task_b.py"))
+    for index in range(workers):
+        predictor.record_tool_started(_tool_request(f"evt-{index}", f"call-{index}", f"python task_{index}.py"))
+    overlap = threading.Barrier(workers)
 
     def complete(event_id: str, tool_call_id: str) -> int:
+        overlap.wait(timeout=5)
         return predictor.observe_completion(
             ToolCompletedEvent(
                 schema_version="clawtune.v1",
@@ -2332,24 +2340,29 @@ def test_tool_resource_predictor_concurrent_completions_persist_without_lost_upd
             _runtime_sample(event_id, tool_call_id),
         )
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         results = list(
             executor.map(
                 lambda args: complete(*args),
-                [("evt-1", "call-1"), ("evt-2", "call-2")],
+                [(f"evt-{i}", f"call-{i}") for i in range(workers)],
             )
         )
 
-    assert results == [1, 1]
-    predictor.flush_kb_updates(timeout_seconds=2.0)
+    assert results == [1] * workers
+    try:
+        predictor.flush_kb_updates(timeout_seconds=5.0)
+    except tool_resource_predictor.KnowledgeBaseFlushError:
+        assert fail_once
+        predictor.flush_kb_updates(timeout_seconds=5.0)
     runtime_writes = [
         (path, thread_name)
         for path, thread_name in writes
         if path.name == "runtime-tool-resource-kb.json"
     ]
-    assert runtime_writes == [
-        (artifact_dir / "runtime-tool-resource-kb.json", "clawtune-kb-writer")
-    ]
+    assert runtime_writes
+    assert all(name == "clawtune-kb-writer" for _, name in runtime_writes)
+    if fail_once:
+        assert len(runtime_writes) >= 2
     reloaded = ToolResourcePredictor.from_traces(
         openclaw_trace_paths=(),
         ebpf_trace_paths=(),
@@ -2357,11 +2370,10 @@ def test_tool_resource_predictor_concurrent_completions_persist_without_lost_upd
         repo="repo-1",
         artifact_dir=artifact_dir,
     )
-    first = reloaded.predict(_tool_request("evt-next-1", "call-next-1", "python task_a.py"))
-    second = reloaded.predict(_tool_request("evt-next-2", "call-next-2", "python task_b.py"))
-
-    assert first.tool_resource["continuous_predictions"]["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
-    assert second.tool_resource["continuous_predictions"]["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
+    assert reloaded.continuous_kb.to_json_obj() == predictor.continuous_kb.to_json_obj()
+    for index in range(workers):
+        prediction = reloaded.predict(_tool_request(f"next-{index}", f"next-{index}", f"python task_{index}.py"))
+        assert prediction.tool_resource["continuous_predictions"]["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
 
 
 def test_tool_resource_predictor_continuous_memory_uses_ambient_anchor() -> None:
@@ -3016,7 +3028,7 @@ def test_sidecar_response_includes_kv_ttl_cost_key(tmp_path: Path) -> None:
     assert tr["kv_ttl_cost"]["reference_runtime_s"] == pytest.approx(1.2)
 
 
-@pytest.mark.parametrize("cleanup,error_kind", [("ok", "incomplete"), ("failed", "incomplete"), ("ok", "io")])
+@pytest.mark.parametrize("cleanup,error_kind", [("ok", "incomplete"), ("failed", "incomplete"), ("ok", "invalid"), ("failed", "invalid"), ("ok", "io")])
 def test_incomplete_finalization_distinguishes_expected_withholding_from_failure(tmp_path, monkeypatch, cleanup, error_kind):
     predictor = ToolResourcePredictor.from_traces(
         openclaw_trace_paths=(), ebpf_trace_paths=(), buckets=LatencyBuckets((100.0, 500.0)),
@@ -3027,16 +3039,18 @@ def test_incomplete_finalization_distinguishes_expected_withholding_from_failure
         context=SimpleNamespace(artifact_path=artifact_path)))
     predictor._runs_by_execution_id["interrupted"] = run
     error = f"ValueError: {artifact_path}: replay execution is incomplete" if error_kind == "incomplete" else "OSError: write failed"
+    if error_kind == "invalid":
+        error = f"ValueError: {artifact_path}: artifact telemetry quality is 'invalid'; not eligible for KB"
     monkeypatch.setattr(predictor._sdk, "finish_command", lambda *a, **k: SimpleNamespace(
         kb_observations=(), kb_observations_added=0, kb_update_error=error,
-        call_telemetry={}, telemetry_artifact={"replay_execution": "incomplete", "cleanup": cleanup},
+        call_telemetry={}, telemetry_artifact={"replay_execution": "incomplete", "cleanup": cleanup, "telemetry_quality": "invalid"},
     ))
     try:
         summary = predictor.finish_execution(execution_id="interrupted", exit_code=None,
                                              signal=None, incomplete_reason="task_timeout")
         assert summary.kb_observations_added == 0
         assert summary.unavailable_reason == "task_timeout"
-        assert (summary.kb_update_error is None) == (cleanup == "ok" and error_kind == "incomplete")
+        assert (summary.kb_update_error is None) == (cleanup == "ok" and error_kind in {"incomplete", "invalid"})
         assert not predictor.execution_active("interrupted")
     finally:
         predictor.close()

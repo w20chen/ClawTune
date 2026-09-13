@@ -107,7 +107,8 @@ def _execute_bridged(task, config, run_dir, port, trace):
         backend = BFCLBackend(task, run_dir) if task.kind == "functions" else TerminalBackend(
             task, run_dir, deadline=deadline, platform=config.docker.platform,
             sidecar_port=port, runtime_id=runtime_id, repo=config.kb_repo,
-            telemetry_required=config.runtime.ebpf_required)
+            telemetry_required=config.runtime.ebpf_required,
+            build_timeout_seconds=getattr(config.docker, "build_timeout_seconds", 1800))
     except TerminalCaseBuildFailure as exc:
         # The constructor only re-raises this error after close() succeeds.
         # No agent or tool producer has started; this case may fail independently.
@@ -165,21 +166,22 @@ def _execute_bridged(task, config, run_dir, port, trace):
             if task.kind == "terminal" and agent_stopped.is_set() and exit_code != 0:
                 # Only assert sandbox cleanup after Compose down succeeds.
                 backend.close()
-                host._abort_runtime(
+                host._observe_best_effort(trace, "runtime_finalization", lambda: host._abort_runtime(
                     port, runtime_id, gateway_id="swe-rebench",
                     reason=("agent_timeout" if exit_code == 124 else
                             "cancelled" if exit_code == -1 else "runtime_stopped"),
                     trace_dir=trace,
-                )
-            host._drain_runtime(
+                ))
+            host._observe_best_effort(trace, "runtime_drain", lambda: host._drain_runtime(
                 port,
                 runtime_id,
                 gateway_id="swe-rebench",
                 flush_kb=False,
-            )
+            ))
         finally:
             try:
-                host._collect_runtime_traces(run_dir / "sidecar", trace, runtime_id, task_label=task.directory_name)
+                host._observe_best_effort(trace, "trace_snapshot", lambda: host._collect_runtime_traces(
+                    run_dir / "sidecar", trace, runtime_id, task_label=task.directory_name))
             finally:
                 backend.close()
     return ContainerResult(task_id=task.task_id, image=task.image, exit_code=exit_code, error=error,

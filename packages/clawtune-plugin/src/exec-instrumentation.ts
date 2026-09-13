@@ -207,6 +207,8 @@ export async function instrumentExecParams(
     ...safeExecEnv(params.env),
     ...inheritedLauncherEnv,
     CLAWTUNE_EXECUTION_ID: executionId,
+    CLAWTUNE_TELEMETRY_FAIL_OPEN: config.mode === "observe" || config.failOpen ? "1" : "0",
+    CLAWTUNE_PAYLOAD_COMMAND: requestedCommand,
     ...(token !== null && config.executionBackend === "managed-wrapper"
       ? {CLAWTUNE_EXECUTION_TOKEN: token}
       : {}),

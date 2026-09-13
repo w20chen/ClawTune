@@ -9,7 +9,9 @@
     "runtime_id": {"type": "string", "minLength": 1},
     "reason": {"enum": ["task_timeout", "agent_timeout", "cancelled", "runtime_stopped"]},
     "aborted_execution_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
-    "pmu_profiles": {"type": "object", "additionalProperties": {"$ref": "pmu-profile.schema.json"}}
+    "pmu_profiles": {"type": "object", "additionalProperties": {"$ref": "pmu-profile.schema.json"}},
+    "trace_flushed": {"type": "boolean"},
+    "observation_errors": {"type": "array", "items": {"type": "object", "required": ["execution_id", "error"], "properties": {"execution_id": {"type": "string"}, "error": {"type": "string"}}, "additionalProperties": false}}
   },
   "additionalProperties": false
 }

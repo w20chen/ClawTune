@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 import os
 import sys
@@ -11,6 +12,8 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
+
+logger = logging.getLogger(__name__)
 
 from clawtune_sidecar import __version__ as _sidecar_version
 from clawtune_sidecar.api.dependencies import AppState, build_state
@@ -1623,7 +1626,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         key = (gateway_id, runtime_id)
         previous = runtime_abort_tasks.get(key)
         if previous is not None and not previous.cancelled():
-            if not previous.done() or previous.exception() is None:
+            if not previous.done() or (previous.exception() is None and not previous.result().get("observation_errors")):
                 return await asyncio.shield(previous)
         records = s.executions.for_runtime(runtime_id, gateway_id)
         # Legacy records without an explicit gateway cannot be safely retired
@@ -1657,6 +1660,14 @@ def create_app(state: AppState | None = None) -> FastAPI:
         async def finalize() -> dict[str, Any]:
             aborted_ids: list[str] = []
             pmu_profiles: dict[str, Any] = {}
+            observation_errors: list[dict[str, str]] = []
+
+            async def finish_observation(execution_id: str, **kwargs: Any) -> None:
+                try:
+                    await finish_ebpf(s, execution_id, trace_owner=(gateway_id, runtime_id), **kwargs)
+                except Exception as exc:
+                    observation_errors.append({"execution_id": execution_id, "error": str(exc)})
+
             by_id = {record.request.execution_id: record for record in records}
             active_by_owner = getattr(s.predictor, "active_execution_ids", None)
             collector_ids = active_by_owner(runtime_id, gateway_id) if callable(active_by_owner) else ()
@@ -1673,11 +1684,10 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     # that authoritative status when finishing its collector.
                     if ebpf_needs_finalization(s, execution_id):
                         cancel_ebpf_fallback(s, execution_id)
-                        await finish_ebpf(s, execution_id, exit_code=record.exit_code, signal=record.signal,
-                                          trace_owner=(gateway_id, runtime_id))
+                        await finish_observation(execution_id, exit_code=record.exit_code, signal=record.signal)
                         telemetry = s.predictor.execution_telemetry(execution_id)
                         if getattr(telemetry, "kb_update_error", None):
-                            raise HTTPException(status_code=503, detail="runtime_finalization_failed")
+                            observation_errors.append({"execution_id": execution_id, "error": telemetry.kb_update_error})
                     continue
                 # A retained collector may outlive its registry record. Its
                 # owner is still known; absent exit evidence it stays incomplete.
@@ -1685,24 +1695,35 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     s.executions.abort(execution_id, request.reason)
                 aborted_ids.append(execution_id)
                 cancel_ebpf_fallback(s, execution_id)
-                pmu_profiles[execution_id] = s.pmu_collector.abort(execution_id).to_dict()
+                try:
+                    pmu_profiles[execution_id] = s.pmu_collector.abort(execution_id).to_dict()
+                except Exception as exc:
+                    observation_errors.append({"execution_id": execution_id, "error": str(exc)})
                 await s.leases.release_execution(execution_id)
                 if ebpf_needs_finalization(s, execution_id):
-                    await finish_ebpf(s, execution_id, exit_code=None, signal=None,
-                                      incomplete_reason=request.reason, trace_owner=(gateway_id, runtime_id))
+                    await finish_observation(execution_id, exit_code=None, signal=None,
+                                             incomplete_reason=request.reason)
                 telemetry = s.predictor.execution_telemetry(execution_id)
                 if getattr(telemetry, "kb_update_error", None):
-                    raise HTTPException(status_code=503, detail="runtime_finalization_failed")
+                    observation_errors.append({"execution_id": execution_id, "error": telemetry.kb_update_error})
                 if not await cleanup_owned_cgroup(s, execution_id):
                     schedule_owned_cgroup_cleanup(s, execution_id)
             response = {"finalized": True, "gateway_id": gateway_id, "runtime_id": runtime_id,
                         "reason": request.reason, "aborted_execution_ids": sorted(aborted_ids),
-                        "pmu_profiles": pmu_profiles}
+                        "pmu_profiles": pmu_profiles, "observation_errors": observation_errors,
+                        "trace_flushed": s.trace_writer is None}
             if s.trace_writer is not None:
-                s.trace_writer.finalize_pending(runtime_id, gateway_id, reason=request.reason)
-                s.trace_writer.record_runtime_finalization(gateway_id, runtime_id, response)
-                if not await asyncio.to_thread(s.trace_writer.flush):
-                    raise HTTPException(status_code=503, detail="trace_persistence_failed")
+                try:
+                    s.trace_writer.finalize_pending(runtime_id, gateway_id, reason=request.reason)
+                    # A trace cannot acknowledge its own later flush. Only the
+                    # HTTP response carries the durability acknowledgement.
+                    s.trace_writer.record_runtime_finalization(gateway_id, runtime_id,
+                        {k: v for k, v in response.items() if k != "trace_flushed"})
+                    response["trace_flushed"] = await asyncio.to_thread(s.trace_writer.flush)
+                except Exception as exc:
+                    observation_errors.append({"execution_id": "", "error": str(exc)})
+                if not response["trace_flushed"]:
+                    observation_errors.append({"execution_id": "", "error": "trace_persistence_failed"})
             return response
 
         task = asyncio.create_task(finalize())
@@ -1931,14 +1952,15 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 if s.docker_exec_observer is not None and event.tool_name not in {"web_search", "web_fetch"}
                 else None
             )
-            if inferred_scope is not None:
-                s.tool_monitor.bind_scope(
+            if inferred_scope is not None and not _is_authoritative_execution_scope(event.resource_scope, event.execution_id):
+                bound = s.tool_monitor.bind_scope(
                     event.tool_call_id,
                     inferred_scope,
                     runtime_id=event.runtime_id,
                     owner=event,
                 )
-                event = event.model_copy(update={"resource_scope": inferred_scope})
+                if bound:
+                    event = event.model_copy(update={"resource_scope": inferred_scope})
             else:
                 event = completed_with_sandbox_fallback(event, s)
             await s.leases.release(
@@ -1963,18 +1985,21 @@ def create_app(state: AppState | None = None) -> FastAPI:
                             sample,
                             pmu_profile=pmu_profile.to_dict(),
                         )
-                await asyncio.to_thread(s.predictor.observe_completion, event, sample)
+                try:
+                    await asyncio.to_thread(s.predictor.observe_completion, event, sample)
+                except Exception:
+                    logger.exception("KB observation failed for execution %s", event.execution_id)
                 s.metrics.observe_tool_runtime(sample)
                 s._recent_samples.insert(0, _sample_summary(sample))
                 if len(s._recent_samples) > s._max_recent_samples:
                     s._recent_samples.pop()
                 if s.trace_writer is not None:
-                    s.trace_writer.record_tool(event, sample)
-                    # Make the {"stored": True} acknowledgement durable: the
-                    # trace writer persists asynchronously on a dedicated
-                    # thread, so drain its queue before responding.
-                    if not await asyncio.to_thread(s.trace_writer.flush):
-                        raise HTTPException(status_code=503, detail="trace_persistence_failed")
+                    try:
+                        s.trace_writer.record_tool(event, sample)
+                        if not await asyncio.to_thread(s.trace_writer.flush):
+                            logger.error("Trace persistence incomplete for execution %s", event.execution_id)
+                    except Exception:
+                        logger.exception("Trace persistence failed for execution %s", event.execution_id)
             if event.execution_id is not None:
                 s.executions.mark_completed(event.execution_id)
                 if not await cleanup_owned_cgroup(s, event.execution_id):

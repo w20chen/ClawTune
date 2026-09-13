@@ -10,6 +10,61 @@ import pytest
 from clawtune_sidecar import launcher
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires real POSIX payload processes")
+@pytest.mark.parametrize("launch_mode", ["fork-exec", "subprocess"])
+def test_eight_launchers_preserve_exactly_once_payload_on_telemetry_failures(tmp_path, launch_mode):
+    import concurrent.futures
+    import json
+    import subprocess
+    import sys
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    commands = {f"exec-{i}": f"printf x >> {shlex.quote(str(tmp_path / str(i)))}; exit {i}" for i in range(8)}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            execution_id = body.get("execution_id") or self.path.split("/")[-2]
+            index = int(execution_id.split("-")[-1])
+            stage = self.path.rsplit("/", 1)[-1]
+            failed_stage = ["claim", "started", "exited", "none"][index % 4]
+            self.send_response(503 if stage == failed_stage else 200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            payload = ({"command": commands[execution_id], "update_token": "test",
+                        "profiling": {"enable_cgroup": False, "enable_affinity": False}}
+                       if stage == "claim" else {"stored": True})
+            self.wfile.write(json.dumps(payload).encode())
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    overlap = threading.Barrier(8)
+
+    def run(index):
+        env = dict(os.environ, CLAWTUNE_LAUNCH_MODE=launch_mode, CLAWTUNE_TELEMETRY_FAIL_OPEN="1",
+                   CLAWTUNE_CGROUP_REQUIRED="1", CLAWTUNE_PAYLOAD_COMMAND=commands[f"exec-{index}"])
+        overlap.wait(timeout=10)
+        return subprocess.run([sys.executable, "-m", "clawtune_sidecar.launcher", "run",
+                               "--execution-id", f"exec-{index}", "--token", "test",
+                               "--endpoint", f"http://127.0.0.1:{server.server_port}"],
+                              env=env, capture_output=True, text=True, timeout=30)
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(run, range(8)))
+        assert [result.returncode for result in results] == list(range(8)), [r.stderr for r in results]
+        assert [(tmp_path / str(i)).read_text() for i in range(8)] == ["x"] * 8
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 class _FakeChild:
     pid = 4242
 

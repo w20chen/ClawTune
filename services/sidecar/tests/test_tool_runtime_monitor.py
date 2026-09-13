@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import os
+import concurrent.futures
+import threading
+
+import pytest
 
 from clawtune_sidecar.contracts.models import ParamFeatures, ResourceScope, ToolBeforeRequest, ToolCompletedEvent
 from clawtune_sidecar.monitoring.process import ProcessResourceSampler, ResourceSnapshot
@@ -101,6 +105,50 @@ def _request(scope: ResourceScope | None = None) -> ToolBeforeRequest:
         raw_params={"command": "ls"},
         resource_scope=scope,
     )
+
+
+def test_eight_owners_keep_exclusive_scope_against_late_docker_events():
+    class Sampler:
+        def __init__(self):
+            self.counts = {}
+            self.lock = threading.Lock()
+
+        def snapshot(self, scope=None, *, net_mode="ignore"):
+            assert scope.attribution_source == "exclusive-execution-cgroup"
+            index = int(scope.execution_id)
+            with self.lock:
+                count = self.counts.get(index, 0)
+                self.counts[index] = count + 1
+            return _snapshot(captured_at=10 + count, cpu_s=index * 100 + count * (index + 1),
+                             rss=4096, available=True, source="cgroup-v2")
+
+    monitor = RealtimeToolMonitor(sampler=Sampler(), poll_interval_s=60)
+    overlap = threading.Barrier(8)
+
+    def execute(index):
+        scope = ResourceScope(kind="cgroup-v2", execution_id=str(index),
+                              cgroup_path=f"/sys/fs/cgroup/test-{index}",
+                              attribution_source="exclusive-execution-cgroup")
+        request = _request(scope).model_copy(update={"runtime_id": f"runtime-{index}"})
+        monitor.begin(request, "unknown")
+        overlap.wait(timeout=5)
+        weak = ResourceScope(kind="pid", pid=123, attribution_source="docker-events")
+        assert monitor.bind_scope("call-1", weak, request.runtime_id, owner=request) is False
+        event = ToolCompletedEvent.model_validate({
+            **{k: v for k, v in request.model_dump().items() if k in ToolCompletedEvent.model_fields},
+            "event_id": f"end-{index}", "duration_ms": 1000,
+            "decision_id": None, "lease_id": None, "error_type": None, "error_digest": None,
+            "succeeded": True, "resource_scope": weak.model_dump(),
+        })
+        sample = monitor.complete(event)
+        assert sample.monitor_source == "cgroup-v2"
+        assert sample.cpu_time_delta_s == pytest.approx(index + 1)
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(execute, range(8)))
+    finally:
+        monitor.stop()
 
 
 def test_bind_scope_switches_unattributed_start_to_cgroup_baseline() -> None:

@@ -1270,16 +1270,17 @@ def test_shared_sidecar_trace_snapshot_survives_drain_failure(
         lambda port, identity, **_kwargs: deleted.append((port, identity)),
     )
 
-    with pytest.raises(RuntimeError, match="runtime drain failed"):
-        run_host_openclaw_task(
-            task=task,
-            trace_dir=trace_dir,
-            config=config,
-            runtime_assets_dir=tmp_path / "assets",
-            sidecar_port=19090,
-            shared_sidecar_trace_dir=shared_trace_dir,
-            manage_sidecar=False,
-        )
+    result = run_host_openclaw_task(
+        task=task,
+        trace_dir=trace_dir,
+        config=config,
+        runtime_assets_dir=tmp_path / "assets",
+        sidecar_port=19090,
+        shared_sidecar_trace_dir=shared_trace_dir,
+        manage_sidecar=False,
+    )
+    assert result.exit_code == 0
+    assert "runtime drain failed" in (trace_dir / "observation-issues.jsonl").read_text()
 
     task_label = task.instance_id.replace("/", "_").replace(":", "_")
     destination = trace_dir / f"{task_label}__{source.name}"

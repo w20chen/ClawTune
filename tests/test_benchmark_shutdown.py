@@ -14,7 +14,7 @@ import pytest
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux subreaper")
 @pytest.mark.parametrize("cancelled", [False, True])
-@pytest.mark.parametrize("parallelism", [1, 4])
+@pytest.mark.parametrize("parallelism", [1, 8])
 def test_supervisor_reaps_detached_descendants(tmp_path, cancelled, parallelism):
     from swe_rebench import process_supervisor
     script = tmp_path / "agent.py"
@@ -123,7 +123,7 @@ def test_bfcl_normal_close_reaps_detached_child(tmp_path):
 
 
 @pytest.mark.parametrize("failures", [1, 3])
-def test_required_exit_report_retries_and_fails_closed(monkeypatch, failures):
+def test_exit_report_failure_never_changes_task_exit(monkeypatch, failures):
     from benchmarks.backends import TerminalBackend
     from benchmarks.exec_control import SidecarUnavailable, ExecutionStartRejected
     from unittest.mock import Mock
@@ -133,9 +133,5 @@ def test_required_exit_report_retries_and_fails_closed(monkeypatch, failures):
     backend.sidecar = Mock()
     backend.sidecar.exited.side_effect = [SidecarUnavailable("timeout")] * failures + [None]
     monkeypatch.setattr("benchmarks.backends.time.sleep", lambda seconds: None)
-    if failures == 3:
-        with pytest.raises(ExecutionStartRejected):
-            backend._report_exit("exec", "token", exit_code=0, term_signal=None)
-    else:
-        backend._report_exit("exec", "token", exit_code=0, term_signal=None)
+    backend._report_exit("exec", "token", exit_code=0, term_signal=None)
     assert backend.sidecar.exited.call_count == min(failures + 1, 3)

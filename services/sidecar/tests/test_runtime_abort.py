@@ -83,6 +83,31 @@ def test_abort_requires_both_shutdown_assertions(tmp_path, field):
         assert not state.executions.get("unfinished").exited
 
 
+def test_abort_continues_after_pmu_and_trace_failures(monkeypatch, tmp_path):
+    state = build_state(SidecarConfig(trace_dir=tmp_path))
+    original_abort = state.pmu_collector.abort
+    calls = []
+
+    def abort(execution_id):
+        calls.append(execution_id)
+        if execution_id == "first":
+            raise OSError("injected PMU read failure")
+        return original_abort(execution_id)
+
+    with TestClient(create_app(state)) as client:
+        register(client, "first")
+        register(client, "second")
+        monkeypatch.setattr(state.pmu_collector, "abort", abort)
+        monkeypatch.setattr(state.trace_writer, "record_runtime_finalization",
+                            lambda *a: (_ for _ in ()).throw(OSError("injected trace failure")))
+        response = client.post(PATH + "/abort", json=BODY)
+        assert response.status_code == 200
+        assert calls == ["first", "second"]
+        assert response.json()["aborted_execution_ids"] == ["first", "second"]
+        assert response.json()["trace_flushed"] is False
+        assert len(response.json()["observation_errors"]) == 3
+
+
 def test_abort_finishes_owned_collectors_even_after_registry_retention(monkeypatch, tmp_path):
     state = build_state(SidecarConfig(trace_dir=tmp_path))
     active = {"expired", "exited", "foreign"}
@@ -121,10 +146,12 @@ def test_orphan_finish_error_cannot_disappear_on_abort_retry(monkeypatch, tmp_pa
     monkeypatch.setattr(state.predictor, "execution_telemetry",
                         lambda eid: SimpleNamespace(kb_update_error="disk write failed"))
     with TestClient(create_app(state)) as client:
-        assert client.post(PATH + "/abort", json=BODY).status_code == 503
+        response = client.post(PATH + "/abort", json=BODY)
+        assert response.status_code == 200
+        assert response.json()["observation_errors"] == [{"execution_id": "expired", "error": "disk write failed"}]
         assert not active
-        assert client.post(PATH + "/abort", json=BODY).status_code == 503
-        assert client.post(PATH + "/drain?timeout_seconds=0").json()["drained"] is False
+        assert client.post(PATH + "/abort", json=BODY).json()["observation_errors"] == response.json()["observation_errors"]
+        assert client.post(PATH + "/drain?timeout_seconds=1&flush_kb=false").json()["drained"] is True
 
 
 @pytest.mark.parametrize("busy", ["cgroup", "request", "legacy_owner"])
@@ -184,7 +211,9 @@ def test_failed_finalization_keeps_drain_closed_until_successful_retry(monkeypat
     monkeypatch.setattr(state.predictor, "finish_execution", finish)
     with TestClient(create_app(state), raise_server_exceptions=False) as client:
         register(client, "unfinished")
-        assert client.post(PATH + "/abort", json=BODY).status_code == 500
+        response = client.post(PATH + "/abort", json=BODY)
+        assert response.status_code == 200
+        assert response.json()["observation_errors"][0]["error"] == "collector cleanup failed"
         assert client.post(PATH + "/drain?timeout_seconds=0").json()["drained"] is False
         assert client.post(PATH + "/abort", json=BODY).status_code == 200
         assert client.post(PATH + "/drain?timeout_seconds=0&flush_kb=false").json()["drained"] is True

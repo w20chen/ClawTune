@@ -315,8 +315,8 @@ def run_host_openclaw_task(
                             "agent_timeout" if timeout_record.get("scope") == "agent" else "task_timeout"),
                     trace_dir=trace_dir,
                 )
-            except BaseException as exc:
-                cleanup_error = cleanup_error or exc
+            except Exception as exc:
+                _record_observation_issue(trace_dir, "runtime_finalization", exc)
         if not manage_sidecar and shared_sidecar_trace_dir is not None:
             runtime_id = _runtime_id(workspace)
             try:
@@ -326,13 +326,13 @@ def run_host_openclaw_task(
                     gateway_id=_BENCHMARK_GATEWAY_ID,
                     flush_kb=getattr(config, "flush_kb_on_task_drain", True),
                 )
-            except BaseException as exc:
+            except Exception as exc:
                 # A failed drain means the snapshot may be incomplete, but it
                 # must not make already durable telemetry disappear.  This is
                 # especially important when one shared sidecar serves many
                 # concurrent runtimes: the batch owner remains alive and the
                 # per-runtime JSONL files are still the best diagnostic record.
-                cleanup_error = cleanup_error or exc
+                _record_observation_issue(trace_dir, "runtime_drain", exc)
             try:
                 _collect_runtime_traces(
                     shared_sidecar_trace_dir,
@@ -344,8 +344,8 @@ def run_host_openclaw_task(
                     shared_kb_dir,
                     trace_dir,
                 )
-            except BaseException as exc:
-                cleanup_error = cleanup_error or exc
+            except Exception as exc:
+                _record_observation_issue(trace_dir, "trace_snapshot", exc)
             finally:
                 _delete_runtime_scope(
                     sidecar_port,
@@ -2366,6 +2366,35 @@ def _post_sandbox_scope(
         pass
 
 
+_OBSERVATION_ISSUE_LOCK = threading.Lock()
+
+
+def _observe_best_effort(trace_dir: Path, stage: str, action):
+    """Diagnostics never replace the task's outcome; process cleanup stays strict."""
+    try:
+        return action()
+    except Exception as exc:
+        _record_observation_issue(trace_dir, stage, exc)
+        return None
+
+
+def _record_observation_issue(trace_dir: Path, stage: str, exc: Exception) -> None:
+    detail = str(exc)
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            detail += ": " + exc.read(4096).decode("utf-8", errors="replace")
+        except OSError:
+            pass
+    issue = {"stage": stage, "error": f"{type(exc).__name__}: {detail[:4096]}"}
+    _log(f"[observation] {stage}: {issue['error']}")
+    try:
+        with _OBSERVATION_ISSUE_LOCK:
+            with (trace_dir / "observation-issues.jsonl").open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(issue) + "\n")
+    except OSError:
+        pass
+
+
 def _abort_runtime(
     sidecar_port: int,
     runtime_id: str,
@@ -2391,9 +2420,12 @@ def _abort_runtime(
         if not isinstance(payload, dict) or payload.get("finalized") is not True:
             raise ValueError(f"unexpected finalization response: {payload!r}")
     except (OSError, ValueError) as exc:
+        _record_observation_issue(trace_dir, "runtime_finalization", exc)
         raise RuntimeError(f"failed to finalize stopped runtime {runtime_id}: {exc}") from exc
     summary = {key: value for key, value in payload.items() if key != "pmu_profiles"}
     summary["trace_file"] = "trace.jsonl"
+    for issue in payload.get("observation_errors", []):
+        _record_observation_issue(trace_dir, "runtime_finalization", RuntimeError(str(issue)))
     _write_text(trace_dir / "runtime-finalization.json", json.dumps(summary, indent=2) + "\n")
 
 

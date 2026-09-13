@@ -2187,7 +2187,7 @@ def run_batch(
         primary_error = (
             str(agent_error)
             if isinstance(agent_error, str) and agent_error
-            else telemetry_error
+            else None
         )
         if primary_error is not None and result.exit_code == 0 and not result.error:
             result.exit_code = -1

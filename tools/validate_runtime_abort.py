@@ -117,8 +117,10 @@ def main() -> None:
             assert incomplete.kb_observations_added == 0, incomplete
             assert hashlib.sha256(artifact.read_bytes()).hexdigest() == digest
             assert not state.predictor.active_execution_ids(runtime, "swe-rebench")
-            assert client._request("POST", f"/v1/gateways/swe-rebench/runtimes/{runtime}/abort",
-                {"reason": reason, "agent_stopped": True, "sandbox_cleaned": True}) == response
+            acknowledgement = client._request("POST", f"/v1/gateways/swe-rebench/runtimes/{runtime}/abort",
+                {"reason": reason, "agent_stopped": True, "sandbox_cleaned": True})
+            assert acknowledgement.pop("trace_flushed") is True
+            assert acknowledgement == response
             traces = list(folder.glob("*.jsonl"))
             assert traces == [folder / "trace.jsonl"], traces
             rows = [json.loads(line) for line in traces[0].read_text().splitlines()]

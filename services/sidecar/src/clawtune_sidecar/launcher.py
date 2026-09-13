@@ -27,6 +27,10 @@ class _CleanupUnconfirmed(RuntimeError):
     """Keep the sidecar claim active when payload termination is unconfirmed."""
 
 
+class _SidecarRequestError(RuntimeError):
+    """A telemetry HTTP request was rejected by the sidecar."""
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="clawtune-launch")
     sub = parser.add_subparsers(dest="command_name", required=True)
@@ -124,10 +128,12 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
     may miss the root exec event and produce an attribution_gap.
     """
     launcher_pid = os.getpid()
-    claim = _post_json(
+    claim = _claim_execution(
         endpoint, "/v2/executions/claim",
         {"execution_id": execution_id, "token": token, "launcher_pid": launcher_pid},
     )
+    if claim is None:
+        return _run_unobserved(os.environ["CLAWTUNE_PAYLOAD_COMMAND"])
     try:
         return _run_forkexec_claimed(endpoint, execution_id, claim, launcher_pid)
     except _CleanupUnconfirmed:
@@ -220,6 +226,7 @@ def _run_forkexec_claimed(
         if (
             cgroup_path is None
             and _env_enabled("CLAWTUNE_CGROUP_REQUIRED")
+            and not _env_enabled("CLAWTUNE_TELEMETRY_FAIL_OPEN")
             and not use_host_cgroup_gate
         ):
             raise RuntimeError("cgroup_unavailable: host_cgroup_gate_disabled")
@@ -341,11 +348,13 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
     """Subprocess fallback: original spawn-wait-report behavior (cgroup,
     placement, systemd scope support).  Used on Windows and in tests."""
     launcher_pid = os.getpid()
-    claim = _post_json(
+    claim = _claim_execution(
         endpoint,
         "/v2/executions/claim",
         {"execution_id": execution_id, "token": token, "launcher_pid": launcher_pid},
     )
+    if claim is None:
+        return _run_unobserved(os.environ["CLAWTUNE_PAYLOAD_COMMAND"])
     try:
         return _run_subprocess_claimed(endpoint, execution_id, claim, launcher_pid)
     except _CleanupUnconfirmed:
@@ -470,6 +479,7 @@ def _run_subprocess_claimed(
         if (
             cgroup_path is None
             and _env_enabled("CLAWTUNE_CGROUP_REQUIRED")
+            and not _env_enabled("CLAWTUNE_TELEMETRY_FAIL_OPEN")
             and not use_host_cgroup_gate
         ):
             raise RuntimeError("cgroup_unavailable: host_cgroup_gate_disabled")
@@ -576,6 +586,24 @@ def _run_degraded(endpoint: str, execution_id: str, command: str) -> int:
     return _shell_exit_code(returncode)
 
 
+def _run_unobserved(command: str) -> int:
+    """Only entered before any payload was released; never retry a command."""
+    child = _spawn_shell(command, os.environ.get("CLAWTUNE_EXEC_WORKDIR") or None,
+                         cgroup_path=None, affinity_cpus=None)
+    _install_signal_forwarders(child)
+    return _shell_exit_code(child.wait())
+
+
+def _claim_execution(endpoint: str, path: str, payload: dict[str, Any]):
+    try:
+        return _post_json(endpoint, path, payload)
+    except (OSError, ValueError, _SidecarRequestError):
+        if not (_env_enabled("CLAWTUNE_TELEMETRY_FAIL_OPEN") and os.environ.get("CLAWTUNE_PAYLOAD_COMMAND")):
+            raise
+        print("clawtune: telemetry claim unavailable; running command without telemetry", file=sys.stderr)
+        return None
+
+
 def _spawn_shell(
     command: str,
     cwd: str | None,
@@ -603,9 +631,8 @@ def _post_started(
     cgroup_path: str | None,
     host_cgroup_gate: bool,
 ) -> dict[str, Any]:
-    # The payload is still behind its gate. A rejected or unreachable
-    # /started request means the required collector was not armed, so this
-    # lifecycle boundary must fail closed rather than executing unobserved.
+    # The payload remains behind its gate during collector setup. Observation
+    # mode can release this same child if setup fails; it never replays a payload.
     return _post_json(
         endpoint,
         f"/v2/executions/{execution_id}/started",
@@ -1036,12 +1063,13 @@ def _post_json(endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, A
         timeout_seconds = _START_REPORT_TIMEOUT_SECONDS
     else:
         timeout_seconds = 10.0
-    return _post_json_with_timeout(
-        endpoint,
-        path,
-        payload,
-        timeout_seconds=timeout_seconds,
-    )
+    try:
+        return _post_json_with_timeout(endpoint, path, payload, timeout_seconds=timeout_seconds)
+    except (OSError, ValueError, _SidecarRequestError):
+        if not (path.endswith("/started") and _env_enabled("CLAWTUNE_TELEMETRY_FAIL_OPEN")):
+            raise
+        print("clawtune: collector unavailable; releasing command without telemetry", file=sys.stderr)
+        return {"stored": True, "telemetry_unavailable": True}
 
 
 def _start_report_timeout_seconds() -> float:
@@ -1079,7 +1107,7 @@ def _post_json_with_timeout(
             raw = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"sidecar_http_{exc.code}:{detail}") from exc
+        raise _SidecarRequestError(f"sidecar_http_{exc.code}:{detail}") from exc
     return json.loads(raw) if raw else {}
 
 
@@ -1203,7 +1231,7 @@ def _prepare_cgroup(
     Set CLAWTUNE_ENABLE_CGROUP=0 to disable automatic cgroup creation.
     Set CLAWTUNE_CGROUP_REQUIRED=1 to fail hard when no root is writable.
     """
-    required = _env_enabled("CLAWTUNE_CGROUP_REQUIRED")
+    required = _env_enabled("CLAWTUNE_CGROUP_REQUIRED") and not _env_enabled("CLAWTUNE_TELEMETRY_FAIL_OPEN")
     if not _supports_posix_controls():
         if required:
             raise RuntimeError("cgroup_unavailable: posix_controls_unsupported")
@@ -1416,7 +1444,7 @@ def _join_child_cgroup(child_pid: int, cgroup_path: str | None) -> bool:
         _write_file(Path(cgroup_path) / "cgroup.procs", str(child_pid))
         return True
     except OSError as exc:
-        if _env_enabled("CLAWTUNE_CGROUP_REQUIRED"):
+        if _env_enabled("CLAWTUNE_CGROUP_REQUIRED") and not _env_enabled("CLAWTUNE_TELEMETRY_FAIL_OPEN"):
             details = _cgroup_debug_details(Path(cgroup_path), child_pid)
             raise RuntimeError(
                 f"cgroup_join_failed path={cgroup_path} child_pid={child_pid}: {exc}; {details}"

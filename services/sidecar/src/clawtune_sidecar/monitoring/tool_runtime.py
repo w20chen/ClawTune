@@ -120,6 +120,10 @@ class RealtimeToolMonitor:
                     owner=completion,
                 )
         completion_scope = completion.resource_scope
+        if (active is not None and active.request.resource_scope is not None
+                and active.request.resource_scope.attribution_source == "exclusive-execution-cgroup"
+                and (completion_scope is None or completion_scope.attribution_source != "exclusive-execution-cgroup")):
+            completion_scope = active.request.resource_scope
         if completion_scope is None and active is not None:
             completion_scope = active.request.resource_scope
         end = self.sampler.snapshot(completion_scope, net_mode="read")
@@ -280,6 +284,15 @@ class RealtimeToolMonitor:
             if active is None:
                 return False
             current_scope = active.request.resource_scope
+            if (
+                current_scope is not None
+                and current_scope.attribution_source == "exclusive-execution-cgroup"
+                and scope.attribution_source != "exclusive-execution-cgroup"
+            ):
+                # A delayed Docker event must not replace the authenticated
+                # execution scope or reset a long-running command's baseline.
+                self._active[correlation_key(active.request)] = active
+                return False
             if (
                 current_scope is not None
                 and current_scope.kind == scope.kind
