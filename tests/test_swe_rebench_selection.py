@@ -1920,50 +1920,15 @@ def test_host_openclaw_launcher_exports_testbed_path_but_uses_system_python(
 
 def _write_test_kb_pair(directory: Path, marker: str) -> None:
     directory.mkdir(parents=True, exist_ok=True)
+    from tool_resource.runtime_kb import RuntimeToolResourceKB, ClauseResourceKB
+    from tool_time.lattice_kb import LatticeTimeKB
     payloads = {
-        "runtime-tool-resource-kb.json": {
-            "schema": "runtime_tool_resource_kb_v1",
-            "quantile": 0.9,
-            "max_prefix_depth": 4,
-            "public": {
-                "latency_ms": [],
-                "peak_cpu_cores": [],
-                "peak_memory_mb": [],
-            },
-            "repo": {},
-            "pending": [],
-            "last_query_ts": None,
-            "marker": marker,
-        },
-        "clause-resource-kb.json": {
-            "schema": "runtime_clause_resource_kb_v5",
-            "max_prefix_depth": 4,
-            "public": {
-                "latency_ms": [],
-                "peak_cpu_cores": [],
-                "sampled_peak_rss_mb": [],
-            },
-            "repo": {},
-            "pending": [],
-            "last_query_ts": None,
-            "marker": marker,
-        },
-        "clause-lattice-time-kb.json": {
-            "schema": "clause_lattice_time_kb_v1",
-            "node_generation": {
-                "mode": "bounded",
-                "max_optional_features": 6,
-                "min_partial_support": 1,
-                "max_nodes_per_signature": 4_096,
-                "node_occurrence_budget": 20_000,
-                "max_shrinkage_candidates": 512,
-            },
-            "observations": [],
-            "pending": [],
-            "last_query_ts": None,
-            "marker": marker,
-        },
+        "runtime-tool-resource-kb.json": RuntimeToolResourceKB().to_json_obj(),
+        "clause-resource-kb.json": ClauseResourceKB().to_json_obj(),
+        "clause-lattice-time-kb.json": LatticeTimeKB().to_json_obj(),
     }
+    for payload in payloads.values():
+        payload["marker"] = marker
     for filename, payload in payloads.items():
         (directory / filename).write_text(
             json.dumps(payload, sort_keys=True) + "\n",
@@ -2107,7 +2072,7 @@ def test_batch_shared_kb_rejects_schema_only_snapshot_as_unloadable(
     (tracked_seed / "runtime-tool-resource-kb.json").write_text(
         json.dumps(
             {
-                "schema": "runtime_tool_resource_kb_v1",
+                "schema": "runtime_tool_resource_kb_v3",
                 "max_prefix_depth": 4,
                 "public": {},
                 "repo": {},

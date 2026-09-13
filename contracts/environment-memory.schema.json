@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawtune.dev/contracts/environment-memory.schema.json",
+  "title": "Eligible environment memory observation",
+  "type": "object",
+  "required": [
+    "memory_baseline_bytes",
+    "memory_total_peak_bytes",
+    "memory_extra_peak_bytes",
+    "memory_measurement",
+    "memory_environment_id",
+    "memory_eligible"
+  ],
+  "properties": {
+    "memory_baseline_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "memory_total_peak_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "memory_extra_peak_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "memory_measurement": {
+      "enum": [
+        "cgroup_v2_memory_current",
+        "guest_memtotal_minus_memavailable"
+      ]
+    },
+    "memory_environment_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "memory_eligible": {
+      "const": true
+    }
+  },
+  "description": "Bytes within one unchanged execution environment. Total is the sampled maximum including its background; extra=max(0,total-baseline). Baseline is sampled before execution. RSS is diagnostic only. Concurrent unowned workloads cannot produce eligible per-clause labels."
+}

@@ -13,8 +13,12 @@ from tool_time.resource_lattice import RESOURCE_TARGETS, build_resource_states
 def observation(index=0, **kwargs):
     values = dict(repo="org/repo", bin="python", argv=("python", "work.py"),
                   ts_start=float(index), ts_end=float(index + 1), latency_ms=1000.0,
-                  cpu_ns_cumulative=2_000_000_000, peak_cpu_cores=3.0,
-                  sampled_peak_rss_mb=512.0)
+                  cpu_ns_cumulative=2_000_000_000, cpu_peak_cores=3.0,
+                  memory_total_peak_bytes=512 * 1024**2, memory_extra_peak_bytes=512 * 1024**2,
+                  memory_baseline_bytes=0, memory_eligible=True, memory_environment_id="test",
+                  memory_measurement="cgroup_v2_memory_current")
+    if "memory_total_peak_bytes" in kwargs:
+        values["memory_extra_peak_bytes"] = kwargs["memory_total_peak_bytes"]
     values.update(kwargs)
     return ClauseObservation(**values)
 
@@ -28,7 +32,7 @@ def targets(result, algorithm="shrinkage"):
 
 
 def test_quantiles_units_joint_cpu_average_and_thresholds():
-    rows = [observation(i, cpu_ns_cumulative=i * 1_000_000_000, sampled_peak_rss_mb=i)
+    rows = [observation(i, cpu_ns_cumulative=i * 1_000_000_000, memory_total_peak_bytes=i * 1024**2)
             for i in range(10)]
     kb = LatticeTimeKB.fit(rows)
     result = query(kb, thresholds={"cpu_avg_cores": 8.0})
@@ -40,8 +44,8 @@ def test_quantiles_units_joint_cpu_average_and_thresholds():
             assert output[target]["p90"] == 8
             assert output[target]["evidence_count"] == 10
         assert output["cpu_avg_cores"]["probability_ge"] == 0.2
-        assert output["memory_peak_rss_bytes"]["p50"] == 4.5 * 1024**2
-        assert output["memory_peak_rss_bytes"]["p90"] == 8 * 1024**2
+        assert output["memory_total_peak_bytes"]["p50"] == 4.5 * 1024**2
+        assert output["memory_total_peak_bytes"]["p90"] == 8 * 1024**2
         assert output["cpu_peak_cores"]["p50"] == 3
     # Average is derived per observation, not ratio of independently estimated medians.
     other = LatticeTimeKB.fit([observation(0, latency_ms=100), observation(1, latency_ms=2000)])
@@ -50,11 +54,11 @@ def test_quantiles_units_joint_cpu_average_and_thresholds():
 
 @pytest.mark.parametrize("latency", [None, 0.0])
 def test_independent_eligibility_zero_and_missing_latency(latency):
-    row = observation(latency_ms=latency, cpu_ns_cumulative=0, peak_cpu_cores=None, sampled_peak_rss_mb=0)
+    row = observation(latency_ms=latency, cpu_ns_cumulative=0, cpu_peak_cores=None, memory_total_peak_bytes=0)
     kb = LatticeTimeKB.fit([row])
     output = targets(query(kb))
     assert output["cpu_time_seconds"]["p90"] == 0
-    assert output["memory_peak_rss_bytes"]["p50"] == 0
+    assert output["memory_total_peak_bytes"]["p50"] == 0
     assert output["cpu_avg_cores"]["unavailable_reason"] == "no_lattice_resource_evidence"
     assert output["cpu_peak_cores"]["p50"] is None
     assert kb.predict_clauses("org/repo", [{"bin":"python", "argv":["python", "work.py"]}], 100)[0].predictions[0].prediction_ms is None
@@ -64,12 +68,12 @@ def test_independent_eligibility_zero_and_missing_latency(latency):
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1, True])
 def test_invalid_resource_does_not_pollute_other_targets(bad):
-    kb = LatticeTimeKB.fit([observation(peak_cpu_cores=bad, cpu_ns_cumulative=None)])
+    kb = LatticeTimeKB.fit([observation(cpu_peak_cores=bad, cpu_ns_cumulative=None)])
     output = targets(query(kb))
     assert output["cpu_peak_cores"]["p50"] is None
-    assert output["memory_peak_rss_bytes"]["p50"] == 512 * 1024**2
+    assert output["memory_total_peak_bytes"]["p50"] == 512 * 1024**2
     snapshot = LatticeTimeKB.fit([observation()]).to_json_obj()
-    snapshot["observations"][0]["peak_cpu_cores"] = bad
+    snapshot["observations"][0]["cpu_peak_cores"] = bad
     with pytest.raises(ValueError, match="finite and non-negative"):
         LatticeTimeKB.from_json_obj(snapshot)
 
@@ -91,11 +95,11 @@ def test_causal_preparation_snapshot_and_duplicate_import():
 
 def test_target_contexts_use_only_their_eligible_evidence():
     kb = LatticeTimeKB.fit([
-        observation(cpu_ns_cumulative=None, peak_cpu_cores=None),
-        observation(1, repo="org/other", sampled_peak_rss_mb=None),
+        observation(cpu_ns_cumulative=None, cpu_peak_cores=None),
+        observation(1, repo="org/other", memory_total_peak_bytes=None),
     ])
     output = targets(query(kb))
-    assert "repo=org/repo" in output["memory_peak_rss_bytes"]["selected_features"]
+    assert "repo=org/repo" in output["memory_total_peak_bytes"]["selected_features"]
     assert "repo=org/repo" not in output["cpu_time_seconds"]["selected_features"]
     assert output["cpu_time_seconds"]["evidence_count"] == 1
 
@@ -139,10 +143,12 @@ def test_legacy_snapshot_upgrade_and_no_fixed_threshold_storage():
     snapshot = kb.to_json_obj()
     legacy = copy.deepcopy(snapshot)
     legacy["schema"] = "clause_lattice_time_kb_v1"
-    restored = LatticeTimeKB.from_json_obj(legacy)
+    with pytest.raises(ValueError, match="unsupported"):
+        LatticeTimeKB.from_json_obj(legacy)
+    restored = LatticeTimeKB.from_json_obj(snapshot)
     assert query(restored) == query(kb)
     before = restored.to_json_obj()
-    query(restored, thresholds={"memory_peak_rss_bytes": 128 * 1024**2})
+    query(restored, thresholds={"memory_total_peak_bytes": 128 * 1024**2})
     assert restored.to_json_obj() == before
     assert "heavy" not in json.dumps(before)
 
@@ -166,5 +172,5 @@ def test_prepared_generation_contains_resources_without_query_rebuild(monkeypatc
         pytest.fail("resource query rebuilt an already prepared generation")
     monkeypatch.setattr("tool_time.lattice_kb._build_node_state", unexpected_rebuild)
     result = targets(query(kb, ts=3))
-    assert result["memory_peak_rss_bytes"]["p50"] == 512 * 1024**2
+    assert result["memory_total_peak_bytes"]["p50"] == 512 * 1024**2
     assert result["cpu_time_seconds"]["p50"] == 2

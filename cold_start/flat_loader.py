@@ -117,7 +117,8 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
                     args = json.loads(args)
                 except ValueError:
                     args = None
-            command = args.get("command") if name == "exec" and isinstance(args, dict) else None
+            from clawtune_sidecar.tool_resource_commands import extract_command
+            command = extract_command(args) if name in {"exec", "terminal_exec"} else None
             if not isinstance(command, str):
                 command = None
             censored = _censored_call(data)
@@ -197,7 +198,7 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
                     continue
                 accepted = ClauseObservation(repo, str(clause.get("bin") or argv[0]), tuple(argv),
                     0., (elapsed or 0.) / 1000, latency_ms=elapsed, cpu_ns_cumulative=cpu_ns,
-                    peak_cpu_cores=peak, sampled_peak_rss_mb=memory,
+                    cpu_peak_cores=peak, sampled_peak_rss_mb=memory,
                     in_loop=clause.get("in_loop") is True, in_pipe=clause.get("in_pipe") is True,
                     in_subst=clause.get("in_subst") is True, pipeline_position=int(clause.get("pipeline_position", -1)))
                 result.clauses.append(accepted)
@@ -210,10 +211,11 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
                     actuals["cpu_time_seconds"] = clause.cpu_ns_cumulative / 1e9
                     if duration > 0:
                         actuals["cpu_avg_cores"] = actuals["cpu_time_seconds"] / (duration / 1000)
-                if clause.peak_cpu_cores is not None:
-                    actuals["cpu_peak_cores"] = clause.peak_cpu_cores
-                if clause.sampled_peak_rss_mb is not None:
-                    actuals["memory_peak_rss_bytes"] = clause.sampled_peak_rss_mb * 1024**2
+                if clause.cpu_peak_cores is not None:
+                    actuals["cpu_peak_cores"] = clause.cpu_peak_cores
+                from clawtune_sidecar.monitoring.environment_memory import memory_labels
+                from dataclasses import asdict
+                actuals.update(memory_labels(asdict(clause)))
     if result.counts["metadata_records"] != 1:
         raise ValueError(f"{path.name}: expected one trace metadata record")
     result.counts["calls"] = len(result.calls)

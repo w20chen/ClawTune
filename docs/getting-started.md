@@ -136,6 +136,8 @@ Expect model and tool events, pre-execution predictions, and post-execution meas
 
 New daily state and online runs copy the bundled initialization prior by default. Override with `CLAWTUNE_KB_SEED` for daily use or `--seed <directory>` for benchmarks. Changing the prior does not reset existing state. Resuming an old run requires its original prior. The offline command's `--seed` is instead an integer split seed.
 
+Resource KB snapshots use Runtime v3, Trie v6, and Lattice v3. Start a new benchmark run or set `CLAWTUNE_STATE_DIR` to a new directory after upgrading an older state; older snapshots are rejected. Memory predictions expose total environment peak and extra peak above its pre-execution baseline. A short or failed measurement leaves that target unavailable and does not fail the tool.
+
 Common settings belong in root `.env`; restart the service after changes:
 
 | Setting | Purpose |

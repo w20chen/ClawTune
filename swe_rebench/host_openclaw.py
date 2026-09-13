@@ -70,9 +70,9 @@ _RUNTIME_PROXY_API_KEY_PREFIX = "clawtune-runtime."
 _BENCHMARK_GATEWAY_ID = "swe-rebench"
 
 _TOOL_RESOURCE_KB_SCHEMAS = {
-    "runtime-tool-resource-kb.json": "runtime_tool_resource_kb_v2",
-    "clause-resource-kb.json": "runtime_clause_resource_kb_v5",
-    "clause-lattice-time-kb.json": "clause_lattice_kb_v2",
+    "runtime-tool-resource-kb.json": "runtime_tool_resource_kb_v3",
+    "clause-resource-kb.json": "runtime_clause_resource_kb_v6",
+    "clause-lattice-time-kb.json": "clause_lattice_kb_v3",
 }
 
 _TASK_CLEANUP_TIMEOUT_SECONDS = 15.0
@@ -1159,9 +1159,7 @@ def _validate_kb_snapshot_pair(directory: Path) -> None:
                 f"invalid KB snapshot {path}: {exc}"
             ) from exc
         schema = payload.get("schema") if isinstance(payload, dict) else None
-        legacy_lattice = filename == "clause-lattice-time-kb.json" and schema == "clause_lattice_time_kb_v1"
-        legacy_runtime = filename == "runtime-tool-resource-kb.json" and schema == "runtime_tool_resource_kb_v1"
-        if schema != schema_prefix and not legacy_lattice and not legacy_runtime:
+        if schema != schema_prefix:
             raise KnowledgeBaseSyncError(
                 f"invalid KB snapshot schema in {path}: {schema!r}; "
                 f"expected {schema_prefix!r}"
@@ -1239,7 +1237,7 @@ def _validate_lattice_time_kb_snapshot(path: Path, payload: dict[str, Any]) -> N
                 path,
                 row,
                 location=f"{collection_name}[{index}]",
-                allow_resource_only=payload.get("schema") == "clause_lattice_kb_v2",
+                allow_resource_only=payload.get("schema") == "clause_lattice_kb_v3",
             )
     last_query_ts = payload.get("last_query_ts")
     if last_query_ts is not None and not _is_finite_number(last_query_ts):
@@ -1266,13 +1264,15 @@ def _validate_lattice_time_observation(
         "ts_start",
         "ts_end",
         "latency_ms",
-        "peak_cpu_cores",
+        "cpu_peak_cores",
         "sampled_peak_rss_mb",
         "cpu_ns_cumulative",
         "in_loop",
         "in_pipe",
         "in_subst",
         "pipeline_position",
+        "memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes",
+        "memory_measurement", "memory_environment_id", "memory_eligible",
     }
     unknown = sorted(row.keys() - allowed)
     if unknown:
@@ -1316,7 +1316,7 @@ def _validate_lattice_time_observation(
             f"invalid lattice KB observation {location} in {path}: "
             "ts_end precedes ts_start"
         )
-    resource_fields = ("cpu_ns_cumulative", "peak_cpu_cores", "sampled_peak_rss_mb")
+    resource_fields = ("cpu_ns_cumulative", "cpu_peak_cores", "sampled_peak_rss_mb", "memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes")
     for field in resource_fields:
         value = row.get(field)
         if value is not None and (not _is_finite_number(value) or value < 0):

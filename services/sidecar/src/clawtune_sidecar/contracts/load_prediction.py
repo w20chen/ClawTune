@@ -7,26 +7,41 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-LoadTarget = Literal["duration_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_peak_rss_bytes"]
+LoadTarget = Literal["duration_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes"]
 TARGET_UNITS = {"duration_ms": "ms", "cpu_time_seconds": "core_seconds", "cpu_avg_cores": "cores",
-                "cpu_peak_cores": "cores", "memory_peak_rss_bytes": "bytes"}
+                "cpu_peak_cores": "cores", "memory_total_peak_bytes": "bytes", "memory_extra_peak_bytes": "bytes"}
 TARGET_DEFINITIONS = {
     "duration_ms": "tool_hook_elapsed",
     "cpu_time_seconds": "owned_workload_cpu_time",
     "cpu_avg_cores": "owned_cpu_time_over_tool_hook_elapsed",
     "cpu_peak_cores": "owned_cpu_fixed_500ms_window_peak",
-    "memory_peak_rss_bytes": "sampled_distinct_mm_rss",
+    "memory_total_peak_bytes": "environment_memory_total_peak",
+    "memory_extra_peak_bytes": "environment_memory_peak_minus_baseline",
 }
-PmuTarget = Literal["ipc", "llc_mpki", "llc_miss_rate"]
+PmuTarget = Literal['cycles', 'instructions', 'llc_read_accesses', 'llc_read_misses', "ipc", "llc_mpki", "llc_miss_rate", "llc_read_accesses_per_cpu_second", "llc_read_misses_per_cpu_second"]
 PMU_UNITS = {
+    "cycles": "count",
+    "instructions": "count",
+    "llc_read_accesses": "count",
+    "llc_read_misses": "count",
+
     "ipc": "instructions_per_cycle",
     "llc_mpki": "misses_per_kilo_instructions",
     "llc_miss_rate": "ratio",
+    "llc_read_accesses_per_cpu_second": "accesses_per_cpu_second",
+    "llc_read_misses_per_cpu_second": "misses_per_cpu_second",
 }
 PMU_DEFINITIONS = {
+    "cycles": "execution_cycles",
+    "instructions": "execution_instructions",
+    "llc_read_accesses": "execution_llc_read_accesses",
+    "llc_read_misses": "execution_llc_read_misses",
+
     "ipc": "retired_instructions_over_cpu_cycles",
     "llc_mpki": "llc_read_misses_per_kilo_retired_instructions",
     "llc_miss_rate": "llc_read_misses_over_llc_read_accesses",
+    "llc_read_accesses_per_cpu_second": "llc_read_accesses_over_perf_running_seconds",
+    "llc_read_misses_per_cpu_second": "llc_read_misses_over_perf_running_seconds",
 }
 
 
@@ -84,18 +99,42 @@ class LoadEstimate(StrictModel):
         return self
 
 
+class ClauseLoadPrediction(StrictModel):
+    clause_index: int = Field(ge=0)
+    memory_measurement: Literal["cgroup_v2_memory_current", "guest_memtotal_minus_memavailable"] = "cgroup_v2_memory_current"
+    argv: list[str]
+    cwd: str | None = None
+    env_names: list[str] = Field(default_factory=list)
+    scope: Literal["clause"] = "clause"
+    targets: dict[LoadTarget, LoadEstimate]
+
+
+    @model_validator(mode="after")
+    def complete_targets(self) -> "ClauseLoadPrediction":
+        definitions = dict(TARGET_DEFINITIONS, duration_ms="clause_elapsed",
+                           cpu_avg_cores="owned_cpu_time_over_clause_elapsed")
+        if set(self.targets) != set(TARGET_UNITS) or not self.argv:
+            raise ValueError("clause prediction requires argv and all six targets")
+        for target, estimate in self.targets.items():
+            if estimate.unit != TARGET_UNITS[target] or estimate.metric_definition != definitions[target]:
+                raise ValueError("clause target unit or measurement definition mismatch")
+        return self
+
+
 class CallLoadPrediction(StrictModel):
-    schema_version: Literal["call_load.v1"] = "call_load.v1"
+    schema_version: Literal["call_load.v2"] = "call_load.v2"
+    memory_measurement: Literal["cgroup_v2_memory_current", "guest_memtotal_minus_memavailable"] = "cgroup_v2_memory_current"
     scope: Literal["tool_call"] = "tool_call"
     lifecycle: Literal["tool_hook_interval"] = "tool_hook_interval"
     cpu_peak_window_ms: Literal[500] = 500
     quantile_method: Literal["median_p50_nearest_rank_p90"] = "median_p50_nearest_rank_p90"
     targets: dict[LoadTarget, LoadEstimate]
+    clause_predictions: list[ClauseLoadPrediction] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def complete_targets(self) -> "CallLoadPrediction":
         if set(self.targets) != set(TARGET_UNITS):
-            raise ValueError("call prediction requires all five targets")
+            raise ValueError("call prediction requires all six targets")
         for target, estimate in self.targets.items():
             if estimate.unit != TARGET_UNITS[target] or estimate.metric_definition != TARGET_DEFINITIONS[target]:
                 raise ValueError("target unit or measurement definition mismatch")
@@ -104,7 +143,7 @@ class CallLoadPrediction(StrictModel):
 
 class PmuEstimate(StrictModel):
     status: Literal["available", "unavailable"]
-    unit: Literal["instructions_per_cycle", "misses_per_kilo_instructions", "ratio"]
+    unit: Literal["instructions_per_cycle", "misses_per_kilo_instructions", "ratio", "accesses_per_cpu_second", "misses_per_cpu_second", "count"]
     metric_definition: str
     avg: float | None = Field(default=None, ge=0)
     p50: float | None = Field(default=None, ge=0)
@@ -132,7 +171,7 @@ class PmuEstimate(StrictModel):
 
 
 class PmuPrediction(StrictModel):
-    schema_version: Literal["pmu_prediction.v1"] = "pmu_prediction.v1"
+    schema_version: Literal["pmu_prediction.v2"] = "pmu_prediction.v2"
     scope: Literal["tool_call"] = "tool_call"
     lifecycle: Literal["completed_execution_profile"] = "completed_execution_profile"
     quantile_method: Literal["median_p50_nearest_rank_p90"] = "median_p50_nearest_rank_p90"

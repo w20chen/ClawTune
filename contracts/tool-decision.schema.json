@@ -11,7 +11,8 @@
             "cpu_time_seconds",
             "cpu_avg_cores",
             "cpu_peak_cores",
-            "memory_peak_rss_bytes"
+            "memory_total_peak_bytes",
+            "memory_extra_peak_bytes"
           ]
         },
         "unit": {
@@ -169,7 +170,7 @@
           "const": "clause_owned_lineage"
         },
         "memory_metric": {
-          "const": "sampled_distinct_mm_rss"
+          "const": "environment_memory"
         },
         "cpu_peak_window_ms": {
           "const": 500
@@ -180,7 +181,7 @@
         "predictions": {
           "type": "array",
           "minItems": 12,
-          "maxItems": 12,
+          "maxItems": 15,
           "items": {
             "$ref": "#/$defs/latticeResourcePrediction"
           }
@@ -201,15 +202,34 @@
     "clauseLatencyBucketPrediction": {
       "type": "object",
       "properties": {
-        "bucket_id": {"type": "integer", "minimum": 0},
+        "bucket_id": {
+          "type": "integer",
+          "minimum": 0
+        },
         "probability_by_bucket": {
           "type": "array",
-          "items": {"type": "number", "minimum": 0, "maximum": 1}
+          "items": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
         },
-        "scope": {"type": "string"},
-        "key_kind": {"type": "string"},
-        "evidence_count": {"type": "integer", "minimum": 0},
-        "fallback_path": {"type": "array", "items": {"type": "string"}}
+        "scope": {
+          "type": "string"
+        },
+        "key_kind": {
+          "type": "string"
+        },
+        "evidence_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fallback_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       },
       "required": [
         "bucket_id",
@@ -225,20 +245,37 @@
       "type": "object",
       "description": "Latency-bucket result for one static clause that requires a runtime exec image. Shell builtins that execute inside the shell are intentionally omitted; clause_index maps each result back to the unfiltered clause_bins sequence.",
       "properties": {
-        "clause_index": {"type": "integer", "minimum": 0},
-        "bin": {"type": "string", "minLength": 1},
+        "clause_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bin": {
+          "type": "string",
+          "minLength": 1
+        },
         "argv": {
           "type": "array",
           "minItems": 1,
-          "items": {"type": "string"}
+          "items": {
+            "type": "string"
+          }
         },
         "prediction": {
           "anyOf": [
-            {"$ref": "#/$defs/clauseLatencyBucketPrediction"},
-            {"type": "null"}
+            {
+              "$ref": "#/$defs/clauseLatencyBucketPrediction"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
-        "unavailable_reason": {"type": ["string", "null"]}
+        "unavailable_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       },
       "required": [
         "clause_index",
@@ -250,14 +287,23 @@
       "oneOf": [
         {
           "properties": {
-            "prediction": {"$ref": "#/$defs/clauseLatencyBucketPrediction"},
-            "unavailable_reason": {"type": "null"}
+            "prediction": {
+              "$ref": "#/$defs/clauseLatencyBucketPrediction"
+            },
+            "unavailable_reason": {
+              "type": "null"
+            }
           }
         },
         {
           "properties": {
-            "prediction": {"type": "null"},
-            "unavailable_reason": {"type": "string", "minLength": 1}
+            "prediction": {
+              "type": "null"
+            },
+            "unavailable_reason": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         }
       ],
@@ -267,14 +313,55 @@
       "type": "object",
       "description": "One clause-level point prediction produced from the shared, unlayered lattice KB.",
       "properties": {
-        "algorithm": {"enum": ["shrinkage", "loso", "max_cardinality"]},
-        "prediction_ms": {"type": ["number", "null"], "minimum": 0},
-        "selected_features": {"type": "array", "items": {"type": "string"}},
-        "evidence_count": {"type": "integer", "minimum": 0},
-        "selected_risk": {"type": ["number", "null"], "minimum": 0},
-        "exact_match": {"type": ["boolean", "null"]},
-        "fallback": {"type": ["string", "null"]},
-        "unavailable_reason": {"type": ["string", "null"]}
+        "algorithm": {
+          "enum": [
+            "shrinkage",
+            "loso",
+            "max_cardinality"
+          ]
+        },
+        "prediction_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "selected_features": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "selected_risk": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "exact_match": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "fallback": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unavailable_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       },
       "required": [
         "algorithm",
@@ -289,16 +376,30 @@
       "oneOf": [
         {
           "properties": {
-            "prediction_ms": {"type": "number", "minimum": 0},
-            "exact_match": {"type": "boolean"},
-            "unavailable_reason": {"type": "null"}
+            "prediction_ms": {
+              "type": "number",
+              "minimum": 0
+            },
+            "exact_match": {
+              "type": "boolean"
+            },
+            "unavailable_reason": {
+              "type": "null"
+            }
           }
         },
         {
           "properties": {
-            "prediction_ms": {"type": "null"},
-            "exact_match": {"type": "null"},
-            "unavailable_reason": {"type": "string", "minLength": 1}
+            "prediction_ms": {
+              "type": "null"
+            },
+            "exact_match": {
+              "type": "null"
+            },
+            "unavailable_reason": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         }
       ],
@@ -308,12 +409,20 @@
       "type": "object",
       "description": "The three point estimates for one exec-producing static clause. Compound command estimates are intentionally not composed.",
       "properties": {
-        "clause_index": {"type": "integer", "minimum": 0},
-        "bin": {"type": "string", "minLength": 1},
+        "clause_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bin": {
+          "type": "string",
+          "minLength": 1
+        },
         "argv": {
           "type": "array",
           "minItems": 1,
-          "items": {"type": "string"}
+          "items": {
+            "type": "string"
+          }
         },
         "predictions": {
           "type": "array",
@@ -322,27 +431,56 @@
           "prefixItems": [
             {
               "allOf": [
-                {"$ref": "#/$defs/latticeTimePrediction"},
-                {"properties": {"algorithm": {"const": "shrinkage"}}}
+                {
+                  "$ref": "#/$defs/latticeTimePrediction"
+                },
+                {
+                  "properties": {
+                    "algorithm": {
+                      "const": "shrinkage"
+                    }
+                  }
+                }
               ]
             },
             {
               "allOf": [
-                {"$ref": "#/$defs/latticeTimePrediction"},
-                {"properties": {"algorithm": {"const": "loso"}}}
+                {
+                  "$ref": "#/$defs/latticeTimePrediction"
+                },
+                {
+                  "properties": {
+                    "algorithm": {
+                      "const": "loso"
+                    }
+                  }
+                }
               ]
             },
             {
               "allOf": [
-                {"$ref": "#/$defs/latticeTimePrediction"},
-                {"properties": {"algorithm": {"const": "max_cardinality"}}}
+                {
+                  "$ref": "#/$defs/latticeTimePrediction"
+                },
+                {
+                  "properties": {
+                    "algorithm": {
+                      "const": "max_cardinality"
+                    }
+                  }
+                }
               ]
             }
           ],
           "items": false
         }
       },
-      "required": ["clause_index", "bin", "argv", "predictions"],
+      "required": [
+        "clause_index",
+        "bin",
+        "argv",
+        "predictions"
+      ],
       "additionalProperties": false
     },
     "kvTTLCost": {
@@ -352,19 +490,68 @@
         {
           "type": "object",
           "properties": {
-            "reference_runtime_s": {"type": "number", "minimum": 0},
-            "initial_bucket_index": {"type": "integer", "minimum": 0},
-            "final_bucket_index": {"type": "integer", "minimum": 0},
-            "num_bucket_jumps": {"type": "integer", "minimum": 0},
-            "bucket_exhausted": {"type": "boolean"},
-            "ttl_s": {"type": "number", "minimum": 0},
-            "kv_eviction_time_s": {"type": "number", "minimum": 0},
-            "kv_retention_time_s": {"type": "number", "minimum": 0},
-            "kv_cache_miss": {"type": "boolean"},
-            "proxy_cost_s": {"type": ["number", "null"], "minimum": 0},
-            "buckets_s": {"type": "array", "items": {"type": "number", "minimum": 0}},
-            "ttl_by_bucket_s": {"type": "array", "items": {"type": "number", "minimum": 0}},
-            "miss_penalty_s": {"type": ["number", "null"], "minimum": 0}
+            "reference_runtime_s": {
+              "type": "number",
+              "minimum": 0
+            },
+            "initial_bucket_index": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "final_bucket_index": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "num_bucket_jumps": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "bucket_exhausted": {
+              "type": "boolean"
+            },
+            "ttl_s": {
+              "type": "number",
+              "minimum": 0
+            },
+            "kv_eviction_time_s": {
+              "type": "number",
+              "minimum": 0
+            },
+            "kv_retention_time_s": {
+              "type": "number",
+              "minimum": 0
+            },
+            "kv_cache_miss": {
+              "type": "boolean"
+            },
+            "proxy_cost_s": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "buckets_s": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "ttl_by_bucket_s": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "miss_penalty_s": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0
+            }
           },
           "required": [
             "reference_runtime_s",
@@ -386,10 +573,18 @@
         {
           "type": "object",
           "properties": {
-            "unavailable_reason": {"type": "string", "minLength": 1},
-            "initial_bucket_index": {"type": "integer", "minimum": 0}
+            "unavailable_reason": {
+              "type": "string",
+              "minLength": 1
+            },
+            "initial_bucket_index": {
+              "type": "integer",
+              "minimum": 0
+            }
           },
-          "required": ["unavailable_reason"],
+          "required": [
+            "unavailable_reason"
+          ],
           "additionalProperties": false
         }
       ]
@@ -397,116 +592,336 @@
     "compositionUnit": {
       "type": "object",
       "description": "One unit of a derived compound-latency composition. Serial units (; && ||) sum; pipeline units (|) contribute their slowest stage after trailing result-viewing consumers are dropped.",
-      "required": ["kind", "bins", "time_ms", "dropped_viewer_bins"],
+      "required": [
+        "kind",
+        "bins",
+        "time_ms",
+        "dropped_viewer_bins"
+      ],
       "properties": {
-        "kind": {"enum": ["single", "pipeline"]},
-        "bins": {"type": "array", "items": {"type": "string"}},
-        "time_ms": {"type": "number", "minimum": 0},
-        "dropped_viewer_bins": {"type": "array", "items": {"type": "string"}}
+        "kind": {
+          "enum": [
+            "single",
+            "pipeline"
+          ]
+        },
+        "bins": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "time_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "dropped_viewer_bins": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       },
       "additionalProperties": false
     },
     "numaNodeUsage": {
       "type": "object",
       "description": "Aggregated CPU utilization for one hardware NUMA node over the sampling window. cpu_utilization_pct is the total busy share of the whole NUMA domain (0-100, where 100 means every CPU in the node was fully busy); busy_cores is the average number of fully busy cores over the window.",
-      "required": ["node", "cpulist", "online_cpus", "cpu_utilization_pct", "busy_cores"],
+      "required": [
+        "node",
+        "cpulist",
+        "online_cpus",
+        "cpu_utilization_pct",
+        "busy_cores"
+      ],
       "properties": {
-        "node": {"type": "integer", "minimum": 0},
-        "cpulist": {"type": "string"},
-        "online_cpus": {"type": "integer", "minimum": 0},
-        "cpu_utilization_pct": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
-        "busy_cores": {"type": ["number", "null"], "minimum": 0}
+        "node": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cpulist": {
+          "type": "string"
+        },
+        "online_cpus": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cpu_utilization_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100
+        },
+        "busy_cores": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
       },
       "additionalProperties": false
     },
     "numaUsage": {
       "type": "object",
       "description": "Host-wide per-NUMA-node CPU usage snapshot captured at prediction time. One node entry is emitted per hardware NUMA node (e.g. four entries on a 4-node machine), reflecting each NUMA domain's busyness. available=false means the host exposes no /proc/stat or NUMA sysfs; sampled=false means this is the first sample so no window delta exists yet.",
-      "required": ["available", "sampled", "node_count", "window_s", "user_hz", "nodes"],
+      "required": [
+        "available",
+        "sampled",
+        "node_count",
+        "window_s",
+        "user_hz",
+        "nodes"
+      ],
       "properties": {
-        "available": {"type": "boolean"},
-        "sampled": {"type": "boolean"},
-        "node_count": {"type": "integer", "minimum": 0},
-        "window_s": {"type": ["number", "null"], "minimum": 0},
-        "user_hz": {"type": ["integer", "null"], "minimum": 1},
+        "available": {
+          "type": "boolean"
+        },
+        "sampled": {
+          "type": "boolean"
+        },
+        "node_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "window_s": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "user_hz": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
         "nodes": {
           "type": "array",
-          "items": {"$ref": "#/$defs/numaNodeUsage"}
+          "items": {
+            "$ref": "#/$defs/numaNodeUsage"
+          }
         }
       },
       "additionalProperties": false
     }
   },
-  "required": ["decision_id", "action", "reason_code", "reason", "policy_name", "policy_version", "lease_id", "prediction", "placement_advice"],
+  "required": [
+    "decision_id",
+    "action",
+    "reason_code",
+    "reason",
+    "policy_name",
+    "policy_version",
+    "lease_id",
+    "prediction",
+    "placement_advice"
+  ],
   "properties": {
-    "decision_id": {"type": "string", "minLength": 1},
-    "action": {"enum": ["allow", "block"]},
-    "reason_code": {"type": "string", "minLength": 1},
-    "reason": {"type": "string"},
-    "policy_name": {"type": "string"},
-    "policy_version": {"type": "string"},
-    "lease_id": {"type": ["string", "null"]},
+    "decision_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "action": {
+      "enum": [
+        "allow",
+        "block"
+      ]
+    },
+    "reason_code": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reason": {
+      "type": "string"
+    },
+    "policy_name": {
+      "type": "string"
+    },
+    "policy_version": {
+      "type": "string"
+    },
+    "lease_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "prediction": {
       "type": "object",
-      "required": ["duration_p50_ms", "duration_p90_ms", "resource_class", "confidence"],
+      "required": [
+        "duration_p50_ms",
+        "duration_p90_ms",
+        "resource_class",
+        "confidence"
+      ],
       "properties": {
         "call_prediction": {
           "description": "Authoritative versioned call-level output. Nullable only for legacy/custom predictors during migration.",
-          "anyOf": [{"$ref": "call-load.schema.json"}, {"type": "null"}]
+          "anyOf": [
+            {
+              "$ref": "call-load.schema.json"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "pmu_prediction": {
           "description": "Quality-gated empirical PMU prediction from ToolKB. All three targets remain present when unavailable.",
-          "anyOf": [{"$ref": "pmu-prediction.schema.json"}, {"type": "null"}]
+          "anyOf": [
+            {
+              "$ref": "pmu-prediction.schema.json"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "diagnostics": {
-          "type": ["object", "null"], "additionalProperties": false,
-          "required": ["backends"],
-          "properties": {"backends": {
-            "type": "object", "additionalProperties": false,
-            "properties": {
-              "runtime": {"$ref": "call-load.schema.json"},
-              "trie": {"$ref": "call-load.schema.json"},
-              "lattice": {"$ref": "call-load.schema.json"}
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "backends"
+          ],
+          "properties": {
+            "backends": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "runtime": {
+                  "$ref": "call-load.schema.json"
+                },
+                "trie": {
+                  "$ref": "call-load.schema.json"
+                },
+                "lattice": {
+                  "$ref": "call-load.schema.json"
+                }
+              }
             }
-          }}
+          }
         },
-        "duration_p50_ms": {"type": ["integer", "null"], "minimum": 0},
-        "duration_p90_ms": {"type": ["integer", "null"], "minimum": 0},
-        "resource_class": {"type": "string"},
-        "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "duration_p50_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "duration_p90_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "resource_class": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
+        },
         "tool_resource": {
-          "type": ["object", "null"],
+          "type": [
+            "object",
+            "null"
+          ],
           "description": "Deprecated native KB diagnostics. Use call_prediction for authoritative tool-call load statistics.",
           "deprecated": true,
           "properties": {
-            "repo": {"type": "string"},
-            "command": {"type": "string"},
-            "parse_failed": {"type": "boolean"},
-            "clause_bins": {"type": "array", "items": {"type": "string"}},
+            "repo": {
+              "type": "string"
+            },
+            "command": {
+              "type": "string"
+            },
+            "parse_failed": {
+              "type": "boolean"
+            },
+            "clause_bins": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
             "clause_predictions": {
               "type": "array",
-              "items": {"$ref": "#/$defs/clauseLatencyBucketOutcome"}
+              "items": {
+                "$ref": "#/$defs/clauseLatencyBucketOutcome"
+              }
             },
             "prediction": {
               "anyOf": [
-                {"$ref": "#/$defs/clauseLatencyBucketPrediction"},
-                {"type": "null"}
+                {
+                  "$ref": "#/$defs/clauseLatencyBucketPrediction"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
-            "unavailable_reason": {"type": ["string", "null"]},
+            "unavailable_reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "continuous_predictions": {
               "type": "object",
               "description": "Best-effort non-MLP RuntimeToolResourceKB TargetPrediction payloads keyed by target name.",
               "additionalProperties": {
                 "type": "object",
                 "properties": {
-                  "target": {"type": "string"},
-                  "conditional_p90": {"type": ["number", "null"]},
-                  "scope": {"type": ["string", "null"]},
-                  "key_kind": {"type": ["string", "null"]},
-                  "evidence_count": {"type": "integer", "minimum": 0},
-                  "fallback_path": {"type": "array", "items": {"type": "string"}},
-                  "note": {"type": ["string", "null"]}
+                  "target": {
+                    "type": "string"
+                  },
+                  "conditional_p90": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "scope": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "key_kind": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "evidence_count": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "fallback_path": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "note": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
                 },
                 "required": [
                   "target",
@@ -530,7 +945,9 @@
             "lattice_time_predictions": {
               "type": "array",
               "description": "Clause-level shrinkage, LOSO, and max-cardinality point predictions sharing one independent lattice KB.",
-              "items": {"$ref": "#/$defs/clauseLatticeTimePredictions"}
+              "items": {
+                "$ref": "#/$defs/clauseLatticeTimePredictions"
+              }
             },
             "prediction_algorithms": {
               "type": "object",
@@ -541,13 +958,35 @@
                   "items": {
                     "type": "object",
                     "properties": {
-                      "name": {"type": "string"},
-                      "family": {"type": "string"},
-                      "source": {"type": "string"},
-                      "targets": {"type": "array", "items": {"type": "string"}},
-                      "outputs": {"type": "array", "items": {"type": "string"}}
+                      "name": {
+                        "type": "string"
+                      },
+                      "family": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "targets": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "outputs": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
                     },
-                    "required": ["name", "family", "source", "targets", "outputs"],
+                    "required": [
+                      "name",
+                      "family",
+                      "source",
+                      "targets",
+                      "outputs"
+                    ],
                     "additionalProperties": false
                   }
                 },
@@ -556,28 +995,49 @@
                   "items": {
                     "type": "object",
                     "properties": {
-                      "name": {"type": "string"},
-                      "source": {"type": "string"},
-                      "reason": {"type": "string"}
+                      "name": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "reason": {
+                        "type": "string"
+                      }
                     },
-                    "required": ["name", "source", "reason"],
+                    "required": [
+                      "name",
+                      "source",
+                      "reason"
+                    ],
                     "additionalProperties": false
                   }
                 }
               },
-              "required": ["enabled", "excluded"],
+              "required": [
+                "enabled",
+                "excluded"
+              ],
               "additionalProperties": false
             },
             "kv_ttl_cost": {
               "anyOf": [
-                {"type": "null"},
-                {"$ref": "#/$defs/kvTTLCost"}
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/kvTTLCost"
+                }
               ]
             },
             "numa_usage": {
               "anyOf": [
-                {"type": "null"},
-                {"$ref": "#/$defs/numaUsage"}
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/numaUsage"
+                }
               ],
               "description": "Host-wide per-NUMA-node CPU usage snapshot taken at prediction time. Present only when the sidecar configures a NUMA usage sampler."
             },
@@ -586,14 +1046,19 @@
               "description": "True when the command-level prediction is a derived total composed from per-clause median latencies."
             },
             "composed_total_ms": {
-              "type": ["number", "null"],
+              "type": [
+                "number",
+                "null"
+              ],
               "minimum": 0,
               "description": "Composed total latency in milliseconds when composed is true."
             },
             "composition": {
               "type": "array",
               "description": "Per-unit breakdown of the derived composition when composed is true.",
-              "items": {"$ref": "#/$defs/compositionUnit"}
+              "items": {
+                "$ref": "#/$defs/compositionUnit"
+              }
             }
           },
           "required": [
@@ -614,12 +1079,35 @@
     },
     "placement_advice": {
       "type": "object",
-      "required": ["cpu_set", "numa_node", "llc_cluster", "advisory"],
+      "required": [
+        "cpu_set",
+        "numa_node",
+        "llc_cluster",
+        "advisory"
+      ],
       "properties": {
-        "cpu_set": {"type": ["string", "null"]},
-        "numa_node": {"type": ["integer", "null"], "minimum": 0},
-        "llc_cluster": {"type": ["string", "null"]},
-        "advisory": {"const": true}
+        "cpu_set": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "numa_node": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "llc_cluster": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "advisory": {
+          "const": true
+        }
       },
       "additionalProperties": false
     },

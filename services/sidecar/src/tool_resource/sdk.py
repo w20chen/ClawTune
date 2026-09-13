@@ -611,7 +611,7 @@ def _observation_from_clause(
         ts_start=ts_start,
         ts_end=ts_end,
         latency_ms=latency_ms,
-        peak_cpu_cores=_optional_finite_float(row.get("peak_cpu_cores")),
+        cpu_peak_cores=_optional_finite_float(row.get("peak_cpu_cores")),
         sampled_peak_rss_mb=_optional_finite_float(
             row.get("sampled_peak_rss_mb")
         ),

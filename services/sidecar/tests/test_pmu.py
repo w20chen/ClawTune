@@ -224,7 +224,7 @@ def test_quality_gated_pmu_evidence_has_complete_prediction_output() -> None:
         "ipc": {"values": (0.5, 1.5), "context": ("repo", "exact")},
     })
 
-    assert set(prediction.targets) == {"ipc", "llc_mpki", "llc_miss_rate"}
+    assert set(prediction.targets) == {spec.name for spec in pmu_module.EVENT_SPECS} | {"ipc", "llc_mpki", "llc_miss_rate", "llc_read_accesses_per_cpu_second", "llc_read_misses_per_cpu_second"}
     assert prediction.targets["ipc"].p50 == 1.0
     assert prediction.targets["ipc"].p90 == 1.5
     assert prediction.targets["ipc"].evidence_count == 2
@@ -242,6 +242,7 @@ def test_reliable_metrics_are_gated_independently_when_a_ratio_is_undefined() ->
     metrics = _quality_gated_pmu_metrics(collector.finish("exec").to_dict())
 
     assert metrics == {
+        "cycles": 2000000, "instructions": 1000000, "llc_read_accesses": 0, "llc_read_misses": 0,
         "ipc": 0.5,
         "llc_mpki": 0.0,
         "llc_miss_rate": None,
@@ -296,6 +297,7 @@ def test_kb_rechecks_raw_evidence_and_recomputes_ratios():
     profile["derived"] = {"ipc": 999, "llc_mpki": 999, "llc_miss_rate": 999}
     assert not _quality_gated_pmu_metrics(profile, execution_id="another-execution")["eligible"]
     assert _quality_gated_pmu_metrics(profile) == {
+        "cycles": 2000000, "instructions": 1000000, "llc_read_accesses": 10000, "llc_read_misses": 1000,
         "ipc": .5, "llc_mpki": 1., "llc_miss_rate": .1, "eligible": True,
         "llc_read_accesses_per_cpu_second": 10000.,
         "llc_read_misses_per_cpu_second": 1000.}

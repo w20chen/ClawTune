@@ -69,6 +69,10 @@ class ProcessResourceSampler:
         mono = time.monotonic()
         if scope is None:
             return self._empty(now, mono, None, "unattributed")
+        if scope.attribution_source == "trusted-execution-root-pid":
+            # The container path is context, not exclusive CPU ownership. Reading
+            # cpu.stat here would include unrelated/background container work.
+            scope = scope.model_copy(update={"kind": "pid", "pid": scope.root_pid or scope.pid, "cgroup_path": None})
         if scope.kind == "cgroup-v2" and scope.cgroup_path:
             if _is_cgroup_root(scope.cgroup_path):
                 return self._empty(now, mono, None, "cgroup-root-unattributed")

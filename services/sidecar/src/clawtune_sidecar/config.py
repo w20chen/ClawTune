@@ -137,7 +137,8 @@ class SidecarConfig:
                     "cpu_time_seconds": "CLAWTUNE_TOOL_RESOURCE_CPU_TIME_BUCKETS_S",
                     "cpu_avg_cores": "CLAWTUNE_TOOL_RESOURCE_CPU_AVG_BUCKETS_CORES",
                     "cpu_peak_cores": "CLAWTUNE_TOOL_RESOURCE_CPU_PEAK_BUCKETS_CORES",
-                    "memory_peak_rss_bytes": "CLAWTUNE_TOOL_RESOURCE_MEMORY_BUCKETS_BYTES",
+                    "memory_total_peak_bytes": "CLAWTUNE_TOOL_RESOURCE_MEMORY_TOTAL_BUCKETS_BYTES",
+                    "memory_extra_peak_bytes": "CLAWTUNE_TOOL_RESOURCE_MEMORY_EXTRA_BUCKETS_BYTES",
                 }.items()
             },
             tool_resource_miss_penalty_s=_optional_nonnegative_float_from_env(

@@ -1,5 +1,5 @@
 {
-  "schema_version": "call_load.v1",
+  "schema_version": "call_load.v2",
   "scope": "tool_call",
   "lifecycle": "tool_hook_interval",
   "cpu_peak_window_ms": 500,
@@ -175,10 +175,52 @@
       "calibration": "unvalidated",
       "unavailable_reason": null
     },
-    "memory_peak_rss_bytes": {
+    "memory_total_peak_bytes": {
       "status": "available",
       "unit": "bytes",
-      "metric_definition": "sampled_distinct_mm_rss",
+      "metric_definition": "environment_memory_total_peak",
+      "avg": 67108864,
+      "p50": 67108864,
+      "p90": 67108864,
+      "buckets": {
+        "edges": [
+          16777216,
+          67108864,
+          268435456,
+          1073741824,
+          4294967296
+        ],
+        "interval": "left_closed_right_open",
+        "probabilities": [
+          0,
+          0,
+          1,
+          0,
+          0,
+          0
+        ]
+      },
+      "backend": "trie",
+      "method": "composed",
+      "evidence_counts": [
+        3
+      ],
+      "sample_count": 3,
+      "context": [
+        "public",
+        "bin"
+      ],
+      "assumptions": [
+        "foreground_clause_lineage_covers_call_workload",
+        "shell_and_hook_overhead_not_modeled"
+      ],
+      "calibration": "unvalidated",
+      "unavailable_reason": null
+    },
+    "memory_extra_peak_bytes": {
+      "status": "available",
+      "unit": "bytes",
+      "metric_definition": "environment_memory_peak_minus_baseline",
       "avg": 67108864,
       "p50": 67108864,
       "p90": 67108864,
@@ -217,5 +259,6 @@
       "calibration": "unvalidated",
       "unavailable_reason": null
     }
-  }
+  },
+  "memory_measurement": "cgroup_v2_memory_current"
 }

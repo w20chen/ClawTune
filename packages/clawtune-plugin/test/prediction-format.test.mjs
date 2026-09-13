@@ -46,7 +46,7 @@ test("prints selected results and all three backends with complete histogram/evi
   }
   const text = formatCallLoadPrediction(prediction).join("\n");
   for (const title of ["Selected prediction", "RUNTIME", "TRIE", "LATTICE"]) assert.ok(text.includes(title));
-  for (const label of ["Duration", "CPU time", "CPU average", "CPU peak", "Peak RSS"]) {
+  for (const label of ["Duration", "CPU time", "CPU average", "CPU peak", "Memory total", "Memory extra"]) {
     assert.equal(text.split("\n").filter(line => line.startsWith(`    ${label.padEnd(12)} `)).length, 4);
   }
   assert.ok(text.includes("Mean") && text.includes("P50") && text.includes("P90"));

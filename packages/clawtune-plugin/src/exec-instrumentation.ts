@@ -59,11 +59,20 @@ export const CLAWBOX_EXEC_ENVELOPE_PREFIX = "__CBX_EXEC_1__";
  * header shell-safe while allowing the Tool collector to profile the logical
  * command and execute the wrapper unchanged.
  */
-export function buildSandboxExecEnvelope(command: string, executionId: string): string {
+export function buildSandboxExecEnvelope(command: string, executionId: string, decision?: ToolDecision | null): string {
   const header = Buffer.from(JSON.stringify({
     v: 1,
     execution_id: executionId,
     profile_command_b64: Buffer.from(command, "utf8").toString("base64url"),
+    ...(decision?.prediction.call_prediction
+      ? {call_prediction: {
+          schema_version: decision.prediction.call_prediction.schema_version,
+          scope: decision.prediction.call_prediction.scope,
+          targets: {
+            memory_extra_peak_bytes: decision.prediction.call_prediction.targets.memory_extra_peak_bytes,
+          },
+        }}
+      : {}),
   }), "utf8").toString("base64url");
   return `${CLAWBOX_EXEC_ENVELOPE_PREFIX}b64:${header}\n${command}`;
 }
@@ -74,7 +83,7 @@ export function buildSandboxExecEnvelope(command: string, executionId: string): 
  * the bridge envelope so the tool bridge records the SAME execution_id as the
  * ClawTune span (exact join, no time window).  Otherwise it returns empty.
  */
-function instrumentHookOnlyExec(event: unknown, config: PluginConfig): InstrumentResult {
+function instrumentHookOnlyExec(event: unknown, config: PluginConfig, decision: ToolDecision | null): InstrumentResult {
   const empty: InstrumentResult = {
     params: null,
     executionId: null,
@@ -95,7 +104,7 @@ function instrumentHookOnlyExec(event: unknown, config: PluginConfig): Instrumen
     ...safeExecEnv(params.env),
     CLAWTUNE_EXECUTION_ID: executionId,
   };
-  const effectiveCommand = buildSandboxExecEnvelope(requestedCommand, executionId);
+  const effectiveCommand = buildSandboxExecEnvelope(requestedCommand, executionId, decision);
   params.command = effectiveCommand;
   return {
     params,
@@ -123,7 +132,7 @@ export async function instrumentExecParams(
   };
 
   if (config.executionBackend === "hook-only") {
-    return instrumentHookOnlyExec(event, config);
+    return instrumentHookOnlyExec(event, config, decision);
   }
   const shouldInstrumentResult = shouldInstrument(event, config);
   if (!shouldInstrumentResult) {

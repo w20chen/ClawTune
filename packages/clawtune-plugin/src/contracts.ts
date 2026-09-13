@@ -160,7 +160,7 @@ export type ToolDecision = {
 // Mirror of contracts/call-load.schema.json. Native KB payloads below are
 // migration diagnostics; consumers should use prediction.call_prediction.
 export type LoadBackend = "runtime" | "trie" | "lattice";
-export type LoadTarget = "duration_ms" | "cpu_time_seconds" | "cpu_avg_cores" | "cpu_peak_cores" | "memory_peak_rss_bytes";
+export type LoadTarget = "duration_ms" | "cpu_time_seconds" | "cpu_avg_cores" | "cpu_peak_cores" | "memory_total_peak_bytes" | "memory_extra_peak_bytes";
 export type LoadEstimate = {
   status: "available" | "unavailable";
   unit: "ms" | "core_seconds" | "cores" | "bytes";
@@ -179,17 +179,23 @@ export type LoadEstimate = {
   unavailable_reason: string | null;
 };
 export type CallLoadPrediction = {
-  schema_version: "call_load.v1";
+  schema_version: "call_load.v2";
+  memory_measurement: "cgroup_v2_memory_current" | "guest_memtotal_minus_memavailable";
   scope: "tool_call";
   lifecycle: "tool_hook_interval";
   cpu_peak_window_ms: 500;
   quantile_method: "median_p50_nearest_rank_p90";
   targets: Record<LoadTarget, LoadEstimate>;
+  clause_predictions?: Array<{
+    clause_index: number; argv: string[]; cwd: string | null; env_names: string[];
+    memory_measurement: "cgroup_v2_memory_current" | "guest_memtotal_minus_memavailable";
+    scope: "clause"; targets: Record<LoadTarget, LoadEstimate>;
+  }>;
 };
-export type PmuTarget = "ipc" | "llc_mpki" | "llc_miss_rate";
+export type PmuTarget = "cycles" | "instructions" | "llc_read_accesses" | "llc_read_misses" | "llc_read_accesses_per_cpu_second" | "llc_read_misses_per_cpu_second" | "ipc" | "llc_mpki" | "llc_miss_rate";
 export type PmuEstimate = {
   status: "available" | "unavailable";
-  unit: "instructions_per_cycle" | "misses_per_kilo_instructions" | "ratio";
+  unit: "instructions_per_cycle" | "misses_per_kilo_instructions" | "ratio" | "count" | "accesses_per_cpu_second" | "misses_per_cpu_second";
   metric_definition: string;
   avg: number | null;
   p50: number | null;
@@ -202,7 +208,7 @@ export type PmuEstimate = {
   unavailable_reason: string | null;
 };
 export type PmuPrediction = {
-  schema_version: "pmu_prediction.v1";
+  schema_version: "pmu_prediction.v2";
   scope: "tool_call";
   lifecycle: "completed_execution_profile";
   quantile_method: "median_p50_nearest_rank_p90";
@@ -398,14 +404,14 @@ export type ToolResourceClauseLatticeResourcePredictions = {
   bin: string;
   argv: string[];
   scope: "clause_owned_lineage";
-  memory_metric: "sampled_distinct_mm_rss";
+  memory_metric: "environment_memory";
   cpu_peak_window_ms: 500;
   quantile_method: "median_p50_nearest_rank_p90";
   predictions: ToolResourceLatticeResourcePrediction[];
 };
 
 export type ToolResourceLatticeResourcePrediction = {
-  target: "cpu_time_seconds" | "cpu_avg_cores" | "cpu_peak_cores" | "memory_peak_rss_bytes";
+  target: "cpu_time_seconds" | "cpu_avg_cores" | "cpu_peak_cores" | "memory_total_peak_bytes" | "memory_extra_peak_bytes";
   unit: "core_seconds" | "cores" | "bytes";
   algorithm: "shrinkage" | "loso" | "max_cardinality";
   p50: number | null;

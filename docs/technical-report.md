@@ -29,13 +29,14 @@ A tool call may contain a shell command, represented as text such as `grep patte
 | CPU time | Cumulative CPU time of the attributed workload | core-s |
 | Average CPU use | CPU time divided by duration for the same observation | cores |
 | Peak CPU use | Maximum CPU use over fixed 500 ms windows | cores |
-| Peak resident memory | Maximum sampled sum of resident set size (RSS) across distinct address spaces | bytes |
+| `memory_total_peak_bytes` | Sampled peak environment memory, including its background | bytes |
+| `memory_extra_peak_bytes` | `max(0, memory_total_peak_bytes - memory_baseline_bytes)` | bytes |
 
-For observation $i$, average CPU use is $a_i=c_i/t_i$. Its predicted mean averages these per-observation ratios, rather than dividing the separate means of CPU time and duration. Sampled RSS differs from total cgroup-accounted memory and is not an allocation that guarantees avoidance of out-of-memory failures.
+For observation $i$, average CPU use is $a_i=c_i/t_i$. Its predicted mean averages these per-observation ratios, rather than dividing the separate means of CPU time and duration. Process RSS is retained only as a diagnostic, not as a memory prediction target. Current collection samples cgroup v2 `memory.current`: the background is memory already charged to that cgroup before the call, including its existing processes and charged cache; it is not the whole host OS. Guest `MemTotal - MemAvailable` is a separate measurement source for future VM integration. All three KBs keep the sources separate; host VM RSS is not guest memory. Total and extra are sampled estimates, not guaranteed allocation limits.
 
 Resource labels require identifiable execution ownership and sufficient collection quality for the target. Shared-container totals cannot serve as individual tool labels. Timeout and cancellation observations are censored and excluded from complete-execution labels. Missing values remain distinct from valid zeros, and each target has its own validity mask.
 
-Selected downstream pipeline consumers are excluded from independent clause modeling because their duration depends on upstream input. The same executables remain eligible when run independently or at the start of a pipeline.
+The downstream list is `cat comm column cut egrep fgrep fold grep head hexdump less more nl od paste rev rg tac tail tee tr ts uniq wc xxd`. These consumers at pipeline position greater than zero are excluded from independent clause modeling because their duration depends on upstream input. The same executables remain eligible when run independently or at the start of a pipeline.
 
 Hardware profiling records cycles $C$, instructions $I$, last-level-cache read accesses $A$, and read misses $M$:
 
@@ -44,6 +45,8 @@ $$
 \mathrm{MPKI}=1000M/I,\qquad
 \mathrm{MissRate}=M/A.
 $$
+
+ToolKB stores all nine metrics: `cycles`, `instructions`, `llc_read_accesses`, `llc_read_misses`, `ipc`, `llc_mpki`, `llc_miss_rate`, `llc_read_accesses_per_cpu_second`, and `llc_read_misses_per_cpu_second`. The final two divide their event counts by that event's inherited perf `time_running_ns / 1e9`; they describe on-CPU read intensity, not DRAM bandwidth or bytes per wall second.
 
 A zero denominator makes the corresponding ratio unavailable. Only complete, correctly attributed observations with consistent event semantics and no counter multiplexing enter prediction history. Scaled or incomplete counters remain diagnostic. Shared chip-level cache counters are not substituted for task-attributed measurements.
 
@@ -158,13 +161,13 @@ $$
 
 A standalone clause forms a one-element group. A fixed random seed generates 2048 draws, from which summary statistics are computed. Clause medians or p90s are not added directly, and generated draws are not counted as historical observations.
 
-This approximation assumes that foreground clauses cover the workload, ignores shell and hook overhead, and treats clause durations as independent. General conditionals, loops, substitutions, and background jobs are not composed. Multi-clause CPU and memory estimates require aligned execution ownership and timelines and are currently unavailable from independent clause labels. A single-clause shell command also uses the composition path when its estimate is reconstructed from clause evidence.
+This approximation assumes that foreground clauses cover the workload, ignores shell and hook overhead, and treats clause durations as independent. `exec` and `terminal_exec` share shell extraction. `cd`, assignments, `env`, `timeout`, and `nohup` retain executable-stage predictions. `&&` and `||` predictions state the assumed branch; they do not forecast exit status. Loops, substitutions, and background jobs cannot establish a complete-call composition. CPU time sums across retained stages; sequential CPU peaks use their maximum, and parallel peaks use a conservative sum. The latter is not a calibrated p90 of simultaneous load. Multi-clause CPU averages need paired duration/CPU samples; environment memory needs a joint baseline and timeline, so these whole-call estimates remain unavailable when that evidence is missing. Individual clause predictions remain available. A single-clause shell command also uses the composition path when its estimate is reconstructed from clause evidence.
 
 ## 6. Learning, initialization, and evaluation
 
 An online query may use an observation only when $t_i^{end}<t_q^{start}$. Concurrent tasks share evidence in actual completion order; fixed task selection does not ensure identical learning interleavings. Offline testing freezes all models and cannot incorporate test outcomes.
 
-The bundled initialization prior contains a small set of historical executable-clause observations with source identities removed and resource labels filtered. Call-level history starts empty. The bundle is retained as a runtime resource; its source workload and hardware conditions limit cross-platform interpretation.
+The bundled initialization prior contains a small set of historical executable-clause observations with source identities removed and resource labels filtered. Call-level history starts empty. Runtime KB v3, TrieKB v6, and LatticeKB v3 reject earlier snapshots; the release prior contains no formal memory labels synthesized from historical RSS. The bundle is retained as a runtime resource; its source workload and hardware conditions limit cross-platform interpretation.
 
 Online execution evaluates collection and continuous learning behavior. Fixed-trace evaluation measures prediction error outside the training subset. The current offline protocol keeps each task and all its attempts on one side of a deterministic split, stratified by benchmark and project or category. Singleton groups are training-only. The resulting overall fraction can differ from the requested fraction, and within-project tests do not establish unseen-project performance.
 

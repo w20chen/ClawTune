@@ -1367,7 +1367,7 @@ def _aggregate(
         ts_start=epoch_offset + t_exec / 1e9,
         ts_end=epoch_offset + t_end / 1e9,
         latency_ms=(None if protocol_timeout_terminated else (t_end - t_exec) / 1e6),
-        peak_cpu_cores=peak_cpu,
+        cpu_peak_cores=peak_cpu,
         sampled_peak_rss_mb=peak_rss,
         cpu_ns_cumulative=sum(i.cpu_ns_cumulative for i in owned_images),
         in_loop=bool(clause.get("in_loop", False)),

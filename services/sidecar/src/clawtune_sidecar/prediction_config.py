@@ -8,7 +8,8 @@ DEFAULT_RESOURCE_BUCKETS = {
     "cpu_time_seconds": (0.01, 0.1, 1.0, 10.0, 60.0),
     "cpu_avg_cores": (0.1, 0.5, 1.0, 2.0, 4.0, 8.0),
     "cpu_peak_cores": (0.5, 1.0, 2.0, 4.0, 8.0, 16.0),
-    "memory_peak_rss_bytes": tuple(float(mib * 1024**2) for mib in (16, 64, 256, 1024, 4096)),
+    "memory_total_peak_bytes": tuple(float(mib * 1024**2) for mib in (16, 64, 256, 1024, 4096)),
+    "memory_extra_peak_bytes": tuple(float(mib * 1024**2) for mib in (16, 64, 256, 1024, 4096)),
 }
 
 

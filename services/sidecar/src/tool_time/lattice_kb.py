@@ -35,7 +35,7 @@ from tool_time.resource_lattice import (
 
 
 LATTICE_TIME_ALGORITHMS = ("shrinkage", "loso", "max_cardinality")
-LATTICE_TIME_KB_SCHEMA = "clause_lattice_kb_v2"
+LATTICE_TIME_KB_SCHEMA = "clause_lattice_kb_v3"
 _LEGACY_SCHEMA = "clause_lattice_time_kb_v1"
 
 _NODE_MODE = "bounded"
@@ -288,7 +288,8 @@ class LatticeTimeKB:
                 continue
             predictions = []
             for target, (unit, _scale) in RESOURCE_TARGETS.items():
-                state = self._resource_states.get(target, ResourceState({}, 0.0, 0.5))
+                state_key = target + (":" + clause.get("memory_measurement", "cgroup_v2_memory_current") if target.startswith("memory_") else "")
+                state = self._resource_states.get(state_key, ResourceState({}, 0.0, 0.5))
                 for algorithm in LATTICE_TIME_ALGORITHMS:
                     try:
                         result = (
@@ -300,7 +301,7 @@ class LatticeTimeKB:
                     predictions.append(result.to_dict())
             outcomes.append({
                 "clause_index": index, "bin": bin_, "argv": list(argv),
-                "scope": "clause_owned_lineage", "memory_metric": "sampled_distinct_mm_rss",
+                "scope": "clause_owned_lineage", "memory_metric": "environment_memory",
                 "cpu_peak_window_ms": 500, "quantile_method": "median_p50_nearest_rank_p90",
                 "predictions": predictions,
             })
@@ -323,7 +324,10 @@ class LatticeTimeKB:
                 continue
             targets = {}
             for target, (_, scale) in LOAD_TARGETS.items():
-                state = self._resource_states.get("load:" + target)
+                state_key = "load:" + target
+                if target.startswith("memory_"):
+                    state_key += ":" + clause.get("memory_measurement", "cgroup_v2_memory_current")
+                state = self._resource_states.get(state_key)
                 if state is None:
                     continue
                 try:
@@ -505,7 +509,7 @@ class LatticeTimeKB:
 
     @classmethod
     def from_json_obj(cls, obj: Mapping[str, Any]) -> LatticeTimeKB:
-        if obj.get("schema") not in {LATTICE_TIME_KB_SCHEMA, _LEGACY_SCHEMA}:
+        if obj.get("schema") != LATTICE_TIME_KB_SCHEMA:
             raise ValueError(f"unsupported lattice KB schema {obj.get('schema')!r}")
         expected_generation = {
             "mode": _NODE_MODE,
@@ -561,6 +565,16 @@ def _build_node_state(
     ]
     resources = build_resource_states(ordered)
     resources.update({"load:" + target: state for target, state in build_resource_states(ordered, load=True).items()})
+    for measurement in {row.memory_measurement for row in ordered if row.memory_measurement}:
+        subset = [row for row in ordered if row.memory_measurement == measurement]
+        for load, prefix in [(False, ""), (True, "load:")]:
+            for target, state in build_resource_states(subset, load=load).items():
+                if target.startswith("memory_"):
+                    resources[prefix + target + ":" + measurement] = state
+    for key in list(resources):
+        if key.removeprefix("load:").startswith("memory_") and key.count(":") <= (1 if key.startswith("load:") else 0):
+            del resources[key]
+
     if not training:
         return {}, 0.0, 0.5, 0.0, resources
     effective_max_optional_features = _effective_max_optional_features(training)
@@ -652,7 +666,9 @@ def _unavailable_prediction(algorithm: str, reason: str) -> LatticeTimePredictio
 
 def _sanitize_resources(observation: ClauseObservation) -> ClauseObservation:
     """Mask invalid optional resources without losing valid time/other targets."""
-    fields = ("cpu_ns_cumulative", "peak_cpu_cores", "sampled_peak_rss_mb")
+    from tool_resource.commands import normalized_observation
+    observation = normalized_observation(observation)
+    fields = ("cpu_ns_cumulative", "cpu_peak_cores", "sampled_peak_rss_mb", "memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes")
     invalid = {name: None for name in fields
                if getattr(observation, name) is not None and not nonnegative(getattr(observation, name))}
     if observation.latency_ms is not None and not nonnegative(observation.latency_ms):
@@ -678,12 +694,15 @@ def _observation_key(observation: ClauseObservation) -> _ObservationKey:
         observation.ts_end,
         observation.latency_ms,
         observation.cpu_ns_cumulative,
-        observation.peak_cpu_cores,
+        observation.cpu_peak_cores,
         observation.sampled_peak_rss_mb,
         observation.in_loop,
         observation.in_pipe,
         observation.in_subst,
         observation.pipeline_position,
+        observation.memory_baseline_bytes, observation.memory_total_peak_bytes,
+        observation.memory_extra_peak_bytes, observation.memory_measurement,
+        observation.memory_environment_id, observation.memory_eligible,
     )
 
 
@@ -710,13 +729,15 @@ def _observation_from_json(row: Any, *, allow_resource_only: bool = True) -> Cla
         "ts_start",
         "ts_end",
         "latency_ms",
-        "peak_cpu_cores",
+        "cpu_peak_cores",
         "sampled_peak_rss_mb",
         "cpu_ns_cumulative",
         "in_loop",
         "in_pipe",
         "in_subst",
         "pipeline_position",
+        "memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes",
+        "memory_measurement", "memory_environment_id", "memory_eligible",
     }
     unknown = sorted(values.keys() - allowed)
     if unknown:
@@ -737,7 +758,7 @@ def _observation_from_json(row: Any, *, allow_resource_only: bool = True) -> Cla
     values["argv"] = tuple(argv)
     for field in ("ts_start", "ts_end", "latency_ms"):
         if allow_resource_only and field == "latency_ms" and values[field] is None and any(
-            nonnegative(values.get(key)) for key in ("cpu_ns_cumulative", "peak_cpu_cores", "sampled_peak_rss_mb")
+            nonnegative(values.get(key)) for key in ("cpu_ns_cumulative", "cpu_peak_cores", "sampled_peak_rss_mb", "memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes")
         ):
             continue
         value = values[field]
@@ -748,12 +769,12 @@ def _observation_from_json(row: Any, *, allow_resource_only: bool = True) -> Cla
         ):
             raise ValueError(f"lattice KB observation {field} must be finite")
         values[field] = float(value)
-    for field in ("cpu_ns_cumulative", "peak_cpu_cores", "sampled_peak_rss_mb"):
+    for field in ("cpu_ns_cumulative", "cpu_peak_cores", "sampled_peak_rss_mb", "memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes"):
         if values.get(field) is not None and not nonnegative(values[field]):
             raise ValueError(f"lattice KB observation {field} must be finite and non-negative")
     if values["latency_ms"] is not None and values["latency_ms"] <= 0.0:
         zero_resource_row = allow_resource_only and values["latency_ms"] == 0 and any(
-            nonnegative(values.get(key)) for key in ("cpu_ns_cumulative", "peak_cpu_cores", "sampled_peak_rss_mb")
+            nonnegative(values.get(key)) for key in ("cpu_ns_cumulative", "cpu_peak_cores", "sampled_peak_rss_mb", "memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes")
         )
         if not zero_resource_row:
             raise ValueError("lattice KB observation latency_ms must be positive")

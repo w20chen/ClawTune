@@ -2,20 +2,19 @@
 
 Plain foreground commands, unconditional serial lists, and simple pipelines are
 supported. Downstream dependency-only pipe consumers are excluded. Duration
-composition resamples clause marginals; multi-clause resources stay unknown.
+composition resamples clause marginals; memory composition requires joint evidence.
 """
 from __future__ import annotations
 
 import math
 import random
-import re
 import statistics
 from bisect import bisect_right
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from clawtune_sidecar.contracts.load_prediction import (
-    CallLoadPrediction, LoadBuckets, LoadDiagnostics, LoadEstimate, TARGET_DEFINITIONS, TARGET_UNITS,
+    ClauseLoadPrediction, CallLoadPrediction, LoadBuckets, LoadDiagnostics, LoadEstimate, TARGET_DEFINITIONS, TARGET_UNITS,
 )
 from tool_resource.features import parse_command_clauses, shell_bin_requires_exec_evidence
 from tool_resource.runtime_kb import ToolCallQuery, is_pipeline_dependent_consumer
@@ -43,48 +42,8 @@ def summarize(target: str, edges: Sequence[float], backend: str,
 
 
 def plain_execution(command: str | None) -> tuple[tuple[dict[str, Any], ...], str | None]:
-    """Whitelist literal simple clauses joined by pipes, semicolons, or newlines.
-
-    Inspect gaps as well as clause spans: AST clause flags alone miss &&, &,
-    subshells, assignments, redirects and conditionals. Quoted metacharacters
-    are conservatively rejected too; direct call history remains usable.
-    """
-    if not command:
-        return (), "not_a_shell_command"
-    parsed = parse_command_clauses(command)
-    clauses = tuple(parsed["clauses"])
-    if parsed["parse_failed"]:
-        return clauses, "parse_failed"
-    if not clauses or parsed.get("control_edges"):
-        return clauses, "unsupported_execution_structure"
-    position = 0
-    for index, clause in enumerate(clauses):
-        argv = clause["argv"]
-        if (not argv or not shell_bin_requires_exec_evidence(clause["bin"], argv[0])
-                or any(clause.get(flag) for flag in ("in_loop", "in_subst"))):
-            return clauses, "unsupported_execution_structure"
-        start, end = clause["span"]
-        gap = command[position:start]
-        previous = clauses[index - 1] if index else None
-        pipe_connected = bool(
-            previous
-            and previous.get("in_pipe")
-            and clause.get("in_pipe")
-            and int(clause.get("pipeline_position", -1))
-            == int(previous.get("pipeline_position", -1)) + 1
-        )
-        gap_pattern = r"[ \t\r]*\|&?[ \t\r]*" if pipe_connected else r"[ \t\r]*[;\n][;\s]*"
-        if (index == 0 and gap.strip()) or (index and not re.fullmatch(gap_pattern, gap)):
-            return clauses, "unsupported_execution_structure"
-        text = command[start:end]
-        # No expansions, redirection, operators, assignments, braces or comments.
-        text_without_stderr_merge = re.sub(r"\s+2>&1(?=\s|$)", "", text)
-        if re.search(r"[|&<>$`(){}=!#*?\[\]~]", text_without_stderr_merge):
-            return clauses, "unsupported_execution_structure"
-        position = end
-    if not re.fullmatch(r"[;\s]*", command[position:]):
-        return clauses, "unsupported_execution_structure"
-    return clauses, None
+    from tool_resource.commands import parse_execution
+    return parse_execution(command, parser=parse_command_clauses)
 
 
 def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
@@ -97,14 +56,18 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
         if not why and (not rows or any(not row or not row.get("values") for row in rows)):
             why = next((row["unavailable_reason"] for row in rows if row and row.get("unavailable_reason")),
                        "missing_clause_evidence")
-        if not why and len(rows) > 1 and target != "duration_ms":
-            why = "requires_joint_execution_ownership_and_timeline"
+        if not why and len(rows) > 1 and target.startswith("memory_"):
+            why = "requires_environment_baseline_and_joint_memory_timeline"
+        if not why and len(rows) > 1 and target == "cpu_avg_cores":
+            why = "requires_paired_cpu_time_and_duration_samples"
         if why:
             targets[target] = summarize(target, boundaries, backend, reason=why)
             continue
         values = [row["values"] for row in rows]
         contexts = [str(c) for row in rows for c in row.get("context", ())]
-        assumptions = ["foreground_clause_lineage_covers_call_workload", "shell_and_hook_overhead_not_modeled"]
+        assumptions = ["foreground_clause_lineage_covers_call_workload", "shell_and_hook_overhead_not_modeled",
+                       "listed_downstream_consumers_excluded"]
+        assumptions += [a for c in clauses for a in c.get("prediction_assumptions", [])]
         if len(values) == 1:
             samples = values[0]
         else:
@@ -136,13 +99,21 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
                     target, boundaries, backend, reason="clause_evidence_alignment_error"
                 )
                 continue
-            samples = [
-                sum(max(rng.choice(values[index]) for index in group) for group in groups)
-                for _ in range(2048)
-            ]
-            assumptions += ["independent_clause_durations", "serial_groups_sum"]
+            samples = []
+            for _ in range(2048):
+                draw = [rng.choice(v) for v in values]
+                if target == "duration_ms":
+                    value = sum(max(draw[i] for i in group) for group in groups)
+                elif target == "cpu_time_seconds":
+                    value = sum(draw)
+                else:  # CPU peak: aligned peaks are unknown; stage sum is conservative.
+                    value = max(sum(draw[i] for i in group) for group in groups)
+                samples.append(value)
+            assumptions += ["independent_clause_marginals", "all_retained_stages_execute",
+                            "no_surviving_background_work"]
             if any(len(group) > 1 for group in groups):
-                assumptions.append("pipeline_group_duration_is_stage_max")
+                assumptions.append("pipeline_group_duration_is_stage_max" if target == "duration_ms"
+                                   else "parallel_peak_sum_is_conservative_not_calibrated")
         targets[target] = summarize(target, boundaries, backend, samples, method="composed",
                                     evidence_counts=[len(v) for v in values], context=contexts,
                                     assumptions=assumptions)
@@ -169,18 +140,43 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
     except Exception as exc:
         backends["runtime"] = compose("runtime", (), edges, reason=f"backend_error:{type(exc).__name__}")
     if parsed_clauses is not None:
-        clauses, reason = tuple(parsed_clauses), None
+        from tool_resource.commands import unwrap_argv
+        normalized = []
+        for index, clause in enumerate(parsed_clauses):
+            argv, env, assumptions, why = unwrap_argv(clause.get("argv", []))
+            if not argv or not shell_bin_requires_exec_evidence(argv[0].rsplit("/", 1)[-1], argv[0]):
+                continue
+            normalized.append(dict(clause, argv=argv, bin=argv[0].rsplit("/", 1)[-1],
+                clause_index=clause.get("clause_index", index), env=env,
+                prediction_assumptions=assumptions, prediction_unavailable_reason=why))
+        clauses, reason = tuple(normalized), None
     else:
         try:
-            clauses, reason = plain_execution(query.command) if query.tool_name == "exec" else ((), "not_a_shell_command")
+            clauses, reason = plain_execution(query.command) if query.tool_name in {"exec", "terminal_exec"} else ((), "not_a_shell_command")
         except Exception as exc:
             clauses, reason = (), f"parse_error:{type(exc).__name__}"
+    clause_results = {}
     for backend, kb in (("trie", trie), ("lattice", lattice)):
         try:
+            clauses = tuple(dict(c, memory_measurement=query.memory_measurement) for c in clauses)
             evidence = kb.predict_load_samples(query.repo, clauses, query.ts_start) if not reason else ()
+            retained = [c for c in clauses if not is_pipeline_dependent_consumer(c)]
+            scoped = []
+            for c, row in zip(retained, evidence):
+                why = c.get("prediction_unavailable_reason")
+                result = compose(backend, [row], edges, reason=why, clauses=[c])
+                clause_targets = dict(result.targets)
+                for target, definition in (("duration_ms", "clause_elapsed"), ("cpu_avg_cores", "owned_cpu_time_over_clause_elapsed")):
+                    clause_targets[target] = clause_targets[target].model_copy(update={"metric_definition": definition})
+                scoped.append(ClauseLoadPrediction(
+                    clause_index=c.get("clause_index", len(scoped)), argv=list(c["argv"]),
+                    cwd=c.get("cwd"), env_names=sorted(c.get("env", {})), targets=clause_targets, memory_measurement=query.memory_measurement))
+            clause_results[backend] = scoped
+            combined_reason = reason or next((c.get("prediction_unavailable_reason") for c in retained
+                                              if c.get("prediction_unavailable_reason")), None)
             backends[backend] = compose(
-                backend, evidence, edges, reason=reason, clauses=clauses
-            )
+                backend, evidence, edges, reason=combined_reason, clauses=clauses
+            ).model_copy(update={"clause_predictions": scoped})
         except Exception as exc:
             backends[backend] = compose(backend, (), edges, reason=f"backend_error:{type(exc).__name__}")
     selected = {}
@@ -189,4 +185,14 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
         selected[target] = next((value for value in candidates if value.status == "available"),
                                 candidates[0].model_copy(update={"unavailable_reason": ";".join(
                                     f"{value.backend}:{value.unavailable_reason}" for value in candidates)}))
-    return CallLoadPrediction(targets=selected), LoadDiagnostics(backends=backends)
+    merged = []
+    for index, first in enumerate(clause_results.get("trie", [])):
+        others = clause_results.get("lattice", [])
+        targets = dict(first.targets)
+        if index < len(others):
+            for target, value in targets.items():
+                if value.status != "available" and others[index].targets[target].status == "available":
+                    targets[target] = others[index].targets[target]
+        merged.append(first.model_copy(update={"targets": targets}))
+    backends = {name: value.model_copy(update={"memory_measurement": query.memory_measurement}) for name, value in backends.items()}
+    return CallLoadPrediction(targets=selected, clause_predictions=merged, memory_measurement=query.memory_measurement), LoadDiagnostics(backends=backends)

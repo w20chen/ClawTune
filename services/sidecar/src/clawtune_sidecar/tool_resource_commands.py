@@ -27,7 +27,7 @@ def extract_command(raw_params: Any) -> str | None:
 
 
 def operation_from_tool_request(tool_name: str, raw_params: Any) -> str | None:
-    if tool_name != "exec":
+    if tool_name not in {"exec", "terminal_exec"}:
         return tool_name or None
     command = extract_command(raw_params)
     if command is None:

@@ -26,7 +26,8 @@ RESOURCE_TARGETS = {
     "cpu_time_seconds": ("core_seconds", 1.0),
     "cpu_avg_cores": ("cores", 1.0),
     "cpu_peak_cores": ("cores", 1.0),
-    "memory_peak_rss_bytes": ("bytes", 1024.0 * 1024.0),
+    "memory_total_peak_bytes": ("bytes", 1024.0 * 1024.0),
+    "memory_extra_peak_bytes": ("bytes", 1024.0 * 1024.0),
 }
 LOAD_TARGETS = {"duration_ms": ("ms", 1000.0), **RESOURCE_TARGETS}
 
@@ -45,12 +46,10 @@ def resource_values(row: ClauseObservation) -> dict[str, float]:
         values["cpu_time_seconds"] = seconds
         if nonnegative(row.latency_ms) and row.latency_ms > 0:
             values["cpu_avg_cores"] = seconds / (row.latency_ms / 1000.0)
-    if nonnegative(row.peak_cpu_cores):
-        values["cpu_peak_cores"] = float(row.peak_cpu_cores)
-    if nonnegative(row.sampled_peak_rss_mb):
-        value = float(row.sampled_peak_rss_mb) * 1024 * 1024
-        if math.isfinite(value):
-            values["memory_peak_rss_bytes"] = value
+    if nonnegative(row.cpu_peak_cores):
+        values["cpu_peak_cores"] = float(row.cpu_peak_cores)
+    from clawtune_sidecar.monitoring.environment_memory import memory_labels
+    values.update(memory_labels(asdict(row)))
     return {key: value for key, value in values.items() if math.isfinite(value)}
 
 

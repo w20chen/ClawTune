@@ -38,7 +38,9 @@ def parser_response_fixture(monkeypatch):
 
 def row(i=0, **overrides):
     data = dict(repo="repo", bin="python", argv=("python", "job.py"), ts_start=float(i), ts_end=float(i + 1),
-                latency_ms=1000, cpu_ns_cumulative=2_000_000_000, peak_cpu_cores=4, sampled_peak_rss_mb=64)
+                latency_ms=1000, cpu_ns_cumulative=2_000_000_000, cpu_peak_cores=4, memory_baseline_bytes=0, memory_total_peak_bytes=64 * 1024**2,
+                memory_extra_peak_bytes=64 * 1024**2, memory_environment_id="test",
+                memory_measurement="cgroup_v2_memory_current", memory_eligible=True)
     return ClauseObservation(**(data | overrides))
 
 
@@ -65,11 +67,16 @@ def test_env_bucket_configuration(monkeypatch):
     assert cfg.tool_resource_latency_buckets_ms == (50, 300)
 
 
-@pytest.mark.parametrize("command", ["python job.py && sleep 1", "python job.py &", "(python job.py)",
-                                     "for x in 1 2; do python job.py; done", "echo $(python job.py)", "cd /tmp; python job.py",
-                                     "X=1 python job.py", "python job.py > out", "if true; then python job.py; fi"])
-def test_unsupported_structures_are_explicit(command):
-    assert plain_execution(command)[1] is not None
+@pytest.mark.parametrize("command", ["python job.py && sleep 1", "cd /tmp; python job.py", "X=1 python job.py", "python job.py > out"])
+def test_simple_preparation_and_conditionals_keep_executable_clauses(command):
+    clauses, reason = plain_execution(command)
+    assert reason is None and clauses
+
+
+@pytest.mark.parametrize("command", ["python job.py &", "(python job.py)"])
+def test_dynamic_structure_is_reported_per_clause(command):
+    clauses, _ = plain_execution(command)
+    assert clauses[0]["prediction_unavailable_reason"]
 
 
 def test_serial_duration_is_distribution_not_sum_of_quantiles():
@@ -80,7 +87,7 @@ def test_serial_duration_is_distribution_not_sum_of_quantiles():
     assert duration.p90 == 100  # individual p90s are zero; their sum is wrong
     assert duration.evidence_counts == [10, 10]
     assert duration.sample_count == 2048
-    assert "independent_clause_durations" in duration.assumptions
+    assert "independent_clause_marginals" in duration.assumptions
     assert result == compose("trie", evidence, EDGES)
     assert result.targets["cpu_peak_cores"].status == "unavailable"
 
@@ -110,8 +117,11 @@ def test_pipeline_consumer_is_ignored_and_other_stages_use_max():
 def test_multi_clause_resources_not_added_even_with_evidence():
     evidence = [{t: {"values": [1, 2]} for t in TARGET_UNITS}] * 2
     result = compose("trie", evidence, EDGES)
-    for target in set(TARGET_UNITS) - {"duration_ms"}:
-        assert result.targets[target].unavailable_reason == "requires_joint_execution_ownership_and_timeline"
+    for target in ("cpu_time_seconds", "cpu_peak_cores"):
+        assert result.targets[target].status == "available"
+    assert result.targets["cpu_avg_cores"].unavailable_reason == "requires_paired_cpu_time_and_duration_samples"
+    for target in ("memory_total_peak_bytes", "memory_extra_peak_bytes"):
+        assert result.targets[target].unavailable_reason == "requires_environment_baseline_and_joint_memory_timeline"
 
 
 def test_all_backends_full_targets_and_schema():
@@ -119,9 +129,9 @@ def test_all_backends_full_targets_and_schema():
     trie, lattice = ClauseResourceKB.fit_public(rows), LatticeTimeKB.fit(rows)
     runtime = RuntimeToolResourceKB()
     runtime.observe_completed_call(CompletedCall("repo", "exec", "python job.py", 0, 1,
-        cpu_time_seconds=2, cpu_time_eligible=True, peak_cpu_cores=4, peak_cpu_cores_eligible=True,
-        cpu_peak_window_ms=500, memory_peak_rss_bytes=64 * 1024**2,
-        memory_rss_eligible=True, memory_metric="sampled_distinct_mm_rss"))
+        cpu_time_seconds=2, cpu_time_eligible=True, cpu_peak_cores=4, cpu_peak_cores_eligible=True,
+        cpu_peak_window_ms=500, memory_total_peak_bytes=64 * 1024**2,
+        memory_eligible=True, memory_measurement="cgroup_v2_memory_current", memory_baseline_bytes=0, memory_extra_peak_bytes=64 * 1024**2, memory_environment_id="test"))
     result, diagnostics = predict_call_load(runtime=runtime, trie=trie, lattice=lattice,
         query=ToolCallQuery("repo", "exec", "python job.py", 10), edges=EDGES)
     assert all(v.backend == "runtime" for v in result.targets.values())
@@ -133,7 +143,7 @@ def test_all_backends_full_targets_and_schema():
         assert set(prediction.targets) == set(TARGET_UNITS)
         assert all(t.status == "available" for t in prediction.targets.values())
         assert prediction.targets["cpu_avg_cores"].avg == 2
-        assert prediction.targets["memory_peak_rss_bytes"].p90 == 64 * 1024**2
+        assert prediction.targets["memory_total_peak_bytes"].p90 == 64 * 1024**2
         Draft202012Validator(schema, registry=registry).validate(prediction.model_dump())
         assert CallLoadPrediction.model_validate(prediction.model_dump()) == prediction
 
@@ -153,7 +163,7 @@ def test_runtime_independent_targets_causality_and_snapshot():
     assert kb.predict_load_samples(ToolCallQuery("r", "read", None, 1)) == {}
     values = kb.predict_load_samples(ToolCallQuery("r", "read", None, 2))
     assert values["cpu_time_seconds"]["values"] == (0,)
-    assert "cpu_peak_cores" not in values and "memory_peak_rss_bytes" not in values
+    assert "cpu_peak_cores" not in values and "memory_total_peak_bytes" not in values
     restored = RuntimeToolResourceKB.from_json_obj(kb.to_json_obj())
     assert restored.predict_load_samples(ToolCallQuery("r", "read", None, 2)) == values
     with pytest.raises(ValueError):
@@ -162,13 +172,11 @@ def test_runtime_independent_targets_causality_and_snapshot():
 
 def test_v1_cpu_labels_quarantined():
     kb = RuntimeToolResourceKB()
-    kb.observe_completed_call(CompletedCall("r", "read", None, 0, 1, peak_cpu_cores=2, peak_cpu_cores_eligible=True))
+    kb.observe_completed_call(CompletedCall("r", "read", None, 0, 1, cpu_peak_cores=2, cpu_peak_cores_eligible=True))
     data = kb.to_json_obj()
     data["schema"] = "runtime_tool_resource_kb_v1"
-    restored = RuntimeToolResourceKB.from_json_obj(data)
-    result = restored.predict_load_samples(ToolCallQuery("r", "read", None, 2))
-    assert set(result) == {"duration_ms"}
-    assert restored.to_json_obj()["schema"] == "runtime_tool_resource_kb_v2"
+    with pytest.raises(ValueError, match="unsupported"):
+        RuntimeToolResourceKB.from_json_obj(data)
 
 
 def test_loop_samples_not_reused_as_standalone():
@@ -201,13 +209,13 @@ def test_pre_filter_aggregated_clause_snapshot_is_rejected():
 
 
 def test_resource_only_training_and_per_target_fault_isolation(monkeypatch):
-    rows = [row(latency_ms=None, sampled_peak_rss_mb=0)]
+    rows = [row(latency_ms=None, memory_total_peak_bytes=0, memory_extra_peak_bytes=0)]
     clause = [{"bin": "python", "argv": ["python", "job.py"]}]
     for kb in (ClauseResourceKB.fit_public(rows), LatticeTimeKB.fit(rows)):
         result = kb.predict_load_samples("repo", clause, 3)[0]
         assert "duration_ms" not in result and "cpu_avg_cores" not in result
         assert result["cpu_time_seconds"]["values"] == (2,)
-        assert result["memory_peak_rss_bytes"]["values"] == (0,)
+        assert result["memory_total_peak_bytes"]["values"] == (0,)
     lattice = LatticeTimeKB.fit([row()])
     lattice.prepare()
     def fail(*args, **kwargs):
@@ -223,15 +231,15 @@ def test_policy_uses_only_call_targets_and_zero_is_valid():
     assert _predicted_cpu_millis(result) == 1235
     zero = compose("trie", [{"cpu_avg_cores": {"values": [0]}}], EDGES)
     assert _predicted_cpu_millis(zero) == 1
-    assert _predicted_cpu_millis({"continuous_predictions": {"peak_cpu_cores": {"conditional_p90": 100}}}) == 1000
+    assert _predicted_cpu_millis({"continuous_predictions": {"cpu_peak_cores": {"conditional_p90": 100}}}) == 1000
 
 
 def test_censored_resource_totals_not_used_as_complete_load():
     kb = RuntimeToolResourceKB()
     kb.observe_completed_call(CompletedCall("r", "read", None, 0, 1, censored=True,
-        cpu_time_seconds=2, cpu_time_eligible=True, peak_cpu_cores=4, peak_cpu_cores_eligible=True,
-        cpu_peak_window_ms=500, memory_peak_rss_bytes=100, memory_rss_eligible=True,
-        memory_metric="sampled_distinct_mm_rss", outcome="timeout"))
+        cpu_time_seconds=2, cpu_time_eligible=True, cpu_peak_cores=4, cpu_peak_cores_eligible=True,
+        cpu_peak_window_ms=500, memory_total_peak_bytes=100, memory_eligible=True,
+        memory_measurement="cgroup_v2_memory_current", memory_baseline_bytes=0, memory_extra_peak_bytes=100, memory_environment_id="test", outcome="timeout"))
     assert kb.predict_load_samples(ToolCallQuery("r", "read", None, 2)) == {}
 
 

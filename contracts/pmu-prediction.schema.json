@@ -6,43 +6,336 @@
     "estimate": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "unit", "metric_definition", "avg", "p50", "p90", "backend", "method", "evidence_count", "context", "calibration", "unavailable_reason"],
+      "required": [
+        "status",
+        "unit",
+        "metric_definition",
+        "avg",
+        "p50",
+        "p90",
+        "backend",
+        "method",
+        "evidence_count",
+        "context",
+        "calibration",
+        "unavailable_reason"
+      ],
       "properties": {
-        "status": {"enum": ["available", "unavailable"]},
-        "unit": {"enum": ["instructions_per_cycle", "misses_per_kilo_instructions", "ratio"]},
-        "metric_definition": {"type": "string"},
-        "avg": {"type": ["number", "null"], "minimum": 0},
-        "p50": {"type": ["number", "null"], "minimum": 0},
-        "p90": {"type": ["number", "null"], "minimum": 0},
-        "backend": {"const": "runtime"},
-        "method": {"enum": ["direct", "unavailable"]},
-        "evidence_count": {"type": "integer", "minimum": 0},
-        "context": {"type": "array", "items": {"type": "string"}},
-        "calibration": {"const": "unvalidated"},
-        "unavailable_reason": {"type": ["string", "null"], "minLength": 1}
+        "status": {
+          "enum": [
+            "available",
+            "unavailable"
+          ]
+        },
+        "unit": {
+          "enum": [
+            "instructions_per_cycle",
+            "misses_per_kilo_instructions",
+            "ratio",
+            "count",
+            "misses_per_cpu_second",
+            "accesses_per_cpu_second"
+          ]
+        },
+        "metric_definition": {
+          "type": "string"
+        },
+        "avg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "p50": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "p90": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "backend": {
+          "const": "runtime"
+        },
+        "method": {
+          "enum": [
+            "direct",
+            "unavailable"
+          ]
+        },
+        "evidence_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "context": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "calibration": {
+          "const": "unvalidated"
+        },
+        "unavailable_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
       },
       "oneOf": [
-        {"properties": {"status": {"const": "available"}, "avg": {"type": "number"}, "p50": {"type": "number"}, "p90": {"type": "number"}, "method": {"const": "direct"}, "evidence_count": {"minimum": 1}, "unavailable_reason": {"type": "null"}}},
-        {"properties": {"status": {"const": "unavailable"}, "avg": {"type": "null"}, "p50": {"type": "null"}, "p90": {"type": "null"}, "method": {"const": "unavailable"}, "evidence_count": {"const": 0}, "unavailable_reason": {"type": "string", "minLength": 1}}}
+        {
+          "properties": {
+            "status": {
+              "const": "available"
+            },
+            "avg": {
+              "type": "number"
+            },
+            "p50": {
+              "type": "number"
+            },
+            "p90": {
+              "type": "number"
+            },
+            "method": {
+              "const": "direct"
+            },
+            "evidence_count": {
+              "minimum": 1
+            },
+            "unavailable_reason": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "unavailable"
+            },
+            "avg": {
+              "type": "null"
+            },
+            "p50": {
+              "type": "null"
+            },
+            "p90": {
+              "type": "null"
+            },
+            "method": {
+              "const": "unavailable"
+            },
+            "evidence_count": {
+              "const": 0
+            },
+            "unavailable_reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
       ]
     }
   },
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "scope", "lifecycle", "quantile_method", "targets"],
+  "required": [
+    "schema_version",
+    "scope",
+    "lifecycle",
+    "quantile_method",
+    "targets"
+  ],
   "properties": {
-    "schema_version": {"const": "pmu_prediction.v1"},
-    "scope": {"const": "tool_call"},
-    "lifecycle": {"const": "completed_execution_profile"},
-    "quantile_method": {"const": "median_p50_nearest_rank_p90"},
+    "schema_version": {
+      "const": "pmu_prediction.v2"
+    },
+    "scope": {
+      "const": "tool_call"
+    },
+    "lifecycle": {
+      "const": "completed_execution_profile"
+    },
+    "quantile_method": {
+      "const": "median_p50_nearest_rank_p90"
+    },
     "targets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ipc", "llc_mpki", "llc_miss_rate"],
+      "required": [
+        "ipc",
+        "llc_mpki",
+        "llc_miss_rate",
+        "cycles",
+        "instructions",
+        "llc_read_accesses",
+        "llc_read_misses",
+        "llc_read_accesses_per_cpu_second",
+        "llc_read_misses_per_cpu_second"
+      ],
       "properties": {
-        "ipc": {"allOf": [{"$ref": "#/$defs/estimate"}, {"properties": {"unit": {"const": "instructions_per_cycle"}, "metric_definition": {"const": "retired_instructions_over_cpu_cycles"}}}]},
-        "llc_mpki": {"allOf": [{"$ref": "#/$defs/estimate"}, {"properties": {"unit": {"const": "misses_per_kilo_instructions"}, "metric_definition": {"const": "llc_read_misses_per_kilo_retired_instructions"}}}]},
-        "llc_miss_rate": {"allOf": [{"$ref": "#/$defs/estimate"}, {"properties": {"unit": {"const": "ratio"}, "metric_definition": {"const": "llc_read_misses_over_llc_read_accesses"}}}]}
+        "ipc": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/estimate"
+            },
+            {
+              "properties": {
+                "unit": {
+                  "const": "instructions_per_cycle"
+                },
+                "metric_definition": {
+                  "const": "retired_instructions_over_cpu_cycles"
+                }
+              }
+            }
+          ]
+        },
+        "llc_mpki": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/estimate"
+            },
+            {
+              "properties": {
+                "unit": {
+                  "const": "misses_per_kilo_instructions"
+                },
+                "metric_definition": {
+                  "const": "llc_read_misses_per_kilo_retired_instructions"
+                }
+              }
+            }
+          ]
+        },
+        "llc_miss_rate": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/estimate"
+            },
+            {
+              "properties": {
+                "unit": {
+                  "const": "ratio"
+                },
+                "metric_definition": {
+                  "const": "llc_read_misses_over_llc_read_accesses"
+                }
+              }
+            }
+          ]
+        },
+        "cycles": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/estimate"
+            },
+            {
+              "properties": {
+                "unit": {
+                  "const": "count"
+                },
+                "metric_definition": {
+                  "const": "execution_cycles"
+                }
+              }
+            }
+          ]
+        },
+        "instructions": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/estimate"
+            },
+            {
+              "properties": {
+                "unit": {
+                  "const": "count"
+                },
+                "metric_definition": {
+                  "const": "execution_instructions"
+                }
+              }
+            }
+          ]
+        },
+        "llc_read_accesses": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/estimate"
+            },
+            {
+              "properties": {
+                "unit": {
+                  "const": "count"
+                },
+                "metric_definition": {
+                  "const": "execution_llc_read_accesses"
+                }
+              }
+            }
+          ]
+        },
+        "llc_read_misses": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/estimate"
+            },
+            {
+              "properties": {
+                "unit": {
+                  "const": "count"
+                },
+                "metric_definition": {
+                  "const": "execution_llc_read_misses"
+                }
+              }
+            }
+          ]
+        },
+        "llc_read_accesses_per_cpu_second": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/estimate"
+            },
+            {
+              "properties": {
+                "unit": {
+                  "const": "accesses_per_cpu_second"
+                },
+                "metric_definition": {
+                  "const": "llc_read_accesses_over_perf_running_seconds"
+                }
+              }
+            }
+          ]
+        },
+        "llc_read_misses_per_cpu_second": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/estimate"
+            },
+            {
+              "properties": {
+                "unit": {
+                  "const": "misses_per_cpu_second"
+                },
+                "metric_definition": {
+                  "const": "llc_read_misses_over_perf_running_seconds"
+                }
+              }
+            }
+          ]
+        }
       }
     }
   }

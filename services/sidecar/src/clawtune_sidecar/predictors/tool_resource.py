@@ -10,7 +10,7 @@ import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -464,6 +464,7 @@ class ToolResourcePredictor:
             openclaw_accepted += 1
             openclaw_spans_seen += loaded.tool_spans_seen
             continuous_observations.extend(loaded.completed_calls)
+            observations.extend(loaded.observations)
 
         snapshot_path = _clause_kb_snapshot_path(artifact_dir)
         runtime_snapshot_path = _runtime_kb_snapshot_path(artifact_dir)
@@ -573,15 +574,15 @@ class ToolResourcePredictor:
         )
 
     def predict(
-        self, request: ToolBeforeRequest, *, ambient_before_mb: float | None = None,
+        self, request: ToolBeforeRequest,
     ) -> ToolPrediction:
         # All backends and diagnostics see one serialized causal transaction.
         # Legacy payload is migration-only; no policy consumes its clause data.
         with self._kb_lock:
-            legacy = self._predict_legacy(request, ambient_before_mb=ambient_before_mb)
+            legacy = self._predict_legacy(request, )
             query = ToolCallQuery(repo=request.repo or self.repo, tool_name=request.tool_name,
                                   command=_command_for_request(request), ts_start=time.time(),
-                                  ambient_before_mb=ambient_before_mb)
+                                  )
             call, diagnostics = predict_call_load(runtime=self.continuous_kb, trie=self.kb,
                                                   lattice=self.lattice_kb, query=query, edges=self.load_buckets)
             from clawtune_sidecar.contracts.load_prediction import summarize_pmu_evidence
@@ -602,7 +603,7 @@ class ToolResourcePredictor:
                     derived = ClauseLatencyBucketPrediction(
                         bucket_id=bucket, probability_by_bucket=tuple(probabilities), scope="composed",
                         key_kind="compound_composed", evidence_count=min(duration.evidence_counts),
-                        fallback_path=("call_load.v1",))
+                        fallback_path=("call_load.v2",))
                     payload["kv_ttl_cost"] = self._kv_ttl_cost_payload(derived, reference_runtime_s=duration.p90 / 1000)
             return ToolPrediction(duration_p50_ms=p50, duration_p90_ms=p90,
                                   resource_class=_resource_class_for_duration_ms(p90), confidence=None,
@@ -612,8 +613,6 @@ class ToolResourcePredictor:
     def _predict_legacy(
         self,
         request: ToolBeforeRequest,
-        *,
-        ambient_before_mb: float | None = None,
     ) -> ToolPrediction:
         command = _command_for_request(request)
         repo = request.repo or self.repo
@@ -636,8 +635,7 @@ class ToolResourcePredictor:
                     request,
                     command,
                     query_ts,
-                    ambient_before_mb=ambient_before_mb,
-                )
+                            )
                 runtime_p50_ms, runtime_p90_ms = self._continuous_latency_topline_ms(
                     request,
                     command,
@@ -695,8 +693,7 @@ class ToolResourcePredictor:
                     request,
                     command,
                     query_ts,
-                    ambient_before_mb=ambient_before_mb,
-                )
+                            )
                 runtime_p50_ms, runtime_p90_ms = self._continuous_latency_topline_ms(
                     request,
                     command,
@@ -724,8 +721,7 @@ class ToolResourcePredictor:
                 request,
                 command,
                 query_ts,
-                ambient_before_mb=ambient_before_mb,
-            )
+                    )
             if prediction.prediction is None:
                 runtime_p50_ms, runtime_p90_ms = self._continuous_latency_topline_ms(
                     request,
@@ -877,6 +873,37 @@ class ToolResourcePredictor:
             repo=event.repo or (start.repo if start is not None else None) or self.repo,
             start=start,
         )
+        # Add only newly measured environment labels. Existing clause CPU/time
+        # observations were already ingested at eBPF finish and are not repeated.
+        if sample.environment_memory and event.execution_id and completed_call and not completed_call.censored:
+            summary = self._telemetry_by_execution_id.get(event.execution_id)
+            if summary is not None and summary.artifact_path:
+                try:
+                    artifact = _read_ebpf_artifact(Path(summary.artifact_path))
+                    from clawtune_sidecar.monitoring.environment_memory import clause_memory_labels
+                    repo = event.repo or (start.repo if start else None) or self.repo
+                    for call in artifact.get("calls", []):
+                        if call.get("eligible_for_kb") is not True:
+                            continue
+                        clauses = call.get("clauses", [])
+                        labels = clause_memory_labels(sample.environment_memory, clauses)
+                        for row, labels_for_clause in zip(clauses, labels):
+                            if not labels_for_clause:
+                                continue
+                            observation = ClauseObservation(repo=repo, bin=row["bin"], argv=tuple(row["argv"]),
+                                ts_start=row["ts_start"], ts_end=row["ts_end"],
+                                in_pipe=row.get("in_pipe", False), pipeline_position=row.get("pipeline_position", -1),
+                                in_loop=row.get("in_loop", False), in_subst=row.get("in_subst", False),
+                                **labels_for_clause)
+                            with self._kb_lock:
+                                self.kb.observe_completed_clause(observation)
+                                self._clause_kb_version += 1
+                            sample.environment_memory.setdefault("memory_clause_observations", []).append(asdict(observation))
+                            self._kb_writes.enqueue((observation,))
+                except Exception:
+                    # Auxiliary learning cannot change the tool outcome.
+                    import logging
+                    logging.getLogger(__name__).exception("environment memory clause update failed")
         if completed_call is not None:
             with self._kb_lock:
                 self.continuous_kb.observe_completed_call(completed_call)
@@ -1421,7 +1448,6 @@ class ToolResourcePredictor:
         request: ToolBeforeRequest,
         command: str | None,
         ts_start: float,
-        ambient_before_mb: float | None = None,
     ) -> dict[str, Any]:
         repo = request.repo or self.repo
         query = ToolCallQuery(
@@ -1429,8 +1455,7 @@ class ToolResourcePredictor:
             tool_name=request.tool_name,
             command=command,
             ts_start=ts_start,
-            ambient_before_mb=ambient_before_mb,
-        )
+            )
         with self._kb_lock:
             return self._continuous_predictions_for_query(query)
 
@@ -1449,7 +1474,7 @@ class ToolResourcePredictor:
                 pass
         except Exception:
             pass
-        for target in ("latency_ms", "peak_cpu_cores", "peak_memory_mb"):
+        for target in ("latency_ms", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes"):
             try:
                 prediction = self.continuous_kb._predict_target(query, target)  # type: ignore[attr-defined]
             except Exception as exc:
@@ -1591,6 +1616,15 @@ def load_openclaw_trace_observations(path: Path, *, repo: str) -> _LoadedTrace:
             )
             if completed_call is not None:
                 completed_calls.append(completed_call)
+                if not completed_call.censored:
+                    resources = record.get("resources") or {}
+                    from clawtune_sidecar.monitoring.environment_memory import memory_labels
+                    for row in resources.get("memory_clause_observations", []):
+                        if not isinstance(row, dict) or row.get("repo") != span_repo or not memory_labels(row):
+                            continue
+                        values = dict(row)
+                        values["argv"] = tuple(values["argv"])
+                        observations.append(ClauseObservation(**values))
     return _LoadedTrace(tool_spans_seen, tuple(observations), tuple(completed_calls))
 
 
@@ -1650,7 +1684,7 @@ def observation_from_completion(
         ts_start=ts_start,
         ts_end=ts_end,
         latency_ms=max(0.0, float(event.duration_ms)),
-        peak_cpu_cores=None,  # legacy helper cannot turn averages into peaks
+        cpu_peak_cores=None,  # legacy helper cannot turn averages into peaks
         sampled_peak_rss_mb=None,  # process/cgroup memory is not clause distinct-mm RSS
         cpu_ns_cumulative=(
             None if exclude_resource_labels else _cpu_ns(sample.cpu_time_delta_s)
@@ -1675,8 +1709,6 @@ def completed_call_from_completion(
     ts_end = sample.ended_at
     if ts_end < ts_start:
         ts_end = ts_start
-    peak_memory_mb = _rss_mb(sample.rss_bytes_peak)
-    ambient_before_mb = _rss_mb(sample.rss_bytes_before)
     exclude_resource_labels = _completion_uses_shared_resources(event, start) or not _sample_resources_usable(sample)
     pmu = _quality_gated_pmu_metrics(sample.pmu_profile if event.execution_id else None,
                                    execution_id=event.execution_id)
@@ -1690,17 +1722,20 @@ def completed_call_from_completion(
         outcome="ok" if event.succeeded else "error",
         # A monitor average is not a fixed-window peak. Only explicitly measured
         # peak labels may populate either peak target.
-        peak_cpu_cores=None,
-        peak_cpu_cores_eligible=False,
+        cpu_peak_cores=sample.cpu_peak_cores,
+        cpu_peak_cores_eligible=not exclude_resource_labels and sample.cpu_peak_cores is not None,
+        cpu_peak_window_ms=500,
+        **{k: v for k, v in (sample.environment_memory or {}).items()
+           if k in {"memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes",
+                    "memory_measurement", "memory_environment_id", "memory_eligible"}},
         cpu_time_seconds=sample.cpu_time_delta_s,
         cpu_time_eligible=not exclude_resource_labels and sample.cpu_time_delta_s is not None,
-        peak_memory_mb=peak_memory_mb,
-        peak_memory_mb_eligible=(
-            not exclude_resource_labels
-            and peak_memory_mb is not None
-            and ambient_before_mb is not None
-        ),
-        ambient_before_mb=ambient_before_mb,
+        pmu_cycles=pmu.get("cycles"),
+        pmu_instructions=pmu.get("instructions"),
+        pmu_llc_read_accesses=pmu.get("llc_read_accesses"),
+        pmu_llc_read_misses=pmu.get("llc_read_misses"),
+        pmu_llc_read_accesses_per_cpu_second=pmu.get("llc_read_accesses_per_cpu_second"),
+        pmu_llc_read_misses_per_cpu_second=pmu.get("llc_read_misses_per_cpu_second"),
         pmu_ipc=pmu["ipc"],
         pmu_llc_mpki=pmu["llc_mpki"],
         pmu_llc_miss_rate=pmu["llc_miss_rate"],
@@ -1710,7 +1745,7 @@ def completed_call_from_completion(
 
 def clauses_from_tool_request(tool_name: str, raw_params: Any) -> tuple[tuple[dict[str, Any], ...], bool]:
     command = extract_command(raw_params)
-    if tool_name == "exec" and command:
+    if tool_name in {"exec", "terminal_exec"} and command:
         return _clauses_from_command(command)
     if not tool_name:
         return (), False
@@ -1755,7 +1790,7 @@ def _observation_from_tool_span(
         ts_start=ts_start,
         ts_end=ts_end,
         latency_ms=duration_ms,
-        peak_cpu_cores=None,
+        cpu_peak_cores=None,
         sampled_peak_rss_mb=None,
         cpu_ns_cumulative=(
             None if exclude_resource_labels else _cpu_ns(resources.get("cpu_time_s"))
@@ -1791,8 +1826,6 @@ def _completed_call_from_tool_span(
     raw_params = _raw_params_from_start(start)
     command = extract_command(raw_params)
     resources = end.get("resources") if isinstance(end.get("resources"), dict) else {}
-    peak_memory_mb = _rss_mb(resources.get("rss_peak_bytes"))
-    ambient_before_mb = _rss_mb(resources.get("memory_rss_bytes_before"))
     peak_cpu_cores = _optional_float(resources.get("cpu_peak_cores"))
     execution = end.get("execution") if isinstance(end.get("execution"), dict) else {}
     exclude_resource_labels = not _trace_resources_usable(resources) or _uses_shared_resources(resources) or _uses_shared_resources(
@@ -1808,22 +1841,24 @@ def _completed_call_from_tool_span(
         ts_end=ts_end,
         censored=_truncated_outcome(status.get("message")) or resources.get("censored") is True,
         outcome=str(status.get("code", "unknown")),
-        peak_cpu_cores=peak_cpu_cores,
-        peak_cpu_cores_eligible=(not exclude_resource_labels and peak_cpu_cores is not None
+        cpu_peak_cores=peak_cpu_cores,
+        cpu_peak_cores_eligible=(not exclude_resource_labels and peak_cpu_cores is not None
                                  and resources.get("cpu_peak_window_ms") == 500),
         cpu_peak_window_ms=resources.get("cpu_peak_window_ms"),
         cpu_time_seconds=_optional_float(resources.get("cpu_time_s", resources.get("cpu_time_delta_s"))),
         cpu_time_eligible=not exclude_resource_labels,
-        memory_peak_rss_bytes=_optional_float(resources.get("memory_peak_rss_bytes")),
-        memory_metric=resources.get("memory_metric"),
-        memory_rss_eligible=not exclude_resource_labels,
-        peak_memory_mb=peak_memory_mb,
-        peak_memory_mb_eligible=(
-            not exclude_resource_labels
-            and peak_memory_mb is not None
-            and ambient_before_mb is not None
-        ),
-        ambient_before_mb=ambient_before_mb,
+        memory_baseline_bytes=resources.get("memory_baseline_bytes"),
+        memory_total_peak_bytes=resources.get("memory_total_peak_bytes"),
+        memory_extra_peak_bytes=resources.get("memory_extra_peak_bytes"),
+        memory_measurement=resources.get("memory_measurement"),
+        memory_environment_id=resources.get("memory_environment_id"),
+        memory_eligible=resources.get("memory_eligible") is True,
+        pmu_cycles=pmu.get("cycles"),
+        pmu_instructions=pmu.get("instructions"),
+        pmu_llc_read_accesses=pmu.get("llc_read_accesses"),
+        pmu_llc_read_misses=pmu.get("llc_read_misses"),
+        pmu_llc_read_accesses_per_cpu_second=pmu.get("llc_read_accesses_per_cpu_second"),
+        pmu_llc_read_misses_per_cpu_second=pmu.get("llc_read_misses_per_cpu_second"),
         pmu_ipc=pmu["ipc"],
         pmu_llc_mpki=pmu["llc_mpki"],
         pmu_llc_miss_rate=pmu["llc_miss_rate"],
@@ -1967,11 +2002,8 @@ def _ebpf_completed_call(repo: str, row: Any) -> CompletedCall | None:
         ts_start=ts_start,
         ts_end=ts_end,
         censored=False,
-        peak_cpu_cores=peak_cpu_cores,
-        peak_cpu_cores_eligible=peak_cpu_cores is not None,
-        peak_memory_mb=None,
-        peak_memory_mb_eligible=False,
-        ambient_before_mb=None,
+        cpu_peak_cores=peak_cpu_cores,
+        cpu_peak_cores_eligible=peak_cpu_cores is not None,
     )
 
 
@@ -2234,32 +2266,29 @@ def _compact_clauses(clauses: Any) -> list[dict[str, Any]]:
 
 
 def _clauses_from_command(command: str) -> tuple[tuple[dict[str, Any], ...], bool]:
+    from tool_resource.commands import parse_execution
     try:
-        parsed = parse_command_clauses(command)
+        clauses, reason = parse_execution(command, parser=parse_command_clauses)
     except Exception:
-        parsed = _fallback_parse_command_clauses(command)
-    clauses = parsed.get("clauses")
-    if not isinstance(clauses, list):
-        return (), True
-    normalized = tuple(
-        clause
-        for clause in (_normalize_clause(item) for item in clauses)
-        if clause is not None
-    )
-    return normalized, bool(parsed.get("parse_failed"))
+        clauses, reason = parse_execution(command, parser=_fallback_parse_command_clauses)
+    return clauses, reason == "parse_failed"
 
 
 def _fallback_parse_command_clauses(command: str) -> dict[str, Any]:
     import shlex
 
     try:
-        argv = shlex.split(command, posix=True)
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>")
+        lexer.whitespace_split = True
+        argv = list(lexer)
+        if any(token and all(c in ";&|()<>" for c in token) for token in argv):
+            return {"clauses": [], "parse_failed": True}
     except ValueError:
         return {"clauses": [], "parse_failed": True}
     if not argv:
         return {"clauses": [], "parse_failed": True}
     return {
-        "clauses": [{"bin": argv[0].rsplit("/", 1)[-1], "argv": argv}],
+        "clauses": [{"bin": argv[0].rsplit("/", 1)[-1], "argv": argv, "span": (0, len(command))}],
         "parse_failed": False,
     }
 
@@ -2722,28 +2751,28 @@ def _prediction_algorithms_payload() -> dict[str, Any]:
                 "name": "lattice_shrinkage",
                 "family": "context_lattice",
                 "source": "LatticeTimeKB",
-                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_peak_rss_bytes"],
+                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes"],
                 "outputs": ["clause_point_prediction_ms", "resource_p50", "resource_p90"],
             },
             {
                 "name": "lattice_loso",
                 "family": "context_lattice",
                 "source": "LatticeTimeKB",
-                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_peak_rss_bytes"],
+                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes"],
                 "outputs": ["clause_point_prediction_ms", "resource_p50", "resource_p90"],
             },
             {
                 "name": "lattice_max_cardinality",
                 "family": "context_lattice",
                 "source": "LatticeTimeKB",
-                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_peak_rss_bytes"],
+                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes"],
                 "outputs": ["clause_point_prediction_ms", "resource_p50", "resource_p90"],
             },
             {
                 "name": "runtime_tool_resource_conditional_p90",
                 "family": "empirical_ecdf",
                 "source": "RuntimeToolResourceKB",
-                "targets": ["latency_ms", "peak_cpu_cores", "peak_memory_mb"],
+                "targets": ["latency_ms", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes"],
                 "outputs": ["conditional_p90"],
             },
         ],

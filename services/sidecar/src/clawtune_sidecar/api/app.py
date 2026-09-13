@@ -77,14 +77,6 @@ def _sample_summary(sample: ToolRuntimeSample) -> dict[str, object]:
     }
 
 
-def _ambient_before_mb(request: ToolBeforeRequest, sample_rss_bytes: int | None) -> float | None:
-    if sample_rss_bytes is not None:
-        return sample_rss_bytes / (1024 * 1024)
-    if request.tool_name == "exec":
-        return 0.0
-    return None
-
-
 def _has_usable_cgroup_scope(scope: ResourceScope | None) -> bool:
     if scope is None or scope.kind != "cgroup-v2":
         return False
@@ -1803,18 +1795,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             if s.trace_writer is not None:
                 s.trace_writer.record_tool_started(request)
             s.predictor.record_tool_started(request)
-            ambient_snapshot = s.tool_monitor.sampler.snapshot(
-                request.resource_scope
-            )
-            ambient_before_mb = _ambient_before_mb(
-                request,
-                ambient_snapshot.rss_bytes,
-            )
-            prediction = await asyncio.to_thread(
-                s.predictor.predict,
-                request,
-                ambient_before_mb=ambient_before_mb,
-            )
+            prediction = await asyncio.to_thread(s.predictor.predict, request)
             if s.trace_writer is not None:
                 s.trace_writer.record_tool_prediction(request, prediction)
             decision = await s.policy.decide(

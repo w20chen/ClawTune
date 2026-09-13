@@ -32,7 +32,7 @@ def test_release_seed_is_small_and_has_no_repository_knowledge():
         assert row["argv"] == [row["bin"]]
         if row["latency_ms"] < 20:
             assert row["cpu_ns_cumulative"] is row["sampled_peak_rss_mb"] is None
-        assert row["peak_cpu_cores"] is None
+        assert row["cpu_peak_cores"] is None
 
 
 def test_rebuild_from_explicit_source_is_deterministic_and_sanitized(tmp_path):

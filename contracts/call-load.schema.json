@@ -6,68 +6,536 @@
     "estimate": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "unit", "metric_definition", "avg", "p50", "p90", "buckets", "backend", "method", "evidence_counts", "sample_count", "context", "assumptions", "calibration", "unavailable_reason"],
+      "required": [
+        "status",
+        "unit",
+        "metric_definition",
+        "avg",
+        "p50",
+        "p90",
+        "buckets",
+        "backend",
+        "method",
+        "evidence_counts",
+        "sample_count",
+        "context",
+        "assumptions",
+        "calibration",
+        "unavailable_reason"
+      ],
       "properties": {
-        "status": {"enum": ["available", "unavailable"]},
-        "unit": {"enum": ["ms", "core_seconds", "cores", "bytes"]},
-        "metric_definition": {"type": "string"},
-        "avg": {"type": ["number", "null"], "minimum": 0},
-        "p50": {"type": ["number", "null"], "minimum": 0},
-        "p90": {"type": ["number", "null"], "minimum": 0},
+        "status": {
+          "enum": [
+            "available",
+            "unavailable"
+          ]
+        },
+        "unit": {
+          "enum": [
+            "ms",
+            "core_seconds",
+            "cores",
+            "bytes"
+          ]
+        },
+        "metric_definition": {
+          "type": "string"
+        },
+        "avg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "p50": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "p90": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
         "buckets": {
-          "type": "object", "additionalProperties": false,
-          "required": ["edges", "interval", "probabilities"],
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "edges",
+            "interval",
+            "probabilities"
+          ],
           "properties": {
-            "edges": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "number", "exclusiveMinimum": 0}},
-            "interval": {"const": "left_closed_right_open"},
-            "probabilities": {"type": ["array", "null"], "minItems": 2, "items": {"type": "number", "minimum": 0, "maximum": 1}}
+            "edges": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              }
+            },
+            "interval": {
+              "const": "left_closed_right_open"
+            },
+            "probabilities": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "minItems": 2,
+              "items": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            }
           },
           "$comment": "Semantic validators additionally enforce increasing edges, edge_count+1 probabilities, and sum(probabilities)=1."
         },
-        "backend": {"enum": ["runtime", "trie", "lattice"]},
-        "method": {"enum": ["direct", "composed", "unavailable"]},
-        "evidence_counts": {"type": "array", "items": {"type": "integer", "minimum": 1}},
-        "sample_count": {"type": "integer", "minimum": 0},
-        "context": {"type": "array", "items": {"type": "string"}},
-        "assumptions": {"type": "array", "items": {"type": "string"}},
-        "calibration": {"const": "unvalidated"},
-        "unavailable_reason": {"type": ["string", "null"], "minLength": 1}
+        "backend": {
+          "enum": [
+            "runtime",
+            "trie",
+            "lattice"
+          ]
+        },
+        "method": {
+          "enum": [
+            "direct",
+            "composed",
+            "unavailable"
+          ]
+        },
+        "evidence_counts": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "context": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "calibration": {
+          "const": "unvalidated"
+        },
+        "unavailable_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
       },
-      "allOf": [{
-        "if": {"properties": {"status": {"const": "available"}}},
-        "then": {"properties": {
-          "avg": {"type": "number"}, "p50": {"type": "number"}, "p90": {"type": "number"},
-          "buckets": {"properties": {"probabilities": {"type": "array"}}},
-          "method": {"enum": ["direct", "composed"]}, "sample_count": {"minimum": 1},
-          "evidence_counts": {"minItems": 1}, "unavailable_reason": {"type": "null"}
-        }},
-        "else": {"properties": {
-          "avg": {"type": "null"}, "p50": {"type": "null"}, "p90": {"type": "null"},
-          "buckets": {"properties": {"probabilities": {"type": "null"}}},
-          "method": {"const": "unavailable"}, "sample_count": {"const": 0},
-          "unavailable_reason": {"type": "string"}
-        }}
-      }]
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "available"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "avg": {
+                "type": "number"
+              },
+              "p50": {
+                "type": "number"
+              },
+              "p90": {
+                "type": "number"
+              },
+              "buckets": {
+                "properties": {
+                  "probabilities": {
+                    "type": "array"
+                  }
+                }
+              },
+              "method": {
+                "enum": [
+                  "direct",
+                  "composed"
+                ]
+              },
+              "sample_count": {
+                "minimum": 1
+              },
+              "evidence_counts": {
+                "minItems": 1
+              },
+              "unavailable_reason": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "avg": {
+                "type": "null"
+              },
+              "p50": {
+                "type": "null"
+              },
+              "p90": {
+                "type": "null"
+              },
+              "buckets": {
+                "properties": {
+                  "probabilities": {
+                    "type": "null"
+                  }
+                }
+              },
+              "method": {
+                "const": "unavailable"
+              },
+              "sample_count": {
+                "const": 0
+              },
+              "unavailable_reason": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
     }
   },
-  "type": "object", "additionalProperties": false,
-  "required": ["schema_version", "scope", "lifecycle", "cpu_peak_window_ms", "quantile_method", "targets"],
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scope",
+    "lifecycle",
+    "cpu_peak_window_ms",
+    "quantile_method",
+    "targets",
+    "memory_measurement"
+  ],
   "properties": {
-    "schema_version": {"const": "call_load.v1"},
-    "scope": {"const": "tool_call"},
-    "lifecycle": {"const": "tool_hook_interval"},
-    "cpu_peak_window_ms": {"const": 500},
-    "quantile_method": {"const": "median_p50_nearest_rank_p90"},
+    "schema_version": {
+      "const": "call_load.v2"
+    },
+    "scope": {
+      "const": "tool_call"
+    },
+    "lifecycle": {
+      "const": "tool_hook_interval"
+    },
+    "cpu_peak_window_ms": {
+      "const": 500
+    },
+    "quantile_method": {
+      "const": "median_p50_nearest_rank_p90"
+    },
     "targets": {
-      "type": "object", "additionalProperties": false,
-      "required": ["duration_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_peak_rss_bytes"],
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "duration_ms",
+        "cpu_time_seconds",
+        "cpu_avg_cores",
+        "cpu_peak_cores",
+        "memory_total_peak_bytes",
+        "memory_extra_peak_bytes"
+      ],
       "properties": {
-        "duration_ms": {"allOf": [{"$ref": "#/$defs/estimate"}, {"properties": {"unit": {"const": "ms"}, "metric_definition": {"const": "tool_hook_elapsed"}}}]},
-        "cpu_time_seconds": {"allOf": [{"$ref": "#/$defs/estimate"}, {"properties": {"unit": {"const": "core_seconds"}, "metric_definition": {"const": "owned_workload_cpu_time"}}}]},
-        "cpu_avg_cores": {"allOf": [{"$ref": "#/$defs/estimate"}, {"properties": {"unit": {"const": "cores"}, "metric_definition": {"const": "owned_cpu_time_over_tool_hook_elapsed"}}}]},
-        "cpu_peak_cores": {"allOf": [{"$ref": "#/$defs/estimate"}, {"properties": {"unit": {"const": "cores"}, "metric_definition": {"const": "owned_cpu_fixed_500ms_window_peak"}}}]},
-        "memory_peak_rss_bytes": {"allOf": [{"$ref": "#/$defs/estimate"}, {"properties": {"unit": {"const": "bytes"}, "metric_definition": {"const": "sampled_distinct_mm_rss"}}}]}
+        "duration_ms": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/estimate"
+            },
+            {
+              "properties": {
+                "unit": {
+                  "const": "ms"
+                },
+                "metric_definition": {
+                  "const": "tool_hook_elapsed"
+                }
+              }
+            }
+          ]
+        },
+        "cpu_time_seconds": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/estimate"
+            },
+            {
+              "properties": {
+                "unit": {
+                  "const": "core_seconds"
+                },
+                "metric_definition": {
+                  "const": "owned_workload_cpu_time"
+                }
+              }
+            }
+          ]
+        },
+        "cpu_avg_cores": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/estimate"
+            },
+            {
+              "properties": {
+                "unit": {
+                  "const": "cores"
+                },
+                "metric_definition": {
+                  "const": "owned_cpu_time_over_tool_hook_elapsed"
+                }
+              }
+            }
+          ]
+        },
+        "cpu_peak_cores": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/estimate"
+            },
+            {
+              "properties": {
+                "unit": {
+                  "const": "cores"
+                },
+                "metric_definition": {
+                  "const": "owned_cpu_fixed_500ms_window_peak"
+                }
+              }
+            }
+          ]
+        },
+        "memory_total_peak_bytes": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/estimate"
+            },
+            {
+              "properties": {
+                "unit": {
+                  "const": "bytes"
+                },
+                "metric_definition": {
+                  "const": "environment_memory_total_peak"
+                }
+              }
+            }
+          ]
+        },
+        "memory_extra_peak_bytes": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/estimate"
+            },
+            {
+              "properties": {
+                "unit": {
+                  "const": "bytes"
+                },
+                "metric_definition": {
+                  "const": "environment_memory_peak_minus_baseline"
+                }
+              }
+            }
+          ]
+        }
       }
+    },
+    "clause_predictions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "clause_index",
+          "argv",
+          "cwd",
+          "env_names",
+          "scope",
+          "targets",
+          "memory_measurement"
+        ],
+        "properties": {
+          "clause_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "argv": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "env_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scope": {
+            "const": "clause"
+          },
+          "targets": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "duration_ms",
+              "cpu_time_seconds",
+              "cpu_avg_cores",
+              "cpu_peak_cores",
+              "memory_total_peak_bytes",
+              "memory_extra_peak_bytes"
+            ],
+            "properties": {
+              "duration_ms": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/estimate"
+                  },
+                  {
+                    "properties": {
+                      "unit": {
+                        "const": "ms"
+                      },
+                      "metric_definition": {
+                        "const": "clause_elapsed"
+                      }
+                    }
+                  }
+                ]
+              },
+              "cpu_time_seconds": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/estimate"
+                  },
+                  {
+                    "properties": {
+                      "unit": {
+                        "const": "core_seconds"
+                      },
+                      "metric_definition": {
+                        "const": "owned_workload_cpu_time"
+                      }
+                    }
+                  }
+                ]
+              },
+              "cpu_avg_cores": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/estimate"
+                  },
+                  {
+                    "properties": {
+                      "unit": {
+                        "const": "cores"
+                      },
+                      "metric_definition": {
+                        "const": "owned_cpu_time_over_clause_elapsed"
+                      }
+                    }
+                  }
+                ]
+              },
+              "cpu_peak_cores": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/estimate"
+                  },
+                  {
+                    "properties": {
+                      "unit": {
+                        "const": "cores"
+                      },
+                      "metric_definition": {
+                        "const": "owned_cpu_fixed_500ms_window_peak"
+                      }
+                    }
+                  }
+                ]
+              },
+              "memory_total_peak_bytes": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/estimate"
+                  },
+                  {
+                    "properties": {
+                      "unit": {
+                        "const": "bytes"
+                      },
+                      "metric_definition": {
+                        "const": "environment_memory_total_peak"
+                      }
+                    }
+                  }
+                ]
+              },
+              "memory_extra_peak_bytes": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/estimate"
+                  },
+                  {
+                    "properties": {
+                      "unit": {
+                        "const": "bytes"
+                      },
+                      "metric_definition": {
+                        "const": "environment_memory_peak_minus_baseline"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "memory_measurement": {
+            "enum": [
+              "cgroup_v2_memory_current",
+              "guest_memtotal_minus_memavailable"
+            ]
+          }
+        }
+      }
+    },
+    "memory_measurement": {
+      "enum": [
+        "cgroup_v2_memory_current",
+        "guest_memtotal_minus_memavailable"
+      ]
     }
   }
 }

@@ -78,7 +78,7 @@ def select_observations(payload):
                 repo="", bin=bin_, argv=(bin_,), ts_start=0,
                 ts_end=latency / 1000, latency_ms=latency,
                 cpu_ns_cumulative=cpu, sampled_peak_rss_mb=memory,
-                peak_cpu_cores=peak,
+                cpu_peak_cores=peak,
             ))
     return selected, coverage
 
@@ -108,13 +108,11 @@ def build(output: Path, source: Path | None = None):
     for observation in observations:
         if observation.cpu_ns_cumulative is not None:
             counts.update(("cpu_time_seconds", "cpu_avg_cores"))
-        if observation.sampled_peak_rss_mb is not None:
-            counts.update(("memory_peak_rss_bytes",))
-        if observation.peak_cpu_cores is not None:
+        if observation.cpu_peak_cores is not None:
             counts.update(("cpu_peak_cores",))
     return create_seed(output, dict(zip(FILES, (
         trie.to_json_obj(), tool.to_json_obj(), lattice.to_json_obj()))), provenance={
-            "kind": "repository-neutral-bootstrap", "recipe_version": 1,
+            "kind": "repository-neutral-bootstrap", "recipe_version": 2,
             "source_snapshot_sha256": hashlib.sha256(raw).hexdigest(),
             "source": "historical SWE-Rebench clause training data",
             "source_quota_cores": SOURCE_QUOTA_CORES,

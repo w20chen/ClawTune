@@ -656,7 +656,7 @@ def _ratio(numerator: float | None, denominator: float | None,
 
 def quality_gated_pmu_metrics(profile: Any) -> dict[str, Any]:
     """Recheck raw evidence, not just a producer's reliability label."""
-    unavailable = {"ipc": None, "llc_mpki": None, "llc_miss_rate": None,
+    unavailable = {**{spec.name: None for spec in EVENT_SPECS}, "ipc": None, "llc_mpki": None, "llc_miss_rate": None,
                    "llc_read_accesses_per_cpu_second": None,
                    "llc_read_misses_per_cpu_second": None, "eligible": False}
     if not isinstance(profile, dict) or any(profile.get(key) != value for key, value in {
@@ -690,7 +690,7 @@ def quality_gated_pmu_metrics(profile: Any) -> dict[str, Any]:
     if counts["llc_read_misses"] > counts["llc_read_accesses"]:
         return unavailable
     # Eligible events have no multiplexing, so ratios use raw counts directly.
-    return {"ipc": _ratio(counts["instructions"], counts["cycles"]),
+    return {**counts, "ipc": _ratio(counts["instructions"], counts["cycles"]),
             "llc_mpki": _ratio(counts["llc_read_misses"], counts["instructions"], 1000.),
             "llc_miss_rate": _ratio(counts["llc_read_misses"], counts["llc_read_accesses"]),
             "llc_read_accesses_per_cpu_second": _ratio(

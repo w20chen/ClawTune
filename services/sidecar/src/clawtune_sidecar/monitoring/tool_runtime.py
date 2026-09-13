@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -51,6 +52,8 @@ class ToolRuntimeSample:
     attribution_status: str
     monitor_source: str
     pmu_profile: dict[str, Any] | None = None
+    environment_memory: dict[str, Any] | None = None
+    cpu_peak_cores: float | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +78,8 @@ class RealtimeToolMonitor:
         max_timeline_points: int = 2_000,
     ) -> None:
         self.sampler = sampler or ProcessResourceSampler()
+        from clawtune_sidecar.monitoring.environment_memory import EnvironmentMemoryMonitor
+        self.environment_memory = EnvironmentMemoryMonitor()
         self.max_active = max_active
         self.poll_interval_s = poll_interval_s
         self.max_timeline_points = max_timeline_points
@@ -86,11 +91,13 @@ class RealtimeToolMonitor:
 
     def begin(self, request: ToolBeforeRequest, resource_class: str) -> None:
         key = correlation_key(request)
+        self.environment_memory.begin(correlation_key(request), request.resource_scope)
         snapshot = self.sampler.snapshot(request.resource_scope, net_mode="reset")
         with self._lock:
             if len(self._active) >= self.max_active:
                 oldest = next(iter(self._active))
                 self._active.pop(oldest, None)
+                self.environment_memory.discard(oldest)
             self._active[key] = _ActiveTool(
                 request=request,
                 snapshot=snapshot,
@@ -208,7 +215,11 @@ class RealtimeToolMonitor:
         net_rx_delta, net_tx_delta = _net_window_delta(start, end, timeline)
         cpu_avg_cores = _rate(cpu_delta, duration_s)
         normalized_timeline = _relative_timeline(timeline)
+        memory = self.environment_memory.complete(correlation_key(active.request) if active else key)
         return ToolRuntimeSample(
+            cpu_peak_cores=_windowed_cpu_peak(timeline) if active is not None
+                and not timeline_truncated else None,
+            environment_memory=memory,
             event_id=completion.event_id,
             tool_call_id=completion.tool_call_id,
             tool_name=completion.tool_name,
@@ -398,6 +409,7 @@ class RealtimeToolMonitor:
 
     def _poll_active(self) -> None:
         while not self._stop.wait(self.poll_interval_s):
+            self.environment_memory.poll()
             with self._lock:
                 items = list(self._active.items())
             for key, active in items:
@@ -434,6 +446,28 @@ def _delta_int(start: int | None, end: int | None) -> int | None:
     if start is None or end is None:
         return None
     return max(0, end - start)
+
+
+def _windowed_cpu_peak(points: list[dict[str, Any]]) -> float | None:
+    """500ms windows from sampled cumulative CPU, without bridging telemetry gaps."""
+    samples = [(p.get("ts"), p.get("cpu_time_s")) for p in points if p.get("available")]
+    if len(samples) < 3 or len({p.get("source") for p in points if p.get("available")}) != 1:
+        return None
+    if any(not isinstance(v, (int, float)) or not math.isfinite(v) for p in samples for v in p):
+        return None
+    if samples[-1][0] - samples[0][0] < .5:
+        return None
+    if any(b[0] <= a[0] or b[0] - a[0] > .15 or b[1] < a[1]
+           for a, b in zip(samples, samples[1:])):
+        return None
+    def value_at(t: float) -> float:
+        for a, b in zip(samples, samples[1:]):
+            if a[0] <= t <= b[0]:
+                return a[1] + (b[1] - a[1]) * (t - a[0]) / (b[0] - a[0])
+        return samples[-1][1]
+    windows = int((samples[-1][0] - samples[0][0]) / .5)
+    return max((value_at(samples[0][0] + (i + 1) * .5)
+                - value_at(samples[0][0] + i * .5)) / .5 for i in range(windows))
 
 
 def _delta_float(start: float | None, end: float | None) -> float | None:

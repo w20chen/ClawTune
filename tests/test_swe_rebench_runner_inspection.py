@@ -1004,8 +1004,8 @@ def _canonical_prediction():
         CompletedCall("", "read_file", None, 0, .1),
     ])
     runtime.freeze()
-    query = ToolCallQuery("review", "read_file", None, 1, ambient_before_mb=100)
-    assert runtime.query(query)["peak_cpu_cores"].conditional_p90 is None
+    query = ToolCallQuery("review", "read_file", None, 1)
+    assert runtime.query(query)["cpu_peak_cores"].conditional_p90 is None
     prediction, _ = predict_call_load(
         runtime=runtime, trie=ClauseResourceKB(), lattice=LatticeTimeKB(), query=query,
         edges=load_bucket_edges((100, 500, 2000, 10000)),

@@ -389,6 +389,9 @@ class AgentTestBenchTraceWriter:
                 "sidecar_overhead_ns": event.sidecar_overhead_ns,
                 "cgroup_resource": cgroup_resource,
 
+                **(sample.environment_memory or {}),
+                "cpu_peak_cores": sample.cpu_peak_cores,
+                "cpu_peak_window_ms": 500,
                 "pmu": sample.pmu_profile,
                 "coverage_ratio": _cov_ratio,
                 "coverage_reason": _cov_reason,

@@ -492,7 +492,7 @@ def test_openclaw_trace_v6_loads_as_tool_resource_observations(tmp_path: Path) -
     assert completed.tool_name == "exec"
     assert completed.command == "python -m pytest tests -q"
     assert completed.ts_end - completed.ts_start == pytest.approx(1.2)
-    assert completed.peak_memory_mb == 100
+    assert completed.memory_total_peak_bytes is None
 
 
 def test_openclaw_trace_span_repo_overrides_batch_fallback(tmp_path: Path) -> None:
@@ -593,10 +593,10 @@ def test_openclaw_trace_shared_scope_keeps_only_runtime_latency(
 
     assert len(loaded.completed_calls) == 1
     completed = loaded.completed_calls[0]
-    assert completed.peak_cpu_cores is None
-    assert completed.peak_cpu_cores_eligible is False
-    assert completed.peak_memory_mb == pytest.approx(100.0)
-    assert completed.peak_memory_mb_eligible is False
+    assert completed.cpu_peak_cores is None
+    assert completed.cpu_peak_cores_eligible is False
+    assert completed.memory_total_peak_bytes is None
+    assert completed.memory_eligible is False
 
     records = [
         json.loads(line)
@@ -611,7 +611,7 @@ def test_openclaw_trace_shared_scope_keeps_only_runtime_latency(
     )
     assert clause is not None
     assert clause.latency_ms == pytest.approx(1200.0)
-    assert clause.peak_cpu_cores is None
+    assert clause.cpu_peak_cores is None
     assert clause.sampled_peak_rss_mb is None
     assert clause.cpu_ns_cumulative is None
 
@@ -622,12 +622,11 @@ def test_openclaw_trace_shared_scope_keeps_only_runtime_latency(
     )
     prediction = predictor.predict(
         _tool_request("evt-next", "call-next", "python -m pytest tests -q"),
-        ambient_before_mb=50.0,
     )
     continuous = prediction.tool_resource["continuous_predictions"]
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
-    assert continuous["peak_cpu_cores"]["conditional_p90"] is None
-    assert continuous["peak_memory_mb"]["conditional_p90"] is None
+    assert continuous["cpu_peak_cores"]["conditional_p90"] is None
+    assert continuous["memory_total_peak_bytes"]["conditional_p90"] is None
 
 
 def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) -> None:
@@ -701,17 +700,17 @@ def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) ->
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
     assert continuous["latency_ms"]["scope"] == "repo"
     assert continuous["latency_ms"]["key_kind"] == "exact_command"
-    assert continuous["peak_cpu_cores"]["conditional_p90"] is None
-    assert continuous["peak_cpu_cores"]["scope"] is None
-    assert continuous["peak_cpu_cores"]["key_kind"] is None
-    assert continuous["peak_memory_mb"] == {
-        "target": "peak_memory_mb",
+    assert continuous["cpu_peak_cores"]["conditional_p90"] is None
+    assert continuous["cpu_peak_cores"]["scope"] is None
+    assert continuous["cpu_peak_cores"]["key_kind"] is None
+    assert continuous["memory_total_peak_bytes"] == {
+        "target": "memory_total_peak_bytes",
         "conditional_p90": None,
         "scope": None,
         "key_kind": None,
         "evidence_count": 0,
         "fallback_path": [],
-        "note": "memory prediction requires ambient_before_mb anchor",
+        "note": "no continuous evidence for target",
     }
 
 
@@ -883,7 +882,7 @@ def test_ebpf_clause_identity_matches_online_prediction(tmp_path: Path, monkeypa
     assert [item["prediction_ms"] for item in lattice[0]["predictions"]] == pytest.approx(
         [1200.0, 1200.0, 1200.0]
     )
-    assert result.tool_resource["continuous_predictions"]["peak_cpu_cores"][
+    assert result.tool_resource["continuous_predictions"]["cpu_peak_cores"][
         "conditional_p90"
     ] is None
 
@@ -894,11 +893,10 @@ def test_ebpf_clause_identity_matches_online_prediction(tmp_path: Path, monkeypa
             command="python -m pytest tests -q",
             ts_start=4.0,
             ts_end=4.9,
-            peak_cpu_cores=None,
-            peak_cpu_cores_eligible=False,
-            peak_memory_mb=None,
-            peak_memory_mb_eligible=False,
-            ambient_before_mb=None,
+            cpu_peak_cores=None,
+            cpu_peak_cores_eligible=False,
+            memory_total_peak_bytes=None,
+            memory_eligible=False,
         )
     )
     continuous_result = predictor.predict(
@@ -1008,7 +1006,7 @@ def test_shipped_toolkb_starts_without_fabricated_whole_call_predictions(
     assert latency["scope"] is None
     assert latency["evidence_count"] == 0
     assert latency["conditional_p90"] is None
-    cpu = continuous["peak_cpu_cores"]
+    cpu = continuous["cpu_peak_cores"]
     assert cpu["scope"] is None
     assert cpu["evidence_count"] == 0
     assert cpu["conditional_p90"] is None
@@ -1033,11 +1031,12 @@ def test_shared_snapshots_reuse_same_repo_evidence_but_isolate_other_repos() -> 
             command="git status",
             ts_start=runtime_base_ts,
             ts_end=runtime_base_ts + 0.2,
-            peak_cpu_cores=0.25,
-            peak_cpu_cores_eligible=True,
-            peak_memory_mb=64.0,
-            peak_memory_mb_eligible=True,
-            ambient_before_mb=40.0,
+            cpu_peak_cores=0.25,
+            cpu_peak_cores_eligible=True,
+            memory_total_peak_bytes=64 * 1024**2,
+            memory_extra_peak_bytes=24 * 1024**2, memory_baseline_bytes=40 * 1024**2,
+            memory_environment_id="test", memory_measurement="cgroup_v2_memory_current",
+            memory_eligible=True, cpu_peak_window_ms=500,
         )
     )
     same_repo = runtime.query(
@@ -1046,7 +1045,6 @@ def test_shared_snapshots_reuse_same_repo_evidence_but_isolate_other_repos() -> 
             tool_name="exec",
             command="git status",
             ts_start=runtime_base_ts + 2.0,
-            ambient_before_mb=50.0,
         )
     )
     restored_runtime = RuntimeToolResourceKB.from_json_obj(runtime.to_json_obj())
@@ -1056,18 +1054,17 @@ def test_shared_snapshots_reuse_same_repo_evidence_but_isolate_other_repos() -> 
             tool_name="exec",
             command="git status",
             ts_start=runtime_base_ts + 3.0,
-            ambient_before_mb=60.0,
         )
     )
 
     assert same_repo["latency_ms"].scope == "repo"
     assert same_repo["latency_ms"].conditional_p90 == pytest.approx(200.0)
-    assert same_repo["peak_memory_mb"].conditional_p90 == pytest.approx(74.0)
+    assert same_repo["memory_total_peak_bytes"].conditional_p90 == pytest.approx(64 * 1024**2)
     # New repo history must not leak to another repo; ToolKB has no initial priors.
     assert other_repo["latency_ms"].scope is None
     assert other_repo["latency_ms"].conditional_p90 is None
-    assert other_repo["peak_memory_mb"].scope is None
-    assert other_repo["peak_memory_mb"].conditional_p90 is None
+    assert other_repo["memory_total_peak_bytes"].scope is None
+    assert other_repo["memory_total_peak_bytes"].conditional_p90 is None
 
     clause = ClauseResourceKB.from_json_obj(
         json.loads(
@@ -1171,24 +1168,13 @@ def test_shipped_clause_snapshot_predicts_exec_clause_in_real_compound_command(
     )
 
     tool_resource = result.tool_resource
-    assert tool_resource["clause_bins"] == ["cd", "python3"]
+    assert tool_resource["clause_bins"] == ["python3"]
     assert tool_resource["prediction"] is not None
     assert tool_resource["unavailable_reason"] is None
-    assert tool_resource["composed"] is True
-    assert tool_resource["prediction"]["scope"] == "composed"
-    assert tool_resource["prediction"]["key_kind"] == "compound_composed"
-    assert tool_resource["composed_total_ms"] is not None
-    assert tool_resource["composition"] == [
-        {
-            "kind": "single",
-            "bins": ["python3"],
-            "time_ms": tool_resource["composed_total_ms"],
-            "dropped_viewer_bins": [],
-        }
-    ]
+    assert tool_resource.get("composed", False) is False
     assert len(tool_resource["clause_predictions"]) == 1
     clause = tool_resource["clause_predictions"][0]
-    assert clause["clause_index"] == 1
+    assert clause["clause_index"] == 0
     assert clause["bin"] == "python3"
     assert clause["prediction"]["scope"] == "public"
     assert clause["prediction"]["key_kind"] in {"bin", "global"}
@@ -1300,9 +1286,9 @@ def test_tool_resource_predictor_exposes_native_unavailable_reason(
     }
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
     assert continuous["latency_ms"]["key_kind"] == "command_prefix_depth_3"
-    assert continuous["peak_cpu_cores"]["conditional_p90"] is None
-    assert continuous["peak_cpu_cores"]["key_kind"] is None
-    assert continuous["peak_memory_mb"]["note"] == "memory prediction requires ambient_before_mb anchor"
+    assert continuous["cpu_peak_cores"]["conditional_p90"] is None
+    assert continuous["cpu_peak_cores"]["key_kind"] is None
+    assert continuous["memory_total_peak_bytes"]["note"] == "no continuous evidence for target"
 
 
 def test_compound_prediction_requires_evidence_for_every_effective_clause() -> None:
@@ -1711,11 +1697,12 @@ def test_commandless_repo_tool_name_learning_is_causal_and_survives_snapshot(
             command=None,
             ts_start=1.0,
             ts_end=1.2,
-            peak_cpu_cores=0.25,
-            peak_cpu_cores_eligible=True,
-            peak_memory_mb=64.0,
-            peak_memory_mb_eligible=True,
-            ambient_before_mb=40.0,
+            cpu_peak_cores=0.25,
+            cpu_peak_cores_eligible=True,
+            memory_total_peak_bytes=64 * 1024**2,
+            memory_extra_peak_bytes=24 * 1024**2, memory_baseline_bytes=40 * 1024**2,
+            memory_environment_id="test", memory_measurement="cgroup_v2_memory_current",
+            memory_eligible=True, cpu_peak_window_ms=500,
         )
     )
 
@@ -1725,13 +1712,12 @@ def test_commandless_repo_tool_name_learning_is_causal_and_survives_snapshot(
             tool_name=tool_name,
             command=None,
             ts_start=2.0,
-            ambient_before_mb=50.0,
         )
     )
 
     assert second_call["latency_ms"].conditional_p90 == pytest.approx(200.0)
-    assert second_call["peak_cpu_cores"].conditional_p90 == pytest.approx(0.25)
-    assert second_call["peak_memory_mb"].conditional_p90 == pytest.approx(74.0)
+    assert second_call["cpu_peak_cores"].conditional_p90 == pytest.approx(0.25)
+    assert second_call["memory_total_peak_bytes"].conditional_p90 == pytest.approx(64 * 1024**2)
     for prediction in second_call.values():
         assert prediction.scope == "repo"
         assert prediction.key_kind == "tool_name"
@@ -1745,11 +1731,12 @@ def test_commandless_repo_tool_name_learning_is_causal_and_survives_snapshot(
             command=None,
             ts_start=2.1,
             ts_end=2.5,
-            peak_cpu_cores=0.5,
-            peak_cpu_cores_eligible=True,
-            peak_memory_mb=80.0,
-            peak_memory_mb_eligible=True,
-            ambient_before_mb=50.0,
+            cpu_peak_cores=0.5,
+            cpu_peak_cores_eligible=True,
+            memory_total_peak_bytes=80 * 1024**2,
+            memory_extra_peak_bytes=30 * 1024**2, memory_baseline_bytes=50 * 1024**2,
+            memory_environment_id="test", memory_measurement="cgroup_v2_memory_current",
+            memory_eligible=True, cpu_peak_window_ms=500,
         )
     )
     restored = RuntimeToolResourceKB.from_json_obj(kb.to_json_obj())
@@ -1760,13 +1747,12 @@ def test_commandless_repo_tool_name_learning_is_causal_and_survives_snapshot(
             tool_name=tool_name,
             command=None,
             ts_start=3.0,
-            ambient_before_mb=60.0,
         )
     )
 
     assert third_call["latency_ms"].conditional_p90 == pytest.approx(400.0)
-    assert third_call["peak_cpu_cores"].conditional_p90 == pytest.approx(0.5)
-    assert third_call["peak_memory_mb"].conditional_p90 == pytest.approx(90.0)
+    assert third_call["cpu_peak_cores"].conditional_p90 == pytest.approx(0.5)
+    assert third_call["memory_total_peak_bytes"].conditional_p90 == pytest.approx(80 * 1024**2)
     assert all(prediction.evidence_count == 2 for prediction in third_call.values())
 
 
@@ -1814,12 +1800,12 @@ def test_tool_resource_predictor_learns_from_completion_without_cold_start() -> 
     assert result.duration_p90_ms == 1200
     assert result.tool_resource["prediction"] is None
     assert result.tool_resource["unavailable_reason"] == "no_clause_latency_evidence"
-    assert result.tool_resource["continuous_predictions"]["peak_cpu_cores"][
+    assert result.tool_resource["continuous_predictions"]["cpu_peak_cores"][
         "conditional_p90"
     ] is None
-    assert result.tool_resource["continuous_predictions"]["peak_memory_mb"][
+    assert result.tool_resource["continuous_predictions"]["memory_total_peak_bytes"][
         "note"
-    ] == "memory prediction requires ambient_before_mb anchor"
+    ] == "no continuous evidence for target"
 
 
 @pytest.mark.parametrize("error_type,censored", [(None, False), ("ValueError", False), ("TimeoutError", True), ("CancelledError", True)])
@@ -1959,10 +1945,10 @@ def test_live_shared_scope_keeps_only_runtime_latency(
         start=request,
     )
     assert completed is not None
-    assert completed.peak_cpu_cores is None
-    assert completed.peak_cpu_cores_eligible is False
-    assert completed.peak_memory_mb == pytest.approx(100.0)
-    assert completed.peak_memory_mb_eligible is False
+    assert completed.cpu_peak_cores is None
+    assert completed.cpu_peak_cores_eligible is False
+    assert completed.memory_total_peak_bytes is None
+    assert completed.memory_eligible is False
 
     clause = tool_resource_predictor.observation_from_completion(
         completion,
@@ -1972,7 +1958,7 @@ def test_live_shared_scope_keeps_only_runtime_latency(
     )
     assert clause is not None
     assert clause.latency_ms == pytest.approx(1200.0)
-    assert clause.peak_cpu_cores is None
+    assert clause.cpu_peak_cores is None
     assert clause.sampled_peak_rss_mb is None
     assert clause.cpu_ns_cumulative is None
 
@@ -1984,12 +1970,11 @@ def test_live_shared_scope_keeps_only_runtime_latency(
             "call-shared-next",
             "python -m pytest tests -q",
         ),
-        ambient_before_mb=50.0,
     )
     continuous = prediction.tool_resource["continuous_predictions"]
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
-    assert continuous["peak_cpu_cores"]["conditional_p90"] is None
-    assert continuous["peak_memory_mb"]["conditional_p90"] is None
+    assert continuous["cpu_peak_cores"]["conditional_p90"] is None
+    assert continuous["memory_total_peak_bytes"]["conditional_p90"] is None
 
 
 def test_tool_resource_predictor_explains_unknown_without_cold_start() -> None:
@@ -2010,8 +1995,8 @@ def test_tool_resource_predictor_explains_unknown_without_cold_start() -> None:
     assert result.tool_resource["unavailable_reason"] == "no_clause_latency_evidence"
     continuous = result.tool_resource["continuous_predictions"]
     assert continuous["latency_ms"]["note"] == "no continuous evidence for target"
-    assert continuous["peak_cpu_cores"]["note"] == "no continuous evidence for target"
-    assert continuous["peak_memory_mb"]["note"] == "memory prediction requires ambient_before_mb anchor"
+    assert continuous["cpu_peak_cores"]["note"] == "no continuous evidence for target"
+    assert continuous["memory_total_peak_bytes"]["note"] == "no continuous evidence for target"
     assert [item["name"] for item in result.tool_resource["prediction_algorithms"]["enabled"]] == [
         "clause_latency_bucket",
         "lattice_shrinkage",
@@ -2062,8 +2047,10 @@ def test_resource_lattice_predictions_reach_before_call_payload_and_fail_indepen
     predictor.lattice_kb.merge_historical([ClauseObservation(
         repo="repo-1", bin="python", argv=("python", "task.py"),
         ts_start=1, ts_end=2, latency_ms=1000,
-        cpu_ns_cumulative=2_000_000_000, sampled_peak_rss_mb=128,
-        peak_cpu_cores=3,
+        cpu_ns_cumulative=2_000_000_000, memory_total_peak_bytes=128 * 1024**2,
+        memory_extra_peak_bytes=128 * 1024**2, memory_baseline_bytes=0,
+        memory_environment_id="test", memory_measurement="cgroup_v2_memory_current", memory_eligible=True,
+        cpu_peak_cores=3,
     )])
     request = _tool_request("resource-event", "resource-call", "python task.py")
     result = predictor.predict(request)
@@ -2071,7 +2058,7 @@ def test_resource_lattice_predictions_reach_before_call_payload_and_fail_indepen
     by_target = {row["target"]: row for row in output["predictions"] if row["algorithm"] == "shrinkage"}
     assert by_target["cpu_time_seconds"]["p50"] == 2
     assert by_target["cpu_avg_cores"]["p50"] == 2
-    assert by_target["memory_peak_rss_bytes"]["p90"] == 128 * 1024**2
+    assert by_target["memory_total_peak_bytes"]["p90"] == 128 * 1024**2
     assert all(row["prediction_ms"] == 1000 for row in result.tool_resource["lattice_time_predictions"][0]["predictions"])
     def fail(*args, **kwargs):
         raise ValueError("resource-only failure")
@@ -2184,10 +2171,9 @@ def test_tool_resource_predictor_explains_empty_continuous_memory_with_anchor() 
 
     result = predictor.predict(
         _tool_request("evt-1", "call-1", "python -m pytest tests -q"),
-        ambient_before_mb=10.0,
     )
 
-    memory = result.tool_resource["continuous_predictions"]["peak_memory_mb"]
+    memory = result.tool_resource["continuous_predictions"]["memory_total_peak_bytes"]
     assert memory["conditional_p90"] is None
     assert memory["note"] == "no continuous evidence for target"
 
@@ -2376,7 +2362,7 @@ def test_tool_resource_predictor_concurrent_completions_persist_without_lost_upd
         assert prediction.tool_resource["continuous_predictions"]["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
 
 
-def test_tool_resource_predictor_continuous_memory_uses_ambient_anchor() -> None:
+def test_tool_resource_predictor_does_not_relabel_rss_using_ambient_anchor() -> None:
     predictor = ToolResourcePredictor.from_traces(
         openclaw_trace_paths=(),
         ebpf_trace_paths=(),
@@ -2414,14 +2400,13 @@ def test_tool_resource_predictor_continuous_memory_uses_ambient_anchor() -> None
 
     result = predictor.predict(
         _tool_request("evt-2", "call-2", "python -m pytest tests -q"),
-        ambient_before_mb=50.0,
     )
 
-    memory = result.tool_resource["continuous_predictions"]["peak_memory_mb"]
-    assert memory["conditional_p90"] == pytest.approx(150.0)
-    assert memory["scope"] == "repo"
-    assert memory["key_kind"] == "exact_command"
-    assert memory["note"] == "residual quantile plus query ambient_before_mb"
+    memory = result.tool_resource["continuous_predictions"]["memory_total_peak_bytes"]
+    assert memory["conditional_p90"] is None
+    assert memory["scope"] is None
+    assert memory["key_kind"] is None
+    assert memory["note"] == "no continuous evidence for target"
 
 
 def test_sidecar_uses_tool_resource_predictor_when_configured(tmp_path: Path) -> None:
@@ -2480,7 +2465,7 @@ def test_sidecar_uses_tool_resource_predictor_when_configured(tmp_path: Path) ->
     Draft202012Validator(schema, registry=registry).validate(response.json())
     assert response.json()["prediction"]["resource_class"] == "latency_medium"
     pmu = response.json()["prediction"]["pmu_prediction"]
-    assert set(pmu["targets"]) == {"ipc", "llc_mpki", "llc_miss_rate"}
+    assert set(pmu["targets"]) == {"cycles", "instructions", "llc_read_accesses", "llc_read_misses", "ipc", "llc_mpki", "llc_miss_rate", "llc_read_accesses_per_cpu_second", "llc_read_misses_per_cpu_second"}
     assert all(value["status"] == "unavailable" for value in pmu["targets"].values())
 
 
@@ -2500,8 +2485,8 @@ def test_resource_label_quality_online_offline_parity(quality, points, overlap):
     usable = quality == "ok" and points >= 2 and overlap
     assert online.cpu_time_eligible is usable
     assert offline.cpu_time_eligible is usable
-    assert online.peak_memory_mb_eligible is usable
-    assert offline.peak_memory_mb_eligible is usable
+    assert online.memory_eligible is False  # RSS alone is not an environment measurement
+    assert offline.memory_eligible is False
     assert online.ts_end - online.ts_start == pytest.approx(1.2)
     assert offline.ts_end - offline.ts_start == pytest.approx(1.2)
     assert tool_resource_predictor.observation_from_completion(event, sample, repo="repo").cpu_ns_cumulative == (1000000000 if usable else None)
@@ -2530,7 +2515,7 @@ def test_trace_does_not_export_out_of_window_snapshots_as_tool_usage(tmp_path):
         writer.close()
 
 
-def test_sidecar_defaults_exec_memory_anchor_for_new_execution_cgroup(tmp_path: Path) -> None:
+def test_sidecar_does_not_invent_environment_memory_from_rss(tmp_path: Path) -> None:
     trace = tmp_path / "trace.jsonl"
     _write_trace(trace, memory_rss_bytes_before=0)
     state = build_state(
@@ -2574,12 +2559,12 @@ def test_sidecar_defaults_exec_memory_anchor_for_new_execution_cgroup(tmp_path: 
 
     assert response.status_code == 200
     memory = response.json()["prediction"]["tool_resource"]["continuous_predictions"][
-        "peak_memory_mb"
+        "memory_total_peak_bytes"
     ]
-    assert memory["conditional_p90"] == pytest.approx(100.0)
-    assert memory["scope"] == "repo"
-    assert memory["key_kind"] == "exact_command"
-    assert memory["note"] == "residual quantile plus query ambient_before_mb"
+    assert memory["conditional_p90"] is None
+    assert memory["scope"] is None
+    assert memory["key_kind"] is None
+    assert memory["note"] == "no continuous evidence for target"
 
 
 def test_trace_writes_tool_prediction_payload(tmp_path: Path) -> None:
@@ -2661,7 +2646,8 @@ def test_trace_writes_tool_prediction_payload(tmp_path: Path) -> None:
     assert tool_start["prediction"]["duration_p50_ms"] == 1200
     assert tool_start["prediction"]["duration_p90_ms"] == 1200
     assert set(tool_start["prediction"]["pmu_prediction"]["targets"]) == {
-        "ipc", "llc_mpki", "llc_miss_rate",
+        "cycles", "instructions", "llc_read_accesses", "llc_read_misses", "ipc", "llc_mpki", "llc_miss_rate",
+        "llc_read_accesses_per_cpu_second", "llc_read_misses_per_cpu_second",
     }
     assert tool_start["prediction"]["tool_resource"]["prediction"] is None
     assert (
@@ -2801,28 +2787,28 @@ def _prediction_algorithms() -> dict:
                 "name": "lattice_shrinkage",
                 "family": "context_lattice",
                 "source": "LatticeTimeKB",
-                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_peak_rss_bytes"],
+                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes"],
                 "outputs": ["clause_point_prediction_ms", "resource_p50", "resource_p90"],
             },
             {
                 "name": "lattice_loso",
                 "family": "context_lattice",
                 "source": "LatticeTimeKB",
-                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_peak_rss_bytes"],
+                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes"],
                 "outputs": ["clause_point_prediction_ms", "resource_p50", "resource_p90"],
             },
             {
                 "name": "lattice_max_cardinality",
                 "family": "context_lattice",
                 "source": "LatticeTimeKB",
-                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_peak_rss_bytes"],
+                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes"],
                 "outputs": ["clause_point_prediction_ms", "resource_p50", "resource_p90"],
             },
             {
                 "name": "runtime_tool_resource_conditional_p90",
                 "family": "empirical_ecdf",
                 "source": "RuntimeToolResourceKB",
-                "targets": ["latency_ms", "peak_cpu_cores", "peak_memory_mb"],
+                "targets": ["latency_ms", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes"],
                 "outputs": ["conditional_p90"],
             },
         ],

@@ -1,9 +1,8 @@
 """Runtime asymmetric two-layer tool resource knowledge bases.
 
 Both KBs expose full-target ``predict_load_samples`` evidence APIs consumed
-by the sidecar's common call-level adapter. The older continuous and latency-
-bucket APIs described below remain migration diagnostics, not canonical load
-outputs. Runtime v2 isolates canonical resources from legacy peak/residual labels.
+by the sidecar's common call-level adapter. Additional latency bucket and
+conditional-quantile views share the same canonical measurements.
 
 Public and repo layers intentionally use different key granularity because
 they encode different environment assumptions:
@@ -38,14 +37,9 @@ label is never attributed to every contained binary. Shell builtins such as
 enclosing tool-call observation. No tool-specific option semantics are
 implemented; argument order is preserved as-is.
 
-Historical call-level target semantics:
-
-- ``latency_ms``: observed call latency, skipped for censored calls;
-- ``peak_cpu_cores``: eligible peak CPU cores;
-- ``peak_memory_mb``: stored as an eligible residual relative to the
-  deployment-legal ``ambient_before_mb`` anchor; a prediction adds the
-  query's *current* ambient memory to the residual quantile. Queries
-  without an ambient anchor get no memory prediction.
+Call-level labels use eligible CPU measurements and paired environment-memory
+maxima: total includes the pre-execution background; extra=max(0,total-baseline).
+The measurement source partitions every memory index. RSS remains diagnostic.
 
 Causality: ``observe_completed_call`` buffers observations; an observation
 enters repo state only when a later query's ``ts_start`` strictly exceeds
@@ -100,20 +94,26 @@ from tool_resource.features import (
 from tool_resource.metrics import ecdf_quantile
 from tool_time.command import shell_command_heads, shell_command_prefix_tokens
 
-TARGETS = ("latency_ms", "peak_cpu_cores", "peak_memory_mb")
+TARGETS = ("latency_ms", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes")
 _CONDITIONAL_P90_QUANTILE = 0.9
 _MAX_PREFIX_DEPTH = 4  # frozen depth budget, same as the evaluated lattice
-_SCHEMA = "runtime_tool_resource_kb_v2"
-_LEGACY_RUNTIME_SCHEMA = "runtime_tool_resource_kb_v1"
-# Legacy targets remain diagnostic only. Canonical resources require new,
-# explicitly eligible labels; legacy peak/ambient-residual nodes cannot feed them.
+_SCHEMA = "runtime_tool_resource_kb_v3"
+# Canonical targets share one eligible value per observation.
 LOAD_TARGET_SOURCES = {"duration_ms": "latency_ms", "cpu_time_seconds": "cpu_time_seconds",
                        "cpu_avg_cores": "cpu_avg_cores", "cpu_peak_cores": "cpu_peak_cores",
-                       "memory_peak_rss_bytes": "memory_peak_rss_bytes"}
+                       "memory_total_peak_bytes": "memory_total_peak_bytes",
+                       "memory_extra_peak_bytes": "memory_extra_peak_bytes"}
 PMU_TARGET_SOURCES = {
+    "cycles": "pmu_cycles",
+    "instructions": "pmu_instructions",
+    "llc_read_accesses": "pmu_llc_read_accesses",
+    "llc_read_misses": "pmu_llc_read_misses",
+
     "ipc": "pmu_ipc",
     "llc_mpki": "pmu_llc_mpki",
     "llc_miss_rate": "pmu_llc_miss_rate",
+    "llc_read_accesses_per_cpu_second": "pmu_llc_read_accesses_per_cpu_second",
+    "llc_read_misses_per_cpu_second": "pmu_llc_read_misses_per_cpu_second",
 }
 _ALL_TARGETS = (
     *TARGETS,
@@ -135,20 +135,26 @@ class CompletedCall:
     ts_start: float
     ts_end: float
     censored: bool = False
-    peak_cpu_cores: float | None = None
-    peak_cpu_cores_eligible: bool = False
-    peak_memory_mb: float | None = None
-    peak_memory_mb_eligible: bool = False
-    ambient_before_mb: float | None = None
+    cpu_peak_cores: float | None = None
+    cpu_peak_cores_eligible: bool = False
     cpu_time_seconds: float | None = None
     cpu_time_eligible: bool = False
     cpu_peak_window_ms: int | None = None
-    memory_peak_rss_bytes: float | None = None
-    memory_metric: str | None = None
-    memory_rss_eligible: bool = False
+    memory_baseline_bytes: int | None = None
+    memory_total_peak_bytes: int | None = None
+    memory_extra_peak_bytes: int | None = None
+    memory_measurement: str | None = None
+    memory_environment_id: str | None = None
+    memory_eligible: bool = False
+    pmu_cycles: float | None = None
+    pmu_instructions: float | None = None
+    pmu_llc_read_accesses: float | None = None
+    pmu_llc_read_misses: float | None = None
     pmu_ipc: float | None = None
     pmu_llc_mpki: float | None = None
     pmu_llc_miss_rate: float | None = None
+    pmu_llc_read_accesses_per_cpu_second: float | None = None
+    pmu_llc_read_misses_per_cpu_second: float | None = None
     pmu_eligible: bool = False
     outcome: str = "ok"
 
@@ -158,25 +164,6 @@ class CompletedCall:
         if self.ts_end < self.ts_start:
             raise ValueError(f"ts_end {self.ts_end} precedes ts_start {self.ts_start}")
 
-    @classmethod
-    def from_resource_sample(cls, sample: Any, repo: str) -> CompletedCall:
-        """Adapt a ``ResourceCallSample``-shaped row (duck-typed)."""
-
-        tool_args = sample.tool_args or {}
-        command = tool_args.get("command")
-        return cls(
-            repo=repo,
-            tool_name=sample.tool_name,
-            command=command if isinstance(command, str) else None,
-            ts_start=sample.tool_ts_start,
-            ts_end=sample.tool_ts_end,
-            censored=sample.censored,
-            peak_cpu_cores=sample.peak_cpu_cores,
-            peak_cpu_cores_eligible=sample.peak_cpu_cores_eligible,
-            peak_memory_mb=sample.peak_memory_mb,
-            peak_memory_mb_eligible=sample.peak_memory_mb_eligible,
-            ambient_before_mb=sample.ambient_before_mb,
-        )
 
 
 @dataclass(frozen=True)
@@ -187,7 +174,7 @@ class ToolCallQuery:
     tool_name: str
     command: str | None
     ts_start: float
-    ambient_before_mb: float | None = None
+    memory_measurement: str = "cgroup_v2_memory_current"
 
 
 @dataclass(frozen=True)
@@ -209,38 +196,34 @@ def _target_values(call: CompletedCall) -> dict[str, float]:
     values: dict[str, float] = {}
     if not call.censored:
         values["latency_ms"] = (call.ts_end - call.ts_start) * 1000.0
-    if call.peak_cpu_cores_eligible and call.peak_cpu_cores is not None:
-        values["peak_cpu_cores"] = float(call.peak_cpu_cores)
-    if (
-        call.peak_memory_mb_eligible
-        and call.peak_memory_mb is not None
-        and call.ambient_before_mb is not None
-    ):
-        residual = float(call.peak_memory_mb) - float(call.ambient_before_mb)
-        if math.isfinite(residual):
-            values["peak_memory_mb"] = residual
     if not call.censored and call.cpu_time_eligible and _valid_load_value(call.cpu_time_seconds):
         values["cpu_time_seconds"] = float(call.cpu_time_seconds)
         if not call.censored and call.ts_end > call.ts_start:
             values["cpu_avg_cores"] = float(call.cpu_time_seconds) / (call.ts_end - call.ts_start)
-    if not call.censored and call.peak_cpu_cores_eligible and call.cpu_peak_window_ms == 500:
-        if _valid_load_value(call.peak_cpu_cores):
-            values["cpu_peak_cores"] = float(call.peak_cpu_cores)
-    if (not call.censored and call.memory_rss_eligible and call.memory_metric == "sampled_distinct_mm_rss"
-            and _valid_load_value(call.memory_peak_rss_bytes)):
-        values["memory_peak_rss_bytes"] = float(call.memory_peak_rss_bytes)
+    if not call.censored and call.cpu_peak_cores_eligible and call.cpu_peak_window_ms == 500:
+        if _valid_load_value(call.cpu_peak_cores):
+            values["cpu_peak_cores"] = float(call.cpu_peak_cores)
+    if not call.censored:
+        from clawtune_sidecar.monitoring.environment_memory import memory_labels
+        values.update(memory_labels(asdict(call)))
     if not call.censored and call.pmu_eligible:
         for target, value in (
+            ("pmu_cycles", call.pmu_cycles),
+            ("pmu_instructions", call.pmu_instructions),
+            ("pmu_llc_read_accesses", call.pmu_llc_read_accesses),
+            ("pmu_llc_read_misses", call.pmu_llc_read_misses),
             ("pmu_ipc", call.pmu_ipc),
             ("pmu_llc_mpki", call.pmu_llc_mpki),
             ("pmu_llc_miss_rate", call.pmu_llc_miss_rate),
+            ("pmu_llc_read_accesses_per_cpu_second", call.pmu_llc_read_accesses_per_cpu_second),
+            ("pmu_llc_read_misses_per_cpu_second", call.pmu_llc_read_misses_per_cpu_second),
         ):
             if target == "pmu_llc_miss_rate" and _valid_load_value(value) and value > 1:
                 continue
             if _valid_load_value(value):
                 values[target] = float(value)
     return {target: value for target, value in values.items()
-            if math.isfinite(value) and (value >= 0 or target == "peak_memory_mb")}
+            if math.isfinite(value) and (value >= 0)}
 
 
 def _valid_load_value(value: Any) -> bool:
@@ -402,7 +385,7 @@ class RuntimeToolResourceKB(_ReplayHistory):
             keys = _public_keys(call.tool_name, call.command)
             for target, value in _target_values(call).items():
                 for key in keys:
-                    accumulator[target].setdefault(key, []).append(value)
+                    accumulator[target].setdefault(_metric_key(target, key, call.memory_measurement), []).append(value)
         if not any(nodes for nodes in accumulator.values()):
             raise ValueError("fit corpus has no eligible labels")
         kb = cls()
@@ -454,20 +437,21 @@ class RuntimeToolResourceKB(_ReplayHistory):
             keys = _repo_keys(call.tool_name, call.command)
             for target, value in _target_values(call).items():
                 for key in keys:
-                    repo_targets[target].setdefault(key, []).append(value)
+                    repo_targets[target].setdefault(_metric_key(target, key, call.memory_measurement), []).append(value)
 
     def _levels(
-        self, repo: str, target: str, tool_name: str, command: str | None
+        self, repo: str, target: str, tool_name: str, command: str | None,
+        memory_measurement: str = "cgroup_v2_memory_current"
     ) -> Iterator[tuple[str, NodeKey, Sequence[float]]]:
         repo_nodes = self._repo.get(repo, {}).get(target, {})
         for key in _repo_keys(tool_name, command):
-            yield "repo", key, repo_nodes.get(key, ())
+            yield "repo", key, repo_nodes.get(_metric_key(target, key, memory_measurement), ())
         public_nodes = self._public[target]
         for key in _public_keys(tool_name, command):
-            yield "public", key, public_nodes.get(key, ())
+            yield "public", key, public_nodes.get(_metric_key(target, key, memory_measurement), ())
 
     def _select(
-        self, repo: str, target: str, tool_name: str, command: str | None
+        self, repo: str, target: str, tool_name: str, command: str | None, memory_measurement: str = "cgroup_v2_memory_current"
     ) -> tuple[Sequence[float], str, str, tuple[str, ...]]:
         """Baseline arbitration: first (deepest) non-empty node wins outright.
 
@@ -476,32 +460,19 @@ class RuntimeToolResourceKB(_ReplayHistory):
         """
 
         path: list[str] = []
-        for scope, (kind, _), values in self._levels(repo, target, tool_name, command):
+        for scope, (kind, _), values in self._levels(repo, target, tool_name, command, memory_measurement):
             path.append(f"{scope}:{kind}")
             if values:
                 return values, scope, kind, tuple(path)
         raise ValueError(f"no public global node for target {target!r}")
 
     def _predict_target(self, query: ToolCallQuery, target: str) -> TargetPrediction:
-        if target == "peak_memory_mb" and query.ambient_before_mb is None:
-            return TargetPrediction(
-                target=target,
-                conditional_p90=None,
-                scope=None,
-                key_kind=None,
-                evidence_count=0,
-                fallback_path=(),
-                note="memory prediction requires ambient_before_mb anchor",
-            )
         try:
-            values, scope, kind, path = self._select(query.repo, target, query.tool_name, query.command)
+            values, scope, kind, path = self._select(query.repo, target, query.tool_name, query.command, query.memory_measurement)
         except ValueError:
             return TargetPrediction(target, None, None, None, 0, (), "no continuous evidence for target")
         conditional_p90 = ecdf_quantile(values, _CONDITIONAL_P90_QUANTILE)
         note = None
-        if target == "peak_memory_mb":
-            conditional_p90 += float(query.ambient_before_mb)
-            note = "residual quantile plus query ambient_before_mb"
         return TargetPrediction(
             target=target,
             conditional_p90=conditional_p90,
@@ -527,7 +498,7 @@ class RuntimeToolResourceKB(_ReplayHistory):
             self._absorb_completed(query.ts_start)
         result = {}
         for target, source in LOAD_TARGET_SOURCES.items():
-            for scope, (kind, _), values in self._levels(query.repo, source, query.tool_name, query.command):
+            for scope, (kind, _), values in self._levels(query.repo, source, query.tool_name, query.command, query.memory_measurement):
                 # Unrelated tools are not workload predictions, even at cold start.
                 if kind == "global":
                     continue
@@ -540,7 +511,7 @@ class RuntimeToolResourceKB(_ReplayHistory):
     def predict_pmu_samples(self, query: ToolCallQuery) -> dict[str, dict[str, Any]]:
         """Return only quality-gated PMU evidence for online calibration.
 
-        This deliberately stays outside ``call_load.v1``: PMU observations
+        This deliberately stays outside ``call_load.v2``: PMU observations
         calibrate the KB without changing placement/admission semantics in the
         MVP.
         """
@@ -590,7 +561,7 @@ class RuntimeToolResourceKB(_ReplayHistory):
     def from_json_obj(cls, obj: Mapping[str, Any]) -> RuntimeToolResourceKB:
         """Restore a snapshot produced by :meth:`to_json_obj`."""
 
-        if obj.get("schema") not in {_SCHEMA, _LEGACY_RUNTIME_SCHEMA}:
+        if obj.get("schema") != _SCHEMA:
             raise ValueError(f"unsupported schema {obj.get('schema')!r}")
         if obj.get("quantile") != _CONDITIONAL_P90_QUANTILE:
             raise ValueError("snapshot quantile differs from module quantile")
@@ -616,20 +587,17 @@ class RuntimeToolResourceKB(_ReplayHistory):
         }
         for row in obj.get("pending", []):
             call = CompletedCall(**row)
-            if obj.get("schema") == _LEGACY_RUNTIME_SCHEMA:
-                call = replace(call, peak_cpu_cores=None, peak_cpu_cores_eligible=False,
-                               cpu_peak_window_ms=None, cpu_time_eligible=False, memory_rss_eligible=False)
             kb.observe_completed_call(call)
-        if obj.get("schema") == _LEGACY_RUNTIME_SCHEMA:
-            # v1 may contain averages mislabeled as peaks; do not reinterpret them.
-            for target in ("peak_cpu_cores", *[t for t in _ALL_TARGETS if t not in TARGETS]):
-                kb._public[target] = {}
-                for targets in kb._repo.values():
-                    targets[target] = {}
         last_query_ts = obj.get("last_query_ts")
         kb._last_query_ts = None if last_query_ts is None else float(last_query_ts)
         kb._restore_history(obj, {"exact_command", "tool_name"})
         return kb
+
+
+def _metric_key(target: str, key: NodeKey, measurement: str | None) -> NodeKey:
+    if "memory_" in target:
+        return key[0], str(measurement) + "\x1f" + key[1]
+    return key
 
 
 def _nodes_to_json(
@@ -649,20 +617,20 @@ def _nodes_from_json(
 # Clause latency bucket predictor
 # ==========================================================================
 
-_CLAUSE_SCHEMA = "runtime_clause_resource_kb_v5"
+_CLAUSE_SCHEMA = "runtime_clause_resource_kb_v6"
 _CLAUSE_MAX_DEPTH = 4  # frozen ordered argv-prefix depth budget
 _DELIM = "\x00"  # argv tokens may contain spaces; NUL cannot collide
 
 # Aggregated eBPF clause-observation value sources. Each is a per-clause
 # MEASURED metric (see ``tool_resource.clause_bridge``), not an eBPF exit field:
 #   latency_ms          -- clause wall interval;
-#   peak_cpu_cores       -- windowed peak CPU cores (never cpu_ns/wall_ns);
+#   cpu_peak_cores       -- windowed peak CPU cores (never cpu_ns/wall_ns);
 #   sampled_peak_rss_mb  -- max aligned distinct-mm RSS (never lifetime hiwater).
 _LATENCY_MS = "latency_ms"
-_PEAK_CPU_CORES = "peak_cpu_cores"
+_PEAK_CPU_CORES = "cpu_peak_cores"
 _SAMPLED_PEAK_RSS_MB = "sampled_peak_rss_mb"
 _CLAUSE_LOAD_SOURCES = {target: "load:" + target for target in LOAD_TARGET_SOURCES}
-_CLAUSE_SOURCES = (_LATENCY_MS, _PEAK_CPU_CORES, _SAMPLED_PEAK_RSS_MB, *_CLAUSE_LOAD_SOURCES.values())
+_CLAUSE_SOURCES = (_LATENCY_MS, _PEAK_CPU_CORES, *_CLAUSE_LOAD_SOURCES.values())
 
 
 @dataclass(frozen=True)
@@ -677,7 +645,7 @@ class ClauseObservation:
     ``None`` when its target-specific coverage was insufficient:
 
     - ``latency_ms``      -- clause wall interval;
-    - ``peak_cpu_cores``  -- windowed peak CPU cores over the owned lineage;
+    - ``cpu_peak_cores``  -- windowed peak CPU cores over the owned lineage;
     - ``sampled_peak_rss_mb`` -- max aligned distinct-mm RSS over the lineage.
 
     ``cpu_ns_cumulative`` is preserved as a separate raw field.
@@ -691,9 +659,15 @@ class ClauseObservation:
     ts_start: float
     ts_end: float
     latency_ms: float | None = None
-    peak_cpu_cores: float | None = None
+    cpu_peak_cores: float | None = None
     sampled_peak_rss_mb: float | None = None
     cpu_ns_cumulative: int | None = None  # raw, separate; never a flag source
+    memory_baseline_bytes: int | None = None
+    memory_total_peak_bytes: int | None = None
+    memory_extra_peak_bytes: int | None = None
+    memory_measurement: str | None = None
+    memory_environment_id: str | None = None
+    memory_eligible: bool = False
     in_loop: bool = False
     in_pipe: bool = False
     in_subst: bool = False
@@ -853,18 +827,19 @@ def _clause_value(obs: ClauseObservation, source: str) -> float | None:
         if obs.in_loop or obs.in_subst or is_pipeline_dependent_consumer(obs):
             return None
         target = source.removeprefix("load:")
-        values = {"duration_ms": obs.latency_ms, "cpu_peak_cores": obs.peak_cpu_cores,
-                  "memory_peak_rss_bytes": None if obs.sampled_peak_rss_mb is None else obs.sampled_peak_rss_mb * 1024**2,
+        values = {"duration_ms": obs.latency_ms, "cpu_peak_cores": obs.cpu_peak_cores,
                   "cpu_time_seconds": None if obs.cpu_ns_cumulative is None else obs.cpu_ns_cumulative / 1e9}
+        from clawtune_sidecar.monitoring.environment_memory import memory_labels
+        values.update(memory_labels(asdict(obs)))
         cpu = values["cpu_time_seconds"]
         values["cpu_avg_cores"] = (cpu / (obs.latency_ms / 1000)
                                    if _valid_load_value(cpu) and _valid_load_value(obs.latency_ms) and obs.latency_ms > 0 else None)
-        value = values[target]
+        value = values.get(target)
         return float(value) if _valid_load_value(value) else None
     if source == _LATENCY_MS:
         return obs.latency_ms
     if source == _PEAK_CPU_CORES:
-        return obs.peak_cpu_cores
+        return obs.cpu_peak_cores
     if source == _SAMPLED_PEAK_RSS_MB:
         return obs.sampled_peak_rss_mb
     raise ValueError(f"unknown clause value source {source!r}")
@@ -1033,6 +1008,8 @@ class ClauseResourceKB(_ReplayHistory):
             source: {} for source in _CLAUSE_SOURCES
         }
         for obs in observations:
+            from tool_resource.commands import normalized_observation
+            obs = normalized_observation(obs)
             if is_pipeline_dependent_consumer(obs):
                 continue
             keys = _clause_public_keys(obs.bin)
@@ -1041,7 +1018,7 @@ class ClauseResourceKB(_ReplayHistory):
                 if value is None:
                     continue
                 for key in keys:
-                    acc[source].setdefault(key, []).append(value)
+                    acc[source].setdefault(_metric_key(source, key, obs.memory_measurement), []).append(value)
         if not any(nodes for nodes in acc.values()):
             raise ValueError("fit corpus has no eligible clause evidence")
         kb = cls()
@@ -1056,6 +1033,8 @@ class ClauseResourceKB(_ReplayHistory):
 
         if self._frozen:
             return
+        from tool_resource.commands import normalized_observation
+        obs = normalized_observation(obs)
         if is_pipeline_dependent_consumer(obs):
             return
         self._observed_counts[_history_identity(obs)] += 1
@@ -1068,9 +1047,8 @@ class ClauseResourceKB(_ReplayHistory):
             return [_legacy_history_key(obs.repo, source, key, value)
                     for source in _CLAUSE_SOURCES
                     if (value := _clause_value(obs, source)) is not None]
-        eligible = (
-            obs for obs in observations if not is_pipeline_dependent_consumer(obs)
-        )
+        from tool_resource.commands import normalized_observation
+        eligible = (normalized_observation(obs) for obs in observations if not is_pipeline_dependent_consumer(obs))
         return self._merge_historical(eligible, project, self.observe_completed_clause)
 
     def _absorb_completed(self, ts_start: float) -> None:
@@ -1085,22 +1063,23 @@ class ClauseResourceKB(_ReplayHistory):
                 if value is None:
                     continue
                 for key in keys:
-                    repo_sources[source].setdefault(key, []).append(value)
+                    repo_sources[source].setdefault(_metric_key(source, key, obs.memory_measurement), []).append(value)
 
     def _select(
-        self, repo: str, source: str, bin_: str, argv: Sequence[str]
+        self, repo: str, source: str, bin_: str, argv: Sequence[str],
+        memory_measurement: str = "cgroup_v2_memory_current"
     ) -> tuple[Sequence[float], str, str, tuple[str, ...]] | None:
         repo_nodes = self._repo.get(repo, {}).get(source, {})
         public_nodes = self._public[source]
         path: list[str] = []
         for key in _clause_repo_keys(bin_, argv):
             path.append(f"repo:{key[0]}")
-            values = repo_nodes.get(key)
+            values = repo_nodes.get(_metric_key(source, key, memory_measurement))
             if values:
                 return values, "repo", key[0], tuple(path)
         for key in _clause_public_keys(bin_):
             path.append(f"public:{key[0]}")
-            values = public_nodes.get(key)
+            values = public_nodes.get(_metric_key(source, key, memory_measurement))
             if values:
                 return values, "public", key[0], tuple(path)
         return None
@@ -1119,7 +1098,8 @@ class ClauseResourceKB(_ReplayHistory):
                 continue
             targets = {}
             for target, source in _CLAUSE_LOAD_SOURCES.items():
-                selected = self._select(repo, source, str(clause["bin"]), clause["argv"])
+                selected = self._select(repo, source, str(clause["bin"]), clause["argv"],
+                                        clause.get("memory_measurement", "cgroup_v2_memory_current"))
                 if selected is not None:
                     values, scope, kind, _ = selected
                     if kind == "global":

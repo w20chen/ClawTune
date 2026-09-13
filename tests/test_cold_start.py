@@ -65,14 +65,13 @@ def test_flat_loader_units_and_unproven_call_resource_scope(tmp_path):
     path.write_text(trace("org__a-1"), encoding="utf-8")
     loaded = read_task(path, repo="org/a", task_id="org__a-1", rss_unit="MB")
     assert loaded.clauses[0].sampled_peak_rss_mb * 1024**2 == pytest.approx(6213632)
-    assert loaded.clauses[0].peak_cpu_cores == 3
+    assert loaded.clauses[0].cpu_peak_cores == 3
     assert loaded.calls[0].cpu_time_eligible is False
     assert loaded.call_actuals == [{
         "duration_ms": 1000.0,
         "cpu_time_seconds": 2.0,
         "cpu_avg_cores": 2.0,
         "cpu_peak_cores": 3.0,
-        "memory_peak_rss_bytes": pytest.approx(6213632),
     }]
     trusted = read_task(path, repo="org/a", task_id="org__a-1", rss_unit="MB", trust_call_cgroup=True)
     assert trusted.calls[0].cpu_time_seconds == 2 and trusted.calls[0].cpu_time_eligible

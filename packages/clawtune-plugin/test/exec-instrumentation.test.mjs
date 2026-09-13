@@ -620,3 +620,16 @@ test("buildSandboxExecEnvelope emits the bridge parseable format", () => {
   });
   assert.equal(envelope.slice(newline + 1), "echo hello\nworld");
 });
+
+test("buildSandboxExecEnvelope carries the selected call memory prediction", () => {
+  const callPrediction = {schema_version: "call_load.v2", scope: "tool_call", targets: {
+    memory_extra_peak_bytes: {status: "available", unit: "bytes", p90: 1048576},
+  }};
+  const envelope = buildSandboxExecEnvelope("true", "exec-memory", {
+    prediction: {call_prediction: callPrediction},
+  });
+  const firstLine = envelope.split("\n", 1)[0];
+  const encoded = firstLine.slice(`${CLAWBOX_EXEC_ENVELOPE_PREFIX}b64:`.length);
+  const header = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  assert.deepEqual(header.call_prediction, callPrediction);
+});

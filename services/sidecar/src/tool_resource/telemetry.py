@@ -4628,7 +4628,7 @@ class ClauseTelemetryCollector:
                 "ts_start": bridged.observation.ts_start,
                 "ts_end": bridged.observation.ts_end,
                 "latency_ms": bridged.observation.latency_ms,
-                "peak_cpu_cores": bridged.observation.peak_cpu_cores,
+                "peak_cpu_cores": bridged.observation.cpu_peak_cores,
                 "sampled_peak_rss_mb": bridged.observation.sampled_peak_rss_mb,
                 "cpu_ns_cumulative": bridged.observation.cpu_ns_cumulative,
                 "status": bridged.status,
