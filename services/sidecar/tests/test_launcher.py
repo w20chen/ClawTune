@@ -693,6 +693,25 @@ def test_started_report_allows_bounded_ebpf_cold_start(monkeypatch) -> None:
     ]
 
 
+def test_strict_claim_allows_bounded_sidecar_start_delay(monkeypatch) -> None:
+    attempts: list[tuple[str, float]] = []
+
+    def fake_post(
+        _endpoint: str,
+        path: str,
+        _payload: dict[str, Any],
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        attempts.append((path, timeout_seconds))
+        return {"stored": True}
+
+    monkeypatch.setattr(launcher, "_post_json_with_timeout", fake_post)
+    monkeypatch.setenv("CLAWTUNE_CGROUP_REQUIRED", "1")
+    launcher._post_json("http://sidecar", "/v2/executions/claim", {})
+    assert attempts == [("/v2/executions/claim", launcher._START_REPORT_TIMEOUT_SECONDS)]
+
+
 def test_launcher_claims_starts_and_returns_child_exit_code(monkeypatch) -> None:
     monkeypatch.setattr(launcher, "_detect_container_id", lambda: None)
     posts: list[tuple[str, dict[str, Any]]] = []

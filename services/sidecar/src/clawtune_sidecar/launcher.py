@@ -1030,11 +1030,12 @@ def _post_json_best_effort(endpoint: str, path: str, payload: dict[str, Any]) ->
 
 
 def _post_json(endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-    timeout_seconds = (
-        _start_report_timeout_seconds()
-        if path.endswith("/started")
-        else 10.0
-    )
+    if path.endswith("/started"):
+        timeout_seconds = _start_report_timeout_seconds()
+    elif path == "/v2/executions/claim" and _env_enabled("CLAWTUNE_CGROUP_REQUIRED"):
+        timeout_seconds = _START_REPORT_TIMEOUT_SECONDS
+    else:
+        timeout_seconds = 10.0
     return _post_json_with_timeout(
         endpoint,
         path,

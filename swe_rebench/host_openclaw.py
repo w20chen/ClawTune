@@ -1909,7 +1909,7 @@ def _openclaw_config(
                             "autoStartSidecar": False,
                             "sidecarCommand": "",
                             "mode": "observe",
-                            "decisionTimeoutMs": 800,
+                            "decisionTimeoutMs": 10000,
                             "reportTimeoutMs": 10000,
                             "failOpen": True,
                             "logLevel": "warn",

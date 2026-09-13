@@ -1007,6 +1007,7 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
         "call_count": 0,
         "ok_call_count": 0,
         "kb_eligible_call_count": 0,
+        "kb_eligible_no_runtime_exec_count": 0,
         "invalid_call_count": 0,
         "unavailable_call_count": 0,
         "non_ok_call_with_reason_count": 0,
@@ -1141,6 +1142,14 @@ def _inspect_tool_resource_artifacts(trace_dir: Path | None) -> dict[str, Any]:
                 )
             if eligible_for_kb:
                 report["kb_eligible_call_count"] += 1
+                if (
+                    call.get("clauses") == []
+                    and isinstance(call.get("no_runtime_exec"), list)
+                    and call["no_runtime_exec"]
+                ):
+                    # A command lookup failure can be fully observed by eBPF
+                    # without producing an executable clause or a KB row.
+                    report["kb_eligible_no_runtime_exec_count"] += 1
             if quality == "ok":
                 report["ok_call_count"] += 1
             elif quality == "invalid":
@@ -1654,11 +1663,13 @@ def _required_telemetry_error(
     trace_kb_updates = int(
         resources.get("launcher_tool_resource_eligible_span_ends", 0)
     )
-    expected_updates = 0 if config.runtime.kb_frozen else eligible_calls
+    no_runtime_calls = int(artifacts.get("kb_eligible_no_runtime_exec_count", 0))
+    expected_updates = 0 if config.runtime.kb_frozen else eligible_calls - no_runtime_calls
     if trace_kb_updates != expected_updates:
         return (
             "required eBPF Clause KB update accounting is inconsistent: "
-            f"{trace_kb_updates} trace updates != {expected_updates} expected updates (eligible={eligible_calls})"
+            f"{trace_kb_updates} trace updates != {expected_updates} expected updates "
+            f"(eligible={eligible_calls}, no_runtime_exec={no_runtime_calls})"
         )
     clause_count = int(artifacts.get("clause_count", 0))
     clauses_with_status = int(artifacts.get("clauses_with_status", 0))

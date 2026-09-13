@@ -1044,6 +1044,30 @@ def test_canonical_gate_accepts_migrated_seed_and_checks_update_accounting(tmp_p
     assert "KB update accounting" in _required_telemetry_error(config, result)
 
 
+def test_eligible_command_lookup_failure_needs_no_clause_kb_update(tmp_path):
+    trace_dir = tmp_path / "trace"
+    artifact_dir = trace_dir / "tool-resource"
+    artifact_dir.mkdir(parents=True)
+    artifact = _ebpf_artifact("call-1", clauses=[])
+    artifact["calls"][0]["no_runtime_exec"] = [
+        {"bin": "unzip", "mapping_evidence": "shell_command_lookup_failure_exact_head"}
+    ]
+    (artifact_dir / "exec-1.json").write_text(json.dumps(artifact), encoding="utf-8")
+    inspected = _inspect_tool_resource_artifacts(trace_dir)
+    assert inspected["kb_eligible_call_count"] == 1
+    assert inspected["kb_eligible_no_runtime_exec_count"] == 1
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("runtime:\n  mode: host-openclaw\n  ebpf_required: true\n", encoding="utf-8")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    config.runtime.kb_frozen = False
+    result = _host_prediction_result()
+    result["tool_resource_artifacts"] = inspected
+    result["resource_summary"]["launcher_tool_resource_eligible_span_ends"] = 0
+    result["resource_summary"].update(_inspect_call_prediction(tmp_path, _canonical_prediction()))
+    assert _required_telemetry_error(config, result) is None
+
+
 @pytest.mark.parametrize("damage", ["schema", "missing_target", "units", "histogram", "missing_envelope", "all_unavailable"])
 def test_canonical_gate_rejects_invalid_or_entirely_unavailable_predictions(tmp_path, damage):
     from clawtune_sidecar.prediction_config import load_bucket_edges
