@@ -155,6 +155,10 @@ class ProcessResourceSampler:
             if net is None:
                 return None, None
             return net[0], net[1]
+        if net_mode == "ignore":
+            # Polls do not consume these counters; avoid lazy BCC compilation
+            # and its global compile lock on the resource sampling thread.
+            return None, None
         accounting = self._net_accounting(scope)
         if accounting is not None and accounting.available:
             if net_mode == "reset":

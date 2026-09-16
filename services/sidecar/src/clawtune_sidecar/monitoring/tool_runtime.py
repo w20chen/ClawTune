@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import math
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Any
 
@@ -88,6 +89,8 @@ class RealtimeToolMonitor:
         self._stop = threading.Event()
         self._poller = threading.Thread(target=self._poll_active, daemon=True)
         self._poller.start()
+        self._memory_poller = threading.Thread(target=self._poll_memory, daemon=True)
+        self._memory_poller.start()
 
     def begin(self, request: ToolBeforeRequest, resource_class: str) -> None:
         key = correlation_key(request)
@@ -211,11 +214,10 @@ class RealtimeToolMonitor:
             rss_bytes_peak = max((point["rss_bytes"] for point in timeline
                                   if point.get("rss_bytes") is not None), default=None)
 
-        wall_started_at, wall_ended_at = _wall_times_from_duration(
-            start.captured_at,
-            end.captured_at,
-            completion.duration_ms,
-        )
+        # The last live process sample is not the tool's completion time.
+        # Anchor the action to the producer's event, before sidecar finalization.
+        wall_ended_at = datetime.fromisoformat(completion.occurred_at.replace("Z", "+00:00")).timestamp()
+        wall_started_at = wall_ended_at - max(0, completion.duration_ms) / 1000
         duration_s = completion.duration_ms / 1000 if completion.duration_ms > 0 else None
         cpu_delta = _delta_float(start.process_cpu_time_s, end.process_cpu_time_s)
         read_delta = _delta_int(start.read_bytes, end.read_bytes)
@@ -226,11 +228,18 @@ class RealtimeToolMonitor:
         # back to the last live net sample in the poll timeline for the window
         # aggregate (and the first live sample when the begin was unattributed).
         net_rx_delta, net_tx_delta = _net_window_delta(start, end, timeline)
-        cpu_avg_cores = _rate(cpu_delta, duration_s)
+        # The producer reports milliseconds. Allow only that rounding error,
+        # not sampling gaps or finalization overhead, in an action average.
+        cpu_window_aligned = (duration_s is not None
+            and abs(start.captured_at - wall_started_at) <= .001
+            and abs(end.captured_at - wall_ended_at) <= .001)
+        cpu_avg_cores = _rate(cpu_delta, duration_s) if cpu_window_aligned else None
         normalized_timeline = _relative_timeline(timeline)
-        memory = self.environment_memory.complete(correlation_key(active.request) if active else key)
+        memory = self.environment_memory.complete(correlation_key(active.request) if active else key,
+                                                  started_at=wall_started_at, ended_at=wall_ended_at)
         return ToolRuntimeSample(
-            cpu_peak_cores=_windowed_cpu_peak(timeline) if active is not None
+            cpu_peak_cores=_windowed_cpu_peak([p for p in timeline
+                if wall_started_at <= p["ts"] <= wall_ended_at]) if active is not None
                 and not timeline_truncated else None,
             environment_memory=memory,
             event_id=completion.event_id,
@@ -288,6 +297,8 @@ class RealtimeToolMonitor:
         self._stop.set()
         if self._poller is not threading.current_thread():
             self._poller.join(timeout=max(0.1, self.poll_interval_s * 2))
+        if self._memory_poller is not threading.current_thread():
+            self._memory_poller.join(timeout=max(0.1, self.poll_interval_s * 2))
 
     def bind_scope(
         self,
@@ -422,7 +433,6 @@ class RealtimeToolMonitor:
 
     def _poll_active(self) -> None:
         while not self._stop.wait(self.poll_interval_s):
-            self.environment_memory.poll()
             with self._lock:
                 items = list(self._active.items())
             for key, active in items:
@@ -454,6 +464,11 @@ class RealtimeToolMonitor:
                         resource_class=current.resource_class,
                         operation=current.operation,
                     )
+
+    def _poll_memory(self) -> None:
+        # Process-tree discovery and network BCC setup must not stall memory.
+        while not self._stop.wait(self.poll_interval_s):
+            self.environment_memory.poll()
 
 def _delta_int(start: int | None, end: int | None) -> int | None:
     if start is None or end is None:

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from typing import Any, Literal
+from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from clawtune_sidecar.contracts.load_prediction import CallLoadPrediction, LoadDiagnostics, PmuPrediction
 
 SCHEMA_VERSION = "clawtune.v1"
@@ -114,6 +115,20 @@ class ToolDecision(BaseModel):
 
 
 class ToolCompletedEvent(CommonEvent):
+    @field_validator("occurred_at")
+    @classmethod
+    def validate_completion_timestamp(cls, value: str) -> str:
+        # Reject before the completion handler removes active monitor state.
+        normalized = value[:-1] + "+00:00" if value.endswith(("Z", "z")) else value
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            raise ValueError("occurred_at must include a timezone")
+        try:
+            parsed.timestamp()
+        except (ValueError, OverflowError, OSError) as exc:
+            raise ValueError("occurred_at is outside the supported timestamp range") from exc
+        return normalized
+
     tool_call_id: str | None
     decision_id: str | None
     lease_id: str | None

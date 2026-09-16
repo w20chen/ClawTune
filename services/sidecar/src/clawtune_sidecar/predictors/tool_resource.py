@@ -1729,7 +1729,8 @@ def completed_call_from_completion(
            if k in {"memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes",
                     "memory_measurement", "memory_environment_id", "memory_eligible"}},
         cpu_time_seconds=sample.cpu_time_delta_s,
-        cpu_time_eligible=not exclude_resource_labels and sample.cpu_time_delta_s is not None,
+        cpu_time_eligible=(not exclude_resource_labels and sample.cpu_time_delta_s is not None
+                           and sample.cpu_utilization_avg_cores is not None),
         pmu_cycles=pmu.get("cycles"),
         pmu_instructions=pmu.get("instructions"),
         pmu_llc_read_accesses=pmu.get("llc_read_accesses"),
@@ -1846,7 +1847,8 @@ def _completed_call_from_tool_span(
                                  and resources.get("cpu_peak_window_ms") == 500),
         cpu_peak_window_ms=resources.get("cpu_peak_window_ms"),
         cpu_time_seconds=_optional_float(resources.get("cpu_time_s", resources.get("cpu_time_delta_s"))),
-        cpu_time_eligible=not exclude_resource_labels,
+        cpu_time_eligible=(not exclude_resource_labels
+            and _trace_cpu_window_aligned(resources, ts_start, ts_end)),
         memory_baseline_bytes=resources.get("memory_baseline_bytes"),
         memory_total_peak_bytes=resources.get("memory_total_peak_bytes"),
         memory_extra_peak_bytes=resources.get("memory_extra_peak_bytes"),
@@ -1864,6 +1866,15 @@ def _completed_call_from_tool_span(
         pmu_llc_miss_rate=pmu["llc_miss_rate"],
         pmu_eligible=pmu["eligible"],
     )
+
+
+def _trace_cpu_window_aligned(resources: dict[str, Any], start: float, end: float) -> bool:
+    # Re-check the window on replay, including traces written by older collectors.
+    first = _ns_to_s(resources.get("monitor_start_wall_time_ns"))
+    last = _ns_to_s(resources.get("monitor_end_wall_time_ns"))
+    return (end > start and first is not None and last is not None
+            and abs(first - start) <= .001
+            and abs(last - end) <= .001)
 
 
 def _sample_resources_usable(sample: ToolRuntimeSample) -> bool:

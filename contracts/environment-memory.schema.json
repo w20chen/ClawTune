@@ -1,14 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://clawtune.dev/contracts/environment-memory.schema.json",
-  "title": "Eligible environment memory observation",
+  "title": "Environment memory observation and availability",
   "type": "object",
   "required": [
-    "memory_baseline_bytes",
-    "memory_total_peak_bytes",
-    "memory_extra_peak_bytes",
-    "memory_measurement",
-    "memory_environment_id",
     "memory_eligible"
   ],
   "properties": {
@@ -35,8 +30,38 @@
       "minLength": 1
     },
     "memory_eligible": {
-      "const": true
+      "type": "boolean"
+    },
+    "memory_unavailable_reason": {
+      "type": "string",
+      "enum": [
+        "unverified_task_environment",
+        "execution_window_unavailable",
+        "overlapping_environment_calls",
+        "baseline_after_execution_start",
+        "stale_memory_baseline",
+        "no_in_execution_memory_sample",
+        "memory_sampling_gap",
+        "memory_timeline_truncated"
+      ]
     }
   },
-  "description": "Bytes within one unchanged execution environment. Total is the sampled maximum including its background; extra=max(0,total-baseline). Baseline is sampled before execution. RSS is diagnostic only. Concurrent unowned workloads cannot produce eligible per-clause labels."
+  "oneOf": [
+    {
+      "properties": {"memory_eligible": {"const": true}},
+      "required": ["memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes", "memory_measurement", "memory_environment_id"],
+      "not": {"required": ["memory_unavailable_reason"]}
+    },
+    {
+      "properties": {
+        "memory_eligible": {"const": false},
+        "memory_baseline_bytes": false,
+        "memory_total_peak_bytes": false,
+        "memory_extra_peak_bytes": false,
+        "memory_timeline": false
+      },
+      "required": ["memory_unavailable_reason"]
+    }
+  ],
+  "description": "Bytes within one verified task container or exclusive execution cgroup. Total is the sampled maximum strictly after the action start and no later than its completion event; extra=max(0,total-baseline). Baseline is the latest sample at or before action start, at most 150ms old. At least one in-window sample is required and no boundary or consecutive sampling gap may exceed 150ms. Overlapping monitored environment calls are ineligible. The environment includes background processes and charged cache; extra is incremental environment usage, not exclusive allocation by a process. Host service cgroups and post-completion samples are excluded. RSS is diagnostic only. Unavailable observations carry memory_eligible=false and memory_unavailable_reason instead of these eligible labels."
 }

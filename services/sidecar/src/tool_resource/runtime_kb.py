@@ -194,7 +194,10 @@ def _target_values(call: CompletedCall) -> dict[str, float]:
     """Eligible per-target values; an ineligible target is skipped alone."""
 
     values: dict[str, float] = {}
-    if not call.censored:
+    # The completion protocol uses zero for missing/sub-millisecond duration.
+    # Neither is a usable zero-latency training observation. Other targets
+    # (notably independently measured PMU) retain their own eligibility.
+    if not call.censored and call.ts_end > call.ts_start:
         values["latency_ms"] = (call.ts_end - call.ts_start) * 1000.0
     if not call.censored and call.cpu_time_eligible and _valid_load_value(call.cpu_time_seconds):
         values["cpu_time_seconds"] = float(call.cpu_time_seconds)

@@ -2480,6 +2480,8 @@ def test_resource_label_quality_online_offline_parity(quality, points, overlap):
     end = {"name": "exec", "status": {"code": "ok"}, "duration_ns": "1200000000",
         "wall_time_ns": "1001200000000", "resources": {"sampling_quality": quality,
         "sampling_point_count": points, "coverage_ratio": 1.0 if overlap else 0.0,
+        "monitor_start_wall_time_ns": str(int(sample.monitor_start_wall_s * 1e9)),
+        "monitor_end_wall_time_ns": str(int(sample.monitor_end_wall_s * 1e9)),
         "cpu_time_s": 1.0, "rss_peak_bytes": 104857600, "memory_rss_bytes_before": 10}}
     offline = tool_resource_predictor._completed_call_from_tool_span(None, end, repo="repo")
     usable = quality == "ok" and points >= 2 and overlap

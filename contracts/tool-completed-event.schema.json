@@ -13,7 +13,7 @@
         "lease_id": {"type": ["string", "null"]},
         "execution_id": {"type": ["string", "null"]},
         "tool_name": {"type": "string", "minLength": 1},
-        "duration_ms": {"type": "integer", "minimum": 0},
+        "duration_ms": {"type": "integer", "minimum": 0, "description": "Producer-reported action duration in milliseconds. Zero may mean unavailable or below clock resolution and must not be learned as a zero-latency observation."},
         "plugin_window_ns": {"type": ["string", "null"], "pattern": "^[0-9]+$"},
         "tool_body_ns": {"type": ["string", "null"], "pattern": "^[0-9]+$"},
         "decision_duration_ns": {"type": ["string", "null"], "pattern": "^[0-9]+$"},

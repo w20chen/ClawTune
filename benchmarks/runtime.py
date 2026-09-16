@@ -45,7 +45,13 @@ def execute(task: Task, config, assets: Path, run_dir: Path, port: int):
     return _execute_bridged(task, config, run_dir, port, trace)
 
 
-def flush_all_kb_updates(port: int, runtime_ids: list[str], *, timeout_seconds: float = 60.0) -> None:
+def flush_all_kb_updates(
+    port: int,
+    runtime_ids: list[str],
+    *,
+    gateway_id: str = "swe-rebench",
+    timeout_seconds: float = 60.0,
+) -> None:
     """Drain every producer before placing one KB durability barrier.
 
     A worker returning (possibly with a drain error) does not prove that its
@@ -59,14 +65,14 @@ def flush_all_kb_updates(port: int, runtime_ids: list[str], *, timeout_seconds: 
     deadline = time.monotonic() + timeout_seconds
     for runtime_id in dict.fromkeys(runtime_ids):
         host._drain_runtime(
-            port, runtime_id, gateway_id="swe-rebench",
+            port, runtime_id, gateway_id=gateway_id,
             timeout_seconds=max(0.0, deadline - time.monotonic()),
             flush_kb=False,
         )
     host._drain_runtime(
         port,
         runtime_ids[-1],
-        gateway_id="swe-rebench",
+        gateway_id=gateway_id,
         timeout_seconds=max(0.0, deadline - time.monotonic()),
         flush_kb=True,
     )
@@ -106,7 +112,9 @@ def _execute_bridged(task, config, run_dir, port, trace):
     try:
         backend = BFCLBackend(task, run_dir) if task.kind == "functions" else TerminalBackend(
             task, run_dir, deadline=deadline, platform=config.docker.platform,
-            sidecar_port=port, runtime_id=runtime_id, repo=config.kb_repo,
+            sidecar_port=port, runtime_id=runtime_id, gateway_id=getattr(
+                config, "benchmark_gateway_id", "swe-rebench"
+            ), repo=config.kb_repo,
             telemetry_required=config.runtime.ebpf_required,
             build_timeout_seconds=getattr(config.docker, "build_timeout_seconds", 1800))
     except TerminalCaseBuildFailure as exc:
@@ -167,7 +175,7 @@ def _execute_bridged(task, config, run_dir, port, trace):
                 # Only assert sandbox cleanup after Compose down succeeds.
                 backend.close()
                 host._observe_best_effort(trace, "runtime_finalization", lambda: host._abort_runtime(
-                    port, runtime_id, gateway_id="swe-rebench",
+                    port, runtime_id, gateway_id=getattr(config, "benchmark_gateway_id", "swe-rebench"),
                     reason=("agent_timeout" if exit_code == 124 else
                             "cancelled" if exit_code == -1 else "runtime_stopped"),
                     trace_dir=trace,
@@ -175,7 +183,7 @@ def _execute_bridged(task, config, run_dir, port, trace):
             host._observe_best_effort(trace, "runtime_drain", lambda: host._drain_runtime(
                 port,
                 runtime_id,
-                gateway_id="swe-rebench",
+                gateway_id=getattr(config, "benchmark_gateway_id", "swe-rebench"),
                 flush_kb=False,
             ))
         finally:

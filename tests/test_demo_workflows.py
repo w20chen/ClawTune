@@ -360,7 +360,7 @@ def test_runner_runs_concurrently_and_flushes_async_kb_once(monkeypatch, tmp_pat
         with lock:
             active -= 1
         return SimpleNamespace(task_id=task.task_id, exit_code=0)
-    def flush_all_kb_updates(port, runtime_ids):
+    def flush_all_kb_updates(port, runtime_ids, *, gateway_id="swe-rebench"):
         assert len(set(runtime_ids)) == 2 * parallelism
         path = tmp_path / "run/kb"
         assert set(pending) == {str(i) for i in range(2 * parallelism)}
@@ -490,7 +490,7 @@ def test_runner_failure_cancels_workers_and_preserves_report(monkeypatch, tmp_pa
         assert set(cleaned) == set(starts)
         stopped.append(process)
 
-    def flush(port, runtime_ids):
+    def flush(port, runtime_ids, *, gateway_id="swe-rebench"):
         barriers.append(runtime_ids)
         raise RuntimeError("real runtime did not drain")
 
@@ -604,7 +604,7 @@ def test_terminal_build_failures_do_not_abort_the_batch(monkeypatch, tmp_path):
         started.append(task.task_id)
         raise backends.TerminalCaseBuildFailure("compose up failed; cleanup succeeded")
     monkeypatch.setattr(backends, "TerminalBackend", build)
-    monkeypatch.setattr(runtime, "flush_all_kb_updates", lambda port, ids: barriers.append(ids))
+    monkeypatch.setattr(runtime, "flush_all_kb_updates", lambda port, ids, **_: barriers.append(ids))
     tasks = [Task("terminal-bench", name, "system", "terminal", "work",
                   payload={"task_path": str(tmp_path / "inputs" / name)})
              for name in ("first", "second")]

@@ -1008,7 +1008,7 @@ def test_internal_tool_prefers_shared_sandbox_over_shared_runtime_scope(
     completion = {
         "schema_version": "clawtune.v1",
         "event_id": "evt-read-end",
-        "occurred_at": "2026-07-16T03:23:01Z",
+        "occurred_at": datetime.now(timezone.utc).isoformat(),
         "plugin_version": "0.1.0",
         "run_id": "run-sandbox",
         "session_id": "session-sandbox",
@@ -2338,7 +2338,7 @@ def test_owned_cgroup_survives_exited_until_completion_final_snapshot(
             json={
                 "schema_version": "clawtune.v1",
                 "event_id": "evt-owned-end",
-                "occurred_at": "2026-07-16T03:23:01Z",
+                "occurred_at": datetime.now(timezone.utc).isoformat(),
                 "plugin_version": "0.1.0",
                 "run_id": "run-exec",
                 "session_id": "session-exec",
@@ -3202,7 +3202,7 @@ def test_agent_test_bench_trace_jsonl_records_tool_and_model_events(tmp_path: Pa
     completion = {
         "schema_version": "clawtune.v1",
         "event_id": "evt-trace-after",
-        "occurred_at": "2026-07-16T03:23:02Z",
+        "occurred_at": datetime.now(timezone.utc).isoformat(),
         "plugin_version": "0.1.0",
         "run_id": "run-trace",
         "session_id": "session-trace",

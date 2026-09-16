@@ -3,6 +3,7 @@ from dataclasses import replace
 import json
 from pathlib import Path
 import threading
+from itertools import count
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -63,18 +64,23 @@ def test_overlap_never_duplicates_environment_peak_into_two_clauses():
     assert one["memory_extra_peak_bytes"] == 200
 
 
-def test_eight_independent_environments_and_overlapping_calls(tmp_path):
+def test_eight_independent_environments_and_overlapping_calls(tmp_path, monkeypatch):
+    # Distinct sample timestamps even on coarse-resolution Windows clocks.
+    ticks = count(1_000_000)
+    monkeypatch.setattr("clawtune_sidecar.monitoring.environment_memory.time.time", lambda: next(ticks) / 100_000)
     monitor = EnvironmentMemoryMonitor()
     from types import SimpleNamespace
     def worker(i):
         path = tmp_path / str(i); path.mkdir(); (path / "memory.current").write_text("100")
-        monitor.begin(i, SimpleNamespace(cgroup_path=str(path)))
+        monitor.begin(i, SimpleNamespace(cgroup_path=str(path), container_id=str(i)))
+        started = monitor._active[i]["points"][0][0]
         (path / "memory.current").write_text(str(200 + i)); monitor.poll()
-        return monitor.complete(i)
+        ended = monitor._active[i]["points"][-1][0]
+        return monitor.complete(i, started_at=started, ended_at=ended)
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(worker, range(8)))
     assert [r["memory_extra_peak_bytes"] for r in results] == list(range(100, 108))
-    scope = SimpleNamespace(cgroup_path=str(tmp_path / "0"))
+    scope = SimpleNamespace(cgroup_path=str(tmp_path / "0"), container_id="0")
     monitor.begin("a", scope); monitor.begin("b", scope)
     assert monitor.complete("a")["memory_eligible"] is False
     assert monitor.complete("b")["memory_eligible"] is False
@@ -147,7 +153,7 @@ def test_environment_is_polled_on_every_monitor_iteration():
     monitor._lock = threading.RLock()
     monitor._active = {}
     monitor.environment_memory = SimpleNamespace(poll=lambda: polls.append(1))
-    monitor._poll_active()
+    monitor._poll_memory()
     assert len(polls) == 3
 
 

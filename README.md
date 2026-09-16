@@ -15,3 +15,5 @@ Read the [technical report](docs/technical-report.md) for the system design, mea
 The repository contains configuration templates, protocols, test fixtures, and a small initialization prior.
 
 [JSON Schemas](contracts/) define the public protocol.
+
+See the [tool profile field reference](docs/tool-profile.md) for all measured resource and prediction targets, sampling cadence, units, attribution boundaries, and unavailable values.

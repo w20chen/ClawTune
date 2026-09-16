@@ -97,6 +97,10 @@ def run(
     config.runtime.mode = "host-openclaw"
     config.runtime.kb_frozen = False
     config.runtime.ebpf_required = _benchmark_requires_ebpf(tasks[0])
+    # Runtime assets and sidecar routing are run-owned.  Keeping the benchmark
+    # identity on the copied config lets host-openclaw use the same identity for
+    # trace routing, runtime scope APIs and completion finalization.
+    config.benchmark_gateway_id = tasks[0].benchmark
     config.batch.retry_failed = 0
     selected_parallelism = (
         config.batch.parallelism if parallelism is None else parallelism
@@ -149,6 +153,13 @@ def run(
     config.output.trace_root = folder / "traces"
     config.output.report_path = folder / "report.json"
     config.output.flat_export_dir = None
+    # prepare.build_runtime_assets removes and recreates its destination.  A
+    # fixed config-level path therefore lets two independent benchmark runs
+    # overwrite one another while they are active.  Scope the staged assets to
+    # this immutable run directory instead.
+    runtime_assets_config = getattr(config, "runtime_assets", None)
+    if runtime_assets_config is not None:
+        runtime_assets_config.output_dir = str(folder / "runtime-assets")
     if resume is None:
         initialize_state(
             folder / "kb",
@@ -380,7 +391,11 @@ def run(
         # deliberately coalesced by the sidecar's single writer and forced once
         # here, after all producers have finished.
         try:
-            flush_all_kb_updates(port, runtime_ids)
+            flush_all_kb_updates(
+                port,
+                runtime_ids,
+                gateway_id=getattr(config, "benchmark_gateway_id", "swe-rebench"),
+            )
             manifest["kb_flush_complete"] = True
             manifest["kb_final_generation"] = committed_state(folder / "kb")["generation"]
         except Exception as exc:

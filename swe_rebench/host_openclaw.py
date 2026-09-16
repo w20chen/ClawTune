@@ -69,6 +69,12 @@ _LOCAL_PROXY_API_KEY = "clawtune-local-proxy"
 _RUNTIME_PROXY_API_KEY_PREFIX = "clawtune-runtime."
 _BENCHMARK_GATEWAY_ID = "swe-rebench"
 
+
+def _gateway_id(config: RunnerConfig | None) -> str:
+    """Return the run's benchmark identity, preserving direct-run defaults."""
+    value = getattr(config, "benchmark_gateway_id", None) if config is not None else None
+    return value if isinstance(value, str) and value else _BENCHMARK_GATEWAY_ID
+
 _TOOL_RESOURCE_KB_SCHEMAS = {
     "runtime-tool-resource-kb.json": "runtime_tool_resource_kb_v3",
     "clause-resource-kb.json": "runtime_clause_resource_kb_v6",
@@ -134,6 +140,7 @@ def run_host_openclaw_task(
     drains and snapshots its runtime-specific output.
     """
     started = time.monotonic()
+    gateway_id = _gateway_id(config)
     deadline = _task_deadline(config, started)
     trace_dir.mkdir(parents=True, exist_ok=True)
     workspace = _task_workspace(config, task)
@@ -310,7 +317,7 @@ def run_host_openclaw_task(
             try:
                 timeout_record = _read_json_object(trace_dir / "task-timeout.json") or {}
                 _abort_runtime(
-                    sidecar_port, _runtime_id(workspace), gateway_id=_BENCHMARK_GATEWAY_ID,
+                    sidecar_port, _runtime_id(workspace), gateway_id=gateway_id,
                     reason=("cancelled" if agent_cancelled else
                             "agent_timeout" if timeout_record.get("scope") == "agent" else "task_timeout"),
                     trace_dir=trace_dir,
@@ -323,7 +330,7 @@ def run_host_openclaw_task(
                 _drain_runtime(
                     sidecar_port,
                     runtime_id,
-                    gateway_id=_BENCHMARK_GATEWAY_ID,
+                    gateway_id=gateway_id,
                     flush_kb=getattr(config, "flush_kb_on_task_drain", True),
                 )
             except Exception as exc:
@@ -350,7 +357,7 @@ def run_host_openclaw_task(
                 _delete_runtime_scope(
                     sidecar_port,
                     runtime_id,
-                    gateway_id=_BENCHMARK_GATEWAY_ID,
+                    gateway_id=gateway_id,
                 )
         try:
             if not sandbox_stopped:
@@ -953,7 +960,7 @@ def _start_sidecar(
     if trace_paths is None and sandbox_container_prefix != "":
         trace_paths = {_runtime_id(workspace): trace_dir / "trace.jsonl"}
     env["CLAWTUNE_TRACE_RUNTIME_PATHS"] = json.dumps({
-        json.dumps([_BENCHMARK_GATEWAY_ID, runtime], separators=(",", ":")): str(path.resolve())
+        json.dumps([_gateway_id(config), runtime], separators=(",", ":")): str(path.resolve())
         for runtime, path in (trace_paths or {}).items()
     })
     scheduler_src = str(config.repo_root / "services" / "sidecar" / "src")
@@ -2186,7 +2193,7 @@ def _openclaw_env(
             "CLAWTUNE_LAUNCH_MODE": "fork-exec",
             "CLAWTUNE_LAUNCH_DEBUG": "0",
             "CLAWTUNE_RUNTIME_ID": _runtime_id(workspace) if workspace is not None else "",
-            "CLAWTUNE_GATEWAY_ID": _BENCHMARK_GATEWAY_ID,
+            "CLAWTUNE_GATEWAY_ID": _gateway_id(config),
             "CLAWTUNE_REPO_KEY": _runtime_id(workspace) if workspace is not None else "openclaw",
         }
     )
@@ -2233,7 +2240,7 @@ def _discover_sandbox_scope_loop(
                     sidecar_port,
                     scope,
                     runtime_id=_runtime_id(workspace),
-                    gateway_id=_BENCHMARK_GATEWAY_ID,
+                    gateway_id=_gateway_id(config),
                 )
                 seen.add(container_id)
                 _write_text(

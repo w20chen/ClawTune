@@ -27,6 +27,24 @@ def test_task_tool_contracts_are_isolated_and_preserve_source(tmp_path):
     assert json.loads((source / "openclaw.plugin.json").read_text()) == original
 
 
+def test_host_openclaw_uses_run_benchmark_gateway_identity(tmp_path):
+    from swe_rebench.host_openclaw import _gateway_id, _openclaw_env
+
+    config = SimpleNamespace(
+        benchmark_gateway_id="terminal-bench",
+        docker=SimpleNamespace(cgroup_required=False, platform=""),
+        llm=SimpleNamespace(
+            upstream_base_url="http://example.invalid",
+            api_key="test-key",
+            model="test-model",
+        ),
+        runtime=SimpleNamespace(ebpf_required=False, kb_frozen=False),
+    )
+    assert _gateway_id(config) == "terminal-bench"
+    env = _openclaw_env(tmp_path / "home", 8765, config, tmp_path / "workspace")
+    assert env["CLAWTUNE_GATEWAY_ID"] == "terminal-bench"
+
+
 def test_terminal_compose_failure_preserves_live_diagnostics(monkeypatch, tmp_path):
     import subprocess
     from benchmarks import backends

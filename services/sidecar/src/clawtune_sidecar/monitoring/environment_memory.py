@@ -10,6 +10,9 @@ import time
 from collections import deque
 
 
+MAX_MEMORY_TIMELINE_POINTS = 20_000
+
+
 @dataclass(frozen=True)
 class EnvironmentMemory:
     baseline_bytes: int
@@ -83,8 +86,13 @@ def clause_memory_labels(environment: Mapping[str, Any], clauses: Sequence[Mappi
         overlap = any(j != i and other.get("ts_start", end) < end
                       and other.get("ts_end", start) > start for j, other in enumerate(clauses))
         before = [(t, v) for t, v in points if t <= start]
-        inside = [v for t, v in points if start <= t <= end]
+        inside_points = [(t, v) for t, v in points if start < t <= end]
+        inside = [v for _, v in inside_points]
         if not before or start - before[-1][0] > .15 or not inside:
+            results.append({})
+            continue
+        window = [start, *[t for t, _ in inside_points], end]
+        if any(b < a or b - a > .15 for a, b in zip(window, window[1:])):
             results.append({})
             continue
         label = environment_memory(baseline=before[-1][1], values=inside,
@@ -101,6 +109,7 @@ class EnvironmentMemoryMonitor:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._active: dict[Any, dict[str, Any]] = {}
+        self._unavailable: dict[Any, str] = {}
 
     @staticmethod
     def _read(path: str) -> int | None:
@@ -114,17 +123,26 @@ class EnvironmentMemoryMonitor:
         path = getattr(scope, "cgroup_path", None)
         if not path or Path(path).as_posix().rstrip("/") in {"/sys/fs/cgroup", "/sys/fs/cgroup/unified"}:
             return
+        # Host service cgroups (e.g. sshd.service) are not task environments.
+        if not (getattr(scope, "container_id", None) or
+                getattr(scope, "attribution_source", None) == "exclusive-execution-cgroup"):
+            with self._lock:
+                self._unavailable[key] = "unverified_task_environment"
+            return
         value = self._read(path)
         if value is None:
             return
         with self._lock:
             if key in self._active:
                 return
+            self._unavailable.pop(key, None)
             overlap = [row for row in self._active.values() if Path(row["path"]).is_relative_to(Path(path)) or Path(path).is_relative_to(Path(row["path"]))]
             for row in overlap:
                 row["exclusive"] = False
             self._active[key] = {"path": path, "baseline": value,
-                                 "points": deque([(time.time(), value)], maxlen=20000), "peak": value, "polls": 0, "exclusive": not overlap}
+                                 "points": deque([(time.time(), value)], maxlen=MAX_MEMORY_TIMELINE_POINTS),
+                                 "timeline_truncated": False, "peak": value, "polls": 0,
+                                 "exclusive": not overlap}
 
     def poll(self) -> None:
         with self._lock:
@@ -132,29 +150,61 @@ class EnvironmentMemoryMonitor:
                 value = self._read(row["path"])
                 if value is not None:
                     row["polls"] += 1
+                    if len(row["points"]) == row["points"].maxlen:
+                        row["timeline_truncated"] = True
                     row["points"].append((time.time(), value))
                     row["peak"] = max(row["peak"], value)
 
-    def complete(self, key: Any) -> dict[str, Any] | None:
+    def complete(self, key: Any, *, started_at: float | None = None,
+                 ended_at: float | None = None) -> dict[str, Any] | None:
         with self._lock:
             row = self._active.pop(key, None)
+            reason = self._unavailable.pop(key, None)
+        if reason:
+            return {"memory_eligible": False, "memory_unavailable_reason": reason}
         if row is None:
             return None
-        value = self._read(row["path"])
-        if value is not None:
-            row["points"].append((time.time(), value))
-            row["peak"] = max(row["peak"], value)
-        if row["polls"] == 0:
-            return {"memory_eligible": False, "memory_unavailable_reason": "no_in_execution_memory_sample"}
+        if row.get("timeline_truncated"):
+            return {"memory_eligible": False, "memory_unavailable_reason": "memory_timeline_truncated"}
+        # Completion processing can run seconds after the payload finished.
+        # Never use a fresh completion-time read as an execution peak.
+        points = list(row["points"])
+        reason = None
+        if (started_at is None or ended_at is None
+                or not math.isfinite(started_at) or not math.isfinite(ended_at)
+                or ended_at <= started_at):
+            reason = "execution_window_unavailable"
+        elif not row["exclusive"]:
+            reason = "overlapping_environment_calls"
+        elif points[0][0] > started_at:
+            reason = "baseline_after_execution_start"
+        elif started_at - points[0][0] > .15:
+            # Use the latest pre-start sample below, if it is fresh enough.
+            before = [p for p in points if p[0] <= started_at]
+            if not before or started_at - before[-1][0] > .15:
+                reason = "stale_memory_baseline"
+        before = [p for p in points if started_at is not None and p[0] <= started_at]
+        inside = [p for p in points if started_at is not None and ended_at is not None
+                  and started_at < p[0] <= ended_at]
+        if reason is None:
+            if not inside:
+                reason = "no_in_execution_memory_sample"
+            else:
+                window = [started_at, *[p[0] for p in inside], ended_at]
+                if any(b < a or b - a > .15 for a, b in zip(window, window[1:])):
+                    reason = "memory_sampling_gap"
+        if reason:
+            return {"memory_eligible": False, "memory_unavailable_reason": reason}
         result = environment_memory(
-            baseline=row["baseline"], values=[row["peak"]],
+            baseline=before[-1][1], values=[p[1] for p in inside],
             environment_id=row["path"], measurement="cgroup_v2_memory_current",
             baseline_before_start=True, exclusive=row["exclusive"],
         )
         if result is None:
             return {"memory_eligible": False, "memory_unavailable_reason": "overlapping_environment_calls"}
-        return {**result.fields(), "memory_timeline": list(row["points"])}
+        return {**result.fields(), "memory_timeline": [before[-1], *inside]}
 
     def discard(self, key: Any) -> None:
         with self._lock:
             self._active.pop(key, None)
+            self._unavailable.pop(key, None)
