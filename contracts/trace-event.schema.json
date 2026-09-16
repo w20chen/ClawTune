@@ -13,10 +13,12 @@
   ],
   "properties": {
     "schema_version": {
-      "const": 6
+      "const": 6,
+      "description": "Trace JSONL record schema version."
     },
     "record_type": {
-      "const": "trace_event"
+      "const": "trace_event",
+      "description": "Discriminator for a supplemental trace event rather than a span or metadata record."
     },
     "event_type": {
       "enum": [
@@ -24,43 +26,52 @@
         "incomplete_span",
         "llm_proxy_unmatched",
         "runtime_finalization"
-      ]
+      ],
+      "description": "Supplemental event kind: finalized execution telemetry, an unclosed span input, an unmatched LLM proxy call, or runtime cleanup/finalization."
     },
     "gateway_id": {
       "type": [
         "string",
         "null"
-      ]
+      ],
+      "description": "Gateway owner identifier, or null when it cannot be uniquely recovered."
     },
     "runtime_id": {
       "type": [
         "string",
         "null"
-      ]
+      ],
+      "description": "Runtime owner identifier, or null when unavailable."
     },
     "execution_id": {
-      "type": "string"
+      "type": "string",
+      "description": "Execution identifier for execution_telemetry events."
     },
     "payload": {
-      "type": "object"
+      "type": "object",
+      "description": "Event-specific payload. Its stable fields are documented by event_type in docs/tool-profile.md."
     },
     "artifact": {
-      "type": "object"
+      "type": "object",
+      "description": "Optional clause_telemetry_v2 artifact inlined from payload.artifact_path for durable, self-contained execution telemetry."
     },
     "kind": {
       "enum": [
         "tool",
         "llm"
-      ]
+      ],
+      "description": "Span kind for incomplete_span events."
     },
     "reason": {
-      "type": "string"
+      "type": "string",
+      "description": "Why an incomplete or unmatched event was finalized."
     },
     "prediction": {
       "type": [
         "object",
         "null"
-      ]
+      ],
+      "description": "Optional tool prediction retained with an incomplete tool span."
     }
   },
   "additionalProperties": false

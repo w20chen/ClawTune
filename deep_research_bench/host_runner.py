@@ -26,16 +26,16 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from swe_rebench.cancellation import TaskCancelled
+from swe_rebench.cancellation import TaskCancelled, run_command
 from swe_rebench.config import RunnerConfig
 from swe_rebench.docker import (
     ContainerResult,
-    get_docker_client,
     local_image_available,
     pull_image,
 )
 from swe_rebench.host_openclaw import (
     TaskDeadlineExceeded,
+    ContainerCleanupError,
     _TASK_CLEANUP_TIMEOUT_SECONDS,
     _abort_runtime,
     _cleanup_openclaw_sandbox_containers,
@@ -101,7 +101,7 @@ def run_drb_task(
         _install_sandbox_runtime(workspace, runtime_assets_dir)
         _write_drb_task_inputs(trace_dir, task, config, workspace)
         _apply_web_search_key(config, swe_cfg)
-        _ensure_basic_image(config, swe_cfg)
+        _ensure_basic_image(config, swe_cfg, deadline=deadline)
         # Managed-wrapper exec runs through clawtune-launch in the basic sandbox
         # container.  Preflight it so a launcher that is unreadable or not
         # executable in the sandbox fails fast with one clear error instead of
@@ -139,6 +139,7 @@ def run_drb_task(
             config=config,
             swe_cfg=swe_cfg,
             workspace=workspace,
+            deadline=deadline,
         )
         # OpenClaw scopes Docker sandbox containers by workspace prefix and
         # reuses a running container.  A stale container can carry a host
@@ -187,11 +188,24 @@ def run_drb_task(
             message=error,
             configured_seconds=config.batch.task_timeout_seconds,
         )
+    except subprocess.TimeoutExpired as exc:
+        exit_code = 124
+        error = f"task timed out while waiting for a setup subprocess: {exc.cmd!r}"
+        _write_timeout_record(
+            trace_dir,
+            scope="task",
+            message=error,
+            configured_seconds=config.batch.task_timeout_seconds,
+        )
     except TaskCancelled as exc:
         agent_stopped = agent_stopped_event.is_set()
         agent_cancelled = True
         error = str(exc)
         _write_text(trace_dir / "drb_host_error.txt", traceback.format_exc())
+    except ContainerCleanupError:
+        # An unconfirmed agent stop can leave producers alive. The coordinator
+        # must stop dispatching instead of publishing an ordinary task result.
+        raise
     except Exception as exc:
         error = str(exc)
         _write_text(trace_dir / "drb_host_error.txt", traceback.format_exc())
@@ -231,7 +245,7 @@ def run_drb_task(
                 _drain_runtime(
                     sidecar_port,
                     _runtime_id(workspace),
-                    gateway_id="swe-rebench",
+                    gateway_id=getattr(swe_cfg, "benchmark_gateway_id", _BENCHMARK_GATEWAY_ID),
                     flush_kb=getattr(swe_cfg, "flush_kb_on_task_drain", True),
                 )
             except BaseException as exc:
@@ -399,6 +413,7 @@ def _link_web_search_provider_plugin(
     log_path: Path,
     plugin_dir: Path,
     plugin_id: str,
+    deadline: float | None = None,
 ) -> bool:
     """Link a locally installed web provider plugin into the isolated home.
 
@@ -426,26 +441,26 @@ def _link_web_search_provider_plugin(
         if link_target is None:
             return False
         with log_path.open("a", encoding="utf-8") as log:
-            result = subprocess.run(
+            result = run_command(
                 [openclaw, "plugins", "install", "--link", str(link_target)],
                 stdout=log,
                 stderr=log,
                 text=True,
                 env=env,
-                timeout=60,
+                timeout=_bounded_task_timeout(deadline, "web provider plugin install"),
             )
             if result.returncode != 0:
                 log.write(
                     f"[warn] link provider plugin failed (exit={result.returncode})\n"
                 )
                 return False
-            result = subprocess.run(
+            result = run_command(
                 [openclaw, "plugins", "enable", plugin_id],
                 stdout=log,
                 stderr=log,
                 text=True,
                 env=env,
-                timeout=60,
+                timeout=_bounded_task_timeout(deadline, "web provider plugin enable"),
             )
             if result.returncode != 0:
                 log.write(
@@ -531,17 +546,18 @@ def _run_web_search_config_patch(
     patch: dict[str, Any],
     env: dict[str, str],
     log_path: Path,
+    deadline: float | None = None,
 ) -> subprocess.CompletedProcess:
     """Run ``openclaw config patch --stdin`` once, appending to ``log_path``."""
     with log_path.open("a", encoding="utf-8") as log:
-        return subprocess.run(
+        return run_command(
             [openclaw, "config", "patch", "--stdin"],
             input=json.dumps(patch),
             stdout=log,
             stderr=log,
             text=True,
             env=env,
-            timeout=60,
+            timeout=_bounded_task_timeout(deadline, "web search configuration"),
         )
 
 
@@ -553,6 +569,7 @@ def _pin_web_search_provider(
     config: DRBConfig,
     swe_cfg: RunnerConfig,
     workspace: Path,
+    deadline: float | None = None,
 ) -> None:
     """Pin the run-scoped OpenClaw config to the configured web provider.
 
@@ -578,7 +595,7 @@ def _pin_web_search_provider(
     log_path.write_text("", encoding="utf-8")
     pinned_provider = config.web_search.provider
     pinned = config.web_search.enabled and bool(pinned_provider and pinned_provider != "auto")
-    result = _run_web_search_config_patch(openclaw, patch, env, log_path)
+    result = _run_web_search_config_patch(openclaw, patch, env, log_path, deadline)
     if result.returncode == 0:
         return
     if pinned:
@@ -593,8 +610,9 @@ def _pin_web_search_provider(
             log_path=log_path,
             plugin_dir=plugin_dir,
             plugin_id=pinned_provider,
+            deadline=deadline,
         ):
-            result = _run_web_search_config_patch(openclaw, patch, env, log_path)
+            result = _run_web_search_config_patch(openclaw, patch, env, log_path, deadline)
             if result.returncode == 0:
                 return
         with log_path.open("a", encoding="utf-8") as log:
@@ -608,7 +626,7 @@ def _pin_web_search_provider(
         # Keep both tool-policy gates open when falling back from an
         # unavailable pinned provider to OpenClaw's provider auto-detection.
         fallback = _web_tools_config_patch({"enabled": True})
-        result = _run_web_search_config_patch(openclaw, fallback, env, log_path)
+        result = _run_web_search_config_patch(openclaw, fallback, env, log_path, deadline)
         if result.returncode == 0:
             return
     raise RuntimeError(
@@ -617,11 +635,26 @@ def _pin_web_search_provider(
     )
 
 
-def _ensure_basic_image(config: DRBConfig, swe_cfg: RunnerConfig) -> str:
+def _bounded_task_timeout(deadline: float | None, phase: str) -> float:
+    remaining = _remaining_task_seconds(deadline, phase=phase)
+    return 60.0 if remaining is None else min(60.0, remaining)
+
+
+def _ensure_basic_image(
+    config: DRBConfig,
+    swe_cfg: RunnerConfig,
+    *,
+    deadline: float | None = None,
+) -> str:
     """Ensure the very basic sandbox image is available locally."""
     image = config.sandbox.image
-    client = get_docker_client(swe_cfg.docker)
-    if local_image_available(client, image, swe_cfg.docker.platform):
+    if local_image_available(
+        None,
+        image,
+        swe_cfg.docker.platform,
+        timeout=_remaining_task_seconds(deadline, phase="basic image inspection"),
+        docker_host=swe_cfg.docker.host,
+    ):
         return image
     if swe_cfg.docker.pull_policy == "never":
         raise RuntimeError(
@@ -629,11 +662,14 @@ def _ensure_basic_image(config: DRBConfig, swe_cfg: RunnerConfig) -> str:
             "pull_policy=never"
         )
     if not pull_image(
-        client,
+        None,
         image,
-        swe_cfg.docker.pull_policy,
+        "always" if swe_cfg.docker.pull_policy == "missing" else swe_cfg.docker.pull_policy,
         swe_cfg.docker.platform,
+        timeout=_remaining_task_seconds(deadline, phase="basic image pull"),
+        docker_host=swe_cfg.docker.host,
     ):
+        _remaining_task_seconds(deadline, phase="basic image pull")
         raise RuntimeError(f"failed to pull basic sandbox image {image}")
     return image
 

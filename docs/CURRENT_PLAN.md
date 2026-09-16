@@ -78,6 +78,9 @@ The sections below retain earlier environment acceptance notes.
 
 # Outstanding Validation
 
+- Timeout/cancellation audit: `PYTHONPATH=services/sidecar/src python3 -m pytest tests/test_timeout_finalization.py tests/test_benchmark_cancellation.py tests/test_benchmark_shutdown.py tests/test_benchmark_runtime_fixes.py tests/test_benchmark_terminal_exec.py services/sidecar/tests/test_runtime_abort.py -q -rs` still requires Linux for the eight subreaper/procfs/POSIX cases skipped on Windows. Live concurrent timeout acceptance additionally requires Linux, Docker, OpenClaw and provider credentials; exercise `python3 scripts/clawtune.py benchmark --benchmark <name> --sample 3 --parallelism 3 --task-timeout-seconds 60` for each adapter, plus interruption during setup and tool execution, and verify no surviving producers and an acknowledged final KB flush.
+  The targeted WSL variant using `tests/test_benchmark_shutdown.py tests/test_benchmark_terminal_exec.py tests/test_timeout_finalization.py tests/test_benchmark_cancellation.py services/sidecar/tests/test_runtime_abort.py` cannot run in the installed Ubuntu environment because `/usr/bin/python3` has no `pytest` module.
+
 This file records checks that still require a suitable environment. Usage and configuration belong in the [installation guide](getting-started.md) and [benchmark guide](benchmarks.md).
 
 The 2026-09-16 review of main commit `5e68953`, confirmed failure modes, implementation status, and validation plan are in [TRACE_MONITORING_REVIEW.md](TRACE_MONITORING_REVIEW.md). The eBPF-default redesign is implemented in the working tree; Linux kernel acceptance remains outstanding.

@@ -1617,6 +1617,7 @@ def test_host_openclaw_openclaw_config_uses_only_public_top_level_keys(tmp_path:
 
     assert set(parsed) == {"agents", "tools", "plugins", "env"}
     assert parsed["agents"]["defaults"]["workspace"] == str(tmp_path / "workspace")
+    assert parsed["agents"]["defaults"]["timeoutSeconds"] == 0
     assert parsed["agents"]["defaults"]["repoRoot"] == str(tmp_path / "workspace")
     docker_cfg = parsed["agents"]["defaults"]["sandbox"]["docker"]
     assert docker_cfg["containerPrefix"] == _sandbox_container_prefix(tmp_path / "workspace")
@@ -1640,6 +1641,7 @@ def test_host_openclaw_openclaw_config_uses_only_public_top_level_keys(tmp_path:
     assert parsed["env"]["CLAWTUNE_LAUNCH_MODE"] == "fork-exec"
     assert "PATH" not in parsed["env"]
     assert parsed["tools"]["deny"] == ["process"]
+    assert parsed["tools"]["exec"]["timeoutSeconds"] == 0
     assert parsed["tools"]["exec"]["pathPrepend"] == _SANDBOX_TASK_PATH.split(":")
 
 

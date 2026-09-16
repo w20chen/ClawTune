@@ -246,6 +246,22 @@ def run(
         host._runtime_id(folder / "workspaces" / task.directory_name)
         for task in tasks
     ]
+    kb_flush_attempted = False
+
+    def flush_kb() -> None:
+        nonlocal kb_flush_attempted
+        kb_flush_attempted = True
+        try:
+            flush_all_kb_updates(
+                port,
+                runtime_ids,
+                gateway_id=getattr(config, "benchmark_gateway_id", "swe-rebench"),
+            )
+            manifest["kb_flush_complete"] = True
+            manifest["kb_final_generation"] = committed_state(folder / "kb")["generation"]
+        except Exception as exc:
+            manifest["kb_flush_complete"] = False
+            manifest["observation_issues"] = [{"stage": "kb_flush", "error": str(exc)}]
 
     def execute_task(task: Task):
         before = _observed_generation(folder / "kb")
@@ -390,21 +406,11 @@ def run(
         # Per-task drains wait only for runtime-local finalizers. Persistence is
         # deliberately coalesced by the sidecar's single writer and forced once
         # here, after all producers have finished.
-        try:
-            flush_all_kb_updates(
-                port,
-                runtime_ids,
-                gateway_id=getattr(config, "benchmark_gateway_id", "swe-rebench"),
-            )
-            manifest["kb_flush_complete"] = True
-            manifest["kb_final_generation"] = committed_state(folder / "kb")["generation"]
-        except Exception as exc:
-            manifest["kb_flush_complete"] = False
-            manifest["observation_issues"] = [{"stage": "kb_flush", "error": str(exc)}]
+        flush_kb()
         manifest.pop("active_tasks", None)
         manifest["status"] = (
             "completed"
-            if all(
+            if manifest["kb_flush_complete"] and all(
                 not row.get("error") and row["exit_code"] == 0
                 for row in manifest["results"]
             )
@@ -418,6 +424,10 @@ def run(
         raise
     finally:
         try:
+            if sidecar is not None and not kb_flush_attempted:
+                # Workers have already been joined on every exit path. Try the
+                # same durability barrier before retiring the shared sidecar.
+                flush_kb()
             if sidecar is not None:
                 host._stop_process(sidecar)
         finally:

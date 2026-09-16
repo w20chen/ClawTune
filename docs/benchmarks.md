@@ -351,7 +351,7 @@ printf 'Run directory: %s\n' "$RUN_ROOT"
 | `--task-timeout-seconds N` | Whole-task timeout |
 | `--agent-timeout-seconds N` | Agent timeout |
 
-A timeout value of 0 disables that layer. Terminal also enforces its task's `max_agent_timeout_sec` and a 300-second shell-call limit; disabling a CLI timeout does not disable the native task budget.
+A timeout value of 0 disables that layer. The run-scoped OpenClaw configuration disables its separate turn and exec defaults so these benchmark limits own the deadline and cleanup sequence; a model-supplied per-call timeout may still end that call sooner. Terminal also enforces its task's `max_agent_timeout_sec` and a 300-second shell-call limit; disabling a CLI timeout does not disable the native task budget.
 
 Terminal Compose build/start has a separate `docker.build_timeout_seconds` budget (default 1800 seconds, minimum 1). Increase it for slow image downloads or package mirrors, or prepare build layers with the cache commands above. This setup time does not consume the native agent budget.
 
@@ -382,7 +382,7 @@ Each task writes directly to one `trace.jsonl`, including all sessions and turns
 
 For SWE timeouts/cancellations and interrupted Terminal agents, `traces/<task-digest>/runtime-finalization.json` records executions finalized after confirmed agent and sandbox shutdown. Measurements without confirmed tool exit remain incomplete and are withheld from learning; observations from previously completed tools remain available. Finalization does not turn a failed task into a successful task, even when `kb_flush_complete` is true.
 
-Task status reflects execution errors and timeouts. `observation_issues`, `runtime-finalization.json.observation_errors`, and collector logs report monitoring or KB failures separately; an isolated failure does not cancel the batch. Very short or incomplete samples may be excluded from learning without being task failures. Check eBPF quality and PMU coverage before using a sample. `trace_flushed: false` or `kb_flush_complete: false` means persistence is incomplete, even if tasks completed; retain the run for diagnosis and do not treat it as a fully saved learning state.
+Task status reflects execution errors, timeouts, and the final KB durability barrier; `completed` requires `kb_flush_complete: true`. `observation_issues`, `runtime-finalization.json.observation_errors`, and collector logs report monitoring or KB failures separately; an isolated per-task observation failure does not cancel the batch. Very short or incomplete samples may be excluded from learning without being task failures. Check eBPF quality and PMU coverage before using a sample. `trace_flushed: false` or `kb_flush_complete: false` means persistence is incomplete; retain the run for diagnosis and do not treat it as a fully saved learning state.
 
 ```bash
 .venv/bin/python tools/inspect_trace.py /path/to/run/traces/<task>/<file>.jsonl --all --details

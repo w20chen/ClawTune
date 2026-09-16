@@ -14,37 +14,44 @@
   ],
   "properties": {
     "schema": {
-      "const": "tool_resource_observation_v1"
+      "const": "tool_resource_observation_v1",
+      "description": "Protocol discriminator for the canonical per-tool resource observation."
     },
     "backend": {
       "enum": [
         "ebpf",
         "cgroup-v2"
-      ]
+      ],
+      "description": "Collector that produced this observation. eBPF is preferred; cgroup-v2 is the dedicated fallback collector."
     },
     "fallback_used": {
-      "type": "boolean"
+      "type": "boolean",
+      "description": "True when the returned observation came from the cgroup-v2 fallback after the preferred eBPF collector failed."
     },
     "scope": {
       "enum": [
         "process_tree",
         "none",
         "cgroup-v2"
-      ]
+      ],
+      "description": "Resource-accounting scope actually measured: the owned process lineage, a dedicated cgroup-v2 scope, or no measurable scope."
     },
     "attribution": {
       "enum": [
         "exclusive_process_tree",
         "shared_scope",
         "unattributed"
-      ]
+      ],
+      "description": "Ownership quality of the measured scope. Only exclusive_process_tree observations can supply action training labels."
     },
     "unavailable_reason": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "description": "Observation-wide reason that no primary resource observation was available. Per-metric reasons remain in metrics."
     },
     "window": {
       "type": "object",
+      "description": "Requested and observed collection boundaries in one explicitly declared clock domain.",
       "required": [
         "clock",
         "requested_start_ns",
@@ -59,29 +66,34 @@
             "linux_monotonic",
             "openclaw_plugin_process_monotonic",
             "sidecar_synthetic_duration_anchor"
-          ]
+          ],
+          "description": "Clock domain for every timestamp in this window. Values from different clock domains must not be subtracted or compared."
         },
         "requested_start_ns": {
           "type": "string",
-          "pattern": "^[0-9]+$"
+          "pattern": "^[0-9]+$",
+          "description": "Requested window start in nanoseconds in the declared clock domain."
         },
         "requested_end_ns": {
           "type": "string",
-          "pattern": "^[0-9]+$"
+          "pattern": "^[0-9]+$",
+          "description": "Requested window end in nanoseconds in the declared clock domain."
         },
         "observed_start_ns": {
           "type": [
             "string",
             "null"
           ],
-          "pattern": "^[0-9]+$"
+          "pattern": "^[0-9]+$",
+          "description": "First timestamp actually covered by usable collector evidence, or null when none is known."
         },
         "observed_end_ns": {
           "type": [
             "string",
             "null"
           ],
-          "pattern": "^[0-9]+$"
+          "pattern": "^[0-9]+$",
+          "description": "Last timestamp actually covered by usable collector evidence, or null when none is known."
         },
         "coverage_ratio": {
           "type": [
@@ -89,33 +101,40 @@
             "null"
           ],
           "minimum": 0,
-          "maximum": 1
+          "maximum": 1,
+          "description": "Observed time-span coverage divided by the requested window duration, or null when it cannot be computed. This is not sampling density or metric eligibility."
         },
         "max_sample_gap_ns": {
           "type": "string",
-          "pattern": "^[0-9]+$"
+          "pattern": "^[0-9]+$",
+          "description": "Largest edge or inter-sample gap in nanoseconds used by the observation-level coverage check."
         },
         "complete": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether collector evidence covers the requested window under the current completeness checks. Individual metrics can still be ineligible."
         },
         "late_scope_binding": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "True when the authoritative resource scope became known only after collection began; available values are then withheld from training."
         },
         "action_clock_unusable": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "True when action boundaries could not be safely aligned with the collector clock; available values are then withheld from action training."
         },
         "kind": {
           "enum": [
             "action",
             "collector",
             "execution"
-          ]
+          ],
+          "description": "Meaning of the requested window: action hook boundaries, the fallback collector's own window, or finalized execution telemetry boundaries. Omitted on older action observations."
         }
       },
       "additionalProperties": false
     },
     "metrics": {
       "type": "object",
+      "description": "Per-metric values and independent availability and training-eligibility decisions.",
       "required": [
         "cpu_time",
         "cpu_peak",
@@ -125,38 +144,47 @@
       ],
       "properties": {
         "cpu_time": {
-          "$ref": "#/$defs/metric"
+          "$ref": "#/$defs/metric",
+          "description": "Cumulative CPU time and, when action-window eligible, average cores."
         },
         "cpu_peak": {
-          "$ref": "#/$defs/metric"
+          "$ref": "#/$defs/metric",
+          "description": "Maximum fixed-window CPU utilization, expressed as cores. The current measurement window is 500 ms."
         },
         "memory_peak": {
-          "$ref": "#/$defs/metric"
+          "$ref": "#/$defs/metric",
+          "description": "Peak sampled distinct-mm RSS for the owned process lineage. This is separate from environment memory and cgroup memory charge."
         },
         "disk_io": {
-          "$ref": "#/$defs/metric"
+          "$ref": "#/$defs/metric",
+          "description": "Read and write byte deltas from task I/O accounting over the metric window."
         },
         "network_io": {
-          "$ref": "#/$defs/metric"
+          "$ref": "#/$defs/metric",
+          "description": "Received and transmitted byte deltas when a supported network collector is available; currently unavailable for finalized execution telemetry."
         },
         "memory_charge_peak": {
-          "$ref": "#/$defs/metric"
+          "$ref": "#/$defs/metric",
+          "description": "Optional absolute cgroup memory.peak charge observed by fallback. It is neither RSS nor a delta and is never an action training label."
         }
       },
       "additionalProperties": false
     },
     "loss": {
       "type": "object",
+      "description": "Observation-window eBPF loss counters. Any positive loss makes the primary observation unavailable.",
       "additionalProperties": {
         "type": "integer",
         "minimum": 0
       }
     },
     "execution_telemetry_quality": {
-      "type": "string"
+      "type": "string",
+      "description": "Quality status copied from finalized execution telemetry when kind is execution."
     },
     "fallback_reason": {
-      "type": "string"
+      "type": "string",
+      "description": "Failure reason from the preferred eBPF observation when a cgroup-v2 fallback observation is returned."
     }
   },
   "$defs": {
@@ -170,82 +198,97 @@
       ],
       "properties": {
         "available": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether this metric has a measured value for its stated measurement and window."
         },
         "eligible": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether the metric is safe to use as a complete, exclusively attributed action training label. Availability alone is insufficient."
         },
         "reason": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Metric-specific eligibility or unavailability reason; ok means the metric is eligible."
         },
         "measurement": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Stable identifier for the measurement method and semantic definition used for this metric."
         },
         "value_seconds": {
           "type": [
             "number",
             "null"
           ],
-          "minimum": 0
+          "minimum": 0,
+          "description": "Cumulative CPU time in core-seconds; used only by cpu_time."
         },
         "average_cores": {
           "type": [
             "number",
             "null"
           ],
-          "minimum": 0
+          "minimum": 0,
+          "description": "Average occupied CPU cores over a complete action window; used only by cpu_time."
         },
         "value_cores": {
           "type": [
             "number",
             "null"
           ],
-          "minimum": 0
+          "minimum": 0,
+          "description": "Fixed-window CPU utilization in cores; used only by cpu_peak."
         },
         "value_bytes": {
           "type": [
             "integer",
             "null"
           ],
-          "minimum": 0
+          "minimum": 0,
+          "description": "Byte value for memory_peak or memory_charge_peak, interpreted according to measurement."
         },
         "read_bytes": {
           "type": [
             "integer",
             "null"
           ],
-          "minimum": 0
+          "minimum": 0,
+          "description": "Read or receive byte delta for disk_io or network_io."
         },
         "write_bytes": {
           "type": [
             "integer",
             "null"
           ],
-          "minimum": 0
+          "minimum": 0,
+          "description": "Write or transmit byte delta for disk_io or network_io."
         },
         "window_ms": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "description": "Fixed aggregation window in milliseconds; currently 500 for cpu_peak."
         },
         "sample_count": {
           "type": [
             "integer",
             "null"
           ],
-          "minimum": 0
+          "minimum": 0,
+          "description": "Number of contributing samples when the collector exposes one; null means the count is not available."
         },
         "counter_exact": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether value_bytes is an exact counter rather than a sampled peak. False for sampled RSS."
         },
         "window_start_ns": {
           "type": "string",
-          "pattern": "^[0-9]+$"
+          "pattern": "^[0-9]+$",
+          "description": "Metric-specific collector-window start in the observation clock domain when it differs from the requested window."
         },
         "window_end_ns": {
           "type": "string",
-          "pattern": "^[0-9]+$"
+          "pattern": "^[0-9]+$",
+          "description": "Metric-specific collector-window end in the observation clock domain when it differs from the requested window."
         }
       },
       "additionalProperties": false

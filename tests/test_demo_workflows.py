@@ -517,7 +517,7 @@ def test_runner_failure_cancels_workers_and_preserves_report(monkeypatch, tmp_pa
             runner.run(tasks, config_path=cfg_path, seed=seed, output=tmp_path / "run")
     manifest = json.loads((tmp_path / "run/run.json").read_text())
     assert manifest == json.loads((tmp_path / "run/report.json").read_text())
-    assert manifest["status"] == {"interrupt": "interrupted", "executor": "failed", "barrier": "completed"}[failure]
+    assert manifest["status"] == {"interrupt": "interrupted", "executor": "failed", "barrier": "failed"}[failure]
     assert manifest["kb_flush_complete"] is False
     assert "kb_final_generation" not in manifest
     assert {row["task_id"] for row in manifest["results"]} == set(starts)
@@ -526,7 +526,7 @@ def test_runner_failure_cancels_workers_and_preserves_report(monkeypatch, tmp_pa
     if failure != "barrier":
         assert set(starts) == {"0", "1"}
         assert manifest["active_tasks"]
-        assert not barriers
+        assert len(barriers) == 1
     else:
         assert len(barriers) == 1
         assert manifest["observation_issues"]

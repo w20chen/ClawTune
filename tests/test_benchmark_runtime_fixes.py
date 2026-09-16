@@ -101,6 +101,20 @@ def test_result_status_includes_validation_errors(exit_code, error, status):
     assert row == {"exit_code": exit_code, "error": error}
 
 
+def test_completed_benchmark_contract_requires_durable_kb():
+    import json
+    from pathlib import Path
+    from jsonschema import ValidationError
+    from clawtune_kb.contracts import validate
+
+    root = Path(__file__).resolve().parents[1]
+    example = json.loads((root / "contracts/examples/benchmark-run.json").read_text())
+    validate(example, "benchmark-run.schema.json")
+    example["kb_flush_complete"] = False
+    with pytest.raises(ValidationError):
+        validate(example, "benchmark-run.schema.json")
+
+
 @pytest.mark.parametrize("actual,expected,match", [("v7", "v7", True), ("v8", "v7", False)])
 def test_platform_variant_must_match(actual, expected, match):
     client = SimpleNamespace(images=SimpleNamespace(get=lambda _: SimpleNamespace(
@@ -116,6 +130,21 @@ def test_cli_pull_always_uses_valid_docker_arguments(monkeypatch):
     monkeypatch.setattr("swe_rebench.docker.subprocess.run", invoke)
     assert pull_image(None, "image", "always", "linux/amd64")
     assert commands == [["docker", "pull", "--platform", "linux/amd64", "image"]]
+
+
+def test_cli_pull_honors_explicit_docker_host(monkeypatch):
+    commands = []
+    monkeypatch.setattr(
+        "swe_rebench.docker.subprocess.run",
+        lambda argv, **kwargs: commands.append(argv) or SimpleNamespace(returncode=0),
+    )
+    assert pull_image(
+        None, "image", "always", "linux/amd64", docker_host="tcp://docker:2375"
+    )
+    assert commands == [[
+        "docker", "--host", "tcp://docker:2375", "pull", "--platform",
+        "linux/amd64", "image",
+    ]]
 
 
 def test_sdk_missing_policy_never_pulls_matching_image():

@@ -24,5 +24,17 @@
     "tasks": {"type": "array", "items": {"type": "object"}},
     "config_sha256": {"type": "string"}
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"status": {"const": "completed"}},
+        "required": ["status"]
+      },
+      "then": {
+        "required": ["kb_flush_complete", "kb_final_generation"],
+        "properties": {"kb_flush_complete": {"const": true}}
+      }
+    }
+  ],
   "additionalProperties": false
 }

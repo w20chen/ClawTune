@@ -1891,6 +1891,11 @@ def _openclaw_config(
         {
             "agents": {
                 "defaults": {
+                    # The benchmark harness owns the whole-task and agent-only
+                    # deadlines and must also cover setup/cleanup. Disable the
+                    # CLI's separate turn timer so it cannot end the agent on a
+                    # different clock.
+                    "timeoutSeconds": 0,
                     "workspace": str(workspace),
                     "repoRoot": str(workspace),
                     "sandbox": {
@@ -1920,6 +1925,9 @@ def _openclaw_config(
                 # telemetry route synchronous.
                 "deny": ["process"],
                 "exec": {
+                    # The outer supervisor terminates the complete agent tree at
+                    # the benchmark deadline, including a command in flight.
+                    "timeoutSeconds": 0,
                     # OpenClaw's supported sandbox-exec PATH extension.  The
                     # launcher repeats the complete value so the forked shell
                     # also inherits it regardless of gateway sanitisation.

@@ -32,6 +32,12 @@ EXAMPLES = {
     "pmu-profile.schema.json": "pmu-profile.json",
 }
 
+TRACE_FIELD_REFERENCE_SCHEMAS = (
+    "trace-event.schema.json",
+    "clause-telemetry.schema.json",
+    "tool-resource-observation.schema.json",
+)
+
 
 def main() -> None:
     store = {}
@@ -45,6 +51,23 @@ def main() -> None:
         example = json.loads((CONTRACTS / "examples" / example_name).read_text(encoding="utf-8"))
         Draft202012Validator(schema).validate(example)
         print(f"validated {example_name} against {schema_name}")
+    for schema_name in TRACE_FIELD_REFERENCE_SCHEMAS:
+        missing = list(properties_without_descriptions(store[schema_name]))
+        if missing:
+            raise ValueError(f"{schema_name} has undocumented fields: {', '.join(missing)}")
+        print(f"validated field descriptions in {schema_name}")
+
+
+def properties_without_descriptions(value: object, path: str = "$"):
+    if not isinstance(value, dict):
+        return
+    for name, child in value.get("properties", {}).items():
+        field_path = f"{path}.{name}"
+        if "description" not in child:
+            yield field_path
+        yield from properties_without_descriptions(child, field_path)
+    for name, child in value.get("$defs", {}).items():
+        yield from properties_without_descriptions(child, f"{path}.$defs.{name}")
 
 
 def inline_local_refs(value: object, store: dict[str, object]) -> object:

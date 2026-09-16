@@ -91,7 +91,10 @@ def test_research_timeout_aborts_runtime_after_agent_and_sandbox_stop(monkeypatc
     monkeypatch.setattr(host, "_write_runtime_case_map", lambda *a, **k: None)
     events = []
     monkeypatch.setattr(host_runner, "_abort_runtime", lambda *a, **k: events.append("abort"))
-    monkeypatch.setattr(host, "_drain_runtime", lambda *a, **k: events.append("drain"))
+    def drain(*args, **kwargs):
+        assert kwargs["gateway_id"] == "deep-research-bench"
+        events.append("drain")
+    monkeypatch.setattr(host, "_drain_runtime", drain)
     monkeypatch.setattr(host, "_collect_runtime_traces", lambda *a, **k: events.append("traces"))
     monkeypatch.setattr(host_runner, "_write_result_summary", lambda *a, **k: events.append("summary"))
 
@@ -107,6 +110,62 @@ def test_research_timeout_aborts_runtime_after_agent_and_sandbox_stop(monkeypatc
 
     assert result.exit_code == 124
     assert events == ["abort", "drain", "traces", "summary"]
+
+
+def test_research_unconfirmed_agent_cleanup_stops_the_batch(monkeypatch, tmp_path):
+    from swe_rebench.host_openclaw import ContainerCleanupError
+
+    config = _config()
+    config.output.trace_root = tmp_path / "traces"
+    for name in (
+        "_reset_directory", "_make_sandbox_workspace_writable",
+        "_install_sandbox_runtime", "_write_drb_task_inputs", "_ensure_basic_image",
+        "_verify_sandbox_launcher", "_configure_openclaw", "_pin_web_search_provider",
+        "_start_sidecar", "_stop_process",
+    ):
+        monkeypatch.setattr(host_runner, name, lambda *a, **k: None)
+    monkeypatch.setattr(
+        host_runner,
+        "_run_openclaw_agent",
+        lambda **kwargs: (_ for _ in ()).throw(ContainerCleanupError("descendants alive")),
+    )
+    monkeypatch.setattr(host_runner, "_cleanup_openclaw_sandbox_containers", lambda *a, **k: None)
+    monkeypatch.setattr(host_runner, "_write_result_summary", lambda *a, **k: None)
+
+    with pytest.raises(ContainerCleanupError, match="descendants alive"):
+        host_runner.run_drb_task(
+            task=DRBTask("test", "question"), trace_dir=tmp_path / "trace",
+            config=config, swe_cfg=config.to_swe_runner_config(),
+            runtime_assets_dir=tmp_path / "assets", sidecar_port=8765,
+        )
+
+
+def test_research_setup_subprocess_timeout_is_a_task_timeout(monkeypatch, tmp_path):
+    config = _config()
+    config.output.trace_root = tmp_path / "traces"
+    for name in (
+        "_reset_directory", "_make_sandbox_workspace_writable",
+        "_install_sandbox_runtime", "_write_drb_task_inputs",
+    ):
+        monkeypatch.setattr(host_runner, name, lambda *a, **k: None)
+    monkeypatch.setattr(
+        host_runner,
+        "_ensure_basic_image",
+        lambda *a, **k: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired(["docker", "pull"], 1)
+        ),
+    )
+    monkeypatch.setattr(host_runner, "_cleanup_openclaw_sandbox_containers", lambda *a, **k: None)
+
+    result = host_runner.run_drb_task(
+        task=DRBTask("test", "question"), trace_dir=tmp_path / "trace",
+        config=config, swe_cfg=config.to_swe_runner_config(),
+        runtime_assets_dir=tmp_path / "assets", sidecar_port=8765,
+    )
+
+    assert result.exit_code == 124
+    timeout = json.loads((tmp_path / "trace/task-timeout.json").read_text())
+    assert timeout["scope"] == "task"
 
 
 def _result(

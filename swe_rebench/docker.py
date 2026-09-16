@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from swe_rebench.cancellation import TaskCancelled, run_command
 from swe_rebench.config import DockerConfig
 from swe_rebench.sandbox import sandbox_container_prefix
 
@@ -177,12 +178,18 @@ def get_docker_client(config: DockerConfig) -> Any:
         return None
 
 
-def pull_image(client: Any, image: str, policy: str = "missing", platform: str = "") -> bool:
+def pull_image(client: Any, image: str, policy: str = "missing", platform: str = "", *,
+               timeout: float | None = None, docker_host: str = "") -> bool:
     """Pull a Docker image.  Returns True on success."""
+    deadline = None if timeout is None else time.monotonic() + timeout
     if policy == "never":
         return True
-    if policy == "missing" and local_image_available(client, image, platform):
+    if policy == "missing" and local_image_available(
+        client, image, platform, timeout=timeout, docker_host=docker_host
+    ):
         return True
+    if deadline is not None:
+        timeout = max(0.001, deadline - time.monotonic())
     if client is not None:
         try:
             if policy == "always":
@@ -194,14 +201,16 @@ def pull_image(client: Any, image: str, policy: str = "missing", platform: str =
             _log(f"[error] pull {image}: {exc}")
             return False
     else:
-        cmd = ["docker", "pull", *_docker_platform_args(platform)]
+        cmd = ["docker", *(["--host", docker_host] if docker_host else []),
+               "pull", *_docker_platform_args(platform)]
         cmd.append(image)
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = run_command(cmd, capture_output=True, text=True, timeout=timeout)
         return result.returncode == 0
 
 
 def local_image_available(client: Any, image: str, platform: str = "", *,
-                          docker_executable: str = "docker", timeout: float | None = None) -> bool:
+                          docker_executable: str = "docker", timeout: float | None = None,
+                          docker_host: str = "") -> bool:
     """Return whether a local image exists and matches the requested platform."""
 
     expected = _normalized_image_platform(platform)
@@ -215,9 +224,10 @@ def local_image_available(client: Any, image: str, platform: str = "", *,
             )
             return actual is not None and actual[:len(expected)] == expected
 
-        result = subprocess.run(
+        result = run_command(
             [
                 docker_executable,
+                *(["--host", docker_host] if docker_host else []),
                 "image",
                 "inspect",
                 "--format",
@@ -234,6 +244,8 @@ def local_image_available(client: Any, image: str, platform: str = "", *,
             return True
         actual = _normalized_image_platform(result.stdout.strip())
         return actual is not None and actual[:len(expected)] == expected
+    except TaskCancelled:
+        raise
     except Exception:
         return False
 

@@ -773,7 +773,7 @@
           ]
         },
         "pmu_prediction": {
-          "description": "Quality-gated empirical PMU prediction from ToolKB. All three targets remain present when unavailable.",
+          "description": "Quality-gated empirical PMU prediction from ToolKB. All nine targets remain present when unavailable.",
           "anyOf": [
             {
               "$ref": "pmu-prediction.schema.json"
@@ -882,7 +882,7 @@
             },
             "continuous_predictions": {
               "type": "object",
-              "description": "Best-effort non-MLP RuntimeToolResourceKB TargetPrediction payloads keyed by target name.",
+              "description": "Deprecated best-effort RuntimeToolResourceKB conditional-p90 payloads for latency_ms, cpu_peak_cores, sampled_peak_rss_bytes, memory_total_peak_bytes, and memory_extra_peak_bytes. Use call_prediction for the complete seven-target contract.",
               "additionalProperties": {
                 "type": "object",
                 "properties": {
@@ -941,7 +941,7 @@
               "items": {
                 "$ref": "#/$defs/clauseLatticeResourcePredictions"
               },
-              "description": "Independent clause CPU and RSS distributions from the shared lattice raw observations. No call-level composition or cgroup memory inference."
+              "description": "Independent clause CPU, sampled-RSS, and environment-memory distributions from shared lattice observations. No call-level composition or cgroup memory inference."
             },
             "lattice_time_predictions": {
               "type": "array",
