@@ -66,6 +66,49 @@ def test_research_cleanup_failure_propagates_after_preserving_traces(monkeypatch
     assert events == ["drain", "traces", "summary"]
 
 
+def test_research_timeout_aborts_runtime_after_agent_and_sandbox_stop(monkeypatch, tmp_path):
+    config = _config()
+    config.output.trace_root = tmp_path / "traces"
+    for name in (
+        "_reset_directory",
+        "_make_sandbox_workspace_writable",
+        "_install_sandbox_runtime",
+        "_write_drb_task_inputs",
+        "_ensure_basic_image",
+        "_verify_sandbox_launcher",
+        "_configure_openclaw",
+        "_pin_web_search_provider",
+    ):
+        monkeypatch.setattr(host_runner, name, lambda *a, **k: None)
+    monkeypatch.setattr(host_runner, "_cleanup_openclaw_sandbox_containers", lambda *a, **k: None)
+
+    def timed_out_agent(**kwargs):
+        kwargs["stopped_event"].set()
+        return 124
+
+    monkeypatch.setattr(host_runner, "_run_openclaw_agent", timed_out_agent)
+    from swe_rebench import host_openclaw as host
+    monkeypatch.setattr(host, "_write_runtime_case_map", lambda *a, **k: None)
+    events = []
+    monkeypatch.setattr(host_runner, "_abort_runtime", lambda *a, **k: events.append("abort"))
+    monkeypatch.setattr(host, "_drain_runtime", lambda *a, **k: events.append("drain"))
+    monkeypatch.setattr(host, "_collect_runtime_traces", lambda *a, **k: events.append("traces"))
+    monkeypatch.setattr(host_runner, "_write_result_summary", lambda *a, **k: events.append("summary"))
+
+    result = host_runner.run_drb_task(
+        task=DRBTask("test", "question"),
+        trace_dir=tmp_path / "trace",
+        config=config,
+        swe_cfg=config.to_swe_runner_config(),
+        runtime_assets_dir=tmp_path / "assets",
+        sidecar_port=8765,
+        shared_sidecar_trace_dir=tmp_path / "sidecar",
+    )
+
+    assert result.exit_code == 124
+    assert events == ["abort", "drain", "traces", "summary"]
+
+
 def _result(
     *,
     tool_spans: int = 1,

@@ -422,6 +422,8 @@ def run_host_openclaw_replay_task(
     server = None
     exit_code = -1
     error: str | None = None
+    agent_stopped = threading.Event()
+    agent_cancelled = False
     try:
         plan = load_replay_plan(source_trace)
         if plan.incomplete_tool_count:
@@ -521,6 +523,7 @@ def run_host_openclaw_replay_task(
             post_sandbox_scope=True,
             prompt_path=trace_dir / "replay_prompt.txt",
             model_ref=plan.model,
+            stopped_event=agent_stopped,
         )
         _remaining_task_seconds(deadline, phase="replay result collection")
         _cleanup_runtime_artifacts(workspace, deadline=deadline)
@@ -544,12 +547,17 @@ def run_host_openclaw_replay_task(
             message=error,
             configured_seconds=config.batch.task_timeout_seconds,
         )
+    except TaskCancelled as exc:
+        agent_cancelled = True
+        error = str(exc)
+        _write_text(trace_dir / "replay_error.txt", traceback.format_exc())
     except Exception as exc:
         error = str(exc)
         _write_text(trace_dir / "replay_error.txt", traceback.format_exc())
     finally:
         if server is not None:
             server.close()
+        sandbox_stopped = False
         try:
             _cleanup_openclaw_sandbox_containers(
                 trace_dir,
@@ -557,9 +565,28 @@ def run_host_openclaw_replay_task(
                 timeout_seconds=_TASK_CLEANUP_TIMEOUT_SECONDS,
                 strict=True,
             )
+            sandbox_stopped = True
         except Exception as exc:
             if error is None:
                 error = f"replay sandbox cleanup failed: {exc}"
+        if sandbox_stopped and agent_stopped.is_set() and (exit_code == 124 or agent_cancelled):
+            try:
+                timeout_record = _read_json_object(trace_dir / "task-timeout.json") or {}
+                _abort_runtime(
+                    sidecar_port,
+                    _runtime_id(workspace),
+                    gateway_id=_gateway_id(config),
+                    reason=(
+                        "cancelled"
+                        if agent_cancelled
+                        else "agent_timeout"
+                        if timeout_record.get("scope") == "agent"
+                        else "task_timeout"
+                    ),
+                    trace_dir=trace_dir,
+                )
+            except Exception as exc:
+                _record_observation_issue(trace_dir, "runtime_finalization", exc)
         if sidecar is not None:
             _stop_process(sidecar)
         if sandbox_image is not None:

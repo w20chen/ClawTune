@@ -20,11 +20,13 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
 import traceback
 from pathlib import Path
 from typing import Any
 
+from swe_rebench.cancellation import TaskCancelled
 from swe_rebench.config import RunnerConfig
 from swe_rebench.docker import (
     ContainerResult,
@@ -35,6 +37,7 @@ from swe_rebench.docker import (
 from swe_rebench.host_openclaw import (
     TaskDeadlineExceeded,
     _TASK_CLEANUP_TIMEOUT_SECONDS,
+    _abort_runtime,
     _cleanup_openclaw_sandbox_containers,
     _configure_openclaw,
     _free_port,
@@ -45,7 +48,9 @@ from swe_rebench.host_openclaw import (
     _remaining_task_seconds,
     _require_executable,
     _reset_directory,
+    _record_observation_issue,
     _run_openclaw_agent,
+    _runtime_id,
     _start_sidecar,
     _stop_process,
     _tail_text,
@@ -83,6 +88,9 @@ def run_drb_task(
     sidecar = None
     exit_code = -1
     error: str | None = None
+    agent_stopped_event = threading.Event()
+    agent_stopped = False
+    agent_cancelled = False
     try:
         _remaining_task_seconds(deadline, phase="workspace reset")
         _reset_directory(workspace, deadline=deadline)
@@ -164,7 +172,9 @@ def run_drb_task(
             config=swe_cfg,
             task_deadline=deadline,
             post_sandbox_scope=True,
+            stopped_event=agent_stopped_event,
         )
+        agent_stopped = agent_stopped_event.is_set()
         timeout_record = _read_json_object(trace_dir / "task-timeout.json")
         if exit_code == 124 and isinstance(timeout_record, dict):
             error = str(timeout_record.get("message") or "task timed out")
@@ -177,19 +187,44 @@ def run_drb_task(
             message=error,
             configured_seconds=config.batch.task_timeout_seconds,
         )
+    except TaskCancelled as exc:
+        agent_stopped = agent_stopped_event.is_set()
+        agent_cancelled = True
+        error = str(exc)
+        _write_text(trace_dir / "drb_host_error.txt", traceback.format_exc())
     except Exception as exc:
         error = str(exc)
         _write_text(trace_dir / "drb_host_error.txt", traceback.format_exc())
     finally:
         cleanup_error: BaseException | None = None
+        sandbox_stopped = False
         try:
             _cleanup_openclaw_sandbox_containers(
                 trace_dir, workspace,
                 timeout_seconds=_TASK_CLEANUP_TIMEOUT_SECONDS, strict=True,
             )
+            sandbox_stopped = True
         except BaseException as exc:
             cleanup_error = exc
             error = error or f"sandbox cleanup failed: {exc}"
+        if sandbox_stopped and agent_stopped and (exit_code == 124 or agent_cancelled):
+            try:
+                timeout_record = _read_json_object(trace_dir / "task-timeout.json") or {}
+                _abort_runtime(
+                    sidecar_port,
+                    _runtime_id(workspace),
+                    gateway_id=_BENCHMARK_GATEWAY_ID,
+                    reason=(
+                        "cancelled"
+                        if agent_cancelled
+                        else "agent_timeout"
+                        if timeout_record.get("scope") == "agent"
+                        else "task_timeout"
+                    ),
+                    trace_dir=trace_dir,
+                )
+            except Exception as exc:
+                _record_observation_issue(trace_dir, "runtime_finalization", exc)
         if shared_sidecar_trace_dir is not None and sidecar_port is not None:
             from swe_rebench.host_openclaw import _drain_runtime, _runtime_id, _collect_runtime_traces
             try:
