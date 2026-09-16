@@ -1045,10 +1045,11 @@ def test_internal_tool_prefers_shared_sandbox_over_shared_runtime_scope(
     expected_cgroup = runtime_cgroup if tool_name in {"web_search", "web_fetch"} else cgroup
     assert tool_end["execution"]["cgroup_path"] == str(expected_cgroup)
     assert tool_end["resources"]["attribution_status"] == "partially_attributed"
-    assert tool_end["resources"]["scope"] == "cgroup"
+    assert tool_end["resources"]["scope"] == "none"
     assert tool_end["resources"]["coverage_reason"] == ("shared_runtime_process" if tool_name in {"web_search", "web_fetch"} else "shared_sandbox_container")
     assert tool_end["resources"]["monitor_duration_ns"] is not None
-    assert tool_end["resources"]["cgroup_cpu_time_s"] is not None
+    assert tool_end["resources"]["cgroup_cpu_time_s"] is None
+    assert tool_end["resources"]["resource_observation"]["fallback_used"] is False
     assert (
         int(tool_end["monotonic_time_ns"]) - int(tool_start["monotonic_time_ns"])
         == int(tool_end["duration_ns"])
@@ -1142,9 +1143,9 @@ def test_internal_tool_uses_docker_exec_inferred_scope_before_fallback(tmp_path:
     assert tool_end["execution"]["cgroup_path"] is None
     assert tool_end["execution"]["payload_pid"] == os.getpid()
     assert tool_end["execution"]["source"] == "docker-events"
-    assert tool_end["resources"]["scope"] == "process_tree"
+    assert tool_end["resources"]["scope"] == "none"
     assert tool_end["resources"]["attribution_source"] == "docker-exec-pid"
-    assert tool_end["resources"]["attribution_status"] == "attributed"
+    assert tool_end["resources"]["attribution_status"] == "unattributed"
     assert tool_end["resources"]["coverage_reason"] != "shared_sandbox_container"
 
 
@@ -1249,7 +1250,7 @@ def test_internal_tool_overrides_shared_runtime_scope_with_docker_exec(tmp_path:
     assert tool_end["execution"]["cgroup_path"] is None
     assert tool_end["execution"]["payload_pid"] == os.getpid()
     assert tool_end["execution"]["source"] == "docker-events"
-    assert tool_end["resources"]["scope"] == "process_tree"
+    assert tool_end["resources"]["scope"] == "none"
     assert tool_end["resources"]["attribution_source"] == "docker-exec-pid"
     assert tool_end["resources"]["coverage_reason"] != "shared_runtime_process"
 
@@ -1359,9 +1360,9 @@ def test_host_openclaw_scoped_read_gets_docker_exec_pid(tmp_path: Path) -> None:
     ][0]
     assert tool_end["execution"]["source"] == "docker-events"
     assert tool_end["execution"]["payload_pid"] == os.getpid()
-    assert tool_end["resources"]["scope"] == "process_tree"
+    assert tool_end["resources"]["scope"] == "none"
     assert tool_end["resources"]["attribution_source"] == "docker-exec-pid"
-    assert tool_end["resources"]["attribution_status"] == "attributed"
+    assert tool_end["resources"]["attribution_status"] == "unattributed"
     assert tool_end["resources"]["coverage_reason"] != "shared_sandbox_container"
 
 
@@ -1540,7 +1541,7 @@ def test_exec_tool_can_use_shared_sandbox_cgroup_fallback(tmp_path: Path) -> Non
     )
     assert tool_end["execution"]["mode"] == "launcher"
     assert tool_end["resources"]["attribution_status"] == "partially_attributed"
-    assert tool_end["resources"]["scope"] == "cgroup"
+    assert tool_end["resources"]["scope"] == "none"
     assert tool_end["resources"]["coverage_reason"] == "shared_sandbox_container"
 
 
@@ -2376,6 +2377,7 @@ def test_owned_cgroup_survives_exited_until_completion_final_snapshot(
         "exclusive-execution-cgroup"
     )
     assert tool_end["resources"]["cpu_time_s"] == pytest.approx(0.2)
+    assert tool_end["resources"]["resource_observation"]["fallback_used"] is True
 
 
 def test_owned_cgroup_delayed_gc_when_completion_is_lost(
@@ -2855,7 +2857,7 @@ def test_ebpf_execution_starts_when_sandbox_scope_arrives_after_started(
 
 
 def test_required_ebpf_defers_claim_without_container_id(tmp_path: Path) -> None:
-    state = build_state(SidecarConfig(trace_dir=tmp_path / "traces"))
+    state = build_state(SidecarConfig(tool_resource_ebpf_required=True, trace_dir=tmp_path / "traces"))
     client = TestClient(create_app(state))
     registration = client.post(
         "/v2/executions",
@@ -2891,7 +2893,7 @@ def test_required_ebpf_rejects_unavailable_collector_during_started(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr("clawtune_sidecar.api.app._resolve_host_pid", lambda *a, **kw: os.getpid())
-    state = build_state(SidecarConfig(trace_dir=tmp_path / "traces"))
+    state = build_state(SidecarConfig(tool_resource_ebpf_required=True, trace_dir=tmp_path / "traces"))
     client = TestClient(create_app(state))
     state.predictor.begin_execution = lambda **kwargs: False  # type: ignore[method-assign]
     registration = client.post(
@@ -2940,7 +2942,7 @@ def test_required_ebpf_rejects_unavailable_collector_during_started(
 
 def test_required_ebpf_starts_during_claim_with_sandbox_container_id(tmp_path: Path) -> None:
     state = build_state(
-        SidecarConfig(
+        SidecarConfig(tool_resource_ebpf_required=True,
             trace_dir=tmp_path / "traces",
             sandbox_container_id="b" * 64,
         )
@@ -3112,8 +3114,8 @@ def test_exec_completion_uses_registered_launcher_scope(tmp_path: Path, monkeypa
     assert tool_end["execution"]["source"] == "clawtune-launch"
     assert tool_end["execution"]["cgroup_path"] == str(cgroup)
     assert tool_end["resources"]["attribution_source"] == "clawtune-launch"
-    assert tool_end["resources"]["attribution_status"] == "attributed"
-    assert tool_end["resources"]["scope"] == "cgroup"
+    assert tool_end["resources"]["attribution_status"] == "unattributed"
+    assert tool_end["resources"]["scope"] == "none"
     assert tool_end["execution"]["tool_resource"]["execution_id"] == "call-exec"
     assert tool_end["execution"]["tool_resource"]["status"] in {
         "ok",
@@ -3276,10 +3278,11 @@ def test_agent_test_bench_trace_jsonl_records_tool_and_model_events(tmp_path: Pa
     assert tool_end["status"]["code"] == "ok"
     assert tool_end["output"]["result"] == "2 passed"
     assert tool_end["output"]["exit_code"] == 0
-    assert tool_end["resources"]["cpu_time_s"] is not None
-    assert tool_end["resources"]["rss_peak_bytes"] is not None
+    assert tool_end["resources"]["cpu_time_s"] is None
+    assert tool_end["resources"]["rss_peak_bytes"] is None
+    assert tool_end["resources"]["resource_observation"]["fallback_used"] is False
     assert "sampling_interval_ms" in tool_end["resources"]
-    assert tool_end["resources"]["sampling_point_count"] >= 1
+    assert tool_end["resources"]["sampling_point_count"] is None
     assert isinstance(tool_end["resources"]["resource_timeline"], list)
     assert tool_end["resources"]["resource_timeline_truncated"] is False
 

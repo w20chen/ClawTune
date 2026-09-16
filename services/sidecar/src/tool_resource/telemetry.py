@@ -271,6 +271,7 @@ def _attach_first_kprobe(
 SAMPLE_PERIOD_NS = 10_000_000  # ~10 ms CPU-time per perf callback
 WINDOW_NS = 500_000_000  # 500 ms wall label window (resource_timeline semantics)
 ALIGN_BIN_NS = 20_000_000  # 20 ms aligned bins for RSS summation
+MAX_RSS_SAMPLE_GAP_NS = 150_000_000
 SENTINEL = 2**64 - 1
 # Bounded argv capture must cover ordinary glob expansion (the observed grep
 # case has argc=25). Larger calls still carry ARG_FLAG_ARGV_CAPPED and remain
@@ -2227,6 +2228,8 @@ def _sampled_peak_rss(
     }
     if len(rss_samples) < 2:
         return None, "insufficient_rss_samples", prov
+    if max_gap > MAX_RSS_SAMPLE_GAP_NS:
+        return None, "rss_sampling_gap", prov
     peak_pages = max(sum(per_mm.values()) for per_mm in bins.values())
     return peak_pages * PAGE / 1e6, "ok", prov
 
@@ -2288,6 +2291,7 @@ def _task_io_totals(
     fork_baselines: dict[int, int],
     *,
     boundary_index=None,
+    counter_fields=_IO_COUNTER_FIELDS,
 ) -> tuple[tuple[int, int, int] | None, str, dict[str, Any]]:
     """Exact task-I/O-accounting deltas for one exec image.
 
@@ -2321,14 +2325,14 @@ def _task_io_totals(
     baselines: dict[int, tuple[int, dict[str, int]]] = {
         root["host_tid"]: (
             root["ts_ns"],
-            {field: int(root[field]) for field in _IO_COUNTER_FIELDS},
+            {field: int(root[field]) for field in counter_fields},
         )
     }
     provenance["exec_boundary_baseline_tids"] = [root["host_tid"]]
     for tid, ts_ns in fork_baselines.items():
         baselines.setdefault(
             tid,
-            (ts_ns, dict.fromkeys(_IO_COUNTER_FIELDS, 0)),
+            (ts_ns, dict.fromkeys(counter_fields, 0)),
         )
 
     attributed_tids = {event["host_tid"] for event in samples}
@@ -2337,7 +2341,7 @@ def _task_io_totals(
         provenance["missing_baseline_tids"] = missing_baselines
         return None, "missing_tid_io_baseline", provenance
 
-    totals = dict.fromkeys(_IO_COUNTER_FIELDS, 0)
+    totals = dict.fromkeys(counter_fields, 0)
     for tid, (baseline_ts, baseline) in baselines.items():
         endpoints = [
             event
@@ -2354,7 +2358,7 @@ def _task_io_totals(
             continue
         endpoint = min(endpoints, key=lambda event: event["ts_ns"])
         provenance["exact_endpoint_tids"].append(tid)
-        for counter_field in _IO_COUNTER_FIELDS:
+        for counter_field in counter_fields:
             delta = int(endpoint[counter_field]) - baseline[counter_field]
             if delta < 0:
                 provenance["counter_regression_clamps"] += 1
@@ -2366,11 +2370,7 @@ def _task_io_totals(
     if provenance["counter_regression_clamps"]:
         return None, "io_counter_regression", provenance
     return (
-        (
-            totals["io_read_bytes"],
-            totals["io_write_bytes"],
-            totals["io_cancelled_write_bytes"],
-        ),
+        tuple(totals[field] for field in counter_fields),
         "ok",
         provenance,
     )
@@ -2429,6 +2429,10 @@ def analyze(
             c,
             fork_io_baselines[(c.host_pid, c.exec_seq)],
             boundary_index=boundary_index,
+        )
+        cpu_totals, cpu_total_reason, _ = _task_io_totals(
+            run.events, samples, c, fork_io_baselines[(c.host_pid, c.exec_seq)],
+            boundary_index=boundary_index, counter_fields=("cpu_ns",),
         )
         has_exit = bool(exits_by_pid.get(c.host_pid))
         # Raw cumulative CPU (preserved separately, never used for the peak):
@@ -2505,6 +2509,8 @@ def analyze(
                     "loss_counts": run.loss_counts,
                     "quota_cores": run.quota_cores,
                     "cpu": cpu_prov,
+                    "cpu_total_ns": cpu_totals[0] if cpu_totals is not None else None,
+                    "cpu_total_reason": cpu_total_reason,
                     "rss": rss_prov,
                     "disk_io": io_prov,
                     "sample_attribution": {
@@ -5131,6 +5137,7 @@ __all__ = [
     "ClauseTelemetryIntegrityError",
     "RawRun",
     "SAMPLE_PERIOD_NS",
+    "MAX_RSS_SAMPLE_GAP_NS",
     "SENTINEL",
     "ToolCallToken",
     "WINDOW_NS",

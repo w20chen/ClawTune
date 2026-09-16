@@ -51,8 +51,8 @@ def test_scheduler_config_loads_env_file_and_resolves_paths(tmp_path, monkeypatc
     assert config.tool_resource_ebpf_required is False
 
 
-def test_scheduler_config_requires_ebpf_by_default() -> None:
-    assert SidecarConfig().tool_resource_ebpf_required is True
+def test_scheduler_config_allows_fallback_by_default() -> None:
+    assert SidecarConfig().tool_resource_ebpf_required is False
 
 
 def test_scheduler_config_loads_dynamic_cpu_capacity_overrides(monkeypatch) -> None:

@@ -40,7 +40,7 @@ class SidecarConfig:
     tool_resource_frozen: bool = False
     tool_resource_artifact_dir: Path | None = None
     tool_resource_container_executable: str = "docker"
-    tool_resource_ebpf_required: bool = True
+    tool_resource_ebpf_required: bool = False
     auth_token: str | None = None
     trace_dir: Path = Path("traces")
     trace_runtime_paths: dict[str, str] = field(default_factory=dict)
@@ -137,6 +137,7 @@ class SidecarConfig:
                     "cpu_time_seconds": "CLAWTUNE_TOOL_RESOURCE_CPU_TIME_BUCKETS_S",
                     "cpu_avg_cores": "CLAWTUNE_TOOL_RESOURCE_CPU_AVG_BUCKETS_CORES",
                     "cpu_peak_cores": "CLAWTUNE_TOOL_RESOURCE_CPU_PEAK_BUCKETS_CORES",
+                    "sampled_peak_rss_bytes": "CLAWTUNE_TOOL_RESOURCE_SAMPLED_RSS_BUCKETS_BYTES",
                     "memory_total_peak_bytes": "CLAWTUNE_TOOL_RESOURCE_MEMORY_TOTAL_BUCKETS_BYTES",
                     "memory_extra_peak_bytes": "CLAWTUNE_TOOL_RESOURCE_MEMORY_EXTRA_BUCKETS_BYTES",
                 }.items()
@@ -156,7 +157,7 @@ class SidecarConfig:
                 "docker",
             ),
             tool_resource_ebpf_required=os.getenv(
-                "CLAWTUNE_TOOL_RESOURCE_EBPF_REQUIRED", "true"
+                "CLAWTUNE_TOOL_RESOURCE_EBPF_REQUIRED", "false"
             ).lower()
             in {"1", "true", "yes", "on"},
             auth_token=os.getenv("CLAWTUNE_TOKEN"),

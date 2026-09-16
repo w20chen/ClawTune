@@ -1,17 +1,8 @@
-"""Independent per-execution cgroup v2 resource artifact.
+"""Legacy cgroup/process diagnostic artifact.
 
-Writes the cgroup/process-sampler view of a tool execution into a standalone
-``tool-resource/cgroup-resource-<execution_id>.json`` file next to the run's
-trace. This is an intentionally *independent* measurement source from native
-eBPF clause telemetry:
-
-- cpu / memory / disk / network here come from the cgroup v2 + procfs
-  sampler (``ToolRuntimeSample``), not from eBPF.
-- cgroup v2 exposes no native network counter, so ``network_*_bytes_delta``
-  are sourced by the sampler from the scope's processes (procfs-based) and
-  are expected to roughly agree with an eBPF network view when one exists.
-
-The ``span_end.resources.cgroup_artifact_path`` field references this file.
+CPU and disk may be independent of execution eBPF telemetry. Legacy network
+snapshots can use either BPF accounting or namespace procfs counters; without
+per-snapshot provenance this artifact reports their source as unknown.
 """
 from __future__ import annotations
 
@@ -67,8 +58,7 @@ class CgroupResourceResult:
     cgroup_read_error: str | None = None
     collector_errors: tuple[str, ...] = ()
     independence: str = (
-        "independent of native eBPF clause telemetry; "
-        "network sourced via procfs sampler (cgroup v2 has no native counter)"
+        "CPU/disk use the legacy sampler; network independence is unknown"
     )
 
     def to_dict(self) -> dict[str, Any]:
@@ -87,7 +77,7 @@ def build_cgroup_resource(
     cgroup_backed = sample.monitor_source == "cgroup-v2"
     process_source = "procfs-process-tree"
     network_source = (
-        process_source
+        "unknown-legacy-network-source"
         if sample.net_rx_bytes_delta is not None or sample.net_tx_bytes_delta is not None
         else "unavailable"
     )
@@ -107,9 +97,9 @@ def build_cgroup_resource(
         duration_ms=sample.duration_ms,
         cpu_time_s=sample.cpu_time_delta_s,
         cpu_utilization_avg_cores=sample.cpu_utilization_avg_cores,
-        memory_rss_before_bytes=sample.rss_bytes_before,
-        memory_rss_after_bytes=sample.rss_bytes_after,
-        memory_rss_peak_bytes=sample.rss_bytes_peak,
+        memory_rss_before_bytes=None if cgroup_backed else sample.rss_bytes_before,
+        memory_rss_after_bytes=None if cgroup_backed else sample.rss_bytes_after,
+        memory_rss_peak_bytes=None if cgroup_backed else sample.rss_bytes_peak,
         disk_read_bytes_delta=sample.read_bytes_delta,
         disk_write_bytes_delta=sample.write_bytes_delta,
         network_rx_bytes_delta=sample.net_rx_bytes_delta,
@@ -119,10 +109,10 @@ def build_cgroup_resource(
         sampling_quality=sample.sampling_quality,
         sampling_coverage_ms=sample.monitor_duration_ms,
         cpu_source="cgroup-v2-cpu.stat" if cgroup_backed else process_source,
-        memory_source="cgroup-v2-memory" if cgroup_backed else process_source,
+        memory_source="unavailable" if cgroup_backed else process_source,
         disk_source="cgroup-v2-io.stat" if cgroup_backed else process_source,
         network_source=network_source,
-        fallback_used=not cgroup_backed or network_source == process_source,
+        fallback_used=not cgroup_backed or network_source != "unavailable",
     )
 
 

@@ -38,7 +38,9 @@ def parser_response_fixture(monkeypatch):
 
 def row(i=0, **overrides):
     data = dict(repo="repo", bin="python", argv=("python", "job.py"), ts_start=float(i), ts_end=float(i + 1),
-                latency_ms=1000, cpu_ns_cumulative=2_000_000_000, cpu_peak_cores=4, memory_baseline_bytes=0, memory_total_peak_bytes=64 * 1024**2,
+                latency_ms=1000, cpu_ns_cumulative=2_000_000_000, cpu_peak_cores=4,
+                sampled_peak_rss_mb=64 * 1024**2 / 1_000_000,
+                memory_baseline_bytes=0, memory_total_peak_bytes=64 * 1024**2,
                 memory_extra_peak_bytes=64 * 1024**2, memory_environment_id="test",
                 memory_measurement="cgroup_v2_memory_current", memory_eligible=True)
     return ClauseObservation(**(data | overrides))
@@ -130,7 +132,8 @@ def test_all_backends_full_targets_and_schema():
     runtime = RuntimeToolResourceKB()
     runtime.observe_completed_call(CompletedCall("repo", "exec", "python job.py", 0, 1,
         cpu_time_seconds=2, cpu_time_eligible=True, cpu_peak_cores=4, cpu_peak_cores_eligible=True,
-        cpu_peak_window_ms=500, memory_total_peak_bytes=64 * 1024**2,
+        cpu_peak_window_ms=500, sampled_peak_rss_bytes=64 * 1024**2,
+        sampled_peak_rss_eligible=True, memory_total_peak_bytes=64 * 1024**2,
         memory_eligible=True, memory_measurement="cgroup_v2_memory_current", memory_baseline_bytes=0, memory_extra_peak_bytes=64 * 1024**2, memory_environment_id="test"))
     result, diagnostics = predict_call_load(runtime=runtime, trie=trie, lattice=lattice,
         query=ToolCallQuery("repo", "exec", "python job.py", 10), edges=EDGES)

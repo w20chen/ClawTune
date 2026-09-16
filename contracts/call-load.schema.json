@@ -258,6 +258,7 @@
         "cpu_time_seconds",
         "cpu_avg_cores",
         "cpu_peak_cores",
+        "sampled_peak_rss_bytes",
         "memory_total_peak_bytes",
         "memory_extra_peak_bytes"
       ],
@@ -328,6 +329,15 @@
                 }
               }
             }
+          ]
+        },
+        "sampled_peak_rss_bytes": {
+          "allOf": [
+            {"$ref": "#/$defs/estimate"},
+            {"properties": {
+              "unit": {"const": "bytes"},
+              "metric_definition": {"const": "ebpf_sampled_distinct_mm_rss_peak"}
+            }}
           ]
         },
         "memory_total_peak_bytes": {
@@ -414,6 +424,7 @@
               "cpu_time_seconds",
               "cpu_avg_cores",
               "cpu_peak_cores",
+              "sampled_peak_rss_bytes",
               "memory_total_peak_bytes",
               "memory_extra_peak_bytes"
             ],
@@ -484,6 +495,15 @@
                       }
                     }
                   }
+                ]
+              },
+              "sampled_peak_rss_bytes": {
+                "allOf": [
+                  {"$ref": "#/$defs/estimate"},
+                  {"properties": {
+                    "unit": {"const": "bytes"},
+                    "metric_definition": {"const": "ebpf_sampled_distinct_mm_rss_peak"}
+                  }}
                 ]
               },
               "memory_total_peak_bytes": {

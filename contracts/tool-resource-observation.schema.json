@@ -1,0 +1,256 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawtune.dev/contracts/tool-resource-observation.schema.json",
+  "title": "Per-tool resource observation",
+  "type": "object",
+  "required": [
+    "schema",
+    "backend",
+    "fallback_used",
+    "scope",
+    "attribution",
+    "window",
+    "metrics"
+  ],
+  "properties": {
+    "schema": {
+      "const": "tool_resource_observation_v1"
+    },
+    "backend": {
+      "enum": [
+        "ebpf",
+        "cgroup-v2"
+      ]
+    },
+    "fallback_used": {
+      "type": "boolean"
+    },
+    "scope": {
+      "enum": [
+        "process_tree",
+        "none",
+        "cgroup-v2"
+      ]
+    },
+    "attribution": {
+      "enum": [
+        "exclusive_process_tree",
+        "shared_scope",
+        "unattributed"
+      ]
+    },
+    "unavailable_reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "window": {
+      "type": "object",
+      "required": [
+        "clock",
+        "requested_start_ns",
+        "requested_end_ns",
+        "observed_start_ns",
+        "observed_end_ns",
+        "coverage_ratio"
+      ],
+      "properties": {
+        "clock": {
+          "enum": [
+            "linux_monotonic",
+            "openclaw_plugin_process_monotonic",
+            "sidecar_synthetic_duration_anchor"
+          ]
+        },
+        "requested_start_ns": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "requested_end_ns": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "observed_start_ns": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9]+$"
+        },
+        "observed_end_ns": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9]+$"
+        },
+        "coverage_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "max_sample_gap_ns": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "late_scope_binding": {
+          "type": "boolean"
+        },
+        "action_clock_unusable": {
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "action",
+            "collector",
+            "execution"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "object",
+      "required": [
+        "cpu_time",
+        "cpu_peak",
+        "memory_peak",
+        "disk_io",
+        "network_io"
+      ],
+      "properties": {
+        "cpu_time": {
+          "$ref": "#/$defs/metric"
+        },
+        "cpu_peak": {
+          "$ref": "#/$defs/metric"
+        },
+        "memory_peak": {
+          "$ref": "#/$defs/metric"
+        },
+        "disk_io": {
+          "$ref": "#/$defs/metric"
+        },
+        "network_io": {
+          "$ref": "#/$defs/metric"
+        },
+        "memory_charge_peak": {
+          "$ref": "#/$defs/metric"
+        }
+      },
+      "additionalProperties": false
+    },
+    "loss": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "execution_telemetry_quality": {
+      "type": "string"
+    },
+    "fallback_reason": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "metric": {
+      "type": "object",
+      "required": [
+        "available",
+        "eligible",
+        "reason",
+        "measurement"
+      ],
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "eligible": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "measurement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value_seconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "average_cores": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "value_cores": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "value_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "read_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "write_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "window_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sample_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "counter_exact": {
+          "type": "boolean"
+        },
+        "window_start_ns": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "window_end_ns": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "description": "eBPF-preferred tool observations. Dedicated cgroup fallback records its own collector window and never substitutes memory charge for RSS. Eligibility is metric-specific."
+}

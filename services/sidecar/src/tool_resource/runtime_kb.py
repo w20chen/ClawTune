@@ -84,7 +84,7 @@ import math
 from collections import Counter
 from bisect import bisect_right
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from tool_resource.features import (
@@ -94,13 +94,14 @@ from tool_resource.features import (
 from tool_resource.metrics import ecdf_quantile
 from tool_time.command import shell_command_heads, shell_command_prefix_tokens
 
-TARGETS = ("latency_ms", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes")
+TARGETS = ("latency_ms", "cpu_peak_cores", "sampled_peak_rss_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes")
 _CONDITIONAL_P90_QUANTILE = 0.9
 _MAX_PREFIX_DEPTH = 4  # frozen depth budget, same as the evaluated lattice
 _SCHEMA = "runtime_tool_resource_kb_v3"
 # Canonical targets share one eligible value per observation.
 LOAD_TARGET_SOURCES = {"duration_ms": "latency_ms", "cpu_time_seconds": "cpu_time_seconds",
                        "cpu_avg_cores": "cpu_avg_cores", "cpu_peak_cores": "cpu_peak_cores",
+                       "sampled_peak_rss_bytes": "sampled_peak_rss_bytes",
                        "memory_total_peak_bytes": "memory_total_peak_bytes",
                        "memory_extra_peak_bytes": "memory_extra_peak_bytes"}
 PMU_TARGET_SOURCES = {
@@ -140,6 +141,8 @@ class CompletedCall:
     cpu_time_seconds: float | None = None
     cpu_time_eligible: bool = False
     cpu_peak_window_ms: int | None = None
+    sampled_peak_rss_bytes: int | None = None
+    sampled_peak_rss_eligible: bool = False
     memory_baseline_bytes: int | None = None
     memory_total_peak_bytes: int | None = None
     memory_extra_peak_bytes: int | None = None
@@ -206,6 +209,8 @@ def _target_values(call: CompletedCall) -> dict[str, float]:
     if not call.censored and call.cpu_peak_cores_eligible and call.cpu_peak_window_ms == 500:
         if _valid_load_value(call.cpu_peak_cores):
             values["cpu_peak_cores"] = float(call.cpu_peak_cores)
+    if not call.censored and call.sampled_peak_rss_eligible and _valid_load_value(call.sampled_peak_rss_bytes):
+        values["sampled_peak_rss_bytes"] = float(call.sampled_peak_rss_bytes)
     if not call.censored:
         from clawtune_sidecar.monitoring.environment_memory import memory_labels
         values.update(memory_labels(asdict(call)))
@@ -831,7 +836,8 @@ def _clause_value(obs: ClauseObservation, source: str) -> float | None:
             return None
         target = source.removeprefix("load:")
         values = {"duration_ms": obs.latency_ms, "cpu_peak_cores": obs.cpu_peak_cores,
-                  "cpu_time_seconds": None if obs.cpu_ns_cumulative is None else obs.cpu_ns_cumulative / 1e9}
+                  "cpu_time_seconds": None if obs.cpu_ns_cumulative is None else obs.cpu_ns_cumulative / 1e9,
+                  "sampled_peak_rss_bytes": None if obs.sampled_peak_rss_mb is None else obs.sampled_peak_rss_mb * 1_000_000.0}
         from clawtune_sidecar.monitoring.environment_memory import memory_labels
         values.update(memory_labels(asdict(obs)))
         cpu = values["cpu_time_seconds"]

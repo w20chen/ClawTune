@@ -162,8 +162,8 @@ def test_completion_accepts_supported_timestamp_precision(timestamp):
     assert datetime.fromisoformat(event.occurred_at).tzinfo is not None
 
 
-@pytest.mark.parametrize("duration,expected_average", [(10000, .1), (1000, None), (20000, None), (0, None)])
-def test_cpu_average_requires_matching_action_window(duration, expected_average):
+@pytest.mark.parametrize("duration", [10000, 1000, 20000, 0])
+def test_sparse_cpu_counter_is_unavailable_even_when_endpoints_look_aligned(duration):
     from clawtune_sidecar.predictors.tool_resource import completed_call_from_completion, _trace_cpu_window_aligned
     from tool_resource.runtime_kb import _target_values
     sampler = QueueSampler([
@@ -176,16 +176,39 @@ def test_cpu_average_requires_matching_action_window(duration, expected_average)
         monitor.begin(request, "unknown")
         event = ToolCompletedEvent.model_validate(completion_data(duration_ms=duration))
         sample = monitor.complete(event)
-        assert sample.cpu_time_delta_s == 1  # retain raw diagnostic counter
-        assert sample.cpu_utilization_avg_cores == expected_average
+        assert sample.cpu_time_delta_s is None
+        assert sample.cpu_utilization_avg_cores is None
         targets = _target_values(completed_call_from_completion(event, sample, repo="r", start=request))
-        if expected_average is None:
-            assert "cpu_avg_cores" not in targets
-            assert "cpu_time_seconds" not in targets
+        assert "cpu_avg_cores" not in targets
+        assert "cpu_time_seconds" not in targets
         if duration == 0:
             assert "latency_ms" not in targets
         resources = {"monitor_start_wall_time_ns": "10000000000", "monitor_end_wall_time_ns": "20000000000"}
-        assert _trace_cpu_window_aligned(resources, sample.started_at, sample.ended_at) == (expected_average is not None)
+        assert _trace_cpu_window_aligned(resources, sample.started_at, sample.ended_at) == (duration == 10000)
+    finally:
+        monitor.stop()
+
+
+def test_dense_cpu_counter_is_interpolated_to_action_boundaries():
+    from dataclasses import replace
+    sampler = QueueSampler([
+        _snapshot(captured_at=9.95, cpu_s=0, rss=100, available=True, source="psutil-process-tree"),
+        _snapshot(captured_at=11.05, cpu_s=.55, rss=100, available=True, source="psutil-process-tree"),
+    ])
+    monitor = RealtimeToolMonitor(sampler=sampler, poll_interval_s=60)
+    try:
+        monitor.begin(_request(), "unknown")
+        key = next(iter(monitor._active))
+        points = [
+            {"ts": 9.95 + i * .05, "cpu_time_s": i * .025,
+             "source": "psutil-process-tree", "available": True}
+            for i in range(23)
+        ]
+        monitor._active[key] = replace(monitor._active[key], timeline=points)
+        sample = monitor.complete(ToolCompletedEvent.model_validate(completion_data(
+            occurred_at="1970-01-01T00:00:11Z", duration_ms=1000)))
+        assert sample.cpu_time_delta_s == pytest.approx(.5)
+        assert sample.cpu_utilization_avg_cores == pytest.approx(.5)
     finally:
         monitor.stop()
 
@@ -214,6 +237,6 @@ def test_cpu_peak_excludes_samples_outside_action():
             occurred_at="1970-01-01T00:00:12Z", duration_ms=1000))
         sample = monitor.complete(event)
         assert sample.cpu_peak_cores == pytest.approx(1)
-        assert sample.cpu_utilization_avg_cores is None
+        assert sample.cpu_utilization_avg_cores == pytest.approx(1)
     finally:
         monitor.stop()

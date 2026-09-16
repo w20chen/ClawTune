@@ -180,6 +180,7 @@ export interface SpanEndResources {
   completion_duration_ns?: string | null;
   /** Plugin-measured sidecar/plugin round-trip overhead (ns), outside the action. */
   sidecar_overhead_ns?: string | null;
+  action_monotonic_clock_domain?: "linux_monotonic" | "openclaw_plugin_process_monotonic" | "sidecar_synthetic_duration_anchor";
   /** Trace-relative path of the independent cgroup resource artifact. */
   cgroup_artifact_path?: string | null;
 
@@ -210,6 +211,37 @@ export interface SpanEndResources {
   process_count_before?: number | null;
   process_count_after?: number | null;
   monitor_source?: string | null;
+  /** Canonical per-metric eBPF observation; JSON Schema is the protocol source of truth. */
+  resource_observation?: ToolResourceObservation | null;
+}
+
+export interface ToolResourceMetricObservation {
+  available: boolean;
+  eligible: boolean;
+  reason: string;
+  measurement: string;
+  [key: string]: unknown;
+}
+
+export interface ToolResourceObservation {
+  schema: "tool_resource_observation_v1";
+  backend: "ebpf" | "cgroup-v2";
+  fallback_used: boolean;
+  fallback_reason?: string;
+  scope: "process_tree" | "cgroup-v2" | "none";
+  attribution: "exclusive_process_tree" | "shared_scope" | "unattributed";
+  window: {
+    kind?: "action" | "collector" | "execution";
+    clock: "linux_monotonic" | "openclaw_plugin_process_monotonic" | "sidecar_synthetic_duration_anchor";
+    requested_start_ns: string;
+    requested_end_ns: string;
+    observed_start_ns: string | null;
+    observed_end_ns: string | null;
+    coverage_ratio: number | null;
+    [key: string]: unknown;
+  };
+  metrics: Record<string, ToolResourceMetricObservation>;
+  unavailable_reason?: string;
 }
 
 export interface SpanEndRecord extends SpanIdentity {

@@ -32,7 +32,7 @@ def test_process_sampler_reads_cgroup_v2_scope(tmp_path) -> None:
     assert snapshot.available is True
     assert snapshot.source == "cgroup-v2"
     assert snapshot.process_cpu_time_s == 0.25
-    assert snapshot.rss_bytes == 4096
+    assert snapshot.rss_bytes is None
     assert snapshot.read_bytes == 10
     assert snapshot.write_bytes == 20
     assert snapshot.target_pid == 123
@@ -62,7 +62,7 @@ def test_process_sampler_reads_cgroup_v2_scope_without_pid(tmp_path) -> None:
     assert snapshot.available is True
     assert snapshot.source == "cgroup-v2"
     assert snapshot.process_cpu_time_s == 0.5
-    assert snapshot.rss_bytes == 8192
+    assert snapshot.rss_bytes is None
 
 
 def test_cgroup_v2_requires_core_cgroup_metrics(tmp_path, monkeypatch) -> None:

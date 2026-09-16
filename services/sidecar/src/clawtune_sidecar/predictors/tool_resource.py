@@ -1676,7 +1676,10 @@ def observation_from_completion(
     ts_end = sample.ended_at
     if ts_end < ts_start:
         ts_end = ts_start
-    exclude_resource_labels = _completion_uses_shared_resources(event, start) or not _sample_resources_usable(sample)
+    exclude_resource_labels = _sample_attribution_ineligible(sample, event, start)
+    cpu_time_eligible = _sample_metric_eligible(sample, "cpu_time")
+    cpu_peak_eligible = _sample_metric_eligible(sample, "cpu_peak")
+    memory_peak_eligible = _sample_metric_eligible(sample, "memory_peak")
     return ClauseObservation(
         repo=repo,
         bin=str(clause["bin"]),
@@ -1684,10 +1687,14 @@ def observation_from_completion(
         ts_start=ts_start,
         ts_end=ts_end,
         latency_ms=max(0.0, float(event.duration_ms)),
-        cpu_peak_cores=None,  # legacy helper cannot turn averages into peaks
-        sampled_peak_rss_mb=None,  # process/cgroup memory is not clause distinct-mm RSS
+        cpu_peak_cores=(sample.cpu_peak_cores if cpu_peak_eligible and not exclude_resource_labels else None),
+        sampled_peak_rss_mb=(
+            sample.rss_bytes_peak / 1_000_000.0
+            if memory_peak_eligible and not exclude_resource_labels and sample.rss_bytes_peak is not None
+            else None
+        ),
         cpu_ns_cumulative=(
-            None if exclude_resource_labels else _cpu_ns(sample.cpu_time_delta_s)
+            None if exclude_resource_labels or not cpu_time_eligible else _cpu_ns(sample.cpu_time_delta_s)
         ),
         in_loop=False,
         in_pipe=False,
@@ -1709,7 +1716,10 @@ def completed_call_from_completion(
     ts_end = sample.ended_at
     if ts_end < ts_start:
         ts_end = ts_start
-    exclude_resource_labels = _completion_uses_shared_resources(event, start) or not _sample_resources_usable(sample)
+    exclude_resource_labels = _sample_attribution_ineligible(sample, event, start)
+    cpu_time_eligible = _sample_metric_eligible(sample, "cpu_time")
+    cpu_peak_eligible = _sample_metric_eligible(sample, "cpu_peak")
+    memory_peak_eligible = _sample_metric_eligible(sample, "memory_peak")
     pmu = _quality_gated_pmu_metrics(sample.pmu_profile if event.execution_id else None,
                                    execution_id=event.execution_id)
     return CompletedCall(
@@ -1723,14 +1733,18 @@ def completed_call_from_completion(
         # A monitor average is not a fixed-window peak. Only explicitly measured
         # peak labels may populate either peak target.
         cpu_peak_cores=sample.cpu_peak_cores,
-        cpu_peak_cores_eligible=not exclude_resource_labels and sample.cpu_peak_cores is not None,
+        cpu_peak_cores_eligible=(not exclude_resource_labels and cpu_peak_eligible
+                                 and sample.cpu_peak_cores is not None),
         cpu_peak_window_ms=500,
+        sampled_peak_rss_bytes=sample.rss_bytes_peak,
+        sampled_peak_rss_eligible=(not exclude_resource_labels and memory_peak_eligible
+                                   and sample.rss_bytes_peak is not None),
         **{k: v for k, v in (sample.environment_memory or {}).items()
            if k in {"memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes",
                     "memory_measurement", "memory_environment_id", "memory_eligible"}},
         cpu_time_seconds=sample.cpu_time_delta_s,
-        cpu_time_eligible=(not exclude_resource_labels and sample.cpu_time_delta_s is not None
-                           and sample.cpu_utilization_avg_cores is not None),
+        cpu_time_eligible=(not exclude_resource_labels and cpu_time_eligible
+                           and sample.cpu_time_delta_s is not None),
         pmu_cycles=pmu.get("cycles"),
         pmu_instructions=pmu.get("instructions"),
         pmu_llc_read_accesses=pmu.get("llc_read_accesses"),
@@ -1781,9 +1795,10 @@ def _observation_from_tool_span(
     ts_start, ts_end = _span_times(end, duration_ms)
     resources = end.get("resources") if isinstance(end.get("resources"), dict) else {}
     execution = end.get("execution") if isinstance(end.get("execution"), dict) else {}
-    exclude_resource_labels = not _trace_resources_usable(resources) or _uses_shared_resources(resources) or _uses_shared_resources(
-        execution
-    )
+    observation = resources.get("resource_observation")
+    observation = observation if isinstance(observation, Mapping) else None
+    exclude_resource_labels = _trace_attribution_ineligible(resources, execution, observation)
+    observed_memory = _resource_metric(observation, "memory_peak")
     return ClauseObservation(
         repo=repo,
         bin=str(clause["bin"]),
@@ -1791,10 +1806,26 @@ def _observation_from_tool_span(
         ts_start=ts_start,
         ts_end=ts_end,
         latency_ms=duration_ms,
-        cpu_peak_cores=None,
-        sampled_peak_rss_mb=None,
+        cpu_peak_cores=(
+            _optional_float(resources.get("cpu_peak_cores"))
+            if _trace_metric_eligible(resources, "cpu_peak") and not exclude_resource_labels
+            else None
+        ),
+        sampled_peak_rss_mb=(
+            float(observed_memory["value_bytes"]) / 1_000_000.0
+            if observed_memory.get("eligible") is True
+            and not exclude_resource_labels
+            and isinstance(observed_memory.get("value_bytes"), (int, float))
+            else None
+        ),
         cpu_ns_cumulative=(
-            None if exclude_resource_labels else _cpu_ns(resources.get("cpu_time_s"))
+            None
+            if exclude_resource_labels or not (
+                _trace_metric_eligible(resources, "cpu_time")
+                if observation is not None
+                else _trace_cpu_window_aligned(resources, ts_start, ts_end)
+            )
+            else _cpu_ns(resources.get("cpu_time_s"))
         ),
         in_loop=False,
         in_pipe=False,
@@ -1829,9 +1860,10 @@ def _completed_call_from_tool_span(
     resources = end.get("resources") if isinstance(end.get("resources"), dict) else {}
     peak_cpu_cores = _optional_float(resources.get("cpu_peak_cores"))
     execution = end.get("execution") if isinstance(end.get("execution"), dict) else {}
-    exclude_resource_labels = not _trace_resources_usable(resources) or _uses_shared_resources(resources) or _uses_shared_resources(
-        execution
-    )
+    observation = resources.get("resource_observation")
+    observation = observation if isinstance(observation, Mapping) else None
+    exclude_resource_labels = _trace_attribution_ineligible(resources, execution, observation)
+    observed_memory = _resource_metric(observation, "memory_peak")
     pmu = _quality_gated_pmu_metrics(resources.get("pmu") if execution.get("execution_id") else None,
                                    execution_id=execution.get("execution_id"))
     return CompletedCall(
@@ -1844,11 +1876,25 @@ def _completed_call_from_tool_span(
         outcome=str(status.get("code", "unknown")),
         cpu_peak_cores=peak_cpu_cores,
         cpu_peak_cores_eligible=(not exclude_resource_labels and peak_cpu_cores is not None
-                                 and resources.get("cpu_peak_window_ms") == 500),
+                                 and resources.get("cpu_peak_window_ms") == 500
+                                 and (_trace_metric_eligible(resources, "cpu_peak")
+                                      if observation is not None else True)),
         cpu_peak_window_ms=resources.get("cpu_peak_window_ms"),
+        sampled_peak_rss_bytes=(
+            int(observed_memory["value_bytes"])
+            if observed_memory.get("available") is True
+            and isinstance(observed_memory.get("value_bytes"), (int, float))
+            else None
+        ),
+        sampled_peak_rss_eligible=(
+            not exclude_resource_labels
+            and observed_memory.get("eligible") is True
+        ),
         cpu_time_seconds=_optional_float(resources.get("cpu_time_s", resources.get("cpu_time_delta_s"))),
         cpu_time_eligible=(not exclude_resource_labels
-            and _trace_cpu_window_aligned(resources, ts_start, ts_end)),
+            and (_trace_metric_eligible(resources, "cpu_time")
+                 if observation is not None
+                 else _trace_cpu_window_aligned(resources, ts_start, ts_end))),
         memory_baseline_bytes=resources.get("memory_baseline_bytes"),
         memory_total_peak_bytes=resources.get("memory_total_peak_bytes"),
         memory_extra_peak_bytes=resources.get("memory_extra_peak_bytes"),
@@ -1879,6 +1925,11 @@ def _trace_cpu_window_aligned(resources: dict[str, Any], start: float, end: floa
 
 def _sample_resources_usable(sample: ToolRuntimeSample) -> bool:
     # A numeric zero from one late snapshot is not a measured tool CPU label.
+    if isinstance(sample.resource_observation, Mapping):
+        return any(
+            _sample_metric_eligible(sample, name)
+            for name in ("cpu_time", "cpu_peak", "memory_peak", "disk_io")
+        )
     return (
         sample.sampling_quality == "ok"
         and sample.sampling_point_count >= 2
@@ -1888,9 +1939,38 @@ def _sample_resources_usable(sample: ToolRuntimeSample) -> bool:
     )
 
 
+def _resource_metric(observation: Mapping[str, Any] | None, name: str) -> Mapping[str, Any]:
+    metrics = observation.get("metrics") if isinstance(observation, Mapping) else None
+    value = metrics.get(name) if isinstance(metrics, Mapping) else None
+    return value if isinstance(value, Mapping) else {}
+
+
+def _sample_metric_eligible(sample: ToolRuntimeSample, name: str) -> bool:
+    if isinstance(sample.resource_observation, Mapping):
+        return _resource_metric(sample.resource_observation, name).get("eligible") is True
+    if name == "cpu_time":
+        return sample.cpu_utilization_avg_cores is not None
+    if name == "cpu_peak":
+        return sample.cpu_peak_cores is not None
+    if name == "memory_peak":
+        return False
+    return _sample_resources_usable(sample)
+
+
+def _trace_metric_eligible(resources: Mapping[str, Any], name: str) -> bool:
+    observation = resources.get("resource_observation")
+    return _resource_metric(observation if isinstance(observation, Mapping) else None, name).get("eligible") is True
+
+
 def _trace_resources_usable(resources: dict[str, Any]) -> bool:
     # Fail closed for legacy records without quality evidence. Keep latency
     # and independently validated PMU even when resource labels are rejected.
+    observation = resources.get("resource_observation")
+    if isinstance(observation, Mapping):
+        return any(
+            _resource_metric(observation, name).get("eligible") is True
+            for name in ("cpu_time", "cpu_peak", "memory_peak", "disk_io")
+        )
     ratio = _optional_float(resources.get("coverage_ratio"))
     return (
         resources.get("sampling_quality") == "ok"
@@ -1898,6 +1978,34 @@ def _trace_resources_usable(resources: dict[str, Any]) -> bool:
         and resources["sampling_point_count"] >= 2
         and ratio is not None and ratio > 0
         and resources.get("coverage_reason") != "monitor_window_no_overlap"
+    )
+
+
+def _sample_attribution_ineligible(
+    sample: ToolRuntimeSample,
+    event: ToolCompletedEvent,
+    start: ToolBeforeRequest | None,
+) -> bool:
+    observation = sample.resource_observation
+    if isinstance(observation, Mapping):
+        # The eBPF observation describes the actual measurement scope. It is
+        # authoritative when finalized execution telemetry replaces an early
+        # shared runtime scope carried by the hook event.
+        return observation.get("attribution") != "exclusive_process_tree"
+    return _completion_uses_shared_resources(event, start) or not _sample_resources_usable(sample)
+
+
+def _trace_attribution_ineligible(
+    resources: dict[str, Any],
+    execution: dict[str, Any],
+    observation: Mapping[str, Any] | None,
+) -> bool:
+    if observation is not None:
+        return observation.get("attribution") != "exclusive_process_tree"
+    return (
+        not _trace_resources_usable(resources)
+        or _uses_shared_resources(resources)
+        or _uses_shared_resources(execution)
     )
 
 
@@ -2254,6 +2362,9 @@ def _compact_clauses(clauses: Any) -> list[dict[str, Any]]:
                 # always agree; cumulative_cpu_s is the human-readable form.
                 "cpu_ns_cumulative": cpu_ns,
                 "cumulative_cpu_s": _cpu_ns_to_s(cpu_ns),
+                "cpu_time_seconds": _cpu_ns_to_s(_nested(row, ("provenance", "cpu_time_ns"))),
+                "t_exec_ns": _nested(row, ("provenance", "t_exec_ns")),
+                "t_end_ns": _nested(row, ("provenance", "t_end_ns")),
                 "peak_cpu_cores": row.get("peak_cpu_cores"),
                 "peak_memory_mb": _first_value(
                     row.get("peak_memory_mb"), row.get("sampled_peak_rss_mb")
@@ -2762,21 +2873,21 @@ def _prediction_algorithms_payload() -> dict[str, Any]:
                 "name": "lattice_shrinkage",
                 "family": "context_lattice",
                 "source": "LatticeTimeKB",
-                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes"],
+                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "sampled_peak_rss_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes"],
                 "outputs": ["clause_point_prediction_ms", "resource_p50", "resource_p90"],
             },
             {
                 "name": "lattice_loso",
                 "family": "context_lattice",
                 "source": "LatticeTimeKB",
-                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes"],
+                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "sampled_peak_rss_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes"],
                 "outputs": ["clause_point_prediction_ms", "resource_p50", "resource_p90"],
             },
             {
                 "name": "lattice_max_cardinality",
                 "family": "context_lattice",
                 "source": "LatticeTimeKB",
-                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes"],
+                "targets": ["latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "sampled_peak_rss_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes"],
                 "outputs": ["clause_point_prediction_ms", "resource_p50", "resource_p90"],
             },
             {

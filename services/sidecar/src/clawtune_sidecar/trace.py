@@ -249,9 +249,29 @@ class AgentTestBenchTraceWriter:
         # Use monotonic clock for durations so they are immune to wall-clock
         # adjustments (NTP, leap seconds).  Wall-clock is preserved separately.
         duration_ns_value = int(max(0, event.duration_ms) * 1_000_000)
-        mono_end_ns_value = time.monotonic_ns()
-        mono_start_ns = str(max(0, mono_end_ns_value - duration_ns_value))
-        mono_end_ns = str(mono_end_ns_value)
+        producer_mono_start = (
+            int(event.action_start_monotonic_ns)
+            if event.action_start_monotonic_ns is not None
+            else None
+        )
+        producer_mono_end = (
+            int(event.action_end_monotonic_ns)
+            if event.action_end_monotonic_ns is not None
+            else None
+        )
+        if (
+            event.monotonic_clock_domain == "linux_monotonic"
+            and producer_mono_start is not None
+            and producer_mono_end is not None
+            and producer_mono_end >= producer_mono_start
+        ):
+            mono_start_ns = str(producer_mono_start)
+            mono_end_ns = str(producer_mono_end)
+            duration_ns_value = producer_mono_end - producer_mono_start
+        else:
+            mono_end_ns_value = time.monotonic_ns()
+            mono_start_ns = str(max(0, mono_end_ns_value - duration_ns_value))
+            mono_end_ns = str(mono_end_ns_value)
         duration_ns = str(duration_ns_value)
 
         tool_exit_code = _tool_exit_code(event.raw_result, event.tool_name)
@@ -321,6 +341,32 @@ class AgentTestBenchTraceWriter:
             shared_runtime_process=shared_runtime,
             shared_sandbox_container=shared_sandbox,
         )
+        resource_observation = sample.resource_observation
+        if isinstance(resource_observation, dict):
+            observed_window = resource_observation.get("window")
+            observed_window = observed_window if isinstance(observed_window, dict) else {}
+            observed_ratio = observed_window.get("coverage_ratio")
+            _cov_ratio = (
+                max(0.0, min(1.0, float(observed_ratio)))
+                if isinstance(observed_ratio, (int, float))
+                else None
+            )
+            _cov_dur_ns = (
+                int(_action_dur_ns * _cov_ratio)
+                if _cov_ratio is not None
+                else None
+            )
+            if resource_observation.get("attribution") == "shared_scope":
+                _cov_reason = (
+                    "shared_sandbox_container" if shared_sandbox else "shared_runtime_process"
+                )
+            elif observed_window.get("complete") is True:
+                _cov_reason = "full_window"
+            else:
+                _cov_reason = (
+                    resource_observation.get("unavailable_reason")
+                    or (str(observed_window["kind"]) + "_window_only" if observed_window.get("kind") else "ebpf_sampling_gap")
+                )
 
         if _cov_dur_ns == 0:
             # Preserve the raw timeline for diagnosis, but never export a
@@ -334,11 +380,15 @@ class AgentTestBenchTraceWriter:
 
         # Inline the independent sampler view; it is no longer written to a
         # second JSON artifact beside the same trace.
-        cgroup_resource = build_cgroup_resource(
-            sample, execution_id=event.execution_id, tool_call_id=event.tool_call_id,
-            tool_name=event.tool_name,
-            attribution_source=scope.attribution_source if scope is not None else None,
-        ).to_dict()
+        cgroup_resource = (
+            build_cgroup_resource(
+                sample, execution_id=event.execution_id, tool_call_id=event.tool_call_id,
+                tool_name=event.tool_name,
+                attribution_source=scope.attribution_source if scope is not None else None,
+            ).to_dict()
+            if sample.monitor_source in {"cgroup-v2", "psutil-process-tree"}
+            else None
+        )
         # span_end
         self._append(filepath, {
             "schema_version": 6,
@@ -373,7 +423,11 @@ class AgentTestBenchTraceWriter:
             "resources": {
                 "attribution_status": _v6_attribution(sample, scope),
                 "attribution_source": scope.attribution_source if scope is not None else None,
-                "scope": "cgroup" if (scope is not None and scope.cgroup_path) else ("process_tree" if has_pid else "none"),
+                "scope": (
+                    resource_observation.get("scope", "none")
+                    if isinstance(resource_observation, dict)
+                    else ("cgroup" if (scope is not None and scope.cgroup_path) else ("process_tree" if has_pid else "none"))
+                ),
                 "quality": _v6_quality(sample.sampling_quality, _cov_reason),
                 "monitor_start_wall_time_ns": str(_mon_start_wall) if _mon_start_wall is not None else None,
                 "monitor_end_wall_time_ns": str(_mon_end_wall) if _mon_end_wall is not None else None,
@@ -387,7 +441,15 @@ class AgentTestBenchTraceWriter:
                 "decision_duration_ns": event.decision_duration_ns,
                 "completion_duration_ns": event.completion_duration_ns,
                 "sidecar_overhead_ns": event.sidecar_overhead_ns,
+                "action_monotonic_clock_domain": (
+                    event.monotonic_clock_domain
+                    if event.monotonic_clock_domain == "linux_monotonic"
+                    and producer_mono_start is not None and producer_mono_end is not None
+                    and producer_mono_end >= producer_mono_start
+                    else "sidecar_synthetic_duration_anchor"
+                ),
                 "cgroup_resource": cgroup_resource,
+                "resource_observation": resource_observation,
 
                 **(sample.environment_memory or {}),
                 "cpu_peak_cores": sample.cpu_peak_cores,
@@ -1158,8 +1220,8 @@ def _monitor_timestamps_ns(sample: ToolRuntimeSample) -> tuple[int | None, int |
     Returns (monitor_start_wall_ns, monitor_end_wall_ns,
              monitor_start_mono_ns, monitor_end_mono_ns).
     """
-    msw = int(sample.monitor_start_wall_s * 1_000_000_000) if sample.monitor_start_wall_s > 0 else None
-    mew = int(sample.monitor_end_wall_s * 1_000_000_000) if sample.monitor_end_wall_s > 0 else None
+    msw = int(sample.monitor_start_wall_s * 1_000_000_000) if sample.monitor_start_wall_s is not None and sample.monitor_start_wall_s > 0 else None
+    mew = int(sample.monitor_end_wall_s * 1_000_000_000) if sample.monitor_end_wall_s is not None and sample.monitor_end_wall_s > 0 else None
     msm = int(sample.monitor_start_monotonic_s * 1_000_000_000) if sample.monitor_start_monotonic_s else None
     mem = int(sample.monitor_end_monotonic_s * 1_000_000_000) if sample.monitor_end_monotonic_s else None
     return msw, mew, msm, mem
@@ -1305,7 +1367,11 @@ def _is_shared_sandbox_scope(scope: Any | None) -> bool:
 
 def _v6_attribution(sample: ToolRuntimeSample, scope: Any | None = None) -> str:
     """Map legacy attribution_status to v6 AttributionStatus."""
-    if _is_shared_runtime_scope(scope) or _is_shared_sandbox_scope(scope):
+    if (
+        _is_shared_runtime_scope(scope)
+        or _is_shared_sandbox_scope(scope)
+        or sample.attribution_status == "shared-runtime"
+    ):
         return "partially_attributed"
     mapping = {
         "pid": "attributed",

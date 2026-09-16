@@ -1,11 +1,13 @@
 import type {CallLoadPrediction, LoadEstimate, LoadTarget, PmuTarget, ToolDecision} from "./contracts.js";
 
 const targets: LoadTarget[] = [
-  "duration_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes",
+  "duration_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "sampled_peak_rss_bytes",
+  "memory_total_peak_bytes", "memory_extra_peak_bytes",
 ];
 const labels: Record<LoadTarget, string> = {
   duration_ms: "Duration", cpu_time_seconds: "CPU time", cpu_avg_cores: "CPU average",
-  cpu_peak_cores: "CPU peak", memory_total_peak_bytes: "Memory total", memory_extra_peak_bytes: "Memory extra",
+  cpu_peak_cores: "CPU peak", sampled_peak_rss_bytes: "Sampled RSS peak",
+  memory_total_peak_bytes: "Memory total", memory_extra_peak_bytes: "Memory extra",
 };
 const clean = (value: string): string => value.replace(/[\x00-\x1f\x7f]/g, " ");
 
@@ -56,8 +58,8 @@ const number = (value: number | null, scale = 1): string =>
   value === null ? "-" : Number((value / scale).toPrecision(6)).toString();
 
 function formatEstimate(target: LoadTarget, estimate: LoadEstimate): string[] {
-  const scale = target.startsWith("memory_") ? 1024 ** 2 : 1;
-  const unit = target.startsWith("memory_") ? "MiB" : estimate.unit;
+  const scale = target.endsWith("_bytes") ? 1024 ** 2 : 1;
+  const unit = target.endsWith("_bytes") ? "MiB" : estimate.unit;
   const source = `${estimate.backend}/${estimate.method}`;
   const lines = [estimate.status === "available"
     ? `    ${labels[target].padEnd(12)} ${number(estimate.avg, scale).padStart(12)} ${number(estimate.p50, scale).padStart(12)} ${number(estimate.p90, scale).padStart(12)}  ${unit}  ${source}`

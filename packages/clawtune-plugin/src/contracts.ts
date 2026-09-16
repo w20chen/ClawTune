@@ -160,7 +160,7 @@ export type ToolDecision = {
 // Mirror of contracts/call-load.schema.json. Native KB payloads below are
 // migration diagnostics; consumers should use prediction.call_prediction.
 export type LoadBackend = "runtime" | "trie" | "lattice";
-export type LoadTarget = "duration_ms" | "cpu_time_seconds" | "cpu_avg_cores" | "cpu_peak_cores" | "memory_total_peak_bytes" | "memory_extra_peak_bytes";
+export type LoadTarget = "duration_ms" | "cpu_time_seconds" | "cpu_avg_cores" | "cpu_peak_cores" | "sampled_peak_rss_bytes" | "memory_total_peak_bytes" | "memory_extra_peak_bytes";
 export type LoadEstimate = {
   status: "available" | "unavailable";
   unit: "ms" | "core_seconds" | "cores" | "bytes";
@@ -323,6 +323,10 @@ export type ToolCompletedEvent = CommonEvent & {
   plugin_window_ns?: string | null;
   /** OpenClaw-reported tool action duration (ns). */
   tool_body_ns?: string | null;
+  /** Producer action boundaries in the plugin process monotonic clock. */
+  action_start_monotonic_ns?: string | null;
+  action_end_monotonic_ns?: string | null;
+  monotonic_clock_domain?: "linux_monotonic" | "openclaw_plugin_process_monotonic" | null;
   /** Plugin-measured before-hook sidecar round-trip overhead (ns). */
   decision_duration_ns?: string | null;
   /** Plugin-measured after-hook sidecar round-trip overhead (ns). */

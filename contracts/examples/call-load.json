@@ -175,6 +175,27 @@
       "calibration": "unvalidated",
       "unavailable_reason": null
     },
+    "sampled_peak_rss_bytes": {
+      "status": "unavailable",
+      "unit": "bytes",
+      "metric_definition": "ebpf_sampled_distinct_mm_rss_peak",
+      "avg": null,
+      "p50": null,
+      "p90": null,
+      "buckets": {
+        "edges": [16777216, 67108864, 268435456, 1073741824, 4294967296],
+        "interval": "left_closed_right_open",
+        "probabilities": null
+      },
+      "backend": "runtime",
+      "method": "unavailable",
+      "evidence_counts": [],
+      "sample_count": 0,
+      "context": [],
+      "assumptions": [],
+      "calibration": "unvalidated",
+      "unavailable_reason": "no_eligible_observations"
+    },
     "memory_total_peak_bytes": {
       "status": "available",
       "unit": "bytes",

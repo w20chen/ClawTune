@@ -142,7 +142,10 @@ def test_eight_owners_keep_exclusive_scope_against_late_docker_events():
         })
         sample = monitor.complete(event)
         assert sample.monitor_source == "cgroup-v2"
-        assert sample.cpu_time_delta_s == pytest.approx(index + 1)
+        # Synthetic sampler timestamps are unrelated to the producer action
+        # clock, so the cumulative counter must not be presented as a tool
+        # action delta.
+        assert sample.cpu_time_delta_s is None
 
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
@@ -218,8 +221,7 @@ def test_bind_scope_switches_unattributed_start_to_cgroup_baseline() -> None:
 
     assert sample.monitor_source == "cgroup-v2"
     assert sample.attribution_status == "cgroup-v2"
-    assert sample.cpu_time_delta_s is not None
-    assert abs(sample.cpu_time_delta_s - 0.2) < 0.001
+    assert sample.cpu_time_delta_s is None
     assert sample.rss_bytes_before == 4096
     assert sample.rss_bytes_after == 8192
 
@@ -300,7 +302,7 @@ def test_docker_exec_pid_binding_rebases_shared_cgroup_sample() -> None:
 
     assert sample.monitor_source == "process-tree"
     assert sample.attribution_status == "pid"
-    assert abs((sample.cpu_time_delta_s or 0) - 0.2) < 0.001
+    assert sample.cpu_time_delta_s is None
     assert sample.rss_bytes_before == 4096
     assert sample.rss_bytes_after == 8192
 
@@ -386,7 +388,7 @@ def test_trusted_exec_pid_binding_rebases_shared_cgroup_baseline() -> None:
     assert sample.monitor_source == "psutil-process-tree"
     assert sample.attribution_status == "pid"
     # Without the rebase this was max(0, 1.2 - 100.0) == 0.0.
-    assert abs((sample.cpu_time_delta_s or 0) - 0.2) < 0.001
+    assert sample.cpu_time_delta_s is None
     assert sample.rss_bytes_before == 4096
     assert sample.rss_bytes_after == 8192
     assert sample.rss_bytes_peak == 8192
@@ -492,7 +494,7 @@ def _snapshot_with_net(
     )
 
 
-def test_complete_cgroup_net_falls_back_to_last_live_sample() -> None:
+def test_complete_cgroup_net_does_not_invent_zero_from_missing_endpoint() -> None:
     # A cgroup-scoped tool's process usually exits before the completion
     # snapshot, so the final /proc/<pid>/net/dev read fails (end net is None)
     # even though the live window baseline had net values.  complete() must
@@ -540,10 +542,10 @@ def test_complete_cgroup_net_falls_back_to_last_live_sample() -> None:
 
     assert sample.monitor_source == "cgroup-v2"
     # Without the fallback the end net is None and the delta would be None;
-    # with the last-live-sample fallback it is a real window aggregate (0 here
-    # because no poll ran, but crucially not None).
-    assert sample.net_rx_bytes_delta == 0
-    assert sample.net_tx_bytes_delta == 0
+    # No sample brackets the action end, so zero would be indistinguishable
+    # from an unobserved value and must remain unavailable.
+    assert sample.net_rx_bytes_delta is None
+    assert sample.net_tx_bytes_delta is None
 
 
 def test_net_window_delta_uses_last_live_timeline_sample() -> None:

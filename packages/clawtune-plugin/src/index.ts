@@ -936,6 +936,15 @@ export default definePluginEntry({
     // the split (the payload is serialized at report time).
     completion.plugin_window_ns = durNs.toString();
     completion.tool_body_ns = openclawActionNs === null ? null : openclawActionNs.toString();
+    completion.action_end_monotonic_ns = endMono.toString();
+    completion.action_start_monotonic_ns = (
+      openclawActionNs === null
+        ? startMono.toString()
+        : (endMono >= openclawActionNs ? endMono - openclawActionNs : 0n).toString()
+    );
+    completion.monotonic_clock_domain = process.platform === "linux"
+      ? "linux_monotonic"
+      : "openclaw_plugin_process_monotonic";
     completion.decision_duration_ns = decisionOverheadNs.toString();
     completion.sidecar_overhead_ns = decisionOverheadNs.toString();
     let completionOverheadNs = 0n;

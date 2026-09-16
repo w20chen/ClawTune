@@ -137,6 +137,9 @@ class ToolCompletedEvent(CommonEvent):
     duration_ms: int = Field(ge=0)
     plugin_window_ns: str | None = Field(default=None, pattern=r"^[0-9]+$")
     tool_body_ns: str | None = Field(default=None, pattern=r"^[0-9]+$")
+    action_start_monotonic_ns: str | None = Field(default=None, pattern=r"^[0-9]+$")
+    action_end_monotonic_ns: str | None = Field(default=None, pattern=r"^[0-9]+$")
+    monotonic_clock_domain: Literal["linux_monotonic", "openclaw_plugin_process_monotonic"] | None = None
     decision_duration_ns: str | None = Field(default=None, pattern=r"^[0-9]+$")
     completion_duration_ns: str | None = Field(default=None, pattern=r"^[0-9]+$")
     sidecar_overhead_ns: str | None = Field(default=None, pattern=r"^[0-9]+$")

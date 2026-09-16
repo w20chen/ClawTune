@@ -7,14 +7,16 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-LoadTarget = Literal["duration_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes"]
+LoadTarget = Literal["duration_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores", "sampled_peak_rss_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes"]
 TARGET_UNITS = {"duration_ms": "ms", "cpu_time_seconds": "core_seconds", "cpu_avg_cores": "cores",
-                "cpu_peak_cores": "cores", "memory_total_peak_bytes": "bytes", "memory_extra_peak_bytes": "bytes"}
+                "cpu_peak_cores": "cores", "sampled_peak_rss_bytes": "bytes",
+                "memory_total_peak_bytes": "bytes", "memory_extra_peak_bytes": "bytes"}
 TARGET_DEFINITIONS = {
     "duration_ms": "tool_hook_elapsed",
     "cpu_time_seconds": "owned_workload_cpu_time",
     "cpu_avg_cores": "owned_cpu_time_over_tool_hook_elapsed",
     "cpu_peak_cores": "owned_cpu_fixed_500ms_window_peak",
+    "sampled_peak_rss_bytes": "ebpf_sampled_distinct_mm_rss_peak",
     "memory_total_peak_bytes": "environment_memory_total_peak",
     "memory_extra_peak_bytes": "environment_memory_peak_minus_baseline",
 }
@@ -114,7 +116,7 @@ class ClauseLoadPrediction(StrictModel):
         definitions = dict(TARGET_DEFINITIONS, duration_ms="clause_elapsed",
                            cpu_avg_cores="owned_cpu_time_over_clause_elapsed")
         if set(self.targets) != set(TARGET_UNITS) or not self.argv:
-            raise ValueError("clause prediction requires argv and all six targets")
+            raise ValueError("clause prediction requires argv and all targets")
         for target, estimate in self.targets.items():
             if estimate.unit != TARGET_UNITS[target] or estimate.metric_definition != definitions[target]:
                 raise ValueError("clause target unit or measurement definition mismatch")
@@ -134,7 +136,7 @@ class CallLoadPrediction(StrictModel):
     @model_validator(mode="after")
     def complete_targets(self) -> "CallLoadPrediction":
         if set(self.targets) != set(TARGET_UNITS):
-            raise ValueError("call prediction requires all six targets")
+            raise ValueError("call prediction requires all targets")
         for target, estimate in self.targets.items():
             if estimate.unit != TARGET_UNITS[target] or estimate.metric_definition != TARGET_DEFINITIONS[target]:
                 raise ValueError("target unit or measurement definition mismatch")

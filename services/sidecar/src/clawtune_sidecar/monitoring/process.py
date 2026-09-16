@@ -39,7 +39,7 @@ def _net_accounting_isolated(scope: ResourceScope) -> bool:
     per-tgid BCC tracker's reset() must not be used for them.
     """
     if scope.kind == "pid":
-        return True
+        return scope.attribution_source != "shared-runtime-process"
     return (
         scope.kind == "cgroup-v2"
         and scope.attribution_source == "exclusive-execution-cgroup"
@@ -200,7 +200,10 @@ class ProcessResourceSampler:
             captured_at=now,
             monotonic_s=mono,
             process_cpu_time_s=(cpu_usec / 1_000_000) if cpu_usec is not None else None,
-            rss_bytes=memory_current,
+            # memory.current is an environment charge (including cache and
+            # kernel-accounted memory), not RSS. Never publish it through an
+            # RSS field; EnvironmentMemoryMonitor owns that separate metric.
+            rss_bytes=None,
             read_bytes=None if io is None else io[0],
             write_bytes=None if io is None else io[1],
             net_rx_bytes=net_rx_bytes,

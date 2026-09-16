@@ -14,6 +14,7 @@ def observation(index=0, **kwargs):
     values = dict(repo="org/repo", bin="python", argv=("python", "work.py"),
                   ts_start=float(index), ts_end=float(index + 1), latency_ms=1000.0,
                   cpu_ns_cumulative=2_000_000_000, cpu_peak_cores=3.0,
+                  sampled_peak_rss_mb=256.0,
                   memory_total_peak_bytes=512 * 1024**2, memory_extra_peak_bytes=512 * 1024**2,
                   memory_baseline_bytes=0, memory_eligible=True, memory_environment_id="test",
                   memory_measurement="cgroup_v2_memory_current")

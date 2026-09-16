@@ -273,7 +273,8 @@ def test_shared_sidecar_isolates_scopes_and_traces_for_two_runtimes(
         assert start["prediction"]["tool_resource"]["repo"] == repo
         assert end["span_id"] == "shared-tool-call"
         assert end["execution"]["cgroup_path"] == cgroup_path
-        assert end["resources"]["scope"] == "cgroup"
+        assert end["resources"]["scope"] == "none"
+        assert end["resources"]["resource_observation"]["fallback_used"] is False
 
 
 def test_runtime_less_events_keep_the_legacy_scope_and_trace_prefix(tmp_path: Path) -> None:
@@ -325,7 +326,8 @@ def test_runtime_less_events_keep_the_legacy_scope_and_trace_prefix(tmp_path: Pa
     assert {record.get("repo") for record in span_records} == {"openclaw"}
     end = _tool_record(records, "span_end")
     assert end["execution"]["cgroup_path"] == str(legacy_cgroup)
-    assert end["resources"]["scope"] == "cgroup"
+    assert end["resources"]["scope"] == "none"
+    assert end["resources"]["resource_observation"]["fallback_used"] is False
 
 
 def test_same_gateway_sessions_cannot_cross_execution_owner(
@@ -538,6 +540,7 @@ def test_shared_sidecar_isolates_128_overlapping_sessions_across_gateways(
                 "requested_args": {"path": case["marker"]}
             }
             assert end["execution"]["cgroup_path"] == str(case["cgroup"])
-            assert end["resources"]["scope"] == "cgroup"
+            assert end["resources"]["scope"] == "none"
+            assert end["resources"]["resource_observation"]["fallback_used"] is False
 
     assert seen == set(expected)

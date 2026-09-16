@@ -154,7 +154,7 @@ PMU 其余字段：`schema`, `execution_id`, `source`, `mode`, `scope`, `root_pi
 
 权威负载预测为 [call_prediction](../contracts/call-load.schema.json)，硬件预测为 [pmu_prediction](../contracts/pmu-prediction.schema.json)。`duration_p50_ms`, `duration_p90_ms`, `resource_class`, `confidence` 是顶层兼容摘要；`confidence` 不是经过校准的成功概率。
 
-`call_prediction.targets` 包含全部六个目标：
+`call_prediction.targets` 包含全部七个目标：
 
 | 目标 | 单位 | 含义 |
 | --- | --- | --- |
@@ -162,6 +162,7 @@ PMU 其余字段：`schema`, `execution_id`, `source`, `mode`, `scope`, `root_pi
 | `cpu_time_seconds` | core_seconds | 归属工作负载累计 CPU。 |
 | `cpu_avg_cores` | cores | 同一观察的累计 CPU / 耗时。 |
 | `cpu_peak_cores` | cores | 500 ms 固定窗口峰值。 |
+| `sampled_peak_rss_bytes` | bytes | eBPF sampled distinct-mm RSS peak; separate from environment memory charge. |
 | `memory_total_peak_bytes` | bytes | 环境内存采样峰值，含背景。 |
 | `memory_extra_peak_bytes` | bytes | 环境峰值相对 baseline 的非负增量。 |
 
@@ -169,11 +170,11 @@ PMU 其余字段：`schema`, `execution_id`, `source`, `mode`, `scope`, `root_pi
 
 `buckets.edges`, `interval`, `probabilities` 为边界、左闭右开规则、各桶概率；从 0 到首边界、相邻边界之间、最后边界到正无穷各一个桶。概率总和为 1。
 
-`call_prediction.schema_version`, `scope`, `lifecycle`, `cpu_peak_window_ms`, `quantile_method`, `memory_measurement` 声明协议、调用范围、生命周期、峰值窗口、分位数方法、内存来源。`clause_predictions[]` 中每项有 `clause_index`, `argv`, `cwd`, `env_names`, `scope`, `targets`, `memory_measurement`，表示子命令索引、参数、工作目录、环境变量名及相同的六目标预测；子命令耗时和调用耗时不可互换。
+`call_prediction.schema_version`, `scope`, `lifecycle`, `cpu_peak_window_ms`, `quantile_method`, `memory_measurement` 声明协议、调用范围、生命周期、峰值窗口、分位数方法、内存来源。`clause_predictions[]` 中每项有 `clause_index`, `argv`, `cwd`, `env_names`, `scope`, `targets`, `memory_measurement`，表示子命令索引、参数、工作目录、环境变量名及相同的七目标预测；子命令耗时和调用耗时不可互换。
 
 `pmu_prediction.targets` 包含上文九个 PMU 目标。每项具有 `status`, `unit`, `metric_definition`, `avg`, `p50`, `p90`, `backend`, `method`, `evidence_count`, `context`, `calibration`, `unavailable_reason`。注意这里是单数 `evidence_count`，没有负载预测的 `sample_count` 或 `buckets`。其 `schema_version`, `scope`, `lifecycle`, `quantile_method` 声明协议、范围、完整执行画像生命周期和分位数方法。
 
-`diagnostics.backends.runtime`, `.trie`, `.lattice` 保留各后端相同结构的六目标预测用于比较，不应当作另外三份实测值。
+`diagnostics.backends.runtime`, `.trie`, `.lattice` 保留各后端相同结构的七目标预测用于比较，不应当作另外三份实测值。
 
 ## 兼容预测与其他诊断
 
@@ -222,3 +223,17 @@ Prometheus 服务指标聚合多个调用，不是单工具画像。`scheduler_`
 Gauge 包括 `active_leases`, `active_lease_millicores`, `active_tool_monitors`，以及 `tool_memory_rss_bytes`, `tool_memory_rss_peak_bytes`, `tool_process_count`, `tool_cpu_utilization_avg_cores`, `tool_io_read_bytes_per_second`, `tool_io_write_bytes_per_second`, `tool_net_rx_bytes_per_second`, `tool_net_tx_bytes_per_second`。后者是最近一次可用完成样本，缺测可能保留上一值，不是当前所有工具的瞬时总量。
 
 `decision_latency_seconds`, `tool_duration_seconds`, `admission_wait_seconds` 各提供 `_count` 和 `_sum`，分别表示决策、工具时长、准入等待的样本数和秒数总和，不提供 p50 / p90。
+
+
+## Resource observation source and eligibility
+
+`resources.resource_observation` is authoritative for metric source and training
+eligibility. eBPF is preferred; a failed collector can use dedicated cgroup CPU/IO
+counter deltas. Fallback observations retain their own collector window and are
+not action labels. `memory_charge_peak` is cgroup-accounted charge, never RSS.
+`sampled_peak_rss_bytes` is the seventh call-load target; it is separate from
+`memory_total_peak_bytes` and `memory_extra_peak_bytes`. Missing or shared evidence
+stays ineligible. Historical `continuous_predictions` remains a four-target
+compatibility view; it is not the complete call-load target inventory.
+
+See [CURRENT_PLAN.md](CURRENT_PLAN.md) for the final candidate behavior and checks.

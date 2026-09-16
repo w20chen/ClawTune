@@ -253,6 +253,7 @@ class BridgeResult:
 
 
 _MIN_RSS_SAMPLES = 2  # fail closed on insufficient merged RSS coverage
+_MAX_RSS_BIN_GAP = 7  # keep aligned-bin gaps below the 150ms eligibility limit
 
 
 def _merge_cpu(
@@ -319,7 +320,13 @@ def _merge_rss(owned: Sequence[ExecImageRecord]) -> tuple[float | None, str]:
             n_samples += 1
     if n_samples < _MIN_RSS_SAMPLES:
         return None, "insufficient_rss_samples"
+    for slots in per_mm.values():
+        ordered = sorted(slots)
+        if any(right - left > _MAX_RSS_BIN_GAP for left, right in zip(ordered, ordered[1:])):
+            return None, "rss_sampling_gap"
     all_bins = sorted({b for slots in per_mm.values() for b in slots})
+    if any(right - left > _MAX_RSS_BIN_GAP for left, right in zip(all_bins, all_bins[1:])):
+        return None, "rss_sampling_gap"
     totals: dict[int, float] = dict.fromkeys(all_bins, 0.0)
     for slots in per_mm.values():
         sbins = sorted(slots)
@@ -1393,7 +1400,13 @@ def _aggregate(
             ),
         }
     )
+    cpu_totals = [img.provenance.get("cpu_total_ns") for img in owned_images]
+    cpu_total_ok = all(isinstance(value, int) and value >= 0 for value in cpu_totals)
+    availability["cpu_time"] = "ok" if cpu_total_ok and not protocol_timeout_terminated else "unknown:missing_cpu_boundaries"
     provenance = {
+        "t_exec_ns": t_exec,
+        "t_end_ns": t_end,
+        "cpu_time_ns": sum(cpu_totals) if cpu_total_ok else None,
         "mapping_evidence": evidence,
         "owned_exec_image_count": len(owned_images),
         "boundary_coverage": {

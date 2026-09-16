@@ -1948,9 +1948,50 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 event.lease_id,
                 owner=owner_key(event),
             )
-            sample = s.tool_monitor.complete(event)
+            sample = await asyncio.to_thread(s.tool_monitor.complete, event)
             if sample is not None:
                 if event.execution_id is not None:
+                    # The finalized execution collector has stronger causal
+                    # evidence than the generic tool window. Promote that eBPF
+                    # view before tracing or learning; never substitute cgroup
+                    # counters when it is unavailable.
+                    execution_summary = s.predictor.execution_telemetry(event.execution_id)
+                    call_telemetry = (
+                        execution_summary.call_telemetry
+                        if execution_summary is not None
+                        else None
+                    )
+                    if isinstance(call_telemetry, dict):
+                        from clawtune_sidecar.monitoring.ebpf_tool import execution_observation
+                        from clawtune_sidecar.monitoring.tool_runtime import apply_resource_observation
+                        if (
+                            event.action_start_monotonic_ns is not None
+                            and event.action_end_monotonic_ns is not None
+                            and int(event.action_end_monotonic_ns) >= int(event.action_start_monotonic_ns)
+                        ):
+                            action_start_ns = int(event.action_start_monotonic_ns)
+                            action_end_ns = int(event.action_end_monotonic_ns)
+                            action_clock = event.monotonic_clock_domain or "openclaw_plugin_process_monotonic"
+                        else:
+                            action_end_ns = time.monotonic_ns()
+                            action_start_ns = max(
+                                0,
+                                action_end_ns - max(0, event.duration_ms) * 1_000_000,
+                            )
+                            action_clock = "sidecar_synthetic_duration_anchor"
+                        promoted = execution_observation(
+                            call_telemetry,
+                            started_ns=action_start_ns,
+                            ended_ns=action_end_ns,
+                            clock=action_clock,
+                        )
+                        if promoted is not None and any(
+                            metric.get("available") for metric in promoted["metrics"].values()
+                        ) and not any(
+                            metric.get("eligible") for metric in
+                            (sample.resource_observation or {}).get("metrics", {}).values()
+                        ):
+                            sample = apply_resource_observation(sample, promoted)
                     pmu_profile = s.pmu_collector.take(event.execution_id)
                     if (
                         pmu_profile is None
