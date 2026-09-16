@@ -6,7 +6,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from benchmarks.adapters import ADAPTERS, default_source, load
+from benchmarks.adapters import (
+    ADAPTERS,
+    BUNDLED_CONFIGS,
+    BUNDLED_DATASETS,
+    NAMES,
+    default_config,
+    default_source,
+    load,
+)
 
 
 def terminal_task(path):
@@ -26,6 +34,18 @@ def test_default_source_uses_actual_dataset_directory(tmp_path, name, directory)
     source.parent.mkdir(parents=True)
     source.write_text("[]")
     assert default_source(name, tmp_path / "external", tmp_path / "root") == source
+
+
+def test_every_benchmark_has_a_tracked_default_config_and_roster(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    missing_external = tmp_path / "missing-agent-test-bench"
+    for name in NAMES:
+        config = default_config(name, root)
+        source = default_source(name, missing_external, root)
+        assert config == root / BUNDLED_CONFIGS[name]
+        assert config.is_file()
+        assert source == root / BUNDLED_DATASETS[name]
+        assert source.is_file()
 
 
 def test_terminal_manifest_paths_are_relative_to_manifest(monkeypatch, tmp_path):

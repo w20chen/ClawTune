@@ -1,0 +1,43 @@
+# Tracked default for the Deep Research Bench adapter.
+# The research list is intentionally a small smoke roster; it is not the
+# complete upstream evaluation set.
+runtime:
+  mode: host-openclaw
+  ebpf_required: false
+  gate_required: true
+  kb_frozen: true
+llm:
+  api_key: "${LLM_API_KEY}"
+  api_key_file: ./configs/llm_api_key.txt
+  upstream_base_url: https://api.deepseek.com
+  model: deepseek-v4-flash
+  openclaw_model_ref: vllm/deepseek-v4-flash
+docker:
+  host: unix:///var/run/docker.sock
+  platform: ""
+  memory_limit: 8g
+  cpus: 4
+  network_mode: bridge
+  pull_policy: missing
+  privileged: false
+  cgroup_required: false
+sandbox:
+  image: python:3.11-slim
+  workdir: /workspace
+web_search:
+  enabled: true
+  provider: tavily
+  api_key: "${TAVILY_API_KEY}"
+  api_key_file: ./configs/tavily_api_key.txt
+batch:
+  task_timeout_seconds: 1800
+  agent_timeout_seconds: 0
+  parallelism: 1
+  retry_failed: 0
+  continue_on_error: true
+runtime_assets:
+  plugin_source: packages/clawtune-plugin
+  sidecar_source: services/sidecar
+  output_dir: .runtime/benchmark-assets/deep-research-bench
+agent:
+  extra_args: []

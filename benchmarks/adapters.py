@@ -8,7 +8,28 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from .bootstrap import ROOT
+
 NAMES = ("swe-rebench", "deep-research-bench", "swe-bench-verified", "bfcl", "terminal-bench")
+
+# These are intentionally small, reviewable input rosters.  They make every
+# adapter runnable from a fresh checkout while keeping full upstream datasets
+# outside the source tree.  A caller can still replace any roster with
+# ``--dataset``.
+BUNDLED_DATASETS = {
+    "swe-rebench": "swe_rebench/tasks.json",
+    "deep-research-bench": "deep_research_bench/tasks.json",
+    "swe-bench-verified": "benchmarks/defaults/swe-bench-verified/tasks.json",
+    "bfcl": "benchmarks/defaults/bfcl/tasks.json",
+    "terminal-bench": "benchmarks/defaults/terminal-bench/tasks.json",
+}
+
+# Keep benchmark-specific defaults separate from the generated
+# ``configs/benchmark.yaml`` so a clean checkout remains self-contained.
+BUNDLED_CONFIGS = {
+    name: f"benchmarks/defaults/{name}/config.yaml"
+    for name in NAMES
+}
 
 
 @dataclass
@@ -170,7 +191,16 @@ def load(name: str, source: Path) -> list[Task]:
 
 
 def default_source(name: str, external: Path, root: Path) -> Path | None:
-    """Known on-disk names are not necessarily benchmark registry slugs."""
+    """Resolve the default task roster, preferring files shipped by ClawTune.
+
+    The external lookup is retained as a compatibility fallback for checkouts
+    that intentionally remove the bundled smoke roster or want the historical
+    sibling ``agent-test-bench`` layout without passing ``--dataset``.
+    """
+    bundled = root / BUNDLED_DATASETS[name] if name in BUNDLED_DATASETS else None
+    if bundled is not None and (bundled.is_file() or bundled.is_dir()):
+        return bundled
+
     directories = {
         "swe-rebench": ("swe-rebench",),
         "deep-research-bench": ("deep-research-bench",),
@@ -180,11 +210,32 @@ def default_source(name: str, external: Path, root: Path) -> Path | None:
     candidates = [external / "data" / directory / "tasks.json" for directory in directories]
     if name == "terminal-bench":
         candidates += [external / "data/terminal-bench/tasks"]
-    if name in {"swe-rebench", "deep-research-bench"}:
-        candidates.append(root / name.replace("-", "_") / "tasks.json")
     return next((path for path in candidates if path.is_file() or (
         name == "terminal-bench" and path.is_dir()
     )), None)
+
+
+def default_config(name: str, root: Path = ROOT) -> Path:
+    """Return the configuration used when ``benchmark`` gets no ``--config``.
+
+    ``configs/benchmark.yaml`` is created by setup and is the user's local
+    override.  The tracked benchmark-specific file is the clean-checkout
+    fallback.  Legacy paths remain last-resort compatibility for older test
+    trees and direct users of the former layout.
+    """
+    if name not in NAMES:
+        raise ValueError(f"unknown benchmark: {name}")
+    candidates = [root / "configs/benchmark.yaml", root / BUNDLED_CONFIGS[name]]
+    legacy = {
+        "swe-rebench": ("swe_rebench/config.yaml", "swe_rebench/config.example.yaml"),
+        "deep-research-bench": (
+            "deep_research_bench/config.yaml",
+            "deep_research_bench/config.example.yaml",
+        ),
+    }
+    candidates.extend(root / path for path in legacy.get(name, ()))
+    candidates.append(root / "configs/benchmark.example.yaml")
+    return next((path for path in candidates if path.is_file()), candidates[0])
 
 
 def select(tasks: list[Task], *, sample: int | None, skip: int = 0, repo: str | None = None, ids: str | None = None) -> list[Task]:

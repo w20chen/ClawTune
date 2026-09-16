@@ -1,0 +1,33 @@
+# Tracked default for the BFCL adapter.
+# The processed entry list is a small executable smoke roster.
+runtime:
+  mode: host-openclaw
+  ebpf_required: false
+  kb_frozen: true
+llm:
+  api_key: "${LLM_API_KEY}"
+  api_key_file: ./configs/llm_api_key.txt
+  upstream_base_url: https://api.deepseek.com
+  model: deepseek-v4-flash
+  openclaw_model_ref: vllm/deepseek-v4-flash
+docker:
+  host: unix:///var/run/docker.sock
+  platform: ""
+  memory_limit: 8g
+  cpus: 4
+  network_mode: bridge
+  pull_policy: missing
+  privileged: false
+  cgroup_required: false
+batch:
+  task_timeout_seconds: 1800
+  agent_timeout_seconds: 0
+  parallelism: 1
+  retry_failed: 0
+  continue_on_error: true
+runtime_assets:
+  plugin_source: packages/clawtune-plugin
+  sidecar_source: services/sidecar
+  output_dir: .runtime/benchmark-assets/bfcl
+agent:
+  extra_args: []

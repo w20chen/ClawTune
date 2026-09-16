@@ -1,0 +1,45 @@
+[
+  {
+    "id": "multi_turn_base_1",
+    "question": [
+      [
+        {
+          "role": "system",
+          "content": "Maintain the counter state across turns."
+        },
+        {
+          "role": "user",
+          "content": "Add two to the counter."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Now add three more."
+        }
+      ]
+    ],
+    "function": [
+      {
+        "name": "increment",
+        "description": "Increase the counter by the requested amount.",
+        "parameters": {
+          "type": "dict",
+          "properties": {
+            "count": {
+              "type": "integer",
+              "description": "The amount to add."
+            }
+          },
+          "required": ["count"]
+        }
+      }
+    ],
+    "involved_classes": ["Counter"],
+    "initial_config": {
+      "Counter": {
+        "total": 0
+      }
+    }
+  }
+]

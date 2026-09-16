@@ -1,0 +1,36 @@
+# Tracked default for the SWE-Rebench adapter.
+# This is a safe, credential-free baseline; put the key in
+# configs/llm_api_key.txt or override the model settings in configs/benchmark.yaml.
+runtime:
+  mode: host-openclaw
+  ebpf_required: true
+  kb_frozen: true
+llm:
+  api_key: "${LLM_API_KEY}"
+  api_key_file: ./configs/llm_api_key.txt
+  upstream_base_url: https://api.deepseek.com
+  model: deepseek-v4-flash
+  openclaw_model_ref: vllm/deepseek-v4-flash
+docker:
+  host: unix:///var/run/docker.sock
+  platform: ""
+  memory_limit: 8g
+  cpus: 4
+  network_mode: bridge
+  pull_policy: missing
+  privileged: true
+  cgroupns_mode: host
+  cgroup_mount_rw: true
+  cgroup_required: true
+batch:
+  task_timeout_seconds: 1800
+  agent_timeout_seconds: 0
+  parallelism: 1
+  retry_failed: 0
+  continue_on_error: true
+runtime_assets:
+  plugin_source: packages/clawtune-plugin
+  sidecar_source: services/sidecar
+  output_dir: .runtime/benchmark-assets/swe-rebench
+agent:
+  extra_args: []

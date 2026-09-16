@@ -1,0 +1,8 @@
+[
+  {
+    "instance_id": "django__django-11039",
+    "repo": "django/django",
+    "base_commit": "",
+    "problem_statement": "Inspect this Django issue, implement the minimal correct fix in the repository, and run the most relevant focused tests. This bundled entry is a smoke task for verifying the ClawTune adapter; use the pinned upstream Verified dataset for official evaluation."
+  }
+]

@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 
 from .bootstrap import ROOT
-from .adapters import NAMES, default_source, load, select
+from .adapters import NAMES, default_config, default_source, load, select
 
 
 def _offline_console_summary(report: dict, output: Path) -> dict:
@@ -60,15 +60,15 @@ def parser():
     bench = sub.add_parser("benchmark", help="Run a peer dataset with online KB learning")
     bench.add_argument("--benchmark", choices=NAMES, default="swe-rebench")
     bench.add_argument("--list", action="store_true", help="List all peer benchmarks without starting a runtime")
-    bench.add_argument("--dataset", "--tasks", type=Path, help="JSON/JSONL tasks; Terminal Bench also accepts a task directory")
-    bench.add_argument("--category", default="multi_turn_base", help="BFCL native category when --dataset is omitted")
+    bench.add_argument("--dataset", "--tasks", type=Path, help="JSON/JSONL tasks; Terminal Bench also accepts a task directory (default: tracked benchmark roster)")
+    bench.add_argument("--category", default="multi_turn_base", help="BFCL category (default: multi_turn_base bundled roster)")
     bench.add_argument("--resume", type=Path, help="Resume a run at a fully saved task boundary")
     bench.add_argument("--sample", type=int, help="First N selected tasks, not random sampling")
     bench.add_argument("--skip", type=int, default=0)
     bench.add_argument("--repo")
     bench.add_argument("--instance-ids")
     bench.add_argument("--seed", type=Path, default=ROOT / "seeds/bootstrap-v1", help="Immutable seed bundle")
-    bench.add_argument("--config", type=Path, help="Runner YAML including model configuration")
+    bench.add_argument("--config", type=Path, help="Runner YAML including model configuration (default: configs/benchmark.yaml or tracked benchmark config)")
     bench.add_argument("--output", type=Path, help="New run directory; existing directories are never overwritten")
     bench.add_argument(
         "--parallelism",
@@ -129,9 +129,18 @@ def main(argv=None):
             else:
                 tasks = None
                 source = args.dataset
-            if source is None and tasks is None and args.benchmark != "bfcl":
+            if source is None and tasks is None:
                 external = Path(os.getenv("AGENT_TEST_BENCH_ROOT", str(ROOT.parent / "agent-test-bench")))
                 source = default_source(args.benchmark, external.expanduser(), ROOT)
+            if (
+                source is not None
+                and args.benchmark == "bfcl"
+                and args.dataset is None
+                and not any(task.group == args.category for task in load(args.benchmark, source))
+            ):
+                # Keep the historical native BFCL category path available for
+                # categories not represented by the bundled smoke roster.
+                source = None
             if tasks is None:
                 if source is None and args.benchmark == "bfcl":
                     if "memory" in args.category:
@@ -148,22 +157,23 @@ def main(argv=None):
                     tasks = load(args.benchmark, source.expanduser().resolve())
                 else:
                     raise ValueError(f"{args.benchmark}: supply --dataset with the task source")
+                if args.benchmark == "bfcl":
+                    tasks = [task for task in tasks if task.group == args.category]
                 tasks = select(tasks, sample=args.sample, skip=args.skip, repo=args.repo, ids=args.instance_ids)
             if source and source.is_dir() and args.output and args.output.resolve().is_relative_to(source.resolve()):
                 raise ValueError("run output must be outside the read-only task dataset")
             from clawtune_kb import validate_seed
             validate_seed(args.seed)
+            config = args.config or default_config(args.benchmark, ROOT)
             if args.dry_run:
                 print(json.dumps({"benchmark": args.benchmark, "mode": "online", "kb_frozen": False,
                     "parallelism_override": args.parallelism,
                     "dataset": str(source.expanduser().resolve()) if source else None,
+                    "config": str(config.expanduser().resolve()),
                     "seed": str(args.seed.resolve()), "tasks": [{"id": task.task_id, "group": task.group,
                     "executor": task.kind, "image": task.image} for task in tasks]}, indent=2))
                 return 0
             from .runner import run
-            config = args.config or ROOT / "configs/benchmark.yaml"
-            if args.config is None and not config.is_file():
-                config = ROOT / ("deep_research_bench" if args.benchmark == "deep-research-bench" else "swe_rebench") / "config.yaml"
             if not config.is_file():
                 raise ValueError(f"config missing: {config}; run setup or pass --config")
             result = run(tasks, config_path=config.resolve(), seed=args.seed.resolve(), output=args.output,

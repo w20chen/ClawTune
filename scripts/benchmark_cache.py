@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "services/sidecar/src"))
 
-from benchmarks.adapters import NAMES, default_source, load
+from benchmarks.adapters import NAMES, default_config, default_source, load
 
 TERMINAL_REVISION = "d28711d0da2675d0bb1d56de45ae5df6082438a3"
 
@@ -206,7 +206,12 @@ def prepare(args):
         if not count:
             continue
         if name == "bfcl":
-            selections[name] = {"requested": count, "status": "no_task_images_required"}
+            selections[name] = {
+                "requested": count,
+                "status": "no_task_images_required",
+                "source": str(sources.get(name) or default_source(name, external, ROOT)),
+                "config": str(configs.get(name) or default_config(name, ROOT)),
+            }
             continue
         source = sources.get(name) or default_source(name, external, ROOT)
         if source is None and args.download_missing:
@@ -227,13 +232,13 @@ def prepare(args):
                     builds.extend(jobs)
         elif name == "deep-research-bench":
             from deep_research_bench.config import DRBConfig
-            config = configs.get(name, ROOT / "configs/benchmark.yaml")
-            if name not in configs and not config.exists():
-                config = ROOT / "deep_research_bench/config.yaml"
+            config = configs.get(name) or default_config(name, ROOT)
             images.add(DRBConfig.from_yaml(config, repo_root=ROOT).sandbox.image)
             selections[name]["config"] = str(config)
         else:
             images.update(t.image for t in tasks)
+        if name != "deep-research-bench":
+            selections[name]["config"] = str(configs.get(name) or default_config(name, ROOT))
     manifest = {"platform": args.platform, "docker": docker_prefix(args.sudo),
                 "selections": selections, "images": sorted(images), "builds": builds}
     write_json(out / "manifest.json", manifest)

@@ -907,12 +907,20 @@ def benchmark(extra: Sequence[str]) -> None:
 
 
 def configured_docker_platform(extra: Sequence[str]) -> str:
-    path = ROOT / "configs" / "benchmark.yaml"
+    benchmark = "swe-rebench"
+    path: Path | None = None
     for index, item in enumerate(extra):
         if item == "--config" and index + 1 < len(extra):
             path = Path(extra[index + 1])
         elif item.startswith("--config="):
             path = Path(item.split("=", 1)[1])
+        elif item == "--benchmark" and index + 1 < len(extra):
+            benchmark = extra[index + 1]
+        elif item.startswith("--benchmark="):
+            benchmark = item.split("=", 1)[1]
+    if path is None:
+        from benchmarks.adapters import default_config
+        path = default_config(benchmark, ROOT)
     if not path.is_absolute():
         path = ROOT / path
     if not path.is_file():

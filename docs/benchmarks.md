@@ -4,11 +4,34 @@ Online runs execute tasks through OpenClaw and collect predictions and measureme
 
 ## 1. Configure a first run
 
-Complete machine preparation in the [installation guide](getting-started.md). Setup creates `configs/benchmark.yaml`; copy the [configuration template](../configs/benchmark.example.yaml) to create another configuration.
+Complete machine preparation in the [installation guide](getting-started.md). Every
+online benchmark has a tracked configuration and task roster, so the normal
+benchmark command does not need `--config` or `--dataset`. Setup also creates
+`configs/benchmark.yaml`; when present, that Git-ignored file is the local
+configuration override shared by all benchmark adapters.
 
-Run the commands below from the ClawTune repository root on the configured Linux machine. The online wrapper selects the collector's `.venv` and requests sudo when needed. Each benchmark section includes a **3-task, parallelism-3** example. Start with `--sample 1 --parallelism 1` if machine resources are limited.
+### Tracked defaults
 
-Edit the model settings, keeping the template's Docker and cgroup settings initially:
+The following files are part of this repository. The bundled rosters are small
+smoke/default inputs, not complete upstream evaluation sets.
+
+| Benchmark | Default configuration | Default task list |
+| --- | --- | --- |
+| SWE-Rebench | `benchmarks/defaults/swe-rebench/config.yaml` | `swe_rebench/tasks.json` |
+| SWE-bench Verified | `benchmarks/defaults/swe-bench-verified/config.yaml` | `benchmarks/defaults/swe-bench-verified/tasks.json` |
+| Deep Research Bench | `benchmarks/defaults/deep-research-bench/config.yaml` | `deep_research_bench/tasks.json` |
+| BFCL | `benchmarks/defaults/bfcl/config.yaml` | `benchmarks/defaults/bfcl/tasks.json` |
+| Terminal Bench | `benchmarks/defaults/terminal-bench/config.yaml` | `benchmarks/defaults/terminal-bench/tasks.json` (task files under the same directory) |
+
+When no explicit path is supplied, configuration resolution is:
+`--config <file>`, then `configs/benchmark.yaml`, then the tracked benchmark
+configuration in the table. Dataset resolution is `--dataset <file-or-directory>`,
+then the tracked task list, with the historical sibling `agent-test-bench` lookup
+only as a compatibility fallback if the tracked list is unavailable.
+
+Edit `configs/benchmark.yaml` when setup has created it, or copy
+`configs/benchmark.example.yaml` to that path in a fresh checkout, keeping the
+template's Docker and cgroup settings initially:
 
 ```yaml
 llm:
@@ -30,14 +53,14 @@ Place the raw provider key on one line in the Git-ignored `configs/llm_api_key.t
 ```bash
 python3 scripts/clawtune.py benchmark --list
 python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
-  --config configs/benchmark.yaml --sample 1 --parallelism 1 --dry-run
+  --sample 1 --parallelism 1 --dry-run
 python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
-  --config configs/benchmark.yaml --sample 1 --parallelism 1
+  --sample 1 --parallelism 1
 ```
 
 For an existing key file elsewhere, set `llm.api_key_file` to its path; `swe_rebench/llm_api_key.txt` is the legacy default when no file is configured. Environment-based credentials remain optional. Do not commit keys in YAML. Resolution order is: nonempty YAML value or environment expansion, exported `LLM_API_KEY`, configured key file, then root `.env`. `LLM_API_KEY_FILE` overrides the file path. If switching from an old environment-based setup to the configured file, clear stale overrides with `unset LLM_API_KEY LLM_API_KEY_FILE`.
 
-Defaults use external task lists when available; SWE and research otherwise use bundled smoke inputs. Use explicit dataset paths for experiments. Dry-run checks task structure, selection, and initialization data, not image availability, credentials, or live collection.
+Dry-run checks task structure, selection, and initialization data, not image availability, credentials, or live collection.
 
 Full predictions and agent output are saved in `.runtime/benchmarks/<benchmark>/<run>/traces/<task>/agent-stdout.txt`; errors are in `agent-stderr.txt` (under `--output` when set). Use `less <path>` to inspect them. The live agent stream shows only baseline time buckets: `mode` denotes the most probable bucket (ties retained), `p90` denotes the bucket containing that estimate; clause results remain separate.
 
@@ -45,13 +68,15 @@ Full predictions and agent output are saved in `.runtime/benchmarks/<benchmark>/
 
 Common inputs are a JSON array, JSONL, or a JSON object containing a `tasks`, `instances`, or `data` array. Task IDs must be unique. Datasets and traces are read-only inputs; prepare exports and execution outputs elsewhere.
 
-The external root is `$AGENT_TEST_BENCH_ROOT`, defaulting to the sibling `../agent-test-bench`:
+For compatibility with older experiments, the launcher can also look under
+`$AGENT_TEST_BENCH_ROOT` (defaulting to the sibling `../agent-test-bench`) when
+the tracked list is unavailable:
 
 | Benchmark | Default lookup relative to the external root |
 | --- | --- |
-| SWE-Rebench | `data/swe-rebench/tasks.json`, then bundled `swe_rebench/tasks.json` |
+| SWE-Rebench | `data/swe-rebench/tasks.json` |
 | SWE-bench Verified | `data/swe-bench-verified/tasks.json` or `data/swebench_verified/tasks.json` |
-| Deep Research Bench | `data/deep-research-bench/tasks.json`, then bundled `deep_research_bench/tasks.json` |
+| Deep Research Bench | `data/deep-research-bench/tasks.json` |
 | BFCL | Category loader in a separately installed BFCL package |
 | Terminal Bench | `data/terminal-bench/tasks.json` or `data/terminal-bench/tasks/` |
 
@@ -61,11 +86,11 @@ These are lookup conventions. Setup does not download complete benchmarks.
 
 | Benchmark | Version / source snapshot | Input used by ClawTune |
 | --- | --- | --- |
-| SWE-Rebench | [Hugging Face, revision `89cdfba`](https://huggingface.co/datasets/nebius/SWE-rebench/tree/89cdfbab4ab1bd8f5a658bb212d1b63624f4f881) | `nebius/SWE-rebench`, `filtered` split; dataset-provided task images |
-| SWE-bench Verified | [Hugging Face, revision `c104f84`](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified/tree/c104f840cc67f8b6eec6f759ebc8b2693d585d4a) | Verified edition, `test` split (500 tasks) |
-| Deep Research Bench | [Hugging Face, revision `f7d27cd`](https://huggingface.co/datasets/muset-ai/DeepResearch-Bench-Dataset/tree/f7d27cdd3930dd1eaf67a217821e616cc62e9f8e) | `generated_reports/openai-deepresearch.jsonl`; questions are agent inputs, reports are references only |
-| BFCL | [Gorilla BFCL v4, commit `6ea5797`](https://github.com/ShishirPatil/gorilla/tree/6ea57973c7a6097fd7c5915698c54c17c5b1b6c8/berkeley-function-call-leaderboard) | Selected executable categories listed [below](#bfcl), not the complete BFCL suite |
-| Terminal Bench | [Terminal-Bench 1 repository, commit `d28711d`](https://github.com/harbor-framework/terminal-bench-1/tree/d28711d0da2675d0bb1d56de45ae5df6082438a3/original-tasks) | Legacy `task.yaml` tasks in `original-tasks`; not Terminal-Bench 2.0 / Harbor `task.toml` |
+| SWE-Rebench | [Hugging Face, revision `89cdfba`](https://huggingface.co/datasets/nebius/SWE-rebench/tree/89cdfbab4ab1bd8f5a658bb212d1b63624f4f881) | Bundled smoke roster by default; upstream `filtered` tasks with images when supplied as a custom dataset |
+| SWE-bench Verified | [Hugging Face, revision `c104f84`](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified/tree/c104f840cc67f8b6eec6f759ebc8b2693d585d4a) | Bundled smoke roster by default; Verified `test` split (500 tasks) as a custom dataset |
+| Deep Research Bench | [Hugging Face, revision `f7d27cd`](https://huggingface.co/datasets/muset-ai/DeepResearch-Bench-Dataset/tree/f7d27cdd3930dd1eaf67a217821e616cc62e9f8e) | Bundled smoke roster by default; `generated_reports/openai-deepresearch.jsonl` as a custom dataset |
+| BFCL | [Gorilla BFCL v4, commit `6ea5797`](https://github.com/ShishirPatil/gorilla/tree/6ea57973c7a6097fd7c5915698c54c17c5b1b6c8/berkeley-function-call-leaderboard) | Bundled `multi_turn_base` smoke entry by default; selected executable categories listed [below](#bfcl) |
+| Terminal Bench | [Terminal-Bench 1 repository, commit `d28711d`](https://github.com/harbor-framework/terminal-bench-1/tree/d28711d0da2675d0bb1d56de45ae5df6082438a3/original-tasks) | Bundled smoke task by default; legacy `task.yaml` tasks in `original-tasks` as a custom dataset |
 
 These links identify exact reference snapshots, not automatic version pins or the provenance of every existing run. SWE-Rebench and Research discovery currently fetch the upstream default revision; retain the exported task file and use `--dataset` to repeat a selection. For Git sources, obtain the linked commit before preparing tasks and retain `git rev-parse HEAD` with your experiment inputs. The Terminal directory is a repository task collection, not a pinned `terminal-bench-core` leaderboard release.
 
@@ -84,34 +109,45 @@ Supply an ID, `problem_statement`, and `docker_image`. The image must contain th
 [{"instance_id":"org__repo-1","repo":"org/repo","problem_statement":"Fix the issue","docker_image":"registry/task:tag"}]
 ```
 
-Prepare an input list and run:
+The default run uses the tracked `swe_rebench/tasks.json` automatically:
 
 ```bash
-.venv/bin/python -m pip install datasets
-.venv/bin/python -m swe_rebench.discover --sample 3 --out .runtime/swe-tasks.json
 python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
-  --config configs/benchmark.yaml --dataset .runtime/swe-tasks.json \
   --sample 3 --parallelism 3 --dry-run
 python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
-  --config configs/benchmark.yaml --dataset .runtime/swe-tasks.json \
   --sample 3 --parallelism 3
 ```
 
-Discovery first attempts the external task source, then Hugging Face. Use the dataset-provided image, not a generic Python image. Startup checks exclusive cgroup and eBPF support. Individual collection failures are recorded separately from task outcomes.
+To use a larger or custom roster, export it with `swe_rebench.discover` and
+pass that file explicitly with `--dataset`. Use the dataset-provided image, not
+a generic Python image. Startup checks exclusive cgroup and eBPF support.
+Individual collection failures are recorded separately from task outcomes.
 
 ### SWE-bench Verified
 
-Uses the same repository fields with a separate dataset identity. Export upstream records and run:
+Uses the same repository fields with a separate dataset identity. The default
+run uses the tracked smoke roster
+`benchmarks/defaults/swe-bench-verified/tasks.json`:
+
+```bash
+python3 scripts/clawtune.py benchmark --benchmark swe-bench-verified \
+  --sample 1 --parallelism 1 --dry-run
+python3 scripts/clawtune.py benchmark --benchmark swe-bench-verified \
+  --sample 1 --parallelism 1
+```
+
+For official evaluation, export the pinned upstream records and pass the
+resulting file as a custom dataset:
 
 ```bash
 .venv/bin/python -m pip install datasets
 mkdir -p .runtime/datasets
 .venv/bin/python -c "from datasets import load_dataset; load_dataset('princeton-nlp/SWE-bench_Verified', revision='c104f840cc67f8b6eec6f759ebc8b2693d585d4a', split='test').to_json('.runtime/datasets/verified.jsonl')"
 python3 scripts/clawtune.py benchmark --benchmark swe-bench-verified \
-  --config configs/benchmark.yaml --dataset .runtime/datasets/verified.jsonl \
+  --dataset .runtime/datasets/verified.jsonl \
   --sample 3 --parallelism 3 --dry-run
 python3 scripts/clawtune.py benchmark --benchmark swe-bench-verified \
-  --config configs/benchmark.yaml --dataset .runtime/datasets/verified.jsonl \
+  --dataset .runtime/datasets/verified.jsonl \
   --sample 3 --parallelism 3
 ```
 
@@ -121,6 +157,18 @@ Without an explicit image, the adapter derives the official x86_64 image name fr
 
 Supply an ID and nonempty `problem_statement`, `prompt`, or `question`. Optional `topic` or `domain` controls grouping. Reference answers are saved with output, not given to the executing model.
 
+The default run uses the tracked `deep_research_bench/tasks.json` automatically:
+
+```bash
+python3 scripts/clawtune.py benchmark --benchmark deep-research-bench \
+  --sample 3 --parallelism 3 --dry-run
+python3 scripts/clawtune.py benchmark --benchmark deep-research-bench \
+  --sample 3 --parallelism 3
+```
+
+To use a larger upstream selection, install the optional dependencies, discover
+into a new file, and pass that file as a custom dataset:
+
 ```bash
 .venv/bin/python -m pip install huggingface_hub
 openclaw plugins install @openclaw/tavily-plugin
@@ -128,10 +176,10 @@ openclaw plugins install @openclaw/tavily-plugin
   --sample 3 --out .runtime/research-tasks.json
 export TAVILY_API_KEY="<tavily-key>"
 python3 scripts/clawtune.py benchmark --benchmark deep-research-bench \
-  --config configs/benchmark.yaml --dataset .runtime/research-tasks.json \
+  --dataset .runtime/research-tasks.json \
   --sample 3 --parallelism 3 --dry-run
 python3 scripts/clawtune.py benchmark --benchmark deep-research-bench \
-  --config configs/benchmark.yaml --dataset .runtime/research-tasks.json \
+  --dataset .runtime/research-tasks.json \
   --sample 3 --parallelism 3
 ```
 
@@ -154,15 +202,19 @@ mkdir -p .runtime/dependencies
 cp -R /data/gorilla/berkeley-function-call-leaderboard .runtime/dependencies/bfcl
 export BFCL_REPO_PATH="$PWD/.runtime/dependencies/bfcl"
 .venv/bin/python -m pip install "$BFCL_REPO_PATH"
-python3 scripts/clawtune.py benchmark --benchmark bfcl \
-  --config configs/benchmark.yaml --category multi_turn_base \
-  --sample 3 --parallelism 3 --dry-run
-python3 scripts/clawtune.py benchmark --benchmark bfcl \
-  --config configs/benchmark.yaml --category multi_turn_base \
-  --sample 3 --parallelism 3
 ```
 
-Replace `/data/gorilla` with the actual checkout. Use a fresh copy when changing revisions. Native category loading needs these dependencies even in dry-run.
+The default run uses the tracked processed entry list
+`benchmarks/defaults/bfcl/tasks.json` (category `multi_turn_base`):
+
+```bash
+python3 scripts/clawtune.py benchmark --benchmark bfcl \
+  --sample 1 --parallelism 1 --dry-run
+python3 scripts/clawtune.py benchmark --benchmark bfcl \
+  --sample 1 --parallelism 1
+```
+
+Replace `/data/gorilla` with the actual checkout. Use a fresh copy when changing revisions. The bundled default is `multi_turn_base`; selecting another category without a matching bundled entry falls back to native category loading and needs these dependencies even in dry-run.
 
 To run long-context tasks instead, use `--category multi_turn_long_context` in both commands. Install BFCL dependencies into ClawTune's `.venv`; installing them only in another virtual environment does not make them available to the benchmark wrapper.
 
@@ -180,7 +232,10 @@ Function state persists across turns of one task; tasks are independent. **This 
 
 Use a concrete category name, not upstream collection aliases such as `all`, `multi_turn`, or `agentic`. Support here describes the execution adapter; ClawTune does not compute official BFCL scores or claim full-category model validation.
 
-With `--dataset`, provide processed entries containing `id`, turn-structured `question`, `function` documentation, and `involved_classes`, optionally `initial_config`. Raw category files missing function documentation are not equivalent to loader output.
+With a custom `--dataset`, provide processed entries containing `id`,
+turn-structured `question`, `function` documentation, and `involved_classes`,
+optionally `initial_config`. Raw category files missing function documentation
+are not equivalent to loader output.
 
 ### Terminal Bench
 
@@ -192,11 +247,27 @@ git clone --no-checkout --depth 1 https://github.com/harbor-framework/terminal-b
 git -C .runtime/datasets/terminal-bench-1 fetch --depth 1 origin d28711d0da2675d0bb1d56de45ae5df6082438a3
 git -C .runtime/datasets/terminal-bench-1 checkout --detach FETCH_HEAD
 git -C .runtime/datasets/terminal-bench-1 rev-parse HEAD
+```
+
+The default run uses the tracked smoke list
+`benchmarks/defaults/terminal-bench/tasks.json`:
+
+```bash
 python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
-  --config configs/benchmark.yaml --dataset .runtime/datasets/terminal-bench-1/original-tasks \
+  --sample 1 --parallelism 1 --dry-run
+python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
+  --sample 1 --parallelism 1
+```
+
+For the pinned upstream task checkout, pass its task directory as a custom
+dataset:
+
+```bash
+python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
+  --dataset .runtime/datasets/terminal-bench-1/original-tasks \
   --sample 3 --parallelism 3 --dry-run
 python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
-  --config configs/benchmark.yaml --dataset .runtime/datasets/terminal-bench-1/original-tasks \
+  --dataset .runtime/datasets/terminal-bench-1/original-tasks \
   --sample 3 --parallelism 3
 ```
 
@@ -232,7 +303,12 @@ python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
   --task-timeout-seconds 1800 --output .runtime/my-run
 ```
 
-`--output` must name a new directory outside datasets and immutable priors. `--config <file>` selects another configuration. Initialization and state ownership are described once in [Output and persistent state](getting-started.md#3-output-and-persistent-state).
+`--output` must name a new directory outside datasets and immutable priors. The
+default configuration and dataset can be overridden independently. For example,
+use `--config ./configs/my-benchmark.yaml` for a custom YAML file and/or
+`--dataset ./data/my-tasks.jsonl` for a custom task list. Paths are resolved from
+the repository root in the documented commands. Initialization and state
+ownership are described once in [Output and persistent state](getting-started.md#3-output-and-persistent-state).
 
 To run the first 30 SWE-Rebench tasks followed by the first 30 Terminal Bench tasks in the background, use the dataset checkout above. Each stage runs at most eight tasks concurrently; the stages run sequentially so total task concurrency stays at eight. The online model configuration described in section 1 is required. Background execution also needs sudo configured for noninteractive use; `sudo -n true` must succeed before starting.
 
@@ -242,21 +318,21 @@ mkdir -p .runtime/benchmarks
 RUN_ROOT="$(mktemp -d "$PWD/.runtime/benchmarks/pair-XXXXXXXX")"
 .venv/bin/python -m swe_rebench.discover --sample 30 --out "$RUN_ROOT/swe-tasks.json"
 python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
-  --config configs/benchmark.yaml --dataset "$RUN_ROOT/swe-tasks.json" \
+  --dataset "$RUN_ROOT/swe-tasks.json" \
   --sample 30 --parallelism 8 --dry-run
 python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
-  --config configs/benchmark.yaml --dataset .runtime/datasets/terminal-bench-1/original-tasks \
+  --dataset .runtime/datasets/terminal-bench-1/original-tasks \
   --sample 30 --parallelism 8 --dry-run
 nohup bash -c '
   set -u
   cd "$1"
   run_root="$2"
   python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
-    --config configs/benchmark.yaml --dataset "$run_root/swe-tasks.json" \
+    --dataset "$run_root/swe-tasks.json" \
     --sample 30 --parallelism 8 --output "$run_root/swe"
   swe_status=$?
   python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
-    --config configs/benchmark.yaml --dataset .runtime/datasets/terminal-bench-1/original-tasks \
+    --dataset .runtime/datasets/terminal-bench-1/original-tasks \
     --sample 30 --parallelism 8 --output "$run_root/terminal"
   terminal_status=$?
   printf "swe_exit=%s terminal_exit=%s\n" "$swe_status" "$terminal_status" > "$run_root/exit-status.txt"
@@ -282,8 +358,7 @@ Terminal Compose build/start has a separate `docker.build_timeout_seconds` budge
 Resume with:
 
 ```bash
-python3 scripts/clawtune.py benchmark --resume .runtime/my-run \
-  --config configs/benchmark.yaml
+python3 scripts/clawtune.py benchmark --resume .runtime/my-run
 ```
 
 Resume requires the original configuration and prior; repeat `--seed` if it was customized. Saved task selection and parallelism are reused. Recorded failures are not retried. Ctrl+C stops tasks and attempts cleanup. A run with interrupted in-flight tasks or incompletely saved final state cannot resume; start a new run.
