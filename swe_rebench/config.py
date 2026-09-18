@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,13 @@ HOST_OPENCLAW_MODE = "host-openclaw"
 RUNTIME_MODES = frozenset({CONTAINER_OPENCLAW_MODE, HOST_OPENCLAW_MODE})
 
 RUNTIME_EBPF_REQUIRED_KEY = "ebpf_required"
+DEFAULT_TASK_TIMEOUT_SECONDS = 1200
+
+
+def validate_task_timeout(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("task_timeout_seconds must be >= 0 and an integer (0 disables the harness deadline)")
+    return value
 
 
 def _env_subst(value: str) -> str:
@@ -126,8 +134,6 @@ class DockerConfig:
     cgroupns_mode: str = ""
     cgroup_mount_rw: bool = False
     cgroup_required: bool = False
-    build_timeout_seconds: float = 1800
-
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DockerConfig":
         return cls(
@@ -143,26 +149,33 @@ class DockerConfig:
             cgroupns_mode=str(d.get("cgroupns_mode", "")),
             cgroup_mount_rw=_as_bool(d.get("cgroup_mount_rw", False)),
             cgroup_required=_as_bool(d.get("cgroup_required", False)),
-            build_timeout_seconds=max(1.0, float(d.get("build_timeout_seconds", 1800))),
         )
 
 
 @dataclass
 class BatchConfig:
-    task_timeout_seconds: int = 1800
-    agent_timeout_seconds: int = 0
+    task_timeout_seconds: int = DEFAULT_TASK_TIMEOUT_SECONDS
     parallelism: int = 1
     retry_failed: int = 0
     continue_on_error: bool = True
 
+    def __post_init__(self) -> None:
+        validate_task_timeout(self.task_timeout_seconds)
+
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "BatchConfig":
+        if d.get("agent_timeout_seconds", 0) != 0:
+            warnings.warn(
+                "batch.agent_timeout_seconds is obsolete and is ignored; only "
+                "batch.task_timeout_seconds controls the benchmark task budget "
+                "(default 1200 seconds). OpenClaw tool timeouts are unchanged.",
+                UserWarning, stacklevel=2,
+            )
         parallelism = int(d.get("parallelism", 1))
         if parallelism < 1:
             parallelism = 1
         return cls(
-            task_timeout_seconds=int(d.get("task_timeout_seconds", 1800)),
-            agent_timeout_seconds=int(d.get("agent_timeout_seconds", 0)),
+            task_timeout_seconds=validate_task_timeout(d.get("task_timeout_seconds", DEFAULT_TASK_TIMEOUT_SECONDS)),
             parallelism=parallelism,
             retry_failed=int(d.get("retry_failed", 0)),
             continue_on_error=bool(d.get("continue_on_error", True)),
@@ -261,6 +274,11 @@ def _parse_yaml_scalar(value: str) -> Any:
         if not inner:
             return []
         return [item.strip().strip('"').strip("'") for item in inner.split(",")]
+    # Keep the fallback compatible with the typed values produced by PyYAML.
+    # In particular, task_timeout_seconds must remain an int so the strict
+    # timeout validator does not reject a valid unquoted YAML number.
+    if re.fullmatch(r"[+-]?\d+", v):
+        return int(v)
     return v.strip('"').strip("'")
 
 

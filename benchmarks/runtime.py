@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -108,15 +109,33 @@ def _execute_bridged(task, config, run_dir, port, trace):
     runtime_id = host._runtime_id(workspace)
     host._write_runtime_case_map(run_dir / "sidecar", runtime_id, task.task_id)
     deadline = host._task_deadline(config, started)
-    _required_terminal_preflight(config, task, trace, deadline)
+    def timed_out(exc):
+        message = str(exc)
+        host._write_timeout_record(trace, scope="task", message=message,
+                                   configured_seconds=config.batch.task_timeout_seconds)
+        return message
+
+    def timeout_outcome(exc):
+        if isinstance(exc, host.TaskDeadlineExceeded) or (
+            deadline is not None and time.monotonic() >= deadline
+        ):
+            return 124, timed_out(exc)
+        # A shorter infrastructure probe can fail without exhausting the task.
+        return 1, f"setup operation timed out: {exc}"
+
     try:
-        backend = BFCLBackend(task, run_dir) if task.kind == "functions" else TerminalBackend(
+        _required_terminal_preflight(config, task, trace, deadline)
+        backend = BFCLBackend(task, run_dir, deadline=deadline) if task.kind == "functions" else TerminalBackend(
             task, run_dir, deadline=deadline, platform=config.docker.platform,
             sidecar_port=port, runtime_id=runtime_id, gateway_id=getattr(
                 config, "benchmark_gateway_id", "swe-rebench"
             ), repo=config.kb_repo,
-            telemetry_required=config.runtime.ebpf_required,
-            build_timeout_seconds=getattr(config.docker, "build_timeout_seconds", 1800))
+            telemetry_required=config.runtime.ebpf_required)
+    except (host.TaskDeadlineExceeded, subprocess.TimeoutExpired) as exc:
+        # Backend constructors must confirm cleanup before propagating timeout.
+        exit_code, error = timeout_outcome(exc)
+        return ContainerResult(task_id=task.task_id, image=task.image, exit_code=exit_code,
+            error=error, trace_dir=trace, trace_files=[], duration_seconds=time.monotonic() - started)
     except TerminalCaseBuildFailure as exc:
         # The constructor only re-raises this error after close() succeeds.
         # No agent or tool producer has started; this case may fail independently.
@@ -147,8 +166,6 @@ def _execute_bridged(task, config, run_dir, port, trace):
             turn_cfg = copy.deepcopy(config)
             # Each process is a turn in the same persistent OpenClaw session.
             turn_cfg.agent.extra_args = [*config.agent.extra_args, "--session-id", task.directory_name]
-            if task.kind == "terminal":
-                deadline = backend.start_agent()
             for index, prompt in enumerate(backend.turns):
                 agent_stopped.clear()
                 exit_code = -1
@@ -164,7 +181,13 @@ def _execute_bridged(task, config, run_dir, port, trace):
                     if (trace / name).exists():
                         (trace / name).rename(trace / f"turn-{index}-{name}")
                 if exit_code != 0:
+                    if exit_code == 124:
+                        record = host._read_json_object(trace / "task-timeout.json") or {}
+                        error = str(record.get("message") or "task timed out")
                     break
+            host._remaining_task_seconds(deadline, phase="task result collection")
+    except (host.TaskDeadlineExceeded, subprocess.TimeoutExpired) as exc:
+        exit_code, error = timeout_outcome(exc)
     finally:
         manifest.unlink(missing_ok=True)
         try:
@@ -176,7 +199,7 @@ def _execute_bridged(task, config, run_dir, port, trace):
                 backend.close()
                 host._observe_best_effort(trace, "runtime_finalization", lambda: host._abort_runtime(
                     port, runtime_id, gateway_id=getattr(config, "benchmark_gateway_id", "swe-rebench"),
-                    reason=("agent_timeout" if exit_code == 124 else
+                    reason=("task_timeout" if exit_code == 124 else
                             "cancelled" if exit_code == -1 else "runtime_stopped"),
                     trace_dir=trace,
                 ))

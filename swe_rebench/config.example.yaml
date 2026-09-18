@@ -79,11 +79,7 @@ docker:
 batch:
   # Whole-task wall-clock budget in seconds, including repository export,
   # preflight, agent execution, and normal result collection. 0 = no limit.
-  task_timeout_seconds: 1800
-
-  # Optional additional limit for only the OpenClaw agent phase. The smaller
-  # of this and the remaining whole-task budget wins. 0 = no separate limit.
-  agent_timeout_seconds: 0
+  # Task budget defaults to 1200 seconds; no timeout configuration is needed.
 
   # Number of SWE-ReBench tasks to run concurrently.
   parallelism: 1

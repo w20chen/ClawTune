@@ -14,10 +14,9 @@ batch:
   # sidecar merges accepted observations through its asynchronous single writer.
   parallelism: 1
   retry_failed: 0
-  task_timeout_seconds: 1800
-  agent_timeout_seconds: 0
+  # The only harness deadline: task execution budget, including setup; cleanup has a separate grace period.
+  # Task budget defaults to 1200 seconds; no timeout configuration is needed.
 docker:
-  build_timeout_seconds: 1800
   pull_policy: missing
   cpus: 4
   memory_limit: 8g

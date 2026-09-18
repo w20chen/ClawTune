@@ -427,19 +427,13 @@ def _apply_batch_overrides(
     config: DRBConfig,
     *,
     task_timeout_seconds: int | None = None,
-    agent_timeout_seconds: int | None = None,
     parallelism: int | None = None,
 ) -> None:
-    for option, value in (
-        ("--task-timeout-seconds", task_timeout_seconds),
-        ("--agent-timeout-seconds", agent_timeout_seconds),
-    ):
-        if value is not None and value < 0:
-            raise ValueError(f"{option} must be >= 0")
+    from swe_rebench.config import validate_task_timeout
+
     if task_timeout_seconds is not None:
-        config.batch.task_timeout_seconds = task_timeout_seconds
-    if agent_timeout_seconds is not None:
-        config.batch.agent_timeout_seconds = agent_timeout_seconds
+        config.batch.task_timeout_seconds = validate_task_timeout(task_timeout_seconds)
+
     if parallelism is not None:
         if parallelism < 1:
             raise ValueError("--parallelism must be >= 1")
@@ -536,8 +530,6 @@ def main() -> None:
     run_p.add_argument("--task-timeout-seconds", "--timeout-seconds",
                        type=int, default=None,
                        help="Hard wall-clock limit for each task in seconds")
-    run_p.add_argument("--agent-timeout-seconds", type=int, default=None,
-                       help="Limit only the OpenClaw agent phase (0 disables)")
     run_p.add_argument("--parallelism", type=int, default=None,
                        help="Number of tasks to run concurrently")
     run_p.add_argument(
@@ -580,7 +572,6 @@ def main() -> None:
             _apply_batch_overrides(
                 config,
                 task_timeout_seconds=args.task_timeout_seconds,
-                agent_timeout_seconds=args.agent_timeout_seconds,
                 parallelism=args.parallelism,
             )
         except ValueError as exc:

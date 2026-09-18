@@ -337,7 +337,7 @@ def test_runner_runs_concurrently_and_flushes_async_kb_once(monkeypatch, tmp_pat
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text("llm: {}\n")
     cfg = SimpleNamespace(llm=SimpleNamespace(api_key="test", model="test"),
-        runtime=SimpleNamespace(), batch=SimpleNamespace(parallelism=1), output=SimpleNamespace())
+        runtime=SimpleNamespace(), batch=SimpleNamespace(parallelism=1, task_timeout_seconds=1200), output=SimpleNamespace())
     monkeypatch.setattr(config.RunnerConfig, "from_yaml", lambda *a, **k: cfg)
     monkeypatch.setattr(runner.platform, "system", lambda: "Linux")
     monkeypatch.setattr(prepare, "build_runtime_assets", lambda cfg: tmp_path)
@@ -456,7 +456,7 @@ def test_runner_failure_cancels_workers_and_preserves_report(monkeypatch, tmp_pa
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text("llm: {}\n")
     cfg = SimpleNamespace(llm=SimpleNamespace(api_key="test", model="test"),
-        runtime=SimpleNamespace(), batch=SimpleNamespace(parallelism=2), output=SimpleNamespace())
+        runtime=SimpleNamespace(), batch=SimpleNamespace(parallelism=2, task_timeout_seconds=1200), output=SimpleNamespace())
     monkeypatch.setattr(config.RunnerConfig, "from_yaml", lambda *a, **k: cfg)
     monkeypatch.setattr(runner.platform, "system", lambda: "Linux")
     monkeypatch.setattr(prepare, "build_runtime_assets", lambda cfg: tmp_path)

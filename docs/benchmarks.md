@@ -42,8 +42,7 @@ llm:
   openclaw_model_ref: vllm/your-model
 batch:
   parallelism: 1
-  task_timeout_seconds: 1800
-  agent_timeout_seconds: 0
+  # Task budget defaults to 1200 seconds; no timeout configuration is needed.
 ```
 
 `model` is the upstream model name; `openclaw_model_ref` is its corresponding `vllm/` reference. These settings are independent of daily OpenClaw configuration. Relative credential-file paths resolve against the repository root.
@@ -300,7 +299,7 @@ For attributed exec calls, `resources.pmu.events.llc_read_accesses.raw_count` an
 ```bash
 python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
   --dataset /data/tasks.jsonl --skip 2 --sample 4 --parallelism 2 \
-  --task-timeout-seconds 1800 --output .runtime/my-run
+  --output .runtime/my-run
 ```
 
 `--output` must name a new directory outside datasets and immutable priors. The
@@ -349,11 +348,14 @@ printf 'Run directory: %s\n' "$RUN_ROOT"
 | `--instance-ids id1,id2` | Select tasks in the supplied order |
 | `--parallelism N` | Maximum in-flight tasks; otherwise use YAML |
 | `--task-timeout-seconds N` | Whole-task timeout |
-| `--agent-timeout-seconds N` | Agent timeout |
 
-A timeout value of 0 disables that layer. The run-scoped OpenClaw configuration disables its separate turn and exec defaults so these benchmark limits own the deadline and cleanup sequence; a model-supplied per-call timeout may still end that call sooner. Terminal also enforces its task's `max_agent_timeout_sec` and a 300-second shell-call limit; disabling a CLI timeout does not disable the native task budget.
+All five benchmarks use one harness-owned task deadline, defaulting to **1,200 seconds**. Normal commands need no timeout configuration. The default is defined once in `BatchConfig`; bundled YAML files inherit it. The clock starts when a task begins setup, and setup, agent execution, all conversation turns, and normal result collection share the same remaining budget. Parallel tasks each have their own clock. Terminal Compose build/start also consumes this budget.
 
-Terminal Compose build/start has a separate `docker.build_timeout_seconds` budget (default 1800 seconds, minimum 1). Increase it for slow image downloads or package mirrors, or prepare build layers with the cache commands above. This setup time does not consume the native agent budget.
+OpenClaw agent-turn and tool-execution settings are left untouched. Runtime defaults and LLM-supplied tool arguments retain their normal meaning. The BFCL/Terminal bridge adds no separate per-call timer and forwards OpenClaw's cancellation signal. Terminal's `max_agent_timeout_sec` is retained as dataset metadata only; it does not shorten the task budget. There is no additional 300-second BFCL/Terminal call limit or 600-second bridge request limit. These are ClawTune simulation runs, not runs under Terminal's native timing/scoring conditions.
+
+Advanced diagnostics may explicitly override `batch.task_timeout_seconds`, or use `--task-timeout-seconds N` for a single run (CLI takes precedence over YAML). `0` disables only the harness deadline; negative, fractional and boolean values are rejected. A nonzero legacy `agent_timeout_seconds` produces a migration warning and never supplies a second deadline. `--dry-run` displays the resolved task budget.
+
+At the deadline, the harness stops task producers and records exit code `124` with `scope: task`. Cleanup, runtime drain and the final KB durability barrier have separate bounded grace periods, so total observed wall time can exceed 1,200 seconds. Cleanup failure remains fatal: the runner must not dispatch replacement work or claim safe completion while producers may survive. Infrastructure health probes retain short operation timeouts capped by the remaining task budget; these are not additional agent/tool budgets. Prepare slow image downloads/builds with the cache commands above before running the benchmark.
 
 Resume with:
 

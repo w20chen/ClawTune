@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -130,9 +129,7 @@ def _terminal(row: dict) -> Task:
         raise ValueError(f"Terminal Bench task has no instruction: {source}")
     if not any((source / name).is_file() for name in ("docker-compose.yaml", "docker-compose.yml", "compose.yaml", "compose.yml", "Dockerfile")):
         raise ValueError(f"Terminal Bench task requires a Dockerfile or Compose file: {source}")
-    timeout = config.get("max_agent_timeout_sec", 360)
-    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError("Terminal Bench max_agent_timeout_sec must be a finite positive number")
+    # Native timing metadata is provenance only; simulations use the harness deadline.
     task_id = _id(row) if any(row.get(key) is not None for key in ("instance_id", "task_id", "id")) else source.name
     return Task("terminal-bench", task_id,
                 str(config.get("category") or "dataset"), "terminal", config["instruction"],

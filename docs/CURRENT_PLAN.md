@@ -78,12 +78,60 @@ The sections below retain earlier environment acceptance notes.
 
 # Outstanding Validation
 
+## Unified benchmark task budget (2026-09-18)
+
+- All five adapters now inherit the single 1,200-second default in `BatchConfig`; bundled configurations do not override it. Per explicit user direction, Terminal native agent limits are metadata only. Setup and every agent turn share one deadline. OpenClaw tool settings remain untouched.
+- Removed independent BFCL/Terminal payload timers and the bridge request timer. The bridge uses Node HTTP without an implicit fetch headers deadline and accepts the runtime's AbortSignal. Terminal live builds consume the task budget. Task timeouts remain ordinary failed cases only after confirmed cleanup; uncertain cleanup remains fatal.
+- Validation: with `$env:PYTHONPATH='services/sidecar/src'`, `python -m pytest tests services/sidecar/tests/test_runtime_abort.py -q -rs --disable-warnings --tb=short`: **485 passed, 10 skipped**. New `tests/test_benchmark_timeout.py` covers shared deadlines, multi-turn execution, obsolete/invalid configuration, setup timeout attribution, and cleanup failure. `npm.cmd test` in `packages/clawtune-plugin`: build and **104 tests passed**. `python tools/validate_docs.py` and `git diff --check`: passed.
+- `python scripts/clawtune.py benchmark --benchmark <name> --sample 1 --dry-run` passed for all five adapters and reported `task_timeout_seconds: 1200` without timeout arguments.
+- Required Linux validation remains unavailable here: `PYTHONPATH=services/sidecar/src python3 -m pytest tests services/sidecar/tests/test_runtime_abort.py -q -rs` must exercise the ten subreaper/procfs/POSIX/file-mode cases skipped on Windows. Live `python3 scripts/clawtune.py benchmark --benchmark <name> --sample 1 --task-timeout-seconds 60` cannot run here because Linux, Docker, and OpenClaw are unavailable. On the target host, check timeout during setup and active tools, absence of surviving producers, and the final KB flush. Also run a Terminal task with native `max_agent_timeout_sec` below the harness budget to confirm it no longer truncates the simulation. These checks require working provider credentials.
+
+## Timeout configuration review against `75fec4c` (2026-09-18)
+
+- Windows review validation: with `$env:PYTHONPATH='services/sidecar/src'`, `python -m pytest tests -q -rs --disable-warnings --tb=short` passed (455 passed, 10 skipped), and `python -m pytest services/sidecar/tests/test_runtime_abort.py -q -rs` passed (11 passed). `git diff --check` passed.
+- The ten skipped root tests still require Linux subreaper/procfs/POSIX behavior or POSIX file modes. Repeat the root-suite command above on Linux; Windows results do not validate those paths.
+- Live validation `python3 scripts/clawtune.py benchmark --benchmark <name> --sample 1 --task-timeout-seconds 60` for each registered benchmark cannot run on this review host: neither OpenClaw nor Docker is available on PATH, and the host is Windows. Confirm actual deadline enforcement, producer cleanup, and final KB flush on the target Linux runtime.
+
+## Benchmark validation on the target Linux host (2026-09-18)
+
+An earlier validation attempt could not run `tests/test_benchmark_timeout.py` because it was absent. The unified-budget change now supplies and validates that file (see above).
+
+The following requested default-roster validation commands cannot select the
+requested two tasks, even in `--dry-run` mode, because the tracked smoke roster
+contains only one entry.  Each exits 1 with `requested 2 tasks, only 1
+available`; use `--sample 1` for the current smoke roster, or add a second
+tracked valid smoke task before requiring this acceptance command.
+
+- `python3 scripts/clawtune.py benchmark --benchmark swe-bench-verified --sample 2 --parallelism 2 --task-timeout-seconds 1200 --dry-run`
+- `python3 scripts/clawtune.py benchmark --benchmark bfcl --sample 2 --parallelism 2 --task-timeout-seconds 1200 --dry-run`
+- `python3 scripts/clawtune.py benchmark --benchmark terminal-bench --sample 2 --parallelism 2 --task-timeout-seconds 1200 --dry-run`
+
+Before the timeout-separation change, on `weitianc@193.124.7.2` (OpenClaw
+2026.7.1), the otherwise selectable SWE-Rebench and Deep Research Bench live
+commands failed:
+
+- `python3 scripts/clawtune.py benchmark --benchmark swe-rebench --sample 2 --parallelism 2 --task-timeout-seconds 1200`
+- `python3 scripts/clawtune.py benchmark --benchmark deep-research-bench --sample 2 --parallelism 2 --task-timeout-seconds 1200`
+
+They failed before an agent or tool call because the generated run-local
+OpenClaw configuration set `agents.defaults.timeoutSeconds: 0`, which this
+OpenClaw version rejects (`must be greater than 0`).  The local fix removes both
+benchmark-written OpenClaw timeout fields and retains only the 1,200-second
+whole-task supervisor deadline. Deploy it to the target host and rerun these
+commands before treating trace-quality acceptance as complete.
+
+After deploying that fix, the SWE-Rebench command reached its LLM span without
+the configuration error, but both selected tasks received upstream HTTP 402
+(provider balance/credit exhausted) before a tool call. Live tool-trace and
+metric-quality acceptance remains blocked until a funded provider credential is
+available; this is not a timeout result.
+
 - Timeout/cancellation audit: `PYTHONPATH=services/sidecar/src python3 -m pytest tests/test_timeout_finalization.py tests/test_benchmark_cancellation.py tests/test_benchmark_shutdown.py tests/test_benchmark_runtime_fixes.py tests/test_benchmark_terminal_exec.py services/sidecar/tests/test_runtime_abort.py -q -rs` still requires Linux for the eight subreaper/procfs/POSIX cases skipped on Windows. Live concurrent timeout acceptance additionally requires Linux, Docker, OpenClaw and provider credentials; exercise `python3 scripts/clawtune.py benchmark --benchmark <name> --sample 3 --parallelism 3 --task-timeout-seconds 60` for each adapter, plus interruption during setup and tool execution, and verify no surviving producers and an acknowledged final KB flush.
   The targeted WSL variant using `tests/test_benchmark_shutdown.py tests/test_benchmark_terminal_exec.py tests/test_timeout_finalization.py tests/test_benchmark_cancellation.py services/sidecar/tests/test_runtime_abort.py` cannot run in the installed Ubuntu environment because `/usr/bin/python3` has no `pytest` module.
 
 This file records checks that still require a suitable environment. Usage and configuration belong in the [installation guide](getting-started.md) and [benchmark guide](benchmarks.md).
 
-The 2026-09-16 review of main commit `5e68953`, confirmed failure modes, implementation status, and validation plan are in [TRACE_MONITORING_REVIEW.md](TRACE_MONITORING_REVIEW.md). The eBPF-default redesign is implemented in the working tree; Linux kernel acceptance remains outstanding.
+The 2026-09-16 review reference for main commit `5e68953` is not included in this checkout. The eBPF-default redesign is implemented in the working tree; Linux kernel acceptance remains outstanding.
 
 - Trace review Linux collector validation: `python3 tools/check_ebpf.py` cannot establish compile/attach/sampling behavior on this Windows host; run on the target Linux kernel with BCC, matching headers, Docker and required BPF/perf privileges. Include long-lived sleeping memory holders and shared-runtime non-exec tools in subsequent integration acceptance; passing command/exec preflight alone does not establish those capabilities.
 

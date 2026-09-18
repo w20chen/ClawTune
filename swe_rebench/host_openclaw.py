@@ -315,11 +315,9 @@ def run_host_openclaw_task(
             cleanup_error = exc
         if sandbox_stopped and agent_stopped.is_set() and (exit_code == 124 or agent_cancelled):
             try:
-                timeout_record = _read_json_object(trace_dir / "task-timeout.json") or {}
                 _abort_runtime(
                     sidecar_port, _runtime_id(workspace), gateway_id=gateway_id,
-                    reason=("cancelled" if agent_cancelled else
-                            "agent_timeout" if timeout_record.get("scope") == "agent" else "task_timeout"),
+                    reason=("cancelled" if agent_cancelled else "task_timeout"),
                     trace_dir=trace_dir,
                 )
             except Exception as exc:
@@ -571,18 +569,11 @@ def run_host_openclaw_replay_task(
                 error = f"replay sandbox cleanup failed: {exc}"
         if sandbox_stopped and agent_stopped.is_set() and (exit_code == 124 or agent_cancelled):
             try:
-                timeout_record = _read_json_object(trace_dir / "task-timeout.json") or {}
                 _abort_runtime(
                     sidecar_port,
                     _runtime_id(workspace),
                     gateway_id=_gateway_id(config),
-                    reason=(
-                        "cancelled"
-                        if agent_cancelled
-                        else "agent_timeout"
-                        if timeout_record.get("scope") == "agent"
-                        else "task_timeout"
-                    ),
+                    reason="cancelled" if agent_cancelled else "task_timeout",
                     trace_dir=trace_dir,
                 )
             except Exception as exc:
@@ -1619,7 +1610,7 @@ def _configure_openclaw(
             )
 
 
-def _openclaw_uses_agent_flag(openclaw: str) -> bool:
+def _openclaw_uses_agent_flag(openclaw: str, *, deadline: float | None = None) -> bool:
     """True when ``openclaw agent`` selects the agent via ``--agent <id>``.
 
     OpenClaw 2026.7.x uses ``--agent main``.  Newer builds moved the agent id
@@ -1638,17 +1629,21 @@ def _openclaw_uses_agent_flag(openclaw: str) -> bool:
         f"HOME={os.environ.get('HOME')!r} "
         f"OPENCLAW_HOME={os.environ.get('OPENCLAW_HOME')!r}"
     )
+    remaining = _remaining_task_seconds(deadline, phase="OpenClaw syntax probe")
     try:
-        probe = subprocess.run(
+        probe = run_command(
             [openclaw, "agent", "main", "--help"],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=min(30, remaining) if remaining is not None else 30,
         )
+    except (TaskCancelled, ContainerCleanupError):
+        raise
     except Exception:
         # Best-effort probe: any failure (missing binary, timeout, or a
         # Popen stand-in without a context manager in tests) falls back to
         # the long-documented flag form.
+        _remaining_task_seconds(deadline, phase="OpenClaw syntax probe")
         return True
     positional = (
         probe.returncode == 0
@@ -1668,9 +1663,10 @@ def _openclaw_agent_argv(
     model_ref: str,
     prompt_path: Path,
     extra_args: Sequence[str],
+    deadline: float | None = None,
 ) -> list[str]:
     """Build the ``openclaw agent`` argv for the installed CLI syntax."""
-    if _openclaw_uses_agent_flag(openclaw):
+    if _openclaw_uses_agent_flag(openclaw, deadline=deadline):
         argv = [
             openclaw,
             "agent",
@@ -1765,7 +1761,9 @@ def _run_openclaw_agent(
         agent_argv = _openclaw_agent_argv(
             openclaw, model_ref=model_ref or config.llm.openclaw_model_ref,
             prompt_path=prompt_path, extra_args=config.agent.extra_args,
+            deadline=task_deadline,
         )
+        _remaining_task_seconds(task_deadline, phase="agent process launch")
         supervised = sys.platform == "linux"
         if supervised:
             agent_argv = [sys.executable, str(Path(__file__).with_name("process_supervisor.py")), "--", *agent_argv]
@@ -1805,19 +1803,9 @@ def _run_openclaw_agent(
     tee_stderr.start()
 
     try:
-        agent_deadline = (
-            time.monotonic() + config.batch.agent_timeout_seconds
-            if config.batch.agent_timeout_seconds > 0
-            else None
-        )
-        effective_deadline = min(
-            value
-            for value in (task_deadline, agent_deadline)
-            if value is not None
-        ) if task_deadline is not None or agent_deadline is not None else None
         timeout = (
-            max(0.001, effective_deadline - time.monotonic())
-            if effective_deadline is not None
+            max(0.001, task_deadline - time.monotonic())
+            if task_deadline is not None
             else None
         )
         code = wait_process(process, timeout)
@@ -1830,17 +1818,8 @@ def _run_openclaw_agent(
         _kill_agent_process_and_confirm(process)
         if stopped_event is not None:
             stopped_event.set()
-        scope = (
-            "task"
-            if task_deadline is not None
-            and (agent_deadline is None or task_deadline <= agent_deadline)
-            else "agent"
-        )
-        configured_seconds = (
-            config.batch.task_timeout_seconds
-            if scope == "task"
-            else config.batch.agent_timeout_seconds
-        )
+        scope = "task"
+        configured_seconds = config.batch.task_timeout_seconds
         message = (
             f"{scope} timed out after {configured_seconds}s"
             if configured_seconds > 0
@@ -1891,11 +1870,8 @@ def _openclaw_config(
         {
             "agents": {
                 "defaults": {
-                    # The benchmark harness owns the whole-task and agent-only
-                    # deadlines and must also cover setup/cleanup. Disable the
-                    # CLI's separate turn timer so it cannot end the agent on a
-                    # different clock.
-                    "timeoutSeconds": 0,
+                    # Preserve OpenClaw's own turn timeout. The benchmark
+                    # supervisor owns only the whole-task deadline.
                     "workspace": str(workspace),
                     "repoRoot": str(workspace),
                     "sandbox": {
@@ -1925,9 +1901,7 @@ def _openclaw_config(
                 # telemetry route synchronous.
                 "deny": ["process"],
                 "exec": {
-                    # The outer supervisor terminates the complete agent tree at
-                    # the benchmark deadline, including a command in flight.
-                    "timeoutSeconds": 0,
+                    # Preserve OpenClaw/LLM per-tool timeout policy.
                     # OpenClaw's supported sandbox-exec PATH extension.  The
                     # launcher repeats the complete value so the forked shell
                     # also inherits it regardless of gateway sanitisation.

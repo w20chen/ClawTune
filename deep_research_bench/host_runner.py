@@ -176,6 +176,7 @@ def run_drb_task(
             stopped_event=agent_stopped_event,
         )
         agent_stopped = agent_stopped_event.is_set()
+        _remaining_task_seconds(deadline, phase="research result collection")
         timeout_record = _read_json_object(trace_dir / "task-timeout.json")
         if exit_code == 124 and isinstance(timeout_record, dict):
             error = str(timeout_record.get("message") or "task timed out")
@@ -223,7 +224,6 @@ def run_drb_task(
             error = error or f"sandbox cleanup failed: {exc}"
         if sandbox_stopped and agent_stopped and (exit_code == 124 or agent_cancelled):
             try:
-                timeout_record = _read_json_object(trace_dir / "task-timeout.json") or {}
                 _abort_runtime(
                     sidecar_port,
                     _runtime_id(workspace),
@@ -231,8 +231,6 @@ def run_drb_task(
                     reason=(
                         "cancelled"
                         if agent_cancelled
-                        else "agent_timeout"
-                        if timeout_record.get("scope") == "agent"
                         else "task_timeout"
                     ),
                     trace_dir=trace_dir,

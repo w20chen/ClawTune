@@ -91,11 +91,8 @@ web_search:
 
 # ── Batch Execution ──────────────────────────────────────────────
 batch:
-  # Whole-task wall-clock budget in seconds. 0 = no limit.
-  task_timeout_seconds: 1800
-
-  # Optional additional limit for only the OpenClaw agent phase. 0 = none.
-  agent_timeout_seconds: 0
+  # The only harness deadline: total task wall time. 0 = no limit.
+  # Task budget defaults to 1200 seconds; no timeout configuration is needed.
 
   # Number of tasks to run concurrently (each task owns a private sidecar).
   parallelism: 1

@@ -78,8 +78,8 @@ def parser():
             "runner config"
         ),
     )
-    bench.add_argument("--task-timeout-seconds", type=int)
-    bench.add_argument("--agent-timeout-seconds", type=int)
+    bench.add_argument("--task-timeout-seconds", type=int,
+                       help="Advanced task-budget override; normally omit (default 1200 seconds)")
     bench.add_argument("--dry-run", action="store_true", help="Validate and show selected tasks/seed without Docker or an LLM")
     off = sub.add_parser("offline", help="Split fixed-format traces, train, freeze, evaluate")
     off.add_argument("--dataset", type=Path, required=True)
@@ -165,8 +165,15 @@ def main(argv=None):
             from clawtune_kb import validate_seed
             validate_seed(args.seed)
             config = args.config or default_config(args.benchmark, ROOT)
+            if not config.is_file():
+                raise ValueError(f"config missing: {config}; run setup or pass --config")
             if args.dry_run:
+                from swe_rebench.config import RunnerConfig, validate_task_timeout
+                loaded = RunnerConfig.from_yaml(config, repo_root=ROOT)
+                timeout = (loaded.batch.task_timeout_seconds if args.task_timeout_seconds is None
+                           else validate_task_timeout(args.task_timeout_seconds))
                 print(json.dumps({"benchmark": args.benchmark, "mode": "online", "kb_frozen": False,
+                    "task_timeout_seconds": timeout,
                     "parallelism_override": args.parallelism,
                     "dataset": str(source.expanduser().resolve()) if source else None,
                     "config": str(config.expanduser().resolve()),
@@ -174,11 +181,9 @@ def main(argv=None):
                     "executor": task.kind, "image": task.image} for task in tasks]}, indent=2))
                 return 0
             from .runner import run
-            if not config.is_file():
-                raise ValueError(f"config missing: {config}; run setup or pass --config")
             result = run(tasks, config_path=config.resolve(), seed=args.seed.resolve(), output=args.output,
                          resume=args.resume, task_timeout=args.task_timeout_seconds,
-                         agent_timeout=args.agent_timeout_seconds, parallelism=args.parallelism)
+                         parallelism=args.parallelism)
             return 0 if result["status"] == "completed" else 1
         if args.command == "offline":
             from offline.runner import run

@@ -1,4 +1,5 @@
 import {readFileSync} from "node:fs";
+import {request} from "node:http";
 import type {HookApi} from "openclaw/plugin-sdk/plugin-entry";
 
 /** Runner-only task tools. Ordinary OpenClaw sessions have no bridge manifest. */
@@ -17,17 +18,32 @@ export function registerBenchmarkTools(api: HookApi): void {
       label: tool.name,
       description: tool.description || tool.name,
       parameters: tool.parameters,
-      async execute(id: string, params: Record<string, unknown>) {
-        const response = await fetch(url, {
-          method: "POST",
-          headers: {"Content-Type": "application/json", Authorization: `Bearer ${bridge.token}`},
-          body: JSON.stringify({name: tool.name, arguments: params, call_id: id}),
-          // The backend's 300 s payload budget excludes gate setup and exit
-          // acknowledgement. Allow it to return its authoritative result.
-          signal: AbortSignal.timeout(600_000),
+      async execute(id: string, params: Record<string, unknown>, signal?: AbortSignal) {
+        // node:http has no implicit fetch/Undici headers deadline. The runner
+        // owns the task deadline; preserve OpenClaw's per-call cancellation.
+        const body = JSON.stringify({name: tool.name, arguments: params, call_id: id});
+        const data = await new Promise<{result: unknown}>((resolve, reject) => {
+          const req = request(url, {
+            method: "POST",
+            headers: {"Content-Type": "application/json", Authorization: `Bearer ${bridge.token}`,
+              "Content-Length": Buffer.byteLength(body)},
+            signal,
+          }, (response) => {
+            const chunks: Buffer[] = [];
+            response.on("data", (chunk: Buffer) => chunks.push(chunk));
+            response.on("error", reject);
+            response.on("end", () => {
+              const text = Buffer.concat(chunks).toString("utf8");
+              if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
+                reject(new Error(`Benchmark tool failed: ${response.statusCode} ${text}`));
+                return;
+              }
+              try { resolve(JSON.parse(text)); } catch (error) { reject(error); }
+            });
+          });
+          req.on("error", reject);
+          req.end(body);
         });
-        if (!response.ok) throw new Error(`Benchmark tool failed: ${response.status} ${await response.text()}`);
-        const data = await response.json() as {result: unknown};
         return {content: [{type: "text", text: typeof data.result === "string" ? data.result : JSON.stringify(data.result)}]};
       },
     });

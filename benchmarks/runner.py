@@ -68,7 +68,6 @@ def run(
     output: Path | None = None,
     resume: Path | None = None,
     task_timeout: int | None = None,
-    agent_timeout: int | None = None,
     parallelism: int | None = None,
 ) -> dict:
     from swe_rebench.config import RunnerConfig
@@ -113,13 +112,10 @@ def run(
         raise ValueError("parallelism must be a positive integer")
     config.batch.parallelism = selected_parallelism
 
-    for value in (task_timeout, agent_timeout):
-        if value is not None and value < 0:
-            raise ValueError("timeouts must be nonnegative")
+    from swe_rebench.config import validate_task_timeout
+
     if task_timeout is not None:
-        config.batch.task_timeout_seconds = task_timeout
-    if agent_timeout is not None:
-        config.batch.agent_timeout_seconds = agent_timeout
+        config.batch.task_timeout_seconds = validate_task_timeout(task_timeout)
 
     folder = (
         resume
@@ -236,6 +232,7 @@ def run(
     print(
         f"{manifest['benchmark']}: {len(tasks)} tasks; "
         f"parallelism={selected_parallelism}; asynchronous online learning; "
+        f"task_timeout_seconds={config.batch.task_timeout_seconds}; "
         f"KB={folder / 'kb'}",
         flush=True,
     )

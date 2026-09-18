@@ -22,7 +22,8 @@ from .exec_control import (
     SidecarUnavailable,
     parse_gate_identity,
 )
-from swe_rebench.cancellation import run_command, TaskCancelled
+from swe_rebench.cancellation import check_cancelled, run_command, TaskCancelled
+from swe_rebench.host_openclaw import ContainerCleanupError, TaskDeadlineExceeded
 
 
 class _GateDegrade(RuntimeError):
@@ -160,16 +161,17 @@ def _bfcl_worker(connection, task, run_dir, factory):
 
 class BFCLBackend:
     """Keep BFCL's state in one killable worker, not a daemon HTTP thread."""
-    def __init__(self, task, run_dir, *, _factory=_BFCLImplementation):
+    def __init__(self, task, run_dir, *, deadline=None, _factory=_BFCLImplementation):
         import multiprocessing
         context = multiprocessing.get_context("spawn")
         self._connection, child = context.Pipe()
         self._cancelled = threading.Event()
+        self.deadline = deadline
         self._worker = context.Process(target=_bfcl_worker, args=(child, task, run_dir, _factory))
         self._worker.start()
         child.close()
         try:
-            for key, value in self._receive(timeout=60).items():
+            for key, value in self._receive().items():
                 setattr(self, key, value)
         except BaseException:
             self._stop()
@@ -188,12 +190,17 @@ class BFCLBackend:
         if self._worker.exitcode == 125:
             raise RuntimeError("BFCL descendants did not stop")
 
-    def _receive(self, timeout=300):
-        deadline = time.monotonic() + timeout
-        while not self._connection.poll(0.1):
-            if self._cancelled.is_set() or time.monotonic() >= deadline:
+    def _receive(self):
+        while True:
+            check_cancelled()
+            if self._cancelled.is_set():
                 self._stop()
-                raise TaskCancelled("BFCL call cancelled or timed out")
+                raise TaskCancelled("BFCL call cancelled")
+            if self.deadline is not None and time.monotonic() >= self.deadline:
+                self._stop()
+                raise TaskDeadlineExceeded("task timed out during BFCL worker execution")
+            if self._connection.poll(0.1):
+                break
             if not self._worker.is_alive():
                 raise RuntimeError("BFCL worker exited without a result")
         ok, value = self._connection.recv()
@@ -234,7 +241,7 @@ class TerminalBackend:
     def __init__(self, task, run_dir: Path, *, deadline: float | None = None, platform: str = "",
                  sidecar_port: int | None = None, runtime_id: str = "",
                  gateway_id: str = GATEWAY_ID, repo: str = "terminal-bench",
-                 telemetry_required: bool = False, build_timeout_seconds: float = 1800):
+                 telemetry_required: bool = False):
         self.deadline = deadline
         self._cancelled = threading.Event()
         self.telemetry_required = telemetry_required
@@ -279,8 +286,6 @@ class TerminalBackend:
             "T_BENCH_TASK_LOGS_PATH": str(logs), "T_BENCH_TASK_AGENT_LOGS_PATH": str(logs / "agent"),
             "T_BENCH_CONTAINER_LOGS_PATH": "/logs", "T_BENCH_CONTAINER_AGENT_LOGS_PATH": "/agent-logs",
             "T_BENCH_TEST_DIR": "/tests"})
-        self.agent_timeout = float(task.payload["config"].get("max_agent_timeout_sec", 360))
-        self.timeout = 300
         self.turns = [task.prompt]
         self.system = []
         self.started = False
@@ -306,30 +311,35 @@ class TerminalBackend:
                 if isinstance(build, dict) and not Path(build["context"]).resolve().is_relative_to(self.root.resolve()):
                     raise ValueError("Terminal task build context is outside its copied task")
             self.started = True
-            self._run(["up", "-d", "--build"], timeout=build_timeout_seconds)
+            self._run(["up", "-d", "--build"], timeout=None)
             self.container = self._run(["ps", "-q", "client"], timeout=30).stdout.strip()
             if not self.container or "\n" in self.container:
                 raise ValueError("Terminal Bench Compose must expose exactly one client container")
         except BaseException:
-            self.close()
+            self._cleanup_failed_setup()
             raise
-        if self.sidecar is not None:
-            # Both steps must exist before the first tool call; each degrades
-            # explicitly instead of failing the task on an exotic image.
-            self._install_exec_gate()
-            self._register_container_scope()
+        try:
+            if self.sidecar is not None:
+                # Capability failures degrade; cancellation/deadline still owns cleanup.
+                self._install_exec_gate()
+                self._register_container_scope()
+            self._remaining()
+        except BaseException:
+            self._cleanup_failed_setup()
+            raise
 
-    def start_agent(self):
-        """Apply the native whole-agent budget after environment setup."""
-        native_deadline = time.monotonic() + self.agent_timeout
-        self.deadline = min(self.deadline, native_deadline) if self.deadline is not None else native_deadline
-        return self.deadline
+    def _cleanup_failed_setup(self):
+        try:
+            self.close()
+        except BaseException as exc:
+            raise ContainerCleanupError(f"Terminal setup cleanup unconfirmed: {exc}") from exc
 
-    def _remaining(self, timeout):
+    def _remaining(self, timeout=None):
         if self.deadline is not None:
-            timeout = min(timeout, self.deadline - time.monotonic())
-        if timeout <= 0:
-            raise TimeoutError("Terminal Bench task deadline exceeded")
+            remaining = self.deadline - time.monotonic()
+            if remaining <= 0:
+                raise TaskDeadlineExceeded("task timed out during Terminal Bench execution")
+            timeout = min(timeout, remaining) if timeout is not None else remaining
         return timeout
 
     def _run(self, args, *, timeout, cleanup=False):
@@ -348,6 +358,8 @@ class TerminalBackend:
                         raise TerminalCaseBuildFailure(error) from exc
                     raise RuntimeError(error) from exc
                 except subprocess.TimeoutExpired as exc:
+                    if not cleanup:
+                        self._remaining()  # Preserve whole-task timeout attribution.
                     if args[0] == "up":
                         raise TerminalCaseBuildFailure(
                             f"Terminal Compose up timed out after {timeout} seconds; see {log_path}"
@@ -376,14 +388,14 @@ class TerminalBackend:
             raise TaskCancelled("terminal execution cancelled")
 
     def _communicate(self, process, *, timeout, input=None):
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + timeout if timeout is not None else None
         while True:
             self._check_cancelled()
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            remaining = deadline - time.monotonic() if deadline is not None else None
+            if remaining is not None and remaining <= 0:
                 raise subprocess.TimeoutExpired(process.args, timeout)
             try:
-                return process.communicate(input=input, timeout=min(0.2, remaining))
+                return process.communicate(input=input, timeout=min(0.2, remaining) if remaining is not None else 0.2)
             except subprocess.TimeoutExpired:
                 input = None
 
@@ -402,7 +414,7 @@ class TerminalBackend:
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         try:
-            stdout, stderr = self._communicate(process, timeout=self._remaining(self.timeout))
+            stdout, stderr = self._communicate(process, timeout=self._remaining())
             return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
         except BaseException:
             self._terminate(process)
@@ -422,13 +434,13 @@ class TerminalBackend:
         its exit status and cancellation boundary remain authoritative.
         """
 
-        remaining = self._remaining(self.timeout)
+        remaining = self._remaining()
         execution_id = "terminal-" + uuid.uuid4().hex[:24]
         process = self._start_gated_process(command)
         update_token: str | None = None
         identity = None
         try:
-            identity = self._read_gate_identity(process, timeout=min(30.0, remaining))
+            identity = self._read_gate_identity(process, timeout=min(30.0, remaining) if remaining is not None else 30.0)
             if identity is None:
                 raise _GateDegrade("gate identity unavailable")
             container_pid, namespace_inode, starttime_ticks = identity
@@ -473,7 +485,7 @@ class TerminalBackend:
             # communicate owns stdin, including EOF. Closing it manually first
             # makes CPython 3.10-3.12 on POSIX flush a closed stream. Check the
             # budget before releasing; never retry a released payload.
-            deadline_budget = self._remaining(self.timeout)
+            deadline_budget = self._remaining()
             self._check_cancelled()
             stdout, stderr = self._communicate(process, input="go\n", timeout=deadline_budget)
             exit_code = process.returncode
@@ -596,7 +608,7 @@ class TerminalBackend:
             script.write_text(GATE_SCRIPT, encoding="utf-8", newline="\n")
             copied = run_command(
                 ["docker", "cp", str(script), f"{self.container}:{GATE_CONTAINER_PATH}"],
-                capture_output=True, text=True, timeout=60,
+                capture_output=True, text=True, timeout=self._remaining(60),
             )
             if copied.returncode != 0:
                 raise RuntimeError((copied.stderr or "").strip() or "docker cp failed")
@@ -605,7 +617,7 @@ class TerminalBackend:
                     "docker", "exec", "-i", self.container,
                     "/bin/sh", GATE_CONTAINER_PATH, "/bin/sh", "-c", ":",
                 ],
-                input="go\n", capture_output=True, text=True, timeout=60,
+                input="go\n", capture_output=True, text=True, timeout=self._remaining(60),
             )
             lines = (probe.stdout or "").splitlines()
             if probe.returncode != 0 or not lines or parse_gate_identity(lines[0]) is None:
@@ -613,7 +625,10 @@ class TerminalBackend:
                     f"gate probe exit={probe.returncode} stdout={probe.stdout!r} "
                     f"stderr={probe.stderr!r}"
                 )
+        except (TaskCancelled, TaskDeadlineExceeded):
+            raise
         except Exception as exc:  # capability probe: degrade, never fail the task
+            self._remaining()
             self._disable_gate(f"{type(exc).__name__}: {exc}")
             return
         self.gate_available = True

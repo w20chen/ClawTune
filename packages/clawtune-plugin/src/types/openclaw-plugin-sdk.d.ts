@@ -3,7 +3,7 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
 
   export type HookApi = {
     id: string;
-    registerTool?(tool: {name: string; label?: string; description: string; parameters: Record<string, unknown>; execute(id: string, params: Record<string, unknown>): Promise<unknown>}): void;
+    registerTool?(tool: {name: string; label?: string; description: string; parameters: Record<string, unknown>; execute(id: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>}): void;
     pluginConfig?: Record<string, unknown>;
     on(name: string | string[], handler: (event: unknown, context?: unknown) => unknown | Promise<unknown>, opts?: {priority?: number; timeoutMs?: number}): void;
     logger?: {

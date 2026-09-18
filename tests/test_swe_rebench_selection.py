@@ -909,12 +909,6 @@ def test_cli_task_timeout_override(tmp_path: Path) -> None:
     _apply_batch_overrides(config, task_timeout_seconds=0)
     assert config.batch.task_timeout_seconds == 0
 
-    _apply_batch_overrides(config, agent_timeout_seconds=90)
-    assert config.batch.agent_timeout_seconds == 90
-
-    _apply_batch_overrides(config, agent_timeout_seconds=0)
-    assert config.batch.agent_timeout_seconds == 0
-
 
 def test_cli_task_timeout_override_rejects_negative_value(tmp_path: Path) -> None:
     config = RunnerConfig.from_yaml("swe_rebench/config.yaml", repo_root=tmp_path)
@@ -922,21 +916,16 @@ def test_cli_task_timeout_override_rejects_negative_value(tmp_path: Path) -> Non
     with pytest.raises(ValueError, match="must be >= 0"):
         _apply_batch_overrides(config, task_timeout_seconds=-1)
 
-    with pytest.raises(ValueError, match="agent-timeout-seconds must be >= 0"):
-        _apply_batch_overrides(config, agent_timeout_seconds=-1)
-
-
-def test_runner_config_reads_separate_task_and_agent_timeouts(tmp_path: Path) -> None:
+def test_runner_config_reads_task_timeout(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "batch:\n  task_timeout_seconds: 600\n  agent_timeout_seconds: 420\n",
+        "batch:\n  task_timeout_seconds: 600\n",
         encoding="utf-8",
     )
 
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
 
     assert config.batch.task_timeout_seconds == 600
-    assert config.batch.agent_timeout_seconds == 420
 
 
 def test_full_report_json_is_opt_in(capsys) -> None:
@@ -1617,7 +1606,7 @@ def test_host_openclaw_openclaw_config_uses_only_public_top_level_keys(tmp_path:
 
     assert set(parsed) == {"agents", "tools", "plugins", "env"}
     assert parsed["agents"]["defaults"]["workspace"] == str(tmp_path / "workspace")
-    assert parsed["agents"]["defaults"]["timeoutSeconds"] == 0
+    assert "timeoutSeconds" not in parsed["agents"]["defaults"]
     assert parsed["agents"]["defaults"]["repoRoot"] == str(tmp_path / "workspace")
     docker_cfg = parsed["agents"]["defaults"]["sandbox"]["docker"]
     assert docker_cfg["containerPrefix"] == _sandbox_container_prefix(tmp_path / "workspace")
@@ -1641,7 +1630,7 @@ def test_host_openclaw_openclaw_config_uses_only_public_top_level_keys(tmp_path:
     assert parsed["env"]["CLAWTUNE_LAUNCH_MODE"] == "fork-exec"
     assert "PATH" not in parsed["env"]
     assert parsed["tools"]["deny"] == ["process"]
-    assert parsed["tools"]["exec"]["timeoutSeconds"] == 0
+    assert "timeoutSeconds" not in parsed["tools"]["exec"]
     assert parsed["tools"]["exec"]["pathPrepend"] == _SANDBOX_TASK_PATH.split(":")
 
 
@@ -2605,7 +2594,7 @@ def test_openclaw_uses_agent_flag_falls_back_when_probe_fails(monkeypatch) -> No
 def test_openclaw_agent_argv_flag_syntax(monkeypatch) -> None:
     monkeypatch.setattr(
         "swe_rebench.host_openclaw._openclaw_uses_agent_flag",
-        lambda _openclaw: True,
+        lambda _openclaw, **kwargs: True,
     )
     argv = _openclaw_agent_argv(
         "/usr/bin/openclaw",
@@ -2629,7 +2618,7 @@ def test_openclaw_agent_argv_flag_syntax(monkeypatch) -> None:
 def test_openclaw_agent_argv_positional_syntax(monkeypatch) -> None:
     monkeypatch.setattr(
         "swe_rebench.host_openclaw._openclaw_uses_agent_flag",
-        lambda _openclaw: False,
+        lambda _openclaw, **kwargs: False,
     )
     argv = _openclaw_agent_argv(
         "/usr/bin/openclaw",
@@ -2651,24 +2640,13 @@ def test_openclaw_agent_argv_positional_syntax(monkeypatch) -> None:
     ]
 
 
-@pytest.mark.parametrize(
-    ("task_budget_seconds", "agent_budget_seconds", "expected_scope"),
-    [
-        (None, 30, "agent"),
-        (0.25, 30, "task"),
-    ],
-)
-def test_host_openclaw_agent_uses_smallest_timeout_and_kills_process(
+def test_host_openclaw_agent_uses_task_timeout_and_kills_process(
     monkeypatch,
     tmp_path: Path,
-    task_budget_seconds: float | None,
-    agent_budget_seconds: int,
-    expected_scope: str,
 ) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
-    config.batch.agent_timeout_seconds = agent_budget_seconds
     trace_dir = tmp_path / "trace"
     trace_dir.mkdir()
     workspace = tmp_path / "workspace"
@@ -2700,11 +2678,8 @@ def test_host_openclaw_agent_uses_smallest_timeout_and_kills_process(
         "swe_rebench.host_openclaw.subprocess.Popen",
         lambda *_args, **_kwargs: process,
     )
-    task_deadline = (
-        time.monotonic() + task_budget_seconds
-        if task_budget_seconds is not None
-        else None
-    )
+    task_budget_seconds = 0.25
+    task_deadline = time.monotonic() + task_budget_seconds
 
     exit_code = _run_openclaw_agent(
         trace_dir=trace_dir,
@@ -2719,14 +2694,11 @@ def test_host_openclaw_agent_uses_smallest_timeout_and_kills_process(
     assert exit_code == 124
     assert process.killed is True
     assert waits[0] is not None
-    if task_budget_seconds is not None:
-        assert 0 < float(waits[0]) <= task_budget_seconds
-    else:
-        assert 0 < float(waits[0]) <= agent_budget_seconds
+    assert 0 < float(waits[0]) <= task_budget_seconds
     timeout_record = json.loads(
         (trace_dir / "task-timeout.json").read_text(encoding="utf-8")
     )
-    assert timeout_record["scope"] == expected_scope
+    assert timeout_record["scope"] == "task"
 
 
 def test_host_agent_cancellation_kills_real_process_without_agent_timeout(monkeypatch, tmp_path):
@@ -2737,7 +2709,6 @@ def test_host_agent_cancellation_kills_real_process_without_agent_timeout(monkey
     config_path = tmp_path / "config.yaml"
     config_path.write_text("")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
-    config.batch.agent_timeout_seconds = 0
     trace = tmp_path / "trace"
     trace.mkdir()
     cancellation = Cancellation()
@@ -2791,7 +2762,6 @@ def test_host_agent_cleanup_does_not_wait_for_inherited_output(monkeypatch, tmp_
         config_path = folder / "config.yaml"
         config_path.write_text("")
         config = RunnerConfig.from_yaml(config_path, repo_root=folder)
-        config.batch.agent_timeout_seconds = 0
         start = time.monotonic()
         result = host._run_openclaw_agent(
             trace_dir=folder, openclaw_home=folder / "home", workspace=folder,

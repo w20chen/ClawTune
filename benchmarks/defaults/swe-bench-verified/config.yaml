@@ -23,8 +23,7 @@ docker:
   cgroup_mount_rw: true
   cgroup_required: true
 batch:
-  task_timeout_seconds: 1800
-  agent_timeout_seconds: 0
+  # Task budget defaults to 1200 seconds; no timeout configuration is needed.
   parallelism: 1
   retry_failed: 0
   continue_on_error: true

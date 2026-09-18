@@ -37,13 +37,19 @@ def test_default_source_uses_actual_dataset_directory(tmp_path, name, directory)
 
 
 def test_every_benchmark_has_a_tracked_default_config_and_roster(tmp_path):
+    from swe_rebench.config import RunnerConfig
+
     root = Path(__file__).resolve().parents[1]
     missing_external = tmp_path / "missing-agent-test-bench"
     for name in NAMES:
         config = default_config(name, root)
         source = default_source(name, missing_external, root)
-        assert config == root / BUNDLED_CONFIGS[name]
+        bundled_config = root / BUNDLED_CONFIGS[name]
+        local_config = root / "configs/benchmark.yaml"
+        assert config == (local_config if local_config.is_file() else bundled_config)
         assert config.is_file()
+        assert bundled_config.is_file()
+        assert RunnerConfig.from_yaml(bundled_config, repo_root=root).batch.task_timeout_seconds == 1200
         assert source == root / BUNDLED_DATASETS[name]
         assert source.is_file()
 
@@ -183,23 +189,24 @@ def test_terminal_harbor_parent_has_actionable_error(tmp_path):
 
 
 @pytest.mark.parametrize("timeout", [0, -1, True, ".inf", "invalid"])
-def test_terminal_rejects_invalid_native_timeout(tmp_path, timeout):
+def test_terminal_native_timeout_is_only_metadata(tmp_path, timeout):
     source = terminal_task(tmp_path / "task")
     with (source / "task.yaml").open("a") as handle:
         handle.write(f"max_agent_timeout_sec: {timeout}\n")
-    with pytest.raises(ValueError, match="finite positive"):
-        load("terminal-bench", source)
+    assert load("terminal-bench", source)
 
 
-@pytest.mark.parametrize("outer,expected", [(None, 460), (200, 200), (900, 460)])
-def test_terminal_native_budget_is_shared_across_calls(monkeypatch, outer, expected):
+@pytest.mark.parametrize("outer", [None, 200, 900])
+def test_terminal_uses_only_shared_task_deadline(monkeypatch, outer):
     from benchmarks import backends
     backend = backends.TerminalBackend.__new__(backends.TerminalBackend)
-    backend.deadline, backend.agent_timeout = outer, 360
+    backend.deadline = outer
     monkeypatch.setattr(backends.time, "monotonic", lambda: 100)
-    assert backend.start_agent() == expected
-    monkeypatch.setattr(backends.time, "monotonic", lambda: expected - 10)
-    assert backend._remaining(300) == 10
-    monkeypatch.setattr(backends.time, "monotonic", lambda: expected + 1)
+    assert backend._remaining() == (outer - 100 if outer is not None else None)
+    if outer is None:
+        return
+    monkeypatch.setattr(backends.time, "monotonic", lambda: outer - 10)
+    assert backend._remaining() == 10
+    monkeypatch.setattr(backends.time, "monotonic", lambda: outer + 1)
     with pytest.raises(TimeoutError):
-        backend._remaining(300)
+        backend._remaining()

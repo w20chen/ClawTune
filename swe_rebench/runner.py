@@ -2886,21 +2886,15 @@ def _apply_batch_overrides(
     config: RunnerConfig,
     *,
     task_timeout_seconds: int | None = None,
-    agent_timeout_seconds: int | None = None,
     parallelism: int | None = None,
 ) -> None:
     """Apply command-line batch limits after loading the YAML configuration."""
 
-    for option, value in (
-        ("--task-timeout-seconds", task_timeout_seconds),
-        ("--agent-timeout-seconds", agent_timeout_seconds),
-    ):
-        if value is not None and value < 0:
-            raise ValueError(f"{option} must be >= 0")
+    from swe_rebench.config import validate_task_timeout
+
     if task_timeout_seconds is not None:
-        config.batch.task_timeout_seconds = task_timeout_seconds
-    if agent_timeout_seconds is not None:
-        config.batch.agent_timeout_seconds = agent_timeout_seconds
+        config.batch.task_timeout_seconds = validate_task_timeout(task_timeout_seconds)
+
     if parallelism is not None:
         if parallelism < 1:
             raise ValueError("--parallelism must be >= 1")
@@ -2969,16 +2963,6 @@ def main() -> None:
         help=(
             "Hard wall-clock limit for each task in seconds; overrides "
             "batch.task_timeout_seconds (0 disables the limit)"
-        ),
-    )
-    run_p.add_argument(
-        "--agent-timeout-seconds",
-        type=int,
-        default=None,
-        help=(
-            "Limit only the OpenClaw agent phase; the effective agent limit "
-            "is the smaller of this value and the remaining task budget "
-            "(0 disables the separate agent limit)"
         ),
     )
     run_p.add_argument(
@@ -3086,7 +3070,6 @@ def main() -> None:
             _apply_batch_overrides(
                 config,
                 task_timeout_seconds=args.task_timeout_seconds,
-                agent_timeout_seconds=args.agent_timeout_seconds,
                 parallelism=args.parallelism,
             )
         except ValueError as exc:
@@ -3132,12 +3115,6 @@ def main() -> None:
             else "disabled"
         )
         _log(f"Per-task timeout: {timeout_label}")
-        agent_timeout_label = (
-            f"{config.batch.agent_timeout_seconds}s"
-            if config.batch.agent_timeout_seconds > 0
-            else "disabled"
-        )
-        _log(f"Agent-only timeout: {agent_timeout_label}")
 
         if args.dry_run:
             for i, t in enumerate(tasks):
