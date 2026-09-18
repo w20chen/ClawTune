@@ -185,7 +185,11 @@ def _execute_bridged(task, config, run_dir, port, trace):
                         record = host._read_json_object(trace / "task-timeout.json") or {}
                         error = str(record.get("message") or "task timed out")
                     break
-            host._remaining_task_seconds(deadline, phase="task result collection")
+            if exit_code != 124:
+                # A recorded task timeout owns the deadline and the
+                # task-timeout.json message; re-checking here would replace
+                # it with a later phase's wording.
+                host._remaining_task_seconds(deadline, phase="task result collection")
     except (host.TaskDeadlineExceeded, subprocess.TimeoutExpired) as exc:
         exit_code, error = timeout_outcome(exc)
     finally:

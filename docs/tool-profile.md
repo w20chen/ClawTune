@@ -191,7 +191,7 @@ Stable fields of `resource_scope`:
 | payload field | Meaning |
 | --- | --- |
 | `finalized` | Whether finalization completed; currently `true` for successful records. |
-| `gateway_id`, `runtime_id`, `reason` | The terminated owner and the reason: task / agent timeout, cancellation, or runtime stop. |
+| `gateway_id`, `runtime_id`, `reason` | The terminated owner and the reason: task timeout (historical traces may still carry `agent_timeout`), cancellation, or runtime stop. |
 | `aborted_execution_ids` | List of executions aborted according to the termination reason without complete exit evidence. |
 | `pmu_profiles` | PMU profiles at termination, indexed by execution ID; see the PMU section for the fields. |
 | `observation_errors` | List of errors during finalization; each item contains `execution_id` and `error`. |

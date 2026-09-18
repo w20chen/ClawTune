@@ -172,6 +172,24 @@ def test_timeout_is_case_result_after_cleanup(monkeypatch, bridged, phase):
         assert bridged.calls.index("close") < bridged.calls.index(("abort", "task_timeout"))
 
 
+def test_agent_timeout_record_is_not_overwritten_by_result_collection(monkeypatch, bridged):
+    """The first timeout record survives the post-agent deadline re-check."""
+    def agent(**kwargs):
+        kwargs["stopped_event"].set()
+        (bridged.trace / "task-timeout.json").write_text(json.dumps({
+            "scope": "task", "message": "task timed out after 1200s", "configured_seconds": 1200,
+        }), encoding="utf-8")
+        bridged.clock[0] = 1301  # the deadline elapsed while the agent ran
+        return 124
+
+    monkeypatch.setattr(host, "_run_openclaw_agent", agent)
+    result = bridged.run("terminal")
+    assert result.exit_code == 124
+    assert result.error == "task timed out after 1200s"
+    record = json.loads((bridged.trace / "task-timeout.json").read_text())
+    assert record["message"] == "task timed out after 1200s"
+
+
 def test_cleanup_failure_remains_fatal_after_timeout(monkeypatch, bridged):
     def expire(**kwargs):
         raise host.TaskDeadlineExceeded("expired")

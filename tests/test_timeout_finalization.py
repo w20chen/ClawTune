@@ -64,6 +64,42 @@ def test_timeout_finalizes_only_after_confirmed_cleanup(monkeypatch, tmp_path, f
         assert "abort" not in calls
 
 
+def test_recorded_agent_timeout_survives_result_collection(monkeypatch, tmp_path):
+    """The first timeout record keeps its message after the agent returns 124."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("runtime:\n  mode: host-openclaw\nbatch:\n  task_timeout_seconds: 30\n")
+    config = RunnerConfig.from_yaml(cfg, repo_root=tmp_path)
+    clock = [100.0]
+    monkeypatch.setattr(host.time, "monotonic", lambda: clock[0])
+    trace = tmp_path / "trace"
+    for name in ("_write_host_tool_resource_preflight", "_export_testbed_from_image",
+                 "_make_sandbox_workspace_writable", "_install_sandbox_runtime",
+                 "_write_task_inputs", "_ensure_openclaw_sandbox_image", "_verify_sandbox_launcher",
+                 "_verify_sandbox_task_environment", "_configure_openclaw", "_collect_runtime_traces",
+                 "_collect_runtime_ebpf_artifacts", "_delete_runtime_scope"):
+        monkeypatch.setattr(host, name, lambda *a, **k: None)
+    monkeypatch.setattr(host, "_cleanup_openclaw_sandbox_containers", lambda *a, **k: None)
+    monkeypatch.setattr(host, "_abort_runtime", lambda *a, **k: None)
+    monkeypatch.setattr(host, "_drain_runtime", lambda *a, **k: None)
+
+    def agent(**kwargs):
+        kwargs["stopped_event"].set()
+        host._write_timeout_record(trace, scope="task", message="task timed out after 30s",
+                                   configured_seconds=30)
+        clock[0] = 131.0  # the deadline (100 + 30) elapsed while the agent ran
+        return 124
+
+    monkeypatch.setattr(host, "_run_openclaw_agent", agent)
+    result = host.run_host_openclaw_task(
+        task=TaskDef(instance_id="org__repo-1", image="cached"), trace_dir=trace,
+        config=config, runtime_assets_dir=tmp_path / "assets", sidecar_port=19090,
+        shared_sidecar_trace_dir=tmp_path / "shared", manage_sidecar=False)
+
+    assert result.exit_code == 124
+    assert result.error == "task timed out after 30s"
+    assert json.loads((trace / "task-timeout.json").read_text())["message"] == "task timed out after 30s"
+
+
 @pytest.mark.parametrize("cleanup_failed", [False, True])
 def test_terminal_build_failure_returns_case_result_only_after_cleanup(monkeypatch, tmp_path, cleanup_failed):
     from benchmarks import backends, runtime

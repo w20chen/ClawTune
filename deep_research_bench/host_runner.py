@@ -176,7 +176,10 @@ def run_drb_task(
             stopped_event=agent_stopped_event,
         )
         agent_stopped = agent_stopped_event.is_set()
-        _remaining_task_seconds(deadline, phase="research result collection")
+        if exit_code != 124:
+            # The agent's own timeout record already owns the deadline; a
+            # second check would rewrite its message as a collection timeout.
+            _remaining_task_seconds(deadline, phase="research result collection")
         timeout_record = _read_json_object(trace_dir / "task-timeout.json")
         if exit_code == 124 and isinstance(timeout_record, dict):
             error = str(timeout_record.get("message") or "task timed out")

@@ -264,9 +264,13 @@ def run_host_openclaw_task(
         timeout_record = _read_json_object(trace_dir / "task-timeout.json")
         if exit_code == 124 and isinstance(timeout_record, dict):
             error = str(timeout_record.get("message") or "task timed out")
-        _remaining_task_seconds(deadline, phase="result collection")
-        _cleanup_runtime_artifacts(workspace, deadline=deadline)
-        _collect_patch(trace_dir, workspace, task, deadline=deadline)
+        if exit_code != 124:
+            # The recorded agent timeout owns the deadline. Every remaining
+            # step would raise immediately (and overwrite its message), so
+            # keep the first record instead of re-attributing the overrun.
+            _remaining_task_seconds(deadline, phase="result collection")
+            _cleanup_runtime_artifacts(workspace, deadline=deadline)
+            _collect_patch(trace_dir, workspace, task, deadline=deadline)
     except TaskDeadlineExceeded as exc:
         exit_code = 124
         error = str(exc)

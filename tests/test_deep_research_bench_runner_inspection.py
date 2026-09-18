@@ -112,6 +112,55 @@ def test_research_timeout_aborts_runtime_after_agent_and_sandbox_stop(monkeypatc
     assert events == ["abort", "drain", "traces", "summary"]
 
 
+def test_research_timeout_record_is_not_overwritten_by_collection(monkeypatch, tmp_path):
+    """The agent's timeout record keeps its message after the deadline expired."""
+    from swe_rebench import host_openclaw as host
+    config = _config()
+    config.output.trace_root = tmp_path / "traces"
+    clock = [1000.0]
+    monkeypatch.setattr(host_runner.time, "monotonic", lambda: clock[0])
+    for name in (
+        "_reset_directory",
+        "_make_sandbox_workspace_writable",
+        "_install_sandbox_runtime",
+        "_write_drb_task_inputs",
+        "_ensure_basic_image",
+        "_verify_sandbox_launcher",
+        "_configure_openclaw",
+        "_pin_web_search_provider",
+    ):
+        monkeypatch.setattr(host_runner, name, lambda *a, **k: None)
+    monkeypatch.setattr(host_runner, "_cleanup_openclaw_sandbox_containers", lambda *a, **k: None)
+    monkeypatch.setattr(host, "_write_runtime_case_map", lambda *a, **k: None)
+    monkeypatch.setattr(host_runner, "_abort_runtime", lambda *a, **k: None)
+    monkeypatch.setattr(host, "_drain_runtime", lambda *a, **k: None)
+    monkeypatch.setattr(host, "_collect_runtime_traces", lambda *a, **k: None)
+    monkeypatch.setattr(host_runner, "_write_result_summary", lambda *a, **k: None)
+    trace = tmp_path / "trace"
+
+    def timed_out_agent(**kwargs):
+        kwargs["stopped_event"].set()
+        host._write_timeout_record(trace, scope="task", message="task timed out after 1200s",
+                                   configured_seconds=1200)
+        clock[0] += config.batch.task_timeout_seconds + 1  # deadline elapsed during the run
+        return 124
+
+    monkeypatch.setattr(host_runner, "_run_openclaw_agent", timed_out_agent)
+    result = host_runner.run_drb_task(
+        task=DRBTask("test", "question"),
+        trace_dir=trace,
+        config=config,
+        swe_cfg=config.to_swe_runner_config(),
+        runtime_assets_dir=tmp_path / "assets",
+        sidecar_port=8765,
+        shared_sidecar_trace_dir=tmp_path / "sidecar",
+    )
+
+    assert result.exit_code == 124
+    assert result.error == "task timed out after 1200s"
+    assert json.loads((trace / "task-timeout.json").read_text())["message"] == "task timed out after 1200s"
+
+
 def test_research_unconfirmed_agent_cleanup_stops_the_batch(monkeypatch, tmp_path):
     from swe_rebench.host_openclaw import ContainerCleanupError
 
