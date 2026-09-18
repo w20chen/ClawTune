@@ -61,7 +61,7 @@ For an existing key file elsewhere, set `llm.api_key_file` to its path; `swe_reb
 
 Dry-run checks task structure, selection, and initialization data, not image availability, credentials, or live collection.
 
-Full predictions and agent output are saved in `.runtime/benchmarks/<benchmark>/<run>/traces/<task>/agent-stdout.txt`; errors are in `agent-stderr.txt` (under `--output` when set). Use `less <path>` to inspect them. The live agent stream shows only baseline time buckets: `mode` denotes the most probable bucket (ties retained), `p90` denotes the bucket containing that estimate; clause results remain separate.
+Per-task output is saved under `.runtime/benchmarks/<benchmark>/<run>/traces/<task-digest>/` (under `--output` when set); [Inspect online output](#4-inspect-online-output) lists every file and the per-benchmark differences. The harness does not stream agent output to the terminal: benchmark runs keep the plugin console quiet and discard agent stdout, so a task prints only a few harness lines while it runs. Use `less <path>` to inspect the per-task files.
 
 ## 2. Prepare tasks
 
@@ -367,16 +367,63 @@ Resume requires the original configuration and prior; repeat `--seed` if it was 
 
 ## 4. Inspect online output
 
-Defaults are under `.runtime/benchmarks/<benchmark>/<run>/`:
+Defaults are under `.runtime/benchmarks/<benchmark>/<run>/` (or `--output`). All five benchmarks launched by `scripts/clawtune.py benchmark` share this layout; only the per-task files differ, as noted below.
 
-| Location | Purpose |
+The harness does not stream per-step progress to the terminal. While a task runs, the console shows only the run header, the runtime-asset assembly summary, a few startup lines such as `[agent] starting (trace: ...)`, occasional drain/observation diagnostics, and one result line per task (`<task-id>: status=..., agent_exit=...`). All step output is file-based: `run.json` is updated as tasks start and finish, `trace.jsonl` grows while the agent works, and the logs below are written live.
+
+Run-level layout (`<task-digest>` is a stable 20-hex digest of `<benchmark>:<task-id>`):
+
+| Location | Semantics |
 | --- | --- |
-| `run.json`, `report.json` | Task status, errors, and execution summary |
-| `traces/<task-digest>/trace.jsonl` | Canonical task trace: LLM/tool spans, predictions, resource timelines, PMU and eBPF data |
-| `runtime/<task-digest>/openclaw-home/` | OpenClaw session state required for runtime operation; not an experiment trace export |
-| `kb/` | Learned statistics for the run |
-| `sidecar/` | Shared local-service logs |
-| `workspaces/` | Task workspaces |
+| `run.json` | Live run manifest, updated from `preparing` through `running` to the final state. Validated by `contracts/benchmark-run.schema.json`: `status`, `task_order`, `active_tasks`, `parallelism`, `config_sha256`, `kb_flush_complete`, `observation_issues`, `error`, and one `results` row per finished task (`exit_code`, `error`, `kb_generation_before/after`, `learning_status` recording whether shared-KB progress was observed, plus artifact summaries for repository tasks). |
+| `report.json` | The same manifest written when the run ends, on every exit path (completed, failed, or interrupted). Read this for the final state; `status: completed` requires `kb_flush_complete: true`. |
+| `traces/<task-digest>/` | Per-task files (next table). |
+| `kb/` | The run's shared learned statistics; `state.json` records the committed generation. Operational learning state, not a trace export. |
+| `sidecar/` | Working directory of the shared local service: `sidecar-stdout.txt` and `sidecar-stderr.txt` (service logs), `sidecar.sqlite3`, and `runtime-case-map.json` (maps each runtime id to its task instance id while the batch runs). Canonical traces are written directly to `traces/<task-digest>/trace.jsonl`, not copied here. |
+| `runtime-assets/` | Per-run staging of plugin and sidecar sources, generated entrypoint/setup scripts, and the generated OpenClaw configuration; rebuilt when sources change and installed into each task's sandbox. Not an experiment artifact. |
+| `workspaces/<task-digest>/` | Task workspace: the testbed exported from the task image for repository tasks, or the working directory handed to the agent for the other adapters. |
+| `runtime/<task-digest>/openclaw-home/` | OpenClaw session state for repository, BFCL, and Terminal Bench tasks; runtime-owned, not an experiment export. Deep Research Bench keeps `openclaw-home/` inside its trace directory instead. |
+| `terminal-environments/<task-digest>/`, `terminal-logs/<task-digest>/` | Terminal Bench only: the copied Compose task and its logs (`compose-up.log`, `compose-down.log`, `terminal-gate.log`, and the task's `agent/` log mount). |
+
+Per-task files in `traces/<task-digest>/` (BFCL and Terminal Bench tasks are "bridged": one agent process per conversation turn):
+
+| File | Written for | Semantics |
+| --- | --- | --- |
+| `trace.jsonl` | all | Canonical task trace (all sessions and turns): LLM/tool spans, predictions, resource timelines, PMU and eBPF data. The only experiment trace export. |
+| `dataset-task.json` | all | Task identity (`benchmark`, `instance_id`, `repo`, `category`) written when the result is recorded; offline evaluation reads it for benchmark identity. |
+| `agent_prompt.txt` | repository, research | Exact prompt handed to the agent |
+| `turn-<n>.txt` | BFCL, Terminal Bench | Per-turn prompt for the bridged executor |
+| `agent-stderr.txt` | repository, research | Full stderr of the host `openclaw agent` process, written live. Host runs discard agent stdout, so no `agent-stdout.txt` is produced; canonical agent content is in `trace.jsonl`. |
+| `turn-<n>-agent-stderr.txt` | BFCL, Terminal Bench | The same stderr stream, preserved once per turn |
+| `task-timeout.json` | all (on timeout) | The first timeout record (`scope`, `configured_seconds`, `message`); later phases do not rewrite it |
+| `observation-issues.jsonl` | all (on issues) | Monitoring, drain, or KB issues that did not fail the task; also mirrored into the matching `results` row |
+| `runtime-finalization.json` | all (on timeout/cancellation) | Executions finalized only after confirmed agent and sandbox shutdown; measurements without a confirmed tool exit stay incomplete |
+| `phase3.log` | all | `openclaw onboard`, plugin install, and config patch log for the task |
+| `plugin-build.log` | first task when rebuilt | npm build log for the ClawTune plugin |
+| `agent-cwd.txt`, `task_manifest.json` | repository, research | Agent working directory and task/model/image metadata |
+| `repo_status.txt`, `model.patch` | repository | `git status`/`diff --stat` and the workspace diff against the base commit |
+| `result_summary.json` | repository, research | Exit code, `has_patch`/`patch_bytes` (repository), runtime mode, and error |
+| `reference_answer.txt` | research (when provided) | Held-out reference answer for later offline grading; never shown to the model |
+| `web-search-config.log` | research | Result of the search provider/key configuration patch |
+| `host_openclaw_error.txt` | repository | Python traceback when the runner failed the task outside the agent |
+| `drb_host_error.txt` | research | Equivalent traceback for research tasks |
+| `tool_resource_preflight_host.json` | repository (always); Terminal Bench when `ebpf_required` | Host eBPF/clause-telemetry preflight result |
+| `launcher-preflight.log` | repository, research | `clawtune-launch diagnose` output from the sandbox |
+| `sandbox-runtime-preflight.log` | repository (Python tasks) | Testbed python/pip PATH preflight in the sandbox |
+| `sandbox-image-build.log` | repository | Log of tagging the task image as the runtime-private sandbox image |
+| `sandbox-container-cleanup.log` | repository, research | Stale sandbox container cleanup before and after the agent run |
+| `sandbox_scope.json`, `sandbox_scope_discovery_last_error.txt` | repository, research | cgroup scope discovery for the task sandbox |
+| `tool-bridge.json` | BFCL, Terminal Bench | Tool-bridge manifest for the task; exists only while the task runs |
+
+While a run is in progress, follow it without waiting for the result line:
+
+```bash
+RUN=.runtime/benchmarks/swe-rebench/<run>
+tail -F "$RUN/traces/<task-digest>/trace.jsonl"       # spans appear as the agent works
+tail -F "$RUN/traces/<task-digest>/agent-stderr.txt"  # full agent stderr (repository/research)
+tail -F "$RUN/sidecar/sidecar-stderr.txt"             # shared service log
+docker ps --filter name=clawtune-srb                  # sandbox containers of active repository/research tasks
+```
 
 Check `status`, each result's `error` and `exit_code`, and `kb_flush_complete: true`, which indicates completed persistence.
 
