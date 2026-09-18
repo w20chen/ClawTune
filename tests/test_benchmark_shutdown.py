@@ -12,27 +12,47 @@ import urllib.error
 import pytest
 
 
+def _supervisor_probe_script(cancelled: bool) -> str:
+    """Probe agent that detaches a grandchild and publishes its pid.
+
+    ``Path.write_text`` creates the file before its content is flushed, so a
+    reader polling for existence could observe an empty file. Publish through
+    a temporary file plus an atomic rename instead.
+    """
+    return (
+        "import os,subprocess,sys,time,pathlib\n"
+        "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'],start_new_session=True)\n"
+        "dest=pathlib.Path(sys.argv[1]); tmp=dest.with_name(dest.name+'.tmp')\n"
+        "tmp.write_text(str(p.pid))\n"
+        "os.replace(tmp,dest)\n"
+        + ("time.sleep(30)\n" if cancelled else "")
+    )
+
+
+def _wait_for_child_pid(path: Path) -> int:
+    """Wait until the probe script has published a complete pid."""
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            return int(path.read_text())
+        except (FileNotFoundError, ValueError):
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"child pid file was not populated: {path}")
+            time.sleep(.01)
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux subreaper")
 @pytest.mark.parametrize("cancelled", [False, True])
 @pytest.mark.parametrize("parallelism", [1, 8])
 def test_supervisor_reaps_detached_descendants(tmp_path, cancelled, parallelism):
     from swe_rebench import process_supervisor
     script = tmp_path / "agent.py"
-    script.write_text(
-        "import subprocess,sys,time,pathlib\n"
-        "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'],start_new_session=True)\n"
-        "pathlib.Path(sys.argv[1]).write_text(str(p.pid))\n"
-        + ("time.sleep(30)\n" if cancelled else "")
-    )
+    script.write_text(_supervisor_probe_script(cancelled))
     def run(index):
         child_file = tmp_path / f"child-{index}"
         process = subprocess.Popen([sys.executable, process_supervisor.__file__, "--", sys.executable, str(script), str(child_file)])
         try:
-            deadline = time.monotonic() + 5
-            while not child_file.exists() and time.monotonic() < deadline:
-                time.sleep(.01)
-            assert child_file.exists()
-            child = int(child_file.read_text())
+            child = _wait_for_child_pid(child_file)
             if cancelled:
                 process.terminate()
             assert process.wait(timeout=8) == (143 if cancelled else 0)

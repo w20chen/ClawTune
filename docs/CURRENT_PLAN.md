@@ -95,6 +95,14 @@ The sections below retain earlier environment acceptance notes.
 - Deliberately unchanged: `run_host_openclaw_replay_task` still rewrites its record with `scope: "replay"` when the replay deadline expires, because that mode label is intentional. Apply the same preservation rule there if replay stops using its own scope.
 - Linux-only validation (subreaper/procfs/POSIX cases and live benchmark runs) remains outstanding as listed above and below.
 
+## CI flake fix: supervisor reaping test race (2026-09-18)
+
+- GitHub Actions run 35326665057 failed `tests/test_benchmark_shutdown.py::test_supervisor_reaps_detached_descendants[8-False]` with `ValueError: invalid literal for int() with base 10: ''`; the other 487 collected tests passed. The race is pre-existing and unrelated to the timeout-record change.
+- Root cause was the probe script inside the test: `Path.write_text` creates the pid file before flushing its content, so the polling reader could observe a created-but-empty file under CPU contention (8 parallel supervisors plus detached children).
+- Fix: the probe script now publishes the pid through a temporary file plus `os.replace` (atomic rename), and the reader waits for a parseable pid with a 5-second deadline instead of only file existence.
+- Local validation (Windows): `python -m pytest tests/test_benchmark_shutdown.py -q -rs` → **5 passed, 5 skipped** (the four supervisor parametrizations and the other subreaper case are Linux-only); full `python -m pytest tests -q -rs` → **478 passed, 10 skipped**. `python -m py_compile tests/test_benchmark_shutdown.py`: passed, and the generated probe script was smoke-run against the new reader helper.
+- Required Linux validation: WSL is not installed on this host, so rerun the failing job's command (`python -m pytest tests -q --basetemp .pytest-tmp-root`) and `python -m pytest tests/test_benchmark_shutdown.py -q -rs` on Linux to exercise `test_supervisor_reaps_detached_descendants`.
+
 ## Timeout configuration review against `75fec4c` (2026-09-18)
 
 - Windows review validation: with `$env:PYTHONPATH='services/sidecar/src'`, `python -m pytest tests -q -rs --disable-warnings --tb=short` passed (455 passed, 10 skipped), and `python -m pytest services/sidecar/tests/test_runtime_abort.py -q -rs` passed (11 passed). `git diff --check` passed.
