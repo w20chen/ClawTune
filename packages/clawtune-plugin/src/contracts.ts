@@ -184,7 +184,7 @@ export type LoadEstimate = {
 };
 export type CallLoadPrediction = {
   schema_version: "call_load.v2";
-  memory_measurement: "cgroup_v2_memory_current" | "guest_memtotal_minus_memavailable";
+  memory_measurement: "cgroup_v2_memory_current" | "cgroup_v2_environment_union_v1" | "guest_memtotal_minus_memavailable";
   scope: "tool_call";
   lifecycle: "tool_hook_interval";
   cpu_peak_window_ms: 500;
@@ -192,7 +192,7 @@ export type CallLoadPrediction = {
   targets: Record<LoadTarget, LoadEstimate>;
   clause_predictions?: Array<{
     clause_index: number; argv: string[]; cwd: string | null; env_names: string[];
-    memory_measurement: "cgroup_v2_memory_current" | "guest_memtotal_minus_memavailable";
+    memory_measurement: "cgroup_v2_memory_current" | "cgroup_v2_environment_union_v1" | "guest_memtotal_minus_memavailable";
     scope: "clause"; targets: Record<LoadTarget, LoadEstimate>;
   }>;
 };

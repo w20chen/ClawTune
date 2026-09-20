@@ -1,10 +1,12 @@
-# Pending Linux acceptance for the minimal repair (2026-09-20)
+# Pending Linux acceptance for the minimal repair (2026-09-21)
 
 The candidate now keeps a stable per-runtime cgroup memory scope across execution
-migration and leaf cleanup, uses retained-workload duration consistently for load
-prediction, and admits native-tool collector windows only when their own counter
-boundaries are complete. Use a fresh KB before measuring post-fix coverage because
-the earlier run admitted environment-memory labels from the wrong scope.
+migration and leaf cleanup. For exec, a finalized Linux-monotonic clause interval
+selects the environment-memory payload window; this avoids rejecting the valid
+pre-gate union baseline merely because it follows the earlier tool hook start.
+Readable but ineligible windows retain nested raw diagnostics in the trace, while
+their flat training fields remain absent. Use a fresh KB before measuring post-fix
+coverage so prior measurement versions cannot influence the result.
 
 The Windows host cannot run Linux BCC/perf attachment or target-kernel cgroup
 lifecycle checks. After deploying the candidate on Linux, run:
@@ -15,9 +17,13 @@ PYTHONPATH=services/sidecar/src python3 -m pytest services/sidecar/tests tests -
 python3 scripts/clawtune.py benchmark --benchmark swe-rebench --sample 2 --parallelism 2
 ```
 
-Also verify touched allocations before/after migration, repeated execution and
-cleanup, two isolated concurrent environments, and native read/edit boundaries.
-These checks have not run against this candidate on the target Linux kernel.
+Also verify a serial exec with a payload longer than the 50 ms sampler interval
+has union-v1 baseline, total, and extra labels; two overlapping calls remain
+ineligible but retain `memory_diagnostics`; and a short unsampled call remains
+explicitly unavailable. Check touched allocations before/after migration,
+repeated execution and cleanup, two isolated concurrent environments, and native
+read/edit boundaries. These checks have not run against this candidate on the
+target Linux kernel.
 
 Targeted Ruff validation could not run on this Windows checkout because neither
 the `ruff` executable nor the Python `ruff` module is installed. Compileall,

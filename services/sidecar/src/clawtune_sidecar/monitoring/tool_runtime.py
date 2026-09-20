@@ -5,7 +5,7 @@ import math
 import time
 from datetime import datetime
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Mapping
 
 from clawtune_sidecar.contracts.models import ResourceScope, ToolBeforeRequest, ToolCompletedEvent
 from clawtune_sidecar.identity import correlation_key, owners_compatible
@@ -133,7 +133,12 @@ class RealtimeToolMonitor:
                 operation=operation_from_request(request),
             )
 
-    def complete(self, completion: ToolCompletedEvent) -> ToolRuntimeSample:
+    def complete(
+        self,
+        completion: ToolCompletedEvent,
+        *,
+        environment_memory_window: tuple[float, float] | None = None,
+    ) -> ToolRuntimeSample:
         key = correlation_key(completion)
         with self._lock:
             active = self._active.pop(key, None)
@@ -174,8 +179,12 @@ class RealtimeToolMonitor:
                 observation,
                 poll_interval_s=self.poll_interval_s,
             )
+            memory_start, memory_end = environment_memory_window or (
+                sample.started_at,
+                sample.ended_at,
+            )
             memory = self.environment_memory.complete(
-                active_key, started_at=sample.started_at, ended_at=sample.ended_at,
+                active_key, started_at=memory_start, ended_at=memory_end,
             )
             return replace(sample, environment_memory=memory)
         completion_scope = completion.resource_scope
@@ -290,8 +299,15 @@ class RealtimeToolMonitor:
         )
         cpu_avg_cores = _rate(cpu_delta, duration_s)
         normalized_timeline = _relative_timeline(timeline)
-        memory = self.environment_memory.complete(correlation_key(active.request) if active else key,
-                                                  started_at=wall_started_at, ended_at=wall_ended_at)
+        memory_start, memory_end = environment_memory_window or (
+            wall_started_at,
+            wall_ended_at,
+        )
+        memory = self.environment_memory.complete(
+            correlation_key(active.request) if active else key,
+            started_at=memory_start,
+            ended_at=memory_end,
+        )
         return ToolRuntimeSample(
             cpu_peak_cores=_windowed_cpu_peak([p for p in timeline
                 if wall_started_at <= p["ts"] <= wall_ended_at]) if active is not None
@@ -575,6 +591,77 @@ def _empty_snapshot(source: str) -> ResourceSnapshot:
         process_count=None,
         available=False,
         source=source,
+    )
+
+
+def execution_memory_wall_window(
+    completion: ToolCompletedEvent,
+    observation: dict[str, Any] | None,
+    call_telemetry: Mapping[str, Any] | None,
+) -> tuple[float, float] | None:
+    """Return clause wall bounds only when they match verified monotonic bounds."""
+    if (
+        completion.monotonic_clock_domain != "linux_monotonic"
+        or not observation
+        or not call_telemetry
+        or call_telemetry.get("telemetry_quality") != "ok"
+    ):
+        return None
+    window = observation.get("window")
+    if not isinstance(window, dict) or window.get("kind") != "execution":
+        return None
+    if window.get("clock") != "linux_monotonic":
+        return None
+    clauses = call_telemetry.get("clauses")
+    if not isinstance(clauses, list) or not clauses:
+        return None
+    try:
+        action_start = int(completion.action_start_monotonic_ns or "")
+        action_end = int(completion.action_end_monotonic_ns or "")
+        observed_start = int(window.get("observed_start_ns"))
+        observed_end = int(window.get("observed_end_ns"))
+        rows = [
+            (
+                int(clause["t_exec_ns"]),
+                int(clause["t_end_ns"]),
+                float(clause["ts_start"]),
+                float(clause["ts_end"]),
+            )
+            for clause in clauses
+            if isinstance(clause, Mapping)
+        ]
+    except (KeyError, OverflowError, TypeError, ValueError):
+        return None
+    if len(rows) != len(clauses):
+        return None
+    offsets: list[float] = []
+    for monotonic_start, monotonic_end, wall_start, wall_end in rows:
+        if not (
+            monotonic_start < monotonic_end
+            and math.isfinite(wall_start)
+            and math.isfinite(wall_end)
+            and wall_start < wall_end
+            and math.isclose(
+                wall_end - wall_start,
+                (monotonic_end - monotonic_start) / 1e9,
+                abs_tol=1e-6,
+            )
+        ):
+            return None
+        offsets.extend((
+            wall_start - monotonic_start / 1e9,
+            wall_end - monotonic_end / 1e9,
+        ))
+    if not (
+        action_start <= observed_start < observed_end <= action_end
+        and observed_start == min(row[0] for row in rows)
+        and observed_end == max(row[1] for row in rows)
+        and max(offsets) - min(offsets) <= 1e-6
+    ):
+        return None
+    return (
+        min(row[2] for row in rows),
+        max(row[3] for row in rows),
     )
 
 

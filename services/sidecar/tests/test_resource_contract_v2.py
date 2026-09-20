@@ -82,8 +82,12 @@ def test_eight_independent_environments_and_overlapping_calls(tmp_path, monkeypa
     assert [r["memory_extra_peak_bytes"] for r in results] == list(range(100, 108))
     scope = SimpleNamespace(cgroup_path=str(tmp_path / "0"), container_id="0")
     monitor.begin("a", scope); monitor.begin("b", scope)
-    assert monitor.complete("a")["memory_eligible"] is False
-    assert monitor.complete("b")["memory_eligible"] is False
+    for key in ("a", "b"):
+        result = monitor.complete(key, started_at=10, ended_at=10.1)
+        assert result["memory_eligible"] is False
+        assert result["memory_unavailable_reason"] == "overlapping_environment_calls"
+        assert result["memory_diagnostics"]["exclusive"] is False
+        assert memory_labels(result) == {}
 
 
 def test_cpu_peak_requires_window_coverage():

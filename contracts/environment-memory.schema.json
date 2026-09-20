@@ -3,6 +3,62 @@
   "$id": "https://clawtune.dev/contracts/environment-memory.schema.json",
   "title": "Environment memory observation and availability",
   "type": "object",
+  "$defs": {
+    "sample": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {"type": "number"},
+        {"type": "integer", "minimum": 0}
+      ],
+      "items": false
+    },
+    "diagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "memory_environment_id",
+        "memory_measurement",
+        "window_start_s",
+        "window_end_s",
+        "baseline_sample",
+        "observed_baseline_bytes",
+        "observed_total_peak_bytes",
+        "observed_extra_peak_bytes",
+        "samples",
+        "exclusive",
+        "timeline_truncated"
+      ],
+      "properties": {
+        "memory_environment_id": {"type": "string", "minLength": 1},
+        "memory_measurement": {
+          "enum": [
+            "cgroup_v2_memory_current",
+            "cgroup_v2_environment_union_v1",
+            "guest_memtotal_minus_memavailable"
+          ]
+        },
+        "window_start_s": {"type": ["number", "null"]},
+        "window_end_s": {"type": ["number", "null"]},
+        "baseline_sample": {
+          "oneOf": [
+            {"$ref": "#/$defs/sample"},
+            {"type": "null"}
+          ]
+        },
+        "observed_baseline_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "observed_total_peak_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "observed_extra_peak_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "samples": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/sample"}
+        },
+        "exclusive": {"type": "boolean"},
+        "timeline_truncated": {"type": "boolean"}
+      }
+    }
+  },
   "required": [
     "memory_eligible"
   ],
@@ -46,11 +102,17 @@
         "memory_timeline_truncated",
         "environment_memory_scope_unreadable"
       ]
+    },
+    "memory_diagnostics": {
+      "$ref": "#/$defs/diagnostics"
     }
   },
   "oneOf": [
     {
-      "properties": {"memory_eligible": {"const": true}},
+      "properties": {
+        "memory_eligible": {"const": true},
+        "memory_diagnostics": false
+      },
       "required": ["memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes", "memory_measurement", "memory_environment_id"],
       "not": {"required": ["memory_unavailable_reason"]}
     },
@@ -65,5 +127,5 @@
       "required": ["memory_unavailable_reason"]
     }
   ],
-  "description": "Bytes within one verified task environment. When execution processes migrate to a delegated cgroup, the scope is the deduplicated sum of the original container and its stable per-runtime execution parent; ancestor and descendant paths are never counted twice. Total is the sampled maximum strictly after the action start and no later than its completion event; extra=max(0,total-baseline). Baseline is the latest sample at or before action start, at most 150ms old. At least one in-window sample is required and no boundary or consecutive sampling gap may exceed 150ms. Overlapping monitored environment calls are ineligible. The environment includes background processes and charged cache; extra is incremental environment usage, not exclusive allocation by a process. Host service cgroups and post-completion samples are excluded. RSS is diagnostic only. Unavailable observations carry memory_eligible=false and memory_unavailable_reason instead of these eligible labels."
+  "description": "Bytes within one verified task environment. When execution processes migrate to a delegated cgroup, the scope is the deduplicated sum of the original container and its stable per-runtime execution parent; ancestor and descendant paths are never counted twice. Exec labels use the finalized clause wall-clock boundaries only when they are consistent with verified Linux-monotonic execution boundaries; other tools use their action boundaries. Total is the sampled maximum strictly after the selected start and no later than the selected end; extra=max(0,total-baseline). Baseline is the latest sample at or before the selected start, at most 150ms old. At least one in-window sample is required and no boundary or consecutive sampling gap may exceed 150ms. Overlapping monitored environment calls are ineligible. The environment includes background processes and charged cache; extra is incremental environment usage, not exclusive allocation by a process. Host service cgroups and post-window samples are excluded. RSS is diagnostic only. Unavailable observations carry memory_eligible=false and memory_unavailable_reason instead of flat eligible labels. When the scope was readable, memory_diagnostics retains the selected window, raw samples, and arithmetic values for audit only; nested diagnostics are never training labels."
 }

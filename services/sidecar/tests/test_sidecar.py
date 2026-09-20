@@ -2137,9 +2137,25 @@ def test_completion_prefers_authoritative_execution_scope_over_supplied_scope(
     assert exited.status_code == 200
     assert historical_cgroup.exists()
     completed_scopes: list[ResourceScope | None] = []
+    memory_windows: list[tuple[float, float] | None] = []
+    monkeypatch.setattr(
+        state.predictor,
+        "execution_telemetry",
+        lambda _execution_id: SimpleNamespace(call_telemetry={
+            "telemetry_quality": "ok",
+            "clauses": [{
+                "t_exec_ns": 10_020_000_000,
+                "t_end_ns": 10_080_000_000,
+                "ts_start": 1_000.02,
+                "ts_end": 1_000.08,
+                "availability": {},
+            }],
+        }),
+    )
 
-    def capture_completion(event):
+    def capture_completion(event, *, environment_memory_window=None):
         completed_scopes.append(event.resource_scope)
+        memory_windows.append(environment_memory_window)
         return None
 
     state.tool_monitor.complete = capture_completion  # type: ignore[method-assign]
@@ -2160,6 +2176,9 @@ def test_completion_prefers_authoritative_execution_scope_over_supplied_scope(
             "execution_id": "call-exec",
             "tool_name": "exec",
             "duration_ms": 100,
+            "action_start_monotonic_ns": "10000000000",
+            "action_end_monotonic_ns": "10100000000",
+            "monotonic_clock_domain": "linux_monotonic",
             "succeeded": True,
             "error_type": None,
             "error_digest": None,
@@ -2187,6 +2206,8 @@ def test_completion_prefers_authoritative_execution_scope_over_supplied_scope(
     assert completed_scope is not None
     assert completed_scope.cgroup_path == str(historical_cgroup)
     assert completed_scope.attribution_source == authoritative_attribution
+    assert memory_windows[0] is not None
+    assert memory_windows[0][1] - memory_windows[0][0] == pytest.approx(.06)
     assert not historical_cgroup.exists()
 
 

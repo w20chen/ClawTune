@@ -417,7 +417,7 @@ def test_default_ebpf_path_completes_and_preserves_environment_memory(monkeypatc
             self.key = key
         def complete(self, key, *, started_at, ended_at):
             assert key == self.key
-            assert ended_at - started_at == 1
+            assert (started_at, ended_at) == (12, 18)
             return memory
         def poll(self):
             pass
@@ -437,7 +437,10 @@ def test_default_ebpf_path_completes_and_preserves_environment_memory(monkeypatc
     try:
         assert monitor._memory_poller.is_alive()
         monitor.begin(request, "unknown")
-        sample = monitor.complete(ToolCompletedEvent.model_validate(data))
+        sample = monitor.complete(
+            ToolCompletedEvent.model_validate(data),
+            environment_memory_window=(12, 18),
+        )
         assert sample.environment_memory == memory
         replaced = apply_resource_observation(sample, unavailable_observation("replacement"))
         assert replaced.environment_memory == memory

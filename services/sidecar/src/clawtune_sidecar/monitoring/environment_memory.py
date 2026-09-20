@@ -282,11 +282,16 @@ class EnvironmentMemoryMonitor:
             return {"memory_eligible": False, "memory_unavailable_reason": reason}
         if row is None:
             return None
+        points = list(row["points"])
+        diagnostics = self._diagnostics(row, points, started_at, ended_at)
         if row.get("timeline_truncated"):
-            return {"memory_eligible": False, "memory_unavailable_reason": "memory_timeline_truncated"}
+            return {
+                "memory_eligible": False,
+                "memory_unavailable_reason": "memory_timeline_truncated",
+                "memory_diagnostics": diagnostics,
+            }
         # Completion processing can run seconds after the payload finished.
         # Never use a fresh completion-time read as an execution peak.
-        points = list(row["points"])
         reason = None
         if (started_at is None or ended_at is None
                 or not math.isfinite(started_at) or not math.isfinite(ended_at)
@@ -312,15 +317,68 @@ class EnvironmentMemoryMonitor:
                 if any(b < a or b - a > .15 for a, b in zip(window, window[1:])):
                     reason = "memory_sampling_gap"
         if reason:
-            return {"memory_eligible": False, "memory_unavailable_reason": reason}
+            return {
+                "memory_eligible": False,
+                "memory_unavailable_reason": reason,
+                "memory_diagnostics": diagnostics,
+            }
         result = environment_memory(
             baseline=before[-1][1], values=[p[1] for p in inside],
             environment_id=row["path"], measurement=row["measurement"],
             baseline_before_start=True, exclusive=row["exclusive"],
         )
         if result is None:
-            return {"memory_eligible": False, "memory_unavailable_reason": "overlapping_environment_calls"}
+            return {
+                "memory_eligible": False,
+                "memory_unavailable_reason": "overlapping_environment_calls",
+                "memory_diagnostics": diagnostics,
+            }
         return {**result.fields(), "memory_timeline": [before[-1], *inside]}
+
+    @staticmethod
+    def _diagnostics(
+        row: Mapping[str, Any],
+        points: Sequence[tuple[float, int]],
+        started_at: float | None,
+        ended_at: float | None,
+    ) -> dict[str, Any]:
+        valid_window = (
+            isinstance(started_at, (int, float))
+            and not isinstance(started_at, bool)
+            and isinstance(ended_at, (int, float))
+            and not isinstance(ended_at, bool)
+            and math.isfinite(started_at)
+            and math.isfinite(ended_at)
+            and ended_at > started_at
+        )
+        before = [point for point in points if valid_window and point[0] <= started_at]
+        inside = [
+            point for point in points
+            if valid_window and started_at < point[0] <= ended_at
+        ]
+        baseline = before[-1] if before else None
+        total = max((value for _, value in inside), default=None)
+        extra = (
+            max(0, total - baseline[1])
+            if baseline is not None and total is not None
+            else None
+        )
+        return {
+            "memory_environment_id": row["path"],
+            "memory_measurement": row["measurement"],
+            "window_start_s": started_at if valid_window else None,
+            "window_end_s": ended_at if valid_window else None,
+            "baseline_sample": list(baseline) if baseline is not None else None,
+            "observed_baseline_bytes": baseline[1] if baseline is not None else None,
+            "observed_total_peak_bytes": total,
+            "observed_extra_peak_bytes": extra,
+            "samples": [
+                list(point)
+                for point in [*([baseline] if baseline is not None else []), *inside]
+            ],
+            "exclusive": bool(row["exclusive"]),
+            "timeline_truncated": bool(row.get("timeline_truncated")),
+        }
 
     def discard(self, key: Any) -> None:
         with self._lock:

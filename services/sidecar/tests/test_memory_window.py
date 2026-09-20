@@ -42,8 +42,19 @@ def test_delayed_finalizer_excludes_post_execution_peak(monkeypatch):
     ([(10, 100), (10.1, 200)], 10, 10.01, "no_in_execution_memory_sample"),
 ])
 def test_unavailable_has_no_training_values(monkeypatch, points, start, end, reason):
-    assert collect(monkeypatch, points, start, end) == {
-        "memory_eligible": False, "memory_unavailable_reason": reason}
+    result = collect(monkeypatch, points, start, end)
+    assert result["memory_eligible"] is False
+    assert result["memory_unavailable_reason"] == reason
+    assert not {
+        "memory_baseline_bytes",
+        "memory_total_peak_bytes",
+        "memory_extra_peak_bytes",
+    } & result.keys()
+    diagnostics = result["memory_diagnostics"]
+    assert diagnostics["memory_environment_id"] == "task"
+    assert diagnostics["memory_measurement"] == "cgroup_v2_memory_current"
+    assert diagnostics["window_start_s"] == start
+    assert diagnostics["window_end_s"] == end
 
 
 def test_host_service_is_not_a_task_environment(monkeypatch):
@@ -75,10 +86,12 @@ def test_execution_migration_uses_container_plus_stable_execution_parent(monkeyp
     values["/delegated/env-a"] = 50
     clock.now = 10.06
     monitor.poll()
-    assert monitor.complete("first", started_at=10.0, ended_at=10.06) == {
-        "memory_eligible": False,
-        "memory_unavailable_reason": "baseline_after_execution_start",
-    }
+    first = monitor.complete("first", started_at=10.02, ended_at=10.06)
+    assert first["memory_eligible"] is True
+    assert first["memory_measurement"] == "cgroup_v2_environment_union_v1"
+    assert first["memory_baseline_bytes"] == 100
+    assert first["memory_total_peak_bytes"] == 150
+    assert first["memory_extra_peak_bytes"] == 50
 
     # The stable parent remains readable after the first execution leaf is gone,
     # so its idle sample can serve as the next call's pre-start baseline.
@@ -152,10 +165,10 @@ def test_truncated_memory_timeline_is_unavailable_without_training_values(monkey
     monitor.poll()
     clock.now = 10.10
     monitor.poll()
-    assert monitor.complete("call", started_at=10, ended_at=10.10) == {
-        "memory_eligible": False,
-        "memory_unavailable_reason": "memory_timeline_truncated",
-    }
+    result = monitor.complete("call", started_at=10, ended_at=10.10)
+    assert result["memory_eligible"] is False
+    assert result["memory_unavailable_reason"] == "memory_timeline_truncated"
+    assert result["memory_diagnostics"]["timeline_truncated"] is True
 
 
 def test_short_clause_without_interior_sample_has_no_memory_label(monkeypatch):
@@ -172,6 +185,75 @@ def test_memory_availability_matches_public_schema(monkeypatch):
     validator.validate(eligible)
     validator.validate(unavailable)
     assert list(validator.iter_errors(unavailable | {"memory_total_peak_bytes": 0}))
+    assert list(validator.iter_errors(
+        eligible | {"memory_diagnostics": unavailable["memory_diagnostics"]}
+    ))
+
+
+def test_execution_memory_window_uses_verified_payload_boundaries():
+    from clawtune_sidecar.monitoring.tool_runtime import execution_memory_wall_window
+
+    event = ToolCompletedEvent.model_validate(completion_data(
+        occurred_at="1970-01-01T00:00:20Z",
+        action_start_monotonic_ns="10000000000",
+        action_end_monotonic_ns="20000000000",
+        monotonic_clock_domain="linux_monotonic",
+    ))
+    observation = {
+        "window": {
+            "kind": "execution",
+            "clock": "linux_monotonic",
+            "observed_start_ns": "12000000000",
+            "observed_end_ns": "18000000000",
+        }
+    }
+    call = {
+        "telemetry_quality": "ok",
+        "clauses": [{
+            "t_exec_ns": 12_000_000_000,
+            "t_end_ns": 18_000_000_000,
+            "ts_start": 112,
+            "ts_end": 118,
+        }],
+    }
+    assert execution_memory_wall_window(event, observation, call) == (112, 118)
+    call["clauses"][0]["ts_end"] = 119
+    assert execution_memory_wall_window(event, observation, call) is None
+
+
+@pytest.mark.parametrize("change", [
+    {"monotonic_clock_domain": "openclaw_plugin_process_monotonic"},
+    {"action_start_monotonic_ns": "13000000000"},
+    {"action_end_monotonic_ns": "17000000000"},
+])
+def test_execution_memory_window_rejects_uncomparable_boundaries(change):
+    from clawtune_sidecar.monitoring.tool_runtime import execution_memory_wall_window
+
+    fields = {
+        "occurred_at": "1970-01-01T00:00:20Z",
+        "action_start_monotonic_ns": "10000000000",
+        "action_end_monotonic_ns": "20000000000",
+        "monotonic_clock_domain": "linux_monotonic",
+    } | change
+    event = ToolCompletedEvent.model_validate(completion_data(**fields))
+    observation = {
+        "window": {
+            "kind": "execution",
+            "clock": "linux_monotonic",
+            "observed_start_ns": "12000000000",
+            "observed_end_ns": "18000000000",
+        }
+    }
+    call = {
+        "telemetry_quality": "ok",
+        "clauses": [{
+            "t_exec_ns": 12_000_000_000,
+            "t_end_ns": 18_000_000_000,
+            "ts_start": 112,
+            "ts_end": 118,
+        }],
+    }
+    assert execution_memory_wall_window(event, observation, call) is None
 
 
 def test_completion_clock_does_not_rewind_to_last_live_sample():
