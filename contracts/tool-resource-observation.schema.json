@@ -145,7 +145,7 @@
       "properties": {
         "cpu_time": {
           "$ref": "#/$defs/metric",
-          "description": "Cumulative CPU time and, when action-window eligible, average cores."
+          "description": "Owned workload CPU time. Eligible finalized execution totals may cover less than the tool window; average cores divides the same total by the requested tool duration. Coverage remains explicit."
         },
         "cpu_peak": {
           "$ref": "#/$defs/metric",
@@ -203,12 +203,12 @@
         },
         "eligible": {
           "type": "boolean",
-          "description": "Whether the metric is safe to use as a complete, exclusively attributed action training label. Availability alone is insufficient."
+          "description": "Whether the metric can train its exclusively attributed workload target. Finalized execution labels need not cover shell/hook overhead; window completeness is reported separately. Availability alone is insufficient."
         },
         "reason": {
           "type": "string",
           "minLength": 1,
-          "description": "Metric-specific eligibility or unavailability reason; ok means the metric is eligible."
+          "description": "Metric-specific eligibility or unavailability reason. execution_window_only may be eligible for finalized owned workload labels without claiming full tool-window coverage; consult eligible separately."
         },
         "measurement": {
           "type": "string",

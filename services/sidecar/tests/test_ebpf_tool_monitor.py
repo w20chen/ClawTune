@@ -13,6 +13,7 @@ from clawtune_sidecar.monitoring.ebpf_tool import (
     _reduce_events,
     unavailable_observation,
     execution_observation,
+    promote_execution_observation,
 )
 from clawtune_sidecar.monitoring.tool_runtime import RealtimeToolMonitor
 from test_tool_runtime_monitor import _request
@@ -80,7 +81,9 @@ def test_metric_sampling_gap_and_shared_runtime_are_never_training_eligible():
     _validator().validate(sparse)
     _validator().validate(shared)
     assert sparse["metrics"]["cpu_time"]["available"] is True
-    assert sparse["metrics"]["cpu_time"]["eligible"] is False
+    assert sparse["metrics"]["cpu_time"]["eligible"] is True
+    assert sparse["metrics"]["disk_io"]["eligible"] is True
+    assert sparse["metrics"]["cpu_peak"]["eligible"] is False
     assert sparse["metrics"]["memory_peak"]["reason"] == "sampling_gap"
     assert all(metric["eligible"] is False for metric in shared["metrics"].values())
 
@@ -230,17 +233,36 @@ def test_promotion_preserves_measured_execution_window_without_fabricating_cover
     for result in (synthetic, real):
         _validator().validate(result)
         assert not result["window"]["complete"]
-        assert not any(m["eligible"] for m in result["metrics"].values())
         assert result["metrics"]["cpu_time"]["value_seconds"] == .2
-        assert result["metrics"]["cpu_time"]["average_cores"] is None
+    assert not any(m["eligible"] for m in synthetic["metrics"].values())
+    assert synthetic["metrics"]["cpu_time"]["average_cores"] is None
+    assert real["metrics"]["cpu_time"]["eligible"]
+    assert real["metrics"]["cpu_time"]["average_cores"] == .2
+    assert real["metrics"]["memory_peak"]["eligible"]
     assert synthetic["window"]["coverage_ratio"] is None
     assert real["window"]["coverage_ratio"] == .8
+    outside = execution_observation(call, started_ns=200_000_000, ended_ns=1_000_000_000, clock="linux_monotonic")
+    assert not any(m["eligible"] for m in outside["metrics"].values())
 
 
 def _cgroup_files(path, cpu, read, peak):
     (path / "cpu.stat").write_text(f"usage_usec {cpu}\n", encoding="utf-8")
     (path / "io.stat").write_text(f"8:0 rbytes={read} wbytes=0\n", encoding="utf-8")
     (path / "memory.peak").write_text(str(peak), encoding="utf-8")
+
+
+def test_promotion_preserves_eligible_metrics_and_rejects_cross_window_merge():
+    from copy import deepcopy
+    current = _reduce_events(_events(0, 1_000_000_000), started_ns=0,
+                             ended_ns=1_000_000_000, shared=False, network_delta=(3, 4))
+    execution = deepcopy(current)
+    current["metrics"]["cpu_time"]["eligible"] = False
+    execution["metrics"]["network_io"]["eligible"] = False
+    merged = promote_execution_observation(current, execution)
+    assert merged["metrics"]["cpu_time"]["eligible"]
+    assert merged["metrics"]["network_io"] == current["metrics"]["network_io"]
+    execution["window"]["requested_start_ns"] = "1"
+    assert promote_execution_observation(current, execution) is current
 
 
 def test_collector_failure_uses_dedicated_cgroup_with_truthful_window(tmp_path):

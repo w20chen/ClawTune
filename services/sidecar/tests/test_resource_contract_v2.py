@@ -130,7 +130,8 @@ def test_both_tool_names_use_clauses_with_environment_preparation(monkeypatch):
         assert pred.clause_predictions == []
         for backend in ("trie", "lattice"):
             candidate = diagnostics.backends[backend]
-            assert candidate.targets["cpu_peak_cores"].unavailable_reason == "excluded_pipeline_consumer_workload"
+            assert candidate.targets["cpu_peak_cores"].p50 == 3
+            assert "listed_downstream_consumers_excluded" in candidate.targets["cpu_peak_cores"].assumptions
             assert candidate.clause_predictions[0].targets["cpu_peak_cores"].p50 == 3
             assert candidate.clause_predictions[0].targets["memory_extra_peak_bytes"].p50 == 200
             assert candidate.clause_predictions[0].cwd == "/workspace"

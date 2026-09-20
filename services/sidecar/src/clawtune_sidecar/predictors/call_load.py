@@ -65,7 +65,7 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
             continue
         values = [row["values"] for row in rows]
         contexts = [str(c) for row in rows for c in row.get("context", ())]
-        assumptions = ["foreground_clause_lineage_covers_call_workload", "shell_and_hook_overhead_not_modeled",
+        assumptions = ["foreground_clause_lineage_covers_retained_workload", "shell_and_hook_overhead_not_modeled",
                        "listed_downstream_consumers_excluded"]
         assumptions += [a for c in clauses for a in c.get("prediction_assumptions", [])]
         if len(values) == 1:
@@ -172,8 +172,6 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
                     cwd=c.get("cwd"), env_names=sorted(c.get("env", {})), targets=clause_targets, memory_measurement=query.memory_measurement))
             combined_reason = reason or next((c.get("prediction_unavailable_reason") for c in retained
                                               if c.get("prediction_unavailable_reason")), None)
-            if len(retained) != len(clauses):
-                combined_reason = combined_reason or "excluded_pipeline_consumer_workload"
             backends[backend] = compose(
                 backend, evidence, edges, reason=combined_reason, clauses=clauses
             ).model_copy(update={"clause_predictions": scoped})

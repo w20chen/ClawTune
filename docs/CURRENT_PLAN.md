@@ -16,8 +16,8 @@ core, external dataset, benchmark adapter, or placement policy was changed.
   unsampled CPU peak is invented.
 - Missing/foreign action clocks cannot produce action resource labels. Execution
   summaries retain measured clause boundaries and compute interval-union coverage;
-  they do not manufacture 100% coverage. Execution-only values remain visible but
-  cannot train an action-wide average/peak without matching evidence.
+  they do not manufacture 100% coverage. Finalized owned execution values may
+  train workload targets; average CPU retains the full tool-duration denominator.
 - CPU/IO cumulative validity is separate from dense peak sampling. CPU execution
   totals use boundary differences, not raw lifetime exit counters. Each TID is
   checked independently. Regressing counters and sparse RSS remain ineligible.
@@ -172,8 +172,6 @@ The 2026-09-16 review reference for main commit `5e68953` is not included in thi
 - Cross-process mixed-benchmark sampling acceptance remains pending on Linux with Docker, OpenClaw, BCC/perf privileges and provider credentials: run `python3 scripts/clawtune.py benchmark --benchmark swe-rebench --sample 6 --parallelism 2` and `python3 scripts/clawtune.py benchmark --benchmark terminal-bench --sample 6 --parallelism 2` concurrently, with datasets containing at least six tasks each. Check per-execution ownership, event loss, actual sample gaps and four-event PMU running ratios against independent per-execution counters. Windows unit tests do not establish live accuracy.
 - Linux-only checks for this sampling review: `PYTHONPATH=services/sidecar/src python3 -m pytest tests/test_benchmark_terminal_exec.py -q -rs` must exercise the three procfs/POSIX cases skipped on Windows; `python3 tools/check_ebpf.py` and `python3 tools/validate_pmu.py --concurrency 4 --require-reliable` require the target Linux BCC/perf environment.
 - RSS quality follow-up: both `monitoring/ebpf_tool.py` and `tool_resource/clause_bridge.py` need coverage checks for an address space with only one sample or missing lifetime edges. Dense peer samples can currently leave the aggregate marked eligible/ok despite incomplete coverage of that address space. Validate sleeping memory holders and compare against an independent RSS reference; keep cgroup memory-charge labels separate.
-- Default eBPF monitoring still needs environment-memory begin/poll/complete integration; the current branch bypasses `EnvironmentMemoryMonitor`. Validate total/extra memory labels on the same execution windows as their predictions.
-- Align call-level prediction/measurement windows and update the cgroup audit to accept execution-tree eBPF observations backed by verified exclusive cgroups; do not relax metric eligibility merely to satisfy the legacy `scope=cgroup` check.
 
 
 ## Pending Linux validation: independent predictions and native tool windows
@@ -182,3 +180,13 @@ The 2026-09-16 review reference for main commit `5e68953` is not included in thi
 - Run `python3 scripts/clawtune.py benchmark --benchmark swe-rebench --sample 6 --parallelism 2` with the updated plugin and sidecar. This requires Linux, Docker, OpenClaw and provider access. Check independent `prediction.tool/trie/lattice`, environment-memory eligibility, and read/edit PID resolution retaining the pre-action window. No new-run coverage or prediction accuracy improvement has yet been measured.
 
 - Targeted `python -m ruff check services/sidecar/src/clawtune_sidecar/predictors/call_load.py services/sidecar/src/clawtune_sidecar/monitoring/ebpf_tool.py services/sidecar/src/clawtune_sidecar/monitoring/tool_runtime.py services/sidecar/tests/test_call_load.py services/sidecar/tests/test_ebpf_tool_monitor.py` could not run: Ruff is not installed in the local Python environment.
+
+- Cold-start audit acceptance: `python3 scripts/clawtune.py benchmark --benchmark swe-rebench --sample 4 --parallelism 2` requires the Linux/Docker/OpenClaw deployment and cannot run on this Windows host. Confirm that valid unavailable model outputs do not generate prediction audit issues and per-model coverage remains recorded.
+
+- Pristine task-image dependency check is pending because SSH to `kunpeng` timed out: run `docker run --rm --pull never --network none --read-only --platform linux/amd64 --entrypoint /opt/miniconda3/envs/testbed/bin/python swerebench/sweb.eval.x86_64.0b01001001_1776_spectree-64 -B -c 'import sys,pydantic; print(sys.executable); print(sys.version); print(pydantic.__version__)'` remotely to compare the original Pydantic version with the trace.
+
+## Pending validation: workload labels and prediction coverage
+
+- `ssh -o BatchMode=yes -o ConnectTimeout=10 kunpeng "pwd"` timed out. Deployment and `python3 scripts/clawtune.py benchmark --benchmark swe-rebench --sample 4 --parallelism 2` remain blocked by remote connectivity. Deploy this working tree, including the existing prediction-audit changes, and use a fresh run-local KB. Measure per-model/per-metric training acceptance, prediction coverage and paired errors separately; exclude consumer-scope mismatches from like-for-like error claims.
+- `PYTHONPATH=services/sidecar/src python3 -m pytest services/sidecar/tests tests -q -rs` still requires Linux for the POSIX cases and `test_native_parser_resolves_literal_head`. The direct `parse_command_clauses` probe could not build the native mvdan adapter on Windows (missing bundled binary/POSIX builder); the installed WSL environment has no Go executable. Validate literal `$v`/`${v}` assignment parsing and runtime executable matching on Linux.
+- `python3 tools/check_ebpf.py` and the fresh benchmark above must validate actual collector boundaries, execution-window admission and recent environment baselines. Unit tests and old traces do not establish new-run coverage or measurement accuracy. Confirm first-call missing baselines and overlapping environments remain unavailable.

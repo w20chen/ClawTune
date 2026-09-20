@@ -361,6 +361,20 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                 status_code = _nested_get(record, ("status", "code"))
                 output_exit_code = _extract_trace_exit_code(record.get("output"))
                 resources = record.get("resources") if isinstance(record.get("resources"), dict) else {}
+                observation = resources.get("resource_observation")
+                owned_ebpf = (
+                    isinstance(observation, dict)
+                    and observation.get("backend") == "ebpf"
+                    and observation.get("attribution") == "exclusive_process_tree"
+                    and isinstance(observation.get("metrics"), dict)
+                    and any(isinstance(metric, dict) and metric.get("available") is True
+                            for metric in observation.get("metrics", {}).values())
+                )
+                cgroup_backed = resources.get("scope") == "cgroup" or (
+                    owned_ebpf
+                    and resources.get("attribution_source") == "exclusive-execution-cgroup"
+                    and bool(_nested_get(record, ("execution", "cgroup_path")))
+                )
                 coverage_ratio = resources.get("coverage_ratio")
                 if (
                     isinstance(coverage_ratio, (int, float))
@@ -368,7 +382,7 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                     and not 0.0 <= float(coverage_ratio) <= 1.0
                 ):
                     report["invalid_coverage_ratio_span_ends"] += 1
-                if (
+                if owned_ebpf or (
                     isinstance(resources.get("sampling_point_count"), int)
                     and resources["sampling_point_count"] > 0
                     and resources.get("cpu_time_s") is not None
@@ -381,7 +395,7 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                         report["launcher_resource_sampled_tool_span_ends"] += 1
                     if resources.get("monitor_source") == "cgroup-v2":
                         report["cgroup_sampled_tool_span_ends"] += 1
-                if resources.get("scope") == "cgroup":
+                if cgroup_backed:
                     report["cgroup_tool_span_ends"] += 1
                 if resources.get("scope") == "process_tree":
                     report["process_tree_tool_span_ends"] += 1
@@ -396,7 +410,7 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                     report["docker_exec_pid_tool_span_ends"] += 1
                 if resources.get("coverage_reason") == "shared_sandbox_container":
                     report["shared_sandbox_tool_span_ends"] += 1
-                if resources.get("attribution_status") in {"attributed", "partially_attributed"}:
+                if owned_ebpf or resources.get("attribution_status") in {"attributed", "partially_attributed"}:
                     report["attributed_tool_span_ends"] += 1
                 if status_code == "ok" and output_exit_code not in (None, 0):
                     report["status_exit_code_disagreements"] += 1
@@ -480,12 +494,12 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
                                     report["launcher_tool_resource_disabled_reasons"],
                                     str(disabled_reason),
                                 )
-                    if resources.get("scope") == "cgroup":
+                    if cgroup_backed:
                         report["launcher_cgroup_tool_span_ends"] += 1
-                    if resources.get("attribution_status") in {"attributed", "partially_attributed"}:
+                    if owned_ebpf or resources.get("attribution_status") in {"attributed", "partially_attributed"}:
                         report["launcher_attributed_tool_span_ends"] += 1
                     if (
-                        resources.get("attribution_status") == "unattributed"
+                        not owned_ebpf and resources.get("attribution_status") == "unattributed"
                     ):
                         report["unattributed_launcher_tool_span_ends"] += 1
         if kind == "llm" or "model" in span_name or record.get("action_type") == "llm_call":
@@ -1718,9 +1732,24 @@ def _required_telemetry_error(
             f"{clauses_with_status}/{clause_count} mapped clauses"
         )
     if config.runtime.mode == HOST_OPENCLAW_MODE:
-        # New-protocol runs are judged by complete call predictions. Missing
-        # evidence for individual targets is legal; deprecated backend fields
-        # cannot veto a valid prediction or rescue a malformed new payload.
+        # Independent models must each emit a valid envelope for every tool.
+        # Availability is an experimental result, not a protocol requirement:
+        # the release seed intentionally starts ToolKB with no observations.
+        models = resources.get("prediction_models", {})
+        if any(int(models.get(name, {}).get("span_starts", 0))
+               for name in ("tool", "trie", "lattice")):
+            for name in ("tool", "trie", "lattice"):
+                counts = models.get(name, {})
+                present = int(counts.get("span_starts", 0))
+                valid = int(counts.get("valid_span_starts", 0))
+                if valid != tool_spans or valid != present:
+                    return (
+                        f"required {name} prediction coverage is incomplete or invalid: "
+                        f"{valid}/{tool_spans} tool calls ({present} envelopes)"
+                    )
+            return None
+        # Older call-load traces have only the compatibility envelope. Validate
+        # it without interpreting a legitimate cold start as a collector failure.
         if int(resources.get("call_prediction_span_starts", 0)):
             valid_predictions = int(resources.get("call_prediction_valid_span_starts", 0))
             if (valid_predictions != tool_spans
@@ -1729,8 +1758,6 @@ def _required_telemetry_error(
                     "required call-load prediction coverage is incomplete or invalid: "
                     f"{valid_predictions}/{tool_spans} tool calls"
                 )
-            if int(resources.get("call_prediction_available_span_starts", 0)) == 0:
-                return "required call-load prediction produced no usable target estimate"
             return None
         # Compatibility with traces produced before call_load.v1.
         prediction_spans = int(

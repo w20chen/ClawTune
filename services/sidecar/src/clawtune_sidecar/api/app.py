@@ -1962,7 +1962,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                         else None
                     )
                     if isinstance(call_telemetry, dict):
-                        from clawtune_sidecar.monitoring.ebpf_tool import execution_observation
+                        from clawtune_sidecar.monitoring.ebpf_tool import execution_observation, promote_execution_observation
                         from clawtune_sidecar.monitoring.tool_runtime import apply_resource_observation
                         if (
                             event.action_start_monotonic_ns is not None
@@ -1985,12 +1985,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
                             ended_ns=action_end_ns,
                             clock=action_clock,
                         )
-                        if promoted is not None and any(
-                            metric.get("available") for metric in promoted["metrics"].values()
-                        ) and not any(
-                            metric.get("eligible") for metric in
-                            (sample.resource_observation or {}).get("metrics", {}).values()
-                        ):
+                        promoted = promote_execution_observation(sample.resource_observation, promoted)
+                        if promoted is not None and promoted is not sample.resource_observation:
                             sample = apply_resource_observation(sample, promoted)
                     pmu_profile = s.pmu_collector.take(event.execution_id)
                     if (

@@ -217,6 +217,29 @@ def test_downstream_pipe_consumer_label_is_not_trained_as_standalone():
         assert set(values) == {100.0}
 
 
+@pytest.mark.parametrize("head,consumer", [("head", None), ("cat", None), ("cat", "head"), ("python", "tail")])
+def test_only_downstream_consumers_are_excluded_from_learning_and_prediction(head, consumer):
+    argv = (head, "file.txt")
+    first = dict(bin=head, argv=list(argv), in_pipe=consumer is not None,
+                 pipeline_position=0 if consumer else -1)
+    clauses = [first]
+    observations = [row(bin=head, argv=argv, in_pipe=consumer is not None,
+                        pipeline_position=0 if consumer else -1)]
+    if consumer:
+        clauses.append(dict(bin=consumer, argv=[consumer, "-20"], in_pipe=True, pipeline_position=1))
+        observations.append(row(bin=consumer, argv=(consumer, "-20"), in_pipe=True,
+                                pipeline_position=1, latency_ms=90000))
+    _, diagnostics = predict_call_load(runtime=RuntimeToolResourceKB(),
+        trie=ClauseResourceKB.fit_public(observations), lattice=LatticeTimeKB.fit(observations),
+        query=ToolCallQuery("repo", "exec", " ".join(argv), 10), edges=EDGES,
+        parsed_clauses=clauses)
+    for name in ("trie", "lattice"):
+        prediction = diagnostics.backends[name]
+        assert prediction.targets["duration_ms"].p50 == 1000
+        assert len(prediction.clause_predictions) == 1
+        assert prediction.clause_predictions[0].argv == list(argv)
+
+
 def test_pre_filter_aggregated_clause_snapshot_is_rejected():
     snapshot = ClauseResourceKB.fit_public([row()]).to_json_obj()
     snapshot["schema"] = "runtime_clause_resource_kb_v4"
@@ -341,5 +364,8 @@ def test_excluded_consumer_is_not_claimed_as_complete_tool_workload():
     _, diagnostics = predict_call_load(runtime=runtime, trie=kb, lattice=kb,
         query=ToolCallQuery("repo", "exec", "python job.py | cat", 10), edges=EDGES)
     for name in ("trie", "lattice"):
-        assert diagnostics.backends[name].targets["cpu_time_seconds"].unavailable_reason == "excluded_pipeline_consumer_workload"
+        target = diagnostics.backends[name].targets["cpu_time_seconds"]
+        assert target.p50 == 2
+        assert "listed_downstream_consumers_excluded" in target.assumptions
+        assert "foreground_clause_lineage_covers_call_workload" not in target.assumptions
         assert diagnostics.backends[name].clause_predictions[0].targets["cpu_time_seconds"].p50 == 2

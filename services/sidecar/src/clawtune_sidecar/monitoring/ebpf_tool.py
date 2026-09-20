@@ -415,12 +415,8 @@ def _counter_window_complete(events, field, start, end):
             return False
         if last["type"] != "exit_boundary" and end - last["ts_ns"] > _MAX_SAMPLE_GAP_NS:
             return False
-        # A new task or an exec baseline plus exit closes a cumulative
-        # lifetime even when the task sleeps. Perf-only evidence needs density.
-        if not ((tid in forks or (first["type"] == "exec_boundary" and first["ts_ns"] == start))
-                and last["type"] == "exit_boundary"):
-            if not _metric_window_complete(rows, field, start, end):
-                return False
+        # Cumulative totals need valid boundaries, not dense interior samples.
+        # Peaks retain their independent density checks.
     return True
 
 
@@ -872,6 +868,11 @@ def execution_observation(
             covered += max(0, right - left)
             cursor = max(cursor, right)
     complete = comparable and ended_ns > started_ns and covered == ended_ns - started_ns
+    # Finalized owned clauses are valid execution labels even when the tool
+    # window also includes preparation/waiting. Do not claim complete coverage.
+    execution_eligible = comparable and ended_ns > started_ns and all(
+        started_ns <= lo < hi <= ended_ns for lo, hi in intervals
+    )
     duration_s = max(0.0, (ended_ns - started_ns) / 1e9)
     cpu_values = [row.get("cpu_time_seconds") for row in rows]
     cpu_ok = all(
@@ -927,16 +928,16 @@ def execution_observation(
         "metrics": {
             "cpu_time": {
                 "available": cpu_ok,
-                "eligible": cpu_ok and complete,
+                "eligible": cpu_ok and execution_eligible,
                 "reason": ("ok" if complete else "execution_window_only") if cpu_ok else "clause_cpu_unavailable",
                 "measurement": "ebpf_owned_lineage_cpu_time",
                 "value_seconds": cpu_seconds,
-                "average_cores": None if cpu_seconds is None or not complete or duration_s <= 0 else cpu_seconds / duration_s,
+                "average_cores": None if cpu_seconds is None or not execution_eligible else cpu_seconds / duration_s,
                 "sample_count": None,
             },
             "cpu_peak": {
                 "available": peak_cpu_ok,
-                "eligible": peak_cpu_ok and complete,
+                "eligible": peak_cpu_ok and execution_eligible,
                 "reason": ("ok" if complete else "execution_window_only") if peak_cpu_ok else ("aligned_call_profile_unavailable" if len(rows) > 1 else "clause_cpu_peak_unavailable"),
                 "measurement": "ebpf_owned_lineage_cpu_500ms_peak",
                 "value_cores": float(peak_cpu) if peak_cpu_ok else None,
@@ -944,7 +945,7 @@ def execution_observation(
             },
             "memory_peak": {
                 "available": memory_ok,
-                "eligible": memory_ok and complete,
+                "eligible": memory_ok and execution_eligible,
                 "reason": ("ok" if complete else "execution_window_only") if memory_ok else ("aligned_call_profile_unavailable" if len(rows) > 1 else "clause_memory_unavailable"),
                 "measurement": "ebpf_sampled_distinct_mm_rss",
                 "value_bytes": int(float(peak_memory_mb) * 1_000_000) if memory_ok else None,
@@ -953,7 +954,7 @@ def execution_observation(
             },
             "disk_io": {
                 "available": disk_ok,
-                "eligible": disk_ok and complete,
+                "eligible": disk_ok and execution_eligible,
                 "reason": ("ok" if complete else "execution_window_only") if disk_ok else "clause_disk_io_unavailable",
                 "measurement": "ebpf_task_io_accounting",
                 "read_bytes": read_bytes,
@@ -963,6 +964,23 @@ def execution_observation(
         },
         "execution_telemetry_quality": call.get("telemetry_quality"),
     }
+
+
+def promote_execution_observation(current, execution):
+    """Fill metric gaps only within the same requested clock/window."""
+    if execution is None or not any(m.get("available") for m in execution["metrics"].values()):
+        return current
+    retained = {name: metric for name, metric in (current or {}).get("metrics", {}).items()
+                if metric.get("eligible")}
+    if retained:
+        current_window = current.get("window", {})
+        if any(current_window.get(key) != execution["window"].get(key)
+               for key in ("clock", "requested_start_ns", "requested_end_ns")):
+            return current
+        if not any(metric.get("eligible") and name not in retained
+                   for name, metric in execution["metrics"].items()):
+            return current
+    return {**execution, "metrics": {**execution["metrics"], **retained}}
 
 
 def _int_or_none(value: Any) -> int | None:

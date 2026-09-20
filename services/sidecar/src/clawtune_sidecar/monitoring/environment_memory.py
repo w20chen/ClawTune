@@ -110,6 +110,7 @@ class EnvironmentMemoryMonitor:
         self._lock = threading.RLock()
         self._active: dict[Any, dict[str, Any]] = {}
         self._unavailable: dict[Any, str] = {}
+        self._recent: dict[tuple[str, str], dict[str, Any]] = {}
 
     @staticmethod
     def _read(path: str) -> int | None:
@@ -135,24 +136,55 @@ class EnvironmentMemoryMonitor:
         with self._lock:
             if key in self._active:
                 return
+            now = time.time()
+            identity = (path, str(getattr(scope, "container_id", None) or "exclusive-execution-cgroup"))
+            recent = self._recent.get(identity)
+            # Freshness is relative to the actual start, known at completion,
+            # not the possibly delayed arrival of this begin request.
+            points = list(recent["points"]) if recent else []
+            points.append((now, value))
+            if identity not in self._recent and len(self._recent) >= 128:
+                self._recent.pop(min(self._recent, key=lambda k: self._recent[k]["last_used"]))
+            self._recent[identity] = {
+                "points": deque(points, maxlen=16), "last_used": now,
+                "previous_end": recent["previous_end"] if recent else None,
+            }
             self._unavailable.pop(key, None)
             overlap = [row for row in self._active.values() if Path(row["path"]).is_relative_to(Path(path)) or Path(path).is_relative_to(Path(row["path"]))]
             for row in overlap:
                 row["exclusive"] = False
             self._active[key] = {"path": path, "baseline": value,
-                                 "points": deque([(time.time(), value)], maxlen=MAX_MEMORY_TIMELINE_POINTS),
+                                 "identity": identity,
+                                 "previous_end": recent["previous_end"] if recent else None,
+                                 "points": deque(points, maxlen=MAX_MEMORY_TIMELINE_POINTS),
                                  "timeline_truncated": False, "peak": value, "polls": 0,
                                  "exclusive": not overlap}
 
     def poll(self) -> None:
         with self._lock:
+            now = time.time()
+            values = {}
+            for identity, recent in list(self._recent.items()):
+                if now - recent["last_used"] > 60:
+                    self._recent.pop(identity)
+                    continue
+                value = self._read(identity[0])
+                sampled_at = time.time()
+                values[identity] = (sampled_at, value)
+                if value is not None:
+                    recent["points"].append((sampled_at, value))
             for row in self._active.values():
-                value = self._read(row["path"])
+                sampled_at, value = values.get(row["identity"], (now, None))
+                if row["identity"] in self._recent:
+                    self._recent[row["identity"]]["last_used"] = now
+                else:
+                    value = self._read(row["path"])
+                    sampled_at = time.time()
                 if value is not None:
                     row["polls"] += 1
                     if len(row["points"]) == row["points"].maxlen:
                         row["timeline_truncated"] = True
-                    row["points"].append((time.time(), value))
+                    row["points"].append((sampled_at, value))
                     row["peak"] = max(row["peak"], value)
 
     def complete(self, key: Any, *, started_at: float | None = None,
@@ -160,6 +192,10 @@ class EnvironmentMemoryMonitor:
         with self._lock:
             row = self._active.pop(key, None)
             reason = self._unavailable.pop(key, None)
+            if row and row["identity"] in self._recent:
+                recent = self._recent[row["identity"]]
+                recent["previous_end"] = max(recent["previous_end"] or 0, ended_at or time.time())
+                recent["last_used"] = time.time()
         if reason:
             return {"memory_eligible": False, "memory_unavailable_reason": reason}
         if row is None:
@@ -174,7 +210,7 @@ class EnvironmentMemoryMonitor:
                 or not math.isfinite(started_at) or not math.isfinite(ended_at)
                 or ended_at <= started_at):
             reason = "execution_window_unavailable"
-        elif not row["exclusive"]:
+        elif not row["exclusive"] or (row["previous_end"] is not None and row["previous_end"] > started_at):
             reason = "overlapping_environment_calls"
         elif points[0][0] > started_at:
             reason = "baseline_after_execution_start"
@@ -206,5 +242,8 @@ class EnvironmentMemoryMonitor:
 
     def discard(self, key: Any) -> None:
         with self._lock:
-            self._active.pop(key, None)
+            row = self._active.pop(key, None)
+            if row:
+                # An abandoned call has no trustworthy end for overlap checks.
+                self._recent.pop(row["identity"], None)
             self._unavailable.pop(key, None)

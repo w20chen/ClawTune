@@ -2505,6 +2505,31 @@ def test_resource_label_quality_online_offline_parity(quality, points, overlap):
     assert tool_resource_predictor._observation_from_tool_span(None, end, repo="repo").cpu_ns_cumulative == (1000000000 if usable else None)
 
 
+def test_execution_window_label_online_offline_parity():
+    from clawtune_sidecar.monitoring.ebpf_tool import execution_observation
+    from clawtune_sidecar.monitoring.tool_runtime import apply_resource_observation
+    from tool_resource.runtime_kb import _target_values
+    observation = execution_observation({"telemetry_quality": "ok", "clauses": [{
+        "t_exec_ns": 100_000_000, "t_end_ns": 900_000_000,
+        "availability": {"cpu_time": "ok", "memory": "ok"},
+        "cpu_time_seconds": .6, "peak_memory_mb": 10,
+    }]}, started_ns=0, ended_ns=1_200_000_000, clock="linux_monotonic")
+    sample = apply_resource_observation(_runtime_sample("evt", "call"), observation)
+    online = tool_resource_predictor.completed_call_from_completion(_tool_completion("evt", "call"), sample, repo="repo")
+    end = {"name": "exec", "status": {"code": "ok"}, "duration_ns": "1200000000",
+           "wall_time_ns": "1001200000000", "resources": {
+               "resource_observation": observation, "cpu_time_s": sample.cpu_time_delta_s}}
+    offline = tool_resource_predictor._completed_call_from_tool_span(None, end, repo="repo")
+    assert not observation["window"]["complete"]
+    for call in (online, offline):
+        targets = _target_values(call)
+        assert targets["cpu_time_seconds"] == .6
+        assert targets["cpu_avg_cores"] == pytest.approx(.5)
+        assert targets["sampled_peak_rss_bytes"] == 10_000_000
+        assert targets["latency_ms"] == pytest.approx(1200)
+    assert sample.cpu_utilization_avg_cores == pytest.approx(.5)
+
+
 def test_trace_does_not_export_out_of_window_snapshots_as_tool_usage(tmp_path):
     from dataclasses import replace
     from clawtune_sidecar.trace import AgentTestBenchTraceWriter

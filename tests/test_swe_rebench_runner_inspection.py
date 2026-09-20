@@ -316,6 +316,29 @@ def test_trace_inspection_counts_failed_and_unattributed_launcher_spans(tmp_path
     assert summary["launcher_tool_resource_ratio"] == 0.0
 
 
+def test_trace_inspection_accepts_owned_ebpf_without_legacy_timeline(tmp_path):
+    trace = tmp_path / "trace.jsonl"
+    record = _launcher_cgroup_span_end("exec-1", "/sys/fs/cgroup/task/clawtune-executions/exec-1")
+    record["resources"] = {
+        "scope": "process_tree", "attribution_status": "pid",
+        "attribution_source": "exclusive-execution-cgroup",
+        "resource_observation": {
+            "backend": "ebpf", "attribution": "exclusive_process_tree",
+            "metrics": {"cpu_time": {"available": True, "eligible": True}},
+        },
+    }
+    trace.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    report = _inspect_trace(trace, "")
+    assert report["launcher_cgroup_tool_span_ends"] == 1
+    assert report["launcher_resource_sampled_tool_span_ends"] == 1
+    assert report["launcher_attributed_tool_span_ends"] == 1
+    record["resources"]["resource_observation"]["attribution"] = "shared_scope"
+    trace.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    report = _inspect_trace(trace, "")
+    assert report["launcher_cgroup_tool_span_ends"] == 0
+    assert report["launcher_resource_sampled_tool_span_ends"] == 0
+
+
 def test_trace_inspection_records_exclusive_and_shared_launcher_cgroups(tmp_path):
     trace = tmp_path / "trace.jsonl"
     container_scope = (
@@ -1069,7 +1092,7 @@ def test_eligible_command_lookup_failure_needs_no_clause_kb_update(tmp_path):
 
 
 @pytest.mark.parametrize("damage", ["schema", "missing_target", "units", "histogram", "missing_envelope", "all_unavailable"])
-def test_canonical_gate_rejects_invalid_or_entirely_unavailable_predictions(tmp_path, damage):
+def test_canonical_gate_rejects_invalid_but_accepts_unavailable_predictions(tmp_path, damage):
     from clawtune_sidecar.prediction_config import load_bucket_edges
     from clawtune_sidecar.predictors.call_load import compose
 
@@ -1093,8 +1116,11 @@ def test_canonical_gate_rejects_invalid_or_entirely_unavailable_predictions(tmp_
     config_path = tmp_path / "config.yaml"
     config_path.write_text("runtime:\n  mode: host-openclaw\n  ebpf_required: true\n", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
-    expected = "no usable" if damage == "all_unavailable" else "coverage is incomplete or invalid"
-    assert expected in _required_telemetry_error(config, result)
+    error = _required_telemetry_error(config, result)
+    if damage == "all_unavailable":
+        assert error is None
+    else:
+        assert "coverage is incomplete or invalid" in error
 
 
 def test_canonical_summary_requires_coverage_of_every_tool_call(tmp_path):
@@ -1641,3 +1667,76 @@ def test_trace_counts_each_independent_prediction_without_filling_missing_models
     assert summary["trie"]["target_available_span_starts"] == {"cpu_time_seconds": 2}
     assert summary["lattice"]["span_starts"] == 0
     assert summary["lattice"]["target_available_span_starts"] == {}
+
+
+@pytest.mark.parametrize("case", ["cold_seed", "all_unavailable", "missing_tool", "missing_trie",
+                                  "null_lattice", "bad_tool", "bad_trie", "bad_lattice",
+                                  "partial_coverage", "bad_alias"])
+def test_independent_prediction_audit_allows_cold_start_but_requires_each_model(tmp_path, case):
+    from clawtune_kb import FILES, validate_seed
+    from tool_resource.runtime_kb import RuntimeToolResourceKB, ClauseResourceKB, ToolCallQuery
+    from tool_time.lattice_kb import LatticeTimeKB
+    from clawtune_sidecar.predictors.call_load import predict_call_load, compose
+    from clawtune_sidecar.prediction_config import load_bucket_edges
+
+    seed = Path(__file__).resolve().parents[1] / "seeds/bootstrap-v1"
+    validate_seed(seed)
+    trie, tool, lattice = [json.loads((seed / name).read_text(encoding="utf-8")) for name in FILES]
+    edges = load_bucket_edges((100, 500, 2000, 10000))
+    result, diagnostics = predict_call_load(
+        runtime=RuntimeToolResourceKB.from_json_obj(tool),
+        trie=ClauseResourceKB.from_json_obj(trie), lattice=LatticeTimeKB.from_json_obj(lattice),
+        query=ToolCallQuery("new-repo", "exec", "find .", 1), edges=edges,
+        parsed_clauses=[{"bin": "find", "argv": ["find", "."]}],
+    )
+    assert all(t.status == "unavailable" for t in result.targets.values())
+    assert diagnostics.backends["trie"].targets["duration_ms"].status == "available"
+    record = _ebpf_prediction_start()
+    record["prediction"].update({
+        "tool": result.model_dump(), "trie": diagnostics.backends["trie"].model_dump(),
+        "lattice": diagnostics.backends["lattice"].model_dump(),
+        "call_prediction": result.model_dump(),
+    })
+    expected_model = None
+    if case == "all_unavailable":
+        for name, backend in (("tool", "runtime"), ("trie", "trie"), ("lattice", "lattice")):
+            record["prediction"][name] = compose(backend, (), edges).model_dump()
+    elif case.startswith("missing_"):
+        expected_model = case.removeprefix("missing_")
+        del record["prediction"][expected_model]
+    elif case == "null_lattice":
+        expected_model = "lattice"
+        record["prediction"]["lattice"] = None
+    elif case.startswith("bad_"):
+        name = case.removeprefix("bad_")
+        if name == "alias":
+            record["prediction"]["call_prediction"] = {"schema_version": "invalid"}
+        else:
+            expected_model = name
+            del record["prediction"][name]["targets"]["cpu_time_seconds"]
+            # A healthy compatibility alias cannot rescue a broken formal model.
+            record["prediction"]["call_prediction"] = _canonical_prediction()
+    records = [record]
+    if case == "partial_coverage":
+        records.append(_ebpf_prediction_start())
+        expected_model = "tool"
+    trace = tmp_path / "independent.jsonl"
+    trace.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    summary = _resource_summary([_inspect_trace(trace, "")])
+    audited = _host_prediction_result()
+    resources = audited["resource_summary"]
+    resources.update(prediction_models=summary["prediction_models"],
+                     launcher_tool_resource_eligible_span_ends=0,
+                     tool_span_ends=len(records), resource_sampled_tool_span_ends=len(records))
+    resources.update({k: v for k, v in summary.items() if k.startswith("call_prediction_")})
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("runtime:\n  mode: host-openclaw\n  ebpf_required: true\n", encoding="utf-8")
+    config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
+    error = _required_telemetry_error(config, audited)
+    if expected_model:
+        assert f"required {expected_model} prediction coverage is incomplete or invalid" in error
+    else:
+        assert error is None
+    if case == "cold_seed":
+        assert summary["prediction_models"]["tool"]["target_available_span_starts"] == {}
+        assert summary["prediction_models"]["trie"]["target_available_span_starts"]["duration_ms"] == 1

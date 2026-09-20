@@ -226,6 +226,7 @@ def parse_command_clauses(command: str) -> dict[str, Any]:
         _clause_from_adapter(command, raw_clause, byte_to_character)
         for raw_clause in raw_clauses
     ]
+    _resolve_literal_command_heads(command, clauses)
     raw_control_edges = response.get("control_edges")
     if not isinstance(raw_control_edges, list):
         raise MvdanClientError("mvdan adapter response has no control-edge list")
@@ -243,6 +244,62 @@ def parse_command_clauses(command: str) -> dict[str, Any]:
         "control_edges": control_edges,
         "parse_failed": False,
     }
+
+
+def _resolve_literal_command_heads(command: str, clauses: list[dict[str, Any]]) -> None:
+    """Resolve only standalone literal assignments in an ordinary statement list.
+
+    Assignment-only statements are absent from mvdan's executable clause list.
+    Inspect only the gaps between AST spans; never evaluate shell text. Unknown
+    structure or shell state mutation invalidates the bindings.
+    """
+    assignment = re.compile(
+        r"\s*([A-Za-z_][A-Za-z0-9_]*)=(?:([A-Za-z0-9_./:+-]+)|"
+        r"'([A-Za-z0-9_./:+-]+)'|\"([A-Za-z0-9_./:+-]+)\")\s*(?:;|\n)"
+    )
+    bindings: dict[str, str] = {}
+    previous_end = 0
+    for clause in clauses:
+        start, end = clause["span"]
+        gap = command[previous_end:start]
+        previous_end = end
+        if not re.fullmatch(r"[\s;&|]*", gap):
+            pending = gap.lstrip("; \t\r\n")
+            updates = {}
+            while match := assignment.match(pending):
+                updates[match[1]] = next(v for v in match.groups()[1:] if v is not None)
+                pending = pending[match.end():]
+            if pending.strip():
+                bindings.clear()
+            else:
+                bindings.update(updates)
+        context = clause.get("structural_context", [])
+        if clause.get("in_loop") or clause.get("in_subst") or any(
+            c.startswith(("if:", "for:", "while:", "until:", "case", "function", "subshell",
+                          "command-substitution", "process-substitution", "stmt:background"))
+            for c in context
+        ):
+            bindings.clear()
+            continue
+        argv = clause["argv"]
+        intents = clause.get("word_intents", [])
+        head = re.fullmatch(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})", argv[0])
+        if head and intents and any(c.get("kind") == "parameter" for c in intents[0]["components"]):
+            value = bindings.get(head[1] or head[2])
+            if value is not None:
+                argv[0] = value
+                clause["bin"] = value.rsplit("/", 1)[-1]
+                # Exact literal matching still checks the complete runtime argv
+                # and requested executable path in clause_bridge.
+                intents[0] = dict(intents[0], cooked=value, components=[{
+                    "kind": "literal", "source": value, "span": intents[0]["span"],
+                    "quoted": False, "escaped": False,
+                }])
+        if (any(component.get("kind") not in {"literal", "pathname_expansion"}
+                for intent in intents for component in intent.get("components", []))
+                or argv[0] in {"declare", "typeset", "readonly", "let", "builtin", "command", "exec"}
+                or (argv[0] != "cd" and not shell_bin_requires_exec_evidence(clause["bin"], argv[0]))):
+            bindings.clear()
 
 
 def enrich_clause_structure(

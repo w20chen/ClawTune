@@ -200,7 +200,11 @@ The `trace_flushed` in the HTTP abort response is a persistence confirmation ret
 
 ## Authoritative Call-Level Measurements: `resources.resource_observation`
 
-See the [tool resource observation schema](../contracts/tool-resource-observation.schema.json). This object is the authoritative record of resource measurement source, window, attribution, and training eligibility. `available=true` only means a value exists under the current measurement definition; only `eligible=true` means the metric can serve as a training label for a complete, exclusively attributed action. The two must be read per metric; an object-level coverage or another metric cannot substitute for them.
+See the [tool resource observation schema](../contracts/tool-resource-observation.schema.json). This object is the authoritative record of resource measurement source, window, attribution, and training eligibility. `available=true` only means a value exists under the current measurement definition; only `eligible=true` means the metric can serve as a training label for its exclusively attributed workload target. The two must be read per metric; an object-level coverage or another metric cannot substitute for them.
+
+Finalized execution observations may be eligible with `reason=execution_window_only` and `window.complete=false`: CPU totals and sampled peaks describe the owned workload, excluding unmeasured shell/hook overhead. Average cores uses the same CPU total divided by the full tool duration in both training and trace replay. Compare predictions against those same labels. Pipeline predictions exclude only listed downstream consumers; standalone `head`/`cat` and the first pipeline stage remain included. The whole-tool observation can still include consumer overhead.
+
+Environment-memory baselines may reuse a sample from the same verified environment taken at most 150 ms before the tool window. Overlapping calls, stale baselines and missing in-window samples remain ineligible; a first call without a pre-start sample can still have no memory label.
 
 | Field | Meaning |
 | --- | --- |
@@ -235,7 +239,7 @@ Every `metrics.*` uses the same status shell:
 | Field | Meaning |
 | --- | --- |
 | `available` | Whether a measured value exists under the current `measurement` and window. |
-| `eligible` | Whether it can serve as a training label for a complete, exclusively attributed action; fallback collector-window CPU / I/O can be available but is never eligible. |
+| `eligible` | Whether it can serve as a training label for its exclusively attributed workload target; fallback collector-window CPU / I/O can be available but is never eligible. |
 | `reason` | Metric-level reason for availability or eligibility; `ok` means eligible. Common rejection reasons include `shared_scope`, `sampling_gap`, `insufficient_samples`, `action_clock_window_unusable`, `scope_bound_after_action_start`, and `collector_window_only`. |
 | `measurement` | Measurement semantics identifier; the definition must not be guessed from the field name alone. |
 | `value_seconds`, `average_cores` | Cumulative core-seconds for `cpu_time`, and the average core count over the complete action window. |
