@@ -8,13 +8,6 @@ Agent tool calls vary substantially in execution time and resource consumption. 
 
 The system comprises an OpenClaw plugin, a local monitoring service, and evaluation programs. The plugin associates model requests with tool calls. The service proxies model requests, collects execution measurements, and maintains historical statistics. Evaluation programs organize tasks, isolate execution environments, and score predictions.
 
-```text
-OpenClaw -- plugin -- local service -- historical statistics and prediction
-               |            |
-               |            +-- model proxy and tracing
-               +-- tool execution -- cgroup / eBPF / perf
-```
-
 Docker supplies tool execution environments. Linux cgroups establish resource accounting boundaries, eBPF associates executable clauses with their descendant processes, and perf hardware counters supply microarchitectural measurements. Correlated events form execution traces for subsequent analysis.
 
 Daily operation learns continuously. Online benchmarks share learning within each run. Offline evaluation trains on a fixed subset and freezes all models during testing. The system provides concurrency admission information and resource recommendations for deployment components.

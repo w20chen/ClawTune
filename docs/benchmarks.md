@@ -1,6 +1,6 @@
 # Benchmarks and Offline Evaluation
 
-Online runs execute tasks through OpenClaw and collect predictions and measurements. Offline evaluation reads existing traces without model calls. The adapters support resource-prediction research; **they do not run official answer graders**. `official_score` is `null`, and a completed task is not necessarily solved correctly.
+Online runs execute tasks through OpenClaw and collect predictions and measurements. Offline evaluation reads existing traces without model calls. The adapters support resource-prediction research.
 
 ## 1. Configure a first run
 

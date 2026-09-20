@@ -1,6 +1,6 @@
 # Installation and Use
 
-Commands below run in Bash on Linux, from the repository root unless stated otherwise. Replace `<...>` with actual values. Windows supports source development and offline checks; live resource collection requires Linux.
+Commands below run in Bash on Linux, from the repository root unless stated otherwise. Replace `<...>` with actual values.
 
 ## 1. Prepare a new machine
 
