@@ -364,6 +364,9 @@ class RealtimeToolMonitor:
         runtime_id: str | None = None,
         *,
         owner: ToolBeforeRequest | ToolCompletedEvent | None = None,
+        memory_base_scope: ResourceScope | None = None,
+        memory_execution_parent_path: str | None = None,
+        memory_environment_id: str | None = None,
     ) -> bool:
         if tool_call_id is None:
             return False
@@ -386,6 +389,13 @@ class RealtimeToolMonitor:
                 self._active[correlation_key(active.request)] = active
                 return False
             if self.ebpf_monitor is not None:
+                if memory_execution_parent_path and memory_environment_id:
+                    self.environment_memory.bind_environment(
+                        correlation_key(active.request),
+                        base_scope=memory_base_scope or current_scope,
+                        execution_parent_path=memory_execution_parent_path,
+                        environment_id=memory_environment_id,
+                    )
                 request = active.request.model_copy(update={"resource_scope": scope})
                 self._active[correlation_key(request)] = _ActiveTool(
                     request=request,
@@ -402,7 +412,8 @@ class RealtimeToolMonitor:
                 # an eBPF window. The observation records that collector
                 # failure explicitly; callers still need the accepted scope
                 # for execution identity and trace provenance.
-                self.environment_memory.begin(correlation_key(active.request), scope)
+                if not memory_execution_parent_path:
+                    self.environment_memory.begin(correlation_key(active.request), scope)
                 self.ebpf_monitor.bind_scope(correlation_key(active.request), scope)
                 return True
             if (

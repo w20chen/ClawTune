@@ -1041,7 +1041,7 @@ def test_shared_snapshots_reuse_same_repo_evidence_but_isolate_other_repos() -> 
             sampled_peak_rss_eligible=True,
             memory_total_peak_bytes=64 * 1024**2,
             memory_extra_peak_bytes=24 * 1024**2, memory_baseline_bytes=40 * 1024**2,
-            memory_environment_id="test", memory_measurement="cgroup_v2_memory_current",
+            memory_environment_id="test", memory_measurement="cgroup_v2_environment_union_v1",
             memory_eligible=True, cpu_peak_window_ms=500,
         )
     )
@@ -1709,7 +1709,7 @@ def test_commandless_repo_tool_name_learning_is_causal_and_survives_snapshot(
             sampled_peak_rss_eligible=True,
             memory_total_peak_bytes=64 * 1024**2,
             memory_extra_peak_bytes=24 * 1024**2, memory_baseline_bytes=40 * 1024**2,
-            memory_environment_id="test", memory_measurement="cgroup_v2_memory_current",
+            memory_environment_id="test", memory_measurement="cgroup_v2_environment_union_v1",
             memory_eligible=True, cpu_peak_window_ms=500,
         )
     )
@@ -1745,7 +1745,7 @@ def test_commandless_repo_tool_name_learning_is_causal_and_survives_snapshot(
             sampled_peak_rss_eligible=True,
             memory_total_peak_bytes=80 * 1024**2,
             memory_extra_peak_bytes=30 * 1024**2, memory_baseline_bytes=50 * 1024**2,
-            memory_environment_id="test", memory_measurement="cgroup_v2_memory_current",
+            memory_environment_id="test", memory_measurement="cgroup_v2_environment_union_v1",
             memory_eligible=True, cpu_peak_window_ms=500,
         )
     )
@@ -2059,7 +2059,7 @@ def test_resource_lattice_predictions_reach_before_call_payload_and_fail_indepen
         ts_start=1, ts_end=2, latency_ms=1000,
         cpu_ns_cumulative=2_000_000_000, memory_total_peak_bytes=128 * 1024**2,
         memory_extra_peak_bytes=128 * 1024**2, memory_baseline_bytes=0,
-        memory_environment_id="test", memory_measurement="cgroup_v2_memory_current", memory_eligible=True,
+        memory_environment_id="test", memory_measurement="cgroup_v2_environment_union_v1", memory_eligible=True,
         cpu_peak_cores=3,
     )])
     request = _tool_request("resource-event", "resource-call", "python task.py")
@@ -2505,7 +2505,7 @@ def test_resource_label_quality_online_offline_parity(quality, points, overlap):
     assert tool_resource_predictor._observation_from_tool_span(None, end, repo="repo").cpu_ns_cumulative == (1000000000 if usable else None)
 
 
-def test_execution_window_label_online_offline_parity():
+def test_execution_window_uses_retained_duration_without_changing_tool_elapsed():
     from clawtune_sidecar.monitoring.ebpf_tool import execution_observation
     from clawtune_sidecar.monitoring.tool_runtime import apply_resource_observation
     from tool_resource.runtime_kb import _target_values
@@ -2515,18 +2515,24 @@ def test_execution_window_label_online_offline_parity():
         "cpu_time_seconds": .6, "peak_memory_mb": 10,
     }]}, started_ns=0, ended_ns=1_200_000_000, clock="linux_monotonic")
     sample = apply_resource_observation(_runtime_sample("evt", "call"), observation)
-    online = tool_resource_predictor.completed_call_from_completion(_tool_completion("evt", "call"), sample, repo="repo")
+    online = tool_resource_predictor.completed_call_from_completion(
+        _tool_completion("evt", "call"), sample, repo="repo",
+        workload_duration_seconds=.8,
+    )
     end = {"name": "exec", "status": {"code": "ok"}, "duration_ns": "1200000000",
            "wall_time_ns": "1001200000000", "resources": {
                "resource_observation": observation, "cpu_time_s": sample.cpu_time_delta_s}}
     offline = tool_resource_predictor._completed_call_from_tool_span(None, end, repo="repo")
     assert not observation["window"]["complete"]
-    for call in (online, offline):
-        targets = _target_values(call)
-        assert targets["cpu_time_seconds"] == .6
-        assert targets["cpu_avg_cores"] == pytest.approx(.5)
-        assert targets["sampled_peak_rss_bytes"] == 10_000_000
-        assert targets["latency_ms"] == pytest.approx(1200)
+    online_targets = _target_values(online)
+    offline_targets = _target_values(offline)
+    assert online_targets["cpu_time_seconds"] == offline_targets["cpu_time_seconds"] == .6
+    assert online_targets["cpu_avg_cores"] == pytest.approx(.75)
+    assert offline_targets["cpu_avg_cores"] == pytest.approx(.5)
+    assert online_targets["workload_latency_ms"] == pytest.approx(800)
+    assert offline_targets["workload_latency_ms"] == pytest.approx(1200)
+    assert online_targets["sampled_peak_rss_bytes"] == offline_targets["sampled_peak_rss_bytes"] == 10_000_000
+    assert online_targets["latency_ms"] == offline_targets["latency_ms"] == pytest.approx(1200)
     assert sample.cpu_utilization_avg_cores == pytest.approx(.5)
 
 

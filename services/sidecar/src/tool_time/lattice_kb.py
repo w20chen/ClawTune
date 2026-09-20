@@ -288,7 +288,7 @@ class LatticeTimeKB:
                 continue
             predictions = []
             for target, (unit, _scale) in RESOURCE_TARGETS.items():
-                state_key = target + (":" + clause.get("memory_measurement", "cgroup_v2_memory_current") if target.startswith("memory_") else "")
+                state_key = target + (":" + clause.get("memory_measurement", "cgroup_v2_environment_union_v1") if target.startswith("memory_") else "")
                 state = self._resource_states.get(state_key, ResourceState({}, 0.0, 0.5))
                 for algorithm in LATTICE_TIME_ALGORITHMS:
                     try:
@@ -326,7 +326,7 @@ class LatticeTimeKB:
             for target, (_, scale) in LOAD_TARGETS.items():
                 state_key = "load:" + target
                 if target.startswith("memory_"):
-                    state_key += ":" + clause.get("memory_measurement", "cgroup_v2_memory_current")
+                    state_key += ":" + clause.get("memory_measurement", "cgroup_v2_environment_union_v1")
                 state = self._resource_states.get(state_key)
                 if state is None:
                     continue

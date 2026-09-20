@@ -731,16 +731,21 @@ class EbpfToolCallMonitor:
                 ended_ns=ended_ns,
             )
             return _fallback_result(result, fallback)
-        exact_window = (
+        action_clock_usable = (
             action_start_ns is not None
             and action_end_ns is not None
             and action_end_ns >= action_start_ns
-            and active.started_ns <= action_start_ns <= action_end_ns <= ended_ns
+            and active.started_ns <= action_end_ns <= ended_ns
+        )
+        requested_start_ns = (
+            max(active.started_ns, action_start_ns)
+            if action_clock_usable and action_start_ns is not None
+            else active.started_ns
         )
         try:
             result = active.window.finish(
-                action_end_ns if exact_window else ended_ns,
-                started_ns=action_start_ns if exact_window else None,
+                action_end_ns if action_clock_usable else ended_ns,
+                started_ns=requested_start_ns if action_clock_usable else None,
             )
         except Exception as exc:
             try:
@@ -751,14 +756,29 @@ class EbpfToolCallMonitor:
                 f"ebpf_finish_failed:{type(exc).__name__}:{str(exc)[:400]}",
                 started_ns=active.started_ns, ended_ns=ended_ns,
             )
-        if not exact_window:
+        if not action_clock_usable:
             result["window"]["complete"] = False
             result["window"]["action_clock_unusable"] = True
             for metric in result.get("metrics", {}).values():
                 if isinstance(metric, dict) and metric.get("eligible"):
                     metric["eligible"] = False
                     metric["reason"] = "action_clock_window_unusable"
-        if active.bound_late and not exact_window:
+        elif action_start_ns is not None and action_start_ns < active.started_ns:
+            # The before-hook creates the collector before the tool body runs,
+            # while OpenClaw's action timestamp also includes the hook itself.
+            # Keep the measured collector/workload window explicit instead of
+            # rejecting valid counters or pretending the hook prefix was seen.
+            result["window"]["kind"] = "collector"
+            result["window"]["tool_action_start_ns"] = str(action_start_ns)
+            result["window"]["tool_action_end_ns"] = str(action_end_ns)
+            result["window"]["hook_prefix_excluded"] = True
+        else:
+            result["window"]["kind"] = "action"
+        if active.bound_late and (
+            not action_clock_usable
+            or action_start_ns is None
+            or action_start_ns < active.started_ns
+        ):
             result["window"]["complete"] = False
             result["window"]["late_scope_binding"] = True
             for metric in result.get("metrics", {}).values():

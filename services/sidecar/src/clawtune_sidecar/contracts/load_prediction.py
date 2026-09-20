@@ -12,9 +12,9 @@ TARGET_UNITS = {"duration_ms": "ms", "cpu_time_seconds": "core_seconds", "cpu_av
                 "cpu_peak_cores": "cores", "sampled_peak_rss_bytes": "bytes",
                 "memory_total_peak_bytes": "bytes", "memory_extra_peak_bytes": "bytes"}
 TARGET_DEFINITIONS = {
-    "duration_ms": "tool_hook_elapsed",
+    "duration_ms": "retained_workload_elapsed",
     "cpu_time_seconds": "owned_workload_cpu_time",
-    "cpu_avg_cores": "owned_cpu_time_over_tool_hook_elapsed",
+    "cpu_avg_cores": "owned_cpu_time_over_retained_workload_elapsed",
     "cpu_peak_cores": "owned_cpu_fixed_500ms_window_peak",
     "sampled_peak_rss_bytes": "ebpf_sampled_distinct_mm_rss_peak",
     "memory_total_peak_bytes": "environment_memory_total_peak",
@@ -103,7 +103,7 @@ class LoadEstimate(StrictModel):
 
 class ClauseLoadPrediction(StrictModel):
     clause_index: int = Field(ge=0)
-    memory_measurement: Literal["cgroup_v2_memory_current", "guest_memtotal_minus_memavailable"] = "cgroup_v2_memory_current"
+    memory_measurement: Literal["cgroup_v2_memory_current", "cgroup_v2_environment_union_v1", "guest_memtotal_minus_memavailable"] = "cgroup_v2_environment_union_v1"
     argv: list[str]
     cwd: str | None = None
     env_names: list[str] = Field(default_factory=list)
@@ -125,7 +125,7 @@ class ClauseLoadPrediction(StrictModel):
 
 class CallLoadPrediction(StrictModel):
     schema_version: Literal["call_load.v2"] = "call_load.v2"
-    memory_measurement: Literal["cgroup_v2_memory_current", "guest_memtotal_minus_memavailable"] = "cgroup_v2_memory_current"
+    memory_measurement: Literal["cgroup_v2_memory_current", "cgroup_v2_environment_union_v1", "guest_memtotal_minus_memavailable"] = "cgroup_v2_environment_union_v1"
     scope: Literal["tool_call"] = "tool_call"
     lifecycle: Literal["tool_hook_interval"] = "tool_hook_interval"
     cpu_peak_window_ms: Literal[500] = 500

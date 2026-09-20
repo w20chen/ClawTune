@@ -342,6 +342,40 @@ def test_prepare_host_execution_cgroup_moves_pid_tree_and_records_diagnostics(
     assert "owns launcher pid tree" in joined
 
 
+def test_prepare_host_execution_cgroup_uses_stable_environment_parent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "delegated"
+    monkeypatch.setattr(app_module, "_resolve_host_pid", lambda *_args, **_kwargs: 4242)
+    monkeypatch.setattr(app_module, "_host_execution_cgroup_roots", lambda *_args: [str(root)])
+    monkeypatch.setattr(app_module, "_enable_cgroup_controllers", lambda _path: frozenset({"cpu", "memory"}))
+    monkeypatch.setattr(app_module, "_cgroup_accounting_usable", lambda _path: True)
+    monkeypatch.setattr(app_module, "_execution_cgroup_accounting_usable", lambda _path: True)
+    moved_to: list[Path] = []
+    monkeypatch.setattr(
+        app_module,
+        "_move_pid_tree_into_cgroup",
+        lambda _pid, path, **_kwargs: moved_to.append(path) or True,
+    )
+    request = SimpleNamespace(
+        child_pid=7,
+        pid_namespace_inode=123,
+        process_starttime_ticks=456,
+        container_id="container-a",
+    )
+    first = app_module._prepare_host_execution_cgroup(
+        "exec-1", request, None, None, environment_identity="gateway|runtime|container-a"
+    )
+    second = app_module._prepare_host_execution_cgroup(
+        "exec-2", request, None, None, environment_identity="gateway|runtime|container-a"
+    )
+    assert first is not None and second is not None
+    assert Path(first.cgroup_path).parent == Path(second.cgroup_path).parent
+    assert Path(first.cgroup_path).parent.name.startswith("env-")
+    assert moved_to == [Path(first.cgroup_path), Path(second.cgroup_path)]
+
+
 def test_prepare_host_execution_cgroup_skips_undelegated_candidate(
     tmp_path: Path,
     monkeypatch,
@@ -2511,8 +2545,11 @@ def test_execution_started_host_cgroup_gate_creates_exact_scope(
         },
     )
 
-    exact = tmp_path / "exact-root" / "call-exec"
     assert started.status_code == 200
+    exact = Path(started.json()["cgroup_path"])
+    assert exact.name == "call-exec"
+    assert exact.parent.name.startswith("env-")
+    assert exact.parent.parent == tmp_path / "exact-root"
     assert started.json() == {"stored": True, "cgroup_path": str(exact)}
     assert (exact / "cgroup.procs").read_text(encoding="utf-8").strip() == "4242"
     scope = client.get("/v2/executions/call-exec/scope").json()["execution_scope"]

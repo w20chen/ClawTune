@@ -21,7 +21,7 @@ from tool_time.lattice_kb import LatticeTimeKB
 EDGES = load_bucket_edges((100, 1000, 10000))
 
 
-def labels(source="cgroup_v2_memory_current"):
+def labels(source="cgroup_v2_environment_union_v1"):
     return environment_memory(baseline=100, values=[100, 300, 200], environment_id="task-a",
         measurement=source, baseline_before_start=True, exclusive=True).fields()
 
@@ -44,7 +44,7 @@ def test_memory_means_total_and_increment_not_rss():
 def test_memory_sources_are_not_mixed(kind):
     if kind == "runtime":
         kb = RuntimeToolResourceKB()
-        for source, value in [("cgroup_v2_memory_current", 300), ("guest_memtotal_minus_memavailable", 900)]:
+        for source, value in [("cgroup_v2_environment_union_v1", 300), ("guest_memtotal_minus_memavailable", 900)]:
             kb.observe_completed_call(CompletedCall("r", "exec", "pytest tests/", 0, 1,
                 **(labels(source) | {"memory_total_peak_bytes": value, "memory_extra_peak_bytes": value - 100})))
         result = kb.predict_load_samples(ToolCallQuery("r", "exec", "pytest tests/", 10))

@@ -46,6 +46,7 @@ from tool_resource.runtime_kb import (
     RuntimeToolResourceKB,
     TargetPrediction,
     ToolCallQuery,
+    is_pipeline_dependent_consumer,
 )
 from tool_resource.sdk import (
     CommandRun,
@@ -869,19 +870,26 @@ class ToolResourcePredictor:
                 )
         if self.frozen:
             return 0
+        artifact: dict[str, Any] | None = None
+        if event.execution_id:
+            summary = self._telemetry_by_execution_id.get(event.execution_id)
+            if summary is not None and summary.artifact_path:
+                try:
+                    artifact = _read_ebpf_artifact(Path(summary.artifact_path))
+                except Exception:
+                    artifact = None
         completed_call = completed_call_from_completion(
             event,
             sample,
             repo=event.repo or (start.repo if start is not None else None) or self.repo,
             start=start,
+            workload_duration_seconds=_retained_workload_duration_seconds(artifact),
         )
         # Add only newly measured environment labels. Existing clause CPU/time
         # observations were already ingested at eBPF finish and are not repeated.
         if sample.environment_memory and event.execution_id and completed_call and not completed_call.censored:
-            summary = self._telemetry_by_execution_id.get(event.execution_id)
-            if summary is not None and summary.artifact_path:
+            if artifact is not None:
                 try:
-                    artifact = _read_ebpf_artifact(Path(summary.artifact_path))
                     from clawtune_sidecar.monitoring.environment_memory import clause_memory_labels
                     repo = event.repo or (start.repo if start else None) or self.repo
                     for call in artifact.get("calls", []):
@@ -1705,12 +1713,54 @@ def observation_from_completion(
     )
 
 
+def _retained_workload_duration_seconds(
+    artifact: Mapping[str, Any] | None,
+) -> float | None:
+    """Return the interval union for clauses retained by the prediction model."""
+    if not artifact:
+        return None
+    intervals: list[tuple[float, float]] = []
+    for call in artifact.get("calls", []):
+        if not isinstance(call, Mapping) or call.get("eligible_for_kb") is not True:
+            continue
+        clauses = call.get("clauses")
+        if not isinstance(clauses, list):
+            continue
+        for clause in clauses:
+            if not isinstance(clause, Mapping) or is_pipeline_dependent_consumer(clause):
+                continue
+            start, end = clause.get("ts_start"), clause.get("ts_end")
+            if (
+                isinstance(start, (int, float))
+                and not isinstance(start, bool)
+                and isinstance(end, (int, float))
+                and not isinstance(end, bool)
+                and math.isfinite(float(start))
+                and math.isfinite(float(end))
+                and end > start
+            ):
+                intervals.append((float(start), float(end)))
+    if not intervals:
+        return None
+    intervals.sort()
+    total = 0.0
+    current_start, current_end = intervals[0]
+    for start, end in intervals[1:]:
+        if start <= current_end:
+            current_end = max(current_end, end)
+        else:
+            total += current_end - current_start
+            current_start, current_end = start, end
+    return total + current_end - current_start
+
+
 def completed_call_from_completion(
     event: ToolCompletedEvent,
     sample: ToolRuntimeSample,
     *,
     repo: str,
     start: ToolBeforeRequest | None = None,
+    workload_duration_seconds: float | None = None,
 ) -> CompletedCall | None:
     raw_params = start.raw_params if start is not None else _raw_params_from_result(event.raw_event, event.raw_result)
     command = extract_command(raw_params)
@@ -1718,6 +1768,23 @@ def completed_call_from_completion(
     ts_end = sample.ended_at
     if ts_end < ts_start:
         ts_end = ts_start
+    if workload_duration_seconds is None and event.execution_id is None:
+        observation = sample.resource_observation or {}
+        window = observation.get("window") if isinstance(observation, Mapping) else None
+        if (
+            isinstance(window, Mapping)
+            and window.get("action_clock_unusable") is not True
+        ):
+            try:
+                retained_start_ns = int(window["requested_start_ns"])
+                retained_end_ns = int(window["requested_end_ns"])
+            except (KeyError, TypeError, ValueError):
+                pass
+            else:
+                if retained_end_ns > retained_start_ns:
+                    workload_duration_seconds = (
+                        retained_end_ns - retained_start_ns
+                    ) / 1e9
     exclude_resource_labels = _sample_attribution_ineligible(sample, event, start)
     cpu_time_eligible = _sample_metric_eligible(sample, "cpu_time")
     cpu_peak_eligible = _sample_metric_eligible(sample, "cpu_peak")
@@ -1730,6 +1797,8 @@ def completed_call_from_completion(
         command=command,
         ts_start=ts_start,
         ts_end=ts_end,
+        workload_duration_seconds=workload_duration_seconds,
+        workload_duration_required=event.execution_id is not None,
         censored=_truncated_outcome(event.error_type),
         outcome="ok" if event.succeeded else "error",
         # A monitor average is not a fixed-window peak. Only explicitly measured

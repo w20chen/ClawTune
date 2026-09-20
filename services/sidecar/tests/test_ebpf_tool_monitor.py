@@ -179,6 +179,32 @@ def test_missing_action_clock_never_creates_action_labels():
     assert not any(m["eligible"] for m in result["metrics"].values())
 
 
+def test_before_hook_prefix_can_be_excluded_without_rejecting_complete_counters():
+    class Window:
+        started_ns = 100
+
+        def finish(self, ended_ns, *, started_ns=None):
+            assert (started_ns, ended_ns) == (100, 1_000_000_100)
+            return _reduce_events(
+                _events(100, 1_000_000_100),
+                started_ns=100,
+                ended_ns=1_000_000_100,
+                shared=False,
+            )
+
+    monitor = EbpfToolCallMonitor(lambda _: Window())
+    monitor.begin("call", ResourceScope(kind="pid", pid=123))
+    result = monitor.complete(
+        "call", action_start_ns=0, action_end_ns=1_000_000_100
+    )
+    _validator().validate(result)
+    assert result["window"]["kind"] == "collector"
+    assert result["window"]["hook_prefix_excluded"] is True
+    assert result["window"]["tool_action_start_ns"] == "0"
+    assert result["metrics"]["cpu_time"]["eligible"] is True
+    assert result["metrics"]["disk_io"]["eligible"] is True
+
+
 def test_duplicate_begin_releases_every_lease():
     released = []
     issued = []

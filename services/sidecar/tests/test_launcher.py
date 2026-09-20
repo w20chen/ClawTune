@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shlex
 import time
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -542,8 +543,11 @@ def test_fork_exec_remote_host_gate_creates_exclusive_cgroup(
     )
 
     scope = state.executions.get("exec-integration").scope
-    exact = tmp_path / "host-executions" / "exec-integration"
     assert scope is not None
+    exact = Path(scope.cgroup_path)
+    assert exact.name == "exec-integration"
+    assert exact.parent.name.startswith("env-")
+    assert exact.parent.parent == tmp_path / "host-executions"
     assert scope.attribution_source == "exclusive-execution-cgroup"
     assert scope.cgroup_path == str(exact)
     assert (exact / "cgroup.procs").read_text(encoding="utf-8").strip() == "4242"

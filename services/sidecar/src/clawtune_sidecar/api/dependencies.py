@@ -49,6 +49,7 @@ class AppState:
     _ebpf_finalize_tasks: dict[str, asyncio.Task[None]]
     _owned_cgroup_cleanup_tasks: dict[str, asyncio.Task[None]]
     _owned_cgroup_paths: dict[str, str]
+    _owned_environment_cgroup_paths: set[str]
     _recent_samples: list[dict[str, object]]  # recent tool runtime samples for /v1/tools/recent
     _sandbox_scopes_by_owner: dict[tuple[str | None, str], ResourceScope] = field(
         default_factory=dict
@@ -179,6 +180,7 @@ def build_state(config: SidecarConfig | None = None) -> AppState:
         _ebpf_finalize_tasks={},
         _owned_cgroup_cleanup_tasks={},
         _owned_cgroup_paths={},
+        _owned_environment_cgroup_paths=set(),
         _recent_samples=[],
         _sandbox_scopes_by_owner={},
     )

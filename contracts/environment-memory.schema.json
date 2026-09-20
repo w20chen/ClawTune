@@ -22,6 +22,7 @@
     "memory_measurement": {
       "enum": [
         "cgroup_v2_memory_current",
+        "cgroup_v2_environment_union_v1",
         "guest_memtotal_minus_memavailable"
       ]
     },
@@ -42,7 +43,8 @@
         "stale_memory_baseline",
         "no_in_execution_memory_sample",
         "memory_sampling_gap",
-        "memory_timeline_truncated"
+        "memory_timeline_truncated",
+        "environment_memory_scope_unreadable"
       ]
     }
   },
@@ -63,5 +65,5 @@
       "required": ["memory_unavailable_reason"]
     }
   ],
-  "description": "Bytes within one verified task container or exclusive execution cgroup. Total is the sampled maximum strictly after the action start and no later than its completion event; extra=max(0,total-baseline). Baseline is the latest sample at or before action start, at most 150ms old. At least one in-window sample is required and no boundary or consecutive sampling gap may exceed 150ms. Overlapping monitored environment calls are ineligible. The environment includes background processes and charged cache; extra is incremental environment usage, not exclusive allocation by a process. Host service cgroups and post-completion samples are excluded. RSS is diagnostic only. Unavailable observations carry memory_eligible=false and memory_unavailable_reason instead of these eligible labels."
+  "description": "Bytes within one verified task environment. When execution processes migrate to a delegated cgroup, the scope is the deduplicated sum of the original container and its stable per-runtime execution parent; ancestor and descendant paths are never counted twice. Total is the sampled maximum strictly after the action start and no later than its completion event; extra=max(0,total-baseline). Baseline is the latest sample at or before action start, at most 150ms old. At least one in-window sample is required and no boundary or consecutive sampling gap may exceed 150ms. Overlapping monitored environment calls are ineligible. The environment includes background processes and charged cache; extra is incremental environment usage, not exclusive allocation by a process. Host service cgroups and post-completion samples are excluded. RSS is diagnostic only. Unavailable observations carry memory_eligible=false and memory_unavailable_reason instead of these eligible labels."
 }

@@ -17,7 +17,7 @@ def observation(index=0, **kwargs):
                   sampled_peak_rss_mb=256.0,
                   memory_total_peak_bytes=512 * 1024**2, memory_extra_peak_bytes=512 * 1024**2,
                   memory_baseline_bytes=0, memory_eligible=True, memory_environment_id="test",
-                  memory_measurement="cgroup_v2_memory_current")
+                  memory_measurement="cgroup_v2_environment_union_v1")
     if "memory_total_peak_bytes" in kwargs:
         values["memory_extra_peak_bytes"] = kwargs["memory_total_peak_bytes"]
     values.update(kwargs)

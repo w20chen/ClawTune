@@ -1,3 +1,28 @@
+# Pending Linux acceptance for the minimal repair (2026-09-20)
+
+The candidate now keeps a stable per-runtime cgroup memory scope across execution
+migration and leaf cleanup, uses retained-workload duration consistently for load
+prediction, and admits native-tool collector windows only when their own counter
+boundaries are complete. Use a fresh KB before measuring post-fix coverage because
+the earlier run admitted environment-memory labels from the wrong scope.
+
+The Windows host cannot run Linux BCC/perf attachment or target-kernel cgroup
+lifecycle checks. After deploying the candidate on Linux, run:
+
+```sh
+python3 tools/check_ebpf.py
+PYTHONPATH=services/sidecar/src python3 -m pytest services/sidecar/tests tests -q -rs
+python3 scripts/clawtune.py benchmark --benchmark swe-rebench --sample 2 --parallelism 2
+```
+
+Also verify touched allocations before/after migration, repeated execution and
+cleanup, two isolated concurrent environments, and native read/edit boundaries.
+These checks have not run against this candidate on the target Linux kernel.
+
+Targeted Ruff validation could not run on this Windows checkout because neither
+the `ruff` executable nor the Python `ruff` module is installed. Compileall,
+the full Python suite, schema/document validation, and `git diff --check` pass.
+
 # Monitoring candidate for Linux acceptance (2026-09-16)
 
 This working-tree revision supersedes the earlier eBPF-only policy. No OpenClaw

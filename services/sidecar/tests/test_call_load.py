@@ -42,7 +42,7 @@ def row(i=0, **overrides):
                 sampled_peak_rss_mb=64 * 1024**2 / 1_000_000,
                 memory_baseline_bytes=0, memory_total_peak_bytes=64 * 1024**2,
                 memory_extra_peak_bytes=64 * 1024**2, memory_environment_id="test",
-                memory_measurement="cgroup_v2_memory_current", memory_eligible=True)
+                memory_measurement="cgroup_v2_environment_union_v1", memory_eligible=True)
     return ClauseObservation(**(data | overrides))
 
 
@@ -134,7 +134,7 @@ def test_all_backends_full_targets_and_schema():
         cpu_time_seconds=2, cpu_time_eligible=True, cpu_peak_cores=4, cpu_peak_cores_eligible=True,
         cpu_peak_window_ms=500, sampled_peak_rss_bytes=64 * 1024**2,
         sampled_peak_rss_eligible=True, memory_total_peak_bytes=64 * 1024**2,
-        memory_eligible=True, memory_measurement="cgroup_v2_memory_current", memory_baseline_bytes=0, memory_extra_peak_bytes=64 * 1024**2, memory_environment_id="test"))
+        memory_eligible=True, memory_measurement="cgroup_v2_environment_union_v1", memory_baseline_bytes=0, memory_extra_peak_bytes=64 * 1024**2, memory_environment_id="test"))
     result, diagnostics = predict_call_load(runtime=runtime, trie=trie, lattice=lattice,
         query=ToolCallQuery("repo", "exec", "python job.py", 10), edges=EDGES)
     assert all(v.backend == "runtime" for v in result.targets.values())
@@ -273,12 +273,52 @@ def test_policy_uses_only_call_targets_and_zero_is_valid():
     assert _predicted_cpu_millis({"continuous_predictions": {"cpu_peak_cores": {"conditional_p90": 100}}}) == 1000
 
 
+def test_tool_kb_uses_retained_workload_duration_for_duration_and_cpu_average():
+    from tool_resource.runtime_kb import _target_values
+    values = _target_values(CompletedCall(
+        "repo", "exec", "python job.py | tail -20", 0, 10,
+        workload_duration_seconds=2,
+        cpu_time_seconds=1,
+        cpu_time_eligible=True,
+    ))
+    assert values["latency_ms"] == 10000
+    assert values["workload_latency_ms"] == 2000
+    assert values["cpu_time_seconds"] == 1
+    assert values["cpu_avg_cores"] == .5
+    missing = _target_values(CompletedCall(
+        "repo", "exec", "python job.py", 0, 10,
+        workload_duration_required=True,
+        cpu_time_seconds=1,
+        cpu_time_eligible=True,
+    ))
+    assert missing["latency_ms"] == 10000
+    assert "workload_latency_ms" not in missing
+    assert "cpu_avg_cores" not in missing
+    assert missing["cpu_time_seconds"] == 1
+
+
+def test_retained_workload_duration_unions_intervals_and_excludes_pipe_consumer():
+    from clawtune_sidecar.predictors.tool_resource import _retained_workload_duration_seconds
+    artifact = {"calls": [{
+        "eligible_for_kb": True,
+        "clauses": [
+            {"bin": "python", "argv": ["python", "job.py"], "ts_start": 1.0,
+             "ts_end": 3.0, "in_pipe": True, "pipeline_position": 0},
+            {"bin": "tail", "argv": ["tail", "-20"], "ts_start": 1.1,
+             "ts_end": 3.1, "in_pipe": True, "pipeline_position": 1},
+            {"bin": "cat", "argv": ["cat", "result"], "ts_start": 4.0,
+             "ts_end": 5.0, "in_pipe": False, "pipeline_position": -1},
+        ],
+    }]}
+    assert _retained_workload_duration_seconds(artifact) == 3.0
+
+
 def test_censored_resource_totals_not_used_as_complete_load():
     kb = RuntimeToolResourceKB()
     kb.observe_completed_call(CompletedCall("r", "read", None, 0, 1, censored=True,
         cpu_time_seconds=2, cpu_time_eligible=True, cpu_peak_cores=4, cpu_peak_cores_eligible=True,
         cpu_peak_window_ms=500, memory_total_peak_bytes=100, memory_eligible=True,
-        memory_measurement="cgroup_v2_memory_current", memory_baseline_bytes=0, memory_extra_peak_bytes=100, memory_environment_id="test", outcome="timeout"))
+        memory_measurement="cgroup_v2_environment_union_v1", memory_baseline_bytes=0, memory_extra_peak_bytes=100, memory_environment_id="test", outcome="timeout"))
     assert kb.predict_load_samples(ToolCallQuery("r", "read", None, 2)) == {}
 
 
@@ -286,7 +326,7 @@ def test_call_level_evaluation_scores_and_metric_guard():
     from clawtune_sidecar.predictors.call_load_eval import evaluate_calls
     prediction = compose("trie", [{"duration_ms": {"values": [100, 200]}}], EDGES).model_dump()
     record = dict(prediction=prediction, scope="tool_call", lifecycle="tool_hook_interval",
-                  actual={"duration_ms": {"valid": True, "value": 200, "metric_definition": "tool_hook_elapsed"}})
+                  actual={"duration_ms": {"valid": True, "value": 200, "metric_definition": "retained_workload_elapsed"}})
     result = evaluate_calls([record])["targets"]["duration_ms"]
     assert result["availability"] == 1
     assert result["avg_absolute_error"] == 50

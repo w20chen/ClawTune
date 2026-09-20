@@ -8,7 +8,7 @@
     "duration_ms": {
       "status": "available",
       "unit": "ms",
-      "metric_definition": "tool_hook_elapsed",
+      "metric_definition": "retained_workload_elapsed",
       "avg": 1200,
       "p50": 1200,
       "p90": 1200,
@@ -90,7 +90,7 @@
     "cpu_avg_cores": {
       "status": "available",
       "unit": "cores",
-      "metric_definition": "owned_cpu_time_over_tool_hook_elapsed",
+      "metric_definition": "owned_cpu_time_over_retained_workload_elapsed",
       "avg": 1.6666666666666667,
       "p50": 1.6666666666666667,
       "p90": 1.6666666666666667,
@@ -281,5 +281,5 @@
       "unavailable_reason": null
     }
   },
-  "memory_measurement": "cgroup_v2_memory_current"
+  "memory_measurement": "cgroup_v2_environment_union_v1"
 }

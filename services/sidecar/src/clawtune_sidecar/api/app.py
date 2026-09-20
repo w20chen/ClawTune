@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from dataclasses import replace
 import os
@@ -694,6 +695,7 @@ def _prepare_host_execution_cgroup(
     fallback_scope: ResourceScope | None,
     configured_root: str | None,
     diagnostics: list[str] | None = None,
+    environment_identity: str | None = None,
 ) -> ResourceScope | None:
     host_pid = _resolve_host_pid(
         request.child_pid,
@@ -709,7 +711,11 @@ def _prepare_host_execution_cgroup(
     _record_cgroup_diag(diagnostics, f"resolved launcher host pid {host_pid}")
     for root in _host_execution_cgroup_roots(fallback_scope, configured_root):
         root_path = Path(root)
-        cgroup_path = root_path / _safe_cgroup_name(execution_id)
+        environment_path = root_path
+        if environment_identity:
+            digest = hashlib.sha256(environment_identity.encode("utf-8")).hexdigest()[:24]
+            environment_path = root_path / f"env-{digest}"
+        cgroup_path = environment_path / _safe_cgroup_name(execution_id)
         try:
             root_path.mkdir(parents=True, exist_ok=True)
             _enable_cgroup_controllers(root_path)
@@ -720,6 +726,14 @@ def _prepare_host_execution_cgroup(
                 raise PermissionError(
                     f"cpu and memory controllers not delegated at {root}"
                 )
+            if environment_path != root_path:
+                environment_path.mkdir(mode=0o700, exist_ok=True)
+                _enable_cgroup_controllers(environment_path)
+                if not _cgroup_accounting_usable(environment_path):
+                    raise PermissionError(
+                        "cpu and memory controllers not delegated at "
+                        f"{environment_path}"
+                    )
             cgroup_path.mkdir(mode=0o700, exist_ok=True)
             if not _execution_cgroup_accounting_usable(cgroup_path):
                 raise PermissionError(
@@ -857,6 +871,15 @@ def create_app(state: AppState | None = None) -> FastAPI:
             await asyncio.to_thread(close_predictor)
         for execution_id in list(app_state._owned_cgroup_paths):
             await cleanup_owned_cgroup(app_state, execution_id)
+        for path in sorted(
+            app_state._owned_environment_cgroup_paths,
+            key=lambda item: len(Path(item).parts),
+            reverse=True,
+        ):
+            try:
+                Path(path).rmdir()
+            except OSError:
+                pass
 
     def get_state() -> AppState:
         return app.state.sidecar
@@ -2275,6 +2298,18 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     fallback_scope,
                     s.config.execution_cgroup_root,
                     diagnostics=cgroup_diagnostics,
+                    environment_identity="|".join(
+                        str(value or "")
+                        for value in (
+                            record.request.gateway_id,
+                            record.request.runtime_id,
+                            request.container_id
+                            or (fallback_scope.container_id if fallback_scope else None),
+                            record.request.runtime_id
+                            or request.container_id
+                            or execution_id,
+                        )
+                    ),
                 )
                 if host_scope is not None:
                     s.executions.update_scope(
@@ -2284,6 +2319,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     )
                     if host_scope.cgroup_path is not None:
                         s._owned_cgroup_paths[execution_id] = host_scope.cgroup_path
+                        s._owned_environment_cgroup_paths.add(
+                            str(Path(host_scope.cgroup_path).parent)
+                        )
                     record = s.executions.get(execution_id)
                     response = ExecutionUpdateResponse(
                         stored=True,
@@ -2415,6 +2453,30 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     monitor_scope,
                     runtime_id=record.request.runtime_id,
                     owner=record.request,
+                    memory_base_scope=fallback_scope,
+                    memory_execution_parent_path=(
+                        str(Path(monitor_scope.cgroup_path).parent)
+                        if monitor_scope.attribution_source
+                        == "exclusive-execution-cgroup"
+                        and monitor_scope.cgroup_path
+                        else None
+                    ),
+                    memory_environment_id=(
+                        "|".join(
+                            str(value or "")
+                            for value in (
+                                record.request.gateway_id,
+                                record.request.runtime_id,
+                                monitor_scope.container_id,
+                                record.request.runtime_id
+                                or monitor_scope.container_id
+                                or execution_id,
+                            )
+                        )
+                        if monitor_scope.attribution_source
+                        == "exclusive-execution-cgroup"
+                        else None
+                    ),
                 )
             # The launcher/Tool bridge keeps this root behind an exec gate until
             # this endpoint returns.  PMU enable_on_exec therefore starts at the

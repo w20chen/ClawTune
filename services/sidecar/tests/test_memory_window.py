@@ -51,6 +51,64 @@ def test_host_service_is_not_a_task_environment(monkeypatch):
         "memory_eligible": False, "memory_unavailable_reason": "unverified_task_environment"}
 
 
+def test_execution_migration_uses_container_plus_stable_execution_parent(monkeypatch):
+    clock = SimpleNamespace(now=10.0)
+    values = {"/container": 100, "/delegated/env-a": 0}
+    monkeypatch.setattr(
+        "clawtune_sidecar.monitoring.environment_memory.time.time", lambda: clock.now
+    )
+    monkeypatch.setattr(
+        EnvironmentMemoryMonitor,
+        "_read",
+        staticmethod(lambda path: values.get(path)),
+    )
+    monitor = EnvironmentMemoryMonitor()
+    container = SimpleNamespace(cgroup_path="/container", container_id="container-a")
+    monitor.begin("first", container)
+    clock.now = 10.01
+    monitor.bind_environment(
+        "first",
+        base_scope=container,
+        execution_parent_path="/delegated/env-a",
+        environment_id="runtime-a",
+    )
+    values["/delegated/env-a"] = 50
+    clock.now = 10.06
+    monitor.poll()
+    assert monitor.complete("first", started_at=10.0, ended_at=10.06) == {
+        "memory_eligible": False,
+        "memory_unavailable_reason": "baseline_after_execution_start",
+    }
+
+    # The stable parent remains readable after the first execution leaf is gone,
+    # so its idle sample can serve as the next call's pre-start baseline.
+    values["/delegated/env-a"] = 20
+    clock.now = 10.10
+    monitor.poll()
+    monitor.begin("second", container)
+    clock.now = 10.11
+    monitor.bind_environment(
+        "second",
+        base_scope=container,
+        execution_parent_path="/delegated/env-a",
+        environment_id="runtime-a",
+    )
+    values["/delegated/env-a"] = 70
+    clock.now = 10.16
+    monitor.poll()
+    result = monitor.complete("second", started_at=10.105, ended_at=10.16)
+    assert result["memory_baseline_bytes"] == 120
+    assert result["memory_total_peak_bytes"] == 170
+    assert result["memory_extra_peak_bytes"] == 50
+    assert result["memory_environment_id"] == "runtime-a"
+
+
+def test_environment_paths_are_not_double_counted_when_parent_contains_child():
+    assert EnvironmentMemoryMonitor._nonoverlapping_paths(
+        ["/sys/fs/cgroup/container", "/sys/fs/cgroup/container/clawtune/env-a"]
+    ) == ("/sys/fs/cgroup/container",)
+
+
 @pytest.mark.parametrize("start,begin,eligible", [(10.15, 10.2, True), (10.15, 10.35, True), (10.04, 10.2, False)])
 def test_recent_environment_sample_can_precede_delayed_begin(monkeypatch, start, begin, eligible):
     clock = SimpleNamespace(now=10.0, value=100)

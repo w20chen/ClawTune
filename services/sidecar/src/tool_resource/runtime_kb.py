@@ -99,7 +99,7 @@ _CONDITIONAL_P90_QUANTILE = 0.9
 _MAX_PREFIX_DEPTH = 4  # frozen depth budget, same as the evaluated lattice
 _SCHEMA = "runtime_tool_resource_kb_v3"
 # Canonical targets share one eligible value per observation.
-LOAD_TARGET_SOURCES = {"duration_ms": "latency_ms", "cpu_time_seconds": "cpu_time_seconds",
+LOAD_TARGET_SOURCES = {"duration_ms": "workload_latency_ms", "cpu_time_seconds": "cpu_time_seconds",
                        "cpu_avg_cores": "cpu_avg_cores", "cpu_peak_cores": "cpu_peak_cores",
                        "sampled_peak_rss_bytes": "sampled_peak_rss_bytes",
                        "memory_total_peak_bytes": "memory_total_peak_bytes",
@@ -160,6 +160,8 @@ class CompletedCall:
     pmu_llc_read_misses_per_cpu_second: float | None = None
     pmu_eligible: bool = False
     outcome: str = "ok"
+    workload_duration_seconds: float | None = None
+    workload_duration_required: bool = False
 
     def __post_init__(self) -> None:
         if not (math.isfinite(self.ts_start) and math.isfinite(self.ts_end)):
@@ -177,7 +179,7 @@ class ToolCallQuery:
     tool_name: str
     command: str | None
     ts_start: float
-    memory_measurement: str = "cgroup_v2_memory_current"
+    memory_measurement: str = "cgroup_v2_environment_union_v1"
 
 
 @dataclass(frozen=True)
@@ -200,12 +202,32 @@ def _target_values(call: CompletedCall) -> dict[str, float]:
     # The completion protocol uses zero for missing/sub-millisecond duration.
     # Neither is a usable zero-latency training observation. Other targets
     # (notably independently measured PMU) retain their own eligibility.
-    if not call.censored and call.ts_end > call.ts_start:
-        values["latency_ms"] = (call.ts_end - call.ts_start) * 1000.0
+    tool_duration_seconds = call.ts_end - call.ts_start
+    workload_duration_seconds: float | None = (
+        float(call.workload_duration_seconds)
+        if _valid_load_value(call.workload_duration_seconds)
+        and float(call.workload_duration_seconds) > 0
+        else None if call.workload_duration_required
+        else tool_duration_seconds
+    )
+    if not call.censored and tool_duration_seconds > 0:
+        values["latency_ms"] = tool_duration_seconds * 1000.0
+    if (
+        not call.censored
+        and workload_duration_seconds is not None
+        and workload_duration_seconds > 0
+    ):
+        values["workload_latency_ms"] = workload_duration_seconds * 1000.0
     if not call.censored and call.cpu_time_eligible and _valid_load_value(call.cpu_time_seconds):
         values["cpu_time_seconds"] = float(call.cpu_time_seconds)
-        if not call.censored and call.ts_end > call.ts_start:
-            values["cpu_avg_cores"] = float(call.cpu_time_seconds) / (call.ts_end - call.ts_start)
+        if (
+            not call.censored
+            and workload_duration_seconds is not None
+            and workload_duration_seconds > 0
+        ):
+            values["cpu_avg_cores"] = (
+                float(call.cpu_time_seconds) / workload_duration_seconds
+            )
     if not call.censored and call.cpu_peak_cores_eligible and call.cpu_peak_window_ms == 500:
         if _valid_load_value(call.cpu_peak_cores):
             values["cpu_peak_cores"] = float(call.cpu_peak_cores)
@@ -449,7 +471,7 @@ class RuntimeToolResourceKB(_ReplayHistory):
 
     def _levels(
         self, repo: str, target: str, tool_name: str, command: str | None,
-        memory_measurement: str = "cgroup_v2_memory_current"
+        memory_measurement: str = "cgroup_v2_environment_union_v1"
     ) -> Iterator[tuple[str, NodeKey, Sequence[float]]]:
         repo_nodes = self._repo.get(repo, {}).get(target, {})
         for key in _repo_keys(tool_name, command):
@@ -459,7 +481,7 @@ class RuntimeToolResourceKB(_ReplayHistory):
             yield "public", key, public_nodes.get(_metric_key(target, key, memory_measurement), ())
 
     def _select(
-        self, repo: str, target: str, tool_name: str, command: str | None, memory_measurement: str = "cgroup_v2_memory_current"
+        self, repo: str, target: str, tool_name: str, command: str | None, memory_measurement: str = "cgroup_v2_environment_union_v1"
     ) -> tuple[Sequence[float], str, str, tuple[str, ...]]:
         """Baseline arbitration: first (deepest) non-empty node wins outright.
 
@@ -1076,7 +1098,7 @@ class ClauseResourceKB(_ReplayHistory):
 
     def _select(
         self, repo: str, source: str, bin_: str, argv: Sequence[str],
-        memory_measurement: str = "cgroup_v2_memory_current"
+        memory_measurement: str = "cgroup_v2_environment_union_v1"
     ) -> tuple[Sequence[float], str, str, tuple[str, ...]] | None:
         repo_nodes = self._repo.get(repo, {}).get(source, {})
         public_nodes = self._public[source]
@@ -1108,7 +1130,7 @@ class ClauseResourceKB(_ReplayHistory):
             targets = {}
             for target, source in _CLAUSE_LOAD_SOURCES.items():
                 selected = self._select(repo, source, str(clause["bin"]), clause["argv"],
-                                        clause.get("memory_measurement", "cgroup_v2_memory_current"))
+                                        clause.get("memory_measurement", "cgroup_v2_environment_union_v1"))
                 if selected is not None:
                     values, scope, kind, _ = selected
                     if kind == "global":

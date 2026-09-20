@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import threading
 import time
 from collections import deque
@@ -41,7 +41,7 @@ def environment_memory(*, baseline: int | None, values: Sequence[int],
     a VM guest adapter must declare its own measurement, never use host VM RSS.
     """
     if (not exclusive or not baseline_before_start or not environment_id
-            or measurement not in {"cgroup_v2_memory_current", "guest_memtotal_minus_memavailable"}
+            or measurement not in {"cgroup_v2_memory_current", "cgroup_v2_environment_union_v1", "guest_memtotal_minus_memavailable"}
             or baseline is None or isinstance(baseline, bool) or not isinstance(baseline, (int, float)) or baseline < 0 or not values):
         return None
     if any(isinstance(v, bool) or not isinstance(v, (int, float))
@@ -54,7 +54,7 @@ def environment_memory(*, baseline: int | None, values: Sequence[int],
 def memory_labels(record: Mapping[str, Any]) -> dict[str, float]:
     """Validate paired labels at KB ingress; partial/mixed-source rows stay absent."""
     if not record.get("memory_environment_id") or record.get("memory_eligible") is not True or record.get("memory_measurement") not in {
-        "cgroup_v2_memory_current", "guest_memtotal_minus_memavailable"
+        "cgroup_v2_memory_current", "cgroup_v2_environment_union_v1", "guest_memtotal_minus_memavailable"
     }:
         return {}
     keys = ("memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes")
@@ -110,7 +110,7 @@ class EnvironmentMemoryMonitor:
         self._lock = threading.RLock()
         self._active: dict[Any, dict[str, Any]] = {}
         self._unavailable: dict[Any, str] = {}
-        self._recent: dict[tuple[str, str], dict[str, Any]] = {}
+        self._recent: dict[tuple[tuple[str, ...], str], dict[str, Any]] = {}
 
     @staticmethod
     def _read(path: str) -> int | None:
@@ -119,6 +119,89 @@ class EnvironmentMemoryMonitor:
             return value if value >= 0 else None
         except (OSError, ValueError):
             return None
+
+    @classmethod
+    def _read_paths(cls, paths: Sequence[str]) -> int | None:
+        values = [cls._read(path) for path in paths]
+        if not values or any(value is None for value in values):
+            return None
+        return sum(int(value) for value in values if value is not None)
+
+    @staticmethod
+    def _nonoverlapping_paths(paths: Sequence[str]) -> tuple[str, ...]:
+        normalized = sorted({str(PurePosixPath(path.replace("\\", "/"))) for path in paths if path})
+        kept: list[str] = []
+        for path in normalized:
+            candidate = PurePosixPath(path)
+            if any(
+                candidate == PurePosixPath(parent)
+                or candidate.is_relative_to(PurePosixPath(parent))
+                for parent in kept
+            ):
+                continue
+            kept = [
+                parent for parent in kept
+                if not PurePosixPath(parent).is_relative_to(candidate)
+            ]
+            kept.append(path)
+        return tuple(sorted(kept))
+
+    @staticmethod
+    def _paths_overlap(left: Sequence[str], right: Sequence[str]) -> bool:
+        return any(
+            PurePosixPath(a) == PurePosixPath(b)
+            or PurePosixPath(a).is_relative_to(PurePosixPath(b))
+            or PurePosixPath(b).is_relative_to(PurePosixPath(a))
+            for a in left
+            for b in right
+        )
+
+    def _activate(
+        self, key: Any, paths: Sequence[str], environment_id: str,
+        measurement: str = "cgroup_v2_memory_current",
+    ) -> None:
+        paths = self._nonoverlapping_paths(paths)
+        value = self._read_paths(paths)
+        if not paths or value is None:
+            with self._lock:
+                self._active.pop(key, None)
+                self._unavailable[key] = "environment_memory_scope_unreadable"
+            return
+        with self._lock:
+            now = time.time()
+            identity = (paths, environment_id)
+            recent = self._recent.get(identity)
+            points = list(recent["points"]) if recent else []
+            points.append((now, value))
+            if identity not in self._recent and len(self._recent) >= 128:
+                self._recent.pop(
+                    min(self._recent, key=lambda item: self._recent[item]["last_used"])
+                )
+            self._recent[identity] = {
+                "points": deque(points, maxlen=16),
+                "last_used": now,
+                "previous_end": recent["previous_end"] if recent else None,
+            }
+            self._unavailable.pop(key, None)
+            overlap = [
+                row for active_key, row in self._active.items()
+                if active_key != key and self._paths_overlap(row["paths"], paths)
+            ]
+            for row in overlap:
+                row["exclusive"] = False
+            self._active[key] = {
+                "paths": paths,
+                "path": environment_id,
+                "measurement": measurement,
+                "baseline": value,
+                "identity": identity,
+                "previous_end": recent["previous_end"] if recent else None,
+                "points": deque(points, maxlen=MAX_MEMORY_TIMELINE_POINTS),
+                "timeline_truncated": False,
+                "peak": value,
+                "polls": 0,
+                "exclusive": not overlap,
+            }
 
     def begin(self, key: Any, scope: Any) -> None:
         path = getattr(scope, "cgroup_path", None)
@@ -130,35 +213,34 @@ class EnvironmentMemoryMonitor:
             with self._lock:
                 self._unavailable[key] = "unverified_task_environment"
             return
-        value = self._read(path)
-        if value is None:
-            return
         with self._lock:
             if key in self._active:
                 return
-            now = time.time()
-            identity = (path, str(getattr(scope, "container_id", None) or "exclusive-execution-cgroup"))
-            recent = self._recent.get(identity)
-            # Freshness is relative to the actual start, known at completion,
-            # not the possibly delayed arrival of this begin request.
-            points = list(recent["points"]) if recent else []
-            points.append((now, value))
-            if identity not in self._recent and len(self._recent) >= 128:
-                self._recent.pop(min(self._recent, key=lambda k: self._recent[k]["last_used"]))
-            self._recent[identity] = {
-                "points": deque(points, maxlen=16), "last_used": now,
-                "previous_end": recent["previous_end"] if recent else None,
-            }
-            self._unavailable.pop(key, None)
-            overlap = [row for row in self._active.values() if Path(row["path"]).is_relative_to(Path(path)) or Path(path).is_relative_to(Path(row["path"]))]
-            for row in overlap:
-                row["exclusive"] = False
-            self._active[key] = {"path": path, "baseline": value,
-                                 "identity": identity,
-                                 "previous_end": recent["previous_end"] if recent else None,
-                                 "points": deque(points, maxlen=MAX_MEMORY_TIMELINE_POINTS),
-                                 "timeline_truncated": False, "peak": value, "polls": 0,
-                                 "exclusive": not overlap}
+        self._activate(
+            key,
+            (path,),
+            str(getattr(scope, "container_id", None) or path),
+        )
+
+    def bind_environment(
+        self,
+        key: Any,
+        *,
+        base_scope: Any | None,
+        execution_parent_path: str,
+        environment_id: str,
+    ) -> None:
+        """Measure charges retained before and after execution migration."""
+        paths = [execution_parent_path]
+        base_path = getattr(base_scope, "cgroup_path", None)
+        if base_path:
+            paths.insert(0, base_path)
+        self._activate(
+            key,
+            paths,
+            environment_id,
+            measurement="cgroup_v2_environment_union_v1",
+        )
 
     def poll(self) -> None:
         with self._lock:
@@ -168,7 +250,7 @@ class EnvironmentMemoryMonitor:
                 if now - recent["last_used"] > 60:
                     self._recent.pop(identity)
                     continue
-                value = self._read(identity[0])
+                value = self._read_paths(identity[0])
                 sampled_at = time.time()
                 values[identity] = (sampled_at, value)
                 if value is not None:
@@ -178,7 +260,7 @@ class EnvironmentMemoryMonitor:
                 if row["identity"] in self._recent:
                     self._recent[row["identity"]]["last_used"] = now
                 else:
-                    value = self._read(row["path"])
+                    value = self._read_paths(row["paths"])
                     sampled_at = time.time()
                 if value is not None:
                     row["polls"] += 1
@@ -233,7 +315,7 @@ class EnvironmentMemoryMonitor:
             return {"memory_eligible": False, "memory_unavailable_reason": reason}
         result = environment_memory(
             baseline=before[-1][1], values=[p[1] for p in inside],
-            environment_id=row["path"], measurement="cgroup_v2_memory_current",
+            environment_id=row["path"], measurement=row["measurement"],
             baseline_before_start=True, exclusive=row["exclusive"],
         )
         if result is None:

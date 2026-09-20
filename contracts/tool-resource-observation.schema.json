@@ -121,6 +121,20 @@
           "type": "boolean",
           "description": "True when action boundaries could not be safely aligned with the collector clock; available values are then withheld from action training."
         },
+        "tool_action_start_ns": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "Original tool action start when the retained collector window intentionally excludes the before-hook prefix."
+        },
+        "tool_action_end_ns": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "Original tool action end paired with tool_action_start_ns."
+        },
+        "hook_prefix_excluded": {
+          "type": "boolean",
+          "description": "True when the requested collector window starts after the enclosing action timestamp and deliberately excludes hook setup."
+        },
         "kind": {
           "enum": [
             "action",
@@ -145,7 +159,7 @@
       "properties": {
         "cpu_time": {
           "$ref": "#/$defs/metric",
-          "description": "Owned workload CPU time. Eligible finalized execution totals may cover less than the tool window; average cores divides the same total by the requested tool duration. Coverage remains explicit."
+          "description": "Owned workload CPU time. Average cores divides the same total by the explicitly requested retained workload window. Coverage remains explicit."
         },
         "cpu_peak": {
           "$ref": "#/$defs/metric",

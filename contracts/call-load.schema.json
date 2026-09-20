@@ -274,7 +274,7 @@
                   "const": "ms"
                 },
                 "metric_definition": {
-                  "const": "tool_hook_elapsed"
+                  "const": "retained_workload_elapsed"
                 }
               }
             }
@@ -308,7 +308,7 @@
                   "const": "cores"
                 },
                 "metric_definition": {
-                  "const": "owned_cpu_time_over_tool_hook_elapsed"
+                  "const": "owned_cpu_time_over_retained_workload_elapsed"
                 }
               }
             }
@@ -545,6 +545,7 @@
           "memory_measurement": {
             "enum": [
               "cgroup_v2_memory_current",
+              "cgroup_v2_environment_union_v1",
               "guest_memtotal_minus_memavailable"
             ]
           }
@@ -554,6 +555,7 @@
     "memory_measurement": {
       "enum": [
         "cgroup_v2_memory_current",
+        "cgroup_v2_environment_union_v1",
         "guest_memtotal_minus_memavailable"
       ]
     }
