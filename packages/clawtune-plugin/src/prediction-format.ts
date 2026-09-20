@@ -39,7 +39,9 @@ export function formatTimeBuckets(prediction: ToolDecision["prediction"], callId
     lines.push(`${name.padEnd(26)} ${scope.padEnd(10)} ${value}`);
   };
   for (const backend of ["runtime", "trie", "lattice"] as const) {
-    row(`${backend} (mode)`, "call", modalBucket(prediction.diagnostics?.backends[backend]?.targets.duration_ms));
+    const result = prediction[backend === "runtime" ? "tool" : backend]
+      ?? prediction.diagnostics?.backends[backend];
+    row(`${backend} (mode)`, "call", modalBucket(result?.targets.duration_ms));
   }
   const resource = prediction.tool_resource;
   row("clause_latency_bucket", "command", bucket(resource?.prediction?.bucket_id));
@@ -122,17 +124,21 @@ function formatPmu(prediction: ToolDecision["prediction"]): string[] {
   return lines;
 }
 
-/** Canonical call-load and PMU results followed by every load backend. */
+/** Independent tool-level results; legacy fields support older sidecars. */
 export function formatCallLoadPrediction(prediction: ToolDecision["prediction"]): string[] {
-  const pmuLines = formatPmu(prediction);
-  if (!prediction.call_prediction) return pmuLines;
-  const lines = ["  CALL LOAD - empirical estimates, uncalibrated", ...formatBackend("Selected prediction", prediction.call_prediction)];
-  lines.push("", ...pmuLines);
-  for (const backend of ["runtime", "trie", "lattice"] as const) {
+  if (!prediction.tool && !prediction.trie && !prediction.lattice && !prediction.call_prediction
+      && !prediction.diagnostics) return formatPmu(prediction);
+  const lines = ["  CALL LOAD - independent empirical estimates, uncalibrated"];
+  const results = [
+    ["ToolKB", prediction.tool ?? prediction.call_prediction],
+    ["TrieKB", prediction.trie ?? prediction.diagnostics?.backends.trie],
+    ["LatticeKB", prediction.lattice ?? prediction.diagnostics?.backends.lattice],
+  ] as const;
+  for (const [name, result] of results) {
     lines.push("");
-    const candidate = prediction.diagnostics?.backends[backend];
-    if (candidate) lines.push(...formatBackend(`${backend.toUpperCase()} - call-level candidate`, candidate));
-    else lines.push(`  ${backend.toUpperCase()} - diagnostics not supplied`);
+    if (result) lines.push(...formatBackend(`${name} - tool-level prediction`, result));
+    else lines.push(`  ${name} - prediction not supplied`);
   }
+  lines.push("", ...formatPmu(prediction));
   return lines;
 }

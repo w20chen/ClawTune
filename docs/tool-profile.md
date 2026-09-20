@@ -389,9 +389,9 @@ The remaining PMU fields are `schema`, `execution_id`, `source`, `mode`, `scope`
 
 ## Prediction: `span_start.prediction`
 
-The authoritative load prediction is [call_prediction](../contracts/call-load.schema.json), and the hardware prediction is [pmu_prediction](../contracts/pmu-prediction.schema.json). `duration_p50_ms`, `duration_p90_ms`, `resource_class`, `confidence` are top-level compatibility summaries; `confidence` is not a calibrated probability of success.
+The independent tool-level load predictions are `prediction.tool` (ToolKB), `prediction.trie` (TrieKB), and `prediction.lattice` (LatticeKB), each using the [call-load contract](../contracts/call-load.schema.json). They never fill missing targets or clauses from another model. `call_prediction` is a compatibility alias of `tool`; backend metadata retains the historical name `runtime` for ToolKB. The hardware prediction is [pmu_prediction](../contracts/pmu-prediction.schema.json). `duration_p50_ms`, `duration_p90_ms`, `resource_class`, `confidence` are top-level compatibility summaries; `confidence` is not a calibrated probability of success.
 
-`call_prediction.targets` contains all seven targets:
+Each of `tool.targets`, `trie.targets`, and `lattice.targets` contains all seven targets:
 
 | Target | Unit | Meaning |
 | --- | --- | --- |
@@ -407,15 +407,17 @@ Each target has `status`, `unit`, `metric_definition`, `avg`, `p50`, `p90`, `buc
 
 `buckets.edges`, `interval`, `probabilities` are the boundaries, the left-closed right-open rule, and the probability of each bucket; there is one bucket from 0 to the first boundary, one between adjacent boundaries, and one from the last boundary to positive infinity. The probabilities sum to 1.
 
-`call_prediction.schema_version`, `scope`, `lifecycle`, `cpu_peak_window_ms`, `quantile_method`, `memory_measurement` declare the protocol, call scope, lifecycle, peak window, quantile method, and memory source. Each item in `clause_predictions[]` has `clause_index`, `argv`, `cwd`, `env_names`, `scope`, `targets`, `memory_measurement`, representing the subcommand index, arguments, working directory, environment variable names, and the same seven-target prediction; subcommand duration and call duration are not interchangeable.
+`tool.schema_version` (likewise `trie` and `lattice`), `scope`, `lifecycle`, `cpu_peak_window_ms`, `quantile_method`, `memory_measurement` declare the protocol, call scope, lifecycle, peak window, quantile method, and memory source. Each item in `clause_predictions[]` has `clause_index`, `argv`, `cwd`, `env_names`, `scope`, `targets`, `memory_measurement`, representing the subcommand index, arguments, working directory, environment variable names, and the same seven-target prediction; subcommand duration and call duration are not interchangeable.
 
 `pmu_prediction.targets` contains the nine PMU targets above. Each item has `status`, `unit`, `metric_definition`, `avg`, `p50`, `p90`, `backend`, `method`, `evidence_count`, `context`, `calibration`, `unavailable_reason`. Note that this is the singular `evidence_count` and has no `sample_count` or `buckets` from the load prediction. Its `schema_version`, `scope`, `lifecycle`, `quantile_method` declare the protocol, scope, complete-execution-profile lifecycle, and quantile method.
 
-`diagnostics.backends.runtime`, `.trie`, `.lattice` keep seven-target predictions of the same structure from each backend for comparison and must not be treated as three additional sets of measurements.
+TrieKB and LatticeKB keep their own `clause_predictions`. Their composed tool predictions are estimates: duration and average CPU assume zero hook overhead; single-clause environment memory assumes no peak outside the clause, and extra memory also assumes the same baseline. These assumptions are explicit in each target. Missing paired samples or joint memory timelines remain unavailable for multi-clause averages or memory. Excluded pipeline consumers prevent a complete tool prediction; retained clause predictions remain available. ToolKB learns complete tool observations directly. Short or partial observations do not automatically become eligible training labels.
+
+`diagnostics.backends.runtime`, `.trie`, `.lattice` are compatibility copies of the three independent results. Scheduling and the execution envelope use ToolKB explicitly. PMU remains a separate ToolKB prediction.
 
 ## Compatibility Prediction and Other Diagnostics
 
-`prediction.tool_resource` is a compatibility diagnostic of the [tool decision schema](../contracts/tool-decision.schema.json); consumers should prefer `call_prediction`:
+`prediction.tool_resource` is a compatibility diagnostic of the [tool decision schema](../contracts/tool-decision.schema.json); consumers should use `tool`, `trie`, or `lattice`:
 
 | Field | Meaning |
 | --- | --- |

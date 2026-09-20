@@ -142,6 +142,10 @@ export type ToolDecision = {
     duration_p90_ms: number | null;
     resource_class: string;
     confidence: number | null;
+    tool?: CallLoadPrediction | null;
+    trie?: CallLoadPrediction | null;
+    lattice?: CallLoadPrediction | null;
+    /** Compatibility alias of tool. */
     call_prediction?: CallLoadPrediction | null;
     pmu_prediction?: PmuPrediction | null;
     diagnostics?: { backends: Partial<Record<LoadBackend, CallLoadPrediction>> } | null;
@@ -158,7 +162,7 @@ export type ToolDecision = {
 };
 
 // Mirror of contracts/call-load.schema.json. Native KB payloads below are
-// migration diagnostics; consumers should use prediction.call_prediction.
+// migration diagnostics; consumers should use prediction.tool, prediction.trie, or prediction.lattice.
 export type LoadBackend = "runtime" | "trie" | "lattice";
 export type LoadTarget = "duration_ms" | "cpu_time_seconds" | "cpu_avg_cores" | "cpu_peak_cores" | "sampled_peak_rss_bytes" | "memory_total_peak_bytes" | "memory_extra_peak_bytes";
 export type LoadEstimate = {

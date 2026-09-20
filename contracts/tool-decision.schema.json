@@ -762,7 +762,7 @@
       ],
       "properties": {
         "call_prediction": {
-          "description": "Authoritative versioned call-level output. Nullable only for legacy/custom predictors during migration.",
+          "description": "Compatibility alias of prediction.tool (ToolKB); no cross-backend fallback.",
           "anyOf": [
             {
               "$ref": "call-load.schema.json"
@@ -1074,6 +1074,39 @@
             "prediction_algorithms"
           ],
           "additionalProperties": false
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "$ref": "call-load.schema.json"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Independent tool tool-level load prediction; never filled from another backend."
+        },
+        "trie": {
+          "anyOf": [
+            {
+              "$ref": "call-load.schema.json"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Independent trie tool-level load prediction; never filled from another backend."
+        },
+        "lattice": {
+          "anyOf": [
+            {
+              "$ref": "call-load.schema.json"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Independent lattice tool-level load prediction; never filled from another backend."
         }
       },
       "additionalProperties": false

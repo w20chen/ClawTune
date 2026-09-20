@@ -1325,13 +1325,8 @@ def test_host_openclaw_cgroup_required_audits_exclusive_unique_paths(tmp_path):
 
     wrong_scope = json.loads(json.dumps(valid_resources))
     wrong_scope["launcher_cgroup_tool_span_ends"] = 1
-    assert "scope=cgroup for 1/2" in (
-        _required_telemetry_error(
-            config,
-            {"resource_summary": wrong_scope},
-        )
-        or ""
-    )
+    # eBPF process_tree collection still has verified exclusive cgroup identity.
+    assert _required_telemetry_error(config, {"resource_summary": wrong_scope}) is None
 
     duplicate_execution = json.loads(json.dumps(valid_resources))
     duplicate_execution["launcher_execution_cgroup_refs"][1][
@@ -1623,3 +1618,26 @@ def test_run_batch_keeps_snapshotted_trace_when_task_cleanup_raises(
     assert report.results[0]["error"] == "runtime drain failed"
     assert report.results[0]["trace_lines"] == 1
     assert len(report.results[0]["trace_files"]) == 1
+
+
+def test_trace_counts_each_independent_prediction_without_filling_missing_models(tmp_path):
+    from clawtune_sidecar.predictors.call_load import summarize
+    from clawtune_sidecar.contracts.load_prediction import CallLoadPrediction, TARGET_UNITS
+    from clawtune_sidecar.prediction_config import load_bucket_edges
+    edges = load_bucket_edges((100, 500, 2000, 10000))
+    def prediction(backend, target):
+        return CallLoadPrediction(targets={
+            name: summarize(name, edges[name], backend, [1] if name == target else [])
+            for name in TARGET_UNITS
+        }).model_dump()
+    trace = tmp_path / "trace.jsonl"
+    trace.write_text(json.dumps({"record_type": "span_start", "kind": "tool", "prediction": {
+        "tool": prediction("runtime", "duration_ms"),
+        "trie": prediction("trie", "cpu_time_seconds"),
+    }}) + "\n", encoding="utf-8")
+    report = _inspect_trace(trace, "")
+    summary = _resource_summary([report, report])["prediction_models"]
+    assert summary["tool"]["target_available_span_starts"] == {"duration_ms": 2}
+    assert summary["trie"]["target_available_span_starts"] == {"cpu_time_seconds": 2}
+    assert summary["lattice"]["span_starts"] == 0
+    assert summary["lattice"]["target_available_span_starts"] == {}

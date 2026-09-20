@@ -361,10 +361,10 @@ export default definePluginEntry({
       lines[2] += `; confidence=${formatNumber(prediction.confidence * 100, 0)}%`;
     }
     const toolResource = prediction.tool_resource;
-    const callLoad = prediction.call_prediction;
+    const callLoad = prediction.tool ?? prediction.call_prediction;
     if (callLoad) {
       lines.push(...formatCallLoadPrediction(prediction));
-      if (toolResource) lines.push("", "  CLAUSE / LEGACY DIAGNOSTICS (not the selected call prediction)");
+      if (toolResource) lines.push("", "  CLAUSE / LEGACY DIAGNOSTICS");
     }
     if (!toolResource) return lines.join("\n");
 

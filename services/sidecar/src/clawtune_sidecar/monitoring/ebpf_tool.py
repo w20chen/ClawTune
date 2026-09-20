@@ -168,6 +168,7 @@ class _KernelWindow:
     initial_pids: set[int]
     shared: bool
     loss_before: dict[str, int]
+    cgroup_id: int | None = None
     network: Any | None = None
     network_before: tuple[int, int] | None = None
     network_started_ns: int | None = None
@@ -206,10 +207,35 @@ class _KernelWindow:
                 initial_pids=_existing_descendants(root_pid) if scope.include_children else {root_pid},
                 shared=_is_shared(scope),
                 loss_before=telemetry._loss_counts(source.bpf),
+                cgroup_id=int(cgroup.stat().st_ino),
             )
         except BaseException:
             source.release(lease_id)
             raise
+
+    def narrow_scope(self, scope: ResourceScope) -> bool:
+        """Retain pre-action events when Docker resolves a PID in this cgroup."""
+        cgroup = _resolved_cgroup(scope)
+        root_pid = int(scope.root_pid or scope.pid or 0)
+        if cgroup is None or root_pid <= 0 or self.cgroup_id is None:
+            return False
+        try:
+            if int(cgroup.stat().st_ino) != self.cgroup_id:
+                return False
+        except OSError:
+            return False
+        starttime = _pid_starttime_ticks(root_pid)
+        if starttime is None or (scope.root_starttime_ticks is not None
+                                and int(scope.root_starttime_ticks) != starttime):
+            return False
+        self.root_pid = root_pid
+        self.root_starttime_ticks = starttime
+        self.initial_pids = _existing_descendants(root_pid) if scope.include_children else {root_pid}
+        self.shared = _is_shared(scope)
+        # The old network baseline included a different process set.
+        self.network = None
+        self.network_before = None
+        return True
 
     def finish(self, ended_ns: int, *, started_ns: int | None = None) -> dict[str, Any]:
         from tool_resource import telemetry
@@ -664,6 +690,12 @@ class EbpfToolCallMonitor:
                 return False
             if active.window is not None:
                 if not _same_scope(active.scope, scope):
+                    narrow = getattr(active.window, "narrow_scope", None)
+                    if callable(narrow) and narrow(scope):
+                        active.scope = scope
+                        # A fallback snapshot from the former target is invalid.
+                        active.fallback = None
+                        return True
                     # Start a new window for the authoritative target. Its
                     # timestamp determines whether it precedes the action.
                     self._begin(key, scope)
@@ -792,7 +824,9 @@ def observation_sample_fields(observation: Mapping[str, Any]) -> dict[str, Any]:
         "cpu_time_delta_s": cpu_seconds,
         "cpu_utilization_avg_cores": cpu.get("average_cores") if cpu.get("eligible") else None,
         "cpu_utilization_avg_pct": None if not cpu.get("eligible") else float(cpu.get("average_cores")) * 100,
-        "cpu_peak_cores": peak.get("value_cores") if peak.get("eligible") else None,
+        # Preserve measured diagnostic values just like CPU totals and RSS.
+        # KB ingress checks eligible independently; visibility is not eligibility.
+        "cpu_peak_cores": peak.get("value_cores") if peak.get("available") else None,
         "rss_bytes_peak": memory.get("value_bytes") if memory.get("available") else None,
         "read_bytes_delta": disk.get("read_bytes") if disk.get("available") else None,
         "write_bytes_delta": disk.get("write_bytes") if disk.get("available") else None,

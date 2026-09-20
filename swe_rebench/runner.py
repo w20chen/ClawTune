@@ -230,6 +230,10 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         "continuous_latency_ms_prediction_available_span_starts": 0,
         "continuous_peak_cpu_cores_prediction_available_span_starts": 0,
         "continuous_peak_memory_mb_prediction_available_span_starts": 0,
+        "prediction_models": {
+            name: {"span_starts": 0, "valid_span_starts": 0, "target_available_span_starts": {}}
+            for name in ("tool", "trie", "lattice")
+        },
         "call_prediction_span_starts": 0,
         "call_prediction_valid_span_starts": 0,
         "call_prediction_available_span_starts": 0,
@@ -261,6 +265,29 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         if kind == "tool" or "tool" in span_name or record.get("action_type") == "tool_exec":
             report["has_tool_span"] = True
             if record_type == "span_start":
+                for name, counts in report["prediction_models"].items():
+                    candidate = _nested_get(record, ("prediction", name))
+                    if candidate is None:
+                        continue
+                    counts["span_starts"] += 1
+                    try:
+                        from clawtune_sidecar.contracts.load_prediction import CallLoadPrediction
+                        if not isinstance(candidate, dict) or not all(
+                            field in candidate for field in (
+                                "schema_version", "scope", "lifecycle", "cpu_peak_window_ms",
+                                "quantile_method", "targets",
+                            )
+                        ):
+                            raise ValueError("missing call-load envelope")
+                        load = CallLoadPrediction.model_validate(candidate, strict=True)
+                    except (ValueError, TypeError) as exc:
+                        report["warnings"].append(f"invalid {name} prediction: {exc}")
+                    else:
+                        counts["valid_span_starts"] += 1
+                        available = counts["target_available_span_starts"]
+                        for target, estimate in load.targets.items():
+                            if estimate.status == "available":
+                                available[target] = available.get(target, 0) + 1
                 call_prediction = _nested_get(record, ("prediction", "call_prediction"))
                 if call_prediction is not None:
                     report["call_prediction_span_starts"] += 1
@@ -768,6 +795,19 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
             "call_prediction_span_starts", "call_prediction_valid_span_starts",
             "call_prediction_available_span_starts",
         )},
+        "prediction_models": {
+            name: {
+                **{key: sum(int(item.get("prediction_models", {}).get(name, {}).get(key, 0))
+                             for item in trace_inspection)
+                   for key in ("span_starts", "valid_span_starts")},
+                "target_available_span_starts": dict(sum(
+                    (collections.Counter(item.get("prediction_models", {}).get(name, {}).get(
+                        "target_available_span_starts", {})) for item in trace_inspection),
+                    collections.Counter(),
+                )),
+            }
+            for name in ("tool", "trie", "lattice")
+        },
         "call_prediction_target_available_span_starts": dict(sum(
             (collections.Counter(item.get("call_prediction_target_available_span_starts", {}))
              for item in trace_inspection), collections.Counter(),
@@ -1409,9 +1449,8 @@ def _required_host_openclaw_cgroup_error(
         return "required exclusive execution cgroup audit found no launcher executions"
 
     issues: list[str] = []
-    cgroup_spans = int(resources.get("launcher_cgroup_tool_span_ends", 0))
-    if cgroup_spans != launcher_spans:
-        issues.append(f"scope=cgroup for {cgroup_spans}/{launcher_spans}")
+    # Collector scope may be process_tree even inside a verified exclusive
+    # execution cgroup. Audit the provenance and execution/path pairs below.
 
     exclusive_spans = int(
         resources.get("launcher_exclusive_cgroup_tool_span_ends", 0)

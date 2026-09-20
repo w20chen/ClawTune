@@ -853,8 +853,12 @@ def test_ebpf_clause_identity_matches_online_prediction(tmp_path: Path, monkeypa
     result = predictor.predict(_tool_request("evt-1", "call-1", "python -m pytest tests -q"))
 
     assert predictor.report.observations_loaded == 2
-    assert result.resource_class == "latency_medium"
-    assert result.duration_p50_ms == 1200
+    assert result.resource_class == "unknown"
+    assert result.duration_p50_ms is None  # ToolKB has no whole-tool history.
+    assert result.call_prediction == result.tool
+    assert result.tool.targets["duration_ms"].status == "unavailable"
+    assert result.trie.targets["duration_ms"].p50 == 1200
+    assert result.lattice.targets["duration_ms"].p50 == 1200
     assert result.confidence is None  # bucket mass is not calibrated confidence
     assert result.tool_resource is not None
     assert result.tool_resource["prediction"]["scope"] == "repo"

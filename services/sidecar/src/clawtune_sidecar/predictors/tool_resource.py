@@ -607,6 +607,8 @@ class ToolResourcePredictor:
                     payload["kv_ttl_cost"] = self._kv_ttl_cost_payload(derived, reference_runtime_s=duration.p90 / 1000)
             return ToolPrediction(duration_p50_ms=p50, duration_p90_ms=p90,
                                   resource_class=_resource_class_for_duration_ms(p90), confidence=None,
+                                  tool=call, trie=diagnostics.backends["trie"],
+                                  lattice=diagnostics.backends["lattice"],
                                   call_prediction=call, pmu_prediction=pmu,
                                   diagnostics=diagnostics, tool_resource=payload)
 

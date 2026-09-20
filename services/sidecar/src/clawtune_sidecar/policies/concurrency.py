@@ -22,7 +22,7 @@ class ConcurrencyPolicy:
         lease_id = await self.leases.acquire(
             context.prediction.resource_class,
             self.admission_wait_ms,
-            demand_mcpu=_predicted_cpu_millis(context.prediction.call_prediction),
+            demand_mcpu=_predicted_cpu_millis(context.prediction.tool or context.prediction.call_prediction),
             owner=owner_key(request),
         )
         if lease_id is None:

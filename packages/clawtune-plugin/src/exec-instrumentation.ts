@@ -60,16 +60,17 @@ export const CLAWBOX_EXEC_ENVELOPE_PREFIX = "__CBX_EXEC_1__";
  * command and execute the wrapper unchanged.
  */
 export function buildSandboxExecEnvelope(command: string, executionId: string, decision?: ToolDecision | null): string {
+  const tool = decision?.prediction.tool ?? decision?.prediction.call_prediction;
   const header = Buffer.from(JSON.stringify({
     v: 1,
     execution_id: executionId,
     profile_command_b64: Buffer.from(command, "utf8").toString("base64url"),
-    ...(decision?.prediction.call_prediction
+    ...(tool
       ? {call_prediction: {
-          schema_version: decision.prediction.call_prediction.schema_version,
-          scope: decision.prediction.call_prediction.scope,
+          schema_version: tool.schema_version,
+          scope: tool.scope,
           targets: {
-            memory_extra_peak_bytes: decision.prediction.call_prediction.targets.memory_extra_peak_bytes,
+            memory_extra_peak_bytes: tool.targets.memory_extra_peak_bytes,
           },
         }}
       : {}),

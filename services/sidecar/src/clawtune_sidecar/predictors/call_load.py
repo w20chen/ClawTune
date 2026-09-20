@@ -124,10 +124,10 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
                       edges: Mapping[str, Sequence[float]],
                       parsed_clauses: Sequence[Mapping[str, Any]] | None = None,
                       ) -> tuple[CallLoadPrediction, LoadDiagnostics]:
-    """All three backends expose full call results; selection is per target.
+    """Return ToolKB for existing consumers and all three independent results.
 
-    Prefer compatible observed call evidence, then trie baseline, then lattice.
-    Selection is deterministic, not a claim of measured superiority.
+    The historical name "runtime" is retained in backend metadata and snapshots.
+    No target or clause is filled using another model's evidence.
     """
     backends = {}
     try:
@@ -155,7 +155,6 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
             clauses, reason = plain_execution(query.command) if query.tool_name in {"exec", "terminal_exec"} else ((), "not_a_shell_command")
         except Exception as exc:
             clauses, reason = (), f"parse_error:{type(exc).__name__}"
-    clause_results = {}
     for backend, kb in (("trie", trie), ("lattice", lattice)):
         try:
             clauses = tuple(dict(c, memory_measurement=query.memory_measurement) for c in clauses)
@@ -171,28 +170,29 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
                 scoped.append(ClauseLoadPrediction(
                     clause_index=c.get("clause_index", len(scoped)), argv=list(c["argv"]),
                     cwd=c.get("cwd"), env_names=sorted(c.get("env", {})), targets=clause_targets, memory_measurement=query.memory_measurement))
-            clause_results[backend] = scoped
             combined_reason = reason or next((c.get("prediction_unavailable_reason") for c in retained
                                               if c.get("prediction_unavailable_reason")), None)
+            if len(retained) != len(clauses):
+                combined_reason = combined_reason or "excluded_pipeline_consumer_workload"
             backends[backend] = compose(
                 backend, evidence, edges, reason=combined_reason, clauses=clauses
             ).model_copy(update={"clause_predictions": scoped})
+            # These are predictions, not observed hook labels. Make the
+            # approximation explicit instead of silently changing definitions.
+            targets = dict(backends[backend].targets)
+            for target, assumptions in (
+                ("duration_ms", ["tool_hook_overhead_assumed_zero"]),
+                ("cpu_avg_cores", ["tool_hook_overhead_assumed_zero"]),
+                ("memory_total_peak_bytes", ["no_environment_memory_peak_outside_clause"]),
+                ("memory_extra_peak_bytes", ["clause_baseline_assumed_equal_to_tool_baseline",
+                                             "no_environment_memory_peak_outside_clause"]),
+            ):
+                if targets[target].status == "available":
+                    targets[target] = targets[target].model_copy(update={
+                        "assumptions": [*targets[target].assumptions, *assumptions],
+                    })
+            backends[backend] = backends[backend].model_copy(update={"targets": targets})
         except Exception as exc:
             backends[backend] = compose(backend, (), edges, reason=f"backend_error:{type(exc).__name__}")
-    selected = {}
-    for target in edges:
-        candidates = [backends[name].targets[target] for name in ("runtime", "trie", "lattice")]
-        selected[target] = next((value for value in candidates if value.status == "available"),
-                                candidates[0].model_copy(update={"unavailable_reason": ";".join(
-                                    f"{value.backend}:{value.unavailable_reason}" for value in candidates)}))
-    merged = []
-    for index, first in enumerate(clause_results.get("trie", [])):
-        others = clause_results.get("lattice", [])
-        targets = dict(first.targets)
-        if index < len(others):
-            for target, value in targets.items():
-                if value.status != "available" and others[index].targets[target].status == "available":
-                    targets[target] = others[index].targets[target]
-        merged.append(first.model_copy(update={"targets": targets}))
     backends = {name: value.model_copy(update={"memory_measurement": query.memory_measurement}) for name, value in backends.items()}
-    return CallLoadPrediction(targets=selected, clause_predictions=merged, memory_measurement=query.memory_measurement), LoadDiagnostics(backends=backends)
+    return backends["runtime"], LoadDiagnostics(backends=backends)

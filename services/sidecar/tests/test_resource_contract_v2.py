@@ -124,11 +124,16 @@ def test_both_tool_names_use_clauses_with_environment_preparation(monkeypatch):
     monkeypatch.setattr("clawtune_sidecar.predictors.call_load.parse_command_clauses", parse)
     results = []
     for name in ("exec", "terminal_exec"):
-        pred, _ = predict_call_load(runtime=RuntimeToolResourceKB(), trie=ClauseResourceKB.fit_public([observation()]),
+        pred, diagnostics = predict_call_load(runtime=RuntimeToolResourceKB(), trie=ClauseResourceKB.fit_public([observation()]),
             lattice=LatticeTimeKB.fit([observation()]), query=ToolCallQuery("r", name, command, 10), edges=EDGES)
-        assert pred.targets["cpu_peak_cores"].p50 == 3
-        assert pred.targets["memory_extra_peak_bytes"].p50 == 200
-        assert pred.clause_predictions[0].cwd == "/workspace"
+        assert pred.targets["cpu_peak_cores"].status == "unavailable"
+        assert pred.clause_predictions == []
+        for backend in ("trie", "lattice"):
+            candidate = diagnostics.backends[backend]
+            assert candidate.targets["cpu_peak_cores"].unavailable_reason == "excluded_pipeline_consumer_workload"
+            assert candidate.clause_predictions[0].targets["cpu_peak_cores"].p50 == 3
+            assert candidate.clause_predictions[0].targets["memory_extra_peak_bytes"].p50 == 200
+            assert candidate.clause_predictions[0].cwd == "/workspace"
         results.append(pred)
     assert results[0] == results[1]
 

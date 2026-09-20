@@ -37,7 +37,7 @@ test("compact display never invents a bucket from missing or incompatible eviden
   assert.equal(text.split("unavailable").length - 1, 8);
 });
 
-test("prints selected results and all three backends with complete histogram/evidence details", () => {
+test("prints independent results from all three backends with complete histogram/evidence details", () => {
   const prediction = {call_prediction: example, diagnostics: {backends: {}}};
   for (const backend of ["runtime", "trie", "lattice"]) {
     const candidate = structuredClone(example);
@@ -45,9 +45,9 @@ test("prints selected results and all three backends with complete histogram/evi
     prediction.diagnostics.backends[backend] = candidate;
   }
   const text = formatCallLoadPrediction(prediction).join("\n");
-  for (const title of ["Selected prediction", "RUNTIME", "TRIE", "LATTICE"]) assert.ok(text.includes(title));
+  for (const title of ["ToolKB", "TrieKB", "LatticeKB"]) assert.ok(text.includes(title));
   for (const label of ["Duration", "CPU time", "CPU average", "CPU peak", "Memory total", "Memory extra"]) {
-    assert.equal(text.split("\n").filter(line => line.startsWith(`    ${label.padEnd(12)} `)).length, 4);
+    assert.equal(text.split("\n").filter(line => line.startsWith(`    ${label.padEnd(12)} `)).length, 3);
   }
   assert.ok(text.includes("Mean") && text.includes("P50") && text.includes("P90"));
   assert.ok(text.includes("historical=[") && text.includes("summary samples="));
@@ -67,7 +67,7 @@ test("unavailable values, assumptions and absent diagnostics stay explicit", () 
   assert.ok(text.includes("reason: no compatible evidence"));
   assert.ok(text.includes("histogram: unavailable; edges (cores)="));
   assert.ok(text.includes("assumptions: independent clause durations"));
-  assert.equal(text.split("diagnostics not supplied").length - 1, 3);
+  assert.equal(text.split("- prediction not supplied").length - 1, 2);
   assert.deepEqual(formatCallLoadPrediction({}), [
     "  PMU - quality-gated ToolKB history, uncalibrated",
     "    unavailable: prediction not supplied",
@@ -80,4 +80,17 @@ test("prints all three PMU targets with evidence and unavailable reasons", () =>
   for (const label of ["IPC", "LLC MPKI", "LLC miss rate"]) assert.ok(text.includes(label));
   assert.ok(text.includes("historical=3"));
   assert.ok(text.includes("no_compatible_quality_gated_pmu_evidence"));
+});
+
+
+test("formal model outputs do not fill an absent model", () => {
+  const tool = structuredClone(example);
+  const trie = structuredClone(example);
+  tool.targets.duration_ms.context = ["TOOL_ONLY"];
+  trie.targets.duration_ms.context = ["TRIE_ONLY"];
+  const text = formatCallLoadPrediction({tool, trie}).join("\n");
+  assert.ok(text.includes("TOOL_ONLY"));
+  assert.ok(text.includes("TRIE_ONLY"));
+  assert.ok(text.includes("LatticeKB - prediction not supplied"));
+  assert.ok(!text.includes("Selected prediction"));
 });

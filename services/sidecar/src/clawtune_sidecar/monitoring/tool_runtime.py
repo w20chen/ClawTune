@@ -4,7 +4,7 @@ import threading
 import math
 import time
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from clawtune_sidecar.contracts.models import ResourceScope, ToolBeforeRequest, ToolCompletedEvent
@@ -103,16 +103,16 @@ class RealtimeToolMonitor:
         if self.ebpf_monitor is None:
             self._poller = threading.Thread(target=self._poll_active, daemon=True)
             self._poller.start()
-            self._memory_poller = threading.Thread(target=self._poll_memory, daemon=True)
-            self._memory_poller.start()
+        self._memory_poller = threading.Thread(target=self._poll_memory, daemon=True)
+        self._memory_poller.start()
 
     def begin(self, request: ToolBeforeRequest, resource_class: str) -> None:
         key = correlation_key(request)
+        self.environment_memory.begin(key, request.resource_scope)
         if self.ebpf_monitor is not None:
             self.ebpf_monitor.begin(key, request.resource_scope)
             snapshot = _empty_snapshot("ebpf-window-pending")
         else:
-            self.environment_memory.begin(key, request.resource_scope)
             snapshot = self.sampler.snapshot(request.resource_scope, net_mode="reset")
         with self._lock:
             if len(self._active) >= self.max_active:
@@ -168,12 +168,16 @@ class RealtimeToolMonitor:
                 action_start_ns=action_start_ns,
                 action_end_ns=action_end_ns,
             )
-            return _sample_from_ebpf(
+            sample = _sample_from_ebpf(
                 completion,
                 active,
                 observation,
                 poll_interval_s=self.poll_interval_s,
             )
+            memory = self.environment_memory.complete(
+                active_key, started_at=sample.started_at, ended_at=sample.ended_at,
+            )
+            return replace(sample, environment_memory=memory)
         completion_scope = completion.resource_scope
         if (active is not None and active.request.resource_scope is not None
                 and active.request.resource_scope.attribution_source == "exclusive-execution-cgroup"
@@ -398,6 +402,7 @@ class RealtimeToolMonitor:
                 # an eBPF window. The observation records that collector
                 # failure explicitly; callers still need the accepted scope
                 # for execution identity and trace provenance.
+                self.environment_memory.begin(correlation_key(active.request), scope)
                 self.ebpf_monitor.bind_scope(correlation_key(active.request), scope)
                 return True
             if (
@@ -664,7 +669,6 @@ def apply_resource_observation(
         sampling_quality=values["sampling_quality"],
         attribution_status=values["attribution_status"],
         monitor_source=values["monitor_source"],
-        environment_memory=None,
         resource_observation=observation,
     )
 

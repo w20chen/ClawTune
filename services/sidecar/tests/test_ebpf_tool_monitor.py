@@ -107,6 +107,9 @@ def test_late_scope_binding_keeps_values_but_disqualifies_all_metrics():
     assert {metric["reason"] for metric in result["metrics"].values() if metric["available"]} == {
         "scope_bound_after_action_start"
     }
+    from clawtune_sidecar.monitoring.ebpf_tool import observation_sample_fields
+    assert observation_sample_fields(result)["cpu_peak_cores"] == pytest.approx(.5)
+    assert result["metrics"]["cpu_peak"]["eligible"] is False
 
 
 def test_realtime_default_path_uses_ebpf_without_sampling_fallback(monkeypatch):
@@ -332,3 +335,63 @@ def test_finish_exception_releases_lease_and_uses_existing_fallback_baseline(tmp
     assert result["fallback_used"]
     assert "collector stopped" in result["fallback_reason"]
     assert result["metrics"]["cpu_time"]["value_seconds"] == .0001
+
+
+def test_same_cgroup_pid_resolution_preserves_pre_action_events(monkeypatch, tmp_path):
+    import threading
+    from clawtune_sidecar.monitoring import ebpf_tool
+    scope = ResourceScope(kind="pid", pid=123, root_pid=123, cgroup_path=str(tmp_path))
+    events = _events(1_000_000_000, 2_000_000_000)
+    window = ebpf_tool._KernelWindow(
+        source=None, lease_id=1, buffer=SimpleNamespace(lock=threading.Lock(), events=events),
+        bpf=None, root_pid=1, root_starttime_ticks=1, started_ns=900_000_000,
+        initial_pids={1, 123}, shared=True, loss_before={}, cgroup_id=tmp_path.stat().st_ino,
+    )
+    monkeypatch.setattr(ebpf_tool, "_pid_starttime_ticks", lambda pid: 99)
+    monkeypatch.setattr(ebpf_tool, "_existing_descendants", lambda pid: {pid})
+    assert window.narrow_scope(scope)
+    assert window.started_ns == 900_000_000
+    assert window.buffer.events is events
+    selected, pids = window._select_lineage(events, 2_000_000_000, 1_000_000_000)
+    assert selected == events and pids == {123}
+    assert not window.shared
+    other = tmp_path / "other"
+    other.mkdir()
+    assert not window.narrow_scope(scope.model_copy(update={"cgroup_path": str(other)}))
+
+
+def test_default_ebpf_path_completes_and_preserves_environment_memory(monkeypatch):
+    from clawtune_sidecar.monitoring.tool_runtime import apply_resource_observation
+    memory = {"memory_eligible": True, "memory_total_peak_bytes": 20,
+              "memory_baseline_bytes": 10, "memory_extra_peak_bytes": 10}
+    class Memory:
+        def begin(self, key, scope):
+            self.key = key
+        def complete(self, key, *, started_at, ended_at):
+            assert key == self.key
+            assert ended_at - started_at == 1
+            return memory
+        def poll(self):
+            pass
+    class Ebpf:
+        def begin(self, *args):
+            pass
+        def complete(self, *args, **kwargs):
+            return unavailable_observation("ebpf_unavailable")
+        def stop(self):
+            pass
+    monkeypatch.setattr("clawtune_sidecar.monitoring.environment_memory.EnvironmentMemoryMonitor", Memory)
+    monitor = RealtimeToolMonitor(ebpf_monitor=Ebpf())
+    request = _request()
+    data = {k: v for k, v in request.model_dump().items() if k in ToolCompletedEvent.model_fields}
+    data.update(event_id="end", occurred_at="2026-07-16T03:23:01Z", duration_ms=1000,
+                succeeded=True, decision_id=None, lease_id=None, error_type=None, error_digest=None)
+    try:
+        assert monitor._memory_poller.is_alive()
+        monitor.begin(request, "unknown")
+        sample = monitor.complete(ToolCompletedEvent.model_validate(data))
+        assert sample.environment_memory == memory
+        replaced = apply_resource_observation(sample, unavailable_observation("replacement"))
+        assert replaced.environment_memory == memory
+    finally:
+        monitor.stop()

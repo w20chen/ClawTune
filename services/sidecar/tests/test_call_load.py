@@ -144,11 +144,24 @@ def test_all_backends_full_targets_and_schema():
     schema = next(s for s in schemas if s["$id"].endswith("/call-load.schema.json"))
     for prediction in [result, *diagnostics.backends.values()]:
         assert set(prediction.targets) == set(TARGET_UNITS)
-        assert all(t.status == "available" for t in prediction.targets.values())
-        assert prediction.targets["cpu_avg_cores"].avg == 2
-        assert prediction.targets["memory_total_peak_bytes"].p90 == 64 * 1024**2
+        if prediction is result:
+            assert all(t.status == "available" for t in prediction.targets.values())
+            assert prediction.targets["cpu_avg_cores"].avg == 2
+            assert prediction.targets["memory_total_peak_bytes"].p90 == 64 * 1024**2
+        elif prediction.clause_predictions:
+            assert "tool_hook_overhead_assumed_zero" in prediction.targets["duration_ms"].assumptions
+            assert prediction.clause_predictions[0].targets["duration_ms"].p50 == 1000
+            assert prediction.clause_predictions[0].targets["cpu_avg_cores"].avg == 2
         Draft202012Validator(schema, registry=registry).validate(prediction.model_dump())
         assert CallLoadPrediction.model_validate(prediction.model_dump()) == prediction
+    from clawtune_sidecar.contracts.models import ToolPrediction
+    public = ToolPrediction(tool=result, trie=diagnostics.backends["trie"],
+                            lattice=diagnostics.backends["lattice"], call_prediction=result)
+    decision_schema = next(s for s in schemas if s["$id"].endswith("/tool-decision.schema.json"))
+    prediction_schema = dict(decision_schema["properties"]["prediction"], **{
+        "$id": decision_schema["$id"], "$defs": decision_schema["$defs"],
+    })
+    Draft202012Validator(prediction_schema, registry=registry).validate(public.model_dump())
 
 
 def test_average_cpu_uses_paired_observation_not_ratio_of_marginals():
@@ -303,3 +316,30 @@ def test_background_generation_does_not_hold_prediction_lock(monkeypatch):
         release.set()
         thread.join(5)
     assert not thread.is_alive() and not errors
+
+
+def test_models_never_fill_missing_tool_or_clause_targets_from_each_other():
+    from types import SimpleNamespace
+    runtime = SimpleNamespace(predict_load_samples=lambda query: {})
+    trie = SimpleNamespace(predict_load_samples=lambda *args: ({"cpu_time_seconds": {"values": [2]}},))
+    lattice = SimpleNamespace(predict_load_samples=lambda *args: ({"sampled_peak_rss_bytes": {"values": [64]}},))
+    result, diagnostics = predict_call_load(runtime=runtime, trie=trie, lattice=lattice,
+        query=ToolCallQuery("repo", "exec", "python job.py", 10), edges=EDGES)
+    assert all(t.status == "unavailable" for t in result.targets.values())
+    assert result.clause_predictions == []
+    assert diagnostics.backends["trie"].targets["cpu_time_seconds"].p50 == 2
+    assert diagnostics.backends["trie"].targets["sampled_peak_rss_bytes"].status == "unavailable"
+    assert diagnostics.backends["lattice"].targets["cpu_time_seconds"].status == "unavailable"
+    assert diagnostics.backends["lattice"].targets["sampled_peak_rss_bytes"].p50 == 64
+    assert diagnostics.backends["trie"].clause_predictions[0].targets["sampled_peak_rss_bytes"].status == "unavailable"
+
+
+def test_excluded_consumer_is_not_claimed_as_complete_tool_workload():
+    from types import SimpleNamespace
+    runtime = SimpleNamespace(predict_load_samples=lambda query: {})
+    kb = SimpleNamespace(predict_load_samples=lambda *args: ({"cpu_time_seconds": {"values": [2]}},))
+    _, diagnostics = predict_call_load(runtime=runtime, trie=kb, lattice=kb,
+        query=ToolCallQuery("repo", "exec", "python job.py | cat", 10), edges=EDGES)
+    for name in ("trie", "lattice"):
+        assert diagnostics.backends[name].targets["cpu_time_seconds"].unavailable_reason == "excluded_pipeline_consumer_workload"
+        assert diagnostics.backends[name].clause_predictions[0].targets["cpu_time_seconds"].p50 == 2
