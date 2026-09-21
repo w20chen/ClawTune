@@ -126,7 +126,7 @@ Daily traces are JSONL files under `traces/`. Inspect a generated file and the s
 python3 scripts/clawtune.py kb status
 ```
 
-Expect model and tool events, pre-execution predictions, and post-execution measurements. Missing historical evidence or ineligible measurements produce unavailable targets; definitions are in the [technical report](technical-report.md).
+Expect model and tool events, pre-execution predictions, and post-execution measurements. Missing historical evidence or ineligible measurements produce unavailable targets. Use the [trace measurement and prediction quick guide](tool-profile.md#quick-guide-measurements-and-predictions) to identify the relevant fields; the prediction method is described in the [technical report](technical-report.md).
 
 | Workflow | State location and lifetime |
 | --- | --- |

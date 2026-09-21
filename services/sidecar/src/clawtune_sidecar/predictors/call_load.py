@@ -2,7 +2,7 @@
 
 Plain foreground commands, unconditional serial lists, and simple pipelines are
 supported. Downstream dependency-only pipe consumers are excluded. Duration
-composition resamples clause marginals; memory composition requires joint evidence.
+and resource composition resample clause marginals with explicit approximations.
 """
 from __future__ import annotations
 
@@ -46,6 +46,46 @@ def plain_execution(command: str | None) -> tuple[tuple[dict[str, Any], ...], st
     return parse_execution(command, parser=parse_command_clauses)
 
 
+def _missing_evidence_reason(
+    rows: Sequence[Mapping[str, Any] | None], default: str
+) -> str | None:
+    if rows and all(row and row.get("values") for row in rows):
+        return None
+    return next(
+        (
+            str(row["unavailable_reason"])
+            for row in rows
+            if row and row.get("unavailable_reason")
+        ),
+        default,
+    )
+
+
+def _composition_groups(
+    clauses: Sequence[Mapping[str, Any]], retained_count: int
+) -> list[list[int]] | None:
+    if not clauses:
+        return [[index] for index in range(retained_count)]
+    groups: list[list[int]] = []
+    retained_index = 0
+    for clause_index, clause in enumerate(clauses):
+        previous = clauses[clause_index - 1] if clause_index else None
+        connected = bool(
+            previous
+            and previous.get("in_pipe")
+            and clause.get("in_pipe")
+            and int(clause.get("pipeline_position", -1))
+            == int(previous.get("pipeline_position", -1)) + 1
+        )
+        if not connected:
+            groups.append([])
+        if not is_pipeline_dependent_consumer(clause):
+            groups[-1].append(retained_index)
+            retained_index += 1
+    groups = [group for group in groups if group]
+    return groups if retained_index == retained_count else None
+
+
 def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
             edges: Mapping[str, Sequence[float]], *, reason: str | None = None,
             clauses: Sequence[Mapping[str, Any]] = ()) -> CallLoadPrediction:
@@ -53,69 +93,111 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
     for target, boundaries in edges.items():
         why = reason
         rows = [row.get(target) for row in evidence]
-        if not why and (not rows or any(not row or not row.get("values") for row in rows)):
-            why = next((row["unavailable_reason"] for row in rows if row and row.get("unavailable_reason")),
-                       "missing_clause_evidence")
-        if not why and len(rows) > 1 and target.startswith("memory_"):
-            why = "requires_environment_baseline_and_joint_memory_timeline"
+        cpu_rows: list[Mapping[str, Any] | None] = []
+        duration_rows: list[Mapping[str, Any] | None] = []
         if not why and len(rows) > 1 and target == "cpu_avg_cores":
-            why = "requires_paired_cpu_time_and_duration_samples"
+            cpu_rows = [row.get("cpu_time_seconds") for row in evidence]
+            duration_rows = [row.get("duration_ms") for row in evidence]
+            why = _missing_evidence_reason(
+                cpu_rows, "missing_clause_cpu_time_evidence"
+            ) or _missing_evidence_reason(
+                duration_rows, "missing_clause_duration_evidence"
+            )
+        elif not why:
+            why = _missing_evidence_reason(rows, "missing_clause_evidence")
         if why:
             targets[target] = summarize(target, boundaries, backend, reason=why)
             continue
-        values = [row["values"] for row in rows]
-        contexts = [str(c) for row in rows for c in row.get("context", ())]
+        value_rows = cpu_rows if cpu_rows else rows
+        values = [row["values"] for row in value_rows if row is not None]
+        cpu_values = [row["values"] for row in cpu_rows if row is not None]
+        duration_values = [
+            row["values"] for row in duration_rows if row is not None
+        ]
+        context_rows = [*cpu_rows, *duration_rows] if cpu_rows else rows
+        contexts = [
+            str(context)
+            for row in context_rows
+            if row is not None
+            for context in row.get("context", ())
+        ]
         assumptions = ["foreground_clause_lineage_covers_retained_workload", "shell_and_hook_overhead_not_modeled",
                        "listed_downstream_consumers_excluded"]
-        assumptions += [a for c in clauses for a in c.get("prediction_assumptions", [])]
+        assumptions += [
+            assumption
+            for clause in clauses
+            if not is_pipeline_dependent_consumer(clause)
+            for assumption in clause.get("prediction_assumptions", [])
+        ]
         if len(values) == 1:
             samples = values[0]
+            evidence_counts = [len(values[0])]
         else:
             # Fixed seed: repeatable query results. Generated samples are not
             # counted as historical evidence. Never sum medians or p90 values.
             rng = random.Random(0)
-            if clauses:
-                groups: list[list[int]] = []
-                retained_index = 0
-                for clause_index, clause in enumerate(clauses):
-                    previous = clauses[clause_index - 1] if clause_index else None
-                    connected = bool(
-                        previous
-                        and previous.get("in_pipe")
-                        and clause.get("in_pipe")
-                        and int(clause.get("pipeline_position", -1))
-                        == int(previous.get("pipeline_position", -1)) + 1
-                    )
-                    if not connected:
-                        groups.append([])
-                    if not is_pipeline_dependent_consumer(clause):
-                        groups[-1].append(retained_index)
-                        retained_index += 1
-                groups = [group for group in groups if group]
-            else:
-                groups = [[index] for index in range(len(values))]
-            if sum(len(group) for group in groups) != len(values):
+            groups = _composition_groups(clauses, len(values))
+            if groups is None:
                 targets[target] = summarize(
                     target, boundaries, backend, reason="clause_evidence_alignment_error"
                 )
                 continue
             samples = []
             for _ in range(2048):
-                draw = [rng.choice(v) for v in values]
-                if target == "duration_ms":
-                    value = sum(max(draw[i] for i in group) for group in groups)
-                elif target == "cpu_time_seconds":
-                    value = sum(draw)
-                else:  # CPU peak: aligned peaks are unknown; stage sum is conservative.
-                    value = max(sum(draw[i] for i in group) for group in groups)
+                if target == "cpu_avg_cores":
+                    cpu_draw = [rng.choice(value) for value in cpu_values]
+                    duration_draw = [rng.choice(value) for value in duration_values]
+                    total_duration_ms = sum(
+                        max(duration_draw[i] for i in group) for group in groups
+                    )
+                    if total_duration_ms <= 0:
+                        continue
+                    value = sum(cpu_draw) / (total_duration_ms / 1000.0)
+                else:
+                    draw = [rng.choice(v) for v in values]
+                    if target == "duration_ms":
+                        value = sum(max(draw[i] for i in group) for group in groups)
+                    elif target == "cpu_time_seconds":
+                        value = sum(draw)
+                    elif target in {
+                        "memory_total_peak_bytes",
+                        "memory_extra_peak_bytes",
+                    }:
+                        value = max(draw)
+                    else:  # CPU/RSS peaks lack alignment; pipeline sums are conservative.
+                        value = max(sum(draw[i] for i in group) for group in groups)
                 samples.append(value)
+            if target == "cpu_avg_cores" and not samples:
+                targets[target] = summarize(
+                    target,
+                    boundaries,
+                    backend,
+                    reason="nonpositive_composed_duration",
+                )
+                continue
             assumptions += ["independent_clause_marginals", "all_retained_stages_execute",
                             "no_surviving_background_work"]
+            if target == "cpu_avg_cores":
+                assumptions.append(
+                    "cpu_time_sum_divided_by_composed_duration_approximation"
+                )
+                evidence_counts = [
+                    min(len(cpu), len(duration))
+                    for cpu, duration in zip(cpu_values, duration_values)
+                ]
+            else:
+                evidence_counts = [len(v) for v in values]
+            if target.startswith("memory_"):
+                assumptions.append("call_environment_peak_approximated_by_clause_max")
             if any(len(group) > 1 for group in groups):
-                assumptions.append("pipeline_group_duration_is_stage_max" if target == "duration_ms"
-                                   else "parallel_peak_sum_is_conservative_not_calibrated")
+                if target in {"duration_ms", "cpu_avg_cores"}:
+                    assumptions.append("pipeline_group_duration_is_stage_max")
+                elif target in {"cpu_peak_cores", "sampled_peak_rss_bytes"}:
+                    assumptions.append(
+                        "parallel_peak_sum_is_conservative_not_calibrated"
+                    )
         targets[target] = summarize(target, boundaries, backend, samples, method="composed",
-                                    evidence_counts=[len(v) for v in values], context=contexts,
+                                    evidence_counts=evidence_counts, context=contexts,
                                     assumptions=assumptions)
     return CallLoadPrediction(targets=targets)
 

@@ -105,6 +105,24 @@
       },
       "additionalProperties": true
     },
+    "callResource": {
+      "type": "object",
+      "required": ["peak_cpu_cores", "sampled_peak_rss_mb", "availability"],
+      "properties": {
+        "peak_cpu_cores": {"type": ["number", "null"], "minimum": 0, "description": "Maximum CPU utilization in cores after summing all owned exec-image contributions in aligned 500 ms windows."},
+        "sampled_peak_rss_mb": {"type": ["number", "null"], "minimum": 0, "description": "Maximum sampled RSS in decimal megabytes after summing distinct live address spaces in aligned bins."},
+        "availability": {
+          "type": "object",
+          "required": ["cpu", "memory"],
+          "properties": {
+            "cpu": {"type": "string", "description": "ok or an unknown:<reason> value for the call-level CPU peak."},
+            "memory": {"type": "string", "description": "ok or an unknown:<reason> value for the call-level RSS peak."}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": true
+    },
     "call": {
       "type": "object",
       "required": [
@@ -119,6 +137,7 @@
         "command": {"type": "string", "description": "Original command associated with this telemetry record."},
         "telemetry_quality": {"enum": ["ok", "invalid", "unavailable"], "description": "Quality of this call's mapping and measurements."},
         "eligible_for_kb": {"type": "boolean", "description": "Whether this complete call may contribute any KB observations; targets still apply their own eligibility checks."},
+        "call_resource": {"$ref": "#/$defs/callResource", "description": "Call-level peak metrics reduced from aligned profiles across all mapped exec images."},
         "clauses": {
           "type": "array",
           "items": {"$ref": "#/$defs/clause"},

@@ -16,4 +16,4 @@ The repository contains configuration templates, protocols, test fixtures, and a
 
 [JSON Schemas](contracts/) define the public protocol.
 
-See the [trace JSONL and tool profile field reference](docs/tool-profile.md) for every stable trace record field, measured resource and prediction targets, units, attribution boundaries, and unavailable values.
+Start with the [trace measurement and prediction quick guide](docs/tool-profile.md#quick-guide-measurements-and-predictions), then use the same field reference for every stable trace record field, unit, attribution boundary, and unavailable value.

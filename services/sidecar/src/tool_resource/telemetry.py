@@ -4842,6 +4842,7 @@ class ClauseTelemetryCollector:
                 "perf_sample_count": perf_samples,
                 "collector_perf_sample_count": collector_perf_samples,
             },
+            "call_resource": bridge.call_resource,
             "clauses": clauses,
             "no_runtime_exec": no_runtime_exec,
             "provenance": {

@@ -864,9 +864,9 @@ def execution_observation(
 ) -> dict[str, Any] | None:
     """Build the call-level view from finalized execution eBPF evidence.
 
-    Totals may be summed across causally disjoint owned clauses. Peaks require
-    a single clause because scalar clause peaks cannot be composed without the
-    aligned profiles retained in the full artifact.
+    Totals are summed across causally disjoint owned clauses. Peaks use the
+    call-level aligned profile reduction emitted by the bridge; old single-
+    clause telemetry remains supported for backward compatibility.
     """
     clauses = call.get("clauses")
     if call.get("telemetry_quality") != "ok" or not isinstance(clauses, list) or not clauses:
@@ -905,18 +905,26 @@ def execution_observation(
     )
     cpu_seconds = sum(float(value) for value in cpu_values) if cpu_ok else None
     single = rows[0] if len(rows) == 1 else None
-    peak_cpu = single.get("peak_cpu_cores") if single is not None else None
-    peak_memory_mb = single.get("peak_memory_mb") if single is not None else None
-    single_availability = single.get("availability") if single is not None else None
+    call_resource = call.get("call_resource")
+    peak_source = call_resource if isinstance(call_resource, Mapping) else single
+    peak_cpu = peak_source.get("peak_cpu_cores") if peak_source is not None else None
+    peak_memory_mb = (
+        peak_source.get("sampled_peak_rss_mb", peak_source.get("peak_memory_mb"))
+        if peak_source is not None
+        else None
+    )
+    peak_availability = (
+        peak_source.get("availability") if peak_source is not None else None
+    )
     peak_cpu_ok = (
-        isinstance(single_availability, Mapping)
-        and single_availability.get("cpu") == "ok"
+        isinstance(peak_availability, Mapping)
+        and peak_availability.get("cpu") == "ok"
         and isinstance(peak_cpu, (int, float))
         and math.isfinite(float(peak_cpu))
     )
     memory_ok = (
-        isinstance(single_availability, Mapping)
-        and single_availability.get("memory") == "ok"
+        isinstance(peak_availability, Mapping)
+        and peak_availability.get("memory") == "ok"
         and isinstance(peak_memory_mb, (int, float))
         and math.isfinite(float(peak_memory_mb))
     )
@@ -958,7 +966,7 @@ def execution_observation(
             "cpu_peak": {
                 "available": peak_cpu_ok,
                 "eligible": peak_cpu_ok and execution_eligible,
-                "reason": ("ok" if complete else "execution_window_only") if peak_cpu_ok else ("aligned_call_profile_unavailable" if len(rows) > 1 else "clause_cpu_peak_unavailable"),
+                "reason": ("ok" if complete else "execution_window_only") if peak_cpu_ok else ("aligned_call_profile_unavailable" if peak_source is None else "call_cpu_peak_unavailable"),
                 "measurement": "ebpf_owned_lineage_cpu_500ms_peak",
                 "value_cores": float(peak_cpu) if peak_cpu_ok else None,
                 "window_ms": 500,
@@ -966,7 +974,7 @@ def execution_observation(
             "memory_peak": {
                 "available": memory_ok,
                 "eligible": memory_ok and execution_eligible,
-                "reason": ("ok" if complete else "execution_window_only") if memory_ok else ("aligned_call_profile_unavailable" if len(rows) > 1 else "clause_memory_unavailable"),
+                "reason": ("ok" if complete else "execution_window_only") if memory_ok else ("aligned_call_profile_unavailable" if peak_source is None else "call_memory_unavailable"),
                 "measurement": "ebpf_sampled_distinct_mm_rss",
                 "value_bytes": int(float(peak_memory_mb) * 1_000_000) if memory_ok else None,
                 "sample_count": None,

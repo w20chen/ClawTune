@@ -152,6 +152,34 @@ def test_recent_environment_sample_can_precede_delayed_begin(monkeypatch, start,
         assert result["memory_unavailable_reason"] == "overlapping_environment_calls"
 
 
+def test_overlapping_monitor_lifetimes_allow_disjoint_execution_windows(monkeypatch):
+    clock = SimpleNamespace(now=10.0, value=100)
+    monkeypatch.setattr(
+        "clawtune_sidecar.monitoring.environment_memory.time.time", lambda: clock.now
+    )
+    monkeypatch.setattr(
+        EnvironmentMemoryMonitor, "_read", staticmethod(lambda _: clock.value)
+    )
+    scope = SimpleNamespace(cgroup_path="/sys/fs/cgroup/task", container_id="task")
+    monitor = EnvironmentMemoryMonitor()
+
+    monitor.begin("first", scope)
+    clock.now, clock.value = 10.05, 150
+    monitor.poll()
+    clock.now, clock.value = 10.08, 150
+    monitor.begin("second", scope)
+    first = monitor.complete("first", started_at=10.0, ended_at=10.05)
+
+    clock.now, clock.value = 10.10, 200
+    monitor.poll()
+    second = monitor.complete("second", started_at=10.08, ended_at=10.10)
+
+    assert first["memory_eligible"] is True
+    assert second["memory_eligible"] is True
+    assert second["memory_baseline_bytes"] == 150
+    assert second["memory_extra_peak_bytes"] == 50
+
+
 def test_truncated_memory_timeline_is_unavailable_without_training_values(monkeypatch):
     import clawtune_sidecar.monitoring.environment_memory as module
     clock = SimpleNamespace(now=10.0, value=100)

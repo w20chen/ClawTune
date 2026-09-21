@@ -2536,6 +2536,26 @@ def test_execution_window_uses_retained_duration_without_changing_tool_elapsed()
     assert sample.cpu_utilization_avg_cores == pytest.approx(.5)
 
 
+def test_compact_call_telemetry_retains_aligned_call_resource():
+    call_resource = {
+        "peak_cpu_cores": 0.75,
+        "sampled_peak_rss_mb": 32.0,
+        "availability": {"cpu": "ok", "memory": "ok"},
+    }
+    compact = tool_resource_predictor._compact_call_telemetry(
+        {
+            "tool_call_id": "call",
+            "command": "left | right",
+            "telemetry_quality": "ok",
+            "eligible_for_kb": True,
+            "call_resource": call_resource,
+            "clauses": [],
+        }
+    )
+
+    assert compact["call_resource"] == call_resource
+
+
 def test_trace_does_not_export_out_of_window_snapshots_as_tool_usage(tmp_path):
     from dataclasses import replace
     from clawtune_sidecar.trace import AgentTestBenchTraceWriter

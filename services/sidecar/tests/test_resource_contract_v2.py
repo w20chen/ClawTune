@@ -143,13 +143,14 @@ def test_both_tool_names_use_clauses_with_environment_preparation(monkeypatch):
     assert results[0] == results[1]
 
 
-def test_two_work_clauses_cpu_sums_memory_not_fabricated():
+def test_two_work_clauses_use_cpu_and_memory_composition_approximations():
     evidence = [{"duration_ms": {"values": [1000]}, "cpu_time_seconds": {"values": [2]},
                  "cpu_peak_cores": {"values": [3]}, "memory_total_peak_bytes": {"values": [300]}}] * 2
     result = compose("trie", evidence, EDGES)
     assert result.targets["cpu_time_seconds"].p50 == 4
+    assert result.targets["cpu_avg_cores"].p50 == 2
     assert result.targets["cpu_peak_cores"].p50 == 3
-    assert result.targets["memory_total_peak_bytes"].status == "unavailable"
+    assert result.targets["memory_total_peak_bytes"].p50 == 300
 
 
 def test_environment_is_polled_on_every_monitor_iteration():

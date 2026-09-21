@@ -111,6 +111,7 @@ class EnvironmentMemoryMonitor:
         self._active: dict[Any, dict[str, Any]] = {}
         self._unavailable: dict[Any, str] = {}
         self._recent: dict[tuple[tuple[str, ...], str], dict[str, Any]] = {}
+        self._completed_windows: deque[dict[str, Any]] = deque(maxlen=512)
 
     @staticmethod
     def _read(path: str) -> int | None:
@@ -183,12 +184,6 @@ class EnvironmentMemoryMonitor:
                 "previous_end": recent["previous_end"] if recent else None,
             }
             self._unavailable.pop(key, None)
-            overlap = [
-                row for active_key, row in self._active.items()
-                if active_key != key and self._paths_overlap(row["paths"], paths)
-            ]
-            for row in overlap:
-                row["exclusive"] = False
             self._active[key] = {
                 "paths": paths,
                 "path": environment_id,
@@ -200,7 +195,8 @@ class EnvironmentMemoryMonitor:
                 "timeline_truncated": False,
                 "peak": value,
                 "polls": 0,
-                "exclusive": not overlap,
+                "activated_at": now,
+                "exclusive": True,
             }
 
     def begin(self, key: Any, scope: Any) -> None:
@@ -274,6 +270,43 @@ class EnvironmentMemoryMonitor:
         with self._lock:
             row = self._active.pop(key, None)
             reason = self._unavailable.pop(key, None)
+            valid_window = (
+                row is not None
+                and isinstance(started_at, (int, float))
+                and not isinstance(started_at, bool)
+                and isinstance(ended_at, (int, float))
+                and not isinstance(ended_at, bool)
+                and math.isfinite(started_at)
+                and math.isfinite(ended_at)
+                and ended_at > started_at
+            )
+            overlaps_active = bool(
+                valid_window
+                and any(
+                    self._paths_overlap(row["paths"], peer["paths"])
+                    and peer["activated_at"] < ended_at
+                    for peer in self._active.values()
+                )
+            )
+            overlaps_completed = bool(
+                valid_window
+                and any(
+                    self._paths_overlap(row["paths"], prior["paths"])
+                    and prior["started_at"] < ended_at
+                    and prior["ended_at"] > started_at
+                    for prior in self._completed_windows
+                )
+            )
+            if row is not None:
+                row["exclusive"] = not (overlaps_active or overlaps_completed)
+            if valid_window:
+                self._completed_windows.append(
+                    {
+                        "paths": row["paths"],
+                        "started_at": started_at,
+                        "ended_at": ended_at,
+                    }
+                )
             if row and row["identity"] in self._recent:
                 recent = self._recent[row["identity"]]
                 recent["previous_end"] = max(recent["previous_end"] or 0, ended_at or time.time())
@@ -297,7 +330,7 @@ class EnvironmentMemoryMonitor:
                 or not math.isfinite(started_at) or not math.isfinite(ended_at)
                 or ended_at <= started_at):
             reason = "execution_window_unavailable"
-        elif not row["exclusive"] or (row["previous_end"] is not None and row["previous_end"] > started_at):
+        elif not row["exclusive"]:
             reason = "overlapping_environment_calls"
         elif points[0][0] > started_at:
             reason = "baseline_after_execution_start"

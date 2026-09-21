@@ -232,6 +232,7 @@ class BridgeResult:
     transition_graph: list[dict[str, Any]] = field(default_factory=list)
     candidate_rejections: list[dict[str, Any]] = field(default_factory=list)
     static_clauses: list[dict[str, Any]] = field(default_factory=list)
+    call_resource: dict[str, Any] = field(default_factory=dict)
 
     @property
     def observations(self) -> list[ClauseObservation]:
@@ -343,6 +344,63 @@ def _merge_rss(owned: Sequence[ExecImageRecord]) -> tuple[float | None, str]:
     if not math.isfinite(peak):
         return None, "non_finite_rss"
     return peak, "ok"
+
+
+def _call_resource_profile(
+    exec_images: Sequence[ExecImageRecord],
+    bridged: Sequence[BridgedClause],
+    *,
+    data_valid: bool,
+    protocol_timeout: bool,
+) -> dict[str, Any]:
+    """Reduce aligned profiles across every exec image owned by this call."""
+
+    owned_keys = {
+        identity
+        for clause in bridged
+        for identity in clause.owned_exec_images
+    }
+    owned = [
+        image
+        for image in exec_images
+        if (image.host_pid, image.exec_seq) in owned_keys
+    ]
+    if not data_valid:
+        cpu_peak, cpu_reason = None, "invalid_call_mapping"
+        rss_peak, rss_reason = None, "invalid_call_mapping"
+    elif protocol_timeout:
+        cpu_peak, cpu_reason = None, "protocol_timeout"
+        rss_peak, rss_reason = None, "protocol_timeout"
+    elif not owned:
+        cpu_peak, cpu_reason = None, "no_owned_exec_images"
+        rss_peak, rss_reason = None, "no_owned_exec_images"
+    else:
+        quotas = {
+            float(value)
+            for image in owned
+            if isinstance((value := image.provenance.get("quota_cores")), (int, float))
+            and math.isfinite(float(value))
+            and float(value) > 0.0
+        }
+        quota = quotas.pop() if len(quotas) == 1 else None
+        t_exec = min(image.t_exec_ns for image in owned)
+        t_end = max(image.t_end_ns for image in owned)
+        cpu_peak, cpu_reason = _merge_cpu(owned, t_exec, t_end, quota)
+        rss_peak, rss_reason = _merge_rss(owned)
+
+    return {
+        "peak_cpu_cores": cpu_peak,
+        "sampled_peak_rss_mb": rss_peak,
+        "availability": {
+            "cpu": "ok" if cpu_peak is not None else f"unknown:{cpu_reason}",
+            "memory": "ok" if rss_peak is not None else f"unknown:{rss_reason}",
+        },
+        "provenance": {
+            "owned_exec_image_count": len(owned),
+            "cpu_reduction": "sum_aligned_500ms_windows_then_max",
+            "memory_reduction": "sum_aligned_distinct_live_mm_then_max",
+        },
+    }
 
 
 def _merge_disk_io(
@@ -1303,17 +1361,24 @@ def bridge_command(
             f"runtime attribution has {attribution_gap_count} relevant gap(s)",
         )
     ] if attribution_gap_count else []
+    data_valid = not gaps and not attribution_reasons
     return BridgeResult(
         bridged=bridged,
         no_runtime_exec=no_runtime_exec,
         coverage_gaps=gaps,
         unobserved_builtins=unobserved,
         static_clause_count=len(static),
-        data_valid=not gaps and not attribution_reasons,
+        data_valid=data_valid,
         invalid_reasons=[*gaps, *attribution_reasons],
         transition_graph=transition_graph,
         candidate_rejections=candidate_rejections,
         static_clauses=[dict(clause) for clause in static],
+        call_resource=_call_resource_profile(
+            exec_images,
+            bridged,
+            data_valid=data_valid,
+            protocol_timeout=protocol_timeout,
+        ),
     )
 
 

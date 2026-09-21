@@ -271,6 +271,44 @@ def test_promotion_preserves_measured_execution_window_without_fabricating_cover
     assert not any(m["eligible"] for m in outside["metrics"].values())
 
 
+def test_multi_clause_execution_uses_aligned_call_resource_peaks():
+    clause = {
+        "availability": {
+            "cpu_time": "ok",
+            "cpu": "ok",
+            "memory": "ok",
+            "disk_io": "ok",
+        },
+        "cpu_time_seconds": 0.2,
+        "disk_read_bytes": 0,
+        "disk_write_bytes": 0,
+        "t_exec_ns": 0,
+        "t_end_ns": 1_500_000_000,
+    }
+    call = {
+        "telemetry_quality": "ok",
+        "call_resource": {
+            "peak_cpu_cores": 0.6,
+            "sampled_peak_rss_mb": 30.0,
+            "availability": {"cpu": "ok", "memory": "ok"},
+        },
+        "clauses": [clause, clause],
+    }
+
+    result = execution_observation(
+        call,
+        started_ns=0,
+        ended_ns=1_500_000_000,
+        clock="linux_monotonic",
+    )
+
+    _validator().validate(result)
+    assert result["metrics"]["cpu_peak"]["eligible"]
+    assert result["metrics"]["cpu_peak"]["value_cores"] == 0.6
+    assert result["metrics"]["memory_peak"]["eligible"]
+    assert result["metrics"]["memory_peak"]["value_bytes"] == 30_000_000
+
+
 def _cgroup_files(path, cpu, read, peak):
     (path / "cpu.stat").write_text(f"usage_usec {cpu}\n", encoding="utf-8")
     (path / "io.stat").write_text(f"8:0 rbytes={read} wbytes=0\n", encoding="utf-8")

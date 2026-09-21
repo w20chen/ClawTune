@@ -30,7 +30,12 @@ def test_preflight_waits_for_deferred_task_free_but_keeps_real_leaks(monkeypatch
     if not released:
         assert current == {1: 1}  # The preflight must not erase a leak to pass.
 
-from tool_resource.clause_bridge import ExecImageRecord, _clause_status, bridge_command
+from tool_resource.clause_bridge import (
+    ExecImageRecord,
+    _call_resource_profile,
+    _clause_status,
+    bridge_command,
+)
 from tool_resource.telemetry import (
     BPF_PROGRAM,
     ClauseTelemetryCollector,
@@ -617,6 +622,45 @@ def test_clause_status_uses_terminal_image_from_owned_root_chain() -> None:
         "reason": None,
         "source": "root_exec_chain_terminal",
     }
+
+
+def test_call_resource_profile_sums_aligned_exec_images_before_taking_peak() -> None:
+    common = {
+        "t_exec_ns": 0,
+        "t_end_ns": 1_500_000_000,
+        "terminal": True,
+        "provenance": {"quota_cores": 4.0},
+    }
+    left = ExecImageRecord(
+        host_pid=41,
+        exec_seq=1,
+        bin="left",
+        argv=("left",),
+        cpu_windows=((0, 200_000_000), (1, 100_000_000)),
+        rss_bins=((1, 101, 10.0),),
+        **common,
+    )
+    right = ExecImageRecord(
+        host_pid=42,
+        exec_seq=1,
+        bin="right",
+        argv=("right",),
+        cpu_windows=((0, 100_000_000), (1, 50_000_000)),
+        rss_bins=((1, 102, 20.0),),
+        **common,
+    )
+    bridged = [
+        SimpleNamespace(owned_exec_images=((41, 1),)),
+        SimpleNamespace(owned_exec_images=((42, 1),)),
+    ]
+
+    profile = _call_resource_profile(
+        (left, right), bridged, data_valid=True, protocol_timeout=False
+    )
+
+    assert profile["peak_cpu_cores"] == pytest.approx(0.6)
+    assert profile["sampled_peak_rss_mb"] == 30.0
+    assert profile["availability"] == {"cpu": "ok", "memory": "ok"}
 
 
 def test_explicit_builtin_path_is_bridged_as_external_exec(monkeypatch) -> None:

@@ -22,10 +22,11 @@ A tool call may contain a shell command, represented as text such as `grep patte
 | CPU time | Cumulative CPU time of the attributed workload | core-s |
 | Average CPU use | CPU time divided by duration for the same observation | cores |
 | Peak CPU use | Maximum CPU use over fixed 500 ms windows | cores |
+| Sampled process RSS peak | Peak sampled distinct-mm RSS of the owned process lineage | bytes |
 | `memory_total_peak_bytes` | Sampled peak environment memory, including its background | bytes |
 | `memory_extra_peak_bytes` | `max(0, memory_total_peak_bytes - memory_baseline_bytes)` | bytes |
 
-For observation $i$, average CPU use is $a_i=c_i/t_i$. Its predicted mean averages these per-observation ratios, rather than dividing the separate means of CPU time and duration. Process RSS is retained only as a diagnostic, not as a memory prediction target. Current collection samples cgroup v2 `memory.current`: the background is memory already charged to that cgroup before the call, including its existing processes and charged cache; it is not the whole host OS. Guest `MemTotal - MemAvailable` is a separate measurement source for future VM integration. All three KBs keep the sources separate; host VM RSS is not guest memory. Total and extra are sampled estimates, not guaranteed allocation limits.
+For observation $i$, average CPU use is $a_i=c_i/t_i$. Its predicted mean averages these per-observation ratios, rather than dividing the separate means of CPU time and duration. Sampled process RSS is a formal prediction target, but remains distinct from environment memory: it de-duplicates sampled address spaces in the owned lineage and is not an exact allocation count. Current environment-memory collection samples cgroup v2 `memory.current`: the background is memory already charged to that cgroup before the call, including its existing processes and charged cache; it is not the whole host OS. Guest `MemTotal - MemAvailable` is a separate measurement source for future VM integration. All three KBs keep the sources separate; host VM RSS is not guest memory. Total and extra are sampled estimates, not guaranteed allocation limits, and extra is an environment high-water delta rather than exclusive attribution to the tool process.
 
 Resource labels require identifiable execution ownership and sufficient collection quality for the target. Shared-container totals cannot serve as individual tool labels. Timeout and cancellation observations are censored and excluded from complete-execution labels. Missing values remain distinct from valid zeros, and each target has its own validity mask.
 
@@ -49,7 +50,7 @@ The implementation maintains three complementary statistical indexes:
 
 | Index | Description | Observation scope |
 | --- | --- | --- |
-| ToolKB | Call-level history | Complete tool calls, including eligible hardware-counter metrics |
+| ToolKB | Call-level history | Eligible call-level labels, including retained-workload duration and eligible hardware-counter metrics |
 | TrieKB | Clause-prefix index | Executable clauses and ordered argument prefixes |
 | LatticeKB | Feature-subset index | Clause contexts ordered by feature-set inclusion |
 
@@ -144,7 +145,7 @@ Ties prefer more observations. This specificity baseline has no cross-validation
 
 ## 5. From commands to tool calls
 
-For each target, the system prefers compatible complete-call evidence, followed by clause-prefix estimates and feature-subset estimates. The latter use shrinkage by default.
+The system reports three independent results for each target. ToolKB selects compatible call-level evidence; its duration target is retained-workload elapsed time rather than the raw tool span. TrieKB selects clause-prefix evidence, while LatticeKB selects feature-subset evidence using shrinkage by default. They are parallel predictions rather than one fallback chain, and missing evidence in one KB is never filled from another.
 
 For supported foreground shell commands, unconditional serial lists, and simple pipelines, the composer independently samples clause distributions. Let $g$ index serial groups and $j$ index clauses within a pipeline group:
 
@@ -154,7 +155,7 @@ $$
 
 A standalone clause forms a one-element group. A fixed random seed generates 2048 draws, from which summary statistics are computed. Clause medians or p90s are not added directly, and generated draws are not counted as historical observations.
 
-This approximation assumes that foreground clauses cover the workload, ignores shell and hook overhead, and treats clause durations as independent. `exec` and `terminal_exec` share shell extraction. `cd`, assignments, `env`, `timeout`, and `nohup` retain executable-stage predictions. `&&` and `||` predictions state the assumed branch; they do not forecast exit status. Loops, substitutions, and background jobs cannot establish a complete-call composition. CPU time sums across retained stages; sequential CPU peaks use their maximum, and parallel peaks use a conservative sum. The latter is not a calibrated p90 of simultaneous load. Multi-clause CPU averages need paired duration/CPU samples; environment memory needs a joint baseline and timeline, so these whole-call estimates remain unavailable when that evidence is missing. Individual clause predictions remain available. A single-clause shell command also uses the composition path when its estimate is reconstructed from clause evidence.
+This approximation assumes that foreground clauses cover the workload, ignores shell and hook overhead, and treats clause distributions as independent. `exec` and `terminal_exec` share shell extraction. `cd`, assignments, `env`, `timeout`, and `nohup` retain executable-stage predictions. For `&&` and `||`, the current composer includes every retained stage and annotates its success/failure condition; it does not forecast exit status or branch probability. Loops, substitutions, and background jobs cannot establish a complete-call composition. CPU time sums across retained stages. Average CPU divides sampled total CPU time by the sampled composed duration: serial durations sum and pipeline durations take their maximum. Sequential CPU and RSS peaks use their maximum; parallel peaks use a conservative sum. Those peak rules do not preserve temporal alignment, and their p90 is not calibrated simultaneous-load coverage. Environment total and extra memory use the maximum sampled clause prediction as a call-level approximation. For a single clause, environment total assumes no higher peak outside the clause, and extra additionally assumes that the clause baseline equals the tool baseline. Listed downstream pipeline consumers are excluded from training and prediction for every clause target; the same executable remains eligible alone or in the first pipeline position. Individual clause predictions remain available. A single-clause shell command also uses the composition path when its estimate is reconstructed from clause evidence.
 
 ## 6. Learning, initialization, and evaluation
 

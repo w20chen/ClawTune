@@ -2339,6 +2339,7 @@ def _compact_call_telemetry(call: Mapping[str, Any] | None) -> dict[str, Any] | 
         "formal_completeness": call.get("formal_completeness"),
         "eligible_for_kb": call.get("eligible_for_kb"),
         "clause_count": len(clauses) if isinstance(clauses, list) else 0,
+        "call_resource": call.get("call_resource"),
         "clauses": _compact_clauses(clauses),
     }
 

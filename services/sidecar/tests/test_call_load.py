@@ -13,7 +13,15 @@ from clawtune_sidecar.contracts.load_prediction import CallLoadPrediction, TARGE
 from clawtune_sidecar.prediction_config import load_bucket_edges
 from clawtune_sidecar.predictors.call_load import compose, plain_execution, predict_call_load, summarize
 from clawtune_sidecar.policies.concurrency import _predicted_cpu_millis
-from tool_resource.runtime_kb import ClauseObservation, ClauseResourceKB, CompletedCall, RuntimeToolResourceKB, ToolCallQuery
+from tool_resource.runtime_kb import (
+    PIPELINE_DEPENDENT_CONSUMER_BINS,
+    ClauseObservation,
+    ClauseResourceKB,
+    CompletedCall,
+    RuntimeToolResourceKB,
+    ToolCallQuery,
+    is_pipeline_dependent_consumer,
+)
 from tool_time.lattice_kb import LatticeTimeKB
 
 EDGES = load_bucket_edges((100, 500, 2000, 10000))
@@ -116,14 +124,64 @@ def test_pipeline_consumer_is_ignored_and_other_stages_use_max():
     assert "pipeline_group_duration_is_stage_max" in result.targets["duration_ms"].assumptions
 
 
-def test_multi_clause_resources_not_added_even_with_evidence():
-    evidence = [{t: {"values": [1, 2]} for t in TARGET_UNITS}] * 2
+def test_pipeline_cpu_average_sums_stage_cpu_and_uses_pipeline_wall_time():
+    clauses, reason = plain_execution("python job.py | sleep 1")
+    assert reason is None
+    evidence = [
+        {
+            "duration_ms": {"values": [1000]},
+            "cpu_time_seconds": {"values": [2]},
+        },
+        {
+            "duration_ms": {"values": [3000]},
+            "cpu_time_seconds": {"values": [1]},
+        },
+    ]
+
+    result = compose("trie", evidence, EDGES, clauses=clauses)
+
+    assert result.targets["cpu_avg_cores"].p50 == pytest.approx(1.0)
+    assert "pipeline_group_duration_is_stage_max" in (
+        result.targets["cpu_avg_cores"].assumptions
+    )
+
+
+def test_multi_clause_cpu_average_and_environment_memory_use_declared_approximations():
+    evidence = [
+        {
+            target: {"values": [value]}
+            for target, value in {
+                "duration_ms": 1000,
+                "cpu_time_seconds": 2,
+                "cpu_peak_cores": 2,
+                "sampled_peak_rss_bytes": 100,
+                "memory_total_peak_bytes": 120,
+                "memory_extra_peak_bytes": 40,
+            }.items()
+        },
+        {
+            target: {"values": [value]}
+            for target, value in {
+                "duration_ms": 3000,
+                "cpu_time_seconds": 1,
+                "cpu_peak_cores": 1,
+                "sampled_peak_rss_bytes": 200,
+                "memory_total_peak_bytes": 250,
+                "memory_extra_peak_bytes": 10,
+            }.items()
+        },
+    ]
     result = compose("trie", evidence, EDGES)
-    for target in ("cpu_time_seconds", "cpu_peak_cores"):
-        assert result.targets[target].status == "available"
-    assert result.targets["cpu_avg_cores"].unavailable_reason == "requires_paired_cpu_time_and_duration_samples"
-    for target in ("memory_total_peak_bytes", "memory_extra_peak_bytes"):
-        assert result.targets[target].unavailable_reason == "requires_environment_baseline_and_joint_memory_timeline"
+    assert all(target.status == "available" for target in result.targets.values())
+    assert result.targets["cpu_avg_cores"].p50 == pytest.approx(0.75)
+    assert result.targets["memory_total_peak_bytes"].p50 == 250
+    assert result.targets["memory_extra_peak_bytes"].p50 == 40
+    assert "cpu_time_sum_divided_by_composed_duration_approximation" in (
+        result.targets["cpu_avg_cores"].assumptions
+    )
+    assert "call_environment_peak_approximated_by_clause_max" in (
+        result.targets["memory_total_peak_bytes"].assumptions
+    )
 
 
 def test_all_backends_full_targets_and_schema():
@@ -206,15 +264,46 @@ def test_downstream_pipe_consumer_label_is_not_trained_as_standalone():
     polluted = row(
         i=2,
         bin="grep",
-        argv=("grep", "needle"),
+        argv=("grep", "needle", "file"),
         latency_ms=90_000,
+        cpu_ns_cumulative=90_000_000_000,
+        cpu_peak_cores=90,
+        sampled_peak_rss_mb=90_000,
+        memory_total_peak_bytes=90_000_000_000,
+        memory_extra_peak_bytes=90_000_000_000,
         in_pipe=True,
         pipeline_position=1,
     )
     query = [{"bin": "grep", "argv": ["grep", "needle", "file"]}]
     for kb in (ClauseResourceKB.fit_public([clean, polluted]), LatticeTimeKB.fit([clean, polluted])):
-        values = kb.predict_load_samples("repo", query, 4)[0]["duration_ms"]["values"]
-        assert set(values) == {100.0}
+        prediction = kb.predict_load_samples("repo", query, 4)[0]
+        assert set(prediction) == set(TARGET_UNITS)
+        assert set(prediction["duration_ms"]["values"]) == {100.0}
+        assert set(prediction["cpu_time_seconds"]["values"]) == {2.0}
+        assert set(prediction["cpu_avg_cores"]["values"]) == {20.0}
+        assert set(prediction["cpu_peak_cores"]["values"]) == {4.0}
+        assert set(prediction["sampled_peak_rss_bytes"]["values"]) == {
+            64 * 1024**2
+        }
+        assert set(prediction["memory_total_peak_bytes"]["values"]) == {
+            64 * 1024**2
+        }
+        assert set(prediction["memory_extra_peak_bytes"]["values"]) == {
+            64 * 1024**2
+        }
+
+
+@pytest.mark.parametrize("bin_", sorted(PIPELINE_DEPENDENT_CONSUMER_BINS))
+def test_consumer_exclusion_requires_downstream_pipeline_position(bin_):
+    assert not is_pipeline_dependent_consumer(
+        {"bin": bin_, "argv": [bin_], "in_pipe": False, "pipeline_position": -1}
+    )
+    assert not is_pipeline_dependent_consumer(
+        {"bin": bin_, "argv": [bin_], "in_pipe": True, "pipeline_position": 0}
+    )
+    assert is_pipeline_dependent_consumer(
+        {"bin": bin_, "argv": [bin_], "in_pipe": True, "pipeline_position": 1}
+    )
 
 
 @pytest.mark.parametrize("head,consumer", [("head", None), ("cat", None), ("cat", "head"), ("python", "tail")])
@@ -228,7 +317,11 @@ def test_only_downstream_consumers_are_excluded_from_learning_and_prediction(hea
     if consumer:
         clauses.append(dict(bin=consumer, argv=[consumer, "-20"], in_pipe=True, pipeline_position=1))
         observations.append(row(bin=consumer, argv=(consumer, "-20"), in_pipe=True,
-                                pipeline_position=1, latency_ms=90000))
+                                pipeline_position=1, latency_ms=90_000,
+                                cpu_ns_cumulative=90_000_000_000,
+                                cpu_peak_cores=90, sampled_peak_rss_mb=90_000,
+                                memory_total_peak_bytes=90_000_000_000,
+                                memory_extra_peak_bytes=90_000_000_000))
     _, diagnostics = predict_call_load(runtime=RuntimeToolResourceKB(),
         trie=ClauseResourceKB.fit_public(observations), lattice=LatticeTimeKB.fit(observations),
         query=ToolCallQuery("repo", "exec", " ".join(argv), 10), edges=EDGES,
@@ -236,8 +329,19 @@ def test_only_downstream_consumers_are_excluded_from_learning_and_prediction(hea
     for name in ("trie", "lattice"):
         prediction = diagnostics.backends[name]
         assert prediction.targets["duration_ms"].p50 == 1000
+        assert all(target.status == "available" for target in prediction.targets.values())
+        assert prediction.targets["cpu_time_seconds"].p50 == 2
+        assert prediction.targets["cpu_avg_cores"].p50 == 2
+        assert prediction.targets["cpu_peak_cores"].p50 == 4
+        assert prediction.targets["sampled_peak_rss_bytes"].p50 == 64 * 1024**2
+        assert prediction.targets["memory_total_peak_bytes"].p50 == 64 * 1024**2
+        assert prediction.targets["memory_extra_peak_bytes"].p50 == 64 * 1024**2
         assert len(prediction.clause_predictions) == 1
         assert prediction.clause_predictions[0].argv == list(argv)
+        assert all(
+            target.status == "available"
+            for target in prediction.clause_predictions[0].targets.values()
+        )
 
 
 def test_pre_filter_aggregated_clause_snapshot_is_rejected():

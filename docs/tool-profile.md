@@ -6,6 +6,26 @@ A tool profile consists of the prediction made when a call starts, the measureme
 
 This document covers all stable fields defined by ClawTune in trace v6 JSONL. For `input.requested_args`, `input.messages[]`, `output.result`, `output.content`, `provider_metadata`, `request_options`, `raw_*`, `placement`, `profiling`, and fields marked as open diagnostic objects, the internal structure is determined by the tool, model provider, OpenClaw, or collector version; this document explains the meaning of the container and does not mislist external dynamic keys as part of the ClawTune stable protocol. Each line is an independent JSON object, and its structure is determined by `record_type`.
 
+## Quick Guide: Measurements and Predictions
+
+Read one tool call in three parts. `span_start.prediction` is the forecast made before execution. The matching `span_end.resources` contains call-level observations. An `execution_telemetry` event joined by `execution_id` contains executable-clause evidence. A value in the prediction is not an observation, and a clause observation must not be counted again as another call.
+
+| Question | Observation to inspect | Prediction target | Practical meaning |
+| --- | --- | --- | --- |
+| How long did it run? | Tool duration on `span_end`; clause `latency_ms` for an executable stage | `duration_ms` | The prediction target is retained-workload elapsed time, not necessarily the raw span duration. ToolKB uses a direct call-level label; TrieKB and LatticeKB reconstruct it from retained executable clauses. |
+| How much CPU work accumulated? | `resource_observation.metrics.cpu_time.value_seconds`; clause `cpu_time_seconds` | `cpu_time_seconds` | Core-seconds, not CPU percentage. ToolKB uses the eligible owned call-level label; TrieKB and LatticeKB add retained-stage values. |
+| What was average CPU use? | `resource_observation.metrics.cpu_time.average_cores` | `cpu_avg_cores` | CPU time divided by the matching duration. Multi-core values may exceed one. |
+| What was the CPU burst? | `resource_observation.metrics.cpu_peak.value_cores` | `cpu_peak_cores` | Maximum average core use over a 500 ms window. This is separate from cumulative CPU time. |
+| What process memory was resident? | `resource_observation.metrics.memory_peak.value_bytes` | `sampled_peak_rss_bytes` | Sampled, de-duplicated RSS of the owned process lineage. It is not environment memory and is not an exact allocation count. |
+| What was the environment's highest charge? | `memory_total_peak_bytes` | `memory_total_peak_bytes` | Peak sampled cgroup or guest-environment usage, including pre-existing processes and charged cache. |
+| How much did environment memory rise during this tool? | `memory_extra_peak_bytes` together with `memory_baseline_bytes` | `memory_extra_peak_bytes` | `max(0, total_peak - baseline)`. This is the closest prediction to tool-caused extra memory, but it is an environment delta rather than exclusive attribution to the tool. |
+| What storage or network traffic was observed? | `metrics.disk_io`, `metrics.network_io`, and compatibility delta fields | No target in the seven-target load prediction | These remain measured diagnostics and training inputs only where a separate contract explicitly says so. |
+| What hardware events occurred? | `resources.pmu` | `pmu_prediction` | Separate ToolKB hardware prediction; do not mix it with the seven load targets. |
+
+For extra memory, always read `memory_baseline_bytes`, `memory_total_peak_bytes`, `memory_extra_peak_bytes`, `memory_measurement`, `memory_environment_id`, and `memory_eligible` together. Total and extra samples from different `memory_measurement` values are different metrics. Prediction evidence is namespaced by the same value, so an unavailable prediction can mean that history exists only under another measurement source.
+
+Use the status fields in this order: an observation is a training label only when that metric is `eligible`; a prediction exists only when its target is `available`; `evidence_counts` reports the historical support; and `calibration=unvalidated` means availability does not establish accuracy. `unavailable` is therefore a valid outcome, while a non-null p90 remains an empirical estimate rather than a resource limit.
+
 ## Sampling Frequency and Measurement Scope
 
 The `occurred_at` of a completion event must be a valid timestamp with a time zone; invalid input returns 422 and is not replaced with the current time. `duration_ms=0` may indicate a missing value or insufficient millisecond precision and is not used as a zero-duration training sample; independently valid PMU labels are not subject to this restriction.
@@ -24,7 +44,7 @@ The `occurred_at` of a completion event must be a valid timestamp with a time zo
 
 The authoritative call-level CPU peak uses a fixed 500 ms window; it is trainable only when attribution is exclusive, the action window can be aligned, each task's cumulative CPU boundaries are complete, and sample intervals qualify. The compatibility polling path additionally requires at least three valid samples, a single source, monotonic cumulative CPU, adjacent sample intervals of no more than 150 ms, and an untruncated timeline. A trailing portion shorter than 500 ms does not form a complete window. The subcommand CPU peak is unavailable for executions shorter than 1 second; cumulative CPU time and latency remain available. Short calls are not all discarded; only targets with insufficient evidence are unavailable.
 
-Memory label requirements: a confirmed task container or exclusive execution cgroup, no overlapping environment calls being monitored concurrently, a baseline no more than 150 ms before the call starts, at least one in-call sample, and sampling gaps, including the start and end boundaries, of no more than 150 ms. Samples after the end do not contribute to the peak. Totals include background processes and caches; the delta represents the growth of environment usage relative to the baseline and is not guaranteed to be caused entirely by the current tool.
+Memory label requirements: a confirmed task container or exclusive execution cgroup, no overlapping execution windows in the same environment, a baseline no more than 150 ms before the call starts, at least one in-call sample, and sampling gaps, including the start and end boundaries, of no more than 150 ms. Hook or finalizer lifetimes may overlap when verified execution windows do not. Samples after the end do not contribute to the peak. Totals include background processes and caches; the delta represents the growth of environment usage relative to the baseline and is not guaranteed to be caused entirely by the current tool.
 
 ## JSONL Record Types
 
@@ -130,7 +150,7 @@ The outer protocol for supplementary events is defined in the [trace event schem
 | `call_telemetry` | Compact call telemetry; see below for the fields. |
 | `artifact_summary` | Compact summary of the artifact; see below for the fields. |
 
-`call_telemetry` contains `tool_call_id`, `command`, `telemetry_quality`, `formal_completeness`, `eligible_for_kb`, `clause_count`, `clauses[]`. `artifact_summary` contains `schema`, `schema_version`, `mode`, `replay_execution`, `collector`, `container_id`, `telemetry_quality`, `formal_completeness`, `telemetry_loss_total`, `call_count`. These summaries and the outer inlined `artifact` are views of the same source and must not be counted twice.
+`call_telemetry` contains `tool_call_id`, `command`, `telemetry_quality`, `formal_completeness`, `eligible_for_kb`, `clause_count`, `call_resource`, and `clauses[]`. `call_resource` holds the call-level aligned `peak_cpu_cores` and `sampled_peak_rss_mb` plus per-target availability; it sums simultaneous owned exec-image contributions before taking each peak. `artifact_summary` contains `schema`, `schema_version`, `mode`, `replay_execution`, `collector`, `container_id`, `telemetry_quality`, `formal_completeness`, `telemetry_loss_total`, `call_count`. These summaries and the outer inlined `artifact` are views of the same source and must not be counted twice.
 
 `event_type=incomplete_span` means there is only a started event and no normal completion. Its `payload` is the raw sidecar API event; the common fields are as follows:
 
@@ -255,7 +275,7 @@ The current measurement definitions are as follows:
 | Metric | eBPF measurement | Value semantics |
 | --- | --- | --- |
 | `cpu_time` | `ebpf_task_cpu_time` or `ebpf_owned_lineage_cpu_time` | Cumulative CPU of the owned task lineage; only a complete action window provides a trainable `average_cores`. |
-| `cpu_peak` | `ebpf_task_cpu_500ms_peak` or `ebpf_owned_lineage_cpu_500ms_peak` | Maximum of the 500 ms average CPU; peaks are not synthesized when multiple summarized clauses have no aligned profile. |
+| `cpu_peak` | `ebpf_task_cpu_500ms_peak` or `ebpf_owned_lineage_cpu_500ms_peak` | Maximum of the 500 ms average CPU; multi-clause calls sum owned exec-image contributions in aligned windows before taking the maximum. |
 | `memory_peak` | `ebpf_sampled_distinct_mm_rss` | Sampled RSS peak after de-duplicating mm across the owned lineage; it is neither environment memory nor cgroup charge. |
 | `disk_io` | `ebpf_task_io_accounting` | Read/write cumulative difference of owned task I/O accounting. |
 | `network_io` | `ebpf_tcp_send_recv_bytes` | TCP send/receive bytes; explicitly unavailable when there is no supporting evidence, and currently not provided by the final execution summary. |
@@ -301,7 +321,7 @@ When `resource_observation` is present, the current training code relies on its 
 | `rss_peak_bytes`, `memory_rss_bytes_before`, `memory_rss_bytes_after` | bytes; historically named diagnostic values. For new eBPF records, `rss_peak_bytes` projects sampled distinct-mm RSS; older cgroup values may actually be `memory.current`. Do not mix across sources; when training on sampled RSS use `metrics.memory_peak`. |
 | `memory_baseline_bytes` | bytes; the most recent qualifying pre-call environment memory sample. |
 | `memory_total_peak_bytes` | bytes; maximum in-call environment memory sample, not an allocation limit. |
-| `memory_extra_peak_bytes` | bytes; `max(0, total_peak - baseline)`. |
+| `memory_extra_peak_bytes` | bytes; `max(0, total_peak - baseline)`. It is an environment high-water delta, not the tool process's exclusive allocation or RSS delta. |
 | `memory_environment_id`, `memory_measurement` | Environment identity and measurement method: `cgroup_v2_memory_current` for one stable cgroup or `cgroup_v2_environment_union_v1` for the deduplicated base-plus-execution scope; the protocol also supports `guest_memtotal_minus_memavailable`, which is not host VM RSS. |
 | `memory_eligible`, `memory_unavailable_reason` | Whether there is evidence for a memory label and the reason it is unavailable, independent of the process window coverage. |
 | `memory_timeline` | `[Unix seconds, bytes]` samples; qualifying output includes the baseline and in-call samples. |
@@ -342,7 +362,7 @@ Each point in `resource_timeline[]` contains `ts` (Unix seconds), `elapsed_ms` (
 
 ## Subcommand Profile and Collection Quality
 
-The entry points are `execution.tool_resource.call_telemetry.clauses[]` or `trace_event.artifact.calls[].clauses[]`; see the [clause telemetry schema](../contracts/clause-telemetry.schema.json). The two may represent the same execution and must not be counted twice.
+The entry points are `execution.tool_resource.call_telemetry` or `trace_event.artifact.calls[]`; use `call_resource` for aligned call peaks and `clauses[]` for executable-stage observations. See the [clause telemetry schema](../contracts/clause-telemetry.schema.json). The two may represent the same execution and must not be counted twice.
 
 | Field | Unit and meaning |
 | --- | --- |
@@ -400,7 +420,7 @@ Each of `tool.targets`, `trie.targets`, and `lattice.targets` contains all seven
 
 | Target | Unit | Meaning |
 | --- | --- | --- |
-| `duration_ms` | ms | Call duration. |
+| `duration_ms` | ms | Retained-workload elapsed time. ToolKB uses the direct call-level retained-workload label; TrieKB and LatticeKB reconstruct it from clause evidence. It may differ from raw span duration. |
 | `cpu_time_seconds` | core_seconds | Cumulative CPU of the attributed workload. |
 | `cpu_avg_cores` | cores | Cumulative CPU / duration of the same observation. |
 | `cpu_peak_cores` | cores | Fixed 500 ms window peak. |
@@ -416,7 +436,11 @@ Each target has `status`, `unit`, `metric_definition`, `avg`, `p50`, `p90`, `buc
 
 `pmu_prediction.targets` contains the nine PMU targets above. Each item has `status`, `unit`, `metric_definition`, `avg`, `p50`, `p90`, `backend`, `method`, `evidence_count`, `context`, `calibration`, `unavailable_reason`. Note that this is the singular `evidence_count` and has no `sample_count` or `buckets` from the load prediction. Its `schema_version`, `scope`, `lifecycle`, `quantile_method` declare the protocol, scope, complete-execution-profile lifecycle, and quantile method.
 
-TrieKB and LatticeKB keep their own `clause_predictions`. Their composed tool predictions are estimates: duration and average CPU assume zero hook overhead; single-clause environment memory assumes no peak outside the clause, and extra memory also assumes the same baseline. These assumptions are explicit in each target. Missing paired samples or joint memory timelines remain unavailable for multi-clause averages or memory. Excluded pipeline consumers prevent a complete tool prediction; retained clause predictions remain available. ToolKB learns complete tool observations directly. Short or partial observations do not automatically become eligible training labels.
+ToolKB learns eligible call-level observations directly; its retained-workload duration comes from the measured retained-clause interval when that execution evidence is required. TrieKB and LatticeKB independently select evidence for each retained clause and then use the same composer; none of the three KBs fills another model's missing evidence. For multiple clauses, duration sums serial-group maxima, cumulative CPU sums every retained stage, and CPU/RSS peaks take the maximum across serial groups after conservatively summing stages in each pipeline group. The composer draws 2048 synthetic combinations from independent clause marginals; these draws are not additional historical evidence and do not preserve cross-clause correlation.
+
+Memory evidence is also separated by `memory_measurement`. The current prediction request path uses the default `cgroup_v2_environment_union_v1` namespace. Native non-shell observations can instead be stored under `cgroup_v2_memory_current`; until request routing selects that namespace, ToolKB total/extra memory can be unavailable even though eligible observations exist under the other source. Interpret this as an incompatible-source query, not as zero memory use or proof that collection failed.
+
+TrieKB and LatticeKB tool predictions are estimates with narrower scope than a complete tool observation. Their duration and average CPU assume zero hook overhead. Multi-clause average CPU sums sampled clause CPU time and divides by the sampled composed duration; serial durations sum and pipeline durations take their maximum. Multi-clause environment total and extra memory take the maximum sampled clause prediction. The environment approximation does not reconstruct a shared baseline or joint timeline. Listed downstream pipeline consumers are excluded from both KBs for every clause target and omitted from composition; the same executable remains eligible when it runs alone or in the first pipeline position. An available result therefore describes only the retained workload. Individual retained-clause predictions remain available when the full composition cannot be formed. Short or partial observations do not automatically become eligible training labels.
 
 `diagnostics.backends.runtime`, `.trie`, `.lattice` are compatibility copies of the three independent results. Scheduling and the execution envelope use ToolKB explicitly. PMU remains a separate ToolKB prediction.
 
