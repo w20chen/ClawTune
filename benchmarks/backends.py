@@ -119,7 +119,7 @@ class _BFCLImplementation:
                 flush()
 
 
-def _bfcl_worker(connection, task, run_dir, factory):
+def _bfcl_worker(connection, task, run_dir, factory, gated=False):
     backend = None
     if sys.platform == "linux":
         import ctypes
@@ -129,6 +129,32 @@ def _bfcl_worker(connection, task, run_dir, factory):
             raise SystemExit(143)
         signal.signal(signal.SIGTERM, terminate)
     try:
+        if gated:
+            # Wait before importing BFCL or creating task-owned objects. The
+            # sidecar verifies this identity and moves this worker into its
+            # dedicated task cgroup, as for SWE native (non-exec) tools.
+            if sys.platform != "linux":
+                raise RuntimeError("BFCL resource instrumentation requires Linux cgroup v2")
+            stat = Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()
+            namespace = os.readlink("/proc/self/ns/pid")
+            connection.send((True, {"pid": os.getpid(),
+                "pid_namespace_inode": int(namespace.removeprefix("pid:[").removesuffix("]")),
+                "process_starttime_ticks": int(stat[19])}))
+            if connection.recv() != "go":
+                return
+            # Moving a running Python process does not migrate existing memory
+            # charges. Exec a fresh interpreter *inside* the admitted cgroup,
+            # then receive task state over the inherited private pipe. Otherwise
+            # preallocated Python arenas would escape environment accounting.
+            fd = connection.fileno()
+            os.set_inheritable(fd, True)
+            bootstrap = (
+                "import sys; from multiprocessing.connection import Connection; "
+                f"c=Connection({fd}); sys.path[:]=c.recv(); "
+                "from benchmarks.backends import _bfcl_worker; "
+                "_bfcl_worker(c, *c.recv())"
+            )
+            os.execv(sys.executable, [sys.executable, "-c", bootstrap])
         backend = factory(task, run_dir)
         connection.send((True, {k: getattr(backend, k) for k in ("tools", "system", "turns")}))
         while True:
@@ -161,21 +187,43 @@ def _bfcl_worker(connection, task, run_dir, factory):
 
 class BFCLBackend:
     """Keep BFCL's state in one killable worker, not a daemon HTTP thread."""
-    def __init__(self, task, run_dir, *, deadline=None, _factory=_BFCLImplementation):
+    def __init__(self, task, run_dir, *, deadline=None, _factory=_BFCLImplementation,
+                 sidecar_port=None, runtime_id="", gateway_id=GATEWAY_ID):
         import multiprocessing
         context = multiprocessing.get_context("spawn")
         self._connection, child = context.Pipe()
         self._cancelled = threading.Event()
         self.deadline = deadline
-        self._worker = context.Process(target=_bfcl_worker, args=(child, task, run_dir, _factory))
+        self.sidecar = SidecarExecutions(sidecar_port) if sidecar_port else None
+        self.runtime_id, self.gateway_id = runtime_id, gateway_id
+        self._scope_attempted = False
+        self._worker = context.Process(target=_bfcl_worker,
+            args=(child, task, run_dir, _factory, self.sidecar is not None))
         self._worker.start()
         child.close()
         try:
+            if self.sidecar is not None:
+                identity = self._receive()
+                self._scope_attempted = True
+                self.sidecar.provision_native_scope(runtime_id, identity, gateway_id=gateway_id)
+                check_cancelled()
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TaskDeadlineExceeded("task timed out during BFCL environment admission")
+                self._connection.send("go")
+                self._connection.send(sys.path)
+                self._connection.send((task, run_dir, _factory))
             for key, value in self._receive().items():
                 setattr(self, key, value)
         except BaseException:
             self._stop()
+            self._release_scope()
+            self._connection.close()
             raise
+
+    def _release_scope(self):
+        if self._scope_attempted:
+            self.sidecar.delete_native_scope(self.runtime_id, gateway_id=self.gateway_id)
+            self._scope_attempted = False
 
     def _stop(self):
         if self._worker.is_alive():
@@ -229,6 +277,10 @@ class BFCLBackend:
             self._stop()
             self._connection.close()
 
+    def release_scope(self):
+        """Remove sampling identity only after the common runtime drain."""
+        self._release_scope()
+
     def quiesce(self):
         self.close()
 
@@ -241,10 +293,11 @@ class TerminalBackend:
     def __init__(self, task, run_dir: Path, *, deadline: float | None = None, platform: str = "",
                  sidecar_port: int | None = None, runtime_id: str = "",
                  gateway_id: str = GATEWAY_ID, repo: str = "terminal-bench",
-                 telemetry_required: bool = False):
+                 telemetry_required: bool = False, cgroup_required: bool = False):
         self.deadline = deadline
         self._cancelled = threading.Event()
         self.telemetry_required = telemetry_required
+        self.cgroup_required = cgroup_required
         # Sidecar execution lifecycle.  Without a port the backend keeps the
         # legacy plain `docker exec` path (no PMU evidence for those calls).
         self.runtime_id = runtime_id
@@ -464,6 +517,7 @@ class TerminalBackend:
                 namespace_inode=namespace_inode,
                 starttime_ticks=starttime_ticks,
                 container_id=self.container,
+                cgroup_required=getattr(self, "cgroup_required", False),
             )
         except (_GateDegrade, SidecarUnavailable, ExecutionStartRejected) as exc:
             if isinstance(exc, _GateDegrade):

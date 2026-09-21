@@ -1,3 +1,9 @@
+# Pending benchmark integration acceptance
+
+- On `kunpeng`, `PYTHONPATH=services/sidecar/src python3 -m pytest services/sidecar/tests tests -q --disable-warnings --tb=short` is not clean: nine descendant-cleanup cases fail with the Conda Python missing `os.pidfd_open`. The same nine cases fail on unchanged `83a56b8`. Resolve this interpreter prerequisite before accepting runs that spawn descendants; do not replace PID-safe cleanup with unchecked signals.
+- Fresh model-backed acceptance remains pending: run `python3 scripts/clawtune.py benchmark --benchmark <name> --sample 3 --parallelism 2` for `swe-rebench`, `swe-bench-verified`, `deep-research-bench`, `terminal-bench`, and `bfcl`, with configured providers/datasets and a fresh KB. Verify environment-memory coverage and paired prediction errors; unit tests and the isolated real-cgroup worker probe do not establish prediction accuracy. Deployment to the active remote checkout has not been performed.
+- The opt-in `CLAWTUNE_TEST_NATIVE_CGROUP=1 PYTHONPATH=services/sidecar/src python3 -m pytest tests/test_benchmark_scope_unification.py -q` requires delegated Linux cgroup v2 and cannot run on Windows. Keep it in Linux acceptance alongside the model-backed matrix.
+
 # Pending Linux acceptance for the minimal repair (2026-09-21)
 
 The candidate now keeps a stable per-runtime cgroup memory scope across execution

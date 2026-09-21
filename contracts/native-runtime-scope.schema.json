@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/native-runtime-scope.schema.json",
+  "title": "Gated persistent task worker identity",
+  "description": "POST /v1/gateways/{gateway_id}/runtimes/{runtime_id}/native-scope. The worker must wait for acknowledgement before loading task state. DELETE after the worker and descendants stop. Response is a server-resolved ResourceScope; this is not an exec/PMU boundary.",
+  "type": "object",
+  "required": ["pid", "pid_namespace_inode", "process_starttime_ticks"],
+  "properties": {
+    "pid": {"type": "integer", "minimum": 1},
+    "pid_namespace_inode": {"type": "integer", "minimum": 1},
+    "process_starttime_ticks": {"type": "integer", "minimum": 1}
+  },
+  "additionalProperties": false
+}

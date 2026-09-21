@@ -429,7 +429,9 @@ class RealtimeToolMonitor:
                 # failure explicitly; callers still need the accepted scope
                 # for execution identity and trace provenance.
                 if not memory_execution_parent_path:
-                    self.environment_memory.begin(correlation_key(active.request), scope)
+                    self.environment_memory.begin(
+                        correlation_key(active.request), memory_base_scope or scope
+                    )
                 self.ebpf_monitor.bind_scope(correlation_key(active.request), scope)
                 return True
             if (

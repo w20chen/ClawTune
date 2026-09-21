@@ -122,6 +122,20 @@ def bridged(monkeypatch, tmp_path):
     return SimpleNamespace(clock=clock, calls=calls, run=run, trace=trace, Backend=Backend)
 
 
+@pytest.mark.parametrize("drain_fails", [False, True])
+def test_native_scope_release_requires_acknowledged_drain(monkeypatch, bridged, drain_fails):
+    monkeypatch.setattr(bridged.Backend, "release_scope",
+                        lambda self: bridged.calls.append("release_scope"), raising=False)
+    monkeypatch.setattr(host, "_run_openclaw_agent", lambda **kwargs: 0)
+    if drain_fails:
+        def fail(*args, **kwargs):
+            raise RuntimeError("drain unavailable")
+        monkeypatch.setattr(host, "_drain_runtime", fail)
+    bridged.run()
+    assert ("release_scope" in bridged.calls) is not drain_fails
+    assert "close" in bridged.calls
+
+
 @pytest.mark.parametrize("kind", ["functions", "terminal"])
 def test_setup_and_all_turns_use_one_deadline(monkeypatch, bridged, kind):
     def setup(**kwargs):

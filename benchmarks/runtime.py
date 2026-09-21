@@ -125,12 +125,14 @@ def _execute_bridged(task, config, run_dir, port, trace):
 
     try:
         _required_terminal_preflight(config, task, trace, deadline)
-        backend = BFCLBackend(task, run_dir, deadline=deadline) if task.kind == "functions" else TerminalBackend(
+        backend = BFCLBackend(task, run_dir, deadline=deadline, sidecar_port=port,
+            runtime_id=runtime_id, gateway_id=getattr(config, "benchmark_gateway_id", "swe-rebench")) if task.kind == "functions" else TerminalBackend(
             task, run_dir, deadline=deadline, platform=config.docker.platform,
             sidecar_port=port, runtime_id=runtime_id, gateway_id=getattr(
                 config, "benchmark_gateway_id", "swe-rebench"
             ), repo=config.kb_repo,
-            telemetry_required=config.runtime.ebpf_required)
+            telemetry_required=config.runtime.ebpf_required,
+            cgroup_required=getattr(config.docker, "cgroup_required", False))
     except (host.TaskDeadlineExceeded, subprocess.TimeoutExpired) as exc:
         # Backend constructors must confirm cleanup before propagating timeout.
         exit_code, error = timeout_outcome(exc)
@@ -194,6 +196,7 @@ def _execute_bridged(task, config, run_dir, port, trace):
         exit_code, error = timeout_outcome(exc)
     finally:
         manifest.unlink(missing_ok=True)
+        runtime_drained = False
         try:
             quiesce = getattr(backend, "quiesce", None)
             if quiesce is not None:
@@ -207,17 +210,22 @@ def _execute_bridged(task, config, run_dir, port, trace):
                             "cancelled" if exit_code == -1 else "runtime_stopped"),
                     trace_dir=trace,
                 ))
-            host._observe_best_effort(trace, "runtime_drain", lambda: host._drain_runtime(
-                port,
-                runtime_id,
-                gateway_id=getattr(config, "benchmark_gateway_id", "swe-rebench"),
-                flush_kb=False,
-            ))
+            def drain():
+                host._drain_runtime(
+                    port, runtime_id,
+                    gateway_id=getattr(config, "benchmark_gateway_id", "swe-rebench"),
+                    flush_kb=False,
+                )
+                return True
+            runtime_drained = host._observe_best_effort(trace, "runtime_drain", drain)
         finally:
             try:
                 host._observe_best_effort(trace, "trace_snapshot", lambda: host._collect_runtime_traces(
                     run_dir / "sidecar", trace, runtime_id, task_label=task.directory_name))
             finally:
                 backend.close()
+                release_scope = getattr(backend, "release_scope", None)
+                if release_scope is not None and runtime_drained:
+                    release_scope()
     return ContainerResult(task_id=task.task_id, image=task.image, exit_code=exit_code, error=error,
         trace_dir=trace, trace_files=sorted(trace.glob("*.jsonl")), duration_seconds=time.monotonic() - started)

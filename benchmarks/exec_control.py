@@ -221,6 +221,7 @@ class SidecarExecutions:
         namespace_inode: int,
         starttime_ticks: int,
         container_id: str,
+        cgroup_required: bool = False,
     ) -> None:
         """Report the gated root so the sidecar can arm its collectors."""
 
@@ -232,8 +233,9 @@ class SidecarExecutions:
             "cgroup_path": None,
             "pid_namespace_inode": namespace_inode,
             "container_id": container_id,
-            "host_cgroup_gate": False,
-            "cgroup_required": False,
+            "host_cgroup_gate": os.environ.get("CLAWTUNE_HOST_CGROUP_GATE", "1").lower()
+                not in {"0", "false", "no", "off"},
+            "cgroup_required": cgroup_required,
         }
         try:
             response = self._request(
@@ -273,6 +275,16 @@ class SidecarExecutions:
         )
 
     # ── runtime sampling scope ──────────────────────────────────────────
+    def provision_native_scope(self, runtime_id: str, identity: dict[str, int], *,
+                               gateway_id: str = GATEWAY_ID) -> dict[str, Any]:
+        """Gate a persistent task worker before it loads benchmark state."""
+        return self._request("POST", _scope_endpoint(runtime_id, gateway_id).replace(
+            "/sandbox-scope", "/native-scope"), identity, timeout=self.start_timeout)
+
+    def delete_native_scope(self, runtime_id: str, *, gateway_id: str = GATEWAY_ID) -> None:
+        self._request("DELETE", _scope_endpoint(runtime_id, gateway_id).replace(
+            "/sandbox-scope", "/native-scope"))
+
     def store_container_scope(
         self,
         runtime_id: str,

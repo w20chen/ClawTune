@@ -27,6 +27,40 @@ def collect(monkeypatch, points, start, end, *, container=True):
     return monitor.complete("call", started_at=start, ended_at=end)
 
 
+@pytest.mark.parametrize("source", ["trusted-execution-root-pid", "docker-exec-pid"])
+def test_pid_refinement_keeps_verified_environment_baseline(monkeypatch, source):
+    clock = SimpleNamespace(now=10., value=100)
+    monkeypatch.setattr("clawtune_sidecar.monitoring.environment_memory.time.time", lambda: clock.now)
+    monkeypatch.setattr(EnvironmentMemoryMonitor, "_read", staticmethod(lambda _: clock.value))
+    monitor = EnvironmentMemoryMonitor()
+    monitor.begin("call", SimpleNamespace(cgroup_path="/sys/fs/cgroup/task", container_id="task"))
+    clock.now, clock.value = 10.05, 160
+    monitor.begin("call", SimpleNamespace(cgroup_path="/sys/fs/cgroup/task", container_id=None,
+                                          attribution_source=source))
+    monitor.poll()
+    result = monitor.complete("call", started_at=10., ended_at=10.1)
+    assert result["memory_eligible"] is True
+    assert result["memory_baseline_bytes"] == 100
+    assert result["memory_extra_peak_bytes"] == 60
+
+
+def test_environment_rebind_cannot_cross_task(monkeypatch):
+    monkeypatch.setattr(EnvironmentMemoryMonitor, "_read", staticmethod(lambda _: 100))
+    monitor = EnvironmentMemoryMonitor()
+    monitor.begin("call", SimpleNamespace(cgroup_path="/sys/fs/cgroup/task-a", container_id="a"))
+    monitor.begin("call", SimpleNamespace(cgroup_path="/sys/fs/cgroup/task-b", container_id="b"))
+    result = monitor.complete("call", started_at=10., ended_at=10.1)
+    assert result == {"memory_eligible": False, "memory_unavailable_reason": "task_environment_changed"}
+
+
+def test_native_worker_environment_uses_charge_not_host_rss(monkeypatch):
+    monkeypatch.setattr(EnvironmentMemoryMonitor, "_read", staticmethod(lambda _: 100))
+    monitor = EnvironmentMemoryMonitor()
+    monitor.begin("call", SimpleNamespace(cgroup_path="/sys/fs/cgroup/native", container_id=None,
+                                          attribution_source="exclusive-task-cgroup"))
+    assert monitor._active["call"]["measurement"] == "cgroup_v2_memory_current"
+
+
 def test_delayed_finalizer_excludes_post_execution_peak(monkeypatch):
     result = collect(monkeypatch, [(10, 100), (10.05, 200), (10.1, 150), (20, 9000)], 10, 10.1)
     assert result["memory_total_peak_bytes"] == 200

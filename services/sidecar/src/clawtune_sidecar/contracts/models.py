@@ -226,6 +226,14 @@ class ExecutionClaimResponse(BaseModel):
     profiling: Any | None
 
 
+class NativeRuntimeScopeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pid: int = Field(gt=0)
+    pid_namespace_inode: int = Field(gt=0)
+    process_starttime_ticks: int = Field(gt=0)
+
+
 class ExecutionStartedRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

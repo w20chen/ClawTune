@@ -203,9 +203,23 @@ class EnvironmentMemoryMonitor:
         path = getattr(scope, "cgroup_path", None)
         if not path or Path(path).as_posix().rstrip("/") in {"/sys/fs/cgroup", "/sys/fs/cgroup/unified"}:
             return
+        with self._lock:
+            active = self._active.get(key)
+            if active is not None:
+                # A process-scope refinement is not a new environment. Keep
+                # the pre-action baseline, but reject a different task scope.
+                same_path = any(PurePosixPath(path).is_relative_to(PurePosixPath(p))
+                                for p in active["paths"])
+                container = getattr(scope, "container_id", None)
+                if same_path and (not container or container == active["path"]):
+                    return
+                self._active.pop(key, None)
+                self._unavailable[key] = "task_environment_changed"
+                return
         # Host service cgroups (e.g. sshd.service) are not task environments.
         if not (getattr(scope, "container_id", None) or
-                getattr(scope, "attribution_source", None) == "exclusive-execution-cgroup"):
+                getattr(scope, "attribution_source", None) in {
+                    "exclusive-execution-cgroup", "exclusive-task-cgroup"}):
             with self._lock:
                 self._unavailable[key] = "unverified_task_environment"
             return

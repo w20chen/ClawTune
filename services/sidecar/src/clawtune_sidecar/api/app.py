@@ -28,6 +28,7 @@ from clawtune_sidecar.contracts.models import (
     ExecutionStartedRequest,
     ExecutionUpdateResponse,
     ModelEvent,
+    NativeRuntimeScopeRequest,
     PlacementAdvice,
     ResourceScope,
     RuntimeAbortRequest,
@@ -871,6 +872,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
             await asyncio.to_thread(close_predictor)
         for execution_id in list(app_state._owned_cgroup_paths):
             await cleanup_owned_cgroup(app_state, execution_id)
+        for scope in app_state._native_runtime_scopes.values():
+            _cleanup_owned_cgroup(scope.cgroup_path)
         for path in sorted(
             app_state._owned_environment_cgroup_paths,
             key=lambda item: len(Path(item).parts),
@@ -1188,6 +1191,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
             )
 
     def with_sandbox_fallback(request: ToolBeforeRequest, s: AppState) -> ToolBeforeRequest:
+        native = s._native_runtime_scopes.get((request.gateway_id, request.runtime_id))
+        if native is not None:
+            return request.model_copy(update={"resource_scope": native})
         if request.tool_name in {"web_search", "web_fetch"}:
             return request
         if (
@@ -1208,6 +1214,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
         event: ToolCompletedEvent,
         s: AppState,
     ) -> ToolCompletedEvent:
+        native = s._native_runtime_scopes.get((event.gateway_id, event.runtime_id))
+        if native is not None:
+            return event.model_copy(update={"resource_scope": native})
         if event.tool_name in {"web_search", "web_fetch"}:
             return event
         scope = sandbox_fallback_scope(s, event.runtime_id, event.gateway_id)
@@ -1431,6 +1440,61 @@ def create_app(state: AppState | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail="invalid_runtime_id")
         await store_sandbox_scope(s, scope, runtime_id)
         return {"stored": True}
+
+    @app.post("/v1/gateways/{gateway_id}/runtimes/{runtime_id}/native-scope",
+              response_model=ResourceScope)
+    async def provision_native_runtime_scope(
+        gateway_id: str, runtime_id: str, request: NativeRuntimeScopeRequest,
+        s: AppState = Depends(get_state), _: None = Depends(auth),
+    ) -> ResourceScope:
+        if not gateway_id.strip() or len(gateway_id) > 128 or not runtime_id.strip() or len(runtime_id) > 128:
+            raise HTTPException(status_code=422, detail="invalid_runtime_owner")
+        s.executions.require_runtime_open(gateway_id, runtime_id)
+        host_pid = _resolve_host_pid(request.pid, pid_namespace_inode=request.pid_namespace_inode,
+                                     starttime_ticks=request.process_starttime_ticks)
+        if host_pid is None:
+            raise HTTPException(status_code=422, detail="invalid_native_worker_identity")
+        owner = (gateway_id, runtime_id)
+        previous = s._native_runtime_scopes.get(owner)
+        if previous is not None:
+            if (previous.root_pid != host_pid or previous.root_starttime_ticks != request.process_starttime_ticks
+                    or previous.pid_namespace_inode != request.pid_namespace_inode):
+                raise HTTPException(status_code=409, detail="native_runtime_already_owned")
+            return previous
+        if owner in s._sandbox_scopes_by_owner:
+            raise HTTPException(status_code=409, detail="runtime_scope_already_owned")
+        identity = f"{len(gateway_id)}:{gateway_id}{len(runtime_id)}:{runtime_id}"
+        scope = _prepare_host_execution_cgroup(
+            "native-" + hashlib.sha256(identity.encode()).hexdigest()[:24],
+            ExecutionStartedRequest(update_token="native-runtime", launcher_pid=0,
+                child_pid=request.pid, pid_namespace_inode=request.pid_namespace_inode,
+                process_starttime_ticks=request.process_starttime_ticks, host_cgroup_gate=True),
+            None, s.config.execution_cgroup_root, environment_identity=identity,
+        )
+        # A persistent worker has no container fallback. Never register the
+        # harness/sshd cgroup as its task environment when delegation fails.
+        if scope is None:
+            raise HTTPException(status_code=503, detail="native_task_cgroup_unavailable")
+        scope = scope.model_copy(update={"execution_id": None,
+            "source": "clawtune-sidecar-native-runtime", "attribution_source": "exclusive-task-cgroup"})
+        s._native_runtime_scopes[owner] = scope
+        s._owned_environment_cgroup_paths.add(str(Path(scope.cgroup_path).parent))
+        await store_sandbox_scope(s, scope, runtime_id, gateway_id)
+        return scope
+
+    @app.delete("/v1/gateways/{gateway_id}/runtimes/{runtime_id}/native-scope")
+    async def delete_native_runtime_scope(
+        gateway_id: str, runtime_id: str,
+        s: AppState = Depends(get_state), _: None = Depends(auth),
+    ) -> dict[str, bool]:
+        owner = (gateway_id, runtime_id)
+        scope = s._native_runtime_scopes.get(owner)
+        if scope is None:
+            return {"stored": False}
+        if not _cleanup_owned_cgroup(scope.cgroup_path):
+            raise HTTPException(status_code=409, detail="native_worker_cleanup_unconfirmed")
+        s._native_runtime_scopes.pop(owner)
+        return await delete_gateway_runtime_sandbox_scope(gateway_id, runtime_id, s, None)
 
     @app.post(
         "/v1/gateways/{gateway_id}/runtimes/{runtime_id}/sandbox-scope"

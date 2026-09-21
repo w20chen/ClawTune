@@ -54,6 +54,7 @@ class AppState:
     _sandbox_scopes_by_owner: dict[tuple[str | None, str], ResourceScope] = field(
         default_factory=dict
     )
+    _native_runtime_scopes: dict[tuple[str, str], ResourceScope] = field(default_factory=dict)
     _max_recent_samples: int = 200  # max samples to keep in memory
 
 

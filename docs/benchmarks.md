@@ -61,6 +61,18 @@ For an existing key file elsewhere, set `llm.api_key_file` to its path; `swe_reb
 
 Dry-run checks task structure, selection, and initialization data, not image availability, credentials, or live collection.
 
+All adapters use the shared SWE runtime identity and resource-monitoring path.
+Terminal Bench keeps each task's Compose environment and uses the same host
+cgroup execution gate as SWE. `docker.cgroup_required` also applies to Terminal.
+BFCL keeps a persistent worker for multi-turn state; online runs require Linux
+cgroup v2 with delegated CPU and memory controllers. The sidecar admits that
+worker into a dedicated task cgroup, then starts a fresh Python interpreter there
+before task initialization; failed admission
+stops setup instead of sampling the host service. Native function calls use
+tool-window measurements, not exec-triggered PMU or shell-clause labels.
+Environment memory means cgroup charges (including cache), not process RSS. Insufficient
+sampling coverage still produces unavailable metrics, not zero-valued labels.
+
 Per-task output is saved under `.runtime/benchmarks/<benchmark>/<run>/traces/<task-digest>/` (under `--output` when set); [Inspect online output](#4-inspect-online-output) lists every file and the per-benchmark differences. The harness does not stream agent output to the terminal: benchmark runs keep the plugin console quiet and discard agent stdout, so a task prints only a few harness lines while it runs. Use `less <path>` to inspect the per-task files.
 
 ## 2. Prepare tasks
