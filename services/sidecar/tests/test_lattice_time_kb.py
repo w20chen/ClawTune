@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from tool_resource.runtime_kb import ClauseObservation
+from tool_time import lattice_kb as lattice_config
 from tool_time._lattice_vendor.nodes import build_nodes
 from tool_time._lattice_vendor.normalize import normalize_command
 from tool_time._lattice_vendor.schemas import Observation
@@ -159,7 +160,11 @@ def test_three_algorithms_match_vendored_lattice_core() -> None:
         estimator="median",
         split_compounds=False,
     )
-    compute_shrinkage_variances(nodes, kappa=5.0, global_log_var=global_log_var)
+    compute_shrinkage_variances(
+        nodes,
+        kappa=lattice_config._SHRINKAGE_KAPPA,
+        global_log_var=global_log_var,
+    )
     command = shlex.join(query_argv)
 
     for algorithm in ("shrinkage", "loso"):
@@ -175,7 +180,7 @@ def test_three_algorithms_match_vendored_lattice_core() -> None:
             risk_method=algorithm,
             context_sample_alpha=0.03,
             estimator="median",
-            shrinkage_kappa=5.0,
+            shrinkage_kappa=lattice_config._SHRINKAGE_KAPPA,
             loso_min_signatures=2,
             specificity_risk_tolerance=0.5,
             risk_weight=1.0,
