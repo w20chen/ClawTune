@@ -113,6 +113,7 @@
         "sampled_peak_rss_mb": {"type": ["number", "null"], "minimum": 0, "description": "Maximum sampled RSS in decimal megabytes after summing distinct live address spaces in aligned bins."},
         "availability": {
           "type": "object",
+          "description": "Per-target availability of the call-level CPU and sampled RSS peaks, including reasons when unavailable.",
           "required": ["cpu", "memory"],
           "properties": {
             "cpu": {"type": "string", "description": "ok or an unknown:<reason> value for the call-level CPU peak."},

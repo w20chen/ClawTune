@@ -1059,18 +1059,19 @@ class ClauseResourceKB(_ReplayHistory):
         }
         return kb
 
-    def observe_completed_clause(self, obs: ClauseObservation) -> None:
-        """Buffer a completed clause; visible only once strictly causally prior."""
+    def observe_completed_clause(self, obs: ClauseObservation) -> bool:
+        """Return whether buffered; visible only once strictly causally prior."""
 
         if self._frozen:
-            return
+            return False
         from tool_resource.commands import normalized_observation
         obs = normalized_observation(obs)
         if is_pipeline_dependent_consumer(obs):
-            return
+            return False
         self._observed_counts[_history_identity(obs)] += 1
         heapq.heappush(self._pending, (obs.ts_end, self._pending_seq, obs))
         self._pending_seq += 1
+        return True
 
     def merge_historical(self, observations: Iterable[ClauseObservation]) -> int:
         def project(obs: ClauseObservation) -> list[str]:

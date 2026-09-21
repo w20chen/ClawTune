@@ -2098,6 +2098,48 @@ def test_online_prediction_returns_quality_gated_pmu_history() -> None:
     assert result.pmu_prediction.targets["llc_miss_rate"].p50 == .125
 
 
+@pytest.mark.parametrize("frozen", [False, True])
+def test_finish_execution_counts_only_accepted_clauses(tmp_path, monkeypatch, frozen):
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(), ebpf_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
+        repo="repo-1",
+    )
+    if frozen:
+        predictor = ToolResourcePredictor(
+            kb=predictor.kb, buckets=predictor.buckets, report=predictor.report,
+            repo="repo-1", frozen=True,
+        )
+    observations = tuple(
+        ClauseObservation(
+            repo="repo-1", bin=bin_, argv=argv, ts_start=1.0, ts_end=2.0,
+            latency_ms=1000.0, in_pipe=True, pipeline_position=position,
+        )
+        for position, bin_, argv in (
+            (0, "cat", ("cat", "file")),
+            (1, "head", ("head", "-n", "1")),
+        )
+    )
+    predictor._runs_by_execution_id["exec-pipe"] = SimpleNamespace(
+        tool_call_id="call-pipe",
+        _observer=SimpleNamespace(context=SimpleNamespace(
+            artifact_path=tmp_path / "pipe.json",
+        )),
+    )
+    monkeypatch.setattr(predictor._sdk, "finish_command", lambda *args, **kwargs: SimpleNamespace(
+        kb_observations=observations, kb_observations_added=2,
+        kb_update_error=None, call_telemetry={}, telemetry_artifact=None,
+    ))
+    summary = predictor.finish_execution(execution_id="exec-pipe", exit_code=0, signal=None)
+    predictor.flush_kb_updates(timeout_seconds=2.0)
+    expected = 0 if frozen else 1
+    assert summary.kb_observations_added == expected
+    assert summary.kb_update_error is None
+    assert len(predictor.kb._pending) == expected
+    assert len(predictor.lattice_kb._pending) == expected
+    assert predictor._clause_kb_version == expected
+
+
 def test_finish_execution_feeds_and_persists_the_shared_lattice_kb(
     tmp_path: Path,
     monkeypatch,

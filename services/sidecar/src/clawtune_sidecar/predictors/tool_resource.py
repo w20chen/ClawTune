@@ -262,10 +262,10 @@ class _DeferredSdkClauseKb:
                 **kwargs,
             )
 
-    def observe_completed_clause(self, _observation: ClauseObservation) -> None:
+    def observe_completed_clause(self, _observation: ClauseObservation) -> bool:
         # ToolResourceSDK returns the validated observations to the adapter.
         # The predictor applies them once under its shared-KB lock.
-        return None
+        return True
 
 
 class ToolResourcePredictor:
@@ -1148,12 +1148,14 @@ class ToolResourcePredictor:
             with self._kb_lock:
                 for observation in result.kb_observations:
                     try:
-                        self.kb.observe_completed_clause(observation)
+                        accepted = self.kb.observe_completed_clause(observation)
                     except Exception as exc:
                         kb_update_errors.append(
                             "clause_kb_update_failed:"
                             f"{type(exc).__name__}: {exc}"
                         )
+                        continue
+                    if not accepted:
                         continue
                     accepted_observations.append(observation)
                     self._clause_kb_version += 1

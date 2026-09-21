@@ -422,6 +422,7 @@ class ToolResourceSDK:
         )
         finalize_error = run._observer.finalize(replay_execution=replay_execution)
         artifact: dict[str, Any] | None = None
+        accepted_observations: list[ClauseObservation] = []
         try:
             if finalize_error is not None:
                 raise ValueError(finalize_error)
@@ -453,18 +454,18 @@ class ToolResourceSDK:
             )
             with self._kb_lock:
                 for observation in observations:
-                    self._kb.observe_completed_clause(observation)
+                    if self._kb.observe_completed_clause(observation):
+                        accepted_observations.append(observation)
             update_error = None
         except Exception as exc:
-            observations = []
             update_error = f"{type(exc).__name__}: {exc}"
         result = CommandResult(
             run=run,
             workload_result=workload_result,
             call_telemetry=call_telemetry,
             telemetry_artifact=artifact,
-            kb_observations=tuple(observations),
-            kb_observations_added=len(observations),
+            kb_observations=tuple(accepted_observations),
+            kb_observations_added=len(accepted_observations),
             kb_update_error=update_error,
         )
         with self._run_lock:
