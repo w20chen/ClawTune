@@ -18,6 +18,31 @@ from typing import FrozenSet, Iterable, List
 from tool_time._lattice_vendor.normalize import FeatureSet
 
 
+class CoverageIndex:
+    """Find generated nodes contained in an observation's complete features."""
+
+    def __init__(self, nodes: Iterable[FeatureSet]) -> None:
+        self._trie: dict = {}
+        for position, node in enumerate(nodes):
+            branch = self._trie
+            for feature in sorted(node):
+                branch = branch.setdefault(feature, {})
+            branch[None] = (position, node)
+
+    def subsets(self, features: FeatureSet) -> Iterable[FeatureSet]:
+        allowed = set(features)
+        stack = [self._trie]
+        matches: list[tuple[int, FeatureSet]] = []
+        while stack:
+            for feature, child in stack.pop().items():
+                if feature is None:
+                    matches.append(child)
+                elif feature in allowed:
+                    stack.append(child)
+        for _, node in sorted(matches):
+            yield node
+
+
 def generate_context_nodes(
     features: FeatureSet,
     core: FeatureSet,

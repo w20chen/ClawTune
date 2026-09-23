@@ -1,7 +1,7 @@
 """Node statistics: build, store, and query historical context nodes.
 
-Each node aggregates duration samples from commands whose feature set
-is a superset of the node's features.
+With subset coverage enabled, each generated node aggregates duration samples
+from every command whose feature set contains the node's features.
 """
 
 from __future__ import annotations
@@ -108,6 +108,7 @@ def build_nodes(
     min_partial_support: int = 1,
     estimator: str = "median",
     split_compounds: bool = True,
+    subset_coverage: bool = False,
 ) -> Tuple[Dict[FeatureSet, NodeStats], float, float]:
     """Build context nodes from historical observations.
 
@@ -122,11 +123,13 @@ def build_nodes(
             ``||``, ``;``, ``|``) into individual clauses and process
             each clause independently.  Each clause inherits the
             observation's duration.
+        subset_coverage: Reaggregate the generated node set using every
+            observation whose features contain the node's features.
 
     Returns:
         Tuple of ``(nodes_dict, global_log_var, global_log_std)``.
     """
-    from tool_time._lattice_vendor.features import generate_context_nodes
+    from tool_time._lattice_vendor.features import CoverageIndex, generate_context_nodes
     from tool_time._lattice_vendor.normalize import normalize_command, split_all_clauses
 
     # Collect durations per node
@@ -140,6 +143,7 @@ def build_nodes(
     node_last_updated: Dict[FeatureSet, str] = {}
     all_log_durations: List[float] = []
     exact_feature_sets: set[FeatureSet] = set()
+    normalized: list[tuple[FeatureSet, float, str]] = []
 
     for obs in observations:
         if obs.duration_s <= 0:
@@ -159,6 +163,8 @@ def build_nodes(
                 is_clause=(split_compounds and len(clauses) > 1),
             )
             exact_feature_sets.add(features)
+            if subset_coverage:
+                normalized.append((features, obs.duration_s, obs.timestamp))
             log_duration = math.log1p(obs.duration_s)
             all_log_durations.append(log_duration)
 
@@ -177,6 +183,27 @@ def build_nodes(
                         obs.timestamp,
                     )
 
+    generated_counts = {fs: len(values) for fs, values in node_durations.items()}
+    if subset_coverage:
+        # Bounded generation defines which nodes exist.  It does not define
+        # their coverage: an existing node can be a subset of an observation
+        # even when that observation did not generate the node.
+        coverage = CoverageIndex(node_durations)
+        node_durations = defaultdict(list)
+        node_signature_logs = defaultdict(lambda: defaultdict(list))
+        node_signature_raw = defaultdict(lambda: defaultdict(list))
+        node_last_updated = {}
+        for features, duration, timestamp in normalized:
+            log_duration = math.log1p(duration)
+            for node_fs in coverage.subsets(features):
+                node_durations[node_fs].append(duration)
+                node_signature_logs[node_fs][features].append(log_duration)
+                node_signature_raw[node_fs][features].append(duration)
+                if timestamp:
+                    node_last_updated[node_fs] = _latest_timestamp(
+                        node_last_updated.get(node_fs, ""), timestamp,
+                    )
+
     # Global statistics
     global_log_mean = mean(all_log_durations) if all_log_durations else 0.0
     global_log_std = stdev(all_log_durations) if len(all_log_durations) >= 2 else 0.5
@@ -186,7 +213,7 @@ def build_nodes(
     nodes: Dict[FeatureSet, NodeStats] = {}
     for fs, durations in node_durations.items():
         # Filter partial nodes by support, but never filter exact nodes
-        if fs not in exact_feature_sets and len(durations) < min_partial_support:
+        if fs not in exact_feature_sets and generated_counts[fs] < min_partial_support:
             continue
 
         logs = [math.log1p(v) for v in durations]

@@ -1,4 +1,4 @@
-"""Clause-level time and resource prediction backed by one mixed lattice KB.
+"""LatticeKB: clause-level time and resource prediction from one observation log.
 
 The algorithm implementation is vendored from the ``latt`` project under
 ``tool_time._lattice_vendor``.  This module is deliberately a thin adapter:
@@ -94,7 +94,7 @@ class ClauseLatticeTimePredictions:
 
 
 class LatticeTimeKB:
-    """One raw observation log with independent time and resource lattice views.
+    """LatticeKB: one clause observation log with time and resource views.
 
     Historical observations supplied at startup are committed training data.
     Newly completed eBPF clauses are buffered and become visible only when
@@ -103,7 +103,10 @@ class LatticeTimeKB:
     rebuild can exactly recompute LOSO signature medians after online updates.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, subset_coverage: bool = True) -> None:
+        if type(subset_coverage) is not bool:
+            raise ValueError("subset_coverage must be boolean")
+        self._subset_coverage = subset_coverage
         self._observations: list[ClauseObservation] = []
         self._pending: list[tuple[float, int, ClauseObservation]] = []
         self._pending_seq = 0
@@ -119,8 +122,9 @@ class LatticeTimeKB:
         self._prepared_all_state: _NodeState | None = None
 
     @classmethod
-    def fit(cls, observations: Iterable[ClauseObservation]) -> LatticeTimeKB:
-        kb = cls()
+    def fit(cls, observations: Iterable[ClauseObservation], *,
+            subset_coverage: bool = True) -> LatticeTimeKB:
+        kb = cls(subset_coverage=subset_coverage)
         kb.merge_historical(observations)
         return kb
 
@@ -199,7 +203,7 @@ class LatticeTimeKB:
         outside that lock, and publishes the prepared successor atomically.
         Derived nodes are intentionally not copied or shared with the writer.
         """
-        successor = type(self)()
+        successor = type(self)(subset_coverage=self._subset_coverage)
         successor._observations = list(self._observations)
         successor._pending = list(self._pending)
         successor._pending_seq = self._pending_seq
@@ -215,7 +219,8 @@ class LatticeTimeKB:
         if self._pending:
             pending = [observation for _, _, observation in self._pending]
             self._prepared_all_state = _build_node_state(
-                [*self._observations, *pending]
+                [*self._observations, *pending],
+                subset_coverage=self._subset_coverage,
             )
             self._prepared_all_generation = self._data_generation
 
@@ -469,7 +474,9 @@ class LatticeTimeKB:
     def _ensure_nodes(self) -> None:
         if not self._dirty:
             return
-        self._install_node_state(_build_node_state(self._observations))
+        self._install_node_state(_build_node_state(
+            self._observations, subset_coverage=self._subset_coverage,
+        ))
 
     def _install_node_state(self, state: _NodeState) -> None:
         (
@@ -493,6 +500,7 @@ class LatticeTimeKB:
                 "max_nodes_per_signature": _MAX_NODES_PER_SIGNATURE,
                 "node_occurrence_budget": _NODE_OCCURRENCE_BUDGET,
                 "max_shrinkage_candidates": _MAX_SHRINKAGE_CANDIDATES,
+                "subset_coverage": self._subset_coverage,
             },
             "observations": [
                 asdict(observation)
@@ -519,7 +527,15 @@ class LatticeTimeKB:
             "node_occurrence_budget": _NODE_OCCURRENCE_BUDGET,
             "max_shrinkage_candidates": _MAX_SHRINKAGE_CANDIDATES,
         }
-        if obj.get("node_generation") != expected_generation:
+        generation = obj.get("node_generation")
+        if not isinstance(generation, Mapping):
+            raise ValueError("lattice KB node-generation configuration differs")
+        # Snapshots written before subset coverage existed have no marker and
+        # must retain their original generated-node aggregation on reload.
+        subset_coverage = generation.get("subset_coverage", False)
+        if (type(subset_coverage) is not bool or
+                {key: value for key, value in generation.items()
+                 if key != "subset_coverage"} != expected_generation):
             raise ValueError("lattice KB node-generation configuration differs")
         observation_rows = obj.get("observations")
         if not isinstance(observation_rows, list):
@@ -527,7 +543,7 @@ class LatticeTimeKB:
         pending_rows = obj.get("pending")
         if not isinstance(pending_rows, list):
             raise ValueError("lattice KB pending must be an array")
-        kb = cls()
+        kb = cls(subset_coverage=subset_coverage)
         resource_only = obj.get("schema") == LATTICE_TIME_KB_SCHEMA
         kb.merge_historical(
             _observation_from_json(row, allow_resource_only=resource_only)
@@ -551,6 +567,7 @@ class LatticeTimeKB:
 
 def _build_node_state(
     observations: Sequence[ClauseObservation],
+    *, subset_coverage: bool = True,
 ) -> _NodeState:
     ordered = sorted(observations, key=_observation_sort_key)
     training = [
@@ -563,12 +580,16 @@ def _build_node_state(
         for observation in ordered
         if nonnegative(observation.latency_ms) and observation.latency_ms > 0
     ]
-    resources = build_resource_states(ordered)
-    resources.update({"load:" + target: state for target, state in build_resource_states(ordered, load=True).items()})
+    resources = build_resource_states(ordered, subset_coverage=subset_coverage)
+    resources.update({"load:" + target: state for target, state in build_resource_states(
+        ordered, load=True, subset_coverage=subset_coverage,
+    ).items()})
     for measurement in {row.memory_measurement for row in ordered if row.memory_measurement}:
         subset = [row for row in ordered if row.memory_measurement == measurement]
         for load, prefix in [(False, ""), (True, "load:")]:
-            for target, state in build_resource_states(subset, load=load).items():
+            for target, state in build_resource_states(
+                subset, load=load, subset_coverage=subset_coverage,
+            ).items():
                 if target.startswith("memory_"):
                     resources[prefix + target + ":" + measurement] = state
     for key in list(resources):
@@ -586,6 +607,7 @@ def _build_node_state(
         min_partial_support=_MIN_PARTIAL_SUPPORT,
         estimator="median",
         split_compounds=False,
+        subset_coverage=subset_coverage,
     )
     compute_shrinkage_variances(
         nodes,

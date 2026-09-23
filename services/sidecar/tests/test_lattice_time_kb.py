@@ -159,6 +159,7 @@ def test_three_algorithms_match_vendored_lattice_core() -> None:
         min_partial_support=1,
         estimator="median",
         split_compounds=False,
+        subset_coverage=True,
     )
     compute_shrinkage_variances(
         nodes,
@@ -210,6 +211,54 @@ def test_three_algorithms_match_vendored_lattice_core() -> None:
     assert max_cardinality.exact_match is (best.features == query_features)
     assert max_cardinality.fallback is None
     assert max_cardinality.unavailable_reason is None
+
+
+def test_existing_node_receives_all_subset_covering_observations(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lattice_config, "_MAX_OPTIONAL_FEATURES", 1)
+    simple_argv = ("python", "task.py", "--mode", "fast")
+    expanded_argv = (*simple_argv, "--verbose", "--seed", "1")
+    simple = _observation("r", simple_argv, 100.0, ts_start=1.0)
+    expanded = _observation("r", expanded_argv, 1_000.0, ts_start=2.0)
+    node, _ = normalize_command(shlex.join(simple_argv), repo="r")
+    expanded_features, _ = normalize_command(shlex.join(expanded_argv), repo="r")
+    assert node < expanded_features
+
+    legacy = LatticeTimeKB.fit((simple, expanded), subset_coverage=False)
+    corrected = LatticeTimeKB.fit((simple, expanded))
+    assert legacy.node_count == corrected.node_count
+    assert set(legacy._nodes) == set(corrected._nodes)
+    assert legacy._nodes[node].durations == pytest.approx([0.1])
+    assert corrected._nodes[node].durations == pytest.approx([0.1, 1.0])
+    assert corrected._nodes[node].count == 2
+    assert corrected._nodes[node].signature_count == 2
+
+    snapshot = corrected.to_json_obj()
+    assert snapshot["node_generation"]["subset_coverage"] is True
+    restored = LatticeTimeKB.from_json_obj(snapshot)
+    assert restored._subset_coverage is True
+    assert restored.node_count == corrected.node_count
+    assert restored._nodes[node].durations == pytest.approx([0.1, 1.0])
+    assert corrected.fork_for_update()._subset_coverage is True
+
+
+def test_unmarked_v3_snapshot_restores_legacy_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lattice_config, "_MAX_OPTIONAL_FEATURES", 1)
+    simple_argv = ("python", "task.py", "--mode", "fast")
+    expanded_argv = (*simple_argv, "--verbose", "--seed", "1")
+    rows = (
+        _observation("r", simple_argv, 100.0, ts_start=1.0),
+        _observation("r", expanded_argv, 1_000.0, ts_start=2.0),
+    )
+    node, _ = normalize_command(shlex.join(simple_argv), repo="r")
+    original = LatticeTimeKB.fit(rows, subset_coverage=False)
+    snapshot = original.to_json_obj()
+    del snapshot["node_generation"]["subset_coverage"]
+
+    restored = LatticeTimeKB.from_json_obj(snapshot)
+    assert original.node_count == restored.node_count
+    assert restored._subset_coverage is False
+    assert restored._nodes[node].durations == pytest.approx(original._nodes[node].durations)
+    assert restored._nodes[node].durations == pytest.approx([0.1])
 
 
 def test_one_flat_kb_mixes_common_and_repo_specific_nodes() -> None:

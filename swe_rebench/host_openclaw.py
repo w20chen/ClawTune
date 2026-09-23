@@ -1245,7 +1245,13 @@ def _validate_lattice_time_kb_snapshot(path: Path, payload: dict[str, Any]) -> N
         "node_occurrence_budget": 20_000,
         "max_shrinkage_candidates": 512,
     }
-    if payload.get("node_generation") != expected_generation:
+    generation = payload.get("node_generation")
+    if not isinstance(generation, dict) or (
+        {key: value for key, value in generation.items()
+         if key != "subset_coverage"} != expected_generation
+        or ("subset_coverage" in generation
+            and type(generation["subset_coverage"]) is not bool)
+    ):
         raise KnowledgeBaseSyncError(
             f"invalid lattice KB node_generation in {path}: "
             f"{payload.get('node_generation')!r}"

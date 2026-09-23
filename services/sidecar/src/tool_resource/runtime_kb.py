@@ -1,4 +1,4 @@
-"""Runtime asymmetric two-layer tool resource knowledge bases.
+"""ToolKB and TrieKB implementations in a historically named runtime module.
 
 Both KBs expose full-target ``predict_load_samples`` evidence APIs consumed
 by the sidecar's common call-level adapter. Additional latency bucket and
@@ -377,7 +377,7 @@ class _ReplayHistory:
 
 
 class RuntimeToolResourceKB(_ReplayHistory):
-    """Frozen public layer plus causally accumulated per-repo nodes.
+    """ToolKB: call-level history with public and causal per-repo nodes.
 
     Construct via :meth:`fit_public` or :meth:`from_json_obj`; the public
     layer is immutable afterwards and online observations touch only repo
@@ -1004,11 +1004,12 @@ def _compose_compound_latency_ms(
 
 
 class ClauseResourceKB(_ReplayHistory):
-    """Causal clause history with a current-stage latency-bucket API.
+    """TrieKB: causal clause-prefix history for time and resource targets.
 
     Public bin priors are frozen after construction; repo clause/prefix nodes
     accumulate causally (strict ``ts_end < query ts_start``) under the same
-    monotonic-query guard as :class:`RuntimeToolResourceKB`.
+    monotonic-query guard as :class:`RuntimeToolResourceKB`. The latency-bucket
+    API is one view of this history.
     """
 
     def __init__(self) -> None:

@@ -130,6 +130,55 @@ def test_resource_positive_statistics_match_existing_lattice_numerics():
     assert actual.global_log_var == pytest.approx(variance)
 
 
+def test_resource_and_load_nodes_include_every_covering_observation(monkeypatch):
+    from tool_time import lattice_kb as config
+    from tool_time._lattice_vendor.normalize import normalize_command
+    import shlex
+
+    monkeypatch.setattr(config, "_MAX_OPTIONAL_FEATURES", 1)
+    simple = ("python", "task.py", "--mode", "fast")
+    expanded = (*simple, "--verbose", "--seed", "1")
+    rows = [
+        observation(1, argv=simple, latency_ms=100,
+                    cpu_ns_cumulative=100_000_000),
+        observation(3, argv=expanded, latency_ms=1000,
+                    cpu_ns_cumulative=1_000_000_000),
+    ]
+    features, _ = normalize_command(shlex.join(simple), repo="org/repo")
+    kb = LatticeTimeKB.fit(rows)
+    kb.freeze()
+    assert kb._nodes[features].count == 2
+    for key in ("cpu_time_seconds", "load:duration_ms"):
+        node = kb._resource_states[key].nodes[features]
+        assert node.count == 2
+        assert node.signature_count == 2
+
+
+def test_unmarked_snapshot_keeps_legacy_resource_and_load_coverage(monkeypatch):
+    from tool_time import lattice_kb as config
+    from tool_time._lattice_vendor.normalize import normalize_command
+    import shlex
+
+    monkeypatch.setattr(config, "_MAX_OPTIONAL_FEATURES", 1)
+    simple = ("python", "task.py", "--mode", "fast")
+    expanded = (*simple, "--verbose", "--seed", "1")
+    rows = [
+        observation(1, argv=simple, latency_ms=100,
+                    cpu_ns_cumulative=100_000_000),
+        observation(3, argv=expanded, latency_ms=1000,
+                    cpu_ns_cumulative=1_000_000_000),
+    ]
+    features, _ = normalize_command(shlex.join(simple), repo="org/repo")
+    original = LatticeTimeKB.fit(rows, subset_coverage=False)
+    snapshot = original.to_json_obj()
+    del snapshot["node_generation"]["subset_coverage"]
+    restored = LatticeTimeKB.from_json_obj(snapshot)
+    assert original.node_count == restored.node_count
+    for key in ("cpu_time_seconds", "load:duration_ms"):
+        assert original._resource_states[key].nodes[features].count == 1
+        assert restored._resource_states[key].nodes[features].count == 1
+
+
 def test_output_validates_public_schema():
     from pathlib import Path
     from jsonschema import Draft202012Validator

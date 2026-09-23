@@ -1,5 +1,8 @@
 # Pending benchmark integration acceptance
 
+- EdgeKappaKB remains a research backend. Before sidecar selection, verify confirmed highest-bucket censor bounds from source telemetry, finish the empirical-duration composite-command evaluator and paired call-level tests, verify real concurrent completion delivery, and establish a stable edge-specific gain over fixed and shared-child weights on task-paired trace splits. Do not switch the default predictor without that gate.
+- `ruff check services/sidecar/src/edge_kappa_kb services/sidecar/src/tool_time/edge_kappa_adapter.py offline/edge_kappa_eval.py offline/edge_kappa_trace.py offline/edge_kappa_compare.py offline/edge_kappa_legacy.py services/sidecar/tests/test_edge_kappa_kb.py tests/test_edge_kappa_eval.py` could not run on this Windows checkout because neither the `ruff` executable nor Python module is installed.
+
 - The attempted targeted command `python -m pytest services/sidecar/tests/test_lattice_time_kb.py services/sidecar/tests/test_resource_lattice.py -q` could not run because `test_resource_lattice.py` does not exist; the actual resource test module is `test_lattice_resources.py`.
 
 - On `kunpeng`, `PYTHONPATH=services/sidecar/src python3 -m pytest services/sidecar/tests tests -q --disable-warnings --tb=short` is not clean: nine descendant-cleanup cases fail with the Conda Python missing `os.pidfd_open`. The same nine cases fail on unchanged `83a56b8`. Resolve this interpreter prerequisite before accepting runs that spawn descendants; do not replace PID-safe cleanup with unchecked signals.

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/edge-kappa-kb.schema.json",
+  "type": "object",
+  "required": ["schema", "graph_version", "normalization_version", "config", "generation", "replay_cursor", "frozen", "nodes", "edges", "tokens", "pending", "processed_event_ids", "completed_event_ids", "completion_rows", "observations"],
+  "properties": {
+    "schema": {"const": "edge-kappa-kb.v1"},
+    "graph_version": {"type": "integer", "minimum": 1},
+    "normalization_version": {"type": "string", "minLength": 1},
+    "config": {
+      "type": "object",
+      "required": ["bucket_edges_ms", "k0", "learning_rate", "learn_weights", "shared_child_weight", "max_optional_features", "max_covered_nodes", "max_graph_nodes", "replay_seed"],
+      "properties": {
+        "bucket_edges_ms": {"type": "array", "minItems": 1, "items": {"type": "number", "exclusiveMinimum": 0}},
+        "k0": {"type": "number", "exclusiveMinimum": 0, "maximum": 100},
+        "learning_rate": {"type": "number", "minimum": 0},
+        "learn_weights": {"type": "boolean"},
+        "shared_child_weight": {"type": "boolean"},
+        "max_optional_features": {"type": "integer", "minimum": 0},
+        "max_covered_nodes": {"type": "integer", "minimum": 1},
+        "max_graph_nodes": {"type": "integer", "minimum": 1},
+        "replay_seed": {"type": "integer"}
+      },
+      "additionalProperties": false
+    },
+    "generation": {"type": "integer", "minimum": 0},
+    "replay_cursor": {"type": ["string", "null"]},
+    "frozen": {"type": "boolean"},
+    "nodes": {"type": "array", "items": {"type": "object", "required": ["id", "features", "counts", "observations"], "properties": {
+      "id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+      "features": {"$ref": "#/$defs/strings"},
+      "parents": {"$ref": "#/$defs/strings"},
+      "counts": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+      "observations": {"$ref": "#/$defs/strings"}
+    }, "additionalProperties": false}},
+    "edges": {"type": "array", "items": {"type": "object", "required": ["parent_id", "child_id", "dropped_features", "log_kappa", "update_count", "last_update_id"], "properties": {
+      "parent_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+      "child_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+      "dropped_features": {"$ref": "#/$defs/strings"},
+      "log_kappa": {"type": "number"},
+      "update_count": {"type": "integer", "minimum": 0},
+      "last_update_id": {"type": ["string", "null"]}
+    }, "additionalProperties": false}},
+    "tokens": {"type": "object", "additionalProperties": {"type": "object", "properties": {
+      "weight_update_skipped": {"const": true}
+    }}},
+    "pending": {"type": "array", "items": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "string"}, {"type": "string"}, {"type": "object"}], "items": false, "minItems": 4, "maxItems": 4}},
+    "processed_event_ids": {"$ref": "#/$defs/strings"},
+    "completed_event_ids": {"$ref": "#/$defs/strings"},
+    "completion_rows": {"type": "object", "additionalProperties": {"type": "object"}},
+    "observations": {"type": "array", "items": {"type": "object", "required": ["event_id", "features", "bucket"], "properties": {
+      "event_id": {"type": "string", "minLength": 1},
+      "features": {"$ref": "#/$defs/strings"},
+      "bucket": {"type": "integer", "minimum": 0}
+    }, "additionalProperties": false}}
+  },
+  "$defs": {"strings": {"type": "array", "items": {"type": "string"}}},
+  "additionalProperties": false
+}

@@ -18,3 +18,14 @@ def test_benchmark_handoff_accepts_resource_only_observations(latency):
     )])
     snapshot = json.loads(json.dumps(kb.to_json_obj()))
     _validate_lattice_time_kb_snapshot(Path("kb.json"), snapshot)
+
+
+def test_benchmark_handoff_preserves_explicit_legacy_coverage_mode():
+    kb = LatticeTimeKB.fit([ClauseObservation(
+        repo="org/repo", bin="python", argv=("python", "work.py"),
+        ts_start=1, ts_end=2, latency_ms=100,
+    )], subset_coverage=False)
+    snapshot = json.loads(json.dumps(kb.to_json_obj()))
+    assert snapshot["node_generation"]["subset_coverage"] is False
+    _validate_lattice_time_kb_snapshot(Path("kb.json"), snapshot)
+    assert LatticeTimeKB.from_json_obj(snapshot)._subset_coverage is False

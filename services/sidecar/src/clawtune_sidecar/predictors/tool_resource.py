@@ -291,6 +291,7 @@ class ToolResourcePredictor:
         frozen: bool = False,
     ) -> None:
         self.frozen = frozen
+        # Historical attributes: kb is TrieKB; continuous_kb is ToolKB.
         self.kb = kb
         self.continuous_kb = RuntimeToolResourceKB()
         self.buckets = buckets

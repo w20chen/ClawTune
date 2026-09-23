@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Sequence
 
 from tool_resource.runtime_kb import ClauseObservation, is_pipeline_dependent_consumer
-from tool_time._lattice_vendor.features import generate_context_nodes
+from tool_time._lattice_vendor.features import CoverageIndex, generate_context_nodes
 from tool_time._lattice_vendor.nodes import _compute_loso_risk, _loo_mse_log
 from tool_time._lattice_vendor.normalize import FeatureSet, normalize_command
 from tool_time._lattice_vendor.schemas import NodeStats, Observation
@@ -140,7 +140,8 @@ class ResourceState:
         )
 
 
-def build_resource_states(observations: Sequence[ClauseObservation], *, load: bool = False) -> dict[str, ResourceState]:
+def build_resource_states(observations: Sequence[ClauseObservation], *, load: bool = False,
+                          subset_coverage: bool = True) -> dict[str, ResourceState]:
     """Build per-target statistics, retaining zero values and target eligibility.
 
 Use the vendored node/selector data model without its positive-duration-only
@@ -165,20 +166,27 @@ builder. Risk remains log1p(value/scale); zero CPU/RSS is a valid measurement.
             for row in observations if target in (values := measured(row))
         ]
         maximum = config._effective_max_optional_features(training)
-        samples: dict[FeatureSet, list[float]] = defaultdict(list)
-        signatures: dict[FeatureSet, dict[FeatureSet, list[float]]] = defaultdict(
-            lambda: defaultdict(list)
-        )
+        generated: dict[FeatureSet, None] = {}
+        normalized: list[tuple[FeatureSet, float, list[FeatureSet]]] = []
         all_logs = []
         for row in training:
             features, core = normalize_command(row.cmd, repo=row.repo)
             all_logs.append(math.log1p(row.duration_s))
-            for fs in generate_context_nodes(
+            own_nodes = generate_context_nodes(
                 features, core, mode=config._NODE_MODE, max_optional_features=maximum,
                 always_keep_exact=True,
-            ):
-                samples[fs].append(row.duration_s)
-                signatures[fs][features].append(row.duration_s)
+            )
+            normalized.append((features, row.duration_s, own_nodes))
+            generated.update(dict.fromkeys(own_nodes))
+        coverage = CoverageIndex(generated)
+        samples: dict[FeatureSet, list[float]] = defaultdict(list)
+        signatures: dict[FeatureSet, dict[FeatureSet, list[float]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
+        for features, value, own_nodes in normalized:
+            for fs in coverage.subsets(features) if subset_coverage else own_nodes:
+                samples[fs].append(value)
+                signatures[fs][features].append(value)
         global_std = statistics.stdev(all_logs) if len(all_logs) > 1 else 0.5
         nodes = {}
         for fs, values in samples.items():

@@ -483,3 +483,21 @@ The split methodology is in the [technical report](technical-report.md#6-learnin
 | `report.json`, `report.md` | Availability, errors, baselines, and exclusions |
 
 Mixed input is trained and evaluated separately per benchmark, with an aggregate report. Check train/test counts and `test_updates: 0` before interpreting metrics. All-singleton groups can leave no test set.
+
+### Edge kappa research evaluation
+
+Use a trace directory in the same format as above. Specify one benchmark and a new output directory for each run:
+
+```bash
+PYTHONPATH=services/sidecar/src:. python3 -m offline.edge_kappa_eval \
+  --dataset /path/to/run/traces --benchmark swe-rebench \
+  --output .runtime/edge-kappa-frozen --seed 42 --event-clock trace
+```
+
+`--fixed-weights` holds every edge at its uniform initial weight; `--shared-child-weight` learns one total strength per child, divided equally among its parents. `--online` starts from the same training snapshot and updates after each test clause. Use separate output directories for these runs. `--k0`, `--learning-rate`, `--replay-seed`, `--bucket-edges-ms`, `--train-fraction`, and `--rss-unit` configure the model and input. Compare `split_sha256` before comparing metrics. `predictions.jsonl` contains the probability vector, actual bucket, parent difference counts, edge weights, mixture shares, and overlap; `report.json` contains log loss, Brier score, bucket accuracy, macro recall, far bucket error, and coverage.
+
+`--event-clock trace` uses original clause start/end times and currently requires v5 traces with valid clause clocks. Without it, the common trace loader preserves clause record order but discards original timestamps. That compatibility mode reports `mode: record_order_online` for `--online`; it does not model overlapping executions or establish real-time causal accuracy.
+
+To compare two runs on identical test clauses with task-level bootstrap intervals, run `PYTHONPATH=services/sidecar/src:. python3 -m offline.edge_kappa_compare --baseline .runtime/edge-kappa-fixed --candidate .runtime/edge-kappa-learned --output .runtime/edge-kappa-comparison.json`. A negative log-loss difference favors the candidate; check coverage and bucket accuracy alongside it.
+
+The original point-prediction selector can be measured on the same v5 split with `PYTHONPATH=services/sidecar/src:. python3 -m offline.edge_kappa_legacy --dataset /path/to/run/traces --benchmark swe-rebench --output .runtime/edge-kappa-legacy`. Add `--built-in-coverage` to evaluate the current LatticeTimeKB subset coverage; add `--corrected-coverage` to independently recompute the same coverage on the old node set. Without either flag, the command measures the former generated-node aggregation. Pass the same `--bucket-edges-ms` to both evaluators when changing the default boundaries. Its bucket accuracy and coverage are comparable on paired clauses; it has no probability vector, so it has no comparable log loss or Brier score. Use `--bucket-only` with `edge_kappa_compare` for this comparison.
