@@ -9,6 +9,14 @@
     "test_tasks": {"type": "integer", "minimum": 0},
     "test_updates": {"const": 0},
     "metrics": {"type": "array", "items": {"type": "object", "required": ["benchmark", "target", "eligible", "predicted", "coverage", "mae", "wape"]}},
+    "models": {
+      "type": "object", "additionalProperties": false, "required": ["tool", "trie", "lattice"],
+      "properties": {
+        "tool": {"$ref": "#/$defs/modelReport"},
+        "trie": {"$ref": "#/$defs/modelReport"},
+        "lattice": {"$ref": "#/$defs/modelReport"}
+      }
+    },
     "pmu": {
       "type": "object",
       "description": "PMU prediction availability is reported even when a dataset has no PMU labels.",
@@ -72,6 +80,24 @@
     }
   ],
   "$defs": {
+    "modelReport": {
+      "type": "object", "required": ["metrics", "availability"], "additionalProperties": false,
+      "properties": {
+        "metrics": {"$ref": "#/properties/metrics"},
+        "availability": {
+          "type": "object", "additionalProperties": {
+            "type": "object", "required": ["queries", "labeled", "predicted", "scored"],
+            "additionalProperties": false,
+            "properties": {
+              "queries": {"type": "integer", "minimum": 0},
+              "labeled": {"type": "integer", "minimum": 0},
+              "predicted": {"type": "integer", "minimum": 0},
+              "scored": {"type": "integer", "minimum": 0}
+            }
+          }
+        }
+      }
+    },
     "pmuAvailability": {
       "type": "object",
       "required": ["queries", "available_predictions", "labeled"],

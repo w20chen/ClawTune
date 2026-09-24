@@ -180,7 +180,8 @@ def _write_trace(
             "duration_ns": "1200000000",
             "status": {"code": "ok", "message": None},
             "output": {"exit_code": 0, "result": None},
-            "execution": {"mode": "launcher", "execution_id": "call-1"},
+            "execution": {"mode": "launcher", "execution_id": "call-1", "tool_resource": {
+                "call_telemetry": {"eligible_for_kb": True, "clauses": [{"ts_start": 0., "ts_end": 1.2}]}}},
             "resources": resources,
         },
     ]
@@ -2530,7 +2531,10 @@ def test_resource_label_quality_online_offline_parity(quality, points, overlap):
     event = _tool_completion("evt", "call")
     online = tool_resource_predictor.completed_call_from_completion(event, sample, repo="repo")
     end = {"name": "exec", "status": {"code": "ok"}, "duration_ns": "1200000000",
-        "wall_time_ns": "1001200000000", "resources": {"sampling_quality": quality,
+        "wall_time_ns": "1001200000000",
+           "execution": {"execution_id": "call", "tool_resource": {"call_telemetry": {
+               "eligible_for_kb": True, "clauses": [{"ts_start": .1, "ts_end": .9}]}}},
+           "resources": {"sampling_quality": quality,
         "sampling_point_count": points, "coverage_ratio": 1.0 if overlap else 0.0,
         "monitor_start_wall_time_ns": str(int(sample.monitor_start_wall_s * 1e9)),
         "monitor_end_wall_time_ns": str(int(sample.monitor_end_wall_s * 1e9)),
@@ -2562,7 +2566,10 @@ def test_execution_window_uses_retained_duration_without_changing_tool_elapsed()
         workload_duration_seconds=.8,
     )
     end = {"name": "exec", "status": {"code": "ok"}, "duration_ns": "1200000000",
-           "wall_time_ns": "1001200000000", "resources": {
+           "wall_time_ns": "1001200000000",
+           "execution": {"execution_id": "call", "tool_resource": {"call_telemetry": {
+               "eligible_for_kb": True, "clauses": [{"ts_start": .1, "ts_end": .9}]}}},
+           "resources": {
                "resource_observation": observation, "cpu_time_s": sample.cpu_time_delta_s}}
     offline = tool_resource_predictor._completed_call_from_tool_span(None, end, repo="repo")
     assert not observation["window"]["complete"]
@@ -2570,9 +2577,9 @@ def test_execution_window_uses_retained_duration_without_changing_tool_elapsed()
     offline_targets = _target_values(offline)
     assert online_targets["cpu_time_seconds"] == offline_targets["cpu_time_seconds"] == .6
     assert online_targets["cpu_avg_cores"] == pytest.approx(.75)
-    assert offline_targets["cpu_avg_cores"] == pytest.approx(.5)
+    assert offline_targets["cpu_avg_cores"] == pytest.approx(.75)
     assert online_targets["workload_latency_ms"] == pytest.approx(800)
-    assert offline_targets["workload_latency_ms"] == pytest.approx(1200)
+    assert offline_targets["workload_latency_ms"] == pytest.approx(800)
     assert online_targets["sampled_peak_rss_bytes"] == offline_targets["sampled_peak_rss_bytes"] == 10_000_000
     assert online_targets["latency_ms"] == offline_targets["latency_ms"] == pytest.approx(1200)
     assert sample.cpu_utilization_avg_cores == pytest.approx(.5)

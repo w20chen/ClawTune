@@ -479,10 +479,18 @@ The split methodology is in the [technical report](technical-report.md#6-learnin
 | --- | --- |
 | `split.json` | Task assignments and input hashes |
 | `seed/` | Statistics constructed only from training data |
-| `predictions.jsonl` | Test predictions and eligible labels |
+| `predictions.jsonl` | ToolKB test predictions and eligible labels, including PMU |
+| `model-predictions.jsonl` | ToolKB, TrieKB and LatticeKB predictions with a `model` field |
 | `report.json`, `report.md` | Availability, errors, baselines, and exclusions |
 
 Mixed input is trained and evaluated separately per benchmark, with an aggregate report. Check train/test counts and `test_updates: 0` before interpreting metrics. All-singleton groups can leave no test set.
+
+Each benchmark's `report.json.models` reports `tool`, `trie`, and `lattice` separately. The existing top-level `metrics` and `repositories` describe ToolKB. Per-target `availability` counts all uncensored queries (`queries`), queries with trusted labels (`labeled`), available predictions (`predicted`), and labeled predictions that can be scored (`scored`). Missing labels are never converted to zero; a target can have predictions without a measurable error.
+
+CPU-time labels require `availability.cpu_time == "ok"` and an execution-interval delta (`provenance.cpu_time_ns` or compact `cpu_time_seconds`). A historical `cpu_ns_cumulative` value alone is insufficient. Shell workload duration uses retained clause intervals (or a qualified single-clause elapsed label in v5); missing interval evidence leaves workload duration and average CPU unavailable. The original tool-call elapsed time remains separate. Environment-memory labels require their own eligible measurements; RSS cannot substitute for them. `--rss-unit` applies to v5 RSS; v6 compact RSS is already decimal MB.
+
+Rebuild seeds from the original traces after changing label ingestion rules. Existing snapshots retain previously imported values and cannot recover missing measurement evidence.
+
 
 ### Edge kappa research evaluation
 

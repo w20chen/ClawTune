@@ -570,10 +570,20 @@ def _observations_from_call(
     rows = enrich_clause_structure(command if isinstance(command, str) else None, rows)
     observations: list[ClauseObservation] = []
     for row in rows:
+        if row.get("eligible_for_kb") is False or row.get("telemetry_quality", "ok") != "ok":
+            continue
         availability = row.get("availability")
         if not isinstance(availability, Mapping):
             raise ValueError("eligible clause has invalid availability")
-        if availability.get("latency") == "ok":
+        status = row.get("status") or {}
+        resource_only = (
+            isinstance(status, Mapping) and status.get("state") == "exited"
+            and not any("timeout" in str(value).lower() for value in availability.values())
+            and all(isinstance(row.get(key), (int, float)) and not isinstance(row[key], bool)
+                    and math.isfinite(row[key]) for key in ("ts_start", "ts_end"))
+            and row["ts_end"] > row["ts_start"]
+        )
+        if availability.get("latency") == "ok" or resource_only:
             observations.append(
                 _observation_from_clause(
                     repo,
@@ -590,10 +600,14 @@ def _observation_from_clause(
     *,
     require_timestamps: bool,
 ) -> ClauseObservation:
-    latency_ms = _required_nonnegative_float(row.get("latency_ms"), "latency_ms")
+    availability = row.get("availability") or {}
+    latency_ms = (
+        _required_nonnegative_float(row.get("latency_ms"), "latency_ms")
+        if availability.get("latency") == "ok" else None
+    )
     raw_start = row.get("ts_start")
     raw_end = row.get("ts_end")
-    if raw_start is None and raw_end is None and not require_timestamps:
+    if raw_start is None and raw_end is None and not require_timestamps and latency_ms is not None:
         ts_start = 0.0
         ts_end = latency_ms / 1000.0
     else:
@@ -612,16 +626,41 @@ def _observation_from_clause(
         ts_start=ts_start,
         ts_end=ts_end,
         latency_ms=latency_ms,
-        cpu_peak_cores=_optional_finite_float(row.get("peak_cpu_cores")),
-        sampled_peak_rss_mb=_optional_finite_float(
-            row.get("sampled_peak_rss_mb")
+        cpu_peak_cores=(
+            _measurement_value(row.get("peak_cpu_cores")) if availability.get("cpu") == "ok" else None
         ),
-        cpu_ns_cumulative=_optional_nonnegative_int(row.get("cpu_ns_cumulative")),
+        sampled_peak_rss_mb=(
+            _measurement_value(row.get("sampled_peak_rss_mb", row.get("peak_memory_mb")))
+            if availability.get("memory") == "ok" else None
+        ),
+        cpu_ns_cumulative=clause_cpu_time_ns(row),
         in_loop=bool(row.get("in_loop", False)),
         in_pipe=bool(row.get("in_pipe", False)),
         in_subst=bool(row.get("in_subst", False)),
         pipeline_position=int(row.get("pipeline_position", -1)),
     )
+
+
+def _measurement_value(value: Any) -> float | None:
+    if (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and value >= 0):
+        return float(value)
+    return None
+
+
+def clause_cpu_time_ns(row: Mapping[str, Any]) -> int | None:
+    """Read a qualified exec-interval delta, never the raw exit accumulator."""
+    availability = row.get("availability") or {}
+    if availability.get("cpu_time") != "ok":
+        return None
+    provenance = row.get("provenance") or {}
+    if isinstance(provenance, Mapping) and "cpu_time_ns" in provenance:
+        value = provenance["cpu_time_ns"]
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    seconds = _measurement_value(row.get("cpu_time_seconds"))
+    if seconds is None or not math.isfinite(seconds * 1e9):
+        return None
+    return round(seconds * 1e9)
 
 
 def _required_finite_float(value: Any, name: str) -> float:
@@ -639,18 +678,6 @@ def _required_nonnegative_float(value: Any, name: str) -> float:
     if result < 0.0:
         raise ValueError(f"eligible clause has negative {name}")
     return result
-
-
-def _optional_finite_float(value: Any) -> float | None:
-    return None if value is None else _required_finite_float(value, "measurement")
-
-
-def _optional_nonnegative_int(value: Any) -> int | None:
-    if value is None:
-        return None
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ValueError("eligible clause has invalid cumulative CPU")
-    return value
 
 
 __all__ = [

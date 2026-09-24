@@ -236,6 +236,16 @@ def test_live_clause_memory_reloads_from_trace_without_copying_cpu(tmp_path, mon
     assert writer.flush()
     writer.close()
     loaded = [load_openclaw_trace_observations(p, repo="r") for p in (tmp_path / "traces").glob("*.jsonl")]
+    from offline.runner import load_task
+    from clawtune_kb.store import digest
+    paths = list((tmp_path / "traces").glob("*.jsonl"))
+    task = {"benchmark": "swe-rebench", "group": "org/repo", "task_id": "org__repo-1",
+            "files": [{"path": p.name, "sha256": digest(p), "version": 6} for p in paths]}
+    replay = load_task(tmp_path / "traces", task, "MB")
+    assert len(replay.clauses) == 1
+    assert replay.clauses[0].repo == "swe-rebench:org/repo"
+    assert replay.clauses[0].memory_extra_peak_bytes == 200
+    assert replay.clauses[0].cpu_ns_cumulative is None
     rows = [row for trace in loaded for row in trace.observations]
     assert len(rows) == 1 and rows[0].memory_extra_peak_bytes == 200
     assert rows[0].cpu_ns_cumulative is None and rows[0].latency_ms is None

@@ -1772,22 +1772,7 @@ def completed_call_from_completion(
     if ts_end < ts_start:
         ts_end = ts_start
     if workload_duration_seconds is None and event.execution_id is None:
-        observation = sample.resource_observation or {}
-        window = observation.get("window") if isinstance(observation, Mapping) else None
-        if (
-            isinstance(window, Mapping)
-            and window.get("action_clock_unusable") is not True
-        ):
-            try:
-                retained_start_ns = int(window["requested_start_ns"])
-                retained_end_ns = int(window["requested_end_ns"])
-            except (KeyError, TypeError, ValueError):
-                pass
-            else:
-                if retained_end_ns > retained_start_ns:
-                    workload_duration_seconds = (
-                        retained_end_ns - retained_start_ns
-                    ) / 1e9
+        workload_duration_seconds = _observation_window_seconds(sample.resource_observation)
     exclude_resource_labels = _sample_attribution_ineligible(sample, event, start)
     cpu_time_eligible = _sample_metric_eligible(sample, "cpu_time")
     cpu_peak_eligible = _sample_metric_eligible(sample, "cpu_peak")
@@ -1913,6 +1898,17 @@ def _truncated_outcome(value: Any) -> bool:
     return any(marker in text for marker in ("timeout", "timed out", "cancel", "abort", "interrupt", "killed"))
 
 
+def _observation_window_seconds(observation: Mapping[str, Any] | None) -> float | None:
+    window = observation.get("window") if isinstance(observation, Mapping) else None
+    if not isinstance(window, Mapping) or window.get("action_clock_unusable") is True:
+        return None
+    try:
+        start, end = int(window["requested_start_ns"]), int(window["requested_end_ns"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return (end - start) / 1e9 if end > start else None
+
+
 def _completed_call_from_tool_span(
     start: dict[str, Any] | None,
     end: dict[str, Any],
@@ -1940,12 +1936,21 @@ def _completed_call_from_tool_span(
     observed_memory = _resource_metric(observation, "memory_peak")
     pmu = _quality_gated_pmu_metrics(resources.get("pmu") if execution.get("execution_id") else None,
                                    execution_id=execution.get("execution_id"))
+    workload_required = execution.get("execution_id") is not None
+    telemetry = execution.get("tool_resource") or {}
+    call_telemetry = telemetry.get("call_telemetry") if isinstance(telemetry, Mapping) else None
+    workload_duration = (
+        _retained_workload_duration_seconds({"calls": [call_telemetry]})
+        if workload_required else _observation_window_seconds(observation)
+    )
     return CompletedCall(
         repo=repo,
         tool_name=tool_name,
         command=command,
         ts_start=ts_start,
         ts_end=ts_end,
+        workload_duration_seconds=workload_duration,
+        workload_duration_required=workload_required,
         censored=_truncated_outcome(status.get("message")) or resources.get("censored") is True,
         outcome=str(status.get("code", "unknown")),
         cpu_peak_cores=peak_cpu_cores,

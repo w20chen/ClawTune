@@ -4,10 +4,11 @@ from __future__ import annotations
 import json
 import math
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from tool_resource.runtime_kb import ClauseObservation, CompletedCall
+from tool_resource.sdk import clause_cpu_time_ns
 
 
 def valid(value) -> bool:
@@ -138,11 +139,11 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
                 # Static training labels have synthetic zero-based intervals;
                 # call duration and paired CPU average stay numerically exact.
                 call = CompletedCall(repo, name, command, 0., duration / 1000,
-                    censored=censored,
+                    censored=censored, workload_duration_required=command is not None,
                     cpu_time_seconds=float(cpu) if eligible_cpu else None, cpu_time_eligible=eligible_cpu,
                     outcome="ok" if data.get("success") is True else "error")
                 result.calls.append(call)
-                result.call_actuals.append({"duration_ms": float(duration)})
+                result.call_actuals.append({} if command is not None else {"duration_ms": float(duration)})
                 result.call_clauses.append(())
                 call_actual_index = len(result.call_actuals) - 1
             observation = data.get("resource_observation")
@@ -167,6 +168,34 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
                     field: clause.get(field)
                     for field in ("bin", "argv", "in_loop", "in_pipe", "in_subst", "pipeline_position")
                 } for clause in enriched_clauses)
+            if call_actual_index is not None and command is not None:
+                # A single completed clause supplies its own elapsed label. For
+                # multiple clauses require actual clocks; summing overlaps is wrong.
+                workload = None
+                if len(enriched_clauses) == 1:
+                    only = enriched_clauses[0]
+                    elapsed = only.get("latency_ms")
+                    if (only.get("eligible_for_kb") is True and only.get("telemetry_quality") == "ok"
+                            and (only.get("availability") or {}).get("latency") == "ok"
+                            and valid(elapsed) and elapsed > 0):
+                        workload = elapsed / 1000
+                elif enriched_clauses and all(
+                    c.get("eligible_for_kb") is True and c.get("telemetry_quality") == "ok"
+                    and (c.get("availability") or {}).get("latency") == "ok"
+                    and valid(c.get("ts_start")) and valid(c.get("ts_end"))
+                    and c["ts_end"] > c["ts_start"] for c in enriched_clauses
+                ):
+                    from clawtune_sidecar.predictors.tool_resource import _retained_workload_duration_seconds
+                    workload = _retained_workload_duration_seconds({"calls": [dict(observation, clauses=enriched_clauses)]})
+                result.calls[call_actual_index] = replace(
+                    result.calls[call_actual_index], workload_duration_seconds=workload,
+                    # A trusted whole-tool cgroup counter still cannot provide
+                    # average CPU for a different retained-clause interval.
+                    cpu_time_eligible=(result.calls[call_actual_index].cpu_time_eligible
+                                       and workload is not None and math.isclose(workload, duration / 1000)),
+                )
+                if workload is not None:
+                    result.call_actuals[call_actual_index]["duration_ms"] = workload * 1000
             accepted_clauses = []
             for clause in enriched_clauses:
                 availability = clause.get("availability") or {}
@@ -178,8 +207,9 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
                     raise ValueError(f"{path.name}: invalid clause argv")
                 elapsed = clause.get("latency_ms")
                 elapsed = float(elapsed) if availability.get("latency") == "ok" and valid(elapsed) else None
-                cpu_ns = clause.get("cpu_ns_cumulative")
-                cpu_ns = int(cpu_ns) if valid(cpu_ns) else None
+                cpu_ns = clause_cpu_time_ns(clause)
+                if cpu_ns is None and valid(clause.get("cpu_ns_cumulative")):
+                    result.counts["withheld_clause_cpu_without_interval_evidence"] += 1
                 peak = clause.get("peak_cpu_cores")
                 profile = clause.get("cpu_window_profile") or []
                 windows = [p.get("cpu_cores") for p in profile
@@ -191,9 +221,8 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
                         result.counts["withheld_clause_peak_unverified_500ms"] += 1
                     peak = None
                 memory = clause.get("sampled_peak_rss_mb")
-                # ClauseObservation's existing internal field is MiB. Normalize
-                # the corpus's declared unit now, before either KB consumes it.
-                memory = memory * rss_scale / 1024**2 if valid(memory) and availability.get("memory") == "ok" else None
+                # KB consumers interpret this historical field name as decimal MB.
+                memory = memory * rss_scale / 1_000_000 if valid(memory) and availability.get("memory") == "ok" else None
                 if elapsed is None and cpu_ns is None and peak is None and memory is None:
                     continue
                 accepted = ClauseObservation(repo, str(clause.get("bin") or argv[0]), tuple(argv),
@@ -209,8 +238,9 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
                 actuals = result.call_actuals[call_actual_index]
                 if clause.cpu_ns_cumulative is not None:
                     actuals["cpu_time_seconds"] = clause.cpu_ns_cumulative / 1e9
-                    if duration > 0:
-                        actuals["cpu_avg_cores"] = actuals["cpu_time_seconds"] / (duration / 1000)
+                    workload_ms = actuals.get("duration_ms")
+                    if workload_ms is not None and workload_ms > 0:
+                        actuals["cpu_avg_cores"] = actuals["cpu_time_seconds"] / (workload_ms / 1000)
                 if clause.cpu_peak_cores is not None:
                     actuals["cpu_peak_cores"] = clause.cpu_peak_cores
                 from clawtune_sidecar.monitoring.environment_memory import memory_labels

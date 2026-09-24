@@ -17,8 +17,14 @@ from benchmarks.adapters import NAMES
 from clawtune_kb import FILES, create_seed
 from clawtune_kb.store import digest, write_json
 from cold_start.flat_loader import declared_sampling_interval_ms, read_task, LoadedTask
-from tool_resource.runtime_kb import ClauseResourceKB, RuntimeToolResourceKB, ToolCallQuery, _target_values
+from tool_resource.runtime_kb import ClauseResourceKB, RuntimeToolResourceKB, ToolCallQuery, _target_values, LOAD_TARGET_SOURCES
 from tool_time.lattice_kb import LatticeTimeKB
+
+
+def _call_actuals(call) -> dict[str, float]:
+    values = _target_values(call)
+    return {**{target: values[source] for target, source in LOAD_TARGET_SOURCES.items() if source in values},
+            **{target: value for target, value in values.items() if target.startswith("pmu_")}}
 
 
 def canonical_benchmark(name: str) -> str:
@@ -228,18 +234,22 @@ def load_task(dataset: Path, task: dict, rss_unit: str) -> LoadedTask:
         if file["version"] == 5:
             loaded = read_task(path, repo=namespace, task_id=task["task_id"], rss_unit=rss_unit)
         else:
-            from clawtune_sidecar.predictors.tool_resource import load_openclaw_trace_observations
+            from clawtune_sidecar.predictors.tool_resource import load_openclaw_trace_observations, _completed_call_from_tool_span
             loaded_v6 = load_openclaw_trace_observations(path, repo=namespace)
             # V6 import uses the same ownership/quality gates as runtime import.
             calls_v6 = [replace(call, repo=namespace) for call in loaded_v6.completed_calls]
-            loaded = LoadedTask(calls=calls_v6, call_actuals=[{
-                ("duration_ms" if target == "latency_ms" else target): value
-                for target, value in _target_values(call).items()
-            } for call in calls_v6], call_clauses=[() for _ in calls_v6])
+            loaded = LoadedTask(calls=calls_v6, call_actuals=[_call_actuals(call) for call in calls_v6],
+                                clauses=[replace(row, repo=namespace) for row in loaded_v6.observations],
+                                call_clauses=[() for _ in calls_v6])
             from tool_resource.sdk import _observations_from_call
-            with path.open(encoding="utf-8") as stream:
+            starts = {}
+            with path.open(encoding="utf-8-sig") as stream:
                 for line in stream:
+                    if not line.strip():
+                        continue
                     row = json.loads(line)
+                    if row.get("record_type") == "span_start":
+                        starts[row.get("span_id")] = row
                     if row.get("record_type") != "span_end" or row.get("kind") != "tool":
                         continue
                     sample_interval_ms = declared_sampling_interval_ms(row.get("resources") or {})
@@ -247,7 +257,9 @@ def load_task(dataset: Path, task: dict, rss_unit: str) -> LoadedTask:
                         loaded.sample_periods_ms.append(sample_interval_ms)
                     telemetry = (row.get("execution") or {}).get("tool_resource") or {}
                     call = telemetry.get("call_telemetry") or {}
-                    if call.get("eligible_for_kb") is True and call.get("telemetry_quality") == "ok":
+                    completed = _completed_call_from_tool_span(starts.get(row.get("span_id")), row, repo=namespace)
+                    if (completed is not None and not completed.censored
+                            and call.get("eligible_for_kb") is True and call.get("telemetry_quality") == "ok"):
                         loaded.clauses.extend(_observations_from_call(namespace, call, require_timestamps=False))
         # Static train/test has no chronological replay semantics.
         result.calls.extend(replace(call, ts_start=0., ts_end=call.ts_end - call.ts_start) for call in loaded.calls)
@@ -529,13 +541,15 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
     baselines = defaultdict(list)
     for index, call in enumerate(calls):
         if not call.censored:
-            actuals = {("duration_ms" if target == "latency_ms" else target): value
-                       for target, value in _target_values(call).items()}
+            actuals = _call_actuals(call)
             if index < len(call_actuals):
                 actuals.update(call_actuals[index])
             for target, value in actuals.items():
                 baselines[(call.tool_name, target)].append(value)
     rows = []
+    model_rows = {name: [] for name in ("tool", "trie", "lattice")}
+    availability = {name: {target: {"queries": 0, "labeled": 0, "predicted": 0, "scored": 0}
+                           for target in LOAD_TARGET_SOURCES} for name in model_rows}
     pmu_availability = {
         metric: {"queries": 0, "available_predictions": 0, "labeled": 0}
         for metric in ("ipc", "llc_mpki", "llc_miss_rate")
@@ -568,34 +582,46 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
                     unavailable_reason=None if values else "no_quality_gated_pmu_history")
                 pmu_availability[metric]["queries"] += 1
                 pmu_availability[metric]["available_predictions"] += int(bool(values))
-            actual_target_values = {("duration_ms" if target == "latency_ms" else target): value
-                                    for target, value in _target_values(call).items()}
+            actual_target_values = _call_actuals(call)
             if index < len(loaded.call_actuals):
                 actual_target_values.update(loaded.call_actuals[index])
             for metric in pmu_availability:
                 pmu_availability[metric]["labeled"] += int("pmu_" + metric in actual_target_values)
-            actuals = {target: value for target, value in actual_target_values.items()
-                       if target in estimates}
-            for target, actual in actuals.items():
-                estimate = estimates[target]
-                bucket = getattr(estimate, "buckets", None)
-                probabilities = list(bucket.probabilities) if (target == "duration_ms" and bucket
-                                                               and bucket.probabilities is not None) else None
-                row = {"task": key, "benchmark": task["benchmark"], "repo": task["group"],
-                       "target": target, "unit": getattr(estimate, "unit", None),
-                       "tool": call.tool_name, "actual": actual, "p50": estimate.p50, "p90": estimate.p90,
-                       "status": estimate.status, "backend": estimate.backend,
-                       "unavailable_reason": getattr(estimate, "unavailable_reason", None),
-                       "baseline_p50": statistics.median(baselines[(call.tool_name, target)]) if baselines[(call.tool_name, target)] else None}
-                if target == "duration_ms":
-                    row.update({
-                        "actual_bucket": bisect_right(edges["duration_ms"], actual),
-                        "predicted_bucket": (max(range(len(probabilities)),
-                                                 key=lambda value: (probabilities[value], -value))
-                                             if probabilities else None),
-                        "bucket_probabilities": probabilities,
-                    })
-                rows.append(row)
+            for model, model_estimates in (("tool", estimates),
+                                           ("trie", diagnostics.backends["trie"].targets),
+                                           ("lattice", diagnostics.backends["lattice"].targets)):
+                for target, counters in availability[model].items():
+                    labeled = target in actual_target_values
+                    estimate = model_estimates.get(target)
+                    predicted = estimate is not None and estimate.status == "available" and estimate.p50 is not None
+                    counters["queries"] += 1
+                    counters["labeled"] += int(labeled)
+                    counters["predicted"] += int(predicted)
+                    counters["scored"] += int(labeled and predicted)
+                actuals = {target: value for target, value in actual_target_values.items()
+                           if target in model_estimates}
+                for target, actual in actuals.items():
+                    estimate = model_estimates[target]
+                    bucket = getattr(estimate, "buckets", None)
+                    probabilities = list(bucket.probabilities) if (target == "duration_ms" and bucket
+                                                                   and bucket.probabilities is not None) else None
+                    row = {"task": key, "benchmark": task["benchmark"], "repo": task["group"],
+                           "target": target, "unit": getattr(estimate, "unit", None),
+                           "tool": call.tool_name, "actual": actual, "p50": estimate.p50, "p90": estimate.p90,
+                           "status": estimate.status, "backend": estimate.backend,
+                           "unavailable_reason": getattr(estimate, "unavailable_reason", None),
+                           "baseline_p50": statistics.median(baselines[(call.tool_name, target)]) if baselines[(call.tool_name, target)] else None}
+                    if target == "duration_ms":
+                        row.update({
+                            "actual_bucket": bisect_right(edges["duration_ms"], actual),
+                            "predicted_bucket": (max(range(len(probabilities)),
+                                                     key=lambda value: (probabilities[value], -value))
+                                                 if probabilities else None),
+                            "bucket_probabilities": probabilities,
+                        })
+                    model_rows[model].append(row)
+                    if model == "tool":
+                        rows.append(row)
     summaries = _summarize_rows(rows, edges["duration_ms"])
     rows_by_repo = defaultdict(list)
     for row in rows:
@@ -617,6 +643,8 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
               "test_tasks": len(manifest["test"]), "test_updates": 0, "metrics": summaries,
               "bucket_edges": {target: list(values) for target, values in edges.items()},
               "repositories": repositories,
+              "models": {name: {"metrics": _summarize_rows(selected, edges["duration_ms"]),
+                                "availability": availability[name]} for name, selected in model_rows.items()},
               "pmu": {"scope": "quality-gated ToolKB prediction availability",
                       "targets": pmu_availability},
               "resource_sampling": {
@@ -632,5 +660,8 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
     validate(report, "offline-report.schema.json")
     write_json(output / "report.json", report)
     (output / "predictions.jsonl").write_text("".join(json.dumps(row, allow_nan=False) + "\n" for row in rows), encoding="utf-8")
+    (output / "model-predictions.jsonl").write_text("".join(
+        json.dumps({"model": name, **row}, allow_nan=False) + "\n"
+        for name, selected in model_rows.items() for row in selected), encoding="utf-8")
     (output / "report.md").write_text(_render_report(report), encoding="utf-8")
     return report

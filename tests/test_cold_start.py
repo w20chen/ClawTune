@@ -28,8 +28,8 @@ def trace(task, command="python work.py"):
             "resource_observation": {"tool_call_id": "call-1", "command": command, "eligible_for_kb": True,
                 "telemetry_quality": "ok", "telemetry_status": "ok", "clauses": [{
                     "bin": "python", "argv": ["python", "work.py"], "eligible_for_kb": True, "telemetry_quality": "ok",
-                    "availability": {"latency": "ok", "cpu": "ok", "memory": "ok"}, "latency_ms": 1000,
-                    "cpu_ns_cumulative": 2_000_000_000, "peak_cpu_cores": 3,
+                    "availability": {"latency": "ok", "cpu": "ok", "cpu_time": "ok", "memory": "ok"}, "latency_ms": 1000,
+                    "cpu_ns_cumulative": 2_000_000_000, "provenance": {"cpu_time_ns": 2_000_000_000}, "peak_cpu_cores": 3,
                     "cpu_window_profile": [{"span_s": .5, "cpu_cores": 3}], "sampled_peak_rss_mb": 6.213632,
                 }]}}}]) + "\n"
 
@@ -64,7 +64,7 @@ def test_flat_loader_units_and_unproven_call_resource_scope(tmp_path):
     path = tmp_path / "prefix__org__a-1.trace.jsonl"
     path.write_text(trace("org__a-1"), encoding="utf-8")
     loaded = read_task(path, repo="org/a", task_id="org__a-1", rss_unit="MB")
-    assert loaded.clauses[0].sampled_peak_rss_mb * 1024**2 == pytest.approx(6213632)
+    assert loaded.clauses[0].sampled_peak_rss_mb * 1_000_000 == pytest.approx(6213632)
     assert loaded.clauses[0].cpu_peak_cores == 3
     assert loaded.calls[0].cpu_time_eligible is False
     assert loaded.call_actuals == [{
