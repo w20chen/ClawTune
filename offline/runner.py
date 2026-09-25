@@ -16,7 +16,7 @@ from benchmarks.bootstrap import ROOT
 from benchmarks.adapters import NAMES
 from clawtune_kb import FILES, create_seed
 from clawtune_kb.store import digest, write_json
-from cold_start.flat_loader import declared_sampling_interval_ms, read_task, LoadedTask
+from cold_start.flat_loader import declared_sampling_interval_ms, read_task, LoadedTask, recorded_clause_structure
 from tool_resource.runtime_kb import ClauseResourceKB, RuntimeToolResourceKB, ToolCallQuery, _target_values, LOAD_TARGET_SOURCES
 from tool_time.lattice_kb import LatticeTimeKB
 
@@ -220,7 +220,8 @@ def load_or_create_split(tasks: dict, dataset: Path, seed: int, cache_dir: Path,
     return cached
 
 
-def load_task(dataset: Path, task: dict, rss_unit: str) -> LoadedTask:
+def load_task(dataset: Path, task: dict, rss_unit: str, *,
+              recorded_clauses_only: bool = False) -> LoadedTask:
     result = LoadedTask()
     seen = set()
     namespace = task["benchmark"] + ":" + task["group"]
@@ -232,7 +233,8 @@ def load_task(dataset: Path, task: dict, rss_unit: str) -> LoadedTask:
             continue
         seen.add(file["sha256"])
         if file["version"] == 5:
-            loaded = read_task(path, repo=namespace, task_id=task["task_id"], rss_unit=rss_unit)
+            loaded = read_task(path, repo=namespace, task_id=task["task_id"], rss_unit=rss_unit,
+                               recorded_clauses_only=recorded_clauses_only)
         else:
             from clawtune_sidecar.predictors.tool_resource import load_openclaw_trace_observations, _completed_call_from_tool_span
             loaded_v6 = load_openclaw_trace_observations(path, repo=namespace)
@@ -260,7 +262,12 @@ def load_task(dataset: Path, task: dict, rss_unit: str) -> LoadedTask:
                     completed = _completed_call_from_tool_span(starts.get(row.get("span_id")), row, repo=namespace)
                     if (completed is not None and not completed.censored
                             and call.get("eligible_for_kb") is True and call.get("telemetry_quality") == "ok"):
-                        loaded.clauses.extend(_observations_from_call(namespace, call, require_timestamps=False))
+                        clauses = recorded_clause_structure(
+                            call.get("command"), call.get("clauses"),
+                            recorded_only=recorded_clauses_only)
+                        loaded.clauses.extend(_observations_from_call(
+                            namespace, dict(call, clauses=list(clauses)),
+                            require_timestamps=False, enrich_structure=False))
         # Static train/test has no chronological replay semantics.
         result.calls.extend(replace(call, ts_start=0., ts_end=call.ts_end - call.ts_start) for call in loaded.calls)
         result.call_actuals.extend(loaded.call_actuals)

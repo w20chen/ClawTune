@@ -9,8 +9,8 @@ from collections import Counter
 from pathlib import Path
 
 from clawtune_sidecar.tool_resource_commands import extract_command
-from cold_start.flat_loader import _censored_call
-from tool_resource.features import enrich_clause_structure, shell_bin_requires_exec_evidence
+from cold_start.flat_loader import _censored_call, recorded_clause_structure
+from tool_resource.features import shell_bin_requires_exec_evidence
 from tool_resource.runtime_kb import is_pipeline_dependent_consumer
 from tool_time.edge_kappa_adapter import shell_query
 from edge_kappa_kb import TimeOutcome, TrainingEvent
@@ -73,8 +73,8 @@ def read_v5_events(dataset: Path, task: dict, task_key: str) -> tuple[list[Train
                         observation.get("telemetry_status") != "ok"):
                     excluded["ineligible_resource_observation"] += 1
                     continue
-                for index, clause in enumerate(enrich_clause_structure(
-                        command, observation.get("clauses") or [])):
+                for index, clause in enumerate(recorded_clause_structure(
+                        command, observation.get("clauses") or [], recorded_only=True)):
                     if clause.get("eligible_for_kb") is not True or clause.get("telemetry_quality") != "ok":
                         excluded["ineligible_clause"] += 1
                         continue

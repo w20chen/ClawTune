@@ -562,12 +562,15 @@ def _observations_from_call(
     call: Mapping[str, Any],
     *,
     require_timestamps: bool,
+    enrich_structure: bool = True,
 ) -> list[ClauseObservation]:
+    """Convert labels; offline readers may supply already validated structure."""
     rows = call.get("clauses")
     if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
         raise ValueError("eligible telemetry has invalid clauses")
     command = call.get("command")
-    rows = enrich_clause_structure(command if isinstance(command, str) else None, rows)
+    if enrich_structure:
+        rows = enrich_clause_structure(command if isinstance(command, str) else None, rows)
     observations: list[ClauseObservation] = []
     for row in rows:
         if row.get("eligible_for_kb") is False or row.get("telemetry_quality", "ok") != "ok":

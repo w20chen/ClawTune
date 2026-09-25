@@ -30,7 +30,7 @@ def _events(dataset: Path, tasks: dict, keys: list[str], rss_unit: str,
             events.extend(loaded_events)
             exclusions.update(excluded)
             continue
-        loaded = load_task(dataset, tasks[key], rss_unit)
+        loaded = load_task(dataset, tasks[key], rss_unit, recorded_clauses_only=True)
         for index, clause in enumerate(loaded.clauses):
             if clause.latency_ms is None or not math.isfinite(clause.latency_ms) or clause.latency_ms < 0:
                 exclusions["no_exact_clause_duration"] += 1

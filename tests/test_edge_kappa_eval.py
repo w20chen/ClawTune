@@ -40,7 +40,8 @@ def test_frozen_and_record_order_online_evaluation_share_training_snapshot(
              for key in ("train-1", "train-2", "test-1", "test-2")}
     split = {"train": ["train-1", "train-2"], "test": ["test-1", "test-2"],
              "assignment_sha256": "digest"}
-    def load(_dataset: Path, task: dict, _unit: str) -> LoadedTask:
+    def load(_dataset: Path, task: dict, _unit: str, *, recorded_clauses_only=False) -> LoadedTask:
+        assert recorded_clauses_only
         command = ("python", "-m", "pytest", task["task_id"])
         duration = 50 if task["task_id"] == "train-1" else 600
         clause = ClauseObservation("swe-rebench:repo", "python", command, 0, 1,
@@ -89,7 +90,15 @@ def test_trace_online_replays_task_events_in_start_order(
     assert [row["generation"] for row in rows] == [1, 2, 3]
 
 
-def test_evaluator_reads_v5_clause_traces(tmp_path: Path) -> None:
+@pytest.mark.parametrize("online", [False, True])
+def test_evaluator_reads_v5_clause_traces(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                         online: bool) -> None:
+    from tool_resource import features, mvdan_client
+    def forbidden(*args, **kwargs):
+        pytest.fail("offline clause evaluation attempted to use mvdan")
+    monkeypatch.setattr(features, "parse_command_clauses", forbidden)
+    monkeypatch.setattr(mvdan_client.MvdanClient, "parse", forbidden)
+    monkeypatch.setattr(mvdan_client, "ensure_compatible_adapter", forbidden)
     dataset = tmp_path / "traces"
     dataset.mkdir()
     for index in range(5):
@@ -105,6 +114,8 @@ def test_evaluator_reads_v5_clause_traces(tmp_path: Path) -> None:
                     "tool_call_id": "call", "command": command, "eligible_for_kb": True,
                     "telemetry_quality": "ok", "telemetry_status": "ok", "clauses": [{
                         "bin": "python", "argv": ["python", "work.py"],
+                        "in_loop": False, "in_pipe": False, "in_subst": False,
+                        "pipeline_position": -1,
                 "eligible_for_kb": True, "telemetry_quality": "ok",
                 "availability": {"latency": "ok"},
                         "latency_ms": 50 + index * 100,
@@ -113,12 +124,13 @@ def test_evaluator_reads_v5_clause_traces(tmp_path: Path) -> None:
         (dataset / f"{task}.trace.jsonl").write_text(
             "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
     report = edge_kappa_eval.run(dataset, tmp_path / "result", benchmark="bfcl",
-                                 split_cache_dir=tmp_path / "split-cache")
+                                 split_cache_dir=tmp_path / "split-cache", online=online)
     assert report["train_clauses"] == 4
     assert report["test_clauses"] == 1
     assert report["metrics"]["predicted"] == 1
     strict = edge_kappa_eval.run(dataset, tmp_path / "strict", benchmark="bfcl",
-                                 split_cache_dir=tmp_path / "split-cache", event_clock="trace")
+                                 split_cache_dir=tmp_path / "split-cache", event_clock="trace",
+                                 online=online)
     assert strict["event_clock"] == "trace"
     assert strict["test_clauses"] == 1
     legacy = legacy_run(dataset, tmp_path / "legacy", benchmark="bfcl",
@@ -137,6 +149,8 @@ def test_trace_adapter_excludes_censored_and_missing_clock(tmp_path: Path) -> No
     def action(action_id: str, *, censored: bool = False,
                clock: bool = True) -> dict:
         clause = {"bin": "python", "argv": ["python", "work.py"],
+                  "in_loop": False, "in_pipe": False, "in_subst": False,
+                  "pipeline_position": -1,
                   "eligible_for_kb": True, "telemetry_quality": "ok",
                   "availability": {"latency": "ok"}, "latency_ms": 600}
         if clock:

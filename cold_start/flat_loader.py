@@ -69,8 +69,27 @@ class LoadedTask:
     counts: Counter = field(default_factory=Counter)
 
 
+def recorded_clause_structure(command, rows, *, recorded_only: bool = False):
+    """Reuse complete trace structure; strict evaluation never reparses shell text."""
+    if not isinstance(rows, (list, tuple)):
+        raise ValueError("invalid recorded clauses: expected a list")
+    complete = all(
+        isinstance(row, dict)
+        and all(type(row.get(field)) is bool for field in ("in_loop", "in_pipe", "in_subst"))
+        and type(row.get("pipeline_position")) is int
+        for row in rows
+    )
+    if complete:
+        return tuple(dict(row) for row in rows)
+    if recorded_only:
+        raise ValueError("clause evaluation requires recorded in_loop, in_pipe, in_subst "
+                         "and pipeline_position with valid types; mvdan is not used")
+    from tool_resource.features import enrich_clause_structure
+    return enrich_clause_structure(command, rows)
+
+
 def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
-              trust_call_cgroup: bool = False) -> LoadedTask:
+              trust_call_cgroup: bool = False, recorded_clauses_only: bool = False) -> LoadedTask:
     if rss_unit not in {"MB", "MiB"}:
         raise ValueError("source RSS unit must be explicitly MB or MiB")
     rss_scale = 1_000_000 if rss_unit == "MB" else 1024**2
@@ -161,8 +180,8 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
                     or observation.get("telemetry_status") != "ok"):
                 result.counts["ineligible_resource_observation"] += 1
                 continue
-            from tool_resource.features import enrich_clause_structure
-            enriched_clauses = enrich_clause_structure(command, observation.get("clauses", []))
+            enriched_clauses = recorded_clause_structure(
+                command, observation.get("clauses", []), recorded_only=recorded_clauses_only)
             if call_actual_index is not None:
                 result.call_clauses[call_actual_index] = tuple({
                     field: clause.get(field)

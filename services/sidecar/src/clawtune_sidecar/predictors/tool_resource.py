@@ -2492,6 +2492,10 @@ def _compact_clauses(clauses: Any) -> list[dict[str, Any]]:
             {
                 "bin": row.get("bin"),
                 "argv": row.get("argv"),
+                # Preserve recorded shell structure for parser-free offline replay.
+                # Missing fields remain missing: do not invent standalone semantics.
+                **{field: row[field] for field in
+                   ("in_loop", "in_pipe", "in_subst", "pipeline_position") if field in row},
                 "status": row.get("status"),
                 "availability": row.get("availability"),
                 "ts_start": row.get("ts_start"),
