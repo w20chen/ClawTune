@@ -11,7 +11,7 @@ from typing import Iterable
 
 from .graph import FeatureGraph, bounded_nodes, node_id
 from .types import (
-    BucketPrediction, FeatureQuery, ParentEvidence, TimeOutcome, TrainingEvent, UpdateReport,
+    BucketPrediction, DurationDistribution, FeatureQuery, ParentEvidence, TimeOutcome, TrainingEvent, UpdateReport,
 )
 
 
@@ -234,6 +234,111 @@ class EdgeKappaKB:
     def predict(self, query: FeatureQuery) -> BucketPrediction:
         return self._predict(query)
 
+    def predict_duration(self, query: FeatureQuery) -> DurationDistribution:
+        """Lift the same self/parent mixture to real, weighted duration atoms.
+
+        Each own event has weight 1; each parent-difference event has weight
+        kappa/d. Overlapping parent evidence is one atom with summed weight.
+        Censored and legacy bucket-only events are never assigned bucket midpoints.
+        """
+        prediction = self.predict(query)
+        own = self.nodes[prediction.node_id].observations if prediction.exact_match else set()
+        weights = {event_id: 1.0 for event_id in own}
+        for evidence in prediction.evidence:
+            for event_id in self.nodes[evidence.parent_id].observations - own:
+                weights[event_id] = weights.get(event_id, 0.0) + evidence.kappa / evidence.difference_count
+        reason = prediction.unavailable_reason
+        durations = {event_id: self._completion_rows.get(event_id, {}).get("duration_ms") for event_id in weights}
+        if any(value is None for value in durations.values()):
+            reason = "non_exact_duration_evidence"
+        if reason:
+            return DurationDistribution((), (), len(weights), prediction, reason)
+        ordered = sorted(weights, key=lambda event_id: (durations[event_id], event_id))
+        return DurationDistribution(tuple(durations[event_id] for event_id in ordered),
+                                    tuple(weights[event_id] for event_id in ordered), len(weights), prediction)
+
+    def discard_prediction(self, event_id: str) -> None:
+        """Release an uncompleted prediction (e.g. an unexecuted shell branch)."""
+        if self._frozen:
+            raise ValueError("frozen KB cannot discard an event")
+        if event_id in self._completed and event_id not in self._processed:
+            raise ValueError("cannot discard a queued completion")
+        self._tokens.pop(event_id, None)
+
+    def completion_feedback(self, event_id: str) -> dict:
+        """Copy the original token and outcome before commit consumes the token."""
+        return copy.deepcopy({"token": self._tokens[event_id],
+                              "outcome": self._completion_rows[event_id]})
+
+    def replay_feedback(self, feedback: dict, source: EdgeKappaKB) -> dict:
+        """Apply a saved pre-action gradient to current weights, never source weights.
+
+        Union historical parent relations across task branches. Existing edges
+        retain their weights; missing edges start at the source graph's prior.
+        Saved predictions still determine gradients, not the merged graph's
+        current predictions. Return normalized feedback for durable replay.
+        """
+        if self._frozen:
+            raise ValueError("frozen KB cannot replay feedback")
+        if any(getattr(self, name) != getattr(source, name) for name in (
+                "bucket_edges_ms", "k0", "learning_rate", "learn_weights", "shared_child_weight",
+                "max_optional_features", "max_covered_nodes", "max_graph_nodes", "replay_seed",
+                "normalization_version")):
+            raise ValueError("incompatible feedback KB configuration")
+        token = copy.deepcopy(feedback["token"])
+        outcome = TimeOutcome(**feedback["outcome"])
+        # Older tokens omit this field. Capture their source parents before
+        # unioning graphs so shared-child updates do not touch another task's
+        # extra edges. New tokens already preserve the prediction-time sets.
+        token.setdefault("parent_sets", {
+            child: list(source.graph.parents[child]) for child in token["covered"]
+        })
+        normalized = {"token": token, "outcome": asdict(outcome)}
+        if outcome.event_id in self._completed:
+            self.complete(outcome.event_id, outcome)
+            return normalized
+
+        imported: set[str] = set()
+
+        def import_node(key: str) -> None:
+            if key in imported:
+                return
+            parents = tuple(token["parent_sets"].get(key, source.graph.parents[key]))
+            for parent in parents:
+                import_node(parent)
+            if key not in self.nodes:
+                features = source.graph.signatures[key]
+                query = FeatureQuery(features, features, token["query"]["tool"],
+                                     self.normalization_version)
+                self._ensure_full_node(query)
+                # Auto-selected parents reflect merge order, not a task's
+                # prediction history. Only retain actual historical edges.
+                for parent in self.graph.parents[key]:
+                    del self.edges[(parent, key)]
+                self.graph.parents[key] = ()
+            existing = self.graph.parents[key]
+            combined = tuple(sorted(set(existing).union(parents)))
+            for parent in parents:
+                if parent not in existing:
+                    self.edges[(parent, key)] = _Edge(math.log(self.k0 / len(parents)))
+            if combined != existing:
+                self.graph.parents[key] = combined
+                self.graph_version += 1
+            imported.add(key)
+
+        for key in token["covered"]:
+            import_node(key)
+        query_row = token["query"]
+        query = FeatureQuery(frozenset(query_row["features"]),
+                             frozenset(query_row["core_features"]), query_row["tool"],
+                             query_row["normalization_version"])
+        self._tokens[outcome.event_id] = token
+        # A count-only token must retain that status during replay.
+        self.complete(outcome.event_id, outcome,
+                      query=query if token.get("weight_update_skipped") else None)
+        self.commit_before(float("inf"))
+        return normalized
+
     def begin(self, query: FeatureQuery, event_id: str, start_time: float, *,
               task_id: str | None = None, call_id: str | None = None,
               clause_id: str | None = None) -> tuple[BucketPrediction, str]:
@@ -266,6 +371,7 @@ class EdgeKappaKB:
             "task_id": task_id, "call_id": call_id, "clause_id": clause_id,
             "query": self._query_row(query),
             "prediction": asdict(prediction), "local": local, "covered": sorted(covered),
+            "parent_sets": {child: list(self.graph.parents[child]) for child in sorted(covered)},
             "generation": self.generation}
         return prediction, event_id
 
@@ -377,7 +483,7 @@ class EdgeKappaKB:
                     gradients = {item["parent_id"]: item["kappa"] / denominator * (
                         1 - item["distribution"][bucket] / truth) for item in active}
                     if self.shared_child_weight:
-                        parents = list(self.graph.parents[child])
+                        parents = list(token.get("parent_sets", {}).get(child, self.graph.parents[child]))
                         shared_gradient = max(-1.0, min(1.0, sum(gradients.values())))
                         for parent in parents:
                             edge = self.edges[(parent, child)]
@@ -502,6 +608,11 @@ class EdgeKappaKB:
         kb._observation_buckets = {row["event_id"]: row["bucket"] for row in obj["observations"]}
         kb._observation_features = {row["event_id"]: frozenset(row["features"])
                                     for row in obj["observations"]}
+        for event_id in kb._observation_buckets:
+            duration = kb._completion_rows.get(event_id, {}).get("duration_ms")
+            if duration is not None and (not math.isfinite(duration) or duration < 0
+                    or bisect_right(kb.bucket_edges_ms, duration) != kb._observation_buckets[event_id]):
+                raise ValueError("invalid observation duration")
         if len(kb._observation_buckets) != len(obj["observations"]) or any(
             not 0 <= bucket < kb.bucket_count for bucket in kb._observation_buckets.values()):
             raise ValueError("invalid observation index")

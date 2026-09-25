@@ -80,6 +80,15 @@ _TOOL_RESOURCE_KB_SCHEMAS = {
     "clause-resource-kb.json": "runtime_clause_resource_kb_v6",
     "clause-lattice-time-kb.json": "clause_lattice_kb_v3",
 }
+_OPTIONAL_TOOL_RESOURCE_KB_SCHEMAS = {"edge-kappa-kb.json": "edge-kappa-kb.v1"}
+
+
+def _kb_snapshot_names(directory: Path) -> tuple[str, ...]:
+    return (*_TOOL_RESOURCE_KB_SCHEMAS, *(
+        name for name in _OPTIONAL_TOOL_RESOURCE_KB_SCHEMAS
+        if (directory / name).exists()
+    ))
+
 
 _TASK_CLEANUP_TIMEOUT_SECONDS = 15.0
 _DISCOVERY_COMMAND_TIMEOUT_SECONDS = 5.0
@@ -1075,7 +1084,7 @@ def _prepare_batch_tool_resource_kb(
     try:
         _validate_kb_snapshot_pair(source_dir)
         shared_kb_dir.mkdir(parents=True, exist_ok=False)
-        for filename in _TOOL_RESOURCE_KB_SCHEMAS:
+        for filename in _kb_snapshot_names(source_dir):
             _atomic_copy(source_dir / filename, shared_kb_dir / filename)
         if config.runtime.kb_frozen:
             for name in ("seed-manifest.json", "split-manifest.json", "test-tasks.json"):
@@ -1107,12 +1116,15 @@ def _seed_runtime_tool_resource_kb(
     source_dir = source_dir or config.repo_root / "seeds" / "bootstrap-v1"
     try:
         _validate_kb_snapshot_pair(source_dir)
-        for filename in _TOOL_RESOURCE_KB_SCHEMAS:
+        for filename in _kb_snapshot_names(source_dir):
             dest = dest_dir / filename
             source = source_dir / filename
             if config.runtime.kb_frozen or not dest.exists():
                 _atomic_copy(source, dest)
         if config.runtime.kb_frozen:
+            for name in _OPTIONAL_TOOL_RESOURCE_KB_SCHEMAS:
+                if not (source_dir / name).exists():
+                    (dest_dir / name).unlink(missing_ok=True)
             for name in ("seed-manifest.json", "split-manifest.json", "test-tasks.json"):
                 if (source_dir / name).is_file():
                     _atomic_copy(source_dir / name, dest_dir / name)
@@ -1135,6 +1147,10 @@ def _publish_tool_resource_kb(trace_dir: Path, shared_kb_dir: Path) -> None:
     try:
         _validate_kb_snapshot_pair(source_dir)
         _validate_kb_snapshot_pair(shared_kb_dir)
+        source_names = _kb_snapshot_names(source_dir)
+        backup_names = _kb_snapshot_names(shared_kb_dir)
+        if set(backup_names) - set(source_names):
+            raise KnowledgeBaseSyncError("task KB generation is missing an existing optional snapshot")
         with tempfile.TemporaryDirectory(
             prefix=".kb-publish-",
             dir=shared_kb_dir.parent,
@@ -1144,19 +1160,22 @@ def _publish_tool_resource_kb(trace_dir: Path, shared_kb_dir: Path) -> None:
             backup_dir = root / "backup"
             staged_dir.mkdir()
             backup_dir.mkdir()
-            for filename in _TOOL_RESOURCE_KB_SCHEMAS:
+            for filename in source_names:
                 _atomic_copy(source_dir / filename, staged_dir / filename)
+            for filename in backup_names:
                 _atomic_copy(shared_kb_dir / filename, backup_dir / filename)
             _validate_kb_snapshot_pair(staged_dir)
             _validate_kb_snapshot_pair(backup_dir)
             try:
-                for filename in _TOOL_RESOURCE_KB_SCHEMAS:
+                for filename in source_names:
                     os.replace(staged_dir / filename, shared_kb_dir / filename)
                 _validate_kb_snapshot_pair(shared_kb_dir)
             except Exception as commit_exc:
                 try:
-                    for filename in _TOOL_RESOURCE_KB_SCHEMAS:
+                    for filename in backup_names:
                         _atomic_copy(backup_dir / filename, shared_kb_dir / filename)
+                    for filename in set(source_names) - set(backup_names):
+                        (shared_kb_dir / filename).unlink(missing_ok=True)
                     _validate_kb_snapshot_pair(shared_kb_dir)
                 except Exception as rollback_exc:
                     raise KnowledgeBaseSyncError(
@@ -1175,7 +1194,9 @@ def _publish_tool_resource_kb(trace_dir: Path, shared_kb_dir: Path) -> None:
 
 
 def _validate_kb_snapshot_pair(directory: Path) -> None:
-    for filename, schema_prefix in _TOOL_RESOURCE_KB_SCHEMAS.items():
+    schemas = {**_TOOL_RESOURCE_KB_SCHEMAS, **_OPTIONAL_TOOL_RESOURCE_KB_SCHEMAS}
+    for filename in _kb_snapshot_names(directory):
+        schema_prefix = schemas[filename]
         path = directory / filename
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -1193,6 +1214,17 @@ def _validate_kb_snapshot_pair(directory: Path) -> None:
                 f"invalid KB snapshot schema in {path}: {schema!r}; "
                 f"expected {schema_prefix!r}"
             )
+        if filename == "edge-kappa-kb.json":
+            try:
+                from clawtune_kb.contracts import validate
+                from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
+                validate(payload, "edge-kappa-kb.schema.json")
+                EdgeKappaRuntime.from_snapshot(payload)
+            except Exception as exc:
+                raise KnowledgeBaseSyncError(
+                    f"scheduler rejected KB snapshot {path}: {exc}"
+                ) from exc
+            continue
         if filename == "clause-lattice-time-kb.json":
             _validate_lattice_time_kb_snapshot(path, payload)
         else:

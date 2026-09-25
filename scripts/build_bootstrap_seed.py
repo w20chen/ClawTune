@@ -110,8 +110,10 @@ def build(output: Path, source: Path | None = None):
             counts.update(("cpu_time_seconds", "cpu_avg_cores"))
         if observation.cpu_peak_cores is not None:
             counts.update(("cpu_peak_cores",))
-    return create_seed(output, dict(zip(FILES, (
-        trie.to_json_obj(), tool.to_json_obj(), lattice.to_json_obj()))), provenance={
+    from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
+    payloads = dict(zip(FILES, (trie.to_json_obj(), tool.to_json_obj(), lattice.to_json_obj())))
+    payloads["edge-kappa-kb.json"] = EdgeKappaRuntime.fit(observations, (100, 500, 2000, 10000), frozen=True).to_snapshot()
+    return create_seed(output, payloads, provenance={
             "kind": "repository-neutral-bootstrap", "recipe_version": 2,
             "source_snapshot_sha256": hashlib.sha256(raw).hexdigest(),
             "source": "historical SWE-Rebench clause training data",

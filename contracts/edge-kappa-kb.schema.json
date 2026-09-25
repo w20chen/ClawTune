@@ -41,19 +41,39 @@
       "update_count": {"type": "integer", "minimum": 0},
       "last_update_id": {"type": ["string", "null"]}
     }, "additionalProperties": false}},
-    "tokens": {"type": "object", "additionalProperties": {"type": "object", "properties": {
-      "weight_update_skipped": {"const": true}
-    }}},
+    "tokens": {"type": "object", "additionalProperties": {"$ref": "#/$defs/predictionToken"}},
     "pending": {"type": "array", "items": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "string"}, {"type": "string"}, {"type": "object"}], "items": false, "minItems": 4, "maxItems": 4}},
     "processed_event_ids": {"$ref": "#/$defs/strings"},
     "completed_event_ids": {"$ref": "#/$defs/strings"},
     "completion_rows": {"type": "object", "additionalProperties": {"type": "object"}},
+    "runtime": {
+      "type": "object", "required": ["completed_calls"], "additionalProperties": false,
+      "properties": {
+        "completed_calls": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "observation_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "calls": {"type": "object", "additionalProperties": {"type": "object"}},
+        "feedback": {"type": "object", "additionalProperties": {
+          "type": "object", "required": ["token", "outcome"], "additionalProperties": false,
+          "properties": {
+            "token": {"$ref": "#/$defs/predictionToken"},
+            "outcome": {"type": "object", "required": ["event_id", "end_time"],
+              "properties": {"event_id": {"type": "string"}, "end_time": {"type": "number"}}}
+          }
+        }}
+      }
+    },
     "observations": {"type": "array", "items": {"type": "object", "required": ["event_id", "features", "bucket"], "properties": {
       "event_id": {"type": "string", "minLength": 1},
       "features": {"$ref": "#/$defs/strings"},
       "bucket": {"type": "integer", "minimum": 0}
     }, "additionalProperties": false}}
   },
-  "$defs": {"strings": {"type": "array", "items": {"type": "string"}}},
+  "$defs": {
+    "strings": {"type": "array", "items": {"type": "string"}},
+    "predictionToken": {"type": "object", "properties": {
+      "weight_update_skipped": {"const": true},
+      "parent_sets": {"type": "object", "additionalProperties": {"$ref": "#/$defs/strings"}}
+    }}
+  },
   "additionalProperties": false
 }

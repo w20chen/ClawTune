@@ -27,6 +27,7 @@ from clawtune_sidecar.identity import (
 from clawtune_sidecar.monitoring.tool_runtime import ToolRuntimeSample
 from clawtune_sidecar.prediction_config import load_bucket_edges
 from clawtune_sidecar.predictors.call_load import predict_call_load
+from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime, call_key
 from clawtune_sidecar.topology.linux import NumaCpuUsageSampler
 from clawtune_sidecar.tool_resource_commands import extract_command
 from tool_resource.features import (
@@ -283,6 +284,7 @@ class ToolResourcePredictor:
         clause_kb_snapshot_path: Path | None = None,
         runtime_kb_snapshot_path: Path | None = None,
         lattice_kb: LatticeTimeKB | None = None,
+        edge_kappa: EdgeKappaRuntime | None = None,
         lattice_kb_snapshot_path: Path | None = None,
         ttl_by_bucket_s: tuple[float, ...] | None = None,
         miss_penalty_s: float | None = None,
@@ -303,6 +305,10 @@ class ToolResourcePredictor:
         self.clause_kb_snapshot_path = clause_kb_snapshot_path
         self.runtime_kb_snapshot_path = runtime_kb_snapshot_path
         self.lattice_kb = lattice_kb or LatticeTimeKB()
+        self.edge_kappa = edge_kappa or EdgeKappaRuntime.fit((), self.load_buckets["duration_ms"], frozen=frozen)
+        self.edge_kappa_snapshot_path = artifact_dir / "edge-kappa-kb.json" if artifact_dir else None
+        self._edge_kappa_version = 0
+        self._edge_kappa_persisted_version = 0
         if frozen:
             self.kb.freeze()
             self.continuous_kb.freeze()
@@ -434,6 +440,19 @@ class ToolResourcePredictor:
                     lattice_observations_loaded=lattice.observation_count, lattice_kb_available=bool(lattice.observation_count),
                     rejections=()))
             result.continuous_kb = runtime
+            edge_path = artifact_dir / "edge-kappa-kb.json"
+            if expected is not None and edge_path.name in expected and not edge_path.is_file():
+                raise ValueError("frozen edge kappa snapshot missing from declared seed")
+            if edge_path.is_file():
+                manifest_path = artifact_dir / "manifest.json"
+                edge_hashes = (json.loads(manifest_path.read_text(encoding="utf-8"))["snapshots"]
+                               if manifest_path.is_file() else expected)
+                data = edge_path.read_bytes()
+                if edge_hashes is not None and hashlib.sha256(data).hexdigest() != edge_hashes.get(edge_path.name):
+                    raise ValueError("frozen edge kappa snapshot hash mismatch")
+                result.edge_kappa = EdgeKappaRuntime.from_snapshot(json.loads(data), frozen=True)
+                if result.edge_kappa.kb.bucket_edges_ms != tuple(result.load_buckets["duration_ms"]):
+                    raise ValueError("edge kappa bucket edges mismatch")
             return result
         openclaw_paths = list(_expand_trace_paths(openclaw_trace_paths))
         ebpf_paths = list(_expand_trace_paths(ebpf_trace_paths))
@@ -510,8 +529,21 @@ class ToolResourcePredictor:
             lattice_kb_available = False
             rejections.append(f"prepare lattice KB: {type(exc).__name__}: {exc}")
 
+        edge_path = artifact_dir / "edge-kappa-kb.json" if artifact_dir else None
+        if edge_path is not None and edge_path.is_file():
+            edge_kappa = EdgeKappaRuntime.from_snapshot(json.loads(edge_path.read_text(encoding="utf-8")))
+            if edge_kappa.kb.bucket_edges_ms != tuple(buckets.edges_ms):
+                raise ValueError("edge kappa bucket edges mismatch")
+            edge_kappa.merge_historical(observations)
+        else:
+            # Upgrade a writable three-KB state from its committed raw training
+            # observations, never from another backend's predictions.
+            edge_training = [ClauseObservation(**dict(row, argv=tuple(row["argv"])))
+                             for row in lattice_kb.to_json_obj()["observations"]]
+            edge_kappa = EdgeKappaRuntime.fit(edge_training, buckets.edges_ms)
         predictor = cls(
             kb=kb,
+            edge_kappa=edge_kappa,
             buckets=buckets,
             report=ToolResourceLoadReport(
                 ebpf_traces_seen=len(ebpf_paths),
@@ -552,6 +584,8 @@ class ToolResourcePredictor:
             predictor._persist_runtime_kb()
         if observations or loaded_lattice_snapshot is not None:
             predictor._persist_lattice_kb()
+        if predictor.edge_kappa_snapshot_path is not None:
+            _write_json_atomic(predictor.edge_kappa_snapshot_path, predictor.edge_kappa.to_snapshot())
         return predictor
 
     @classmethod
@@ -586,7 +620,11 @@ class ToolResourcePredictor:
                                   command=_command_for_request(request), ts_start=time.time(),
                                   )
             call, diagnostics = predict_call_load(runtime=self.continuous_kb, trie=self.kb,
-                                                  lattice=self.lattice_kb, query=query, edges=self.load_buckets)
+                                                  lattice=self.lattice_kb, query=query, edges=self.load_buckets,
+                                                  edge_kappa=self.edge_kappa, edge_call_id=call_key(request))
+            if not self.frozen:
+                self._edge_kappa_version += 1
+                self._kb_writes.enqueue()
             from clawtune_sidecar.contracts.load_prediction import summarize_pmu_evidence
             try:
                 pmu = summarize_pmu_evidence(self.continuous_kb.predict_pmu_samples(query))
@@ -611,6 +649,7 @@ class ToolResourcePredictor:
                                   resource_class=_resource_class_for_duration_ms(p90), confidence=None,
                                   tool=call, trie=diagnostics.backends["trie"],
                                   lattice=diagnostics.backends["lattice"],
+                                  edge_kappa=diagnostics.backends["edge_kappa"],
                                   call_prediction=call, pmu_prediction=pmu,
                                   diagnostics=diagnostics, tool_resource=payload)
 
@@ -915,6 +954,22 @@ class ToolResourcePredictor:
                     # Auxiliary learning cannot change the tool outcome.
                     import logging
                     logging.getLogger(__name__).exception("environment memory clause update failed")
+        try:
+            try:
+                edge_observations = _ebpf_observations(artifact, fallback_repo=self.repo) if artifact is not None else []
+            except ValueError:
+                # Memory-only/invalid clause rows are not trusted duration labels.
+                edge_observations = []
+            with self._kb_lock:
+                try:
+                    self.edge_kappa.complete_call(call_key(start or event), edge_observations, commit_time=time.time())
+                finally:
+                    # A failed batch may still have accepted earlier clauses.
+                    self._edge_kappa_version += 1
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("edge kappa clause update failed")
+        self._kb_writes.enqueue()
         if completed_call is not None:
             with self._kb_lock:
                 self.continuous_kb.observe_completed_call(completed_call)
@@ -1302,6 +1357,11 @@ class ToolResourcePredictor:
 
         with self._kb_lock:
             self._capture_kb_snapshot_locked(
+                snapshots, errors, name="edge_kappa", path=self.edge_kappa_snapshot_path,
+                version=self._edge_kappa_version, persisted_version=self._edge_kappa_persisted_version,
+                serializer=self.edge_kappa.to_snapshot,
+            )
+            self._capture_kb_snapshot_locked(
                 snapshots,
                 errors,
                 name="runtime",
@@ -1339,7 +1399,9 @@ class ToolResourcePredictor:
                 )
                 continue
             with self._kb_lock:
-                if name == "runtime":
+                if name == "edge_kappa":
+                    self._edge_kappa_persisted_version = max(self._edge_kappa_persisted_version, version)
+                elif name == "runtime":
                     self._runtime_kb_persisted_version = max(
                         self._runtime_kb_persisted_version,
                         version,
@@ -2807,6 +2869,7 @@ _KNOWN_KB_SNAPSHOT_FILENAMES: frozenset[str] = frozenset(
         "clause-resource-kb.json",
         "runtime-tool-resource-kb.json",
         "clause-lattice-time-kb.json",
+        "edge-kappa-kb.json",
     }
 )
 

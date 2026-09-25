@@ -528,7 +528,11 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
     trie._absorb_completed(float("inf"))
     runtime._absorb_completed(float("inf"))
     lattice = LatticeTimeKB.fit(clauses)
-    bundle = create_seed(output / "seed", dict(zip(FILES, (trie.to_json_obj(), runtime.to_json_obj(), lattice.to_json_obj()))),
+    from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
+    edge_kappa = EdgeKappaRuntime.fit(clauses, (100, 500, 2000, 10000), frozen=True)
+    payloads = dict(zip(FILES, (trie.to_json_obj(), runtime.to_json_obj(), lattice.to_json_obj())))
+    payloads["edge-kappa-kb.json"] = edge_kappa.to_snapshot()
+    bundle = create_seed(output / "seed", payloads,
         provenance={"split_sha256": manifest["assignment_sha256"], "train": manifest["train"],
                     "test": manifest["test"], "rss_unit": rss_unit, "counts": dict(counts),
                     "resource_sampling": {"unit": "ms", "per_task": train_sampling}})
@@ -547,7 +551,7 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
             for target, value in actuals.items():
                 baselines[(call.tool_name, target)].append(value)
     rows = []
-    model_rows = {name: [] for name in ("tool", "trie", "lattice")}
+    model_rows = {name: [] for name in ("tool", "trie", "lattice", "edge_kappa")}
     availability = {name: {target: {"queries": 0, "labeled": 0, "predicted": 0, "scored": 0}
                            for target in LOAD_TARGET_SOURCES} for name in model_rows}
     pmu_availability = {
@@ -567,7 +571,7 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
             known_clauses = _safe_recorded_clause(call.command, recorded_clauses)
             prediction, diagnostics = predict_call_load(
                 runtime=runtime, trie=trie, lattice=lattice, query=query, edges=edges,
-                parsed_clauses=known_clauses,
+                parsed_clauses=known_clauses, edge_kappa=edge_kappa,
             )
             estimates = dict(prediction.targets)
             pmu_evidence = runtime.predict_pmu_samples(query)
@@ -589,7 +593,8 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
                 pmu_availability[metric]["labeled"] += int("pmu_" + metric in actual_target_values)
             for model, model_estimates in (("tool", estimates),
                                            ("trie", diagnostics.backends["trie"].targets),
-                                           ("lattice", diagnostics.backends["lattice"].targets)):
+                                           ("lattice", diagnostics.backends["lattice"].targets),
+                                           ("edge_kappa", diagnostics.backends["edge_kappa"].targets)):
                 for target, counters in availability[model].items():
                     labeled = target in actual_target_values
                     estimate = model_estimates.get(target)
@@ -637,7 +642,7 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
             "evaluated_test_tasks": len({row["task"] for row in selected}),
             "metrics": _summarize_rows(selected, edges["duration_ms"]),
         })
-    if any(digest(output / "seed" / name) != bundle["snapshots"][name] for name in FILES):
+    if any(digest(output / "seed" / name) != bundle["snapshots"][name] for name in bundle["snapshots"]):
         raise RuntimeError("frozen test modified seed")
     report = {"schema": "clawtune.offline-report.v1", "train_tasks": len(manifest["train"]),
               "test_tasks": len(manifest["test"]), "test_updates": 0, "metrics": summaries,

@@ -77,3 +77,14 @@ class UpdateReport:
     weight_update_skipped: int = 0
     skipped_nodes: int = 0
     boundary_hits: int = 0
+
+
+@dataclass(frozen=True)
+class DurationDistribution:
+    """Weighted real durations; numerical bucket smoothing has no time atom."""
+
+    values_ms: tuple[float, ...]
+    weights: tuple[float, ...]
+    evidence_count: int
+    bucket_prediction: BucketPrediction
+    unavailable_reason: str | None = None

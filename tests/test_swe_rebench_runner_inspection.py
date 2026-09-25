@@ -21,6 +21,127 @@ from swe_rebench.runner import (
 )
 
 
+def test_parallel_kb_merge_does_not_ingest_fourth_snapshot_as_telemetry(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
+
+    artifact_dir = tmp_path / "task" / "tool-resource"
+    artifact_dir.mkdir(parents=True)
+    snapshot = EdgeKappaRuntime.fit([], (100, 500, 2000, 10000)).to_snapshot()
+    (artifact_dir / "edge-kappa-kb.json").write_text(json.dumps(snapshot))
+    monkeypatch.setattr(runner, "_task_trace_dir", lambda *args: artifact_dir.parent)
+    # With no actual trace inputs, the merge must not initialize or publish a KB.
+    runner._merge_parallel_task_kbs(None, [SimpleNamespace(instance_id="task")], tmp_path / "shared")
+    assert not (tmp_path / "shared").exists()
+
+
+@pytest.mark.parametrize("fourth_baseline", [False, True])
+@pytest.mark.parametrize("missing_input", ["telemetry", "empty_directory", "missing_directory"])
+def test_parallel_merge_rejects_missing_feedback_before_publication(tmp_path, fourth_baseline, missing_input):
+    from types import SimpleNamespace
+    from clawtune_kb.store import write_json
+    from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
+    from tool_resource.runtime_kb import ClauseResourceKB, RuntimeToolResourceKB
+    from tool_time.lattice_kb import LatticeTimeKB
+
+    shared = tmp_path / "shared"
+    snapshots = {
+        "clause-resource-kb.json": ClauseResourceKB().to_json_obj(),
+        "runtime-tool-resource-kb.json": RuntimeToolResourceKB().to_json_obj(),
+        "clause-lattice-time-kb.json": LatticeTimeKB().to_json_obj(),
+    }
+    edge = EdgeKappaRuntime.fit([], (100, 500, 2000, 10000)).to_snapshot()
+    if fourth_baseline:
+        snapshots["edge-kappa-kb.json"] = edge
+    for name, payload in snapshots.items():
+        write_json(shared / name, payload)
+    # Also require all task feedback when a legacy baseline was upgraded by
+    # another task, not just when the shared baseline already has four KBs.
+    if not fourth_baseline:
+        write_json(tmp_path / "a" / "tool-resource" / "edge-kappa-kb.json", edge)
+    missing = tmp_path / "b" / "tool-resource"
+    if missing_input != "missing_directory":
+        missing.mkdir(parents=True)
+    if missing_input == "telemetry":
+        write_json(missing / "call.json", {
+            "version": 2, "mode": "clause", "replay_execution": "completed", "cleanup": "ok",
+            "status_model": "call_granular_v1", "telemetry_quality": "ok",
+            "collection_validity": "valid", "formal_completeness": "complete",
+            "integrity": {"status": "ok"}, "calls": [{
+                "eligible_for_kb": True, "command": "python job.py", "clauses": [{
+                    "bin": "python", "argv": ["python", "job.py"],
+                    "ts_start": 30., "ts_end": 31., "latency_ms": 50.,
+                    "availability": {"latency": "ok"},
+                }],
+            }],
+        })
+    tasks = [SimpleNamespace(instance_id=name) for name in (("b",) if fourth_baseline else ("a", "b"))]
+    config = SimpleNamespace(runtime=SimpleNamespace(kb_frozen=False),
+                             output=SimpleNamespace(trace_root=tmp_path))
+    before = {path.name: path.read_bytes() for path in shared.iterdir()}
+    with pytest.raises(host_openclaw.KnowledgeBaseSyncError, match="missing task EdgeKappa snapshot") as error:
+        runner._merge_parallel_task_kbs(config, tasks, shared)
+    assert str(missing / "edge-kappa-kb.json") in str(error.value)
+    assert {path.name: path.read_bytes() for path in shared.iterdir()} == before
+
+
+@pytest.mark.parametrize("different_parents", [False, True])
+def test_parallel_merge_publishes_both_tasks_gradients_and_is_retry_safe(tmp_path, monkeypatch, different_parents):
+    from types import SimpleNamespace
+    from clawtune_kb.store import write_json
+    from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
+    from clawtune_sidecar.predictors.tool_resource import ToolResourcePredictor
+    from tool_resource.runtime_kb import ClauseObservation, ClauseResourceKB, RuntimeToolResourceKB
+    from tool_time.lattice_kb import LatticeTimeKB
+
+    def observation(i, ms, argv=("python", "job.py")):
+        return ClauseObservation(repo="repo", bin="python", argv=argv,
+                                 ts_start=i * 10., ts_end=i * 10. + 1, latency_ms=ms)
+
+    training = [observation(0, 50, ("python",))]
+    if not different_parents:
+        training.append(observation(1, 600))
+    baseline = EdgeKappaRuntime.fit(training, (100, 500, 2000, 10000))
+    shared = tmp_path / "shared"
+    for name, payload in {
+        "clause-resource-kb.json": ClauseResourceKB().to_json_obj(),
+        "runtime-tool-resource-kb.json": RuntimeToolResourceKB().to_json_obj(),
+        "clause-lattice-time-kb.json": LatticeTimeKB().to_json_obj(),
+        "edge-kappa-kb.json": baseline.to_snapshot(),
+    }.items():
+        write_json(shared / name, payload)
+    expected = EdgeKappaRuntime.from_snapshot(baseline.to_snapshot())
+    tasks = [SimpleNamespace(instance_id=name) for name in ("b", "a")]
+    for i, name in enumerate(("a", "b"), 3):
+        task = EdgeKappaRuntime.from_snapshot(baseline.to_snapshot())
+        if different_parents and name == "a":
+            task.predict_load_samples("repo", [{"argv": ["python", "job.py"]}], 10, call_id="a-first")
+            task.complete_call("a-first", [observation(1, 600)], commit_time=12)
+        argv = ("python", "job.py", "--verbose") if different_parents else ("python", "job.py")
+        task.predict_load_samples("repo", [{"argv": list(argv)}], 20, call_id=name)
+        task.complete_call(name, [observation(i, 50, argv)], commit_time=60)
+        write_json(tmp_path / name / "tool-resource" / "edge-kappa-kb.json", task.to_snapshot())
+        (tmp_path / name / "trace.jsonl").write_text("")
+        expected.merge_feedback(task)
+    monkeypatch.setattr(runner, "_task_trace_dir", lambda config, task: tmp_path / task.instance_id)
+    original = ToolResourcePredictor.from_traces
+    loaded = []
+    def load(**kwargs):
+        # Assert feedback is already present before the raw-history loader runs.
+        loaded.append(json.loads((kwargs["artifact_dir"] / "edge-kappa-kb.json").read_text()))
+        assert len(kwargs["openclaw_trace_paths"]) == 2
+        kwargs["openclaw_trace_paths"] = ()
+        return original(**kwargs)
+    monkeypatch.setattr(ToolResourcePredictor, "from_traces", load)
+    config = SimpleNamespace(runtime=SimpleNamespace(kb_frozen=False))
+    for _ in range(2):
+        runner._merge_parallel_task_kbs(config, tasks, shared)
+        saved = json.loads((shared / "edge-kappa-kb.json").read_text())
+        assert saved["generation"] == expected.kb.generation == 4
+        assert saved["edges"] == expected.kb.to_snapshot()["edges"]
+    assert all(snapshot["generation"] == 4 for snapshot in loaded)
+
+
 def _ebpf_call_provenance(root_pid: int = 1234) -> dict:
     return {
         "command_tree": {

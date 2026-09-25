@@ -41,6 +41,48 @@ def summarize(target: str, edges: Sequence[float], backend: str,
                         sample_count=len(values), evidence_counts=list(evidence_counts or [len(values)]), **common)
 
 
+def summarize_weighted(target: str, edges: Sequence[float], backend: str,
+                       values: Sequence[float], weights: Sequence[float], **kwargs: Any) -> LoadEstimate:
+    """Exact summaries of weighted duration atoms; no resampling for one clause."""
+    if len(values) != len(weights) or any(not math.isfinite(w) or w <= 0 for w in weights):
+        raise ValueError("invalid empirical weights")
+    if any(not math.isfinite(v) or v < 0 for v in values):
+        raise ValueError("invalid empirical values")
+    result = summarize(target, edges, backend, values, **kwargs)
+    if not values:
+        return result
+    ordered = sorted(zip(values, weights))
+    total = math.fsum(weights)
+    bucket_weights: list[list[float]] = [[] for _ in range(len(edges) + 1)]
+    for value, weight in ordered:
+        bucket_weights[bisect_right(edges, value)].append(weight)
+    # Use the same stable summation for each bucket and the total: ordinary
+    # accumulation can make a bucket containing all atoms exceed probability 1.
+    counts = [math.fsum(bucket) for bucket in bucket_weights]
+    def quantile(probability):
+        cumulative = 0.0
+        correction = 0.0
+        threshold = probability * total
+        for index, (value, weight) in enumerate(ordered):
+            # Compensated prefix sums keep this linear in the number of atoms.
+            adjusted = weight - correction
+            updated = cumulative + adjusted
+            correction = (updated - cumulative) - adjusted
+            cumulative = updated
+            # Only allow rounding-sized differences, not a statistical tolerance
+            # that would turn genuinely unequal masses into a midpoint median.
+            at_boundary = math.isclose(cumulative, threshold, rel_tol=0.0,
+                                       abs_tol=2 * math.ulp(threshold))
+            if cumulative >= threshold or at_boundary:
+                if probability == .5 and at_boundary and index + 1 < len(ordered):
+                    return (value + ordered[index + 1][0]) / 2
+                return value
+        return ordered[-1][0]
+    return result.model_copy(update=dict(avg=math.fsum(v*w for v, w in ordered) / total,
+        p50=quantile(.5), p90=quantile(.9),
+        buckets=LoadBuckets(edges=list(edges), probabilities=[count / total for count in counts])))
+
+
 def plain_execution(command: str | None) -> tuple[tuple[dict[str, Any], ...], str | None]:
     from tool_resource.commands import parse_execution
     return parse_execution(command, parser=parse_command_clauses)
@@ -129,9 +171,12 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
             if not is_pipeline_dependent_consumer(clause)
             for assumption in clause.get("prediction_assumptions", [])
         ]
+        assumptions += [a for row in rows if row for a in row.get("assumptions", ())]
+        sample_weights = None
         if len(values) == 1:
             samples = values[0]
-            evidence_counts = [len(values[0])]
+            sample_weights = rows[0].get("weights")
+            evidence_counts = [rows[0].get("evidence_count", len(values[0]))]
         else:
             # Fixed seed: repeatable query results. Generated samples are not
             # counted as historical evidence. Never sum medians or p90 values.
@@ -154,7 +199,9 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
                         continue
                     value = sum(cpu_draw) / (total_duration_ms / 1000.0)
                 else:
-                    draw = [rng.choice(v) for v in values]
+                    draw = [rng.choices(v, weights=row["weights"], k=1)[0]
+                            if row.get("weights") is not None else rng.choice(v)
+                            for v, row in zip(values, rows)]
                     if target == "duration_ms":
                         value = sum(max(draw[i] for i in group) for group in groups)
                     elif target == "cpu_time_seconds":
@@ -186,7 +233,7 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
                     for cpu, duration in zip(cpu_values, duration_values)
                 ]
             else:
-                evidence_counts = [len(v) for v in values]
+                evidence_counts = [row.get("evidence_count", len(v)) for v, row in zip(values, rows)]
             if target.startswith("memory_"):
                 assumptions.append("call_environment_peak_approximated_by_clause_max")
             if any(len(group) > 1 for group in groups):
@@ -196,17 +243,20 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
                     assumptions.append(
                         "parallel_peak_sum_is_conservative_not_calibrated"
                     )
-        targets[target] = summarize(target, boundaries, backend, samples, method="composed",
-                                    evidence_counts=evidence_counts, context=contexts,
-                                    assumptions=assumptions)
-    return CallLoadPrediction(targets=targets)
+        kwargs = dict(method="composed", evidence_counts=evidence_counts, context=contexts, assumptions=assumptions)
+        targets[target] = (summarize_weighted(target, boundaries, backend, samples, sample_weights, **kwargs)
+                           if sample_weights is not None else summarize(target, boundaries, backend, samples, **kwargs))
+    quantile_method = ("weighted_midpoint_p50_inverse_cdf_p90" if backend == "edge_kappa" and len(evidence) == 1
+                       else "median_p50_nearest_rank_p90")
+    return CallLoadPrediction(targets=targets, quantile_method=quantile_method)
 
 
 def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQuery,
                       edges: Mapping[str, Sequence[float]],
                       parsed_clauses: Sequence[Mapping[str, Any]] | None = None,
+                      edge_kappa: Any = None, edge_call_id: str | None = None,
                       ) -> tuple[CallLoadPrediction, LoadDiagnostics]:
-    """Return ToolKB for existing consumers and all three independent results.
+    """Return ToolKB for existing consumers and each configured independent result.
 
     The historical name "runtime" is retained in backend metadata and snapshots.
     No target or clause is filled using another model's evidence.
@@ -237,10 +287,14 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
             clauses, reason = plain_execution(query.command) if query.tool_name in {"exec", "terminal_exec"} else ((), "not_a_shell_command")
         except Exception as exc:
             clauses, reason = (), f"parse_error:{type(exc).__name__}"
-    for backend, kb in (("trie", trie), ("lattice", lattice)):
+    clause_backends = [("trie", trie), ("lattice", lattice)]
+    if edge_kappa is not None:
+        clause_backends.append(("edge_kappa", edge_kappa))
+    for backend, kb in clause_backends:
         try:
             clauses = tuple(dict(c, memory_measurement=query.memory_measurement) for c in clauses)
-            evidence = kb.predict_load_samples(query.repo, clauses, query.ts_start) if not reason else ()
+            extra = {"call_id": edge_call_id} if backend == "edge_kappa" else {}
+            evidence = kb.predict_load_samples(query.repo, clauses, query.ts_start, **extra) if not reason else ()
             retained = [c for c in clauses if not is_pipeline_dependent_consumer(c)]
             scoped = []
             for c, row in zip(retained, evidence):
@@ -250,6 +304,7 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
                 for target, definition in (("duration_ms", "clause_elapsed"), ("cpu_avg_cores", "owned_cpu_time_over_clause_elapsed")):
                     clause_targets[target] = clause_targets[target].model_copy(update={"metric_definition": definition})
                 scoped.append(ClauseLoadPrediction(
+                    quantile_method=result.quantile_method,
                     clause_index=c.get("clause_index", len(scoped)), argv=list(c["argv"]),
                     cwd=c.get("cwd"), env_names=sorted(c.get("env", {})), targets=clause_targets, memory_measurement=query.memory_measurement))
             combined_reason = reason or next((c.get("prediction_unavailable_reason") for c in retained

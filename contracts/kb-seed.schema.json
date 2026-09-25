@@ -12,7 +12,8 @@
       "properties": {
         "clause-resource-kb.json": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
         "runtime-tool-resource-kb.json": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-        "clause-lattice-time-kb.json": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        "clause-lattice-time-kb.json": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "edge-kappa-kb.json": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
       },
       "additionalProperties": false
     }

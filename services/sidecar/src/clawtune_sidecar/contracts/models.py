@@ -86,6 +86,7 @@ class ToolPrediction(BaseModel):
     tool: CallLoadPrediction | None = None
     trie: CallLoadPrediction | None = None
     lattice: CallLoadPrediction | None = None
+    edge_kappa: CallLoadPrediction | None = None
     # Compatibility alias of ToolKB, never a selection across backends.
     call_prediction: CallLoadPrediction | None = None
     pmu_prediction: PmuPrediction | None = None

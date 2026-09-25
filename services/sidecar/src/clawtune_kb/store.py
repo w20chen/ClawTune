@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 FILES = ("clause-resource-kb.json", "runtime-tool-resource-kb.json", "clause-lattice-time-kb.json")
+OPTIONAL_FILES = ("edge-kappa-kb.json",)
 
 
 def digest(path: Path) -> str:
@@ -45,9 +46,9 @@ def validate_seed(path: Path) -> dict:
     manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
     from .contracts import validate
     validate(manifest, "kb-seed.schema.json")
-    if manifest.get("schema") != "clawtune.seed.v1" or set(manifest.get("snapshots", {})) != set(FILES):
+    if manifest.get("schema") != "clawtune.seed.v1" or not set(FILES) <= set(manifest.get("snapshots", {})) <= set(FILES + OPTIONAL_FILES):
         raise ValueError(f"invalid seed bundle: {path}")
-    for name in FILES:
+    for name in manifest["snapshots"]:
         target = (path / name).resolve(strict=True)
         if not target.is_relative_to(path) or digest(target) != manifest["snapshots"][name]:
             raise ValueError(f"seed snapshot hash mismatch: {name}")
@@ -60,13 +61,13 @@ def validate_seed(path: Path) -> dict:
 
 
 def create_seed(path: Path, payloads: dict[str, dict], *, provenance: dict) -> dict:
-    if set(payloads) != set(FILES):
-        raise ValueError("a seed must contain all three KBs")
+    if not set(FILES) <= set(payloads) <= set(FILES + OPTIONAL_FILES):
+        raise ValueError("a seed must contain the three legacy KBs and may include EdgeKappaKB")
     path.mkdir(parents=True, exist_ok=False)
     for name, payload in payloads.items():
         write_json(path / name, payload)
     result = {"schema": "clawtune.seed.v1", "provenance": provenance,
-              "snapshots": {name: digest(path / name) for name in FILES}}
+              "snapshots": {name: digest(path / name) for name in payloads}}
     write_json(path / "manifest.json", result)
     validate_seed(path)
     return result
@@ -81,7 +82,7 @@ def initialize_state(path: Path, seed: Path, *, owner: str) -> None:
     if path.exists():
         raise FileExistsError(f"state already exists; resume it explicitly: {path}")
     path.mkdir(parents=True)
-    for name in FILES:
+    for name in manifest["snapshots"]:
         shutil.copyfile(seed / name, path / name)
     write_json(path / "state.json", {"schema": "clawtune.kb-state.v1", "owner": owner,
                "seed_sha256": digest(seed / "manifest.json"), "generation": 0,
@@ -101,14 +102,14 @@ def committed_state(path: Path) -> dict:
     state = json.loads((folder / "state.json").read_text(encoding="utf-8"))
     from .contracts import validate
     validate(state, "kb-state.schema.json")
-    for filename in FILES:
+    for filename in state["snapshots"]:
         if digest(folder / filename) != state["snapshots"].get(filename):
             raise ValueError(f"corrupt committed KB generation: {filename}")
     return state
 
 
 class StateStore:
-    """One writer; CURRENT is the atomic commit point for all three snapshots.
+    """One writer; CURRENT is the atomic commit point for all registered snapshots.
 
     Root snapshots are a compatibility working set. Only generation snapshots
     are authoritative after a crash. Interrupted uncommitted updates are lost.
@@ -152,15 +153,19 @@ class StateStore:
         if not name.isdigit():
             raise ValueError("invalid KB CURRENT generation")
         folder = self.path / "generations" / name
-        committed_state(self.path)
-        for filename in (*FILES, "state.json"):
+        committed = committed_state(self.path)
+        for filename in OPTIONAL_FILES:
+            if filename not in committed["snapshots"]:
+                (self.path / filename).unlink(missing_ok=True)
+        for filename in (*committed["snapshots"], "state.json"):
             shutil.copyfile(folder / filename, self.path / filename)
 
     def checkpoint(self) -> dict:
         if self._lock is None:
             raise RuntimeError("KB checkpoint requires its writer lock")
         state = json.loads((self.path / "state.json").read_text(encoding="utf-8"))
-        hashes = {name: digest(self.path / name) for name in FILES}
+        names = (*FILES, *(name for name in OPTIONAL_FILES if (self.path / name).is_file()))
+        hashes = {name: digest(self.path / name) for name in names}
         if (self.path / "CURRENT").exists() and hashes == state["snapshots"]:
             return state
         # An interrupted commit may have left a directory without CURRENT.
@@ -169,7 +174,7 @@ class StateStore:
             generation += 1
         folder = self.path / "generations" / str(generation)
         folder.mkdir(parents=True)
-        for name in FILES:
+        for name in names:
             shutil.copyfile(self.path / name, folder / name)
         state = {**state, "generation": generation, "snapshots": hashes}
         write_json(folder / "state.json", state)

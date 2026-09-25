@@ -102,7 +102,8 @@
           "enum": [
             "runtime",
             "trie",
-            "lattice"
+            "lattice",
+            "edge_kappa"
           ]
         },
         "method": {
@@ -248,7 +249,7 @@
       "const": 500
     },
     "quantile_method": {
-      "const": "median_p50_nearest_rank_p90"
+      "enum": ["median_p50_nearest_rank_p90", "weighted_midpoint_p50_inverse_cdf_p90"]
     },
     "targets": {
       "type": "object",
@@ -391,6 +392,7 @@
           "memory_measurement"
         ],
         "properties": {
+          "quantile_method": {"enum": ["median_p50_nearest_rank_p90", "weighted_midpoint_p50_inverse_cdf_p90"]},
           "clause_index": {
             "type": "integer",
             "minimum": 0

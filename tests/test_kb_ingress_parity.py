@@ -111,12 +111,15 @@ def test_offline_scores_each_model_and_reports_missing_labels(tmp_path):
         assert counters["duration_ms"] == {"queries": 1, "labeled": 1, "predicted": 1, "scored": 1}
         assert counters["memory_total_peak_bytes"]["labeled"] == 0
         assert counters["memory_total_peak_bytes"]["scored"] == 0
-        if name != "tool":
+        if name == "edge_kappa":
+            assert counters["cpu_time_seconds"]["predicted"] == 0
+            assert counters["cpu_time_seconds"]["scored"] == 0
+        elif name != "tool":
             assert counters["cpu_time_seconds"]["scored"] == 1
             metric = next(m for m in model["metrics"] if m["target"] == "cpu_time_seconds")
             assert metric["mae"] == 0
     rows = [json.loads(line) for line in (tmp_path / "output" / "model-predictions.jsonl").read_text().splitlines()]
-    assert {row["model"] for row in rows} == {"tool", "trie", "lattice"}
+    assert {row["model"] for row in rows} == {"tool", "trie", "lattice", "edge_kappa"}
 
 
 @pytest.mark.parametrize("censored", [False, True])

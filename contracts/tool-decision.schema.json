@@ -805,6 +805,9 @@
                 },
                 "lattice": {
                   "$ref": "call-load.schema.json"
+                },
+                "edge_kappa": {
+                  "$ref": "call-load.schema.json"
                 }
               }
             }
@@ -1107,6 +1110,17 @@
             }
           ],
           "description": "Independent lattice tool-level load prediction; never filled from another backend."
+        },
+        "edge_kappa": {
+          "anyOf": [
+            {
+              "$ref": "call-load.schema.json"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Independent EdgeKappaKB time prediction using weighted empirical durations."
         }
       },
       "additionalProperties": false

@@ -14,7 +14,8 @@
       "properties": {
         "tool": {"$ref": "#/$defs/modelReport"},
         "trie": {"$ref": "#/$defs/modelReport"},
-        "lattice": {"$ref": "#/$defs/modelReport"}
+        "lattice": {"$ref": "#/$defs/modelReport"},
+        "edge_kappa": {"$ref": "#/$defs/modelReport"}
       }
     },
     "pmu": {

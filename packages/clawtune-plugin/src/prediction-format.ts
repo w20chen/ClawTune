@@ -38,7 +38,7 @@ export function formatTimeBuckets(prediction: ToolDecision["prediction"], callId
   const row = (name: string, scope: string, value: string): void => {
     lines.push(`${name.padEnd(26)} ${scope.padEnd(10)} ${value}`);
   };
-  for (const backend of ["runtime", "trie", "lattice"] as const) {
+  for (const backend of ["runtime", "trie", "lattice", "edge_kappa"] as const) {
     const result = prediction[backend === "runtime" ? "tool" : backend]
       ?? prediction.diagnostics?.backends[backend];
     row(`${backend} (mode)`, "call", modalBucket(result?.targets.duration_ms));
@@ -126,13 +126,14 @@ function formatPmu(prediction: ToolDecision["prediction"]): string[] {
 
 /** Independent tool-level results; legacy fields support older sidecars. */
 export function formatCallLoadPrediction(prediction: ToolDecision["prediction"]): string[] {
-  if (!prediction.tool && !prediction.trie && !prediction.lattice && !prediction.call_prediction
+  if (!prediction.tool && !prediction.trie && !prediction.lattice && !prediction.edge_kappa && !prediction.call_prediction
       && !prediction.diagnostics) return formatPmu(prediction);
   const lines = ["  CALL LOAD - independent empirical estimates, uncalibrated"];
   const results = [
     ["ToolKB", prediction.tool ?? prediction.call_prediction],
     ["TrieKB", prediction.trie ?? prediction.diagnostics?.backends.trie],
     ["LatticeKB", prediction.lattice ?? prediction.diagnostics?.backends.lattice],
+    ["EdgeKappaKB", prediction.edge_kappa ?? prediction.diagnostics?.backends.edge_kappa],
   ] as const;
   for (const [name, result] of results) {
     lines.push("");

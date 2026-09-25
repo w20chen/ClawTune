@@ -76,7 +76,7 @@ class LoadEstimate(StrictModel):
     p50: float | None = Field(default=None, ge=0)
     p90: float | None = Field(default=None, ge=0)
     buckets: LoadBuckets
-    backend: Literal["runtime", "trie", "lattice"]
+    backend: Literal["runtime", "trie", "lattice", "edge_kappa"]
     method: Literal["direct", "composed", "unavailable"]
     evidence_counts: list[int] = Field(default_factory=list)
     sample_count: int = Field(default=0, ge=0)
@@ -102,6 +102,7 @@ class LoadEstimate(StrictModel):
 
 
 class ClauseLoadPrediction(StrictModel):
+    quantile_method: Literal["median_p50_nearest_rank_p90", "weighted_midpoint_p50_inverse_cdf_p90"] = "median_p50_nearest_rank_p90"
     clause_index: int = Field(ge=0)
     memory_measurement: Literal["cgroup_v2_memory_current", "cgroup_v2_environment_union_v1", "guest_memtotal_minus_memavailable"] = "cgroup_v2_environment_union_v1"
     argv: list[str]
@@ -129,7 +130,7 @@ class CallLoadPrediction(StrictModel):
     scope: Literal["tool_call"] = "tool_call"
     lifecycle: Literal["tool_hook_interval"] = "tool_hook_interval"
     cpu_peak_window_ms: Literal[500] = 500
-    quantile_method: Literal["median_p50_nearest_rank_p90"] = "median_p50_nearest_rank_p90"
+    quantile_method: Literal["median_p50_nearest_rank_p90", "weighted_midpoint_p50_inverse_cdf_p90"] = "median_p50_nearest_rank_p90"
     targets: dict[LoadTarget, LoadEstimate]
     clause_predictions: list[ClauseLoadPrediction] = Field(default_factory=list)
 
@@ -212,4 +213,4 @@ def summarize_pmu_evidence(evidence: dict[str, dict[str, object]]) -> PmuPredict
 
 
 class LoadDiagnostics(StrictModel):
-    backends: dict[Literal["runtime", "trie", "lattice"], CallLoadPrediction]
+    backends: dict[Literal["runtime", "trie", "lattice", "edge_kappa"], CallLoadPrediction]

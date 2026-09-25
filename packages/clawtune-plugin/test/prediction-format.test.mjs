@@ -34,20 +34,20 @@ test("compact display never invents a bucket from missing or incompatible eviden
   call.targets.duration_ms.buckets = {edges: [1], probabilities: [0, 1]};
   const text = formatTimeBuckets({diagnostics: {backends: {runtime: call}}}, "call\n2").join("\n");
   assert.match(text, /Time buckets \| call 2/);
-  assert.equal(text.split("unavailable").length - 1, 8);
+  assert.equal(text.split("unavailable").length - 1, 9);
 });
 
-test("prints independent results from all three backends with complete histogram/evidence details", () => {
+test("prints independent results from all four backends with complete histogram/evidence details", () => {
   const prediction = {call_prediction: example, diagnostics: {backends: {}}};
-  for (const backend of ["runtime", "trie", "lattice"]) {
+  for (const backend of ["runtime", "trie", "lattice", "edge_kappa"]) {
     const candidate = structuredClone(example);
     for (const estimate of Object.values(candidate.targets)) estimate.backend = backend;
     prediction.diagnostics.backends[backend] = candidate;
   }
   const text = formatCallLoadPrediction(prediction).join("\n");
-  for (const title of ["ToolKB", "TrieKB", "LatticeKB"]) assert.ok(text.includes(title));
+  for (const title of ["ToolKB", "TrieKB", "LatticeKB", "EdgeKappaKB"]) assert.ok(text.includes(title));
   for (const label of ["Duration", "CPU time", "CPU average", "CPU peak", "Memory total", "Memory extra"]) {
-    assert.equal(text.split("\n").filter(line => line.startsWith(`    ${label.padEnd(12)} `)).length, 3);
+    assert.equal(text.split("\n").filter(line => line.startsWith(`    ${label.padEnd(12)} `)).length, 4);
   }
   assert.ok(text.includes("Mean") && text.includes("P50") && text.includes("P90"));
   assert.ok(text.includes("historical=[") && text.includes("summary samples="));
@@ -67,7 +67,7 @@ test("unavailable values, assumptions and absent diagnostics stay explicit", () 
   assert.ok(text.includes("reason: no compatible evidence"));
   assert.ok(text.includes("histogram: unavailable; edges (cores)="));
   assert.ok(text.includes("assumptions: independent clause durations"));
-  assert.equal(text.split("- prediction not supplied").length - 1, 2);
+  assert.equal(text.split("- prediction not supplied").length - 1, 3);
   assert.deepEqual(formatCallLoadPrediction({}), [
     "  PMU - quality-gated ToolKB history, uncalibrated",
     "    unavailable: prediction not supplied",
@@ -93,4 +93,15 @@ test("formal model outputs do not fill an absent model", () => {
   assert.ok(text.includes("TRIE_ONLY"));
   assert.ok(text.includes("LatticeKB - prediction not supplied"));
   assert.ok(!text.includes("Selected prediction"));
+});
+
+
+test("fourth backend renders its own duration bucket without borrowing another model", () => {
+  const edge = structuredClone(example);
+  for (const estimate of Object.values(edge.targets)) estimate.backend = "edge_kappa";
+  edge.targets.duration_ms.buckets = {edges: [100, 500, 2000, 10000], probabilities: [0, 0, 1, 0, 0]};
+  const prediction = {edge_kappa: edge};
+  assert.match(formatTimeBuckets(prediction, "edge").join("\n"), /edge_kappa \(mode\).*call.*#2/);
+  assert.match(formatCallLoadPrediction(prediction).join("\n"), /EdgeKappaKB - tool-level prediction/);
+  assert.match(formatCallLoadPrediction(prediction).join("\n"), /ToolKB - prediction not supplied/);
 });

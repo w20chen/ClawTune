@@ -232,7 +232,7 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
         "continuous_peak_memory_mb_prediction_available_span_starts": 0,
         "prediction_models": {
             name: {"span_starts": 0, "valid_span_starts": 0, "target_available_span_starts": {}}
-            for name in ("tool", "trie", "lattice")
+            for name in ("tool", "trie", "lattice", "edge_kappa")
         },
         "call_prediction_span_starts": 0,
         "call_prediction_valid_span_starts": 0,
@@ -820,7 +820,7 @@ def _resource_summary(trace_inspection: list[dict[str, Any]]) -> dict[str, Any]:
                     collections.Counter(),
                 )),
             }
-            for name in ("tool", "trie", "lattice")
+            for name in ("tool", "trie", "lattice", "edge_kappa")
         },
         "call_prediction_target_available_span_starts": dict(sum(
             (collections.Counter(item.get("call_prediction_target_available_span_starts", {}))
@@ -1738,7 +1738,8 @@ def _required_telemetry_error(
         models = resources.get("prediction_models", {})
         if any(int(models.get(name, {}).get("span_starts", 0))
                for name in ("tool", "trie", "lattice")):
-            for name in ("tool", "trie", "lattice"):
+            names = ("tool", "trie", "lattice") + (("edge_kappa",) if int(models.get("edge_kappa", {}).get("span_starts", 0)) else ())
+            for name in names:
                 counts = models.get(name, {})
                 present = int(counts.get("span_starts", 0))
                 valid = int(counts.get("valid_span_starts", 0))
@@ -2449,31 +2450,51 @@ def _merge_parallel_task_kbs(
 
     Each task learns against the same frozen batch baseline.  We replay its
     canonical trace and eBPF artifacts once at the batch barrier, then use
-    the existing transactional three-snapshot publisher.  This avoids both
+    the existing transactional KB publisher.  This avoids both
     mixed generations and last-writer-wins data loss.
     """
 
     from clawtune_sidecar.config import SidecarConfig
     from clawtune_sidecar.predictors.tool_resource import ToolResourcePredictor
+    from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
+    from clawtune_kb.store import write_json
     from tool_resource.runtime_kb import LatencyBuckets
 
     openclaw_paths: list[Path] = []
     ebpf_paths: list[Path] = []
+    edge_snapshots: list[Path] = []
+    missing_edge_snapshots: list[Path] = []
     snapshot_names = {
         "runtime-tool-resource-kb.json",
         "clause-resource-kb.json",
         "clause-lattice-time-kb.json",
+        "edge-kappa-kb.json",
     }
     for task in sorted(tasks, key=lambda item: item.instance_id):
         task_dir = _task_trace_dir(config, task)
         openclaw_paths.extend(sorted(task_dir.glob("*.jsonl")))
         artifact_dir = task_dir / "tool-resource"
+        edge_path = artifact_dir / "edge-kappa-kb.json"
+        if edge_path.is_file():
+            edge_snapshots.append(edge_path)
+        else:
+            missing_edge_snapshots.append(edge_path)
         if artifact_dir.is_dir():
             ebpf_paths.extend(
                 path
                 for path in sorted(artifact_dir.glob("*.json"))
                 if path.name not in snapshot_names
             )
+
+    # A fourth-KB baseline or any upgraded task makes saved feedback mandatory
+    # for the entire batch. Raw telemetry cannot reconstruct its original gradients.
+    if missing_edge_snapshots and (
+        (shared_kb_dir / "edge-kappa-kb.json").exists() or edge_snapshots
+    ):
+        raise KnowledgeBaseSyncError(
+            "parallel KB merge missing task EdgeKappa snapshot; rerun affected tasks: "
+            + "; ".join(str(path) for path in missing_edge_snapshots)
+        )
 
     if not openclaw_paths and not ebpf_paths:
         _log("Parallel KB merge: no completed observations to merge")
@@ -2492,6 +2513,23 @@ def _merge_parallel_task_kbs(
                 source_dir=shared_kb_dir,
             )
             staging_kb_dir = staging_root / "tool-resource"
+            # Replay original delayed feedback before from_traces imports raw
+            # observations count-only. Never manufacture prediction-time tokens
+            # from the later merged KB, or copy a task's final weights wholesale.
+            edge_path = staging_kb_dir / "edge-kappa-kb.json"
+            if edge_snapshots:
+                if not edge_path.is_file():
+                    # Upgrade the same legacy baseline used by task sidecars.
+                    baseline = ToolResourcePredictor.from_traces(
+                        openclaw_trace_paths=(), ebpf_trace_paths=(),
+                        buckets=LatencyBuckets(scheduler_defaults.tool_resource_latency_buckets_ms),
+                        artifact_dir=staging_kb_dir)
+                    baseline.close()
+                edge = EdgeKappaRuntime.from_snapshot(json.loads(edge_path.read_text(encoding="utf-8")))
+                for snapshot in edge_snapshots:
+                    edge.merge_feedback(EdgeKappaRuntime.from_snapshot(
+                        json.loads(snapshot.read_text(encoding="utf-8"))))
+                write_json(edge_path, edge.to_snapshot())
             predictor = ToolResourcePredictor.from_traces(
                 openclaw_trace_paths=openclaw_paths,
                 ebpf_trace_paths=ebpf_paths,
@@ -2505,13 +2543,17 @@ def _merge_parallel_task_kbs(
                     or scheduler_defaults.tool_resource_container_executable
                 ),
             )
-            if predictor.report.rejections:
-                raise KnowledgeBaseSyncError(
-                    "parallel KB merge rejected canonical inputs: "
-                    + "; ".join(predictor.report.rejections)
-                )
-            _validate_kb_snapshot_pair(staging_kb_dir)
-            _publish_tool_resource_kb(staging_root, shared_kb_dir)
+            try:
+                if predictor.report.rejections:
+                    raise KnowledgeBaseSyncError(
+                        "parallel KB merge rejected canonical inputs: "
+                        + "; ".join(predictor.report.rejections)
+                    )
+                predictor.flush_kb_updates()
+                _validate_kb_snapshot_pair(staging_kb_dir)
+                _publish_tool_resource_kb(staging_root, shared_kb_dir)
+            finally:
+                predictor.close()
     except KnowledgeBaseSyncError:
         raise
     except Exception as exc:

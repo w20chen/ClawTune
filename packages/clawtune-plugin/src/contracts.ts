@@ -145,6 +145,7 @@ export type ToolDecision = {
     tool?: CallLoadPrediction | null;
     trie?: CallLoadPrediction | null;
     lattice?: CallLoadPrediction | null;
+    edge_kappa?: CallLoadPrediction | null;
     /** Compatibility alias of tool. */
     call_prediction?: CallLoadPrediction | null;
     pmu_prediction?: PmuPrediction | null;
@@ -163,7 +164,7 @@ export type ToolDecision = {
 
 // Mirror of contracts/call-load.schema.json. Native KB payloads below are
 // migration diagnostics; consumers should use prediction.tool, prediction.trie, or prediction.lattice.
-export type LoadBackend = "runtime" | "trie" | "lattice";
+export type LoadBackend = "runtime" | "trie" | "lattice" | "edge_kappa";
 export type LoadTarget = "duration_ms" | "cpu_time_seconds" | "cpu_avg_cores" | "cpu_peak_cores" | "sampled_peak_rss_bytes" | "memory_total_peak_bytes" | "memory_extra_peak_bytes";
 export type LoadEstimate = {
   status: "available" | "unavailable";
@@ -188,9 +189,10 @@ export type CallLoadPrediction = {
   scope: "tool_call";
   lifecycle: "tool_hook_interval";
   cpu_peak_window_ms: 500;
-  quantile_method: "median_p50_nearest_rank_p90";
+  quantile_method: "median_p50_nearest_rank_p90" | "weighted_midpoint_p50_inverse_cdf_p90";
   targets: Record<LoadTarget, LoadEstimate>;
   clause_predictions?: Array<{
+    quantile_method?: "median_p50_nearest_rank_p90" | "weighted_midpoint_p50_inverse_cdf_p90";
     clause_index: number; argv: string[]; cwd: string | null; env_names: string[];
     memory_measurement: "cgroup_v2_memory_current" | "cgroup_v2_environment_union_v1" | "guest_memtotal_minus_memavailable";
     scope: "clause"; targets: Record<LoadTarget, LoadEstimate>;

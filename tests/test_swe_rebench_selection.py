@@ -2017,6 +2017,115 @@ def test_batch_shared_kb_prepare_copy_in_and_publish_reaches_next_task(
     assert _kb_pair_markers(tracked_seed) == expected_seed
 
 
+def _write_edge_snapshot(directory: Path, duration_ms: float = 50) -> bytes:
+    from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
+    from tool_resource.runtime_kb import ClauseObservation
+
+    runtime = EdgeKappaRuntime.fit([
+        ClauseObservation(repo="repo", bin="python", argv=("python",),
+                          ts_start=1, ts_end=2, latency_ms=50),
+        ClauseObservation(repo="repo", bin="python", argv=("python", "job.py"),
+                          ts_start=3, ts_end=4, latency_ms=600),
+    ], (100, 500, 2000, 10000))
+    runtime.predict_load_samples("repo", [{"argv": ["python", "job.py"]}], 5, call_id="call")
+    runtime.complete_call("call", [ClauseObservation(
+        repo="repo", bin="python", argv=("python", "job.py"),
+        ts_start=5, ts_end=6, latency_ms=duration_ms,
+    )], commit_time=7)
+    assert any(edge.update_count for edge in runtime.kb.edges.values())
+    path = directory / "edge-kappa-kb.json"
+    path.write_text(json.dumps(runtime.to_snapshot()), encoding="utf-8")
+    return path.read_bytes()
+
+
+@pytest.mark.parametrize("frozen", [False, True])
+def test_fourth_kb_seed_and_task_publication_preserve_learned_state(tmp_path, frozen):
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(repo_root=tmp_path, runtime=SimpleNamespace(kb_frozen=frozen))
+    seed = tmp_path / "seeds" / "bootstrap-v1"
+    _write_test_kb_pair(seed, "seed")
+    original = _write_edge_snapshot(seed)
+    shared = tmp_path / "shared"
+    _prepare_batch_tool_resource_kb(shared, config)
+    assert (shared / "edge-kappa-kb.json").read_bytes() == original
+    task = tmp_path / "task"
+    _seed_runtime_tool_resource_kb(task, config, source_dir=shared)
+    assert (task / "tool-resource" / "edge-kappa-kb.json").read_bytes() == original
+    if frozen:
+        # Frozen reseeding must also remove evidence absent from a legacy seed.
+        (seed / "edge-kappa-kb.json").unlink()
+        _seed_runtime_tool_resource_kb(task, config, source_dir=seed)
+        assert not (task / "tool-resource" / "edge-kappa-kb.json").exists()
+        return
+    updated = _write_edge_snapshot(task / "tool-resource", 2000)
+    assert updated != original
+    _publish_tool_resource_kb(task, shared)
+    _seed_runtime_tool_resource_kb(tmp_path / "next", config, source_dir=shared)
+    assert (shared / "edge-kappa-kb.json").read_bytes() == updated
+    assert (tmp_path / "next" / "tool-resource" / "edge-kappa-kb.json").read_bytes() == updated
+
+
+def test_fourth_kb_can_upgrade_legacy_shared_generation(tmp_path):
+    shared, task = tmp_path / "shared", tmp_path / "task"
+    _write_test_kb_pair(shared, "old")
+    _write_test_kb_pair(task / "tool-resource", "new")
+    expected = _write_edge_snapshot(task / "tool-resource")
+    _publish_tool_resource_kb(task, shared)
+    assert (shared / "edge-kappa-kb.json").read_bytes() == expected
+    assert set(_kb_pair_markers(shared).values()) == {"new"}
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_fourth_kb_publication_failure_restores_entire_generation(tmp_path, monkeypatch, legacy):
+    from swe_rebench import host_openclaw as module
+
+    shared, task = tmp_path / "shared", tmp_path / "task"
+    _write_test_kb_pair(shared, "old")
+    _write_test_kb_pair(task / "tool-resource", "new")
+    if not legacy:
+        _write_edge_snapshot(shared)
+    _write_edge_snapshot(task / "tool-resource", 2000)
+    before = {path.name: path.read_bytes() for path in shared.iterdir()}
+    original_validate = module._validate_kb_snapshot_pair
+    published = False
+    original_replace = os.replace
+
+    def replace(source, destination):
+        nonlocal published
+        result = original_replace(source, destination)
+        if Path(source).parent.name == "staged" and Path(source).name == "edge-kappa-kb.json":
+            published = True
+        return result
+
+    def validate(directory):
+        nonlocal published
+        if directory == shared and published:
+            published = False
+            raise OSError("failure after fourth snapshot replace")
+        original_validate(directory)
+
+    monkeypatch.setattr(module.os, "replace", replace)
+    monkeypatch.setattr(module, "_validate_kb_snapshot_pair", validate)
+    with pytest.raises(KnowledgeBaseSyncError, match="was rolled back"):
+        _publish_tool_resource_kb(task, shared)
+    assert {path.name: path.read_bytes() for path in shared.iterdir()} == before
+
+
+@pytest.mark.parametrize("bad_snapshot", [None, {"schema": "edge-kappa-kb.v1"}])
+def test_fourth_kb_missing_or_invalid_task_snapshot_cannot_replace_shared_state(tmp_path, bad_snapshot):
+    shared, task = tmp_path / "shared", tmp_path / "task"
+    _write_test_kb_pair(shared, "old")
+    _write_test_kb_pair(task / "tool-resource", "new")
+    _write_edge_snapshot(shared)
+    before = {path.name: path.read_bytes() for path in shared.iterdir()}
+    if bad_snapshot is not None:
+        (task / "tool-resource" / "edge-kappa-kb.json").write_text(json.dumps(bad_snapshot))
+    with pytest.raises(KnowledgeBaseSyncError):
+        _publish_tool_resource_kb(task, shared)
+    assert {path.name: path.read_bytes() for path in shared.iterdir()} == before
+
+
 def test_batch_shared_kb_invalid_pair_does_not_overwrite_last_good_generation(
     tmp_path: Path,
 ) -> None:
