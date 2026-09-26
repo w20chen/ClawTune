@@ -38,7 +38,7 @@ tool_resource = ["_mvdan_adapter/*"]
 tool_time = ["_lattice_vendor/LICENSE", "_lattice_vendor/VENDORED.md"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "../.."]
 testpaths = ["tests"]
 addopts = "--basetemp ../../.pytest-tmp"
 
