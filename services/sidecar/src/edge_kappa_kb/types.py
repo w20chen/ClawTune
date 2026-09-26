@@ -10,7 +10,7 @@ class FeatureQuery:
     features: frozenset[str]
     core_features: frozenset[str]
     tool: str
-    normalization_version: str = "shell-normalize-v1"
+    normalization_version: str = "shell-normalize-v4"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "features", frozenset(self.features))

@@ -77,6 +77,50 @@ def test_flat_loader_units_and_unproven_call_resource_scope(tmp_path):
     assert trusted.calls[0].cpu_time_seconds == 2 and trusted.calls[0].cpu_time_eligible
 
 
+@pytest.mark.parametrize("reader", ["flat", "offline"])
+@pytest.mark.parametrize("action_clock,clause_clock,accepted", [
+    ({}, {}, True),  # Existing duration-only traces remain supported.
+    ({}, {"ts_start": 10., "ts_end": 11.}, True),
+    ({}, {"ts_start": 11., "ts_end": 10.}, False),
+    ({}, {"ts_start": 10.}, False),
+    ({"ts_start": 10., "ts_end": 11.}, {"ts_start": 10., "ts_end": 11.}, True),
+    ({"ts_start": 10., "ts_end": 11.}, {"ts_start": 100., "ts_end": 200.}, False),
+    ({"ts_start": 10.}, {"ts_start": 10., "ts_end": 11.}, False),
+    ({"ts_start": 11., "ts_end": 10.}, {"ts_start": 10., "ts_end": 11.}, False),
+    ({"ts_start": None, "ts_end": 11.}, {"ts_start": 10., "ts_end": 11.}, False),
+])
+def test_recorded_clock_validation_is_independent_of_storage_clock(
+    tmp_path, reader, action_clock, clause_clock, accepted,
+):
+    from clawtune_kb.store import digest
+    from offline.runner import load_task
+
+    records = [json.loads(line) for line in trace("org__a-1").splitlines()]
+    records[1].update(action_clock)
+    clause = records[1]["data"]["resource_observation"]["clauses"][0]
+    clause.update(clause_clock, in_loop=False, in_pipe=False, in_subst=False, pipeline_position=-1)
+    path = tmp_path / "case.jsonl"
+    path.write_text("\n".join(map(json.dumps, records)), encoding="utf-8")
+    if reader == "offline":
+        loaded = load_task(tmp_path, {
+            "benchmark": "swe-rebench", "group": "org/a", "task_id": "org__a-1",
+            "files": [{"path": path.name, "sha256": digest(path), "version": 5}],
+        }, "MB", recorded_clauses_only=True)
+    else:
+        loaded = read_task(path, repo="org/a", task_id="org__a-1", rss_unit="MB",
+                           recorded_clauses_only=True)
+    assert len(loaded.calls) == 1  # The independent call duration remains usable.
+    assert loaded.calls[0].ts_start == 0. and loaded.calls[0].ts_end == 1.
+    assert len(loaded.clauses) == int(accepted)
+    if accepted:
+        assert loaded.clauses[0].ts_start == 0. and loaded.clauses[0].ts_end == 1.
+        assert loaded.call_actuals[0]["duration_ms"] == 1000.
+    else:
+        assert loaded.call_actuals == [{}]
+        assert loaded.calls[0].workload_duration_seconds is None
+        assert loaded.counts["withheld_clause_without_contained_clock"] == 1
+
+
 def test_flat_loader_records_declared_period_not_partial_sample_durations(tmp_path):
     records = [json.loads(line) for line in trace("org__a-1").splitlines()]
     records[1]["data"]["resource_timeline"]["sample_interval_s"] = .25

@@ -136,7 +136,20 @@ Expect model and tool events, pre-execution predictions, and post-execution meas
 
 New daily state and online runs copy the bundled initialization prior by default. Override with `CLAWTUNE_KB_SEED` for daily use or `--seed <directory>` for benchmarks. Changing the prior does not reset existing state. Resuming an old run requires its original prior. The offline command's `--seed` is instead an integer split seed.
 
-Resource KB snapshots use Runtime v3, Trie v6, and Lattice v3. Start a new benchmark run or set `CLAWTUNE_STATE_DIR` to a new directory after upgrading an older state; older snapshots are rejected. Memory predictions expose total environment peak and extra peak above its pre-execution baseline. A short or failed measurement leaves that target unavailable and does not fail the tool.
+The bundled seed contains Tool, Trie, Lattice, and Edge KBs after replaying 10 cases with eligible clause measurements, ordered by recorded start time. Each case contributes one complete recorded attempt; there is no train/test split. The current selection is entirely from `tobymao/sqlglot`. Tool and Trie retain repository-specific history, so they do not supply a public prior for other repositories. Missing or unqualified CPU, environment-memory, and PMU measurements remain unavailable.
+
+To rebuild from trace-v5 data on Linux/WSL, write to a new directory:
+
+```bash
+python3 scripts/build_bootstrap_seed.py --dataset /path/to/traces \
+  --cases 10 --rss-unit MiB --output /path/to/new-seed
+```
+
+Set `--rss-unit` to the source measurements' unit. The manifest records selected files, hashes, and available targets. Point `CLAWTUNE_KB_SEED` or benchmark `--seed` at this directory to use it for new state.
+
+Resource KB snapshots use Runtime v4, Trie v7, and Lattice v4. Start a new benchmark run or set `CLAWTUNE_STATE_DIR` to a new directory after upgrading an older state; older snapshots are rejected. Memory predictions expose total environment peak and extra peak above its pre-execution baseline. A short or failed measurement leaves that target unavailable and does not fail the tool.
+
+Edge snapshots use `shell-normalize-v4`: Python executable paths share the same command features; known boolean flags remain separate from following arguments. Older Edge snapshots, including v3 path-context snapshots, require rebuilding from raw observations or a fresh state directory. `sed` follows the same consumer policy as `head`, `cat`, and the other listed commands: downstream pipeline stages are excluded from clause training, clause prediction, and ToolKB workload-duration labels regardless of arguments or input redirection. Standalone commands and the first pipeline stage remain eligible. ToolKB still accepts the whole call and independently eligible call-level metrics.
 
 Common settings belong in root `.env`; restart the service after changes:
 

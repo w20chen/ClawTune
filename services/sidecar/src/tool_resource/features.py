@@ -227,6 +227,11 @@ def parse_command_clauses(command: str) -> dict[str, Any]:
         for raw_clause in raw_clauses
     ]
     _resolve_literal_command_heads(command, clauses)
+    from tool_resource.pipeline import pipe_stdin_from_syntax
+    for clause in clauses:
+        source = pipe_stdin_from_syntax(clause)
+        if source is not None:
+            clause["stdin_from_pipe"] = source
     raw_control_edges = response.get("control_edges")
     if not isinstance(raw_control_edges, list):
         raise MvdanClientError("mvdan adapter response has no control-edge list")
@@ -302,6 +307,16 @@ def _resolve_literal_command_heads(command: str, clauses: list[dict[str, Any]]) 
             bindings.clear()
 
 
+def enrich_input_sources(command, rows):
+    """Resolve missing simple-sed input evidence only when an AST is available."""
+    from tool_resource.pipeline import simple_sed_print
+    if any(isinstance(row, Mapping) and simple_sed_print(row.get("argv")) and row.get("in_pipe")
+           and row.get("pipeline_position", -1) > 0
+           and row.get("stdin_from_pipe") is None for row in rows):
+        return enrich_clause_structure(command, rows)
+    return rows
+
+
 def enrich_clause_structure(
     command: str | None,
     rows: Sequence[Mapping[str, Any]],
@@ -313,7 +328,7 @@ def enrich_clause_structure(
         return tuple(enriched)
     try:
         parsed = parse_command_clauses(command)
-    except MvdanClientError:
+    except (MvdanClientError, OSError):
         parsed = {"clauses": _fallback_clauses(command), "parse_failed": True}
     clauses = parsed.get("clauses", [])
     used: set[int] = set()
@@ -340,6 +355,17 @@ def enrich_clause_structure(
             ("pipeline_position", -1),
         ):
             row.setdefault(field, clause.get(field, default))
+        # Telemetry may omit an unexecuted branch. Never borrow input evidence
+        # from one of several identical argv occurrences with different stdin.
+        unambiguous_input = all(
+            candidate.get("stdin_from_pipe") is True
+            for candidate in clauses
+            if candidate.get("bin") == row.get("bin")
+            and list(candidate.get("argv", ())) == argv
+        )
+        if ("stdin_from_pipe" in clause and row.get("stdin_from_pipe") is None
+                and unambiguous_input):
+            row["stdin_from_pipe"] = clause["stdin_from_pipe"]
     return tuple(enriched)
 
 

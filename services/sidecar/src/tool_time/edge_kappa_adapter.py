@@ -5,7 +5,7 @@ from __future__ import annotations
 from edge_kappa_kb import FeatureQuery
 from tool_time._lattice_vendor.normalize import normalize_command
 
-NORMALIZATION_VERSION = "shell-normalize-v1"
+NORMALIZATION_VERSION = "shell-normalize-v4"
 
 
 def shell_query(command: str, *, repo: str | None = None, cwd: str | None = None,

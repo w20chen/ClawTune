@@ -35,7 +35,7 @@ from tool_time.resource_lattice import (
 
 
 LATTICE_TIME_ALGORITHMS = ("shrinkage", "loso", "max_cardinality")
-LATTICE_TIME_KB_SCHEMA = "clause_lattice_kb_v3"
+LATTICE_TIME_KB_SCHEMA = "clause_lattice_kb_v4"
 _LEGACY_SCHEMA = "clause_lattice_time_kb_v1"
 
 _NODE_MODE = "bounded"
@@ -758,6 +758,7 @@ def _observation_from_json(row: Any, *, allow_resource_only: bool = True) -> Cla
         "in_pipe",
         "in_subst",
         "pipeline_position",
+        "stdin_from_pipe",
         "memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes",
         "memory_measurement", "memory_environment_id", "memory_eligible",
     }

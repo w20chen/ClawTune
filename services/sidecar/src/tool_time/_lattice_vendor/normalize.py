@@ -20,6 +20,59 @@ from typing import FrozenSet, List, Tuple
 
 FeatureSet = FrozenSet[str]
 
+# Known no-value options only; all other options keep the existing value heuristic.
+# This describes argument syntax, never resource cost or feature importance.
+_BOOLEAN_OPTIONS: dict[str, frozenset[str]] = {
+    "grep": frozenset({
+        "-E", "-F", "-G", "-i", "-v", "-w", "-x", "-n", "-H", "-h",
+        "-r", "-R", "-l", "-L", "-c", "-q", "-s", "-o",
+        "--ignore-case", "--invert-match", "--line-number", "--recursive",
+        "--quiet", "--silent", "--fixed-strings", "--extended-regexp",
+    }),
+    "pip": frozenset({
+        "-q", "--quiet", "-v", "--verbose", "--no-input", "--no-cache-dir",
+        "--disable-pip-version-check", "--no-deps", "--break-system-packages",
+    }),
+    "pytest": frozenset({
+        "-q", "--quiet", "-v", "--verbose", "-x", "--exitfirst", "-s",
+        "--collect-only", "--co", "--disable-warnings", "--no-header",
+        "--no-summary", "--no-flaky-report",
+    }),
+    "sed": frozenset({"-n", "--quiet", "--silent", "-E", "-r", "-u", "--unbuffered"}),
+    "python": frozenset({"-B", "-E", "-I", "-O", "-s", "-S", "-u", "-v", "-q", "-b"}),
+}
+
+
+def _boolean_flags(token: str, tool: str) -> tuple[str, ...]:
+    """Recognize an exact flag or a cluster made entirely of known short flags."""
+    known = _BOOLEAN_OPTIONS.get(tool, ())
+    if token in known:
+        return (token,)
+    if token.startswith("-") and not token.startswith("--") and len(token) > 2:
+        flags = tuple("-" + char for char in token[1:])
+        if all(flag in known for flag in flags):
+            return flags
+    return ()
+
+
+def _python_module_index(tokens: List[str]) -> int | None:
+    """Find -m only in the interpreter prefix, never inside script arguments."""
+    i = 1
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "-m":
+            return i if i + 1 < len(tokens) else None
+        if _boolean_flags(token, "python"):
+            i += 1
+        elif token in {"-W", "-X"} and i + 1 < len(tokens):
+            i += 2
+        elif token.startswith(("-W", "-X")) and len(token) > 2:
+            i += 1
+        else:
+            return None
+    return None
+
+
 # Tools that are trivial pipe consumers: they only filter/transform
 # an in-memory pipe stream and consume negligible CPU time.
 # Their wall-clock latency in clause_telemetry is artificially inflated
@@ -523,30 +576,65 @@ def normalize_command(
     core.append(tool_feat)
 
     i = 1
+    option_tool = tool
+    module_index = _python_module_index(tokens) if tool == "python" else None
 
     # ── Primary target / script / subcommand ─────────────────────────────
     # For most tools, the first non-option token is the primary target.
     # Special case: ``-m module`` (e.g. ``python -m pytest``) — the
     # module name is the effective target.
     if i < len(tokens):
-        if tokens[i] == "-m" and i + 1 < len(tokens):
+        if module_index == i:
             # python -m module → module is the effective target
             target_feat = f"target={tokens[i + 1]}"
             features.append(target_feat)
             core.append(target_feat)
             features.append(f"opt:-m={tokens[i + 1]}")
+            option_tool = tokens[i + 1]
             i += 2
         elif not tokens[i].startswith("-"):
             target_feat = f"target={tokens[i]}"
             features.append(target_feat)
             core.append(target_feat)
+            if tool == "python":
+                option_tool = ""  # Subsequent options belong to this script.
             i += 1
 
     # ── Remaining tokens: options, flags, positional args ────────────────
     import re
     pos_idx = 0
+    options_ended = False
     while i < len(tokens) and len(features) < max_features:
         token = tokens[i]
+
+        if options_ended:
+            features.append(f"arg{pos_idx}={token}")
+            pos_idx += 1
+            i += 1
+            continue
+        if token == "--":
+            options_ended = True
+            i += 1
+            continue
+        if i == module_index:
+            target_feat = f"target={tokens[i + 1]}"
+            features.append(target_feat)
+            core.append(target_feat)
+            features.append(f"opt:-m={tokens[i + 1]}")
+            option_tool = tokens[i + 1]
+            i += 2
+            continue
+
+        # Attached interpreter values consume only this token. In particular,
+        # -Wignore must not swallow the script name and extend Python's flags
+        # into the script's arguments. Handle -c before generic '=' parsing.
+        if (option_tool == "python" and (module_index is None or i < module_index)
+                and token.startswith(("-W", "-X", "-c")) and len(token) > 2):
+            features.append(f"opt:{token[:2]}={token[2:]}")
+            if token.startswith("-c"):
+                option_tool = ""
+            i += 1
+            continue
 
         # --key=value form
         if token.startswith("-") and "=" in token:
@@ -555,12 +643,16 @@ def normalize_command(
             i += 1
             continue
 
-        # Combined short flags: -rn → flag:-r, flag:-n (never takes a value).
-        # Only split very short tokens (2-3 letters) to avoid false
-        # positives on single-dash long options like -slow, -fast, etc.
-        if re.match(r'^-[a-zA-Z]{2,3}$', token):
-            for ch in token[1:]:
-                features.append(f"flag:-{ch}")
+        flags = _boolean_flags(token, option_tool)
+        if flags:
+            features.extend(f"flag:{flag}" for flag in flags)
+            i += 1
+            continue
+
+        # Preserve the existing fallback for tools outside the small whitelist.
+        # For known tools, do not split a cluster containing a value-taking option.
+        if option_tool not in _BOOLEAN_OPTIONS and re.match(r'^-[a-zA-Z]{2,3}$', token):
+            features.extend(f"flag:-{char}" for char in token[1:])
             i += 1
             continue
 
@@ -568,6 +660,8 @@ def normalize_command(
         if token.startswith("-"):
             if i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
                 features.append(f"opt:{token}={tokens[i + 1]}")
+                if option_tool == "python" and token == "-c":
+                    option_tool = ""
                 i += 2
                 continue
             # Boolean flag: -q, --verbose, etc.
@@ -577,6 +671,8 @@ def normalize_command(
 
         # Positional argument
         features.append(f"arg{pos_idx}={token}")
+        if option_tool == "python":
+            option_tool = ""  # A script after interpreter options ends the prefix.
         pos_idx += 1
         i += 1
 

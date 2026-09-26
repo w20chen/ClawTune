@@ -76,9 +76,9 @@ def _gateway_id(config: RunnerConfig | None) -> str:
     return value if isinstance(value, str) and value else _BENCHMARK_GATEWAY_ID
 
 _TOOL_RESOURCE_KB_SCHEMAS = {
-    "runtime-tool-resource-kb.json": "runtime_tool_resource_kb_v3",
-    "clause-resource-kb.json": "runtime_clause_resource_kb_v6",
-    "clause-lattice-time-kb.json": "clause_lattice_kb_v3",
+    "runtime-tool-resource-kb.json": "runtime_tool_resource_kb_v4",
+    "clause-resource-kb.json": "runtime_clause_resource_kb_v7",
+    "clause-lattice-time-kb.json": "clause_lattice_kb_v4",
 }
 _OPTIONAL_TOOL_RESOURCE_KB_SCHEMAS = {"edge-kappa-kb.json": "edge-kappa-kb.v1"}
 
@@ -1304,7 +1304,7 @@ def _validate_lattice_time_kb_snapshot(path: Path, payload: dict[str, Any]) -> N
                 path,
                 row,
                 location=f"{collection_name}[{index}]",
-                allow_resource_only=payload.get("schema") == "clause_lattice_kb_v3",
+                allow_resource_only=payload.get("schema") == "clause_lattice_kb_v4",
             )
     last_query_ts = payload.get("last_query_ts")
     if last_query_ts is not None and not _is_finite_number(last_query_ts):
@@ -1338,6 +1338,7 @@ def _validate_lattice_time_observation(
         "in_pipe",
         "in_subst",
         "pipeline_position",
+        "stdin_from_pipe",
         "memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes",
         "memory_measurement", "memory_environment_id", "memory_eligible",
     }
@@ -1384,6 +1385,8 @@ def _validate_lattice_time_observation(
             "ts_end precedes ts_start"
         )
     resource_fields = ("cpu_ns_cumulative", "cpu_peak_cores", "sampled_peak_rss_mb", "memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes")
+    if row.get("stdin_from_pipe") is not None and not isinstance(row["stdin_from_pipe"], bool):
+        raise KnowledgeBaseSyncError(f"invalid lattice stdin_from_pipe in {path}: must be boolean or null")
     for field in resource_fields:
         value = row.get(field)
         if value is not None and (not _is_finite_number(value) or value < 0):

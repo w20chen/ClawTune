@@ -1102,22 +1102,22 @@ def test_shared_snapshots_reuse_same_repo_evidence_but_isolate_other_repos() -> 
 
     assert same_clause.prediction is not None
     assert same_clause.prediction.scope == "repo"
-    assert other_clause.prediction is not None
-    assert other_clause.prediction.scope == "public"
+    # A replayed seed retains repo history; it does not manufacture a public prior.
+    assert other_clause.prediction is None
 
 
-def test_shipped_clause_snapshot_produces_public_global_single_clause_bucket(
+def test_public_clause_snapshot_produces_public_global_single_clause_bucket(
     tmp_path: Path,
 ) -> None:
     artifact_dir = tmp_path / "tool-resource"
     artifact_dir.mkdir()
-    source = (
-        Path(__file__).resolve().parents[3]
-        / "seeds"
-        / "bootstrap-v1"
-        / "clause-resource-kb.json"
+    public = ClauseResourceKB.fit_public([ClauseObservation(
+        repo="", bin="python", argv=("python", "-V"),
+        ts_start=0., ts_end=.1, latency_ms=100.,
+    )])
+    (artifact_dir / "clause-resource-kb.json").write_text(
+        json.dumps(public.to_json_obj()), encoding="utf-8",
     )
-    shutil.copyfile(source, artifact_dir / "clause-resource-kb.json")
     predictor = ToolResourcePredictor.from_traces(
         openclaw_trace_paths=(),
         ebpf_trace_paths=(),
@@ -1146,18 +1146,18 @@ def test_shipped_clause_snapshot_produces_public_global_single_clause_bucket(
     ]
 
 
-def test_shipped_clause_snapshot_predicts_exec_clause_in_real_compound_command(
+def test_public_clause_snapshot_predicts_exec_clause_in_real_compound_command(
     tmp_path: Path,
 ) -> None:
     artifact_dir = tmp_path / "tool-resource"
     artifact_dir.mkdir()
-    source = (
-        Path(__file__).resolve().parents[3]
-        / "seeds"
-        / "bootstrap-v1"
-        / "clause-resource-kb.json"
+    public = ClauseResourceKB.fit_public([ClauseObservation(
+        repo="", bin="python", argv=("python", "-V"),
+        ts_start=0., ts_end=.1, latency_ms=100.,
+    )])
+    (artifact_dir / "clause-resource-kb.json").write_text(
+        json.dumps(public.to_json_obj()), encoding="utf-8",
     )
-    shutil.copyfile(source, artifact_dir / "clause-resource-kb.json")
     predictor = ToolResourcePredictor.from_traces(
         openclaw_trace_paths=(),
         ebpf_trace_paths=(),

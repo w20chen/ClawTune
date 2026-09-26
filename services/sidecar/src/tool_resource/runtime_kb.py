@@ -97,7 +97,7 @@ from tool_time.command import shell_command_heads, shell_command_prefix_tokens
 TARGETS = ("latency_ms", "cpu_peak_cores", "sampled_peak_rss_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes")
 _CONDITIONAL_P90_QUANTILE = 0.9
 _MAX_PREFIX_DEPTH = 4  # frozen depth budget, same as the evaluated lattice
-_SCHEMA = "runtime_tool_resource_kb_v3"
+_SCHEMA = "runtime_tool_resource_kb_v4"
 # Canonical targets share one eligible value per observation.
 LOAD_TARGET_SOURCES = {"duration_ms": "workload_latency_ms", "cpu_time_seconds": "cpu_time_seconds",
                        "cpu_avg_cores": "cpu_avg_cores", "cpu_peak_cores": "cpu_peak_cores",
@@ -647,7 +647,7 @@ def _nodes_from_json(
 # Clause latency bucket predictor
 # ==========================================================================
 
-_CLAUSE_SCHEMA = "runtime_clause_resource_kb_v6"
+_CLAUSE_SCHEMA = "runtime_clause_resource_kb_v7"
 _CLAUSE_MAX_DEPTH = 4  # frozen ordered argv-prefix depth budget
 _DELIM = "\x00"  # argv tokens may contain spaces; NUL cannot collide
 
@@ -702,10 +702,13 @@ class ClauseObservation:
     in_pipe: bool = False
     in_subst: bool = False
     pipeline_position: int = -1
+    stdin_from_pipe: bool | None = None
 
     def __post_init__(self) -> None:
         if not self.argv:
             raise ValueError("clause argv must be non-empty")
+        if self.stdin_from_pipe is not None and type(self.stdin_from_pipe) is not bool:
+            raise ValueError("stdin_from_pipe must be boolean or unknown")
         if not (math.isfinite(self.ts_start) and math.isfinite(self.ts_end)):
             raise ValueError("ts_start and ts_end must be finite")
         if self.ts_end < self.ts_start:
@@ -827,7 +830,7 @@ PIPELINE_DEPENDENT_CONSUMER_BINS = frozenset(
     {
         "cat", "comm", "column", "cut", "egrep", "fgrep", "fold", "grep",
         "head", "hexdump", "less", "more", "nl", "od", "paste", "rev",
-        "rg", "tac", "tail", "tee", "tr", "ts", "uniq", "wc", "xxd",
+        "rg", "sed", "tac", "tail", "tee", "tr", "ts", "uniq", "wc", "xxd",
     }
 )
 

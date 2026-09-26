@@ -1811,7 +1811,7 @@ def test_independent_prediction_audit_allows_cold_start_but_requires_each_model(
         parsed_clauses=[{"bin": "find", "argv": ["find", "."]}],
     )
     assert all(t.status == "unavailable" for t in result.targets.values())
-    assert diagnostics.backends["trie"].targets["duration_ms"].status == "available"
+    assert diagnostics.backends["trie"].targets["duration_ms"].status == "unavailable"
     record = _ebpf_prediction_start()
     record["prediction"].update({
         "tool": result.model_dump(), "trie": diagnostics.backends["trie"].model_dump(),
@@ -1860,4 +1860,4 @@ def test_independent_prediction_audit_allows_cold_start_but_requires_each_model(
         assert error is None
     if case == "cold_seed":
         assert summary["prediction_models"]["tool"]["target_available_span_starts"] == {}
-        assert summary["prediction_models"]["trie"]["target_available_span_starts"]["duration_ms"] == 1
+        assert summary["prediction_models"]["trie"]["target_available_span_starts"] == {}

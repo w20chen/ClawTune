@@ -23,7 +23,8 @@ def test_source_release_includes_seed_and_public_contracts(tmp_path):
     with tarfile.open(next(output.glob("*.tar.gz"))) as archive:
         files = [member for member in archive.getmembers() if member.isfile()]
         seeds = [member for member in files if "/_data/seeds/" in member.name]
-        assert len(seeds) == 4
+        assert len(seeds) == 5
+        assert any(member.name.endswith("/edge-kappa-kb.json") for member in seeds)
         for member in seeds:
             assert "/seeds/bootstrap-v1/" in member.name
             assert archive.extractfile(member).read() == (root / "seeds/bootstrap-v1" / Path(member.name).name).read_bytes()

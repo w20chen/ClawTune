@@ -1,5 +1,6 @@
 """Recorded clause evaluation must not depend on a shell parser or Go."""
 import json
+import shlex
 
 import pytest
 
@@ -76,6 +77,49 @@ def test_compatibility_loader_can_still_backfill_old_records(monkeypatch):
 
 def test_empty_recorded_clauses_do_not_require_parser():
     assert recorded_clause_structure("", [], recorded_only=True) == ()
+
+
+@pytest.mark.parametrize("shape", ["consumer_only", "pipeline", "standalone", "first"])
+@pytest.mark.parametrize("stdin_source", ["missing", None, False, True])
+@pytest.mark.parametrize("sed_args", [["-n", "1,20p"], ["s/a/b/"], ["-n", "1,20p", "file.txt"]])
+def test_edge_clock_modes_share_recorded_consumer_admission_without_parser(
+    tmp_path, shape, stdin_source, sed_args,
+):
+    from offline.edge_kappa_eval import _events
+
+    argv = ["sed", *sed_args]
+    command = shlex.join(argv)
+    if shape in {"consumer_only", "pipeline"}:
+        command = "python work.py | " + command
+    elif shape == "first":
+        command += " | cat"
+    records = [json.loads(line) for line in trace("task", command).splitlines()]
+    observation = records[1]["data"]["resource_observation"]
+    base = dict(observation["clauses"][0], in_loop=False, in_subst=False,
+                in_pipe=True, pipeline_position=0, ts_start=10., ts_end=11.)
+    sed = dict(base, bin="sed", argv=argv, in_pipe=shape != "standalone",
+               pipeline_position=1 if shape in {"consumer_only", "pipeline"}
+               else 0 if shape == "first" else -1)
+    if stdin_source != "missing":
+        sed["stdin_from_pipe"] = stdin_source
+    observation["clauses"] = [base, sed] if shape == "pipeline" else [sed]
+    path = tmp_path / "task.trace.jsonl"
+    path.write_text("\n".join(map(json.dumps, records)), encoding="utf-8")
+    task = dict(benchmark="bfcl", group="repo", task_id="task",
+                files=[dict(version=5, path=path.name, sha256=digest(path))])
+    selected = []
+    exclusions = []
+    for clock in ("record-order", "trace"):
+        events, excluded = _events(tmp_path, {"task": task}, ["task"], "MiB", clock)
+        selected.append([(event.query, event.source_command, event.outcome.duration_ms)
+                         for event in events])
+        exclusions.append(excluded)
+    assert selected[0] == selected[1]
+    assert exclusions[0] == exclusions[1]
+    assert len(selected[0]) == int(shape != "consumer_only")
+    if selected[0]:
+        expected = "python work.py" if shape == "pipeline" else shlex.join(argv)
+        assert selected[0][0][1:] == (expected, 1000.)
 
 
 def write_v6(tmp_path, task_id="task", *, changes=None, censored=False, eligible=True):

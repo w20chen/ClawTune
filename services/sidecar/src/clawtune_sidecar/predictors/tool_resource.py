@@ -936,6 +936,8 @@ class ToolResourcePredictor:
                         if call.get("eligible_for_kb") is not True:
                             continue
                         clauses = call.get("clauses", [])
+                        from tool_resource.features import enrich_input_sources
+                        clauses = enrich_input_sources(call.get("command"), clauses)
                         labels = clause_memory_labels(sample.environment_memory, clauses)
                         for row, labels_for_clause in zip(clauses, labels):
                             if not labels_for_clause:
@@ -944,6 +946,7 @@ class ToolResourcePredictor:
                                 ts_start=row["ts_start"], ts_end=row["ts_end"],
                                 in_pipe=row.get("in_pipe", False), pipeline_position=row.get("pipeline_position", -1),
                                 in_loop=row.get("in_loop", False), in_subst=row.get("in_subst", False),
+                                stdin_from_pipe=row.get("stdin_from_pipe"),
                                 **labels_for_clause)
                             with self._kb_lock:
                                 self.kb.observe_completed_clause(observation)
@@ -1791,6 +1794,8 @@ def _retained_workload_duration_seconds(
         clauses = call.get("clauses")
         if not isinstance(clauses, list):
             continue
+        # Consumer admission uses recorded pipe position, not inferred stdin.
+        # Keep this shared label path independent of shell parser availability.
         for clause in clauses:
             if not isinstance(clause, Mapping) or is_pipeline_dependent_consumer(clause):
                 continue
@@ -2495,7 +2500,7 @@ def _compact_clauses(clauses: Any) -> list[dict[str, Any]]:
                 # Preserve recorded shell structure for parser-free offline replay.
                 # Missing fields remain missing: do not invent standalone semantics.
                 **{field: row[field] for field in
-                   ("in_loop", "in_pipe", "in_subst", "pipeline_position") if field in row},
+                   ("in_loop", "in_pipe", "in_subst", "pipeline_position", "stdin_from_pipe") if field in row},
                 "status": row.get("status"),
                 "availability": row.get("availability"),
                 "ts_start": row.get("ts_start"),
@@ -2582,6 +2587,7 @@ def _normalize_clause(value: Any) -> dict[str, Any] | None:
         "in_pipe": bool(value.get("in_pipe", False)),
         "in_subst": bool(value.get("in_subst", False)),
         "pipeline_position": position,
+        "stdin_from_pipe": value.get("stdin_from_pipe"),
     }
 
 

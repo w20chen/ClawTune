@@ -7,7 +7,7 @@ from collections import Counter
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from tool_resource.runtime_kb import ClauseObservation, CompletedCall
+from tool_resource.runtime_kb import ClauseObservation, CompletedCall, is_pipeline_dependent_consumer
 from tool_resource.sdk import clause_cpu_time_ns
 
 
@@ -58,6 +58,17 @@ def _censored_call(data: dict) -> bool:
 
 
 @dataclass
+class RecordedAction:
+    action_id: str
+    tool_name: str
+    command: str | None
+    ts_start: float
+    ts_end: float
+    call_index: int | None = None
+    clauses: list[ClauseObservation] = field(default_factory=list)
+
+
+@dataclass
 class LoadedTask:
     clauses: list[ClauseObservation] = field(default_factory=list)
     calls: list[CompletedCall] = field(default_factory=list)
@@ -67,9 +78,11 @@ class LoadedTask:
     call_clauses: list[tuple[dict, ...]] = field(default_factory=list)
     sample_periods_ms: list[float] = field(default_factory=list)
     counts: Counter = field(default_factory=Counter)
+    actions: list[RecordedAction] = field(default_factory=list)
 
 
-def recorded_clause_structure(command, rows, *, recorded_only: bool = False):
+def recorded_clause_structure(command, rows, *, recorded_only: bool = False,
+                              resolve_input_sources: bool = False):
     """Reuse complete trace structure; strict evaluation never reparses shell text."""
     if not isinstance(rows, (list, tuple)):
         raise ValueError("invalid recorded clauses: expected a list")
@@ -80,6 +93,9 @@ def recorded_clause_structure(command, rows, *, recorded_only: bool = False):
         for row in rows
     )
     if complete:
+        if resolve_input_sources:
+            from tool_resource.features import enrich_input_sources
+            return tuple(enrich_input_sources(command, rows))
         return tuple(dict(row) for row in rows)
     if recorded_only:
         raise ValueError("clause evaluation requires recorded in_loop, in_pipe, in_subst "
@@ -89,7 +105,8 @@ def recorded_clause_structure(command, rows, *, recorded_only: bool = False):
 
 
 def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
-              trust_call_cgroup: bool = False, recorded_clauses_only: bool = False) -> LoadedTask:
+              trust_call_cgroup: bool = False, recorded_clauses_only: bool = False,
+              preserve_timestamps: bool = False) -> LoadedTask:
     if rss_unit not in {"MB", "MiB"}:
         raise ValueError("source RSS unit must be explicitly MB or MiB")
     rss_scale = 1_000_000 if rss_unit == "MB" else 1024**2
@@ -141,6 +158,17 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
             command = extract_command(args) if name in {"exec", "terminal_exec"} else None
             if not isinstance(command, str):
                 command = None
+            action_start, action_end = row.get("ts_start"), row.get("ts_end")
+            has_action_clock = "ts_start" in row or "ts_end" in row
+            valid_action_clock = (valid(action_start) and valid(action_end)
+                                  and action_end >= action_start)
+            action = None
+            if preserve_timestamps:
+                if not valid_action_clock:
+                    result.counts["withheld_action_without_clock"] += 1
+                    continue
+                action = RecordedAction(action_id, name, command, float(action_start), float(action_end))
+                result.actions.append(action)
             censored = _censored_call(data)
             if censored:
                 result.counts["censored_calls"] += 1
@@ -161,6 +189,9 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
                     censored=censored, workload_duration_required=command is not None,
                     cpu_time_seconds=float(cpu) if eligible_cpu else None, cpu_time_eligible=eligible_cpu,
                     outcome="ok" if data.get("success") is True else "error")
+                if action is not None:
+                    call = replace(call, ts_start=action.ts_start, ts_end=action.ts_end)
+                    action.call_index = len(result.calls)
                 result.calls.append(call)
                 result.call_actuals.append({} if command is not None else {"duration_ms": float(duration)})
                 result.call_clauses.append(())
@@ -181,40 +212,13 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
                 result.counts["ineligible_resource_observation"] += 1
                 continue
             enriched_clauses = recorded_clause_structure(
-                command, observation.get("clauses", []), recorded_only=recorded_clauses_only)
+                command, observation.get("clauses", []), recorded_only=recorded_clauses_only,
+                resolve_input_sources=not recorded_clauses_only)
             if call_actual_index is not None:
                 result.call_clauses[call_actual_index] = tuple({
                     field: clause.get(field)
-                    for field in ("bin", "argv", "in_loop", "in_pipe", "in_subst", "pipeline_position")
+                    for field in ("bin", "argv", "in_loop", "in_pipe", "in_subst", "pipeline_position", "stdin_from_pipe")
                 } for clause in enriched_clauses)
-            if call_actual_index is not None and command is not None:
-                # A single completed clause supplies its own elapsed label. For
-                # multiple clauses require actual clocks; summing overlaps is wrong.
-                workload = None
-                if len(enriched_clauses) == 1:
-                    only = enriched_clauses[0]
-                    elapsed = only.get("latency_ms")
-                    if (only.get("eligible_for_kb") is True and only.get("telemetry_quality") == "ok"
-                            and (only.get("availability") or {}).get("latency") == "ok"
-                            and valid(elapsed) and elapsed > 0):
-                        workload = elapsed / 1000
-                elif enriched_clauses and all(
-                    c.get("eligible_for_kb") is True and c.get("telemetry_quality") == "ok"
-                    and (c.get("availability") or {}).get("latency") == "ok"
-                    and valid(c.get("ts_start")) and valid(c.get("ts_end"))
-                    and c["ts_end"] > c["ts_start"] for c in enriched_clauses
-                ):
-                    from clawtune_sidecar.predictors.tool_resource import _retained_workload_duration_seconds
-                    workload = _retained_workload_duration_seconds({"calls": [dict(observation, clauses=enriched_clauses)]})
-                result.calls[call_actual_index] = replace(
-                    result.calls[call_actual_index], workload_duration_seconds=workload,
-                    # A trusted whole-tool cgroup counter still cannot provide
-                    # average CPU for a different retained-clause interval.
-                    cpu_time_eligible=(result.calls[call_actual_index].cpu_time_eligible
-                                       and workload is not None and math.isclose(workload, duration / 1000)),
-                )
-                if workload is not None:
-                    result.call_actuals[call_actual_index]["duration_ms"] = workload * 1000
             accepted_clauses = []
             for clause in enriched_clauses:
                 availability = clause.get("availability") or {}
@@ -244,13 +248,62 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
                 memory = memory * rss_scale / 1_000_000 if valid(memory) and availability.get("memory") == "ok" else None
                 if elapsed is None and cpu_ns is None and peak is None and memory is None:
                     continue
+                start, end = 0., (elapsed or 0.) / 1000
+                # Validate recorded clocks even when storing zero-based training
+                # intervals. Fully clockless legacy rows retain their old path.
+                if preserve_timestamps or has_action_clock or any(
+                        field in clause for field in ("ts_start", "ts_end")):
+                    clause_start, clause_end = clause.get("ts_start"), clause.get("ts_end")
+                    if not (valid(clause_start) and valid(clause_end)
+                            and clause_start <= clause_end
+                            and (not has_action_clock or (valid_action_clock
+                                 and action_start <= clause_start <= clause_end <= action_end))):
+                        result.counts["withheld_clause_without_contained_clock"] += 1
+                        continue
+                    if preserve_timestamps:
+                        start, end = clause_start, clause_end
                 accepted = ClauseObservation(repo, str(clause.get("bin") or argv[0]), tuple(argv),
-                    0., (elapsed or 0.) / 1000, latency_ms=elapsed, cpu_ns_cumulative=cpu_ns,
+                    float(start), float(end), latency_ms=elapsed, cpu_ns_cumulative=cpu_ns,
                     cpu_peak_cores=peak, sampled_peak_rss_mb=memory,
                     in_loop=clause.get("in_loop") is True, in_pipe=clause.get("in_pipe") is True,
-                    in_subst=clause.get("in_subst") is True, pipeline_position=int(clause.get("pipeline_position", -1)))
+                    in_subst=clause.get("in_subst") is True, pipeline_position=int(clause.get("pipeline_position", -1)),
+                    stdin_from_pipe=clause.get("stdin_from_pipe"))
                 result.clauses.append(accepted)
                 accepted_clauses.append(accepted)
+                if action is not None:
+                    action.clauses.append(accepted)
+            if call_actual_index is not None and command is not None:
+                # A single completed clause supplies its own elapsed label. For
+                # multiple clauses require actual clocks; summing overlaps is wrong.
+                # Never derive a whole-call label from rejected or partial telemetry.
+                workload_clauses = (list(enriched_clauses)
+                                    if len(accepted_clauses) == len(enriched_clauses) else [])
+                workload = None
+                if len(workload_clauses) == 1:
+                    only = workload_clauses[0]
+                    elapsed = only.get("latency_ms")
+                    if (not is_pipeline_dependent_consumer(only)
+                            and only.get("eligible_for_kb") is True and only.get("telemetry_quality") == "ok"
+                            and (only.get("availability") or {}).get("latency") == "ok"
+                            and valid(elapsed) and elapsed > 0):
+                        workload = elapsed / 1000
+                elif workload_clauses and all(
+                    c.get("eligible_for_kb") is True and c.get("telemetry_quality") == "ok"
+                    and (c.get("availability") or {}).get("latency") == "ok"
+                    and valid(c.get("ts_start")) and valid(c.get("ts_end"))
+                    and c["ts_end"] > c["ts_start"] for c in workload_clauses
+                ):
+                    from clawtune_sidecar.predictors.tool_resource import _retained_workload_duration_seconds
+                    workload = _retained_workload_duration_seconds({"calls": [dict(observation, clauses=workload_clauses)]})
+                result.calls[call_actual_index] = replace(
+                    result.calls[call_actual_index], workload_duration_seconds=workload,
+                    # A trusted whole-tool cgroup counter still cannot provide
+                    # average CPU for a different retained-clause interval.
+                    cpu_time_eligible=(result.calls[call_actual_index].cpu_time_eligible
+                                       and workload is not None and math.isclose(workload, duration / 1000)),
+                )
+                if workload is not None:
+                    result.call_actuals[call_actual_index]["duration_ms"] = workload * 1000
             if (call_actual_index is not None and len(enriched_clauses) == 1
                     and len(accepted_clauses) == 1):
                 clause = accepted_clauses[0]

@@ -641,6 +641,7 @@ def _observation_from_clause(
         in_pipe=bool(row.get("in_pipe", False)),
         in_subst=bool(row.get("in_subst", False)),
         pipeline_position=int(row.get("pipeline_position", -1)),
+        stdin_from_pipe=row.get("stdin_from_pipe"),
     )
 
 

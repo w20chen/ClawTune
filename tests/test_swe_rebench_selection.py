@@ -2172,7 +2172,7 @@ def test_batch_shared_kb_rejects_schema_only_snapshot_as_unloadable(
     (tracked_seed / "runtime-tool-resource-kb.json").write_text(
         json.dumps(
             {
-                "schema": "runtime_tool_resource_kb_v3",
+                "schema": "runtime_tool_resource_kb_v4",
                 "max_prefix_depth": 4,
                 "public": {},
                 "repo": {},

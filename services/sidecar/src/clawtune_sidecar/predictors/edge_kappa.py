@@ -20,7 +20,7 @@ from clawtune_sidecar.identity import correlation_key
 from tool_resource.commands import normalized_observation
 from tool_resource.features import shell_bin_requires_exec_evidence
 from tool_resource.runtime_kb import ClauseObservation, is_pipeline_dependent_consumer
-from tool_time.edge_kappa_adapter import shell_query
+from tool_time.edge_kappa_adapter import NORMALIZATION_VERSION, shell_query
 
 
 def _digest(value: Any) -> str:
@@ -72,6 +72,9 @@ class EdgeKappaRuntime:
 
     @classmethod
     def from_snapshot(cls, obj: dict, *, frozen: bool = False) -> EdgeKappaRuntime:
+        if obj.get("normalization_version") != NORMALIZATION_VERSION:
+            raise ValueError("Edge shell normalization changed; rebuild the KB from raw observations "
+                             "and start a new state directory (old weights cannot be relabeled)")
         kb = EdgeKappaKB.from_snapshot(obj)
         if frozen:
             kb.freeze()

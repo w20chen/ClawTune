@@ -65,6 +65,7 @@
         "ts_start": {"type": "number", "description": "Clause start as Unix seconds."},
         "ts_end": {"type": "number", "description": "Clause end as Unix seconds."},
         "latency_ms": {"type": ["number", "null"], "minimum": 0, "description": "Clause wall-clock latency in milliseconds."},
+        "stdin_from_pipe": {"type": ["boolean", "null"], "description": "Optional evidence that stdin comes from the upstream pipe. Absent or null means unknown; downstream position alone is insufficient."},
         "status": {"$ref": "#/$defs/clauseStatus", "description": "Clause execution outcome and its evidence source."},
         "cpu_ns_cumulative": {
           "type": ["integer", "null"],

@@ -57,7 +57,7 @@ class EdgeKappaKB:
         max_optional_features: int = 6, max_covered_nodes: int = 4096,
         max_graph_nodes: int = 20_000,
         replay_seed: int = 42,
-        normalization_version: str = "shell-normalize-v1",
+        normalization_version: str = "shell-normalize-v4",
     ) -> None:
         if (not bucket_edges_ms or any(not math.isfinite(v) or v <= 0 for v in bucket_edges_ms)
                 or tuple(sorted(set(bucket_edges_ms))) != tuple(bucket_edges_ms)):
