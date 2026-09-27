@@ -62,7 +62,13 @@ or supply a root PID whose PID namespace and process start time were verified
 by the authenticated launcher lifecycle. Independent `docker exec` roots
 without either proof still fail closed.
 
-Bucket intervals are `[0, b1)`, `[b1, b2)`, ..., `[bk, +inf)`. A compound
-command returns `compound_command_uncomposed`; bucket IDs are never ORed or
-combined. CPU and memory measurements remain internal and are not part of the
-public prediction contract.
+Bucket intervals are `[0, b1)`, `[b1, b2)`, ..., `[bk, +inf)`.
+With complete clause evidence and supported structure, the SDK composes clause
+medians (serial sum, pipeline maximum) and assigns the result to one bucket;
+this is a point estimate, not a calibrated bucket distribution. Missing clause
+predictions return `compound_clause_evidence_incomplete`; unsupported composition
+returns `compound_command_uncomposed`. Bucket IDs are never combined.
+
+This SDK exposes command-duration buckets. The sidecar's separate public
+[load prediction contract](../../../../contracts/call-load.schema.json) also
+exposes CPU and memory; see the [prediction reference](../../../../docs/tool-profile.md#prediction-span_startprediction).

@@ -79,19 +79,7 @@ Per-task output is saved under `.runtime/benchmarks/<benchmark>/<run>/traces/<ta
 
 Common inputs are a JSON array, JSONL, or a JSON object containing a `tasks`, `instances`, or `data` array. Task IDs must be unique. Datasets and traces are read-only inputs; prepare exports and execution outputs elsewhere.
 
-For compatibility with older experiments, the launcher can also look under
-`$AGENT_TEST_BENCH_ROOT` (defaulting to the sibling `../agent-test-bench`) when
-the tracked list is unavailable:
-
-| Benchmark | Default lookup relative to the external root |
-| --- | --- |
-| SWE-Rebench | `data/swe-rebench/tasks.json` |
-| SWE-bench Verified | `data/swe-bench-verified/tasks.json` or `data/swebench_verified/tasks.json` |
-| Deep Research Bench | `data/deep-research-bench/tasks.json` |
-| BFCL | Category loader in a separately installed BFCL package |
-| Terminal Bench | `data/terminal-bench/tasks.json` or `data/terminal-bench/tasks/` |
-
-These are lookup conventions. Setup does not download complete benchmarks.
+Setup does not download complete benchmarks. Supply custom inputs with `--dataset`; the tracked smoke rosters are only for initial checks.
 
 ### Upstream sources and versions
 
@@ -124,8 +112,6 @@ The default run uses the tracked `swe_rebench/tasks.json` automatically:
 
 ```bash
 python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
-  --sample 3 --parallelism 3 --dry-run
-python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
   --sample 3 --parallelism 3
 ```
 
@@ -142,8 +128,6 @@ run uses the tracked smoke roster
 
 ```bash
 python3 scripts/clawtune.py benchmark --benchmark swe-bench-verified \
-  --sample 1 --parallelism 1 --dry-run
-python3 scripts/clawtune.py benchmark --benchmark swe-bench-verified \
   --sample 1 --parallelism 1
 ```
 
@@ -154,9 +138,6 @@ resulting file as a custom dataset:
 .venv/bin/python -m pip install datasets
 mkdir -p .runtime/datasets
 .venv/bin/python -c "from datasets import load_dataset; load_dataset('princeton-nlp/SWE-bench_Verified', revision='c104f840cc67f8b6eec6f759ebc8b2693d585d4a', split='test').to_json('.runtime/datasets/verified.jsonl')"
-python3 scripts/clawtune.py benchmark --benchmark swe-bench-verified \
-  --dataset .runtime/datasets/verified.jsonl \
-  --sample 3 --parallelism 3 --dry-run
 python3 scripts/clawtune.py benchmark --benchmark swe-bench-verified \
   --dataset .runtime/datasets/verified.jsonl \
   --sample 3 --parallelism 3
@@ -172,8 +153,6 @@ The default run uses the tracked `deep_research_bench/tasks.json` automatically:
 
 ```bash
 python3 scripts/clawtune.py benchmark --benchmark deep-research-bench \
-  --sample 3 --parallelism 3 --dry-run
-python3 scripts/clawtune.py benchmark --benchmark deep-research-bench \
   --sample 3 --parallelism 3
 ```
 
@@ -186,9 +165,6 @@ openclaw plugins install @openclaw/tavily-plugin
 .venv/bin/python -m deep_research_bench.discover --source hf \
   --sample 3 --out .runtime/research-tasks.json
 export TAVILY_API_KEY="<tavily-key>"
-python3 scripts/clawtune.py benchmark --benchmark deep-research-bench \
-  --dataset .runtime/research-tasks.json \
-  --sample 3 --parallelism 3 --dry-run
 python3 scripts/clawtune.py benchmark --benchmark deep-research-bench \
   --dataset .runtime/research-tasks.json \
   --sample 3 --parallelism 3
@@ -220,14 +196,12 @@ The default run uses the tracked processed entry list
 
 ```bash
 python3 scripts/clawtune.py benchmark --benchmark bfcl \
-  --sample 1 --parallelism 1 --dry-run
-python3 scripts/clawtune.py benchmark --benchmark bfcl \
   --sample 1 --parallelism 1
 ```
 
 Replace `/data/gorilla` with the actual checkout. Use a fresh copy when changing revisions. The bundled default is `multi_turn_base`; selecting another category without a matching bundled entry falls back to native category loading and needs these dependencies even in dry-run.
 
-To run long-context tasks instead, use `--category multi_turn_long_context` in both commands. Install BFCL dependencies into ClawTune's `.venv`; installing them only in another virtual environment does not make them available to the benchmark wrapper.
+To run long-context tasks instead, add `--category multi_turn_long_context` to the benchmark command. Install BFCL dependencies into ClawTune's `.venv`; installing them only in another virtual environment does not make them available to the benchmark wrapper.
 
 Function state persists across turns of one task; tasks are independent. **This is a partial BFCL v4 integration.** The scope below follows the upstream [v4 category definitions](https://github.com/ShishirPatil/gorilla/blob/6ea57973c7a6097fd7c5915698c54c17c5b1b6c8/berkeley-function-call-leaderboard/bfcl_eval/constants/category_mapping.py) and ClawTune's executable-task constraints:
 
@@ -265,8 +239,6 @@ The default run uses the tracked smoke list
 
 ```bash
 python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
-  --sample 1 --parallelism 1 --dry-run
-python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
   --sample 1 --parallelism 1
 ```
 
@@ -274,9 +246,6 @@ For the pinned upstream task checkout, pass its task directory as a custom
 dataset:
 
 ```bash
-python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
-  --dataset .runtime/datasets/terminal-bench-1/original-tasks \
-  --sample 3 --parallelism 3 --dry-run
 python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
   --dataset .runtime/datasets/terminal-bench-1/original-tasks \
   --sample 3 --parallelism 3
@@ -294,15 +263,7 @@ A Compose build failure fails that case and allows the batch to continue after s
 
 ### PMU results
 
-PMU data is supported for Terminal commands and shell commands in SWE-Rebench, SWE-Bench Verified, and Deep Research. BFCL functions and non-shell research tools currently have no per-call PMU data; missing values are not zero.
-
-All PMU microarchitecture metrics are **tool-level, not clause-level**: for a compound command such as `pip install … && pytest …`, counts and derived metrics cover the whole execution tree, not each clause separately.
-
-The standard Research workflow uses native web tools, not shell commands. Shared-process measurements describe local runtime activity, not an individual function's exclusive CPU/memory. Exclude `partial` and zero-overlap resource samples from CPU/memory labels; valid call duration and independently eligible PMU can still be used. Use a new run/KB, or rebuild from raw traces, when applying updated collection-quality rules; resuming an old KB does not clean previously learned labels.
-
-Only profiles with `coverage.eligible_for_kb=true` are used for learning. Predictions marked `calibration=unvalidated` have not been validated for accuracy. When running amd64 images on arm64, counters include QEMU overhead.
-
-For attributed exec calls, `resources.pmu.events.llc_read_accesses.raw_count` and `llc_read_misses.raw_count` contain the execution tree's LLC read counts. `resources.pmu.derived.llc_read_accesses_per_cpu_second` and `llc_read_misses_per_cpu_second` divide those counts by the corresponding event's `time_running_ns / 1e9`. This measures LLC read intensity per monitored **on-CPU second**, including inherited threads/processes; it excludes blocked time, and parallel threads contribute their accumulated CPU time. It is not wall-time throughput, total memory-access frequency, or DRAM bandwidth. These rates reuse the four existing PMU events with no added polling or hardware counters, and are null for partial/multiplexed/unavailable profiles. Shared-process tools have no exclusive rates. The rates are monitoring outputs; they are not additional prediction targets.
+Terminal and repository shell commands can supply tool-level PMU profiles; BFCL functions and native research tools have no per-call PMU. Compound commands produce one execution-tree profile, not per-clause counters. Only `coverage.eligible_for_kb=true` profiles train ToolKB. Its nine PMU targets include LLC accesses and misses per counter running second; see [definitions and units](tool-profile.md#pmu-resourcespmu). On ARM hosts running amd64 images, counters include QEMU overhead. Availability does not establish prediction accuracy.
 
 ## 3. Selection, concurrency, and resume
 
@@ -321,38 +282,7 @@ use `--config ./configs/my-benchmark.yaml` for a custom YAML file and/or
 the repository root in the documented commands. Initialization and state
 ownership are described once in [Output and persistent state](getting-started.md#3-output-and-persistent-state).
 
-To run the first 30 SWE-Rebench tasks followed by the first 30 Terminal Bench tasks in the background, use the dataset checkout above. Each stage runs at most eight tasks concurrently; the stages run sequentially so total task concurrency stays at eight. The online model configuration described in section 1 is required. Background execution also needs sudo configured for noninteractive use; `sudo -n true` must succeed before starting.
-
-```bash
-sudo -n true
-mkdir -p .runtime/benchmarks
-RUN_ROOT="$(mktemp -d "$PWD/.runtime/benchmarks/pair-XXXXXXXX")"
-.venv/bin/python -m swe_rebench.discover --sample 30 --out "$RUN_ROOT/swe-tasks.json"
-python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
-  --dataset "$RUN_ROOT/swe-tasks.json" \
-  --sample 30 --parallelism 8 --dry-run
-python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
-  --dataset .runtime/datasets/terminal-bench-1/original-tasks \
-  --sample 30 --parallelism 8 --dry-run
-nohup bash -c '
-  set -u
-  cd "$1"
-  run_root="$2"
-  python3 scripts/clawtune.py benchmark --benchmark swe-rebench \
-    --dataset "$run_root/swe-tasks.json" \
-    --sample 30 --parallelism 8 --output "$run_root/swe"
-  swe_status=$?
-  python3 scripts/clawtune.py benchmark --benchmark terminal-bench \
-    --dataset .runtime/datasets/terminal-bench-1/original-tasks \
-    --sample 30 --parallelism 8 --output "$run_root/terminal"
-  terminal_status=$?
-  printf "swe_exit=%s terminal_exit=%s\n" "$swe_status" "$terminal_status" > "$run_root/exit-status.txt"
-' bash "$PWD" "$RUN_ROOT" > "$RUN_ROOT/nohup.log" 2>&1 < /dev/null &
-echo $! > "$RUN_ROOT/pid"
-printf 'Run directory: %s\n' "$RUN_ROOT"
-```
-
-`nohup.log` contains live output. Each stage writes its `run.json` and traces under `$RUN_ROOT/swe` or `$RUN_ROOT/terminal`; `exit-status.txt` appears after both stages finish. If the SWE-Rebench stage reports failures, the Terminal Bench stage still runs.
+For background runs, configure noninteractive sudo (`sudo -n true`) before launching with `nohup` or a service manager. Use a separate output directory for each run; `--parallelism` applies per run.
 
 | Option | Meaning |
 | --- | --- |
@@ -361,13 +291,11 @@ printf 'Run directory: %s\n' "$RUN_ROOT"
 | `--parallelism N` | Maximum in-flight tasks; otherwise use YAML |
 | `--task-timeout-seconds N` | Whole-task timeout |
 
-All five benchmarks use one harness-owned task deadline, defaulting to **1,200 seconds**. Normal commands need no timeout configuration. The default is defined once in `BatchConfig`; bundled YAML files inherit it. The clock starts when a task begins setup, and setup, agent execution, all conversation turns, and normal result collection share the same remaining budget. Parallel tasks each have their own clock. Terminal Compose build/start also consumes this budget.
+All five benchmarks share a **1,200-second** default task deadline covering setup, agent turns, tool execution, and normal result collection. Each parallel task has its own clock. CLI `--task-timeout-seconds` overrides `batch.task_timeout_seconds`; `--dry-run` displays the resolved budget. `0` disables the harness deadline; negative, fractional, and boolean values are rejected. The legacy `agent_timeout_seconds` does not create a second deadline.
 
-OpenClaw agent-turn and tool-execution settings are left untouched. Runtime defaults and LLM-supplied tool arguments retain their normal meaning, so an OpenClaw- or model-side limit can end a turn before the harness budget expires; that is an ordinary agent failure, not a ClawTune task timeout (only the harness deadline produces exit code `124` with `scope: task`). The BFCL/Terminal bridge adds no separate per-call timer and forwards OpenClaw's cancellation signal. Terminal's `max_agent_timeout_sec` is retained as dataset metadata only; it does not shorten the task budget. There is no additional 300-second BFCL/Terminal call limit or 600-second bridge request limit. These are ClawTune simulation runs, not runs under Terminal's native timing/scoring conditions.
+OpenClaw and model-supplied limits remain effective. The BFCL/Terminal bridge adds no separate call timer; Terminal's native `max_agent_timeout_sec` is metadata only. These runs therefore do not reproduce Terminal's native timing/scoring conditions.
 
-Advanced diagnostics may explicitly override `batch.task_timeout_seconds`, or use `--task-timeout-seconds N` for a single run (CLI takes precedence over YAML). `0` disables every harness-owned bound — the per-call, bridge and build timers were removed, so only OpenClaw's own limits, a cancellation signal, or an operator can end a stuck task. Reserve `0` for controlled diagnostics; negative, fractional and boolean values are rejected. A nonzero legacy `agent_timeout_seconds` produces a migration warning and never supplies a second deadline. `--dry-run` displays the resolved task budget.
-
-At the deadline, the harness stops task producers and records exit code `124` with `scope: task`. The first timeout record is authoritative: once a task timeout is recorded, the result-collection phase no longer replaces its message with a later phase's wording. Cleanup, runtime drain and the final KB durability barrier have separate bounded grace periods, so total observed wall time can exceed 1,200 seconds. Cleanup failure remains fatal: the runner must not dispatch replacement work or claim safe completion while producers may survive. Infrastructure health probes retain short operation timeouts capped by the remaining task budget; these are not additional agent/tool budgets. Prepare slow image downloads/builds with the cache commands above before running the benchmark.
+A harness timeout records exit code `124` and `scope: task`; the first timeout reason is preserved. Cleanup and KB drain have separate bounded grace periods, so wall time can exceed the task budget. Cleanup failure stops dispatch of new tasks. Prepare slow image downloads/builds before starting the run.
 
 Resume with:
 
@@ -377,11 +305,13 @@ python3 scripts/clawtune.py benchmark --resume .runtime/my-run
 
 Resume requires the original configuration and prior; repeat `--seed` if it was customized. Saved task selection and parallelism are reused. Recorded failures are not retried. Ctrl+C stops tasks and attempts cleanup. A run with interrupted in-flight tasks or incompletely saved final state cannot resume; start a new run.
 
+Where task snapshots are merged, Edge feedback is replayed in task-ID order, then completion-time/event-ID order. Saved pre-execution gradients update shared weights; duplicate feedback is ignored and original parent edges are retained. Legacy learned task snapshots without replayable feedback require rerunning the affected tasks.
+
 ## 4. Inspect online output
 
 Defaults are under `.runtime/benchmarks/<benchmark>/<run>/` (or `--output`). All five benchmarks launched by `scripts/clawtune.py benchmark` share this layout; only the per-task files differ, as noted below.
 
-The harness does not stream per-step progress to the terminal. While a task runs, the console shows only the run header, the runtime-asset assembly summary, a few startup lines such as `[agent] starting (trace: ...)`, occasional drain/observation diagnostics, and one result line per task (`<task-id>: status=..., agent_exit=...`). All step output is file-based: `run.json` is updated as tasks start and finish, `trace.jsonl` grows while the agent works, and the logs below are written live.
+Agent progress is file-based: follow `trace.jsonl` and agent stderr while `run.json` tracks task status. The console prints startup diagnostics and a result line per task; agent stdout is not duplicated.
 
 Run-level layout (`<task-digest>` is a stable 20-hex digest of `<benchmark>:<task-id>`):
 
@@ -437,20 +367,11 @@ tail -F "$RUN/sidecar/sidecar-stderr.txt"             # shared service log
 docker ps --filter name=clawtune-srb                  # sandbox containers of active repository/research tasks
 ```
 
-Check `status`, each result's `error` and `exit_code`, and `kb_flush_complete: true`, which indicates completed persistence.
+Check run `status`, each result's `error`/`exit_code`, and `kb_flush_complete`. A completed run requires persisted KB state. `observation_issues` and collector logs report monitoring failures separately; unavailable targets can be valid, including empty cold-start history and EdgeKappa's unsupported CPU/memory targets. `resource_summary.prediction_models` records availability for `tool`, `trie`, `lattice`, and `edge_kappa`, not prediction accuracy.
 
-Each task writes directly to one `trace.jsonl`, including all sessions and turns. No post-run trace or telemetry-artifact copies are produced. Benchmark launches disable OpenClaw trajectory capture and the plugin standalone trace writer. LLM messages are retained without trace truncation. Supplemental records follow `contracts/trace-event.schema.json`: join `execution_telemetry` to tool spans by `execution_id`; its `artifact` contains the full eBPF result. Aborted PMU profiles are retained in `runtime_finalization` events. Missing completion hooks are explicitly recorded as `incomplete_span`; unmatched proxy captures are retained as `llm_proxy_unmatched`. Do not count these incomplete records as successful measurements. A successful drain requires trace persistence; abrupt process or machine failure can still lose unacknowledged in-memory events. KB files and OpenClaw session state remain operational data, not additional task trace exports.
+Each task has one `trace.jsonl` containing all turns, full captured LLM messages, and inlined telemetry. Join `execution_telemetry` by `execution_id`; do not count its compact and full views twice. `incomplete_span`, `llm_proxy_unmatched`, and aborted profiles retain incomplete evidence, not successful observations. See the [trace reference](tool-profile.md).
 
-For SWE timeouts/cancellations and interrupted Terminal agents, `traces/<task-digest>/runtime-finalization.json` records executions finalized after confirmed agent and sandbox shutdown. Measurements without confirmed tool exit remain incomplete and are withheld from learning; observations from previously completed tools remain available. Finalization does not turn a failed task into a successful task, even when `kb_flush_complete` is true.
-
-Task status reflects execution errors, timeouts, and the final KB durability barrier; `completed` requires `kb_flush_complete: true`. `observation_issues`, `runtime-finalization.json.observation_errors`, and collector logs report monitoring or KB failures separately; an isolated per-task observation failure does not cancel the batch. Very short or incomplete samples may be excluded from learning without being task failures. Prediction auditing checks the `tool`, `trie`, and `lattice` envelopes independently; valid `unavailable` targets (including an entirely empty cold-start ToolKB) are allowed. Per-model, per-target availability counts remain in `resource_summary.prediction_models`; they measure coverage, not prediction accuracy. Check eBPF quality and PMU coverage before using a sample. `trace_flushed: false` or `kb_flush_complete: false` means persistence is incomplete; retain the run for diagnosis and do not treat it as a fully saved learning state.
-
-```bash
-.venv/bin/python tools/inspect_trace.py /path/to/run/traces/<task>/<file>.jsonl --all --details
-python3 scripts/clawtune.py kb status --path /path/to/run/kb
-```
-
-An exit code alone does not validate a run when no tools were called, search setup failed, or collection was incomplete. Shared-service diagnostic copies must not be counted again as offline observations.
+Timeout finalization follows confirmed producer shutdown. Tools lacking verified exit evidence remain incomplete and are withheld from learning. Abrupt failures can lose unacknowledged events; `trace_flushed: false` or `kb_flush_complete: false` means persistence is incomplete. A successful exit without tool calls or eligible measurements does not validate collection.
 
 ## 5. Fixed-trace offline evaluation
 
@@ -471,7 +392,9 @@ python3 scripts/clawtune.py offline --dataset /data/fixed-traces \
   --benchmark swe-rebench --rss-unit MiB
 ```
 
-Choose `MB` or `MiB` according to the original RSS units; explicit byte-valued labels retain their units. Tasks need `instance_id` or `task_id`; repository tasks also need project identity. Adjacent `dataset-task.json` files from online runs can supply identity.
+Choose `MB` or `MiB` according to original RSS units; explicit bytes retain their units. Tasks need `instance_id` or `task_id`. Adjacent `dataset-task.json` can supply identity. SWE datasets require `repo` or an ID from which it can be inferred.
+
+Offline grouping uses `repo`, otherwise `category`, otherwise `dataset`. Observations receive `repo="<benchmark>:<group>"`. Terminal traces with neither repo nor category therefore share `terminal-bench:dataset`, not a per-task repository. LatticeKB and EdgeKappa treat it as an optional context feature; command features still distinguish workloads, and nodes without repo can share evidence across contexts. Task IDs keep all attempts on one side of the split.
 
 The split methodology is in the [technical report](technical-report.md#6-learning-initialization-and-evaluation). `--train-fraction` defaults to 0.8 and must lie strictly between 0 and 1. Each group assigns `max(1, floor(fraction*N))` tasks to training and the rest to testing. Assignments are reused by task roster, seed, and fraction. The registry defaults to `.runtime/offline/splits/`; use `--split-cache-dir` to relocate it.
 
@@ -480,21 +403,21 @@ The split methodology is in the [technical report](technical-report.md#6-learnin
 | `split.json` | Task assignments and input hashes |
 | `seed/` | Statistics constructed only from training data |
 | `predictions.jsonl` | ToolKB test predictions and eligible labels, including PMU |
-| `model-predictions.jsonl` | ToolKB, TrieKB and LatticeKB predictions with a `model` field |
+| `model-predictions.jsonl` | ToolKB, TrieKB, LatticeKB, and EdgeKappaKB predictions with a `model` field |
 | `report.json`, `report.md` | Availability, errors, baselines, and exclusions |
 
 Mixed input is trained and evaluated separately per benchmark, with an aggregate report. Check train/test counts and `test_updates: 0` before interpreting metrics. All-singleton groups can leave no test set.
 
-Each benchmark's `report.json.models` reports `tool`, `trie`, and `lattice` separately. The existing top-level `metrics` and `repositories` describe ToolKB. Per-target `availability` counts all uncensored queries (`queries`), queries with trusted labels (`labeled`), available predictions (`predicted`), and labeled predictions that can be scored (`scored`). Missing labels are never converted to zero; a target can have predictions without a measurable error.
+Each benchmark's `report.json.models` reports `tool`, `trie`, `lattice`, and `edge_kappa` separately (Edge predicts duration only). The existing top-level `metrics` and `repositories` describe ToolKB. Per-target `availability` counts all uncensored queries (`queries`), queries with trusted labels (`labeled`), available predictions (`predicted`), and labeled predictions that can be scored (`scored`). Missing labels are never converted to zero; a target can have predictions without a measurable error.
 
 CPU-time labels require `availability.cpu_time == "ok"` and an execution-interval delta (`provenance.cpu_time_ns` or compact `cpu_time_seconds`). A historical `cpu_ns_cumulative` value alone is insufficient. Shell workload duration uses retained clause intervals (or a qualified single-clause elapsed label in v5); missing interval evidence leaves workload duration and average CPU unavailable. The original tool-call elapsed time remains separate. Environment-memory labels require their own eligible measurements; RSS cannot substitute for them. `--rss-unit` applies to v5 RSS; v6 compact RSS is already decimal MB.
 
 Rebuild seeds from the original traces after changing label ingestion rules. Existing snapshots retain previously imported values and cannot recover missing measurement evidence.
 
 
-### Edge kappa research evaluation
+### EdgeKappa research evaluation
 
-Use a trace directory in the same format as above. Specify one benchmark and a new output directory for each run:
+For clause-level bucket analysis, specify one benchmark and a new output directory. The following trace-clock command requires v5 input; use `--event-clock record-order` for v6:
 
 ```bash
 PYTHONPATH=services/sidecar/src:. python3 -m offline.edge_kappa_eval \

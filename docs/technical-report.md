@@ -1,62 +1,33 @@
 # ClawTune: Monitoring and Predicting Agent Tool Resources
 
-## Abstract
-
-Agent tool calls vary substantially in execution time and resource consumption. Tool names and static resource limits alone provide an incomplete description of this variation. ClawTune combines call tracing, operating-system measurements, and empirical prediction to estimate execution time, CPU use, and memory consumption before a call, then update its statistical models after execution. This report describes the system architecture, measurement model, prediction methods, and evaluation protocol.
-
 ## 1. System design
 
-The system comprises an OpenClaw plugin, a local monitoring service, and evaluation programs. The plugin associates model requests with tool calls. The service proxies model requests, collects execution measurements, and maintains historical statistics. Evaluation programs organize tasks, isolate execution environments, and score predictions.
+ClawTune combines an OpenClaw plugin, a local monitoring service, and evaluation programs. The plugin correlates model requests and tool calls; the service collects execution measurements and predicts subsequent calls from historical evidence. It does not modify OpenClaw core. Placement advice is advisory.
 
-Docker supplies tool execution environments. Linux cgroups establish resource accounting boundaries, eBPF associates executable clauses with their descendant processes, and perf hardware counters supply microarchitectural measurements. Correlated events form execution traces for subsequent analysis.
-
-Daily operation learns continuously. Online benchmarks share learning within each run. Offline evaluation trains on a fixed subset and freezes all models during testing. The system provides concurrency admission information and resource recommendations for deployment components.
+Docker supplies task environments, cgroups bound resource accounting, eBPF attributes executable clauses to processes, and perf supplies hardware counters. Daily operation learns continuously; online benchmarks share run-local history; the standard offline evaluation freezes models during testing.
 
 ## 2. Measurement scope and validity
 
-A tool call may contain a shell command, represented as text such as `grep pattern file | head`. Parsing that shell command can produce one or more executable clauses: in this example, the producer and the pipeline consumer are separate clauses. Call-level duration covers the complete tool lifecycle, including wrapper overhead. Clause-level duration covers the execution interval attributed to one executable clause. These quantities are not interchangeable.
+Raw tool-span duration includes the tool lifecycle and wrapper overhead. The prediction target is retained-workload duration: ToolKB learns its eligible call-level label, while clause models reconstruct it from executable stages. These scopes are not interchangeable.
 
-| Target | Definition | Unit |
-| --- | --- | --- |
-| Duration | Wall-clock time within the stated observation boundary | ms |
-| CPU time | Cumulative CPU time of the attributed workload | core-s |
-| Average CPU use | CPU time divided by duration for the same observation | cores |
-| Peak CPU use | Maximum CPU use over fixed 500 ms windows | cores |
-| Sampled process RSS peak | Peak sampled distinct-mm RSS of the owned process lineage | bytes |
-| `memory_total_peak_bytes` | Sampled peak environment memory, including its background | bytes |
-| `memory_extra_peak_bytes` | `max(0, memory_total_peak_bytes - memory_baseline_bytes)` | bytes |
+The [measurement reference](tool-profile.md#quick-guide-measurements-and-predictions) defines duration, cumulative and peak CPU, sampled process RSS, environment total/extra memory, and the nine ToolKB PMU targets. Environment memory includes background charges; extra memory is a high-water delta, not exclusive process attribution. Memory sources remain separate, and host VM RSS cannot substitute for guest memory.
 
-For observation $i$, average CPU use is $a_i=c_i/t_i$. Its predicted mean averages these per-observation ratios, rather than dividing the separate means of CPU time and duration. Sampled process RSS is a formal prediction target, but remains distinct from environment memory: it de-duplicates sampled address spaces in the owned lineage and is not an exact allocation count. Current environment-memory collection samples cgroup v2 `memory.current`: the background is memory already charged to that cgroup before the call, including its existing processes and charged cache; it is not the whole host OS. Guest `MemTotal - MemAvailable` is a separate measurement source for future VM integration. All three KBs keep the sources separate; host VM RSS is not guest memory. Total and extra are sampled estimates, not guaranteed allocation limits, and extra is an environment high-water delta rather than exclusive attribution to the tool process.
-
-Resource labels require identifiable execution ownership and sufficient collection quality for the target. Shared-container totals cannot serve as individual tool labels. Timeout and cancellation observations are censored and excluded from complete-execution labels. Missing values remain distinct from valid zeros, and each target has its own validity mask.
-
-The downstream list is `cat comm column cut egrep fgrep fold grep head hexdump less more nl od paste rev rg tac tail tee tr ts uniq wc xxd`. These consumers at pipeline position greater than zero are excluded from independent clause modeling because their duration depends on upstream input. The same executables remain eligible when run independently or at the start of a pipeline.
-
-Hardware profiling records cycles $C$, instructions $I$, last-level-cache read accesses $A$, and read misses $M$:
-
-$$
-\mathrm{IPC}=I/C,\qquad
-\mathrm{MPKI}=1000M/I,\qquad
-\mathrm{MissRate}=M/A.
-$$
-
-ToolKB stores all nine metrics: `cycles`, `instructions`, `llc_read_accesses`, `llc_read_misses`, `ipc`, `llc_mpki`, `llc_miss_rate`, `llc_read_accesses_per_cpu_second`, and `llc_read_misses_per_cpu_second`. The final two divide their event counts by that event's inherited perf `time_running_ns / 1e9`; they describe on-CPU read intensity, not DRAM bandwidth or bytes per wall second.
-
-A zero denominator makes the corresponding ratio unavailable. Only complete, correctly attributed observations with consistent event semantics and no counter multiplexing enter prediction history. Scaled or incomplete counters remain diagnostic. Shared chip-level cache counters are not substituted for task-attributed measurements.
+Labels require execution ownership and sufficient quality for each target. Missing values are not zeros. Incomplete or censored executions do not supply complete-execution labels; shared-container totals cannot become individual tool labels. PMU ratios require nonzero denominators, compatible event semantics, and eligible counters without multiplexing.
 
 ## 3. Historical evidence and empirical predictions
 
-The implementation maintains three complementary statistical indexes:
+The implementation maintains four independent models; they do not fill missing evidence from one another:
 
 | Index | Description | Observation scope |
 | --- | --- | --- |
 | ToolKB | Call-level history | Eligible call-level labels, including retained-workload duration and eligible hardware-counter metrics |
 | TrieKB | Clause-prefix index | Executable clauses and ordered argument prefixes |
 | LatticeKB | Feature-subset index | Clause contexts ordered by feature-set inclusion |
+| EdgeKappaKB | Feature graph with learned parent-edge weights | Clause duration only; CPU and memory are unavailable |
 
 Whole-call history first retrieves a project's exact normalized call representation, then shorter prefixes, executable identity, or an applicable tool category. The clause-prefix index similarly backs off from an exact clause to argument prefixes and executable identity. When local evidence is absent, compatible public priors provide coarser executable- or tool-level evidence. Current call-level predictions do not fill missing targets from unrelated global samples.
 
-Given the selected valid samples $y_1,\ldots,y_n$ for a target, the empirical distribution and mean are
+For ToolKB, TrieKB, and LatticeKB, given the selected valid samples $y_1,\ldots,y_n$ for a target, the empirical distribution and mean are
 
 $$
 \widehat F(y)=\frac{1}{n}\sum_{i=1}^{n}\mathbf{1}[y_i\le y],
@@ -64,7 +35,7 @@ $$
 \bar y=\frac{1}{n}\sum_{i=1}^{n}y_i.
 $$
 
-Outputs include the mean, median, empirical p90, and a histogram. The p90 is the ordered sample at rank $\lceil0.9n\rceil$; an even-sized sample median averages the two central values. Histogram intervals are left-closed and right-open, and probabilities are sample proportions. Neither sample count nor histogram mass is calibrated confidence.
+For average CPU, samples are per-observation CPU-time/duration ratios; their mean is not the ratio of separate means. Outputs include the mean, median, empirical p90, and a histogram. The p90 is the ordered sample at rank $\lceil0.9n\rceil$; an even-sized sample median averages the two central values. Histogram intervals are left-closed and right-open, and probabilities are sample proportions. Neither sample count nor histogram mass is calibrated confidence.
 
 ## 4. Feature-subset prediction
 
@@ -78,7 +49,7 @@ $$
 
 More features make a context more specific, generally reducing its sample size. Fewer features broaden coverage but can mix different workloads. Context selection therefore trades specificity against statistical stability.
 
-The implementation retains complete feature sets while bounding partial combinations. It maintains a bounded subset partial order rather than explicitly materializing a full power set. Project identity can be omitted to construct both project-specific and shared contexts. Each target builds its own eligible sample views and selects its context independently.
+The implementation retains complete feature sets while bounding partial combinations. It maintains a bounded subset partial order rather than explicitly materializing a full power set. The normalizer treats `repo` as optional, so nodes with and without project identity coexist. It is not a hard isolation boundary. LatticeKB builds eligible sample views and selects contexts independently per target; EdgeKappa uses the same shell features. Offline identity fallback is described in the [benchmark guide](benchmarks.md#5-fixed-trace-offline-evaluation).
 
 ### 4.2 Variance shrinkage
 
@@ -143,9 +114,25 @@ $$
 
 Ties prefer more observations. This specificity baseline has no cross-validation risk term. Resource targets with no matching context are unavailable. Historical whole-call duration diagnostics retain broader fallbacks, which do not establish compatible call-level resource evidence.
 
+### 4.5 EdgeKappaKB
+
+EdgeKappa maintains a separate bounded feature graph. Node creation keeps the full feature set and bounded combinations of optional features with the core features. Committed observations accumulate in every existing node whose features are a subset of the observation's features. Querying does not create observations; an unseen full feature set uses matching parent contexts with initial weights.
+
+For query node $S$, let $O_S$ be its observations and $c_{S,b}$ its count in duration bucket $b$. Each parent $P$ contributes only $D_{P,S}=O_P\setminus O_S$, excluding evidence already counted at the child. Parents with empty differences contribute nothing. With $B$ buckets:
+
+$$
+q_{P,S,b}=\frac{c_{P,b}-c_{S,b}+\epsilon/B}{|D_{P,S}|+\epsilon},\qquad
+p_{S,b}=\frac{c_{S,b}+\eta/B+\sum_P\kappa_{P,S}q_{P,S,b}}
+{|O_S|+\eta+\sum_P\kappa_{P,S}}.
+$$
+
+Here $\epsilon=\eta=0.01$. Initial edge weights divide $k_0=1$ among parents. Completion feedback updates log edge weights by bucket log-loss gradients computed from saved pre-execution predictions. Gradients are clipped to $[-1,1]$ with default learning rate 0.1; weights remain positive with a total-strength cap of 100. A cold query with no own or parent evidence is unavailable.
+
+Runtime duration predictions use actual durations: each child observation has weight 1, and each parent-difference observation receives $\kappa_{P,S}/|D_{P,S}|$. An observation shared by several parents is one duration atom with summed weight; evidence count remains the number of unique observations. Numerical bucket smoothing has no duration atom and is omitted from this distribution. Missing exact durations make it unavailable; bucket midpoints are never invented. The [prediction reference](tool-profile.md#prediction-span_startprediction) defines weighted quantiles and unsupported targets.
+
 ## 5. From commands to tool calls
 
-The system reports three independent results for each target. ToolKB selects compatible call-level evidence; its duration target is retained-workload elapsed time rather than the raw tool span. TrieKB selects clause-prefix evidence, while LatticeKB selects feature-subset evidence using shrinkage by default. They are parallel predictions rather than one fallback chain, and missing evidence in one KB is never filled from another.
+ToolKB uses call-level evidence. TrieKB, LatticeKB (shrinkage by default), and EdgeKappaKB reconstruct retained workloads from their own clause evidence; EdgeKappa contributes duration only.
 
 For supported foreground shell commands, unconditional serial lists, and simple pipelines, the composer independently samples clause distributions. Let $g$ index serial groups and $j$ index clauses within a pipeline group:
 
@@ -155,15 +142,15 @@ $$
 
 A standalone clause forms a one-element group. A fixed random seed generates 2048 draws, from which summary statistics are computed. Clause medians or p90s are not added directly, and generated draws are not counted as historical observations.
 
-This approximation assumes that foreground clauses cover the workload, ignores shell and hook overhead, and treats clause distributions as independent. `exec` and `terminal_exec` share shell extraction. `cd`, assignments, `env`, `timeout`, and `nohup` retain executable-stage predictions. For `&&` and `||`, the current composer includes every retained stage and annotates its success/failure condition; it does not forecast exit status or branch probability. Loops, substitutions, and background jobs cannot establish a complete-call composition. CPU time sums across retained stages. Average CPU divides sampled total CPU time by the sampled composed duration: serial durations sum and pipeline durations take their maximum. Sequential CPU and RSS peaks use their maximum; parallel peaks use a conservative sum. Those peak rules do not preserve temporal alignment, and their p90 is not calibrated simultaneous-load coverage. Environment total and extra memory use the maximum sampled clause prediction as a call-level approximation. For a single clause, environment total assumes no higher peak outside the clause, and extra additionally assumes that the clause baseline equals the tool baseline. Listed downstream pipeline consumers are excluded from training and prediction for every clause target; the same executable remains eligible alone or in the first pipeline position. Individual clause predictions remain available. A single-clause shell command also uses the composition path when its estimate is reconstructed from clause evidence.
+This approximation assumes that foreground clauses cover the workload, ignores shell and hook overhead, and treats clause distributions as independent. `exec` and `terminal_exec` share shell extraction. `cd`, assignments, `env`, `timeout`, and `nohup` retain executable-stage predictions. For `&&` and `||`, the current composer includes every retained stage and annotates its success/failure condition; it does not forecast exit status or branch probability. Loops, substitutions, and background jobs cannot establish a complete-call composition. CPU time sums across retained stages. Average CPU divides sampled total CPU time by the sampled composed duration: serial durations sum and pipeline durations take their maximum. Sequential CPU and RSS peaks use their maximum; parallel peaks use a conservative sum. Those peak rules do not preserve temporal alignment, and their p90 is not calibrated simultaneous-load coverage. Environment total and extra memory use the maximum sampled clause prediction as a call-level approximation. For a single clause, environment total assumes no higher peak outside the clause, and extra additionally assumes that the clause baseline equals the tool baseline. The downstream consumers `cat comm column cut egrep fgrep fold grep head hexdump less more nl od paste rev rg sed tac tail tee tr ts uniq wc xxd` are excluded at pipeline positions greater than zero, for every clause target and ToolKB workload-duration labels. They remain eligible alone or first in a pipeline; other eligible call-level metrics are unaffected. Individual retained-clause predictions remain available. A single-clause shell command also uses the composition path when its estimate is reconstructed from clause evidence.
 
 ## 6. Learning, initialization, and evaluation
 
-An online query may use an observation only when $t_i^{end}<t_q^{start}$. Concurrent tasks share evidence in actual completion order; fixed task selection does not ensure identical learning interleavings. Offline testing freezes all models and cannot incorporate test outcomes.
+An online query may use an observation only when $t_i^{end}<t_q^{start}$. Concurrent tasks share evidence in actual completion order; fixed task selection does not ensure identical learning interleavings. Standard offline testing freezes all models and cannot incorporate test outcomes; the separate EdgeKappa research evaluator offers an explicit online-update mode.
 
-The bundled initialization prior contains a small set of historical executable-clause observations with source identities removed and resource labels filtered. Call-level history starts empty. Runtime KB v3, TrieKB v6, and LatticeKB v3 reject earlier snapshots; the release prior contains no formal memory labels synthesized from historical RSS. The bundle is retained as a runtime resource; its source workload and hardware conditions limit cross-platform interpretation.
+Default seed contents, snapshot compatibility, and rebuild instructions are maintained in [Output and persistent state](getting-started.md#3-output-and-persistent-state). Source workloads and hardware conditions limit transfer to other environments.
 
-Online execution evaluates collection and continuous learning behavior. Fixed-trace evaluation measures prediction error outside the training subset. The current offline protocol keeps each task and all its attempts on one side of a deterministic split, stratified by benchmark and project or category. Singleton groups are training-only. The resulting overall fraction can differ from the requested fraction, and within-project tests do not establish unseen-project performance.
+Online execution evaluates collection and continuous learning behavior. Fixed-trace evaluation measures prediction error outside the training subset. The current offline protocol keeps each task and all its attempts on one side of a deterministic split, stratified by benchmark and repository, category, or dataset fallback. Singleton groups are training-only. The resulting overall fraction can differ from the requested fraction, and within-project tests do not establish unseen-project performance.
 
 Evaluation should report availability alongside absolute error, task-level averages, and baseline differences. Quantiles require both empirical coverage and pinball loss:
 

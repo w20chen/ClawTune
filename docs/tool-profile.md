@@ -4,7 +4,7 @@ A tool profile consists of the prediction made when a call starts, the measureme
 
 `null` or a missing field means that measurement does not exist; `0` only means the count is zero within the current measurement scope. `available`, `eligible_for_kb`, and `memory_eligible` do not indicate prediction accuracy or resource limits. Timeouts and cancellations are incomplete executions and cannot serve as training labels for complete executions. Historical traces do not become accurate automatically just because the collector is upgraded; when validating a new collection, use a new run-local KB so that old labels do not keep influencing predictions.
 
-This document covers all stable fields defined by ClawTune in trace v6 JSONL. For `input.requested_args`, `input.messages[]`, `output.result`, `output.content`, `provider_metadata`, `request_options`, `raw_*`, `placement`, `profiling`, and fields marked as open diagnostic objects, the internal structure is determined by the tool, model provider, OpenClaw, or collector version; this document explains the meaning of the container and does not mislist external dynamic keys as part of the ClawTune stable protocol. Each line is an independent JSON object, and its structure is determined by `record_type`.
+This guide explains trace v6 fields needed to interpret predictions and measurements; the linked Schemas define the complete protocol. For `input.requested_args`, `input.messages[]`, `output.result`, `output.content`, `provider_metadata`, `request_options`, `raw_*`, `placement`, `profiling`, and fields marked as open diagnostic objects, the internal structure is determined by the tool, model provider, OpenClaw, or collector version; this document explains the meaning of the container and does not mislist external dynamic keys as part of the ClawTune stable protocol. Each line is an independent JSON object, and its structure is determined by `record_type`.
 
 ## Quick Guide: Measurements and Predictions
 
@@ -12,7 +12,7 @@ Read one tool call in three parts. `span_start.prediction` is the forecast made 
 
 | Question | Observation to inspect | Prediction target | Practical meaning |
 | --- | --- | --- | --- |
-| How long did it run? | Tool duration on `span_end`; clause `latency_ms` for an executable stage | `duration_ms` | The prediction target is retained-workload elapsed time, not necessarily the raw span duration. ToolKB uses a direct call-level label; TrieKB and LatticeKB reconstruct it from retained executable clauses. |
+| How long did it run? | Tool duration on `span_end`; clause `latency_ms` for an executable stage | `duration_ms` | The prediction target is retained-workload elapsed time, not necessarily the raw span duration. ToolKB uses a direct call-level label; TrieKB, LatticeKB, and EdgeKappaKB reconstruct it from retained executable clauses. |
 | How much CPU work accumulated? | `resource_observation.metrics.cpu_time.value_seconds`; clause `cpu_time_seconds` | `cpu_time_seconds` | Core-seconds, not CPU percentage. ToolKB uses the eligible owned call-level label; TrieKB and LatticeKB add retained-stage values. |
 | What was average CPU use? | `resource_observation.metrics.cpu_time.average_cores` | `cpu_avg_cores` | CPU time divided by the matching duration. Multi-core values may exceed one. |
 | What was the CPU burst? | `resource_observation.metrics.cpu_peak.value_cores` | `cpu_peak_cores` | Maximum average core use over a 500 ms window. This is separate from cumulative CPU time. |
@@ -121,102 +121,18 @@ Only records produced by the sidecar's main writer carry `gateway_id`, `runtime_
 
 ### `trace_event`
 
-The outer protocol for supplementary events is defined in the [trace event schema](../contracts/trace-event.schema.json):
+Supplementary records use `schema_version: 6`, `record_type: trace_event`, and an `event_type` defined by the [trace event schema](../contracts/trace-event.schema.json):
 
-| Field | Meaning |
+| Event type | How to read it |
 | --- | --- |
-| `schema_version` | The number `6`. |
-| `record_type` | Fixed to `trace_event`. |
-| `event_type` | `execution_telemetry`, `incomplete_span`, `llm_proxy_unmatched`, or `runtime_finalization`. |
-| `gateway_id`, `runtime_id` | The gateway and runtime instance to which the event belongs; they may be `null` when the owner cannot be uniquely recovered. |
-| `execution_id` | The execution identity for `execution_telemetry`. |
-| `kind` | `tool` or `llm` for `incomplete_span`. |
-| `reason` | The reason an incomplete / unmatched event was produced, for example runtime termination or timeout. |
-| `prediction` | When the `incomplete_span` is a tool, the optional prediction that has been produced but has not yet entered a complete span. |
-| `payload` | Stable payload that varies with `event_type`; see the tables below. |
-| `artifact` | Optional for `execution_telemetry`; the complete object after the writer inlines the clause telemetry JSON pointed to by `artifact_path`. See "Subcommand Profile and Collection Quality" for the fields. |
+| `execution_telemetry` | Join by `execution_id`. `payload.call_telemetry` is the compact execution summary; outer `artifact` inlines the full collector result. `artifact_path` may no longer be accessible after copying a trace. |
+| `incomplete_span` | A started tool/LLM event without normal completion. `kind`, `reason`, raw API `payload`, and optional tool `prediction` preserve what was known; they do not establish a completed observation. |
+| `llm_proxy_unmatched` | A proxy request without a matched OpenClaw completion. `payload.data` retains provider/model, duration, outcome, HTTP diagnostics, and raw request/response. Duplicate message/content views can be omitted when raw content is present. |
+| `runtime_finalization` | `payload` records `finalized`, owner, reason, `aborted_execution_ids`, `pmu_profiles`, and `observation_errors`. Aborted profiles remain incomplete evidence. |
 
-`payload` for `event_type=execution_telemetry`:
+Owner IDs can be null when unresolved. Tool payloads identify the call, arguments/features, and `resource_scope`; scope describes PID/cgroup identity and attribution, not proof that every metric is eligible. `trace_flushed` belongs to the HTTP abort response, not the finalization trace record.
 
-| Field | Meaning |
-| --- | --- |
-| `execution_id`, `tool_call_id` | Execution and corresponding OpenClaw tool call identity. |
-| `artifact_path` | Path of the original eBPF artifact; the path may be inaccessible after the trace is copied. For inlined content, see the outer `artifact`. |
-| `started` | Whether execution telemetry collection started successfully. |
-| `status` | Aggregate status of execution telemetry. |
-| `unavailable_reason` | Reason it did not start or is unavailable. |
-| `kb_observations_added` | Number of clause observations written to the KB this time; not equal to the number of qualifying samples for all metrics. |
-| `kb_update_error` | Reason the KB update failed; empty does not mean every metric is trainable. |
-| `call_telemetry` | Compact call telemetry; see below for the fields. |
-| `artifact_summary` | Compact summary of the artifact; see below for the fields. |
-
-`call_telemetry` contains `tool_call_id`, `command`, `telemetry_quality`, `formal_completeness`, `eligible_for_kb`, `clause_count`, `call_resource`, and `clauses[]`. `call_resource` holds the call-level aligned `peak_cpu_cores` and `sampled_peak_rss_mb` plus per-target availability; it sums simultaneous owned exec-image contributions before taking each peak. `artifact_summary` contains `schema`, `schema_version`, `mode`, `replay_execution`, `collector`, `container_id`, `telemetry_quality`, `formal_completeness`, `telemetry_loss_total`, `call_count`. These summaries and the outer inlined `artifact` are views of the same source and must not be counted twice.
-
-`event_type=incomplete_span` means there is only a started event and no normal completion. Its `payload` is the raw sidecar API event; the common fields are as follows:
-
-| Field | Meaning |
-| --- | --- |
-| `schema_version` | Nested API protocol identifier `clawtune.v1`. |
-| `event_id`, `occurred_at`, `plugin_version` | Event identity, time-zone-aware ISO 8601 time, and plugin version. |
-| `gateway_id`, `runtime_id`, `repo` | Owner and project identity. |
-| `run_id`, `session_id`, `session_key`, `agent_id` | OpenClaw run, session, raw session key, and agent identity. |
-
-When `kind=tool`, the payload additionally contains:
-
-| Field | Meaning |
-| --- | --- |
-| `tool_call_id`, `tool_name`, `tool_kind`, `tool_input_kind` | Tool call identity, name, and the tool / input category provided by OpenClaw. |
-| `operation_hint` | Optional operation hint extracted from the request. |
-| `derived_paths` | List of paths extracted from the arguments; used for features and diagnostics and does not mean all were accessed. |
-| `params_digest` | A stable digest of the arguments, not reversible argument content. |
-| `param_features.serialized_size_bytes` | Serialized size of the arguments in bytes. |
-| `param_features.string_length` | Aggregate length feature of string content in the arguments. |
-| `param_features.list_item_count` | Feature for the number of list items in the arguments. |
-| `param_features.path_count` | Feature for the number of detected paths. |
-| `param_features.has_command_like_field` | Whether it contains a command-like field. |
-| `raw_params`, `raw_event` | Optional raw arguments and hook event; inner keys are defined by the tool / OpenClaw and may be redacted. |
-| `resource_scope` | The PID / cgroup scope known at request time; see the table below for the fields. |
-
-When `kind=llm`, the payload additionally contains `event_type`, `call_id`, `provider`, `model`, `duration_ms`, `outcome`, `context_token_budget`, `raw_input`, `raw_output`, `raw_event`, which respectively represent the started / ended type, call identity, provider, model, known duration, outcome, context token budget, and the open raw input, output, and hook event.
-
-Stable fields of `resource_scope`:
-
-| Field | Meaning |
-| --- | --- |
-| `kind` | `pid` or `cgroup-v2`. |
-| `execution_id` | The execution corresponding to the scope. |
-| `pid`, `root_pid` | Discovered PID and trusted execution root PID. |
-| `process_start_time`, `root_starttime_ticks` | Process start identity; the latter is the Linux starttime tick. |
-| `cgroup_path`, `pid_namespace_inode`, `container_id` | Cgroup path, PID namespace inode, and container identity. |
-| `include_children` | Whether collection should include descendant processes. |
-| `source`, `attribution_source` | How the scope was discovered and the basis for exclusive / shared attribution. |
-
-`event_type=llm_proxy_unmatched` means a proxy request was not matched to an OpenClaw model completion. The payload fields are as follows:
-
-| Field | Meaning |
-| --- | --- |
-| `type`, `action_type` | Fixed to `action`, `llm_call`. |
-| `action_id`, `run_id`, `session_id`, `session_key`, `agent_id`, `runtime_id` | Proxy action and available owner identity; missing values are `null`. |
-| `ts_start`, `ts_end` | Unix-second start and end of the proxy request. |
-| `data.provider`, `data.model` | Model provider and model name. |
-| `data.messages_in`, `data.content` | Input messages and output content; if `raw_request.messages` or `raw_response.choices` is saved, the corresponding duplicate fields are omitted. |
-| `data.duration_ms`, `data.llm_latency_ms` | Integer-ms summary and floating-point ms value of the same proxy wall-clock duration. |
-| `data.outcome`, `data.context_token_budget` | `completed` / `error` outcome and optional context budget. |
-| `data.proxy.status_code`, `.stream`, `.error` | HTTP status, whether streaming, and error text. |
-| `data.openclaw_started_event`, `data.openclaw_ended_event` | Corresponding OpenClaw hook event; usually `null` for unmatched records. |
-| `data.raw_request`, `data.raw_response` | Open raw objects of the provider protocol. |
-
-`event_type=runtime_finalization` means the runtime has completed unified termination and cleanup:
-
-| payload field | Meaning |
-| --- | --- |
-| `finalized` | Whether finalization completed; currently `true` for successful records. |
-| `gateway_id`, `runtime_id`, `reason` | The terminated owner and the reason: task timeout (historical traces may still carry `agent_timeout`), cancellation, or runtime stop. |
-| `aborted_execution_ids` | List of executions aborted according to the termination reason without complete exit evidence. |
-| `pmu_profiles` | PMU profiles at termination, indexed by execution ID; see the PMU section for the fields. |
-| `observation_errors` | List of errors during finalization; each item contains `execution_id` and `error`. |
-
-The `trace_flushed` in the HTTP abort response is a persistence confirmation returned to the caller; it is not written into `runtime_finalization.payload`, because that trace line cannot confirm the flush that happens to it afterward.
+Telemetry summaries and full artifacts represent the same execution. `call_resource` contains aligned call peaks; `clauses[]` contains stage observations. `kb_observations_added` counts written observations, not qualifying samples for every target. See [Subcommand Profile and Collection Quality](#subcommand-profile-and-collection-quality).
 
 ## Authoritative Call-Level Measurements: `resources.resource_observation`
 
@@ -345,20 +261,7 @@ Memory unavailability reasons: `unverified_task_environment` (unverified environ
 
 Each point in `resource_timeline[]` contains `ts` (Unix seconds), `elapsed_ms` (milliseconds since the first point of that segment), `available`, `source`, `rss_bytes`, `process_count`. The cumulative difference fields are `cpu_time_delta_s`, `read_bytes_delta`, `write_bytes_delta`, `net_rx_bytes_delta`, `net_tx_bytes_delta`, `ctx_switches_delta`, relative to the first point of the same-source segment. `read_bytes_per_s`, `write_bytes_per_s`, `net_rx_bytes_per_s`, `net_tx_bytes_per_s` use the adjacent-sample interval as the denominator, unlike the call-level rate denominator. The rate for the first point of a segment is undefined.
 
-`cgroup_resource` is another compatibility representation of legacy cgroup / process-tree runtime sampling results, not an additive measurement; the new eBPF / dedicated fallback path uses `resource_observation` as authoritative and usually does not produce this object:
-
-| Field | Meaning |
-| --- | --- |
-| `schema`, `execution_id`, `tool_call_id`, `tool_name` | `cgroup_resource_v1` and the associated identities. |
-| `source`, `monitor_source`, `attribution_source` | Whether it is actually a cgroup or a process tree, and the source. The object name does not guarantee that a cgroup is used. |
-| `ts_start`, `ts_end`, `duration_ms` | Unix-second start and end and millisecond duration of the action. |
-| `cpu_time_s`, `cpu_utilization_avg_cores` | Same as the identically named fields in the previous table. |
-| `memory_rss_before_bytes`, `memory_rss_after_bytes`, `memory_rss_peak_bytes` | Correspond to the RSS diagnostic fields in the previous table and likewise must be interpreted according to source. |
-| `disk_read_bytes_delta`, `disk_write_bytes_delta` | Storage read/write byte differences. |
-| `network_rx_bytes_delta`, `network_tx_bytes_delta` | Correspond to the top-level `net_rx_bytes_delta`, `net_tx_bytes_delta`. |
-| `sampling_interval_ms`, `sampling_point_count`, `sampling_quality`, `sampling_coverage_ms` | Target interval, point count, quality, and monitoring duration; the last is not the action intersection duration. |
-| `cpu_source`, `memory_source`, `disk_source`, `network_source` | Source descriptions for each target; the network source label currently cannot distinguish BCC from namespace fallback. |
-| `fallback_used`, `cgroup_setup_error`, `cgroup_read_error`, `collector_errors`, `independence` | Fallback flag, errors, and collection-relationship description. An empty error list does not prove that nothing was missed during collection; `independence` means independent of subcommand collection. |
+`cgroup_resource` is a legacy view of cgroup/process-tree sampling. It is not an additional measurement; use `resource_observation` as authoritative. Interpret its RSS, CPU, I/O, and coverage values using the same source and unit rules above.
 
 ## Subcommand Profile and Collection Quality
 
@@ -414,82 +317,36 @@ The remaining PMU fields are `schema`, `execution_id`, `source`, `mode`, `scope`
 
 ## Prediction: `span_start.prediction`
 
-The independent tool-level load predictions are `prediction.tool` (ToolKB), `prediction.trie` (TrieKB), and `prediction.lattice` (LatticeKB), each using the [call-load contract](../contracts/call-load.schema.json). They never fill missing targets or clauses from another model. `call_prediction` is a compatibility alias of `tool`; backend metadata retains the historical name `runtime` for ToolKB. The hardware prediction is [pmu_prediction](../contracts/pmu-prediction.schema.json). `duration_p50_ms`, `duration_p90_ms`, `resource_class`, `confidence` are top-level compatibility summaries; `confidence` is not a calibrated probability of success.
+Four independent outputs use the [call-load contract](../contracts/call-load.schema.json):
 
-Each of `tool.targets`, `trie.targets`, and `lattice.targets` contains all seven targets:
-
-| Target | Unit | Meaning |
+| Field | Model | Supported targets |
 | --- | --- | --- |
-| `duration_ms` | ms | Retained-workload elapsed time. ToolKB uses the direct call-level retained-workload label; TrieKB and LatticeKB reconstruct it from clause evidence. It may differ from raw span duration. |
-| `cpu_time_seconds` | core_seconds | Cumulative CPU of the attributed workload. |
-| `cpu_avg_cores` | cores | Cumulative CPU / duration of the same observation. |
-| `cpu_peak_cores` | cores | Fixed 500 ms window peak. |
-| `sampled_peak_rss_bytes` | bytes | eBPF sampled distinct-mm RSS peak; separate from environment memory charge. |
-| `memory_total_peak_bytes` | bytes | Environment memory sampling peak, including background. |
-| `memory_extra_peak_bytes` | bytes | Non-negative delta of the environment peak relative to the baseline. |
+| `prediction.tool` | ToolKB | All seven load targets; separate `pmu_prediction` for hardware metrics |
+| `prediction.trie` | TrieKB | All seven load targets from clause evidence |
+| `prediction.lattice` | LatticeKB | All seven load targets from clause evidence |
+| `prediction.edge_kappa` | EdgeKappaKB | Duration only; CPU/memory return `unavailable` with `edge_kappa_time_only` |
 
-Each target has `status`, `unit`, `metric_definition`, `avg`, `p50`, `p90`, `buckets`, `backend`, `method`, `evidence_counts`, `sample_count`, `context`, `assumptions`, `calibration`, `unavailable_reason`: availability, unit, measurement definition, mean, median, empirical p90, histogram, backend, direct / synthetic method, historical evidence count, statistical sample count, matching context, assumptions, calibration status, and unavailability reason. Statistical values of an unavailable target must be empty. p50 is the median, and p90 is the `ceil(0.9n)`-th value after sorting; it is not a guarantee that 90% of future values will fall below it. For synthetic predictions, `sample_count` can be 2048 simulation runs, while the historical sample count is in `evidence_counts`.
+Every `targets` object contains the seven entries defined in the [quick guide](#quick-guide-measurements-and-predictions), including unavailable entries. Models never fill missing targets or clauses from one another.
+
+Each target has `status`, `unit`, `metric_definition`, `avg`, `p50`, `p90`, `buckets`, `backend`, `method`, `evidence_counts`, `sample_count`, `context`, `assumptions`, `calibration`, `unavailable_reason`: availability, unit, measurement definition, mean, median, empirical p90, histogram, backend, direct / synthetic method, historical evidence count, statistical sample count, matching context, assumptions, calibration status, and unavailability reason. Statistical values of an unavailable target must be empty. For unweighted samples, p50 is the median and p90 is the `ceil(0.9n)`-th value after sorting; it is not a guarantee that 90% of future values will fall below it. For synthetic predictions, `sample_count` can be 2048 simulation runs, while the historical sample count is in `evidence_counts`.
 
 `buckets.edges`, `interval`, `probabilities` are the boundaries, the left-closed right-open rule, and the probability of each bucket; there is one bucket from 0 to the first boundary, one between adjacent boundaries, and one from the last boundary to positive infinity. The probabilities sum to 1.
 
-`tool.schema_version` (likewise `trie` and `lattice`), `scope`, `lifecycle`, `cpu_peak_window_ms`, `quantile_method`, `memory_measurement` declare the protocol, call scope, lifecycle, peak window, quantile method, and memory source. Each item in `clause_predictions[]` has `clause_index`, `argv`, `cwd`, `env_names`, `scope`, `targets`, `memory_measurement`, representing the subcommand index, arguments, working directory, environment variable names, and the same seven-target prediction; subcommand duration and call duration are not interchangeable.
+`schema_version` in each model output, `scope`, `lifecycle`, `cpu_peak_window_ms`, `quantile_method`, `memory_measurement` declare the protocol, call scope, lifecycle, peak window, quantile method, and memory source. Each item in `clause_predictions[]` has `clause_index`, `argv`, `cwd`, `env_names`, `scope`, `targets`, `memory_measurement`, representing the subcommand index, arguments, working directory, environment variable names, and the same seven-target prediction; subcommand duration and call duration are not interchangeable.
 
 `pmu_prediction.targets` contains the nine PMU targets above. Each item has `status`, `unit`, `metric_definition`, `avg`, `p50`, `p90`, `backend`, `method`, `evidence_count`, `context`, `calibration`, `unavailable_reason`. Note that this is the singular `evidence_count` and has no `sample_count` or `buckets` from the load prediction. Its `schema_version`, `scope`, `lifecycle`, `quantile_method` declare the protocol, scope, complete-execution-profile lifecycle, and quantile method.
 
-ToolKB learns eligible call-level observations directly; its retained-workload duration comes from the measured retained-clause interval when that execution evidence is required. TrieKB and LatticeKB independently select evidence for each retained clause and then use the same composer; none of the four KBs fills another model's missing evidence. For multiple clauses, duration sums serial-group maxima, cumulative CPU sums every retained stage, and CPU/RSS peaks take the maximum across serial groups after conservatively summing stages in each pipeline group. The composer draws 2048 synthetic combinations from independent clause marginals; these draws are not additional historical evidence and do not preserve cross-clause correlation.
+Clause-derived tool predictions cover only the retained workload. Their composition ignores hook overhead and cross-clause correlation; individual clause predictions can remain available when a complete composition is unavailable. See [composition rules and exclusions](technical-report.md#5-from-commands-to-tool-calls).
 
-`prediction.edge_kappa` uses the same `CallLoadPrediction` structure. It predicts duration from weighted historical time observations, with call-level and `clause_predictions[]` results containing `avg`, `p50`, `p90` and bucket probabilities. CPU and memory targets return `unavailable` with `edge_kappa_time_only`. A single clause uses an exact weighted mean, a midpoint median when cumulative weight equals 50%, and an inverse-CDF P90 (`weighted_midpoint_p50_inverse_cdf_p90`); multiple clauses use the shared 2048-draw composer. Its displayed histogram describes this empirical duration distribution. The small uniform bucket smoothing used to train edge weights is excluded because it has no observed duration. Evidence containing a censored or missing exact duration returns `non_exact_duration_evidence`; bucket midpoints are never substituted.
+EdgeKappa's single-clause result uses a weighted mean, a midpoint median at exactly 50% cumulative weight, and inverse-CDF p90 (`weighted_midpoint_p50_inverse_cdf_p90`). Multiple clauses use the shared 2048-draw composer. Its histogram describes weighted observed durations, excluding the bucket smoothing used during weight training. Censored or missing exact-duration evidence returns `non_exact_duration_evidence`; bucket midpoints are never substituted. See [EdgeKappa's algorithm](technical-report.md#45-edgekappakb) and [state compatibility](getting-started.md#3-output-and-persistent-state).
 
-EdgeKappaKB learns from admitted clause telemetry after tool completion and persists in `edge-kappa-kb.json`. Writable three-KB states initialize it from their committed raw clause history; newly generated seeds include it. Frozen legacy seeds without this snapshot leave the fourth result unavailable rather than training during evaluation.
-
-Parallel benchmark batches merge EdgeKappa feedback in task-ID order, then completion-time/event-ID order within each task. The saved execution-time predictions supply gradients applied to the current shared weights; duplicate feedback is ignored. Tasks may discover related commands in different orders: the merged KB retains their historical parent edges and applies each saved gradient to its original edges. Legacy task snapshots with learned weights but no replayable feedback must be rerun. A frozen seed that declares an EdgeKappa snapshot must supply that file and its matching hash.
-
-Memory evidence is also separated by `memory_measurement`. The current prediction request path uses the default `cgroup_v2_environment_union_v1` namespace. Native non-shell observations can instead be stored under `cgroup_v2_memory_current`; until request routing selects that namespace, ToolKB total/extra memory can be unavailable even though eligible observations exist under the other source. Interpret this as an incompatible-source query, not as zero memory use or proof that collection failed.
-
-TrieKB and LatticeKB tool predictions are estimates with narrower scope than a complete tool observation. Their duration and average CPU assume zero hook overhead. Multi-clause average CPU sums sampled clause CPU time and divides by the sampled composed duration; serial durations sum and pipeline durations take their maximum. Multi-clause environment total and extra memory take the maximum sampled clause prediction. The environment approximation does not reconstruct a shared baseline or joint timeline. Listed downstream pipeline consumers are excluded from both KBs for every clause target and omitted from composition; the same executable remains eligible when it runs alone or in the first pipeline position. An available result therefore describes only the retained workload. Individual retained-clause predictions remain available when the full composition cannot be formed. Short or partial observations do not automatically become eligible training labels.
-
-`diagnostics.backends.runtime`, `.trie`, `.lattice`, `.edge_kappa` are compatibility copies of the four independent results. The legacy `call_prediction` field aliases `prediction.tool`; top-level `duration_p50_ms` and `duration_p90_ms` are rounded from ToolKB statistics. These compatibility fields do not select a winner among the four independent predictions. PMU remains a separate ToolKB prediction.
+Memory evidence is separated by `memory_measurement`. Select the query source with `CLAWTUNE_TOOL_RESOURCE_MEMORY_MEASUREMENT`; the default is `cgroup_v2_environment_union_v1`. History stored under another source can leave total/extra memory unavailable. Selection does not convert measurements between sources.
 
 ## Compatibility Prediction and Other Diagnostics
 
-`prediction.tool_resource` is a compatibility diagnostic of the [tool decision schema](../contracts/tool-decision.schema.json); consumers should use `tool`, `trie`, or `lattice`:
+Use the four model outputs above for load estimates. `call_prediction` aliases `tool`; `diagnostics.backends.runtime`, `.trie`, `.lattice`, and `.edge_kappa` copy the corresponding outputs. Top-level `duration_p50_ms` and `duration_p90_ms` are rounded ToolKB summaries, not a choice among models. `confidence` is not a calibrated probability.
 
-| Field | Meaning |
-| --- | --- |
-| `repo`, `command`, `parse_failed`, `clause_bins` | Project, command, parse failure flag, and subcommand list. |
-| `prediction`, `clause_predictions[]` | Overall / per-subcommand latency bucket predictions; sub-items are correlated using `clause_index`, `bin`, `argv`, `prediction`, `unavailable_reason`. |
-| `bucket_id`, `probability_by_bucket`, `scope`, `key_kind`, `evidence_count`, `fallback_path` | Bucket index, bucket probabilities, evidence scope, match type, historical evidence count, and fallback path. |
-| `unavailable_reason` | Reason the prediction is unavailable. |
-| `continuous_predictions` | Historical conditional p90 for the five compatibility targets `latency_ms`, `cpu_peak_cores`, `sampled_peak_rss_bytes`, `memory_total_peak_bytes`, `memory_extra_peak_bytes`. Each target contains `target`, `conditional_p90`, `scope`, `key_kind`, `evidence_count`, `fallback_path`, `note`; it still does not include the cumulative CPU and average cores from the authoritative load protocol. |
-| `lattice_time_predictions`, `lattice_resource_predictions` | Shrinkage, LOSO, and max-cardinality method results and resource distributions for subcommands; see the tables below for the fields. |
-| `composed`, `composed_total_ms`, `composition` | Whether composed, the composed total time, and the `kind`, `bins`, `time_ms`, `dropped_viewer_bins` of each serial / pipeline group. |
-| `prediction_algorithms` | List of algorithms and their input targets, outputs, and source descriptions. |
-| `kv_ttl_cost` | KV cache retention policy simulation, not a measured cache metric of the model service. |
-| `numa_usage` | Optional snapshot of host NUMA CPU usage at prediction time; it appears only when a sampler is configured and is not the resource attribution or placement execution result of the current tool. |
-
-Sub-items of both lattice lists identify subcommands with `clause_index`, `bin`, `argv`, and `predictions[]` holds the results of each algorithm. The resource list additionally declares `scope`, `memory_metric`, `cpu_peak_window_ms`, `quantile_method`: attribution scope, environment memory definition, CPU peak window, and quantile method.
-
-| `predictions[]` field | Meaning |
-| --- | --- |
-| `algorithm` | `shrinkage`, `loso`, or `max_cardinality`. |
-| `prediction_ms` | Point prediction for the latency list, in ms; empty when unavailable. |
-| `target`, `unit` | Target and unit for the resource list: cumulative CPU, average cores, peak cores, sampled RSS, environment memory total peak, or extra peak. |
-| `p50`, `p90` | Empirical quantiles for the resource list, not confidence intervals. |
-| `selected_features` | The final set of features used for matching. |
-| `evidence_count` | Number of historical observations matched. |
-| `selected_risk` | Risk score the algorithm uses to select candidates; it is not a failure probability and cannot be compared directly across algorithms. |
-| `exact_match` | Whether it is an exact match; empty when not applicable. |
-| `fallback` | Fallback description for the latency list. |
-| `unavailable_reason` | Reason a valid prediction is missing. |
-| `threshold`, `probability_ge` | Threshold for the resource list and the fraction of historical values greater than or equal to the threshold; the threshold has the same unit as the target, and it is not a calibrated probability of a future exceedance. |
-
-`prediction_algorithms.enabled[]` contains `name`, `family`, `source`, `targets`, `outputs`, which are the algorithm name, family, source, targets, and outputs; `excluded[]` contains `name`, `source`, `reason`, describing algorithms that are not enabled and why.
-
-`numa_usage.available` indicates whether the host provides `/proc/stat` and NUMA sysfs, and `sampled` indicates whether two samples are already available to compute a window difference; on the first read it can be available but not sampled. `node_count`, `window_s`, `user_hz`, `nodes[]` are the NUMA node count, sampling window in seconds, kernel tick frequency, and per-node data. Each node's `node`, `cpulist`, `online_cpus`, `cpu_utilization_pct`, `busy_cores` represent the node number, CPU list, online CPU count, busy percentage of the entire NUMA domain, and average busy cores within the window; 100% means all online CPUs of that node are fully loaded.
-
-`kv_ttl_cost` contains `buckets_s`, `ttl_by_bucket_s`, `initial_bucket_index`, `final_bucket_index`, `num_bucket_jumps`, `bucket_exhausted`, `ttl_s`, `kv_eviction_time_s`, `kv_retention_time_s`, `reference_runtime_s`, `kv_cache_miss`, `miss_penalty_s`, `proxy_cost_s`: bucket boundaries / TTL (seconds), initial and final buckets, number of bucket jumps, bucket exhaustion flag, TTL, eviction time, retention time, reference duration, simulated misses, penalty, and proxy cost. It cannot prove the real cache hit rate.
-
-`placement_advice.cpu_set`, `numa_node`, `llc_cluster`, `advisory` are the suggested CPU / NUMA / LLC placement and the advisory flag; the MVP does not promise actual CPU pinning. `decision_id`, `action`, `reason_code`, `reason`, `policy_name`, `policy_version`, `lease_id` are decision and lease fields, not resource measurements. `placement`, `profiling` are optional extensions.
+`prediction.tool_resource` retains legacy clause, Lattice method, and TTL diagnostics defined by the [tool decision schema](../contracts/tool-decision.schema.json). `kv_ttl_cost` is a cache-policy simulation, not measured cache performance. Decision, lease, and placement fields are scheduler metadata; `placement_advisory` does not promise actual CPU pinning.
 
 ## Service Aggregate Metrics
 

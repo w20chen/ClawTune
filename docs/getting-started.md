@@ -147,9 +147,9 @@ python3 scripts/build_bootstrap_seed.py --dataset /path/to/traces \
 
 Set `--rss-unit` to the source measurements' unit. The manifest records selected files, hashes, and available targets. Point `CLAWTUNE_KB_SEED` or benchmark `--seed` at this directory to use it for new state.
 
-Resource KB snapshots use Runtime v4, Trie v7, and Lattice v4. Start a new benchmark run or set `CLAWTUNE_STATE_DIR` to a new directory after upgrading an older state; older snapshots are rejected. Memory predictions expose total environment peak and extra peak above its pre-execution baseline. A short or failed measurement leaves that target unavailable and does not fail the tool.
+Resource KB snapshots use Runtime v4, Trie v7, and Lattice v4; Edge uses `edge-kappa-kb.v1` with `shell-normalize-v4`. Older incompatible snapshots are rejected. Rebuild from raw observations into a new seed, then start a new benchmark run or use a new `CLAWTUNE_STATE_DIR`; changing a seed does not migrate existing state.
 
-Edge snapshots use `shell-normalize-v4`: Python executable paths share the same command features; known boolean flags remain separate from following arguments. Older Edge snapshots, including v3 path-context snapshots, require rebuilding from raw observations or a fresh state directory. `sed` follows the same consumer policy as `head`, `cat`, and the other listed commands: downstream pipeline stages are excluded from clause training, clause prediction, and ToolKB workload-duration labels regardless of arguments or input redirection. Standalone commands and the first pipeline stage remain eligible. ToolKB still accepts the whole call and independently eligible call-level metrics.
+Edge persists in `edge-kappa-kb.json`. A writable compatible three-KB state initializes it from committed clause history. A frozen legacy seed without Edge leaves that prediction unavailable; a seed declaring Edge must supply the file and matching hash.
 
 Common settings belong in root `.env`; restart the service after changes:
 
@@ -160,6 +160,7 @@ Common settings belong in root `.env`; restart the service after changes:
 | `CLAWTUNE_TOKEN` | Optional local API token; export the same value to OpenClaw and the service, separately from the provider key |
 | `CLAWTUNE_PMU_ENABLED` | Enable best-effort hardware counting |
 | `CLAWTUNE_TOOL_RESOURCE_FROZEN` | Freeze daily learning |
+| `CLAWTUNE_TOOL_RESOURCE_MEMORY_MEASUREMENT` | Query memory evidence from `cgroup_v2_environment_union_v1` (default), `cgroup_v2_memory_current`, or `guest_memtotal_minus_memavailable`; selects a source without converting labels |
 
 The complete settings are maintained in [.env.example](../.env.example) and the [plugin configuration schema](../packages/clawtune-plugin/openclaw.plugin.json). Existing environment variables take precedence over `.env`. The service binds to loopback and is not configured for public exposure.
 
