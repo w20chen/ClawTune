@@ -7,6 +7,12 @@ const manifest = JSON.parse(
   readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8")
 );
 
+test("ClawBox prediction model is explicit and schema validated", () => {
+  assert.equal(loadConfig({sandboxExecPredictionModel: "lattice"}).sandboxExecPredictionModel, "lattice");
+  assert.deepEqual(manifest.configSchema.properties.sandboxExecPredictionModel.enum, ["tool", "lattice"]);
+  assert.throws(() => loadConfig({sandboxExecPredictionModel: "unknown"}), /sandboxExecPredictionModel/);
+});
+
 test("loadConfig uses managed-wrapper as the default exec path", () => {
   const config = loadConfig({});
 

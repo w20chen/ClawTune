@@ -622,7 +622,8 @@ test("buildSandboxExecEnvelope emits the bridge parseable format", () => {
 });
 
 test("buildSandboxExecEnvelope carries the selected call memory prediction", () => {
-  const callPrediction = {schema_version: "call_load.v2", scope: "tool_call", targets: {
+  const callPrediction = {schema_version: "call_load.v2", scope: "tool_call",
+    memory_measurement: "guest_memtotal_minus_memavailable", targets: {
     memory_extra_peak_bytes: {status: "available", unit: "bytes", p90: 1048576},
   }};
   const envelope = buildSandboxExecEnvelope("true", "exec-memory", {
@@ -632,4 +633,20 @@ test("buildSandboxExecEnvelope carries the selected call memory prediction", () 
   const encoded = firstLine.slice(`${CLAWBOX_EXEC_ENVELOPE_PREFIX}b64:`.length);
   const header = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
   assert.deepEqual(header.call_prediction, callPrediction);
+});
+
+test("ClawBox lattice selection never substitutes ToolKB", () => {
+  const tool = {schema_version: "call_load.v2", scope: "tool_call", targets: {
+    memory_extra_peak_bytes: {backend: "runtime", status: "available", p90: 999},
+  }};
+  const lattice = {...tool, memory_measurement: "guest_memtotal_minus_memavailable", targets: {
+    duration_ms: {backend: "lattice", status: "available", p90: 10},
+    memory_extra_peak_bytes: {backend: "lattice", status: "unavailable", p90: null},
+  }};
+  const decode = (decision) => {
+    const line = buildSandboxExecEnvelope("python -m pytest", "exec-lattice", decision, "lattice").split("\n", 1)[0];
+    return JSON.parse(Buffer.from(line.slice(`${CLAWBOX_EXEC_ENVELOPE_PREFIX}b64:`.length), "base64url"));
+  };
+  assert.deepEqual(decode({prediction: {tool, lattice}}).call_prediction, lattice);
+  assert.equal(decode({prediction: {tool, call_prediction: tool}}).call_prediction, undefined);
 });

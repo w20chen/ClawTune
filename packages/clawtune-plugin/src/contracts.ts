@@ -39,6 +39,7 @@ export type PluginConfig = {
    * exact join key (no time-window heuristic).  Default: false.
    */
   sandboxExecEnvelope: boolean;
+  sandboxExecPredictionModel: "tool" | "lattice";
   launcherPath: string;
   launcherInterpreter: string | null;
   collectorSocket: string;

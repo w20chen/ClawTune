@@ -42,6 +42,29 @@ from tool_resource.runtime_kb import (
 import tool_resource.runtime_kb as tool_resource_runtime_kb
 
 
+def test_lattice_prediction_uses_configured_guest_memory_measurement(monkeypatch) -> None:
+    from tool_time.lattice_kb import LatticeTimeKB
+    monkeypatch.setenv("CLAWTUNE_TOOL_RESOURCE_MEMORY_MEASUREMENT", "guest_memtotal_minus_memavailable")
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(), ebpf_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0)), repo="repo-1",
+    )
+    predictor.lattice_kb = LatticeTimeKB.fit([ClauseObservation(
+        repo="repo-1", bin="python", argv=("python", "job.py"),
+        ts_start=0, ts_end=1, latency_ms=1000,
+        memory_baseline_bytes=100, memory_total_peak_bytes=150,
+        memory_extra_peak_bytes=50, memory_eligible=True,
+        memory_environment_id="cube:boot-1", memory_measurement="guest_memtotal_minus_memavailable",
+    )])
+    try:
+        result = predictor.predict(_tool_request("evt-memory", "call-memory", "python job.py"))
+    finally:
+        predictor.close()
+    assert result.lattice.memory_measurement == "guest_memtotal_minus_memavailable"
+    assert result.lattice.targets["memory_extra_peak_bytes"].p90 == 50
+    assert result.lattice.targets["memory_extra_peak_bytes"].backend == "lattice"
+
+
 def test_normalize_clause_preserves_pipeline_structure() -> None:
     clause = tool_resource_predictor._normalize_clause(
         {

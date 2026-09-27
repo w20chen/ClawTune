@@ -59,8 +59,10 @@ export const CLAWBOX_EXEC_ENVELOPE_PREFIX = "__CBX_EXEC_1__";
  * header shell-safe while allowing the Tool collector to profile the logical
  * command and execute the wrapper unchanged.
  */
-export function buildSandboxExecEnvelope(command: string, executionId: string, decision?: ToolDecision | null): string {
-  const tool = decision?.prediction.tool ?? decision?.prediction.call_prediction;
+export function buildSandboxExecEnvelope(command: string, executionId: string, decision?: ToolDecision | null,
+  model: PluginConfig["sandboxExecPredictionModel"] = "tool"): string {
+  const tool = model === "lattice" ? decision?.prediction.lattice
+    : decision?.prediction.tool ?? decision?.prediction.call_prediction;
   const header = Buffer.from(JSON.stringify({
     v: 1,
     execution_id: executionId,
@@ -69,9 +71,8 @@ export function buildSandboxExecEnvelope(command: string, executionId: string, d
       ? {call_prediction: {
           schema_version: tool.schema_version,
           scope: tool.scope,
-          targets: {
-            memory_extra_peak_bytes: tool.targets.memory_extra_peak_bytes,
-          },
+          memory_measurement: tool.memory_measurement,
+          targets: tool.targets,
         }}
       : {}),
   }), "utf8").toString("base64url");
@@ -105,7 +106,8 @@ function instrumentHookOnlyExec(event: unknown, config: PluginConfig, decision: 
     ...safeExecEnv(params.env),
     CLAWTUNE_EXECUTION_ID: executionId,
   };
-  const effectiveCommand = buildSandboxExecEnvelope(requestedCommand, executionId, decision);
+  const effectiveCommand = buildSandboxExecEnvelope(requestedCommand, executionId, decision,
+    config.sandboxExecPredictionModel);
   params.command = effectiveCommand;
   return {
     params,

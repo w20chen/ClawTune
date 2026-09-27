@@ -300,6 +300,14 @@ class ToolResourcePredictor:
         self.load_buckets = load_bucket_edges(buckets.edges_ms, load_buckets)
         self.report = report
         self.repo = repo
+        self.memory_measurement = os.getenv(
+            "CLAWTUNE_TOOL_RESOURCE_MEMORY_MEASUREMENT", "cgroup_v2_environment_union_v1",
+        )
+        if self.memory_measurement not in {
+            "cgroup_v2_memory_current", "cgroup_v2_environment_union_v1",
+            "guest_memtotal_minus_memavailable",
+        }:
+            raise ValueError("unsupported CLAWTUNE_TOOL_RESOURCE_MEMORY_MEASUREMENT")
         self.artifact_dir = artifact_dir
         self.container_executable = container_executable
         self.clause_kb_snapshot_path = clause_kb_snapshot_path
@@ -618,6 +626,7 @@ class ToolResourcePredictor:
             legacy = self._predict_legacy(request, )
             query = ToolCallQuery(repo=request.repo or self.repo, tool_name=request.tool_name,
                                   command=_command_for_request(request), ts_start=time.time(),
+                                  memory_measurement=self.memory_measurement,
                                   )
             call, diagnostics = predict_call_load(runtime=self.continuous_kb, trie=self.kb,
                                                   lattice=self.lattice_kb, query=query, edges=self.load_buckets,
@@ -1533,7 +1542,8 @@ class ToolResourcePredictor:
             tool_name=request.tool_name,
             command=command,
             ts_start=ts_start,
-            )
+            memory_measurement=self.memory_measurement,
+        )
         with self._kb_lock:
             return self._continuous_predictions_for_query(query)
 

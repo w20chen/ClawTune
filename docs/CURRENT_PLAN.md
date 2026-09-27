@@ -15,6 +15,13 @@ This file contains unresolved checks and their prerequisites. Usage and configur
 
 ## Target Linux runtime and collectors
 
+- ClawBox's LatticeKB integration still needs a rebuilt Runtime/Tool image pair
+  and a real CubeSandbox run using the same ClawTune source export. Run the image
+  build commands in ClawBox's installation guide, then exercise predicted
+  admission with a seed containing eligible guest clause-memory measurements.
+  Run `CGO_ENABLED=1 go test -race ./...` from ClawBox's `toolbridge` directory
+  on Linux with a C compiler; the available WSL environment lacks GCC.
+
 Deployment and live acceptance require Linux, Docker, OpenClaw, a funded provider, BCC/kernel headers, BPF/perf privileges, and appropriate cgroup v2 delegation. The last `ssh -o BatchMode=yes -o ConnectTimeout=10 kunpeng "pwd"` attempt timed out; previous live runs also encountered provider HTTP 402. These prerequisites must be restored before live acceptance.
 
 On the target host, run:
