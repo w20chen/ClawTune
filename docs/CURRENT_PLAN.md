@@ -2,6 +2,8 @@
 
 This file contains unresolved checks and their prerequisites. Usage and configuration belong in [getting-started.md](getting-started.md) and [benchmarks.md](benchmarks.md).
 
+The active implementation specification is [COMMAND_PARSER_PLAN.md](COMMAND_PARSER_PLAN.md).
+
 ## Local validation prerequisites
 
 - Run parser/POSIX tests in Linux or WSL with the sidecar on `PYTHONPATH`, an activated Python environment, pytest, setuptools, and a working mvdan parser. Native Windows parser tests fail with `WinError 10038`; Windows-mounted temporary directories do not preserve POSIX permission bits. Use:
