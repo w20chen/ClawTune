@@ -41,6 +41,8 @@ CLAWTUNE_TEST_NATIVE_CGROUP=1 PYTHONPATH=services/sidecar/src:. python3 -m pytes
 
 ## Live benchmark acceptance
 
+- Cold-start transfer study: fresh measurements could not run locally because neither Windows nor WSL exposes Docker (`command -v docker` returned no path). On a prepared Linux collector host, run `python3 scripts/clawtune.py benchmark --benchmark swe-rebench --dataset <multi-repository-task-roster.json> --sample 30 --parallelism 1 --output <new-study-run>`; retain multiple independent tasks per repository, native/QEMU identity, quota, and eligible environment extra-memory labels. Do not substitute a dry-run for this validation. Existing-trace findings are in `research/cold_start_transfer`.
+
 Use plugin and sidecar from the same checkout and a fresh run-local KB. These commands remain unvalidated on the final target deployment:
 
 ```sh

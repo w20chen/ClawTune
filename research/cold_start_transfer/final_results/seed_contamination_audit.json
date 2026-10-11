@@ -1,0 +1,8 @@
+{
+  "action": "all snapshots excluded; every fold fit solely from declared source records",
+  "case_count": 10,
+  "repos": [
+    "tobymao/sqlglot"
+  ],
+  "seed_sha256": "6dfa19c302653778e23645429c5cdcaf8e5ef4fc4a719725c31b0d614fd3ab96"
+}

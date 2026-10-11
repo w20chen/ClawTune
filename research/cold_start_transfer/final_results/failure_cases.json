@@ -1,0 +1,623 @@
+[
+  {
+    "actual": 426.132853,
+    "calibration_family_count": 0,
+    "command": "python -",
+    "context": [
+      "shrinkage",
+      "flag:-",
+      "tool=python"
+    ],
+    "diagnostics": {},
+    "evidence": 6,
+    "family": "python:interpreter",
+    "history_examples": [
+      {
+        "command": "python -",
+        "id": "944718a0572fce96f0d891f629c36d6bb42f51d345b3fa748862b4c48ae0ad13:call_00_sSzYnW6sstgb5h0l8NFl5219:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 28362.281805
+      },
+      {
+        "command": "python -",
+        "id": "944718a0572fce96f0d891f629c36d6bb42f51d345b3fa748862b4c48ae0ad13:call_00_JM0pujkScZDYWSbOTP1b7105:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 28563.941259
+      },
+      {
+        "command": "python -",
+        "id": "944718a0572fce96f0d891f629c36d6bb42f51d345b3fa748862b4c48ae0ad13:call_00_t6UOZzfhqUZWrmB3y8ry0689:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 28542.11768
+      },
+      {
+        "command": "python -",
+        "id": "944718a0572fce96f0d891f629c36d6bb42f51d345b3fa748862b4c48ae0ad13:call_00_FUlS8mfYZNb3MXolhQHP0838:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 28466.212767
+      },
+      {
+        "command": "python -",
+        "id": "1345158e5a61e9e04e51218543735c91f616f4e5a34ebc1a6aa7d271c2d7d18d:call_00_s0mTq55khzmXdzXaG1Cr8257:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 546.037587
+      }
+    ],
+    "history_family_count": 6,
+    "id": "916a2455333a92f0c7c86d4112db2136e6679f054a46cb793cda65570ac31c8d:call_00_ATK35LvOKukXukd0ECeN8427:0",
+    "interpretation": "selected context is observed; missing input size/code state can confound causation",
+    "log_mae": 3.0265126760786765,
+    "mae": 27988.114433,
+    "method": "lattice",
+    "n": 0,
+    "p50": 28414.247285999998,
+    "p90": 28563.941259,
+    "p90_coverage": 1.0,
+    "p90_pinball": 2813.7808405999995,
+    "reason": null,
+    "repo": "20c/ctl",
+    "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\downloads\\batch-20260913-151054-9d96f2\\swe\\traces\\b9431b7f8a32e1b942cd\\trace.jsonl",
+    "source_line": 42,
+    "stratum": "v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None",
+    "target": "duration_ms",
+    "task": "20c__ctl-3"
+  },
+  {
+    "actual": 331.574976,
+    "calibration_family_count": 0,
+    "command": "python -c '\nfrom django_migration_linter.sql_analyser.base import has_not_null_column\nsql='\"'\"'CREATE INDEX CONCURRENTLY \"delete_data_after_idx\" ON \"models_prediction\" (\"delete_data_after\") WHERE (\"data_deleted_at\" IS NULL AND \"delete_data_after\" IS NOT NULL)'\"'\"'\nassert has_not_null_column([sql]) is False, '\"'\"'should not flag CREATE INDEX'\"'\"'\nassert has_not_null_column(['\"'\"'ALTER TABLE \"t\" ADD COLUMN \"c\" integer NOT NULL DEFAULT 1'\"'\"']) is True\nassert has_not_null_column(['\"'\"'CREATE TABLE \"t\" (\"c\" integer NOT NULL)'\"'\"']) is False\nassert has_not_null_column(['\"'\"'ALTER TABLE \"t\" ALTER COLUMN \"c\" DROP NOT NULL'\"'\"']) is False\nprint('\"'\"'all assertions passed'\"'\"')\n'",
+    "context": [
+      "shrinkage",
+      "tool=python"
+    ],
+    "diagnostics": {},
+    "evidence": 197,
+    "family": "python:inline",
+    "history_examples": [
+      {
+        "command": "python -c '\nfrom pydantic import BaseModel, Field\nfrom typing import List\nclass HelloListForm(BaseModel):\n    a: str = Field(description='\"'\"'a desc'\"'\"')\nclass HelloGetListForm(BaseModel):\n    b: str\nclass HelloForm(BaseModel):\n    user: str = Field(description='\"'\"'\u7528\u6237\u540d\u79f0'\"'\"')\n    msg: str = Field(description='\"'\"'msg test'\"'\"', example='\"'\"'aa'\"'\"')\n    index: int\n    data: HelloGetListForm\n    list: List[HelloListForm]\nimport json\nprint(json.dumps(HelloForm.schema(), ensure_ascii=False, indent=2))\n'",
+        "id": "98b9c4cd53f99d52830f474dc70232586ac479c2b2161ac725f181a1fef78efd:call_01_nkllChnPXgdQwu37LhXo8692:0",
+        "repo": "0b01001001/spectree",
+        "value": 2688.562799
+      },
+      {
+        "command": "python -c '\nfrom pydantic import BaseModel, Field\nfrom typing import List\nfrom spectree.spec import SpecTree\n\napi = SpecTree()\n\nclass HelloListForm(BaseModel):\n    a: str = Field(description='\"'\"'a desc'\"'\"')\nclass HelloForm(BaseModel):\n    user: str = Field(description='\"'\"'\u7528\u6237\u540d\u79f0'\"'\"')\n    msg: str = Field(description='\"'\"'msg test'\"'\"', example='\"'\"'aa'\"'\"')\n    index: int\n\n@api.validate(query=HelloForm)\ndef hello():\n    '\"'\"'hello'\"'\"'\n\nfrom spectree.utils import parse_params\nparams = parse_params(hello, [], api.models)\nfor p in params:\n    print(p['\"'\"'name'\"'\"'], '\"'\"'->'\"'\"', repr(p.get('\"'\"'description'\"'\"')))\n'",
+        "id": "98b9c4cd53f99d52830f474dc70232586ac479c2b2161ac725f181a1fef78efd:call_00_yoIFZOMlaigodmcv0dBw9218:0",
+        "repo": "0b01001001/spectree",
+        "value": 2793.207848
+      },
+      {
+        "command": "python -c '\nfrom sepal_ui import sepalwidgets as sw\n\nd = sw.DatePicker()\nprint('\"'\"'default disabled:'\"'\"', d.disabled)\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n\nd.disabled = True\nprint('\"'\"'after set disabled=True'\"'\"')\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n\nd.disabled = False\nprint('\"'\"'after set disabled=False'\"'\"')\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n'",
+        "id": "b8cd8e661915058de43e5973f25f40f88f376423b6d6e0049ec3d80fe90fc0f7:call_00_WxZeBusWdGEKBt2eQ96M0231:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 77428.87621
+      },
+      {
+        "command": "python -c 'import box; print(box.__version__)'",
+        "id": "de88980bafb7fde82273b74fa41dbf44be8fdf504bafccd18001d1a9ad5492a6:call_01_kIw2EG2SuCpyrKfIa1vh0896:4",
+        "repo": "12rambau/sepal_ui",
+        "value": 2892.553134
+      },
+      {
+        "command": "python -c '\nfrom sepal_ui.translator import Translator\nfrom sepal_ui.message import ms\nprint('\"'\"'ms ok'\"'\"', ms.locale.fallback if hasattr(ms,'\"'\"'locale'\"'\"') else '\"'\"'no locale'\"'\"')\nfrom box import Box\nprint(isinstance(ms, Box))\n'",
+        "id": "de88980bafb7fde82273b74fa41dbf44be8fdf504bafccd18001d1a9ad5492a6:call_00_wAw1dWPlzqLdHMH9OBjA4855:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 52892.474432
+      }
+    ],
+    "history_family_count": 91,
+    "id": "300a0e3745e38accddeebe5b3bb448e45c202e3bdfad5ba9d8ca83ea682348b8:call_00_DrFfKtUB7ne6vzTQQ9k29027:2",
+    "interpretation": "selected context is observed; missing input size/code state can confound causation",
+    "log_mae": 3.0093221167374153,
+    "mae": 25664.312828000002,
+    "method": "lattice",
+    "n": 0,
+    "p50": 25995.887804,
+    "p90": 92088.645076,
+    "p90_coverage": 1.0,
+    "p90_pinball": 9175.707009999998,
+    "reason": null,
+    "repo": "3yourmind/django-migration-linter",
+    "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\downloads\\batch-20260913-151054-9d96f2\\swe\\traces\\5c3824f0e9aaf5b54813\\trace.jsonl",
+    "source_line": 89,
+    "stratum": "v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None",
+    "target": "duration_ms",
+    "task": "3yourmind__django-migration-linter-258"
+  },
+  {
+    "actual": 343.197076,
+    "calibration_family_count": 0,
+    "command": "python -c '\nfrom scim2_filter_parser.lexer import SCIMLexer\nfrom scim2_filter_parser.parser import SCIMParser, SCIMParserError\nqs = [\n '\"'\"'displayName co \"username\" or nickName co \"username\" or userName co \"username\"'\"'\"',\n '\"'\"'displayName co \"username\" and nickName co \"username\" and userName co \"username\"'\"'\"',\n '\"'\"'displayName co \"username\" and nickName co \"username\" or userName co \"username\"'\"'\"',\n]\nfor q in qs:\n    try:\n        SCIMParser().parse(SCIMLexer().tokenize(q))\n        print('\"'\"'OK  '\"'\"', q)\n    except Exception as e:\n        print('\"'\"'FAIL'\"'\"', q, '\"'\"'->'\"'\"', e)\n'",
+    "context": [
+      "shrinkage",
+      "tool=python"
+    ],
+    "diagnostics": {},
+    "evidence": 201,
+    "family": "python:inline",
+    "history_examples": [
+      {
+        "command": "python -c '\nfrom pydantic import BaseModel, Field\nfrom typing import List\nclass HelloListForm(BaseModel):\n    a: str = Field(description='\"'\"'a desc'\"'\"')\nclass HelloGetListForm(BaseModel):\n    b: str\nclass HelloForm(BaseModel):\n    user: str = Field(description='\"'\"'\u7528\u6237\u540d\u79f0'\"'\"')\n    msg: str = Field(description='\"'\"'msg test'\"'\"', example='\"'\"'aa'\"'\"')\n    index: int\n    data: HelloGetListForm\n    list: List[HelloListForm]\nimport json\nprint(json.dumps(HelloForm.schema(), ensure_ascii=False, indent=2))\n'",
+        "id": "98b9c4cd53f99d52830f474dc70232586ac479c2b2161ac725f181a1fef78efd:call_01_nkllChnPXgdQwu37LhXo8692:0",
+        "repo": "0b01001001/spectree",
+        "value": 2688.562799
+      },
+      {
+        "command": "python -c '\nfrom pydantic import BaseModel, Field\nfrom typing import List\nfrom spectree.spec import SpecTree\n\napi = SpecTree()\n\nclass HelloListForm(BaseModel):\n    a: str = Field(description='\"'\"'a desc'\"'\"')\nclass HelloForm(BaseModel):\n    user: str = Field(description='\"'\"'\u7528\u6237\u540d\u79f0'\"'\"')\n    msg: str = Field(description='\"'\"'msg test'\"'\"', example='\"'\"'aa'\"'\"')\n    index: int\n\n@api.validate(query=HelloForm)\ndef hello():\n    '\"'\"'hello'\"'\"'\n\nfrom spectree.utils import parse_params\nparams = parse_params(hello, [], api.models)\nfor p in params:\n    print(p['\"'\"'name'\"'\"'], '\"'\"'->'\"'\"', repr(p.get('\"'\"'description'\"'\"')))\n'",
+        "id": "98b9c4cd53f99d52830f474dc70232586ac479c2b2161ac725f181a1fef78efd:call_00_yoIFZOMlaigodmcv0dBw9218:0",
+        "repo": "0b01001001/spectree",
+        "value": 2793.207848
+      },
+      {
+        "command": "python -c '\nfrom sepal_ui import sepalwidgets as sw\n\nd = sw.DatePicker()\nprint('\"'\"'default disabled:'\"'\"', d.disabled)\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n\nd.disabled = True\nprint('\"'\"'after set disabled=True'\"'\"')\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n\nd.disabled = False\nprint('\"'\"'after set disabled=False'\"'\"')\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n'",
+        "id": "b8cd8e661915058de43e5973f25f40f88f376423b6d6e0049ec3d80fe90fc0f7:call_00_WxZeBusWdGEKBt2eQ96M0231:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 77428.87621
+      },
+      {
+        "command": "python -c 'import box; print(box.__version__)'",
+        "id": "de88980bafb7fde82273b74fa41dbf44be8fdf504bafccd18001d1a9ad5492a6:call_01_kIw2EG2SuCpyrKfIa1vh0896:4",
+        "repo": "12rambau/sepal_ui",
+        "value": 2892.553134
+      },
+      {
+        "command": "python -c '\nfrom sepal_ui.translator import Translator\nfrom sepal_ui.message import ms\nprint('\"'\"'ms ok'\"'\"', ms.locale.fallback if hasattr(ms,'\"'\"'locale'\"'\"') else '\"'\"'no locale'\"'\"')\nfrom box import Box\nprint(isinstance(ms, Box))\n'",
+        "id": "de88980bafb7fde82273b74fa41dbf44be8fdf504bafccd18001d1a9ad5492a6:call_00_wAw1dWPlzqLdHMH9OBjA4855:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 52892.474432
+      }
+    ],
+    "history_family_count": 86,
+    "id": "cccdbacd797782a857427e5284e737ce1bb018dbd0cd2915f3296cd59f548722:call_00_IBxm507MfrVsk75j5iPT0345:0",
+    "interpretation": "selected context is observed; missing input size/code state can confound causation",
+    "log_mae": 3.006987141837114,
+    "mae": 25824.802424,
+    "method": "lattice",
+    "n": 0,
+    "p50": 26167.9995,
+    "p90": 92005.721441,
+    "p90_coverage": 1.0,
+    "p90_pinball": 9166.252436499999,
+    "reason": null,
+    "repo": "15five/scim2-filter-parser",
+    "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\downloads\\batch-20260913-151054-9d96f2\\swe\\traces\\1142b2bc2358172700d6\\trace.jsonl",
+    "source_line": 24,
+    "stratum": "v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None",
+    "target": "duration_ms",
+    "task": "15five__scim2-filter-parser-20"
+  },
+  {
+    "actual": 358.501475,
+    "calibration_family_count": 0,
+    "command": "python -c 'import scim2_filter_parser; print('\"'\"'ok'\"'\"')'",
+    "context": [
+      "shrinkage",
+      "tool=python"
+    ],
+    "diagnostics": {},
+    "evidence": 201,
+    "family": "python:inline",
+    "history_examples": [
+      {
+        "command": "python -c '\nfrom pydantic import BaseModel, Field\nfrom typing import List\nclass HelloListForm(BaseModel):\n    a: str = Field(description='\"'\"'a desc'\"'\"')\nclass HelloGetListForm(BaseModel):\n    b: str\nclass HelloForm(BaseModel):\n    user: str = Field(description='\"'\"'\u7528\u6237\u540d\u79f0'\"'\"')\n    msg: str = Field(description='\"'\"'msg test'\"'\"', example='\"'\"'aa'\"'\"')\n    index: int\n    data: HelloGetListForm\n    list: List[HelloListForm]\nimport json\nprint(json.dumps(HelloForm.schema(), ensure_ascii=False, indent=2))\n'",
+        "id": "98b9c4cd53f99d52830f474dc70232586ac479c2b2161ac725f181a1fef78efd:call_01_nkllChnPXgdQwu37LhXo8692:0",
+        "repo": "0b01001001/spectree",
+        "value": 2688.562799
+      },
+      {
+        "command": "python -c '\nfrom pydantic import BaseModel, Field\nfrom typing import List\nfrom spectree.spec import SpecTree\n\napi = SpecTree()\n\nclass HelloListForm(BaseModel):\n    a: str = Field(description='\"'\"'a desc'\"'\"')\nclass HelloForm(BaseModel):\n    user: str = Field(description='\"'\"'\u7528\u6237\u540d\u79f0'\"'\"')\n    msg: str = Field(description='\"'\"'msg test'\"'\"', example='\"'\"'aa'\"'\"')\n    index: int\n\n@api.validate(query=HelloForm)\ndef hello():\n    '\"'\"'hello'\"'\"'\n\nfrom spectree.utils import parse_params\nparams = parse_params(hello, [], api.models)\nfor p in params:\n    print(p['\"'\"'name'\"'\"'], '\"'\"'->'\"'\"', repr(p.get('\"'\"'description'\"'\"')))\n'",
+        "id": "98b9c4cd53f99d52830f474dc70232586ac479c2b2161ac725f181a1fef78efd:call_00_yoIFZOMlaigodmcv0dBw9218:0",
+        "repo": "0b01001001/spectree",
+        "value": 2793.207848
+      },
+      {
+        "command": "python -c '\nfrom sepal_ui import sepalwidgets as sw\n\nd = sw.DatePicker()\nprint('\"'\"'default disabled:'\"'\"', d.disabled)\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n\nd.disabled = True\nprint('\"'\"'after set disabled=True'\"'\"')\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n\nd.disabled = False\nprint('\"'\"'after set disabled=False'\"'\"')\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n'",
+        "id": "b8cd8e661915058de43e5973f25f40f88f376423b6d6e0049ec3d80fe90fc0f7:call_00_WxZeBusWdGEKBt2eQ96M0231:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 77428.87621
+      },
+      {
+        "command": "python -c 'import box; print(box.__version__)'",
+        "id": "de88980bafb7fde82273b74fa41dbf44be8fdf504bafccd18001d1a9ad5492a6:call_01_kIw2EG2SuCpyrKfIa1vh0896:4",
+        "repo": "12rambau/sepal_ui",
+        "value": 2892.553134
+      },
+      {
+        "command": "python -c '\nfrom sepal_ui.translator import Translator\nfrom sepal_ui.message import ms\nprint('\"'\"'ms ok'\"'\"', ms.locale.fallback if hasattr(ms,'\"'\"'locale'\"'\"') else '\"'\"'no locale'\"'\"')\nfrom box import Box\nprint(isinstance(ms, Box))\n'",
+        "id": "de88980bafb7fde82273b74fa41dbf44be8fdf504bafccd18001d1a9ad5492a6:call_00_wAw1dWPlzqLdHMH9OBjA4855:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 52892.474432
+      }
+    ],
+    "history_family_count": 86,
+    "id": "cccdbacd797782a857427e5284e737ce1bb018dbd0cd2915f3296cd59f548722:call_00_KY7meUl0zyoD2Fq0EPW56621:2",
+    "interpretation": "selected context is observed; missing input size/code state can confound causation",
+    "log_mae": 2.995657556084907,
+    "mae": 25809.498025,
+    "method": "lattice",
+    "n": 0,
+    "p50": 26167.9995,
+    "p90": 92005.721441,
+    "p90_coverage": 1.0,
+    "p90_pinball": 9164.721996599998,
+    "reason": null,
+    "repo": "15five/scim2-filter-parser",
+    "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\downloads\\batch-20260913-151054-9d96f2\\swe\\traces\\1142b2bc2358172700d6\\trace.jsonl",
+    "source_line": 29,
+    "stratum": "v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None",
+    "target": "duration_ms",
+    "task": "15five__scim2-filter-parser-20"
+  },
+  {
+    "actual": 493.149291,
+    "calibration_family_count": 0,
+    "command": "python -c '\nfrom scim2_filter_parser.transpilers.sql import get_query\nm={('\"'\"'displayname'\"'\"',None,None):'\"'\"'displayname'\"'\"',('\"'\"'nickname'\"'\"',None,None):'\"'\"'nickname'\"'\"',('\"'\"'username'\"'\"',None,None):'\"'\"'username'\"'\"'}\nprint(get_query('\"'\"'displayName co \"username\" or nickName co \"username\" or userName co \"username\"'\"'\"', m))\nprint(get_query('\"'\"'displayName co \"username\" and nickName co \"username\" and userName co \"username\"'\"'\"', m))\n'",
+    "context": [
+      "shrinkage",
+      "tool=python"
+    ],
+    "diagnostics": {},
+    "evidence": 201,
+    "family": "python:inline",
+    "history_examples": [
+      {
+        "command": "python -c '\nfrom pydantic import BaseModel, Field\nfrom typing import List\nclass HelloListForm(BaseModel):\n    a: str = Field(description='\"'\"'a desc'\"'\"')\nclass HelloGetListForm(BaseModel):\n    b: str\nclass HelloForm(BaseModel):\n    user: str = Field(description='\"'\"'\u7528\u6237\u540d\u79f0'\"'\"')\n    msg: str = Field(description='\"'\"'msg test'\"'\"', example='\"'\"'aa'\"'\"')\n    index: int\n    data: HelloGetListForm\n    list: List[HelloListForm]\nimport json\nprint(json.dumps(HelloForm.schema(), ensure_ascii=False, indent=2))\n'",
+        "id": "98b9c4cd53f99d52830f474dc70232586ac479c2b2161ac725f181a1fef78efd:call_01_nkllChnPXgdQwu37LhXo8692:0",
+        "repo": "0b01001001/spectree",
+        "value": 2688.562799
+      },
+      {
+        "command": "python -c '\nfrom pydantic import BaseModel, Field\nfrom typing import List\nfrom spectree.spec import SpecTree\n\napi = SpecTree()\n\nclass HelloListForm(BaseModel):\n    a: str = Field(description='\"'\"'a desc'\"'\"')\nclass HelloForm(BaseModel):\n    user: str = Field(description='\"'\"'\u7528\u6237\u540d\u79f0'\"'\"')\n    msg: str = Field(description='\"'\"'msg test'\"'\"', example='\"'\"'aa'\"'\"')\n    index: int\n\n@api.validate(query=HelloForm)\ndef hello():\n    '\"'\"'hello'\"'\"'\n\nfrom spectree.utils import parse_params\nparams = parse_params(hello, [], api.models)\nfor p in params:\n    print(p['\"'\"'name'\"'\"'], '\"'\"'->'\"'\"', repr(p.get('\"'\"'description'\"'\"')))\n'",
+        "id": "98b9c4cd53f99d52830f474dc70232586ac479c2b2161ac725f181a1fef78efd:call_00_yoIFZOMlaigodmcv0dBw9218:0",
+        "repo": "0b01001001/spectree",
+        "value": 2793.207848
+      },
+      {
+        "command": "python -c '\nfrom sepal_ui import sepalwidgets as sw\n\nd = sw.DatePicker()\nprint('\"'\"'default disabled:'\"'\"', d.disabled)\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n\nd.disabled = True\nprint('\"'\"'after set disabled=True'\"'\"')\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n\nd.disabled = False\nprint('\"'\"'after set disabled=False'\"'\"')\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n'",
+        "id": "b8cd8e661915058de43e5973f25f40f88f376423b6d6e0049ec3d80fe90fc0f7:call_00_WxZeBusWdGEKBt2eQ96M0231:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 77428.87621
+      },
+      {
+        "command": "python -c 'import box; print(box.__version__)'",
+        "id": "de88980bafb7fde82273b74fa41dbf44be8fdf504bafccd18001d1a9ad5492a6:call_01_kIw2EG2SuCpyrKfIa1vh0896:4",
+        "repo": "12rambau/sepal_ui",
+        "value": 2892.553134
+      },
+      {
+        "command": "python -c '\nfrom sepal_ui.translator import Translator\nfrom sepal_ui.message import ms\nprint('\"'\"'ms ok'\"'\"', ms.locale.fallback if hasattr(ms,'\"'\"'locale'\"'\"') else '\"'\"'no locale'\"'\"')\nfrom box import Box\nprint(isinstance(ms, Box))\n'",
+        "id": "de88980bafb7fde82273b74fa41dbf44be8fdf504bafccd18001d1a9ad5492a6:call_00_wAw1dWPlzqLdHMH9OBjA4855:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 52892.474432
+      }
+    ],
+    "history_family_count": 86,
+    "id": "cccdbacd797782a857427e5284e737ce1bb018dbd0cd2915f3296cd59f548722:call_00_3LKOUgP1NEeAw9UCch6J1275:0",
+    "interpretation": "selected context is observed; missing input size/code state can confound causation",
+    "log_mae": 2.901152284195074,
+    "mae": 25674.850209,
+    "method": "lattice",
+    "n": 0,
+    "p50": 26167.9995,
+    "p90": 92005.721441,
+    "p90_coverage": 1.0,
+    "p90_pinball": 9151.257214999998,
+    "reason": null,
+    "repo": "15five/scim2-filter-parser",
+    "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\downloads\\batch-20260913-151054-9d96f2\\swe\\traces\\1142b2bc2358172700d6\\trace.jsonl",
+    "source_line": 90,
+    "stratum": "v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None",
+    "target": "duration_ms",
+    "task": "15five__scim2-filter-parser-20"
+  },
+  {
+    "actual": 607.977658,
+    "calibration_family_count": 0,
+    "command": "python -c '\nimport scim2_filter_parser.lexer as l\nprint([t for t in l.SCIMLexer().tokenize('\"'\"'displayName co \"x\" OR nickName co \"y\"'\"'\"')])\n'",
+    "context": [
+      "shrinkage",
+      "tool=python"
+    ],
+    "diagnostics": {},
+    "evidence": 201,
+    "family": "python:inline",
+    "history_examples": [
+      {
+        "command": "python -c '\nfrom pydantic import BaseModel, Field\nfrom typing import List\nclass HelloListForm(BaseModel):\n    a: str = Field(description='\"'\"'a desc'\"'\"')\nclass HelloGetListForm(BaseModel):\n    b: str\nclass HelloForm(BaseModel):\n    user: str = Field(description='\"'\"'\u7528\u6237\u540d\u79f0'\"'\"')\n    msg: str = Field(description='\"'\"'msg test'\"'\"', example='\"'\"'aa'\"'\"')\n    index: int\n    data: HelloGetListForm\n    list: List[HelloListForm]\nimport json\nprint(json.dumps(HelloForm.schema(), ensure_ascii=False, indent=2))\n'",
+        "id": "98b9c4cd53f99d52830f474dc70232586ac479c2b2161ac725f181a1fef78efd:call_01_nkllChnPXgdQwu37LhXo8692:0",
+        "repo": "0b01001001/spectree",
+        "value": 2688.562799
+      },
+      {
+        "command": "python -c '\nfrom pydantic import BaseModel, Field\nfrom typing import List\nfrom spectree.spec import SpecTree\n\napi = SpecTree()\n\nclass HelloListForm(BaseModel):\n    a: str = Field(description='\"'\"'a desc'\"'\"')\nclass HelloForm(BaseModel):\n    user: str = Field(description='\"'\"'\u7528\u6237\u540d\u79f0'\"'\"')\n    msg: str = Field(description='\"'\"'msg test'\"'\"', example='\"'\"'aa'\"'\"')\n    index: int\n\n@api.validate(query=HelloForm)\ndef hello():\n    '\"'\"'hello'\"'\"'\n\nfrom spectree.utils import parse_params\nparams = parse_params(hello, [], api.models)\nfor p in params:\n    print(p['\"'\"'name'\"'\"'], '\"'\"'->'\"'\"', repr(p.get('\"'\"'description'\"'\"')))\n'",
+        "id": "98b9c4cd53f99d52830f474dc70232586ac479c2b2161ac725f181a1fef78efd:call_00_yoIFZOMlaigodmcv0dBw9218:0",
+        "repo": "0b01001001/spectree",
+        "value": 2793.207848
+      },
+      {
+        "command": "python -c '\nfrom sepal_ui import sepalwidgets as sw\n\nd = sw.DatePicker()\nprint('\"'\"'default disabled:'\"'\"', d.disabled)\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n\nd.disabled = True\nprint('\"'\"'after set disabled=True'\"'\"')\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n\nd.disabled = False\nprint('\"'\"'after set disabled=False'\"'\"')\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n'",
+        "id": "b8cd8e661915058de43e5973f25f40f88f376423b6d6e0049ec3d80fe90fc0f7:call_00_WxZeBusWdGEKBt2eQ96M0231:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 77428.87621
+      },
+      {
+        "command": "python -c 'import box; print(box.__version__)'",
+        "id": "de88980bafb7fde82273b74fa41dbf44be8fdf504bafccd18001d1a9ad5492a6:call_01_kIw2EG2SuCpyrKfIa1vh0896:4",
+        "repo": "12rambau/sepal_ui",
+        "value": 2892.553134
+      },
+      {
+        "command": "python -c '\nfrom sepal_ui.translator import Translator\nfrom sepal_ui.message import ms\nprint('\"'\"'ms ok'\"'\"', ms.locale.fallback if hasattr(ms,'\"'\"'locale'\"'\"') else '\"'\"'no locale'\"'\"')\nfrom box import Box\nprint(isinstance(ms, Box))\n'",
+        "id": "de88980bafb7fde82273b74fa41dbf44be8fdf504bafccd18001d1a9ad5492a6:call_00_wAw1dWPlzqLdHMH9OBjA4855:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 52892.474432
+      }
+    ],
+    "history_family_count": 86,
+    "id": "cccdbacd797782a857427e5284e737ce1bb018dbd0cd2915f3296cd59f548722:call_00_z2b9VAE90zmphUCkgoSO6618:1",
+    "interpretation": "selected context is observed; missing input size/code state can confound causation",
+    "log_mae": 2.827062515343291,
+    "mae": 25560.021842000002,
+    "method": "lattice",
+    "n": 0,
+    "p50": 26167.9995,
+    "p90": 92005.721441,
+    "p90_coverage": 1.0,
+    "p90_pinball": 9139.774378299997,
+    "reason": null,
+    "repo": "15five/scim2-filter-parser",
+    "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\downloads\\batch-20260913-151054-9d96f2\\swe\\traces\\1142b2bc2358172700d6\\trace.jsonl",
+    "source_line": 110,
+    "stratum": "v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None",
+    "target": "duration_ms",
+    "task": "15five__scim2-filter-parser-20"
+  },
+  {
+    "actual": 752.723827,
+    "calibration_family_count": 0,
+    "command": "python -c '\nfrom scim2_filter_parser.lexer import SCIMLexer\nfrom scim2_filter_parser.parser import SCIMParser\nfrom scim2_filter_parser.transpilers.sql import Transpiler\nm={('\"'\"'displayname'\"'\"',None,None):'\"'\"'displayname'\"'\"',('\"'\"'nickname'\"'\"',None,None):'\"'\"'nickname'\"'\"',('\"'\"'username'\"'\"',None,None):'\"'\"'username'\"'\"'}\nfor q in ['\"'\"'displayName co \"username\" or nickName co \"username\" or userName co \"username\"'\"'\"',\n          '\"'\"'displayName co \"username\" and nickName co \"username\" and userName co \"username\"'\"'\"']:\n    ast=SCIMParser().parse(SCIMLexer().tokenize(q))\n    print(Transpiler(m).transpile(ast))\n'",
+    "context": [
+      "shrinkage",
+      "tool=python"
+    ],
+    "diagnostics": {},
+    "evidence": 201,
+    "family": "python:inline",
+    "history_examples": [
+      {
+        "command": "python -c '\nfrom pydantic import BaseModel, Field\nfrom typing import List\nclass HelloListForm(BaseModel):\n    a: str = Field(description='\"'\"'a desc'\"'\"')\nclass HelloGetListForm(BaseModel):\n    b: str\nclass HelloForm(BaseModel):\n    user: str = Field(description='\"'\"'\u7528\u6237\u540d\u79f0'\"'\"')\n    msg: str = Field(description='\"'\"'msg test'\"'\"', example='\"'\"'aa'\"'\"')\n    index: int\n    data: HelloGetListForm\n    list: List[HelloListForm]\nimport json\nprint(json.dumps(HelloForm.schema(), ensure_ascii=False, indent=2))\n'",
+        "id": "98b9c4cd53f99d52830f474dc70232586ac479c2b2161ac725f181a1fef78efd:call_01_nkllChnPXgdQwu37LhXo8692:0",
+        "repo": "0b01001001/spectree",
+        "value": 2688.562799
+      },
+      {
+        "command": "python -c '\nfrom pydantic import BaseModel, Field\nfrom typing import List\nfrom spectree.spec import SpecTree\n\napi = SpecTree()\n\nclass HelloListForm(BaseModel):\n    a: str = Field(description='\"'\"'a desc'\"'\"')\nclass HelloForm(BaseModel):\n    user: str = Field(description='\"'\"'\u7528\u6237\u540d\u79f0'\"'\"')\n    msg: str = Field(description='\"'\"'msg test'\"'\"', example='\"'\"'aa'\"'\"')\n    index: int\n\n@api.validate(query=HelloForm)\ndef hello():\n    '\"'\"'hello'\"'\"'\n\nfrom spectree.utils import parse_params\nparams = parse_params(hello, [], api.models)\nfor p in params:\n    print(p['\"'\"'name'\"'\"'], '\"'\"'->'\"'\"', repr(p.get('\"'\"'description'\"'\"')))\n'",
+        "id": "98b9c4cd53f99d52830f474dc70232586ac479c2b2161ac725f181a1fef78efd:call_00_yoIFZOMlaigodmcv0dBw9218:0",
+        "repo": "0b01001001/spectree",
+        "value": 2793.207848
+      },
+      {
+        "command": "python -c '\nfrom sepal_ui import sepalwidgets as sw\n\nd = sw.DatePicker()\nprint('\"'\"'default disabled:'\"'\"', d.disabled)\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n\nd.disabled = True\nprint('\"'\"'after set disabled=True'\"'\"')\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n\nd.disabled = False\nprint('\"'\"'after set disabled=False'\"'\"')\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n'",
+        "id": "b8cd8e661915058de43e5973f25f40f88f376423b6d6e0049ec3d80fe90fc0f7:call_00_WxZeBusWdGEKBt2eQ96M0231:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 77428.87621
+      },
+      {
+        "command": "python -c 'import box; print(box.__version__)'",
+        "id": "de88980bafb7fde82273b74fa41dbf44be8fdf504bafccd18001d1a9ad5492a6:call_01_kIw2EG2SuCpyrKfIa1vh0896:4",
+        "repo": "12rambau/sepal_ui",
+        "value": 2892.553134
+      },
+      {
+        "command": "python -c '\nfrom sepal_ui.translator import Translator\nfrom sepal_ui.message import ms\nprint('\"'\"'ms ok'\"'\"', ms.locale.fallback if hasattr(ms,'\"'\"'locale'\"'\"') else '\"'\"'no locale'\"'\"')\nfrom box import Box\nprint(isinstance(ms, Box))\n'",
+        "id": "de88980bafb7fde82273b74fa41dbf44be8fdf504bafccd18001d1a9ad5492a6:call_00_wAw1dWPlzqLdHMH9OBjA4855:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 52892.474432
+      }
+    ],
+    "history_family_count": 86,
+    "id": "cccdbacd797782a857427e5284e737ce1bb018dbd0cd2915f3296cd59f548722:call_00_VZuI8pGqBMWHbwIxYgKF8887:0",
+    "interpretation": "selected context is observed; missing input size/code state can confound causation",
+    "log_mae": 2.740868741266072,
+    "mae": 25415.275673,
+    "method": "lattice",
+    "n": 0,
+    "p50": 26167.9995,
+    "p90": 92005.721441,
+    "p90_coverage": 1.0,
+    "p90_pinball": 9125.299761399998,
+    "reason": null,
+    "repo": "15five/scim2-filter-parser",
+    "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\downloads\\batch-20260913-151054-9d96f2\\swe\\traces\\1142b2bc2358172700d6\\trace.jsonl",
+    "source_line": 115,
+    "stratum": "v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None",
+    "target": "duration_ms",
+    "task": "15five__scim2-filter-parser-20"
+  },
+  {
+    "actual": 762.784137,
+    "calibration_family_count": 0,
+    "command": "python -c '\nfrom scim2_filter_parser.lexer import SCIMLexer\nfrom scim2_filter_parser.parser import SCIMParser\nfrom scim2_filter_parser.transpilers.sql import Transpiler\nm={('\"'\"'displayname'\"'\"',None,None):'\"'\"'displayname'\"'\"',('\"'\"'nickname'\"'\"',None,None):'\"'\"'nickname'\"'\"',('\"'\"'username'\"'\"',None,None):'\"'\"'username'\"'\"'}\nfor q in ['\"'\"'displayName co \"username\" or nickName co \"username\" or userName co \"username\"'\"'\"',\n          '\"'\"'displayName co \"username\" and nickName co \"username\" and userName co \"username\"'\"'\"']:\n    ast=SCIMParser().parse(SCIMLexer().tokenize(q))\n    print(Transpiler(m).transpile(ast))\n'",
+    "context": [
+      "shrinkage",
+      "tool=python"
+    ],
+    "diagnostics": {},
+    "evidence": 201,
+    "family": "python:inline",
+    "history_examples": [
+      {
+        "command": "python -c '\nfrom pydantic import BaseModel, Field\nfrom typing import List\nclass HelloListForm(BaseModel):\n    a: str = Field(description='\"'\"'a desc'\"'\"')\nclass HelloGetListForm(BaseModel):\n    b: str\nclass HelloForm(BaseModel):\n    user: str = Field(description='\"'\"'\u7528\u6237\u540d\u79f0'\"'\"')\n    msg: str = Field(description='\"'\"'msg test'\"'\"', example='\"'\"'aa'\"'\"')\n    index: int\n    data: HelloGetListForm\n    list: List[HelloListForm]\nimport json\nprint(json.dumps(HelloForm.schema(), ensure_ascii=False, indent=2))\n'",
+        "id": "98b9c4cd53f99d52830f474dc70232586ac479c2b2161ac725f181a1fef78efd:call_01_nkllChnPXgdQwu37LhXo8692:0",
+        "repo": "0b01001001/spectree",
+        "value": 2688.562799
+      },
+      {
+        "command": "python -c '\nfrom pydantic import BaseModel, Field\nfrom typing import List\nfrom spectree.spec import SpecTree\n\napi = SpecTree()\n\nclass HelloListForm(BaseModel):\n    a: str = Field(description='\"'\"'a desc'\"'\"')\nclass HelloForm(BaseModel):\n    user: str = Field(description='\"'\"'\u7528\u6237\u540d\u79f0'\"'\"')\n    msg: str = Field(description='\"'\"'msg test'\"'\"', example='\"'\"'aa'\"'\"')\n    index: int\n\n@api.validate(query=HelloForm)\ndef hello():\n    '\"'\"'hello'\"'\"'\n\nfrom spectree.utils import parse_params\nparams = parse_params(hello, [], api.models)\nfor p in params:\n    print(p['\"'\"'name'\"'\"'], '\"'\"'->'\"'\"', repr(p.get('\"'\"'description'\"'\"')))\n'",
+        "id": "98b9c4cd53f99d52830f474dc70232586ac479c2b2161ac725f181a1fef78efd:call_00_yoIFZOMlaigodmcv0dBw9218:0",
+        "repo": "0b01001001/spectree",
+        "value": 2793.207848
+      },
+      {
+        "command": "python -c '\nfrom sepal_ui import sepalwidgets as sw\n\nd = sw.DatePicker()\nprint('\"'\"'default disabled:'\"'\"', d.disabled)\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n\nd.disabled = True\nprint('\"'\"'after set disabled=True'\"'\"')\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n\nd.disabled = False\nprint('\"'\"'after set disabled=False'\"'\"')\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n'",
+        "id": "b8cd8e661915058de43e5973f25f40f88f376423b6d6e0049ec3d80fe90fc0f7:call_00_WxZeBusWdGEKBt2eQ96M0231:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 77428.87621
+      },
+      {
+        "command": "python -c 'import box; print(box.__version__)'",
+        "id": "de88980bafb7fde82273b74fa41dbf44be8fdf504bafccd18001d1a9ad5492a6:call_01_kIw2EG2SuCpyrKfIa1vh0896:4",
+        "repo": "12rambau/sepal_ui",
+        "value": 2892.553134
+      },
+      {
+        "command": "python -c '\nfrom sepal_ui.translator import Translator\nfrom sepal_ui.message import ms\nprint('\"'\"'ms ok'\"'\"', ms.locale.fallback if hasattr(ms,'\"'\"'locale'\"'\"') else '\"'\"'no locale'\"'\"')\nfrom box import Box\nprint(isinstance(ms, Box))\n'",
+        "id": "de88980bafb7fde82273b74fa41dbf44be8fdf504bafccd18001d1a9ad5492a6:call_00_wAw1dWPlzqLdHMH9OBjA4855:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 52892.474432
+      }
+    ],
+    "history_family_count": 86,
+    "id": "cccdbacd797782a857427e5284e737ce1bb018dbd0cd2915f3296cd59f548722:call_00_289mZxol6pflntpUMmCO6480:0",
+    "interpretation": "selected context is observed; missing input size/code state can confound causation",
+    "log_mae": 2.7351453365317115,
+    "mae": 25405.215363000003,
+    "method": "lattice",
+    "n": 0,
+    "p50": 26167.9995,
+    "p90": 92005.721441,
+    "p90_coverage": 1.0,
+    "p90_pinball": 9124.293730399999,
+    "reason": null,
+    "repo": "15five/scim2-filter-parser",
+    "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\downloads\\batch-20260913-151054-9d96f2\\swe\\traces\\1142b2bc2358172700d6\\trace.jsonl",
+    "source_line": 105,
+    "stratum": "v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None",
+    "target": "duration_ms",
+    "task": "15five__scim2-filter-parser-20"
+  },
+  {
+    "actual": 769.746037,
+    "calibration_family_count": 0,
+    "command": "python -c '\nfrom scim2_filter_parser.lexer import SCIMLexer\nfrom scim2_filter_parser.parser import SCIMParser\nfrom scim2_filter_parser.transpilers.sql import Transpiler\nm={('\"'\"'displayName'\"'\"',None,None):'\"'\"'displayname'\"'\"',('\"'\"'nickName'\"'\"',None,None):'\"'\"'nickname'\"'\"',('\"'\"'userName'\"'\"',None,None):'\"'\"'username'\"'\"'}\nfor q in ['\"'\"'displayName co \"username\" or nickName co \"username\" or userName co \"username\"'\"'\"',\n          '\"'\"'displayName co \"username\" and nickName co \"username\" and userName co \"username\"'\"'\"']:\n    ast=SCIMParser().parse(SCIMLexer().tokenize(q))\n    print(Transpiler(m).transpile(ast))\n'",
+    "context": [
+      "shrinkage",
+      "tool=python"
+    ],
+    "diagnostics": {},
+    "evidence": 201,
+    "family": "python:inline",
+    "history_examples": [
+      {
+        "command": "python -c '\nfrom pydantic import BaseModel, Field\nfrom typing import List\nclass HelloListForm(BaseModel):\n    a: str = Field(description='\"'\"'a desc'\"'\"')\nclass HelloGetListForm(BaseModel):\n    b: str\nclass HelloForm(BaseModel):\n    user: str = Field(description='\"'\"'\u7528\u6237\u540d\u79f0'\"'\"')\n    msg: str = Field(description='\"'\"'msg test'\"'\"', example='\"'\"'aa'\"'\"')\n    index: int\n    data: HelloGetListForm\n    list: List[HelloListForm]\nimport json\nprint(json.dumps(HelloForm.schema(), ensure_ascii=False, indent=2))\n'",
+        "id": "98b9c4cd53f99d52830f474dc70232586ac479c2b2161ac725f181a1fef78efd:call_01_nkllChnPXgdQwu37LhXo8692:0",
+        "repo": "0b01001001/spectree",
+        "value": 2688.562799
+      },
+      {
+        "command": "python -c '\nfrom pydantic import BaseModel, Field\nfrom typing import List\nfrom spectree.spec import SpecTree\n\napi = SpecTree()\n\nclass HelloListForm(BaseModel):\n    a: str = Field(description='\"'\"'a desc'\"'\"')\nclass HelloForm(BaseModel):\n    user: str = Field(description='\"'\"'\u7528\u6237\u540d\u79f0'\"'\"')\n    msg: str = Field(description='\"'\"'msg test'\"'\"', example='\"'\"'aa'\"'\"')\n    index: int\n\n@api.validate(query=HelloForm)\ndef hello():\n    '\"'\"'hello'\"'\"'\n\nfrom spectree.utils import parse_params\nparams = parse_params(hello, [], api.models)\nfor p in params:\n    print(p['\"'\"'name'\"'\"'], '\"'\"'->'\"'\"', repr(p.get('\"'\"'description'\"'\"')))\n'",
+        "id": "98b9c4cd53f99d52830f474dc70232586ac479c2b2161ac725f181a1fef78efd:call_00_yoIFZOMlaigodmcv0dBw9218:0",
+        "repo": "0b01001001/spectree",
+        "value": 2793.207848
+      },
+      {
+        "command": "python -c '\nfrom sepal_ui import sepalwidgets as sw\n\nd = sw.DatePicker()\nprint('\"'\"'default disabled:'\"'\"', d.disabled)\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n\nd.disabled = True\nprint('\"'\"'after set disabled=True'\"'\"')\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n\nd.disabled = False\nprint('\"'\"'after set disabled=False'\"'\"')\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n'",
+        "id": "b8cd8e661915058de43e5973f25f40f88f376423b6d6e0049ec3d80fe90fc0f7:call_00_WxZeBusWdGEKBt2eQ96M0231:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 77428.87621
+      },
+      {
+        "command": "python -c 'import box; print(box.__version__)'",
+        "id": "de88980bafb7fde82273b74fa41dbf44be8fdf504bafccd18001d1a9ad5492a6:call_01_kIw2EG2SuCpyrKfIa1vh0896:4",
+        "repo": "12rambau/sepal_ui",
+        "value": 2892.553134
+      },
+      {
+        "command": "python -c '\nfrom sepal_ui.translator import Translator\nfrom sepal_ui.message import ms\nprint('\"'\"'ms ok'\"'\"', ms.locale.fallback if hasattr(ms,'\"'\"'locale'\"'\"') else '\"'\"'no locale'\"'\"')\nfrom box import Box\nprint(isinstance(ms, Box))\n'",
+        "id": "de88980bafb7fde82273b74fa41dbf44be8fdf504bafccd18001d1a9ad5492a6:call_00_wAw1dWPlzqLdHMH9OBjA4855:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 52892.474432
+      }
+    ],
+    "history_family_count": 86,
+    "id": "cccdbacd797782a857427e5284e737ce1bb018dbd0cd2915f3296cd59f548722:call_00_bL2yTGZhh1roVZlntKyZ6083:0",
+    "interpretation": "selected context is observed; missing input size/code state can confound causation",
+    "log_mae": 2.7312037373546136,
+    "mae": 25398.253463,
+    "method": "lattice",
+    "n": 0,
+    "p50": 26167.9995,
+    "p90": 92005.721441,
+    "p90_coverage": 1.0,
+    "p90_pinball": 9123.597540399998,
+    "reason": null,
+    "repo": "15five/scim2-filter-parser",
+    "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\downloads\\batch-20260913-151054-9d96f2\\swe\\traces\\1142b2bc2358172700d6\\trace.jsonl",
+    "source_line": 124,
+    "stratum": "v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None",
+    "target": "duration_ms",
+    "task": "15five__scim2-filter-parser-20"
+  },
+  {
+    "actual": 775.702961,
+    "calibration_family_count": 0,
+    "command": "python -c '\nfrom scim2_filter_parser.lexer import SCIMLexer\nfrom scim2_filter_parser.parser import SCIMParser\nqs = [\n '\"'\"'displayName co \"username\" or nickName co \"username\" or userName co \"username\"'\"'\"',\n '\"'\"'displayName co \"username\" and nickName co \"username\" and userName co \"username\"'\"'\"',\n '\"'\"'displayName co \"username\" and nickName co \"username\" or userName co \"username\"'\"'\"',\n '\"'\"'a eq \"1\" and b eq \"2\" and c eq \"3\" or d eq \"4\"'\"'\"',\n '\"'\"'a eq \"1\" or b eq \"2\" and c eq \"3\"'\"'\"',\n]\nfor q in qs:\n    try:\n        SCIMParser().parse(SCIMLexer().tokenize(q))\n        print('\"'\"'OK  '\"'\"', q)\n    except Exception as e:\n        print('\"'\"'FAIL'\"'\"', q, '\"'\"'->'\"'\"', e)\n'",
+    "context": [
+      "shrinkage",
+      "tool=python"
+    ],
+    "diagnostics": {},
+    "evidence": 201,
+    "family": "python:inline",
+    "history_examples": [
+      {
+        "command": "python -c '\nfrom pydantic import BaseModel, Field\nfrom typing import List\nclass HelloListForm(BaseModel):\n    a: str = Field(description='\"'\"'a desc'\"'\"')\nclass HelloGetListForm(BaseModel):\n    b: str\nclass HelloForm(BaseModel):\n    user: str = Field(description='\"'\"'\u7528\u6237\u540d\u79f0'\"'\"')\n    msg: str = Field(description='\"'\"'msg test'\"'\"', example='\"'\"'aa'\"'\"')\n    index: int\n    data: HelloGetListForm\n    list: List[HelloListForm]\nimport json\nprint(json.dumps(HelloForm.schema(), ensure_ascii=False, indent=2))\n'",
+        "id": "98b9c4cd53f99d52830f474dc70232586ac479c2b2161ac725f181a1fef78efd:call_01_nkllChnPXgdQwu37LhXo8692:0",
+        "repo": "0b01001001/spectree",
+        "value": 2688.562799
+      },
+      {
+        "command": "python -c '\nfrom pydantic import BaseModel, Field\nfrom typing import List\nfrom spectree.spec import SpecTree\n\napi = SpecTree()\n\nclass HelloListForm(BaseModel):\n    a: str = Field(description='\"'\"'a desc'\"'\"')\nclass HelloForm(BaseModel):\n    user: str = Field(description='\"'\"'\u7528\u6237\u540d\u79f0'\"'\"')\n    msg: str = Field(description='\"'\"'msg test'\"'\"', example='\"'\"'aa'\"'\"')\n    index: int\n\n@api.validate(query=HelloForm)\ndef hello():\n    '\"'\"'hello'\"'\"'\n\nfrom spectree.utils import parse_params\nparams = parse_params(hello, [], api.models)\nfor p in params:\n    print(p['\"'\"'name'\"'\"'], '\"'\"'->'\"'\"', repr(p.get('\"'\"'description'\"'\"')))\n'",
+        "id": "98b9c4cd53f99d52830f474dc70232586ac479c2b2161ac725f181a1fef78efd:call_00_yoIFZOMlaigodmcv0dBw9218:0",
+        "repo": "0b01001001/spectree",
+        "value": 2793.207848
+      },
+      {
+        "command": "python -c '\nfrom sepal_ui import sepalwidgets as sw\n\nd = sw.DatePicker()\nprint('\"'\"'default disabled:'\"'\"', d.disabled)\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n\nd.disabled = True\nprint('\"'\"'after set disabled=True'\"'\"')\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n\nd.disabled = False\nprint('\"'\"'after set disabled=False'\"'\"')\nprint('\"'\"'menu disabled:'\"'\"', d.menu.disabled)\nprint('\"'\"'slot disabled:'\"'\"', d.menu.v_slots[0]['\"'\"'children'\"'\"'].disabled)\n'",
+        "id": "b8cd8e661915058de43e5973f25f40f88f376423b6d6e0049ec3d80fe90fc0f7:call_00_WxZeBusWdGEKBt2eQ96M0231:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 77428.87621
+      },
+      {
+        "command": "python -c 'import box; print(box.__version__)'",
+        "id": "de88980bafb7fde82273b74fa41dbf44be8fdf504bafccd18001d1a9ad5492a6:call_01_kIw2EG2SuCpyrKfIa1vh0896:4",
+        "repo": "12rambau/sepal_ui",
+        "value": 2892.553134
+      },
+      {
+        "command": "python -c '\nfrom sepal_ui.translator import Translator\nfrom sepal_ui.message import ms\nprint('\"'\"'ms ok'\"'\"', ms.locale.fallback if hasattr(ms,'\"'\"'locale'\"'\"') else '\"'\"'no locale'\"'\"')\nfrom box import Box\nprint(isinstance(ms, Box))\n'",
+        "id": "de88980bafb7fde82273b74fa41dbf44be8fdf504bafccd18001d1a9ad5492a6:call_00_wAw1dWPlzqLdHMH9OBjA4855:0",
+        "repo": "12rambau/sepal_ui",
+        "value": 52892.474432
+      }
+    ],
+    "history_family_count": 86,
+    "id": "cccdbacd797782a857427e5284e737ce1bb018dbd0cd2915f3296cd59f548722:call_00_kQH4MFB9dxRx6wMc5wxU0692:0",
+    "interpretation": "selected context is observed; missing input size/code state can confound causation",
+    "log_mae": 2.727843412832266,
+    "mae": 25392.296539000003,
+    "method": "lattice",
+    "n": 0,
+    "p50": 26167.9995,
+    "p90": 92005.721441,
+    "p90_coverage": 1.0,
+    "p90_pinball": 9123.001847999998,
+    "reason": null,
+    "repo": "15five/scim2-filter-parser",
+    "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\downloads\\batch-20260913-151054-9d96f2\\swe\\traces\\1142b2bc2358172700d6\\trace.jsonl",
+    "source_line": 70,
+    "stratum": "v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None",
+    "target": "duration_ms",
+    "task": "15five__scim2-filter-parser-20"
+  }
+]

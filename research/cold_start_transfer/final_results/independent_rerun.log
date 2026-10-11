@@ -1,0 +1,412 @@
+v5 0 records 71
+v5 100 records 6293
+v5 200 records 10258
+v5 300 records 13241
+v5 400 records 13241
+v5 500 records 13241
+v5 600 records 13241
+{
+  "v5:fresh-seed42-skip150-n200": {
+    "files": 275,
+    "observations": 0,
+    "repositories": 0,
+    "tasks": 0,
+    "targets": {},
+    "repository_identity_available": true
+  },
+  "v5:offline-gated-confirm-100-v1": {
+    "files": 93,
+    "observations": 0,
+    "repositories": 0,
+    "tasks": 0,
+    "targets": {},
+    "repository_identity_available": true
+  },
+  "v5:pennylane-all76-c1-fast-ebpf-20260813": {
+    "files": 70,
+    "observations": 5036,
+    "repositories": 1,
+    "tasks": 70,
+    "targets": {
+      "sampled_peak_rss_bytes": 2464,
+      "duration_ms": 5036,
+      "cpu_peak_cores": 1129
+    },
+    "repository_identity_available": true
+  },
+  "v5:source-image-direct-six-v1": {
+    "files": 6,
+    "observations": 0,
+    "repositories": 0,
+    "tasks": 0,
+    "targets": {},
+    "repository_identity_available": true
+  },
+  "v5:sqlglot-100-c2-fast-requested-ebpf-a0419d9-20260803": {
+    "files": 52,
+    "observations": 1969,
+    "repositories": 1,
+    "tasks": 52,
+    "targets": {
+      "sampled_peak_rss_bytes": 1167,
+      "duration_ms": 1969
+    },
+    "repository_identity_available": true
+  },
+  "v5:sqlglot-48-c2-fast-requested-ebpf-8a72722-20260803": {
+    "files": 48,
+    "observations": 1841,
+    "repositories": 1,
+    "tasks": 48,
+    "targets": {
+      "sampled_peak_rss_bytes": 1074,
+      "duration_ms": 1841
+    },
+    "repository_identity_available": true
+  },
+  "v5:sqlglot-prev100-c2-fast-requested-ebpf-20260804": {
+    "files": 100,
+    "observations": 4395,
+    "repositories": 1,
+    "tasks": 100,
+    "targets": {
+      "sampled_peak_rss_bytes": 2601,
+      "duration_ms": 4395
+    },
+    "repository_identity_available": true
+  },
+  "v6:batch-20260913:swe": {
+    "files": 30,
+    "observations": 778,
+    "repositories": 11,
+    "tasks": 30,
+    "targets": {
+      "sampled_peak_rss_bytes": 778,
+      "duration_ms": 778,
+      "cpu_peak_cores": 235
+    },
+    "repository_identity_available": true
+  },
+  "v6:batch-20260913:terminal": {
+    "files": 19,
+    "observations": 722,
+    "repositories": 0,
+    "tasks": 19,
+    "targets": {
+      "sampled_peak_rss_bytes": 722,
+      "duration_ms": 722,
+      "cpu_peak_cores": 173
+    },
+    "repository_identity_available": false
+  },
+  "v6:benchmark-validation:bfcl-run": {
+    "files": 13,
+    "observations": 0,
+    "repositories": 0,
+    "tasks": 0,
+    "targets": {},
+    "repository_identity_available": true
+  },
+  "v6:benchmark-validation:research-direct-run": {
+    "files": 5,
+    "observations": 0,
+    "repositories": 0,
+    "tasks": 0,
+    "targets": {},
+    "repository_identity_available": true
+  },
+  "v6:benchmark-validation:verified-run": {
+    "files": 3,
+    "observations": 3,
+    "repositories": 1,
+    "tasks": 1,
+    "targets": {
+      "sampled_peak_rss_bytes": 3,
+      "duration_ms": 3
+    },
+    "repository_identity_available": true
+  },
+  "v6:experiment-30x2:swe-run-v2": {
+    "files": 18,
+    "observations": 5,
+    "repositories": 3,
+    "tasks": 3,
+    "targets": {
+      "sampled_peak_rss_bytes": 5,
+      "duration_ms": 5
+    },
+    "repository_identity_available": true
+  },
+  "v6:experiment-30x2:terminal-run": {
+    "files": 20,
+    "observations": 3,
+    "repositories": 0,
+    "tasks": 3,
+    "targets": {
+      "duration_ms": 3
+    },
+    "repository_identity_available": false
+  },
+  "v6:experiment-30x2:terminal-supplement-run": {
+    "files": 14,
+    "observations": 7,
+    "repositories": 0,
+    "tasks": 3,
+    "targets": {
+      "duration_ms": 7
+    },
+    "repository_identity_available": false
+  },
+  "v6:terminal-20260921": {
+    "files": 4,
+    "observations": 186,
+    "repositories": 0,
+    "tasks": 4,
+    "targets": {
+      "cpu_time_seconds": 186,
+      "cpu_avg_cores": 186,
+      "sampled_peak_rss_bytes": 166,
+      "duration_ms": 186,
+      "cpu_peak_cores": 37
+    },
+    "repository_identity_available": false
+  },
+  "v6:tool-profile-study:terminal-run-v4": {
+    "files": 25,
+    "observations": 4,
+    "repositories": 0,
+    "tasks": 3,
+    "targets": {
+      "sampled_peak_rss_bytes": 4,
+      "duration_ms": 4
+    },
+    "repository_identity_available": false
+  },
+  "v6:trace-audit:20260920-054917-d62adf68": {
+    "files": 6,
+    "observations": 166,
+    "repositories": 2,
+    "tasks": 6,
+    "targets": {
+      "cpu_time_seconds": 166,
+      "cpu_avg_cores": 166,
+      "sampled_peak_rss_bytes": 146,
+      "duration_ms": 166,
+      "cpu_peak_cores": 53
+    },
+    "repository_identity_available": true
+  },
+  "v6:trace-audit:20260920-105843-4abef2c5": {
+    "files": 4,
+    "observations": 140,
+    "repositories": 2,
+    "tasks": 4,
+    "targets": {
+      "cpu_time_seconds": 140,
+      "cpu_avg_cores": 140,
+      "sampled_peak_rss_bytes": 133,
+      "duration_ms": 140,
+      "cpu_peak_cores": 27
+    },
+    "repository_identity_available": true
+  },
+  "v6:trace-audit:20260920-134712-3bd11c46": {
+    "files": 2,
+    "observations": 52,
+    "repositories": 2,
+    "tasks": 2,
+    "targets": {
+      "cpu_time_seconds": 52,
+      "cpu_avg_cores": 52,
+      "sampled_peak_rss_bytes": 45,
+      "duration_ms": 52,
+      "cpu_peak_cores": 20
+    },
+    "repository_identity_available": true
+  },
+  "v6:trace-audit:20260920-153840-eaa0dfcc": {
+    "files": 2,
+    "observations": 45,
+    "repositories": 2,
+    "tasks": 2,
+    "targets": {
+      "cpu_time_seconds": 45,
+      "cpu_avg_cores": 45,
+      "sampled_peak_rss_bytes": 42,
+      "duration_ms": 45,
+      "cpu_peak_cores": 8
+    },
+    "repository_identity_available": true
+  },
+  "v6:trace-audit:20260920-172943-8ea96fce": {
+    "files": 2,
+    "observations": 51,
+    "repositories": 2,
+    "tasks": 2,
+    "targets": {
+      "cpu_time_seconds": 40,
+      "cpu_avg_cores": 40,
+      "sampled_peak_rss_bytes": 36,
+      "duration_ms": 40,
+      "memory_total_peak_bytes": 11,
+      "memory_extra_peak_bytes": 11,
+      "cpu_peak_cores": 19
+    },
+    "repository_identity_available": true
+  },
+  "v6:trace-audits:20260921-041901-94a4b095": {
+    "files": 3,
+    "observations": 103,
+    "repositories": 2,
+    "tasks": 3,
+    "targets": {
+      "cpu_time_seconds": 76,
+      "cpu_avg_cores": 76,
+      "sampled_peak_rss_bytes": 71,
+      "duration_ms": 76,
+      "memory_total_peak_bytes": 27,
+      "memory_extra_peak_bytes": 27,
+      "cpu_peak_cores": 22
+    },
+    "repository_identity_available": true
+  }
+}
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None 0b01001001/spectree duration_ms rows 778
+DONE 26faa5b68bd9253b 247 10.22 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None 12rambau/sepal_ui duration_ms rows 778
+DONE a0f2a876d1acb9d4 16458 20.2 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None 15five/scim2-filter-parser duration_ms rows 778
+DONE 8b92d5eb9088c446 1872 24.0 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None 20c/ctl duration_ms rows 778
+DONE b1f58a8c4940579e 507 8.78 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None 3yourmind/django-migration-linter duration_ms rows 778
+DONE 452fa06d2945a65a 3185 21.2 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None 4degrees/clique duration_ms rows 778
+DONE 6c75f4ce07a59cbd 208 8.84 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None ai4s2s/lilio duration_ms rows 778
+DONE 09be7ff371b5b8fe 1404 23.58 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None armmbed/greentea duration_ms rows 778
+DONE 64f3f8b523e8b9e8 91 10.91 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None armmbed/mbed-tools duration_ms rows 778
+DONE 3c1784f1f7ec124d 13260 23.48 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None armmbed/yotta duration_ms rows 778
+DONE ce511b43e2c11c98 1352 8.53 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None asfhyp3/hyp3-sdk duration_ms rows 778
+DONE 6c9fa5de573d49ab 39 9.23 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None 0b01001001/spectree sampled_peak_rss_bytes rows 778
+DONE 9c8ff77948dd662d 190 3.66 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None 12rambau/sepal_ui sampled_peak_rss_bytes rows 778
+DONE 2e896bcc85dcf0a7 12660 18.78 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None 15five/scim2-filter-parser sampled_peak_rss_bytes rows 778
+DONE d8cc0fb69847f0ea 1440 19.98 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None 20c/ctl sampled_peak_rss_bytes rows 778
+DONE 1862bdcbef967783 390 3.97 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None 3yourmind/django-migration-linter sampled_peak_rss_bytes rows 778
+DONE 636f186662dbedea 2450 18.33 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None 4degrees/clique sampled_peak_rss_bytes rows 778
+DONE 3a51ab7657fddf74 160 3.48 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None ai4s2s/lilio sampled_peak_rss_bytes rows 778
+DONE 5cacee1addac9fa7 1080 20.25 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None armmbed/greentea sampled_peak_rss_bytes rows 778
+DONE ea288eb6b05b23c9 70 3.33 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None armmbed/mbed-tools sampled_peak_rss_bytes rows 778
+DONE ea51020774aa2dde 10200 18.39 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None armmbed/yotta sampled_peak_rss_bytes rows 778
+DONE cfe7d7a14750f799 1040 3.16 seconds
+FOLD v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None asfhyp3/hyp3-sdk sampled_peak_rss_bytes rows 778
+DONE 4f53a6ac13eac6e7 30 3.16 seconds
+FOLD v6:experiment-30x2:swe-run-v2|aarch64|None|None|None|4|None 0b01001001/spectree duration_ms rows 5
+DONE fe9cc6a785f2b6e0 13 0.03 seconds
+FOLD v6:experiment-30x2:swe-run-v2|aarch64|None|None|None|4|None 12rambau/sepal_ui duration_ms rows 5
+DONE 6a61ba6431c122b6 26 0.0 seconds
+FOLD v6:experiment-30x2:swe-run-v2|aarch64|None|None|None|4|None 20c/ctl duration_ms rows 5
+DONE 26b6317a499c47b1 26 0.03 seconds
+FOLD v6:experiment-30x2:swe-run-v2|aarch64|None|None|None|4|None 0b01001001/spectree sampled_peak_rss_bytes rows 5
+DONE 60f5d1757634701a 10 0.02 seconds
+FOLD v6:experiment-30x2:swe-run-v2|aarch64|None|None|None|4|None 12rambau/sepal_ui sampled_peak_rss_bytes rows 5
+DONE 5ec590485c745041 20 0.0 seconds
+FOLD v6:experiment-30x2:swe-run-v2|aarch64|None|None|None|4|None 20c/ctl sampled_peak_rss_bytes rows 5
+DONE 9db4debcdcc9eddc 20 0.0 seconds
+FOLD v6:trace-audit:20260920-054917-d62adf68|aarch64|None|320.0|qemu|2|None 0b01001001/spectree duration_ms rows 166
+DONE 0706a34b0aff5af1 442 2.33 seconds
+FOLD v6:trace-audit:20260920-054917-d62adf68|aarch64|None|320.0|qemu|2|None 12rambau/sepal_ui duration_ms rows 166
+DONE 72f8e57730a5fd3d 8268 1.66 seconds
+FOLD v6:trace-audit:20260920-054917-d62adf68|aarch64|None|320.0|qemu|2|None 0b01001001/spectree sampled_peak_rss_bytes rows 146
+DONE 809c51cca33bcf40 200 0.8 seconds
+FOLD v6:trace-audit:20260920-054917-d62adf68|aarch64|None|320.0|qemu|2|None 12rambau/sepal_ui sampled_peak_rss_bytes rows 146
+DONE 2816c763eb0e302b 6000 0.94 seconds
+FOLD v6:trace-audit:20260920-054917-d62adf68|aarch64|None|320.0|qemu|2|None 0b01001001/spectree cpu_time_seconds rows 166
+DONE e54a318fedd1b875 340 0.89 seconds
+FOLD v6:trace-audit:20260920-054917-d62adf68|aarch64|None|320.0|qemu|2|None 12rambau/sepal_ui cpu_time_seconds rows 166
+DONE 219425ecbb6bdeaa 6360 1.42 seconds
+FOLD v6:trace-audit:20260920-105843-4abef2c5|aarch64|None|320.0|qemu|2|None 0b01001001/spectree duration_ms rows 140
+DONE fbbb21c78fcd8b28 637 2.73 seconds
+FOLD v6:trace-audit:20260920-105843-4abef2c5|aarch64|None|320.0|qemu|2|None 12rambau/sepal_ui duration_ms rows 140
+DONE 6380d23800798de6 1794 1.19 seconds
+FOLD v6:trace-audit:20260920-105843-4abef2c5|aarch64|None|320.0|qemu|2|None 0b01001001/spectree sampled_peak_rss_bytes rows 133
+DONE 810c89fea9590142 440 1.05 seconds
+FOLD v6:trace-audit:20260920-105843-4abef2c5|aarch64|None|320.0|qemu|2|None 12rambau/sepal_ui sampled_peak_rss_bytes rows 133
+DONE bd3c95d13c7f6465 1380 1.22 seconds
+FOLD v6:trace-audit:20260920-105843-4abef2c5|aarch64|None|320.0|qemu|2|None 0b01001001/spectree cpu_time_seconds rows 140
+DONE fcec7e5e21a7423f 490 0.89 seconds
+FOLD v6:trace-audit:20260920-105843-4abef2c5|aarch64|None|320.0|qemu|2|None 12rambau/sepal_ui cpu_time_seconds rows 140
+DONE 7954f5d5dafd9e1f 1380 1.14 seconds
+FOLD v6:trace-audit:20260920-134712-3bd11c46|aarch64|None|320.0|qemu|2|None 0b01001001/spectree duration_ms rows 52
+DONE bd15784304d0a6e0 364 0.23 seconds
+FOLD v6:trace-audit:20260920-134712-3bd11c46|aarch64|None|320.0|qemu|2|None 12rambau/sepal_ui duration_ms rows 52
+DONE da4ca9fb1334f55f 312 0.11 seconds
+FOLD v6:trace-audit:20260920-134712-3bd11c46|aarch64|None|320.0|qemu|2|None 0b01001001/spectree sampled_peak_rss_bytes rows 45
+DONE 7ad9b9a70746d2c5 240 0.11 seconds
+FOLD v6:trace-audit:20260920-134712-3bd11c46|aarch64|None|320.0|qemu|2|None 12rambau/sepal_ui sampled_peak_rss_bytes rows 45
+DONE cbfb6306d50435f3 210 0.06 seconds
+FOLD v6:trace-audit:20260920-134712-3bd11c46|aarch64|None|320.0|qemu|2|None 0b01001001/spectree cpu_time_seconds rows 52
+DONE ce52cb16cdb43d97 280 0.14 seconds
+FOLD v6:trace-audit:20260920-134712-3bd11c46|aarch64|None|320.0|qemu|2|None 12rambau/sepal_ui cpu_time_seconds rows 52
+DONE 3386e0f1a930fe68 240 0.08 seconds
+FOLD v6:trace-audit:20260920-153840-eaa0dfcc|aarch64|None|320.0|qemu|2|None 0b01001001/spectree duration_ms rows 45
+DONE 864f420e700c1c06 273 0.34 seconds
+FOLD v6:trace-audit:20260920-153840-eaa0dfcc|aarch64|None|320.0|qemu|2|None 12rambau/sepal_ui duration_ms rows 45
+DONE 0f17edca65634ef2 312 0.12 seconds
+FOLD v6:trace-audit:20260920-153840-eaa0dfcc|aarch64|None|320.0|qemu|2|None 0b01001001/spectree sampled_peak_rss_bytes rows 42
+DONE 929b08de8f8fb61b 180 0.09 seconds
+FOLD v6:trace-audit:20260920-153840-eaa0dfcc|aarch64|None|320.0|qemu|2|None 12rambau/sepal_ui sampled_peak_rss_bytes rows 42
+DONE 80ac69dad4901f50 240 0.06 seconds
+FOLD v6:trace-audit:20260920-153840-eaa0dfcc|aarch64|None|320.0|qemu|2|None 0b01001001/spectree cpu_time_seconds rows 45
+DONE 38d91cd702594bca 210 0.11 seconds
+FOLD v6:trace-audit:20260920-153840-eaa0dfcc|aarch64|None|320.0|qemu|2|None 12rambau/sepal_ui cpu_time_seconds rows 45
+DONE 240981615eb0cb64 240 0.08 seconds
+FOLD v6:trace-audit:20260920-172943-8ea96fce|aarch64|None|320.0|qemu|2|None 0b01001001/spectree duration_ms rows 40
+DONE adae42599d198143 182 0.25 seconds
+FOLD v6:trace-audit:20260920-172943-8ea96fce|aarch64|None|320.0|qemu|2|None 12rambau/sepal_ui duration_ms rows 40
+DONE b7463d00db0b7bc4 338 0.3 seconds
+FOLD v6:trace-audit:20260920-172943-8ea96fce|aarch64|None|320.0|qemu|2|None 0b01001001/spectree sampled_peak_rss_bytes rows 36
+DONE c3640a8aa533c670 120 0.11 seconds
+FOLD v6:trace-audit:20260920-172943-8ea96fce|aarch64|None|320.0|qemu|2|None 12rambau/sepal_ui sampled_peak_rss_bytes rows 36
+DONE 0d2e9abfba552cd3 240 0.08 seconds
+FOLD v6:trace-audit:20260920-172943-8ea96fce|aarch64|None|320.0|qemu|2|None 0b01001001/spectree cpu_time_seconds rows 40
+DONE 87eb217d2b3f58a8 140 0.14 seconds
+FOLD v6:trace-audit:20260920-172943-8ea96fce|aarch64|None|320.0|qemu|2|None 12rambau/sepal_ui cpu_time_seconds rows 40
+DONE 42b3fdff6a3f184f 260 0.08 seconds
+FOLD v6:trace-audit:20260920-172943-8ea96fce|aarch64|None|320.0|qemu|2|cgroup_v2_environment_union_v1 0b01001001/spectree memory_extra_peak_bytes rows 11
+DONE 684c2a89c2e4a0bf 70 0.06 seconds
+FOLD v6:trace-audit:20260920-172943-8ea96fce|aarch64|None|320.0|qemu|2|cgroup_v2_environment_union_v1 12rambau/sepal_ui memory_extra_peak_bytes rows 11
+DONE 58db5647e2bd2e3a 40 0.08 seconds
+FOLD v6:trace-audits:20260921-041901-94a4b095|aarch64|None|320.0|qemu|None|None 0b01001001/spectree duration_ms rows 76
+DONE 0892ee09f2390137 182 1.16 seconds
+FOLD v6:trace-audits:20260921-041901-94a4b095|aarch64|None|320.0|qemu|None|None 12rambau/sepal_ui duration_ms rows 76
+DONE 8ca529ecf02c12df 3250 1.03 seconds
+FOLD v6:trace-audits:20260921-041901-94a4b095|aarch64|None|320.0|qemu|None|None 0b01001001/spectree sampled_peak_rss_bytes rows 71
+DONE ee4ea4e512c193ac 100 0.55 seconds
+FOLD v6:trace-audits:20260921-041901-94a4b095|aarch64|None|320.0|qemu|None|None 12rambau/sepal_ui sampled_peak_rss_bytes rows 71
+DONE 5798781f18c758b6 2450 0.69 seconds
+FOLD v6:trace-audits:20260921-041901-94a4b095|aarch64|None|320.0|qemu|None|None 0b01001001/spectree cpu_time_seconds rows 76
+DONE e42b67c26a318a17 140 0.44 seconds
+FOLD v6:trace-audits:20260921-041901-94a4b095|aarch64|None|320.0|qemu|None|None 12rambau/sepal_ui cpu_time_seconds rows 76
+DONE 829f002f9e9469f2 2500 0.88 seconds
+FOLD v6:trace-audits:20260921-041901-94a4b095|aarch64|None|320.0|qemu|None|cgroup_v2_environment_union_v1 0b01001001/spectree memory_extra_peak_bytes rows 27
+DONE 0b18cd08aaffa797 50 0.72 seconds
+FOLD v6:trace-audits:20260921-041901-94a4b095|aarch64|None|320.0|qemu|None|cgroup_v2_environment_union_v1 12rambau/sepal_ui memory_extra_peak_bytes rows 27
+DONE 7cc4af0cad2c4c16 570 0.14 seconds
+COMPLETE 109912 predictions
+Raw quality audit: 814 files {'tool_records': 32371, 'reported_success': 31950, 'not_marked_censored': 32334, 'raw_clause_records': 24599, 'tools_without_clause_records': 22718, 'reported_failure': 421, 'censored': 37}
+REPORT COMPLETE 109912 predictions 68 folds

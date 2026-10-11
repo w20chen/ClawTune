@@ -1,0 +1,107 @@
+[
+  {
+    "observations": 5036,
+    "reason": "fewer_than_two_repositories",
+    "stratum": "v5:pennylane-all76-c1-fast-ebpf-20260813|None|x86_64|None|None|None|None"
+  },
+  {
+    "observations": 1969,
+    "reason": "fewer_than_two_repositories",
+    "stratum": "v5:sqlglot-100-c2-fast-requested-ebpf-a0419d9-20260803|None|x86_64|None|None|None|None"
+  },
+  {
+    "observations": 1841,
+    "reason": "fewer_than_two_repositories",
+    "stratum": "v5:sqlglot-48-c2-fast-requested-ebpf-8a72722-20260803|None|x86_64|None|None|None|None"
+  },
+  {
+    "observations": 4395,
+    "reason": "fewer_than_two_repositories",
+    "stratum": "v5:sqlglot-prev100-c2-fast-requested-ebpf-20260804|None|x86_64|None|None|None|None"
+  },
+  {
+    "reason": "fewer_than_two_labeled_repositories",
+    "stratum": "v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None",
+    "target": "memory_extra_peak_bytes"
+  },
+  {
+    "reason": "fewer_than_two_labeled_repositories",
+    "stratum": "v6:batch-20260913:swe|aarch64|None|320.0|qemu|None|None",
+    "target": "cpu_time_seconds"
+  },
+  {
+    "observations": 3,
+    "reason": "fewer_than_two_repositories",
+    "stratum": "v6:benchmark-validation:verified-run|aarch64|None|None|None|3|None"
+  },
+  {
+    "reason": "fewer_than_two_labeled_repositories",
+    "stratum": "v6:experiment-30x2:swe-run-v2|aarch64|None|None|None|4|None",
+    "target": "memory_extra_peak_bytes"
+  },
+  {
+    "reason": "fewer_than_two_labeled_repositories",
+    "stratum": "v6:experiment-30x2:swe-run-v2|aarch64|None|None|None|4|None",
+    "target": "cpu_time_seconds"
+  },
+  {
+    "reason": "fewer_than_two_labeled_repositories",
+    "stratum": "v6:trace-audit:20260920-054917-d62adf68|aarch64|None|320.0|qemu|2|None",
+    "target": "memory_extra_peak_bytes"
+  },
+  {
+    "reason": "fewer_than_two_labeled_repositories",
+    "stratum": "v6:trace-audit:20260920-105843-4abef2c5|aarch64|None|320.0|qemu|2|None",
+    "target": "memory_extra_peak_bytes"
+  },
+  {
+    "reason": "fewer_than_two_labeled_repositories",
+    "stratum": "v6:trace-audit:20260920-134712-3bd11c46|aarch64|None|320.0|qemu|2|None",
+    "target": "memory_extra_peak_bytes"
+  },
+  {
+    "reason": "fewer_than_two_labeled_repositories",
+    "stratum": "v6:trace-audit:20260920-153840-eaa0dfcc|aarch64|None|320.0|qemu|2|None",
+    "target": "memory_extra_peak_bytes"
+  },
+  {
+    "reason": "fewer_than_two_labeled_repositories",
+    "stratum": "v6:trace-audit:20260920-172943-8ea96fce|aarch64|None|320.0|qemu|2|None",
+    "target": "memory_extra_peak_bytes"
+  },
+  {
+    "reason": "fewer_than_two_labeled_repositories",
+    "stratum": "v6:trace-audit:20260920-172943-8ea96fce|aarch64|None|320.0|qemu|2|cgroup_v2_environment_union_v1",
+    "target": "duration_ms"
+  },
+  {
+    "reason": "fewer_than_two_labeled_repositories",
+    "stratum": "v6:trace-audit:20260920-172943-8ea96fce|aarch64|None|320.0|qemu|2|cgroup_v2_environment_union_v1",
+    "target": "sampled_peak_rss_bytes"
+  },
+  {
+    "reason": "fewer_than_two_labeled_repositories",
+    "stratum": "v6:trace-audit:20260920-172943-8ea96fce|aarch64|None|320.0|qemu|2|cgroup_v2_environment_union_v1",
+    "target": "cpu_time_seconds"
+  },
+  {
+    "reason": "fewer_than_two_labeled_repositories",
+    "stratum": "v6:trace-audits:20260921-041901-94a4b095|aarch64|None|320.0|qemu|None|None",
+    "target": "memory_extra_peak_bytes"
+  },
+  {
+    "reason": "fewer_than_two_labeled_repositories",
+    "stratum": "v6:trace-audits:20260921-041901-94a4b095|aarch64|None|320.0|qemu|None|cgroup_v2_environment_union_v1",
+    "target": "duration_ms"
+  },
+  {
+    "reason": "fewer_than_two_labeled_repositories",
+    "stratum": "v6:trace-audits:20260921-041901-94a4b095|aarch64|None|320.0|qemu|None|cgroup_v2_environment_union_v1",
+    "target": "sampled_peak_rss_bytes"
+  },
+  {
+    "reason": "fewer_than_two_labeled_repositories",
+    "stratum": "v6:trace-audits:20260921-041901-94a4b095|aarch64|None|320.0|qemu|None|cgroup_v2_environment_union_v1",
+    "target": "cpu_time_seconds"
+  }
+]

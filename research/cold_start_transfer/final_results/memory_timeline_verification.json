@@ -1,0 +1,272 @@
+{
+  "checked": 38,
+  "failures": 0,
+  "records": [
+    {
+      "id": "6a3a2459b5c53a0247d892932887225738b3f3a6396b0131925e7b39b0cb2cb1:call_00_p17O86HEzrqmqvVzU8Ft9348:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audit\\20260920-172943-8ea96fce\\traces\\335f11d54fd9071acc70\\trace.jsonl",
+      "source_line": 6,
+      "max_sampling_gap_seconds": 0.030699491500854492,
+      "baseline_age_seconds": 0.028491973876953125
+    },
+    {
+      "id": "6a3a2459b5c53a0247d892932887225738b3f3a6396b0131925e7b39b0cb2cb1:call_00_QiW7bDoc0HMEXtabM3tt7878:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audit\\20260920-172943-8ea96fce\\traces\\335f11d54fd9071acc70\\trace.jsonl",
+      "source_line": 17,
+      "max_sampling_gap_seconds": 0.034204959869384766,
+      "baseline_age_seconds": 0.031397342681884766
+    },
+    {
+      "id": "6a3a2459b5c53a0247d892932887225738b3f3a6396b0131925e7b39b0cb2cb1:call_00_Y0Pf9b3ezIPtBbznyMLD6013:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audit\\20260920-172943-8ea96fce\\traces\\335f11d54fd9071acc70\\trace.jsonl",
+      "source_line": 30,
+      "max_sampling_gap_seconds": 0.05015897750854492,
+      "baseline_age_seconds": 0.04900979995727539
+    },
+    {
+      "id": "6a3a2459b5c53a0247d892932887225738b3f3a6396b0131925e7b39b0cb2cb1:call_00_9MvMqn1H7zX1kRuCe6Wq6164:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audit\\20260920-172943-8ea96fce\\traces\\335f11d54fd9071acc70\\trace.jsonl",
+      "source_line": 57,
+      "max_sampling_gap_seconds": 0.04955244064331055,
+      "baseline_age_seconds": 0.0007226467132568359
+    },
+    {
+      "id": "6a3a2459b5c53a0247d892932887225738b3f3a6396b0131925e7b39b0cb2cb1:call_00_9MvMqn1H7zX1kRuCe6Wq6164:memory:1",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audit\\20260920-172943-8ea96fce\\traces\\335f11d54fd9071acc70\\trace.jsonl",
+      "source_line": 57,
+      "max_sampling_gap_seconds": 0.07826757431030273,
+      "baseline_age_seconds": 0.04084515571594238
+    },
+    {
+      "id": "6a3a2459b5c53a0247d892932887225738b3f3a6396b0131925e7b39b0cb2cb1:call_00_6TYlMbY6IQ48fBfrt4fN1610:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audit\\20260920-172943-8ea96fce\\traces\\335f11d54fd9071acc70\\trace.jsonl",
+      "source_line": 84,
+      "max_sampling_gap_seconds": 0.050296783447265625,
+      "baseline_age_seconds": 0.03473782539367676
+    },
+    {
+      "id": "6a3a2459b5c53a0247d892932887225738b3f3a6396b0131925e7b39b0cb2cb1:call_00_JGUKJQwGqS8oRQUgFNOx5346:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audit\\20260920-172943-8ea96fce\\traces\\335f11d54fd9071acc70\\trace.jsonl",
+      "source_line": 89,
+      "max_sampling_gap_seconds": 0.05020618438720703,
+      "baseline_age_seconds": 0.030645132064819336
+    },
+    {
+      "id": "639100f5d6c87fef752eec4a897c5a339f29586d595856a5c8822af7134e7c90:call_00_haDFhhWtKqWbSWZHN2hV6767:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audit\\20260920-172943-8ea96fce\\traces\\4a1c8416685919568429\\trace.jsonl",
+      "source_line": 21,
+      "max_sampling_gap_seconds": 0.031491756439208984,
+      "baseline_age_seconds": 0.031109333038330078
+    },
+    {
+      "id": "639100f5d6c87fef752eec4a897c5a339f29586d595856a5c8822af7134e7c90:call_01_Mrhu08Aj9yQC1TQ7xzza2187:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audit\\20260920-172943-8ea96fce\\traces\\4a1c8416685919568429\\trace.jsonl",
+      "source_line": 28,
+      "max_sampling_gap_seconds": 0.0505979061126709,
+      "baseline_age_seconds": 0.04100918769836426
+    },
+    {
+      "id": "639100f5d6c87fef752eec4a897c5a339f29586d595856a5c8822af7134e7c90:call_01_L5afYhMARjHMdR3lFOJU1621:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audit\\20260920-172943-8ea96fce\\traces\\4a1c8416685919568429\\trace.jsonl",
+      "source_line": 35,
+      "max_sampling_gap_seconds": 0.04145312309265137,
+      "baseline_age_seconds": 0.00880885124206543
+    },
+    {
+      "id": "639100f5d6c87fef752eec4a897c5a339f29586d595856a5c8822af7134e7c90:call_00_kniT3OMx5ZimRNa3PmGo5642:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audit\\20260920-172943-8ea96fce\\traces\\4a1c8416685919568429\\trace.jsonl",
+      "source_line": 136,
+      "max_sampling_gap_seconds": 0.05016970634460449,
+      "baseline_age_seconds": 0.004360198974609375
+    },
+    {
+      "id": "5a5b1de01f400dfcf9d72dedf51e2458f10e05b6b0e9e51c3ad2f6907c326f61:call_00_teRr80M0r0QHXQ1grEzu8391:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\335f11d54fd9071acc70.trace.jsonl",
+      "source_line": 9,
+      "max_sampling_gap_seconds": 0.05017995834350586,
+      "baseline_age_seconds": 0.036744117736816406
+    },
+    {
+      "id": "5a5b1de01f400dfcf9d72dedf51e2458f10e05b6b0e9e51c3ad2f6907c326f61:call_00_teRr80M0r0QHXQ1grEzu8391:memory:1",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\335f11d54fd9071acc70.trace.jsonl",
+      "source_line": 9,
+      "max_sampling_gap_seconds": 0.04784107208251953,
+      "baseline_age_seconds": 0.0023698806762695312
+    },
+    {
+      "id": "5a5b1de01f400dfcf9d72dedf51e2458f10e05b6b0e9e51c3ad2f6907c326f61:call_00_cgl33Gm3iDwcy8UNItfP4886:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\335f11d54fd9071acc70.trace.jsonl",
+      "source_line": 65,
+      "max_sampling_gap_seconds": 0.05032968521118164,
+      "baseline_age_seconds": 0.032427310943603516
+    },
+    {
+      "id": "5a5b1de01f400dfcf9d72dedf51e2458f10e05b6b0e9e51c3ad2f6907c326f61:call_00_2LpNpbdLgx6BuIoc72pG5855:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\335f11d54fd9071acc70.trace.jsonl",
+      "source_line": 70,
+      "max_sampling_gap_seconds": 0.0507049560546875,
+      "baseline_age_seconds": 0.03570055961608887
+    },
+    {
+      "id": "5a5b1de01f400dfcf9d72dedf51e2458f10e05b6b0e9e51c3ad2f6907c326f61:call_00_sKUAfP9jEyRAVhaqsCgC1322:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\335f11d54fd9071acc70.trace.jsonl",
+      "source_line": 80,
+      "max_sampling_gap_seconds": 0.05020856857299805,
+      "baseline_age_seconds": 0.0325467586517334
+    },
+    {
+      "id": "63bd2c1568476288a4e49b66d59c1fb9d1c9d2a79f03ee48521939809c940d44:call_00_4TfHXL0uARgbUEdGgaUE5718:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\4a1c8416685919568429.trace.jsonl",
+      "source_line": 9,
+      "max_sampling_gap_seconds": 0.04341483116149902,
+      "baseline_age_seconds": 0.03758502006530762
+    },
+    {
+      "id": "63bd2c1568476288a4e49b66d59c1fb9d1c9d2a79f03ee48521939809c940d44:call_00_xmuc9IMcq1UXRBhIrqd32438:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\4a1c8416685919568429.trace.jsonl",
+      "source_line": 18,
+      "max_sampling_gap_seconds": 0.036484718322753906,
+      "baseline_age_seconds": 0.01410222053527832
+    },
+    {
+      "id": "63bd2c1568476288a4e49b66d59c1fb9d1c9d2a79f03ee48521939809c940d44:call_00_XQIiZ9Rf8hOpDwhA3KpQ2867:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\4a1c8416685919568429.trace.jsonl",
+      "source_line": 74,
+      "max_sampling_gap_seconds": 0.04923868179321289,
+      "baseline_age_seconds": 0.0009839534759521484
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_00_qNZFypa3nLeNIEKpO3ZF5506:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 6,
+      "max_sampling_gap_seconds": 0.05040383338928223,
+      "baseline_age_seconds": 0.039067745208740234
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_01_jSEgPfsgaUDsrsDyJMoW9765:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 17,
+      "max_sampling_gap_seconds": 0.017226457595825195,
+      "baseline_age_seconds": 0.03302502632141113
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_00_2h272yiIVEL2hIrQFT434617:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 43,
+      "max_sampling_gap_seconds": 0.034432411193847656,
+      "baseline_age_seconds": 0.035593271255493164
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_01_34eAFMabAPJrmFd47UFm6093:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 48,
+      "max_sampling_gap_seconds": 0.023826122283935547,
+      "baseline_age_seconds": 0.026553869247436523
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_00_KRjeONnWGpfXZ0ohrTmu1840:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 51,
+      "max_sampling_gap_seconds": 0.05023050308227539,
+      "baseline_age_seconds": 0.03658914566040039
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_00_KRjeONnWGpfXZ0ohrTmu1840:memory:1",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 51,
+      "max_sampling_gap_seconds": 0.038747310638427734,
+      "baseline_age_seconds": 0.011780738830566406
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_00_nrDMdtBBSRh9Ae6ulxox2325:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 64,
+      "max_sampling_gap_seconds": 0.037238121032714844,
+      "baseline_age_seconds": 0.013268709182739258
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_00_R5Srw0ZUUmNA32Qjt4f14047:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 77,
+      "max_sampling_gap_seconds": 0.04892873764038086,
+      "baseline_age_seconds": 0.007908821105957031
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_00_R5Srw0ZUUmNA32Qjt4f14047:memory:1",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 77,
+      "max_sampling_gap_seconds": 0.04899954795837402,
+      "baseline_age_seconds": 0.0012629032135009766
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_00_7NQDFTdjOADkCsMYrBEL2623:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 82,
+      "max_sampling_gap_seconds": 0.05024433135986328,
+      "baseline_age_seconds": 0.03154563903808594
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_00_7NQDFTdjOADkCsMYrBEL2623:memory:1",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 82,
+      "max_sampling_gap_seconds": 0.0502324104309082,
+      "baseline_age_seconds": 0.024445295333862305
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_00_D4jfVKOK8G0hbcAZJcME0924:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 87,
+      "max_sampling_gap_seconds": 0.05022025108337402,
+      "baseline_age_seconds": 0.03662848472595215
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_00_yLkNP81bzwnO4u420SJH2799:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 107,
+      "max_sampling_gap_seconds": 0.025505542755126953,
+      "baseline_age_seconds": 0.024737119674682617
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_00_B2EuBab2RrHiLu6jn4rI7835:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 121,
+      "max_sampling_gap_seconds": 0.050307273864746094,
+      "baseline_age_seconds": 0.04079103469848633
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_00_mwx3R86EMmsdp0Xeq4vI1463:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 139,
+      "max_sampling_gap_seconds": 0.05017590522766113,
+      "baseline_age_seconds": 0.019396543502807617
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_00_LF6VQDW6HUR2fySaW1DG4437:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 148,
+      "max_sampling_gap_seconds": 0.05016279220581055,
+      "baseline_age_seconds": 0.027541399002075195
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_00_uNYcueTIgw4vYgW1d8oA6857:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 171,
+      "max_sampling_gap_seconds": 0.05015707015991211,
+      "baseline_age_seconds": 0.02063775062561035
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_00_uNYcueTIgw4vYgW1d8oA6857:memory:1",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 171,
+      "max_sampling_gap_seconds": 0.030211448669433594,
+      "baseline_age_seconds": 0.019939184188842773
+    },
+    {
+      "id": "8f2b0d0e8946902f2060094b5d008f3be59cb8fedfe3e2291964ec1b0bfb8ad5:call_00_JqUja5GJwpJVQlILvPDf4119:memory:0",
+      "source": "C:\\Users\\29068\\Desktop\\ClawTune\\.runtime\\trace-audits\\20260921-041901-94a4b095\\5be3e95bd5bfcded5289.trace.jsonl",
+      "source_line": 181,
+      "max_sampling_gap_seconds": 0.047842979431152344,
+      "baseline_age_seconds": 0.0023345947265625
+    }
+  ]
+}

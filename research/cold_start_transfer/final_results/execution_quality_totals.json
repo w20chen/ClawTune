@@ -1,0 +1,9 @@
+{
+  "censored": 37,
+  "not_marked_censored": 32334,
+  "raw_clause_records": 24599,
+  "reported_failure": 421,
+  "reported_success": 31950,
+  "tool_records": 32371,
+  "tools_without_clause_records": 22718
+}
