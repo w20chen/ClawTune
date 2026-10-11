@@ -1,0 +1,93 @@
+{
+  "grammar": {
+    "syntax": {
+      "clusters": true,
+      "intermixed": true,
+      "assignments": false
+    },
+    "positionals": [
+      {
+        "role": "operand",
+        "min": 0,
+        "max": null
+      }
+    ]
+  },
+  "options": {
+    "-f": {
+      "independent": true
+    }
+  },
+  "add_options": [
+    {
+      "names": [
+        "-n",
+        "--lines"
+      ],
+      "canonical": "--lines",
+      "min": 1,
+      "max": 1,
+      "forms": [
+        "separate",
+        "attached",
+        "equals"
+      ],
+      "optional_value": "attached",
+      "dash_values": "attached",
+      "repeat": "ordered",
+      "independent": true
+    },
+    {
+      "names": [
+        "-c",
+        "--bytes"
+      ],
+      "canonical": "--bytes",
+      "min": 1,
+      "max": 1,
+      "forms": [
+        "separate",
+        "attached",
+        "equals"
+      ],
+      "optional_value": "attached",
+      "dash_values": "attached",
+      "repeat": "ordered",
+      "independent": true
+    },
+    {
+      "names": [
+        "-q"
+      ],
+      "canonical": "-q",
+      "min": 0,
+      "max": 0,
+      "forms": [
+        "separate",
+        "attached",
+        "equals"
+      ],
+      "optional_value": "attached",
+      "dash_values": "attached",
+      "repeat": "ordered",
+      "independent": true
+    },
+    {
+      "names": [
+        "-v"
+      ],
+      "canonical": "-v",
+      "min": 0,
+      "max": 0,
+      "forms": [
+        "separate",
+        "attached",
+        "equals"
+      ],
+      "optional_value": "attached",
+      "dash_values": "attached",
+      "repeat": "ordered",
+      "independent": true
+    }
+  ]
+}

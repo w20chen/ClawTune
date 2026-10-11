@@ -23,7 +23,7 @@ def parse_execution(command: str | None, parser=parse_command_clauses) -> tuple[
     previous_end = 0
     previous_preparation = None
     for index, raw in enumerate(parsed["clauses"]):
-        clause = dict(raw)
+        clause = dict(raw, syntax_argv=list(raw["argv"]))
         argv = list(clause["argv"])
         if "span" in clause:
             start, end = clause["span"]

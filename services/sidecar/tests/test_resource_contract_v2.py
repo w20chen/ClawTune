@@ -168,11 +168,12 @@ def test_environment_is_polled_on_every_monitor_iteration():
     assert len(polls) == 3
 
 
-def test_wrapped_training_matches_unwrapped_query_and_reimport():
+def test_wrapped_training_preserves_backend_identity_and_reimport():
     wrapped = replace(observation(), bin="timeout", argv=("timeout", "-k", "2", "30", "env", "X=1", "pytest", "tests/"))
     for kb in (ClauseResourceKB(), LatticeTimeKB()):
         kb.observe_completed_clause(wrapped)
-        query = [{"bin": "pytest", "argv": ["pytest", "tests/"]}]
+        query = [{"bin": "pytest", "argv": ["pytest", "tests/"]}] if isinstance(kb, ClauseResourceKB) else [
+            {"bin": wrapped.bin, "argv": list(wrapped.argv)}]
         assert kb.predict_load_samples("r", query, 10)[0]["cpu_peak_cores"]["values"] == (3,)
         restored = type(kb).from_json_obj(kb.to_json_obj())
         assert restored.merge_historical([wrapped]) == 0

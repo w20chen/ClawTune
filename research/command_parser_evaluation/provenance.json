@@ -1,0 +1,21 @@
+{
+  "dataset": "C:\\Users\\29068\\Desktop\\swe-rebench-original-flat-644-20260904\\swe-rebench-original-flat-644-20260904",
+  "trace_files": 644,
+  "unique_tasks": 631,
+  "two_trace_tasks": 13,
+  "input_file_hashes_identical_between_runs": true,
+  "phase1_commit": "b513e1d",
+  "source_revision_policy": "main source is the commit containing this report; rule manifest is archived alongside it",
+  "seed_file_sha256": {
+    "clause-lattice-time-kb.json": "a3cfb33e4f5c567430249791cfa12f1e0486ee64208aa3c3bd708ae98caa4fb3",
+    "clause-resource-kb.json": "41f6a61719b261d256d9a337a976481b0530e1125e31637e9639336770bdb4a5",
+    "edge-kappa-kb.json": "59c5bab2658ebfea7fe2893e9b2b513604db8bc98e994f9151465feb735340bb",
+    "manifest.json": "6dfa19c302653778e23645429c5cdcaf8e5ef4fc4a719725c31b0d614fd3ab96",
+    "runtime-tool-resource-kb.json": "6ba30767c8ebf712eb4ef5aed3cfe71272ecafc43afe0c4bc54269fee8708748"
+  },
+  "python": "3.14 WSL Ubuntu",
+  "split_seed": 42,
+  "train_fraction": 0.8,
+  "rss_unit": "MiB",
+  "generation_enabled_during_accuracy_evaluation": false
+}

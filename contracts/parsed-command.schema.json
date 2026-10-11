@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/parsed-command.schema.json",
+  "type": "object",
+  "properties": {
+    "format": {
+      "const": "parsed-command.v1"
+    },
+    "tool": {
+      "type": "string",
+      "maxLength": 65536
+    },
+    "argv": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 65536
+      },
+      "maxItems": 16384
+    },
+    "layers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "entry": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "mode": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "maxLength": 65536
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 65536
+                  },
+                  "maxItems": 16384
+                },
+                "repeat": {
+                  "type": "string",
+                  "maxLength": 65536
+                },
+                "independent": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "name",
+                "values",
+                "repeat",
+                "independent"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 16384
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 65536
+            },
+            "maxItems": 16384
+          },
+          "opaque": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 65536
+            },
+            "maxItems": 16384
+          },
+          "payload": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 65536
+          },
+          "script": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "scope",
+          "entry",
+          "mode",
+          "options",
+          "args",
+          "opaque",
+          "payload",
+          "script"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 9
+    },
+    "target": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 65536
+      },
+      "maxItems": 16384
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 65536
+      },
+      "maxItems": 16384
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 65536
+      },
+      "maxItems": 16384
+    },
+    "status": {
+      "enum": [
+        "complete",
+        "partial",
+        "invalid"
+      ]
+    },
+    "roles": {
+      "type": "array",
+      "maxItems": 32768,
+      "items": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "entry",
+              "entry_option",
+              "option",
+              "operand",
+              "subcommand",
+              "payload",
+              "opaque"
+            ]
+          },
+          "start": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "scope",
+          "kind",
+          "start",
+          "end"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "format",
+    "tool",
+    "argv",
+    "layers",
+    "target",
+    "diagnostics",
+    "rules",
+    "status",
+    "roles"
+  ],
+  "additionalProperties": false
+}

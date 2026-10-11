@@ -1,0 +1,69 @@
+{
+  "grammar": {
+    "syntax": {
+      "clusters": true,
+      "intermixed": true,
+      "assignments": false
+    },
+    "positionals": [
+      {
+        "role": "operand",
+        "min": 1,
+        "max": 1,
+        "skip_if_options": [
+          "-e",
+          "--expression",
+          "-f",
+          "--file"
+        ]
+      },
+      {
+        "role": "operand",
+        "min": 0,
+        "max": null
+      }
+    ],
+    "subcommands": []
+  },
+  "options": {
+    "-n": {
+      "names": [
+        "-n",
+        "--quiet",
+        "--silent"
+      ],
+      "canonical": "--quiet",
+      "independent": true
+    },
+    "-e": {
+      "names": [
+        "-e",
+        "--expression"
+      ],
+      "canonical": "--expression",
+      "independent": true
+    },
+    "-f": {
+      "names": [
+        "-f",
+        "--file"
+      ],
+      "canonical": "--file",
+      "independent": true
+    },
+    "-i": {
+      "min": 0,
+      "max": 1,
+      "optional_value": "attached",
+      "independent": true,
+      "names": [
+        "-i",
+        "--in-place"
+      ],
+      "canonical": "--in-place"
+    },
+    "-u": {
+      "independent": true
+    }
+  }
+}

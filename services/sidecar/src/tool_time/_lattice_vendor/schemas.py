@@ -38,6 +38,7 @@ class Observation:
     exit_code: int | None = None
     tool_name: str | None = None
     clause_index: int | None = None
+    command_features: dict | None = None
 
 
 @dataclass

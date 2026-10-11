@@ -9,7 +9,6 @@ import copy
 import hashlib
 import json
 import math
-import shlex
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
@@ -20,7 +19,8 @@ from clawtune_sidecar.identity import correlation_key
 from tool_resource.commands import normalized_observation
 from tool_resource.features import shell_bin_requires_exec_evidence
 from tool_resource.runtime_kb import ClauseObservation, is_pipeline_dependent_consumer
-from tool_time.edge_kappa_adapter import NORMALIZATION_VERSION, shell_query
+from tool_time.edge_kappa_adapter import NORMALIZATION_VERSION, feature_query
+from command_parser.service import observation_features, clause_features
 
 
 def _digest(value: Any) -> str:
@@ -39,10 +39,11 @@ def training_event(observation: ClauseObservation) -> TrainingEvent | None:
             or is_pipeline_dependent_consumer(row) or row.in_loop or row.in_subst
             or not shell_bin_requires_exec_evidence(row.bin, row.argv[0])):
         return None
-    query = shell_query(shlex.join(row.argv), repo=row.repo)
+    record = observation_features(observation)
+    query = feature_query(record)
     identity = _digest([row.repo, row.argv, row.ts_start, row.ts_end, row.latency_ms])
     return TrainingEvent(query, TimeOutcome(identity, row.ts_start, row.ts_end,
-        row.repo or "repository-neutral", identity, "0", duration_ms=row.latency_ms))
+        row.repo or "repository-neutral", identity, str(row.clause_index) if row.clause_index is not None else "observed", duration_ms=row.latency_ms))
 
 
 class EdgeKappaRuntime:
@@ -108,7 +109,7 @@ class EdgeKappaRuntime:
                 row["duration_ms"] = {"values": (), "unavailable_reason": reason}
                 output.append(row)
                 continue
-            query = shell_query(shlex.join(clause["argv"]), repo=repo)
+            query = feature_query(clause_features(clause, repo))
             event_id = None
             if not self.frozen and call_id is not None and call_id not in self._completed_calls:
                 event_id = f"{call_id}:{clause.get('clause_index', index)}"
@@ -125,7 +126,7 @@ class EdgeKappaRuntime:
                     "start_time": start, "query": {"features": sorted(query.features),
                     "core_features": sorted(query.core_features), "tool": query.tool,
                     "normalization_version": query.normalization_version},
-                    "clause_id": str(clause.get("clause_index", index))}
+                    "clause_id": str(clause.get("clause_index", index)), "argv": list(clause.get("syntax_argv", clause["argv"]))}
             distribution = self.kb.predict_duration(query)
             row["duration_ms"] = {
                 "values": distribution.values_ms, "weights": distribution.weights,
@@ -157,9 +158,11 @@ class EdgeKappaRuntime:
         for event in events:
             if event.outcome.event_id in self._observation_ids:
                 continue
+            explicit_clause = event.outcome.clause_id != "observed"
             matches = [(key, token) for key, token in tokens.items()
-                       if frozenset(token["query"]["features"]) == event.query.features]
-            match = matches[0] if len(matches) == 1 and frequencies[event.query.features] == 1 else None
+                       if frozenset(token["query"]["features"]) == event.query.features
+                       and (not explicit_clause or token["clause_id"] == event.outcome.clause_id)]
+            match = matches[0] if len(matches) == 1 and (explicit_clause or frequencies[event.query.features] == 1) else None
             if match and event.outcome.end_time >= match[1]["start_time"]:
                 event_id, token = match
                 outcome = TimeOutcome(event_id, token["start_time"], event.outcome.end_time,

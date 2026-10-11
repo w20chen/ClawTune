@@ -1,0 +1,792 @@
+{
+  "format": "command-rule.v1",
+  "canonical": "ls",
+  "names": [
+    "ls"
+  ],
+  "scope": {
+    "kind": "global"
+  },
+  "origin": {
+    "kind": "fig",
+    "source": "https://github.com/withfig/autocomplete/blob/aef52acff84c45edde61ae610cc2c964802b9a38/src/ls.ts",
+    "revision": "aef52acff84c45edde61ae610cc2c964802b9a38",
+    "evidence": [
+      "overrides/ls.json"
+    ]
+  },
+  "grammar": {
+    "options": [
+      {
+        "names": [
+          "-@"
+        ],
+        "canonical": "-@",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-1"
+        ],
+        "canonical": "-1",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-A"
+        ],
+        "canonical": "-A",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-a"
+        ],
+        "canonical": "-a",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-B"
+        ],
+        "canonical": "-B",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-b"
+        ],
+        "canonical": "-b",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-C"
+        ],
+        "canonical": "-C",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-c"
+        ],
+        "canonical": "-c",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-d"
+        ],
+        "canonical": "-d",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-e"
+        ],
+        "canonical": "-e",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-F"
+        ],
+        "canonical": "-F",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-f"
+        ],
+        "canonical": "-f",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-G"
+        ],
+        "canonical": "-G",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-g"
+        ],
+        "canonical": "-g",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-H"
+        ],
+        "canonical": "-H",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-h"
+        ],
+        "canonical": "-h",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-i"
+        ],
+        "canonical": "-i",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-k"
+        ],
+        "canonical": "-k",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-L"
+        ],
+        "canonical": "-L",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-l"
+        ],
+        "canonical": "-l",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-m"
+        ],
+        "canonical": "-m",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-n"
+        ],
+        "canonical": "-n",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-O"
+        ],
+        "canonical": "-O",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-o"
+        ],
+        "canonical": "-o",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-P"
+        ],
+        "canonical": "-P",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-p"
+        ],
+        "canonical": "-p",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-q"
+        ],
+        "canonical": "-q",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-R"
+        ],
+        "canonical": "-R",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-r"
+        ],
+        "canonical": "-r",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-S"
+        ],
+        "canonical": "-S",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-s"
+        ],
+        "canonical": "-s",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-T"
+        ],
+        "canonical": "-T",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-t"
+        ],
+        "canonical": "-t",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-u"
+        ],
+        "canonical": "-u",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-U"
+        ],
+        "canonical": "-U",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-v"
+        ],
+        "canonical": "-v",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-W"
+        ],
+        "canonical": "-W",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-w"
+        ],
+        "canonical": "-w",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-x"
+        ],
+        "canonical": "-x",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-%"
+        ],
+        "canonical": "-%",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-,"
+        ],
+        "canonical": "-,",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "--color"
+        ],
+        "canonical": "--color",
+        "min": 1,
+        "max": 1,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      }
+    ],
+    "positionals": [
+      {
+        "role": "operand",
+        "min": 0,
+        "max": null
+      }
+    ],
+    "subcommands": [],
+    "syntax": {
+      "clusters": true,
+      "intermixed": true,
+      "assignments": false
+    },
+    "partial": []
+  }
+}

@@ -13,10 +13,13 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass
 from typing import Any, Sequence
 
+from command_parser import ParseContext, default_service
+from command_parser.models import CommandFeatures
+from command_parser.service import observation_features
 from tool_resource.runtime_kb import ClauseObservation, is_pipeline_dependent_consumer
 from tool_time._lattice_vendor.features import CoverageIndex, generate_context_nodes
 from tool_time._lattice_vendor.nodes import _compute_loso_risk, _loo_mse_log
-from tool_time._lattice_vendor.normalize import FeatureSet, normalize_command
+from tool_time._lattice_vendor.normalize import FeatureSet
 from tool_time._lattice_vendor.schemas import NodeStats, Observation
 from tool_time._lattice_vendor.selector import predict as select_prediction
 from tool_time._lattice_vendor.shrinkage import compute_shrinkage_variances
@@ -85,7 +88,7 @@ class ResourceState:
 
     def predict(
         self, repo: str, argv: Sequence[str], target: str, algorithm: str,
-        *, threshold: float | None = None,
+        *, threshold: float | None = None, command_features: CommandFeatures | None = None,
     ) -> ResourcePrediction:
         from tool_time import lattice_kb as config
 
@@ -97,7 +100,7 @@ class ResourceState:
         if not self.nodes:
             return unavailable("no_lattice_resource_evidence")
         command = shlex.join(argv)
-        features, _ = normalize_command(command, repo=repo)
+        features = (command_features or default_service().argv(argv, ParseContext(repo=repo))).features
         candidates = [node for fs, node in self.nodes.items() if fs.issubset(features)]
         # An unrelated global workload is not a resource estimate for this tool.
         if not candidates:
@@ -114,7 +117,7 @@ class ResourceState:
             risk = None
         else:
             result = select_prediction(
-                command, self.nodes, repo=repo,
+                command, self.nodes, repo=repo, query_features=features,
                 global_log_var=self.global_log_var, global_log_std=self.global_log_std,
                 beta=0.0, gamma=0.0, delta=config._DOMINANCE_DELTA,
                 risk_method=algorithm, exact_match_shortcut=(algorithm == "shrinkage"),
@@ -162,7 +165,7 @@ builder. Risk remains log1p(value/scale); zero CPU/RSS is a valid measurement.
 
     for target, (_unit, scale) in (LOAD_TARGETS if load else RESOURCE_TARGETS).items():
         training = [
-            Observation(cmd=shlex.join(row.argv), repo=row.repo, duration_s=values[target] / scale)
+            Observation(cmd=shlex.join(row.argv), repo=row.repo, duration_s=values[target] / scale, command_features=observation_features(row).to_dict())
             for row in observations if target in (values := measured(row))
         ]
         maximum = config._effective_max_optional_features(training)
@@ -170,7 +173,8 @@ builder. Risk remains log1p(value/scale); zero CPU/RSS is a valid measurement.
         normalized: list[tuple[FeatureSet, float, list[FeatureSet]]] = []
         all_logs = []
         for row in training:
-            features, core = normalize_command(row.cmd, repo=row.repo)
+            record = CommandFeatures.from_dict(row.command_features)
+            features, core = record.features, record.core
             all_logs.append(math.log1p(row.duration_s))
             own_nodes = generate_context_nodes(
                 features, core, mode=config._NODE_MODE, max_optional_features=maximum,

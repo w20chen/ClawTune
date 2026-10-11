@@ -94,10 +94,11 @@ def build_state(config: SidecarConfig | None = None) -> AppState:
     )
     if (cfg.tool_resource_artifact_dir is not None and not cfg.tool_resource_frozen
             and not cfg.tool_resource_trace_paths and not cfg.tool_resource_ebpf_trace_paths):
+        import os
+        from pathlib import Path
+
         from clawtune_kb import initialize_state
         from clawtune_kb.contracts import data_root
-        from pathlib import Path
-        import os
         kb_dir = cfg.tool_resource_artifact_dir
         seed = Path(os.environ.get("CLAWTUNE_KB_SEED", str(data_root() / "seeds/bootstrap-v1")))
         if not kb_dir.exists():
@@ -121,6 +122,16 @@ def build_state(config: SidecarConfig | None = None) -> AppState:
     )
     if predictor.artifact_dir is not None:
         predictor.artifact_dir.mkdir(parents=True, exist_ok=True)
+    from command_parser import CommandFeatureService
+    from command_parser.generation import GeneratorConfig, RuleGenerator
+    from command_parser.help_runner import HelpRunner
+    from command_parser.registry import RuleRegistry
+    rule_cache = predictor.artifact_dir / "command-rules" if predictor.artifact_dir else None
+    registry = RuleRegistry(rule_cache)
+    generator = RuleGenerator(registry, GeneratorConfig.from_sidecar(cfg),
+                              help_runner=HelpRunner(idle=lambda: not predictor.active_execution_ids(),
+                                                     gate=predictor._execution_start_lock))
+    predictor.command_features = CommandFeatureService(registry, generator)
     policy: SchedulingPolicy
     if cfg.policy == "concurrency":
         policy = ConcurrencyPolicy(leases, cfg.admission_wait_ms)

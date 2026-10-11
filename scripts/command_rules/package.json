@@ -1,0 +1,7 @@
+{
+  "name": "clawtune-command-rule-importer",
+  "private": true,
+  "type": "module",
+  "scripts": {"test": "node --test test/*.test.mjs"},
+  "dependencies": {"typescript": "5.6.3"}
+}

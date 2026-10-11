@@ -100,8 +100,8 @@ def test_target_contexts_use_only_their_eligible_evidence():
         observation(1, repo="org/other", memory_total_peak_bytes=None),
     ])
     output = targets(query(kb))
-    assert "repo=org/repo" in output["memory_total_peak_bytes"]["selected_features"]
-    assert "repo=org/repo" not in output["cpu_time_seconds"]["selected_features"]
+    assert 'context:["repo","org/repo"]' in output["memory_total_peak_bytes"]["selected_features"]
+    assert 'context:["repo","org/repo"]' not in output["cpu_time_seconds"]["selected_features"]
     assert output["cpu_time_seconds"]["evidence_count"] == 1
 
 
@@ -136,8 +136,8 @@ def test_resource_and_load_nodes_include_every_covering_observation(monkeypatch)
     import shlex
 
     monkeypatch.setattr(config, "_MAX_OPTIONAL_FEATURES", 1)
-    simple = ("python", "task.py", "--mode", "fast")
-    expanded = (*simple, "--verbose", "--seed", "1")
+    simple = ("pytest", "-q", "tests")
+    expanded = (*simple, "-x", "--maxfail", "1")
     rows = [
         observation(1, argv=simple, latency_ms=100,
                     cpu_ns_cumulative=100_000_000),

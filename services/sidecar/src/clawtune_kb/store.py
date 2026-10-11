@@ -84,9 +84,26 @@ def initialize_state(path: Path, seed: Path, *, owner: str) -> None:
     path.mkdir(parents=True)
     for name in manifest["snapshots"]:
         shutil.copyfile(seed / name, path / name)
+    # Seeds are immutable inputs. Old feature-dependent components start empty
+    # in the new writable state; their learned weights cannot be relabeled.
+    from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
+    from command_parser.models import FORMAT
+    from tool_time.lattice_kb import LatticeTimeKB
+    for name in ("clause-lattice-time-kb.json", "edge-kappa-kb.json"):
+        target = path / name
+        if not target.exists():
+            continue
+        payload = json.loads(target.read_text(encoding="utf-8"))
+        if payload.get("normalization_version") == FORMAT:
+            continue
+        if name == "clause-lattice-time-kb.json":
+            fresh = LatticeTimeKB().to_json_obj()
+        else:
+            fresh = EdgeKappaRuntime.fit([], payload["config"]["bucket_edges_ms"]).to_snapshot()
+        write_json(target, fresh)
     write_json(path / "state.json", {"schema": "clawtune.kb-state.v1", "owner": owner,
                "seed_sha256": digest(seed / "manifest.json"), "generation": 0,
-               "snapshots": manifest["snapshots"]})
+               "snapshots": {name: digest(path / name) for name in manifest["snapshots"]}})
     with StateStore(path) as store:
         store.checkpoint()
 

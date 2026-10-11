@@ -566,6 +566,8 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
         for metric in ("ipc", "llc_mpki", "llc_miss_rate")
     }
     test_sampling = {}
+    from command_parser import default_service
+    default_service().metrics(reset=True)
     for key in manifest["test"]:
         task = tasks[key]
         loaded = load_task(dataset, task, rss_unit)
@@ -652,6 +654,7 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
     if any(digest(output / "seed" / name) != bundle["snapshots"][name] for name in bundle["snapshots"]):
         raise RuntimeError("frozen test modified seed")
     report = {"schema": "clawtune.offline-report.v1", "train_tasks": len(manifest["train"]),
+              "command_parsing": {"scope": "pre-execution test clause parses; frozen bundled rules; no LLM", **default_service().metrics()},
               "test_tasks": len(manifest["test"]), "test_updates": 0, "metrics": summaries,
               "bucket_edges": {target: list(values) for target, values in edges.items()},
               "repositories": repositories,

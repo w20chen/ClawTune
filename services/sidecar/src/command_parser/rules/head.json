@@ -1,0 +1,149 @@
+{
+  "format": "command-rule.v1",
+  "canonical": "head",
+  "names": [
+    "head"
+  ],
+  "scope": {
+    "kind": "global"
+  },
+  "origin": {
+    "kind": "fig",
+    "source": "https://github.com/withfig/autocomplete/blob/aef52acff84c45edde61ae610cc2c964802b9a38/src/head.ts",
+    "revision": "aef52acff84c45edde61ae610cc2c964802b9a38",
+    "evidence": [
+      "overrides/head.json"
+    ]
+  },
+  "grammar": {
+    "options": [
+      {
+        "names": [
+          "-c",
+          "--bytes"
+        ],
+        "canonical": "--bytes",
+        "min": 1,
+        "max": 1,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-n",
+          "--lines"
+        ],
+        "canonical": "--lines",
+        "min": 1,
+        "max": 1,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-q",
+          "--quiet",
+          "--silent"
+        ],
+        "canonical": "--quiet",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-v",
+          "--verbose"
+        ],
+        "canonical": "--verbose",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "--help"
+        ],
+        "canonical": "--help",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "--version"
+        ],
+        "canonical": "--version",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      }
+    ],
+    "positionals": [
+      {
+        "role": "operand",
+        "min": 0,
+        "max": null
+      }
+    ],
+    "subcommands": [],
+    "syntax": {
+      "clusters": true,
+      "intermixed": true,
+      "assignments": false
+    },
+    "partial": []
+  }
+}

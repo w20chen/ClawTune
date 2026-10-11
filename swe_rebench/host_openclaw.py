@@ -1341,6 +1341,7 @@ def _validate_lattice_time_observation(
         "stdin_from_pipe",
         "memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes",
         "memory_measurement", "memory_environment_id", "memory_eligible",
+        "command_features", "clause_index",
     }
     unknown = sorted(row.keys() - allowed)
     if unknown:
@@ -1348,6 +1349,15 @@ def _validate_lattice_time_observation(
             f"invalid lattice KB observation {location} in {path}: "
             f"unknown fields {unknown!r}"
         )
+    if row.get("command_features") is not None:
+        from command_parser.models import CommandFeatures
+        from jsonschema import ValidationError
+        try:
+            CommandFeatures.from_dict(row["command_features"])
+        except (ValueError, TypeError, ValidationError) as exc:
+            raise KnowledgeBaseSyncError(f"invalid command_features in {path}: {exc}") from exc
+    if row.get("clause_index") is not None and (type(row["clause_index"]) is not int or row["clause_index"] < 0):
+        raise KnowledgeBaseSyncError(f"invalid clause_index in {path}")
     required = {"repo", "bin", "argv", "ts_start", "ts_end", "latency_ms"}
     missing = sorted(required - row.keys())
     if missing:

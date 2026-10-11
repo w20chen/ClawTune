@@ -1,0 +1,450 @@
+{
+  "format": "command-rule.v1",
+  "canonical": "python",
+  "names": [
+    "python"
+  ],
+  "scope": {
+    "kind": "global"
+  },
+  "origin": {
+    "kind": "fig",
+    "source": "https://github.com/withfig/autocomplete/blob/aef52acff84c45edde61ae610cc2c964802b9a38/src/python.ts",
+    "revision": "aef52acff84c45edde61ae610cc2c964802b9a38",
+    "evidence": [
+      "overrides/python.json"
+    ]
+  },
+  "grammar": {
+    "options": [
+      {
+        "names": [
+          "-c"
+        ],
+        "canonical": "-c",
+        "min": 1,
+        "max": 1,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "any",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false,
+        "transition": {
+          "mode": "inline",
+          "action": "opaque"
+        }
+      },
+      {
+        "names": [
+          "-m"
+        ],
+        "canonical": "-m",
+        "min": 1,
+        "max": 1,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "any",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false,
+        "transition": {
+          "mode": "module",
+          "action": "module"
+        }
+      },
+      {
+        "names": [
+          "-?",
+          "-h",
+          "--help"
+        ],
+        "canonical": "--help",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-V",
+          "--version"
+        ],
+        "canonical": "--version",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-b"
+        ],
+        "canonical": "-b",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-B"
+        ],
+        "canonical": "-B",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true,
+        "persistent": false
+      },
+      {
+        "names": [
+          "--check-hash-based-pycs"
+        ],
+        "canonical": "--check-hash-based-pycs",
+        "min": 1,
+        "max": 1,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-d"
+        ],
+        "canonical": "-d",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-E"
+        ],
+        "canonical": "-E",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-i"
+        ],
+        "canonical": "-i",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-I"
+        ],
+        "canonical": "-I",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-O"
+        ],
+        "canonical": "-O",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-OO"
+        ],
+        "canonical": "-OO",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-R"
+        ],
+        "canonical": "-R",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-s"
+        ],
+        "canonical": "-s",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-S"
+        ],
+        "canonical": "-S",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-u"
+        ],
+        "canonical": "-u",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-v"
+        ],
+        "canonical": "-v",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-W"
+        ],
+        "canonical": "-W",
+        "min": 1,
+        "max": 1,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "any",
+        "repeat": "ordered",
+        "independent": true,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-x"
+        ],
+        "canonical": "-x",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-X"
+        ],
+        "canonical": "-X",
+        "min": 1,
+        "max": 1,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "any",
+        "repeat": "ordered",
+        "independent": true,
+        "persistent": false
+      },
+      {
+        "names": [
+          "-q"
+        ],
+        "canonical": "-q",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "attached",
+          "equals"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true
+      }
+    ],
+    "positionals": [
+      {
+        "role": "script_entry",
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "subcommands": [],
+    "syntax": {
+      "clusters": true,
+      "intermixed": true,
+      "assignments": false
+    },
+    "partial": [
+      "python:generateSpec"
+    ],
+    "literals": {
+      "-": {
+        "mode": "stdin",
+        "action": "opaque"
+      }
+    }
+  }
+}

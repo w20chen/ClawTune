@@ -25,6 +25,9 @@ from tool_resource.runtime_kb import ClauseObservation, is_pipeline_dependent_co
 from tool_time._lattice_vendor.features import estimate_node_count
 from tool_time._lattice_vendor.nodes import build_nodes
 from tool_time._lattice_vendor.normalize import FeatureSet, normalize_command
+from command_parser import ParseContext, default_service
+from command_parser.models import CommandFeatures, FORMAT
+from command_parser.service import observation_features, clause_features
 from tool_time._lattice_vendor.schemas import NodeStats, Observation, PredictionResult
 from tool_time._lattice_vendor.selector import predict as select_prediction
 from tool_time._lattice_vendor.shrinkage import compute_shrinkage_variances
@@ -254,7 +257,7 @@ class LatticeTimeKB:
                     for algorithm in LATTICE_TIME_ALGORITHMS
                 )
                 if parse_failed
-                else self._predict_clause(repo, argv)
+                else self._predict_clause(repo, argv, clause_features(clause, repo))
             )
             outcomes.append(
                 ClauseLatticeTimePredictions(
@@ -299,7 +302,7 @@ class LatticeTimeKB:
                     try:
                         result = (
                             ResourcePrediction(target, unit, algorithm, unavailable_reason="parse_failed", threshold=thresholds.get(target))
-                            if parse_failed else state.predict(repo, argv, target, algorithm, threshold=thresholds.get(target))
+                            if parse_failed else state.predict(repo, argv, target, algorithm, threshold=thresholds.get(target), command_features=clause_features(clause, repo))
                         )
                     except (KeyError, TypeError, ValueError) as exc:
                         result = ResourcePrediction(target, unit, algorithm, unavailable_reason=f"lattice_resource_error:{type(exc).__name__}")
@@ -336,7 +339,7 @@ class LatticeTimeKB:
                 if state is None:
                     continue
                 try:
-                    result = state.predict(repo, clause["argv"], target, algorithm)
+                    result = state.predict(repo, clause["argv"], target, algorithm, command_features=clause_features(clause, repo))
                     if result.unavailable_reason is None:
                         node = state.nodes[frozenset(result.selected_features)]
                         targets[target] = {"values": tuple(v * scale for v in node.durations),
@@ -350,6 +353,7 @@ class LatticeTimeKB:
         self,
         repo: str,
         argv: tuple[str, ...],
+        command_features: CommandFeatures | None = None,
     ) -> tuple[LatticeTimePrediction, ...]:
         self._ensure_nodes()
         if not self._nodes:
@@ -359,7 +363,7 @@ class LatticeTimeKB:
             )
 
         command = shlex.join(argv)
-        query_features, _ = normalize_command(command, repo=repo)
+        query_features = (command_features or default_service().argv(argv, ParseContext(repo=repo))).features
         predictions: list[LatticeTimePrediction] = []
         for algorithm in LATTICE_TIME_ALGORITHMS:
             try:
@@ -376,7 +380,7 @@ class LatticeTimeKB:
                         "lattice_candidate_limit_exceeded",
                     )
                 else:
-                    prediction = self._predict_vendored(command, repo, algorithm)
+                    prediction = self._predict_vendored(command, repo, algorithm, query_features)
             except (KeyError, TypeError, ValueError) as exc:
                 prediction = _unavailable_prediction(
                     algorithm,
@@ -390,10 +394,12 @@ class LatticeTimeKB:
         command: str,
         repo: str,
         algorithm: str,
+        query_features: FeatureSet,
     ) -> LatticeTimePrediction:
         result = select_prediction(
             command,
             self._nodes,
+            query_features=query_features,
             repo=repo,
             global_log_var=self._global_log_var,
             global_log_std=self._global_log_std,
@@ -493,6 +499,7 @@ class LatticeTimeKB:
 
         return {
             "schema": LATTICE_TIME_KB_SCHEMA,
+            "normalization_version": FORMAT,
             "node_generation": {
                 "mode": _NODE_MODE,
                 "max_optional_features": _MAX_OPTIONAL_FEATURES,
@@ -519,6 +526,8 @@ class LatticeTimeKB:
     def from_json_obj(cls, obj: Mapping[str, Any]) -> LatticeTimeKB:
         if obj.get("schema") != LATTICE_TIME_KB_SCHEMA:
             raise ValueError(f"unsupported lattice KB schema {obj.get('schema')!r}")
+        if obj.get("normalization_version") != FORMAT:
+            raise ValueError("Lattice command feature format changed; start a new state directory")
         expected_generation = {
             "mode": _NODE_MODE,
             "max_optional_features": _MAX_OPTIONAL_FEATURES,
@@ -576,6 +585,7 @@ def _build_node_state(
             duration_s=float(observation.latency_ms) / 1000.0,
             repo=observation.repo,
             clause_index=0,
+            command_features=observation_features(observation).to_dict(),
         )
         for observation in ordered
         if nonnegative(observation.latency_ms) and observation.latency_ms > 0
@@ -625,12 +635,12 @@ def _effective_max_optional_features(
 ) -> int:
     optional_counts: list[int] = []
     for observation in observations:
-        features, core = normalize_command(
-            observation.cmd,
-            repo=observation.repo,
-            cwd=observation.cwd,
-            env_id=observation.env_id,
-        )
+        if observation.command_features is not None:
+            record = CommandFeatures.from_dict(observation.command_features)
+            features, core = record.features, record.core
+        else:
+            features, core = normalize_command(observation.cmd, repo=observation.repo,
+                cwd=observation.cwd, env_id=observation.env_id, is_clause=True)
         optional_counts.append(len(features - core))
     for maximum in range(_MAX_OPTIONAL_FEATURES, -1, -1):
         estimates = [
@@ -687,7 +697,9 @@ def _unavailable_prediction(algorithm: str, reason: str) -> LatticeTimePredictio
 
 
 def _sanitize_resources(observation: ClauseObservation) -> ClauseObservation:
-    """Mask invalid optional resources without losing valid time/other targets."""
+    """Bind representation and mask only invalid optional resource labels."""
+    if observation.argv and observation.command_features is None:
+        observation = replace(observation, command_features=observation_features(observation).to_dict())
     from tool_resource.commands import normalized_observation
     observation = normalized_observation(observation)
     fields = ("cpu_ns_cumulative", "cpu_peak_cores", "sampled_peak_rss_mb", "memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes")
@@ -760,7 +772,7 @@ def _observation_from_json(row: Any, *, allow_resource_only: bool = True) -> Cla
         "pipeline_position",
         "stdin_from_pipe",
         "memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes",
-        "memory_measurement", "memory_environment_id", "memory_eligible",
+        "memory_measurement", "memory_environment_id", "memory_eligible", "command_features", "clause_index",
     }
     unknown = sorted(values.keys() - allowed)
     if unknown:

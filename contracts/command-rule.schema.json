@@ -1,0 +1,414 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/command-rule.schema.json",
+  "type": "object",
+  "properties": {
+    "format": {
+      "const": "command-rule.v1"
+    },
+    "canonical": {
+      "type": "string",
+      "maxLength": 65536
+    },
+    "names": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 65536
+      },
+      "maxItems": 16384,
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "global",
+            "runtime",
+            "script"
+          ]
+        },
+        "repo": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 65536
+        },
+        "runtime_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 65536
+        },
+        "entry": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "source_hash": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "tool_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 65536
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "origin": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "fig",
+            "curated",
+            "llm"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "revision": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "maxItems": 16384
+        }
+      },
+      "required": [
+        "kind",
+        "source",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "grammar": {
+      "$ref": "#/$defs/grammar"
+    },
+    "fixtures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "argv": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 65536
+            },
+            "maxItems": 16384
+          },
+          "status": {
+            "enum": [
+              "complete",
+              "partial",
+              "invalid"
+            ]
+          },
+          "target": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 65536
+            },
+            "maxItems": 16384
+          }
+        },
+        "required": [
+          "argv",
+          "status",
+          "target"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 128
+    }
+  },
+  "required": [
+    "format",
+    "canonical",
+    "names",
+    "scope",
+    "origin",
+    "grammar"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "grammar": {
+      "type": "object",
+      "properties": {
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "names": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 65536
+                },
+                "maxItems": 16384,
+                "minItems": 1,
+                "uniqueItems": true
+              },
+              "canonical": {
+                "type": "string",
+                "maxLength": 65536
+              },
+              "min": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 16384
+              },
+              "max": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 16384
+              },
+              "forms": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "separate",
+                    "attached",
+                    "equals"
+                  ]
+                },
+                "maxItems": 3
+              },
+              "optional_value": {
+                "enum": [
+                  "attached",
+                  "next",
+                  "numeric"
+                ]
+              },
+              "dash_values": {
+                "enum": [
+                  "any",
+                  "numeric",
+                  "attached"
+                ]
+              },
+              "repeat": {
+                "enum": [
+                  "last",
+                  "count",
+                  "ordered",
+                  "set"
+                ]
+              },
+              "independent": {
+                "type": "boolean"
+              },
+              "persistent": {
+                "type": "boolean"
+              },
+              "transition": {
+                "type": "object",
+                "properties": {
+                  "action": {
+                    "enum": [
+                      "opaque",
+                      "module",
+                      "script",
+                      "command"
+                    ]
+                  },
+                  "mode": {
+                    "enum": [
+                      "inline",
+                      "stdin",
+                      "module",
+                      "script",
+                      "command"
+                    ]
+                  }
+                },
+                "required": [
+                  "action",
+                  "mode"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "names",
+              "canonical",
+              "min",
+              "max",
+              "forms",
+              "optional_value",
+              "dash_values",
+              "repeat"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 4096
+        },
+        "positionals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "min": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 16384
+              },
+              "max": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 16384
+              },
+              "role": {
+                "enum": [
+                  "operand",
+                  "script_entry",
+                  "module_entry",
+                  "command_tail",
+                  "opaque_payload"
+                ]
+              },
+              "skip_if_options": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 65536
+                },
+                "maxItems": 16384
+              }
+            },
+            "required": [
+              "min",
+              "max",
+              "role"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 256
+        },
+        "subcommands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "names": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 65536
+                },
+                "maxItems": 16384
+              },
+              "canonical": {
+                "type": "string",
+                "maxLength": 65536
+              },
+              "grammar": {
+                "$ref": "#/$defs/grammar"
+              }
+            },
+            "required": [
+              "names",
+              "canonical",
+              "grammar"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 4096
+        },
+        "syntax": {
+          "type": "object",
+          "properties": {
+            "clusters": {
+              "type": "boolean"
+            },
+            "intermixed": {
+              "type": "boolean"
+            },
+            "assignments": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "clusters",
+            "intermixed",
+            "assignments"
+          ],
+          "additionalProperties": false
+        },
+        "literals": {
+          "type": "object",
+          "maxProperties": 16,
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "enum": [
+                  "opaque",
+                  "module",
+                  "script",
+                  "command"
+                ]
+              },
+              "mode": {
+                "enum": [
+                  "inline",
+                  "stdin",
+                  "module",
+                  "script",
+                  "command"
+                ]
+              }
+            },
+            "required": [
+              "action",
+              "mode"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "partial": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "maxItems": 16384
+        }
+      },
+      "required": [
+        "options",
+        "positionals",
+        "subcommands",
+        "syntax"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

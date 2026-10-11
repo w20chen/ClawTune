@@ -8,6 +8,16 @@
     "train_tasks": {"type": "integer", "minimum": 0},
     "test_tasks": {"type": "integer", "minimum": 0},
     "test_updates": {"const": 0},
+    "command_parsing": {
+      "type": "object", "additionalProperties": false, "required": ["scope"],
+      "properties": {
+        "scope": {"type": "string"},
+        "complete": {"type": "integer", "minimum": 0},
+        "partial": {"type": "integer", "minimum": 0},
+        "invalid": {"type": "integer", "minimum": 0},
+        "feature_truncated": {"type": "integer", "minimum": 0}
+      }
+    },
     "metrics": {"type": "array", "items": {"type": "object", "required": ["benchmark", "target", "eligible", "predicted", "coverage", "mae", "wape"]}},
     "models": {
       "type": "object", "additionalProperties": false, "required": ["tool", "trie", "lattice"],

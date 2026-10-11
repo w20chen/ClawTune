@@ -1,0 +1,127 @@
+{
+  "format": "command-rule.v1",
+  "canonical": "timeout",
+  "names": [
+    "timeout"
+  ],
+  "scope": {
+    "kind": "global"
+  },
+  "origin": {
+    "kind": "curated",
+    "source": "https://www.gnu.org/software/manual/",
+    "revision": "gnu-linux-initial",
+    "evidence": [
+      "overrides/timeout.json"
+    ]
+  },
+  "grammar": {
+    "options": [
+      {
+        "names": [
+          "-s",
+          "--signal"
+        ],
+        "canonical": "--signal",
+        "min": 1,
+        "max": 1,
+        "forms": [
+          "separate",
+          "attached",
+          "equals"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true
+      },
+      {
+        "names": [
+          "-k",
+          "--kill-after"
+        ],
+        "canonical": "--kill-after",
+        "min": 1,
+        "max": 1,
+        "forms": [
+          "separate",
+          "attached",
+          "equals"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true
+      },
+      {
+        "names": [
+          "--preserve-status"
+        ],
+        "canonical": "--preserve-status",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "attached",
+          "equals"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true
+      },
+      {
+        "names": [
+          "--foreground"
+        ],
+        "canonical": "--foreground",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "attached",
+          "equals"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true
+      },
+      {
+        "names": [
+          "--verbose"
+        ],
+        "canonical": "--verbose",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "attached",
+          "equals"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true
+      }
+    ],
+    "positionals": [
+      {
+        "role": "operand",
+        "min": 1,
+        "max": 1
+      },
+      {
+        "role": "command_tail",
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "subcommands": [],
+    "syntax": {
+      "clusters": true,
+      "intermixed": true,
+      "assignments": false
+    }
+  }
+}

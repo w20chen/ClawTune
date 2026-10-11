@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/command-features.schema.json",
+  "type": "object",
+  "properties": {
+    "format": {
+      "const": "command-features.v1"
+    },
+    "tool": {
+      "type": "string",
+      "maxLength": 65536
+    },
+    "features": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 65536
+      },
+      "maxItems": 16384,
+      "uniqueItems": true
+    },
+    "core": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 65536
+      },
+      "maxItems": 16384,
+      "uniqueItems": true
+    },
+    "parse_digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "status": {
+      "enum": [
+        "complete",
+        "partial",
+        "invalid"
+      ]
+    },
+    "omitted_features": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 16384
+    }
+  },
+  "required": [
+    "format",
+    "tool",
+    "features",
+    "core",
+    "parse_digest",
+    "status",
+    "omitted_features"
+  ],
+  "additionalProperties": false
+}

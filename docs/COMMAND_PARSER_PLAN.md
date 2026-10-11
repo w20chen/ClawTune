@@ -1,11 +1,11 @@
 # Command parser implementation plan
 
-Status: implementation specification. Scope and the four choices marked "Confirmed" were agreed on 2026-10-11; the remaining details are concrete engineering defaults for implementation. This document specifies work to implement; it does not claim that the new parser already exists.
+Status: implemented on `main`. Usage is in [command-parsing.md](command-parsing.md); evaluation is in [the command parser study](../research/command_parser_evaluation/README.md). Target-runtime checks remain in [CURRENT_PLAN.md](CURRENT_PLAN.md).
 
 ## 1. Scope and decisions
 
 - `phase1` archives the previous implementation and its research artifacts. Development continues on `main`.
-- The new design is the only supported command representation. Replace the heuristic normalizer; do not add a legacy mode, snapshot migration, dual reads, or preservation of old learned state. Start the new release with fresh KB state and remove phase1 seeds from its default initialization.
+- The new design is the only supported command representation. Replace the heuristic normalizer; do not add a legacy mode, snapshot migration, dual reads, or preservation of old learned state. Start with fresh feature-dependent KB state. Per the subsequent user decision, preserve release seeds unchanged: Tool/Trie keep their seed data, while incompatible Lattice/Edge components initialize empty in the new writable state. Offline accuracy evaluation builds separate run-local training snapshots.
 - Keep the Lattice/Edge node construction, subset coverage, selection, resource eligibility, and learning algorithms. Their inputs change to rule-derived features. Algorithmic prediction improvement is a separate concern.
 - Reuse mvdan shell parsing. Do not change OpenClaw core or collector attribution. One measured static shell clause remains one observation even when its syntax contains wrappers and delegated commands.
 - Fig imports and LLM generation produce the same declarative JSON rules. JSON Schema is authoritative. Neither rule source supplies matching weights, core-feature settings, resource estimates, or executable parser callbacks.
@@ -242,7 +242,7 @@ Required call-site changes:
 
 Persist the projected record with each newly collected observation. Restarts load these records; they do not reinterpret observations through whatever rules happen to be current. Missing-rule observations carry conservative features and retain them after a more specific rule becomes available. This naturally leaves broader evidence available under existing subset coverage without inventing missing parameters.
 
-New rules are activated for future calls. If a published rule is later found to have asserted incorrect semantics, replace it and start fresh affected release/run KB state; do not build a selective historical repair or migration framework in this project phase. Representation changes require fresh state. Old phase1 snapshots fail clearly on format checks and are never automatically imported.
+New rules are activated for future calls. If a published rule is later found to have asserted incorrect semantics, replace it and start fresh affected release/run KB state; do not build a selective historical repair or migration framework in this project phase. Representation changes require fresh state. Old phase1 feature snapshots fail clearly on direct format checks. Seed initialization follows the component-specific fresh-state rule above; it does not convert learned weights.
 
 The feature contract version identifies feature semantics, not a hash of the entire registry. Unrelated rule additions must not invalidate every cached feature or become a cross-tool matching barrier.
 
@@ -252,7 +252,7 @@ Each milestone is a reviewable commit on `main`; `phase1` remains fixed.
 
 1. **Contracts and projection fixtures.** Add the five schemas, internal records, deterministic feature encoding and manually specified cases above. Fix exact target, alias, scope, repetition, partial and invalid semantics before changing KB consumers.
 2. **Parser plus Fig.** Implement static import, bundle the first rules and entry overrides, and consume existing mvdan words. Verify parent/child boundaries, wrappers, expressions and malformed inputs. Use a small actual Lattice query fixture to exercise the new projection end to end.
-3. **Feature-based KB entry points.** Replace every heuristic-normalizer caller, carry pre-action records through completion/persistence, remove legacy normalization/default seeds, and verify Lattice/Edge numerical behavior on fixed feature inputs.
+3. **Feature-based KB entry points.** Replace every heuristic-normalizer caller, carry pre-action records through completion/persistence, remove legacy normalization and initialize incompatible feature-dependent seed components empty, and verify Lattice/Edge numerical behavior on fixed feature inputs.
 4. **Evidence and LLM generation.** Implement local/Docker evidence readers, restricted help provider, bounded async generation and registry activation. Complete one repository script and one previously unseen tool through the exact same schema/parser/projector/KB path used by Fig.
 5. **Delivery and evaluation.** Include schemas/rules/licenses in packaging; document provider overrides and rule status; verify restart, cancellation and queue behavior; run parser correctness and fixed-algorithm matching comparisons.
 

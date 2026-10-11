@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/command-context.schema.json",
+  "type": "object",
+  "properties": {
+    "repo": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 65536
+    },
+    "cwd": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 65536
+    },
+    "runtime_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 65536
+    },
+    "workspace": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 65536
+    },
+    "host_workspace": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 65536
+    },
+    "container_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 65536
+    },
+    "image": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 65536
+    },
+    "env_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 65536
+    },
+    "tool_version": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 65536
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}

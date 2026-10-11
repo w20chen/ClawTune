@@ -1,0 +1,17 @@
+{
+  "grammar": {
+    "syntax": {
+      "clusters": true,
+      "intermixed": true,
+      "assignments": false
+    },
+    "positionals": [
+      {
+        "role": "operand",
+        "min": 0,
+        "max": null
+      }
+    ]
+  },
+  "options": {}
+}

@@ -22,7 +22,8 @@ from tool_time._lattice_vendor.shrinkage import compute_shrinkage_variances
 
 def _observation(event) -> ClauseObservation:
     argv = tuple(shlex.split(event.source_command))
-    repo = next(feature[5:] for feature in event.query.features if feature.startswith("repo="))
+    repo = next(json.loads(feature[len("context:"):])[1] for feature in event.query.features
+                if feature.startswith('context:["repo",'))
     outcome = event.outcome
     return ClauseObservation(repo, argv[0], argv, outcome.start_time,
                              outcome.end_time, latency_ms=outcome.duration_ms)

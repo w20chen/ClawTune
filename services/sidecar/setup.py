@@ -53,6 +53,7 @@ setup(
         "psutil>=5.9",
         "numpy>=1.26",
         "jsonschema>=4",
+        "tomli>=2; python_version<'3.11'",
         "pyyaml>=6",
         "typing-extensions>=4.12",
         "uvicorn>=0.27",
@@ -71,6 +72,7 @@ setup(
         ],
     },
     package_data={
+        "command_parser": ["rules/*.json", "rules/FIG-LICENSE"],
         "tool_resource": ["_mvdan_adapter/*"],
         "tool_time": ["_lattice_vendor/LICENSE", "_lattice_vendor/VENDORED.md"],
     },

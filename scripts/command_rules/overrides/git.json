@@ -1,0 +1,23 @@
+{
+  "grammar": {
+    "syntax": {
+      "clusters": true,
+      "intermixed": true,
+      "assignments": false
+    }
+  },
+  "options": {
+    "-C": {
+      "independent": true
+    },
+    "-c": {
+      "independent": true
+    },
+    "--git-dir": {
+      "independent": true
+    },
+    "--work-tree": {
+      "independent": true
+    }
+  }
+}

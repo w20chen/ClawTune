@@ -8,6 +8,7 @@
       "type": "object",
       "required": ["tool_call_id", "tool_name", "tool_kind", "tool_input_kind", "derived_paths", "params_digest", "param_features", "raw_params"],
       "properties": {
+        "command_context": {"anyOf": [{"$ref": "command-context.schema.json"}, {"type": "null"}]},
         "tool_call_id": {"type": ["string", "null"]},
         "tool_name": {"type": "string", "minLength": 1},
         "tool_kind": {"type": ["string", "null"]},

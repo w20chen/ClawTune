@@ -1794,15 +1794,16 @@ def test_trace_counts_each_independent_prediction_without_filling_missing_models
                                   "null_lattice", "bad_tool", "bad_trie", "bad_lattice",
                                   "partial_coverage", "bad_alias"])
 def test_independent_prediction_audit_allows_cold_start_but_requires_each_model(tmp_path, case):
-    from clawtune_kb import FILES, validate_seed
+    from clawtune_kb import FILES, initialize_state
     from tool_resource.runtime_kb import RuntimeToolResourceKB, ClauseResourceKB, ToolCallQuery
     from tool_time.lattice_kb import LatticeTimeKB
     from clawtune_sidecar.predictors.call_load import predict_call_load, compose
     from clawtune_sidecar.prediction_config import load_bucket_edges
 
     seed = Path(__file__).resolve().parents[1] / "seeds/bootstrap-v1"
-    validate_seed(seed)
-    trie, tool, lattice = [json.loads((seed / name).read_text(encoding="utf-8")) for name in FILES]
+    state = tmp_path / "kb-state"
+    initialize_state(state, seed, owner="test")
+    trie, tool, lattice = [json.loads((state / name).read_text(encoding="utf-8")) for name in FILES]
     edges = load_bucket_edges((100, 500, 2000, 10000))
     result, diagnostics = predict_call_load(
         runtime=RuntimeToolResourceKB.from_json_obj(tool),

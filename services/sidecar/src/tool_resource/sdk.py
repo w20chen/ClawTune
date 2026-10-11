@@ -572,7 +572,7 @@ def _observations_from_call(
     if enrich_structure:
         rows = enrich_clause_structure(command if isinstance(command, str) else None, rows)
     observations: list[ClauseObservation] = []
-    for row in rows:
+    for clause_index, row in enumerate(rows):
         if row.get("eligible_for_kb") is False or row.get("telemetry_quality", "ok") != "ok":
             continue
         availability = row.get("availability")
@@ -590,7 +590,7 @@ def _observations_from_call(
             observations.append(
                 _observation_from_clause(
                     repo,
-                    row,
+                    {**row, "clause_index": row.get("clause_index", clause_index)},
                     require_timestamps=require_timestamps,
                 )
             )
@@ -642,6 +642,7 @@ def _observation_from_clause(
         in_subst=bool(row.get("in_subst", False)),
         pipeline_position=int(row.get("pipeline_position", -1)),
         stdin_from_pipe=row.get("stdin_from_pipe"),
+        clause_index=row.get("clause_index"),
     )
 
 

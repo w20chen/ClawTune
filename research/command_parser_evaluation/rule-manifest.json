@@ -1,0 +1,60 @@
+{
+  "source_revision": "aef52acff84c45edde61ae610cc2c964802b9a38",
+  "rules": {
+    "python": "46969cc42fdcfe0b40c1c2a3b95ff3a10258f1aaefc338153c0d35dd8216a9c9",
+    "pytest": "8ff1d027f58d059c3f36d69021d4f5e577109145562c81d8473c0ccf768f5e46",
+    "git": "a03f207237549dd10fd776ff4d211f715daba2c8540a26b2f77cce71622dc581",
+    "grep": "67eab24eb4e5fc0b23cb3e13ead94fa1f8eddd0dc543b824d89ef0543ffc12e7",
+    "sed": "37607b1efbf282ae4347162532778493640c7d6e0c14f7270a67ad099a1b9943",
+    "find": "9a36d1afeda226e4b3dc9cdd3bc6f35042f0dc5db042a42ece006f518ee833f8",
+    "ls": "804e2e89637699abc8aac5be605de2b438b34a72fe76a8040c2e8cecfa2c7420",
+    "cat": "a78063362569fa2bd1a51ae00e17529450d5afbc4a04d73c7d1caaa237b2b60f",
+    "pip": "983ff4aa17dbc936810ec61ca0abc752c7cd7a564927fa900a722723a260f5f4",
+    "head": "4a1443fbdf2ef21732e8d4c0f85c4b496ed9dcc411ecd0d75ddde18a54dbe97a",
+    "tail": "57c3d41706b7684df65701f4b1ef37719c171f9739cb3ca8aa0d4b70521ca9d4",
+    "bash": "dfb83840154905eea320e6e891e6783c9d8f023c8eda258cfc701245c54b79d8",
+    "env": "264f3e33d4aa181460d9cb56cd12d1d60d62869398bcb062e916db20cfa7cf1a",
+    "nice": "18096450c86b099019781401651dba2fb98684b597984329789f067ffee12ec5",
+    "timeout": "9537ad85bb8ea40c3333809d9943fb55a46f536ec5ec5b6526c16062450447a5",
+    "make": "1cdad9e0833c1e61390e84269cfeafd2140419797c787386c1b56b266f99fd50",
+    "npm": "1814e1f2b3fbff3a7b557a1ccfff243888bd1124e65cd2237413ab67044a20b0"
+  },
+  "diagnostics": [
+    {
+      "tool": "python",
+      "reason": "python:generateSpec"
+    },
+    {
+      "tool": "git",
+      "reason": "git/remote/update:ambiguous-variadic-boundary"
+    },
+    {
+      "tool": "git",
+      "reason": "git:generateSpec"
+    },
+    {
+      "tool": "find",
+      "reason": "find:ambiguous-variadic-boundary"
+    },
+    {
+      "tool": "npm",
+      "reason": "npm:subcommands"
+    },
+    {
+      "tool": "npm",
+      "reason": "npm:subcommands"
+    },
+    {
+      "tool": "npm",
+      "reason": "npm:subcommands"
+    },
+    {
+      "tool": "npm",
+      "reason": "npm:subcommands"
+    },
+    {
+      "tool": "npm",
+      "reason": "npm:subcommands"
+    }
+  ]
+}

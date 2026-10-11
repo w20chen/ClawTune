@@ -370,6 +370,9 @@ class ToolResourcePredictor:
         )
         self._runs_by_execution_id: dict[str, CommandRun] = {}
         self._execution_owners: dict[str, tuple[str | None, str | None]] = {}
+        from command_parser import CommandFeatureService
+        self.command_features = CommandFeatureService()
+        self._feature_call_keys: dict[tuple, str] = {}
         self._telemetry_by_execution_id: dict[str, ExecutionTelemetrySummary] = {}
         self._starts: dict[CorrelationKey, ToolBeforeRequest] = {}
         self._kb_writes = _KnowledgeBaseWriteCoordinator(
@@ -623,14 +626,23 @@ class ToolResourcePredictor:
         # All backends and diagnostics see one serialized causal transaction.
         # Legacy payload is migration-only; no policy consumes its clause data.
         with self._kb_lock:
-            legacy = self._predict_legacy(request, )
+            from command_parser import ParseContext
+            from command_parser.validation import validate
+            raw_context = request.command_context or {}
+            validate("command-context", raw_context)
+            command_context = ParseContext(**{**raw_context, "repo": request.repo or self.repo,
+                                             "runtime_id": request.runtime_id})
+            self._feature_call_keys[(request.gateway_id, request.runtime_id, request.tool_call_id)] = call_key(request)
+            self.command_features.discover(command_context)
+            legacy = self._predict_legacy(request, command_context)
             query = ToolCallQuery(repo=request.repo or self.repo, tool_name=request.tool_name,
                                   command=_command_for_request(request), ts_start=time.time(),
                                   memory_measurement=self.memory_measurement,
                                   )
             call, diagnostics = predict_call_load(runtime=self.continuous_kb, trie=self.kb,
                                                   lattice=self.lattice_kb, query=query, edges=self.load_buckets,
-                                                  edge_kappa=self.edge_kappa, edge_call_id=call_key(request))
+                                                  edge_kappa=self.edge_kappa, edge_call_id=call_key(request),
+                                                  feature_service=self.command_features, command_context=command_context)
             if not self.frozen:
                 self._edge_kappa_version += 1
                 self._kb_writes.enqueue()
@@ -665,6 +677,7 @@ class ToolResourcePredictor:
     def _predict_legacy(
         self,
         request: ToolBeforeRequest,
+        command_context=None,
     ) -> ToolPrediction:
         command = _command_for_request(request)
         repo = request.repo or self.repo
@@ -716,6 +729,10 @@ class ToolResourcePredictor:
         # their monotonic watermarks cannot be interleaved by another request.
         with self._kb_lock:
             query_ts = time.time()
+            if request.tool_name == "exec" and not parse_failed and command_context is not None:
+                # Share the same rule registry with the authoritative load path.
+                # Its parse_execution stage has independent static clause indices.
+                clauses = self.command_features.prepare(clauses, command_context, call_key(request))
             lattice_time_predictions: tuple[ClauseLatticeTimePredictions, ...] = ()
             lattice_resource_predictions: tuple[dict[str, Any], ...] = ()
             try:
@@ -918,6 +935,8 @@ class ToolResourcePredictor:
                     event,
                 )
         if self.frozen:
+            self.command_features.bind_observations([], call_key(start or event), release=True)
+            self._feature_call_keys.pop((event.gateway_id, event.runtime_id, event.tool_call_id), None)
             return 0
         artifact: dict[str, Any] | None = None
         if event.execution_id:
@@ -948,7 +967,7 @@ class ToolResourcePredictor:
                         from tool_resource.features import enrich_input_sources
                         clauses = enrich_input_sources(call.get("command"), clauses)
                         labels = clause_memory_labels(sample.environment_memory, clauses)
-                        for row, labels_for_clause in zip(clauses, labels):
+                        for index, (row, labels_for_clause) in enumerate(zip(clauses, labels)):
                             if not labels_for_clause:
                                 continue
                             observation = ClauseObservation(repo=repo, bin=row["bin"], argv=tuple(row["argv"]),
@@ -956,7 +975,9 @@ class ToolResourcePredictor:
                                 in_pipe=row.get("in_pipe", False), pipeline_position=row.get("pipeline_position", -1),
                                 in_loop=row.get("in_loop", False), in_subst=row.get("in_subst", False),
                                 stdin_from_pipe=row.get("stdin_from_pipe"),
+                                clause_index=row.get("clause_index", index),
                                 **labels_for_clause)
+                            observation = self.command_features.bind_observations([observation], call_key(start or event))[0]
                             with self._kb_lock:
                                 self.kb.observe_completed_clause(observation)
                                 self._clause_kb_version += 1
@@ -974,6 +995,7 @@ class ToolResourcePredictor:
                 edge_observations = []
             with self._kb_lock:
                 try:
+                    edge_observations = self.command_features.bind_observations(edge_observations, call_key(start or event), release=True)
                     self.edge_kappa.complete_call(call_key(start or event), edge_observations, commit_time=time.time())
                 finally:
                     # A failed batch may still have accepted earlier clauses.
@@ -982,6 +1004,7 @@ class ToolResourcePredictor:
             import logging
             logging.getLogger(__name__).exception("edge kappa clause update failed")
         self._kb_writes.enqueue()
+        self._feature_call_keys.pop((event.gateway_id, event.runtime_id, event.tool_call_id), None)
         if completed_call is not None:
             with self._kb_lock:
                 self.continuous_kb.observe_completed_call(completed_call)
@@ -1139,7 +1162,7 @@ class ToolResourcePredictor:
             )
         with self._execution_lock:
             run = self._runs_by_execution_id.pop(execution_id, None)
-            self._execution_owners.pop(execution_id, None)
+            feature_owner = self._execution_owners.pop(execution_id, None)
         if run is None:
             return self._telemetry_by_execution_id.get(
                 execution_id,
@@ -1214,7 +1237,8 @@ class ToolResourcePredictor:
         accepted_observations: list[ClauseObservation] = []
         if result.kb_observations_added and not self.frozen:
             with self._kb_lock:
-                for observation in result.kb_observations:
+                feature_key = self._feature_call_keys.get((*feature_owner, run.tool_call_id)) if feature_owner else None
+                for observation in self.command_features.bind_observations(result.kb_observations, feature_key):
                     try:
                         accepted = self.kb.observe_completed_clause(observation)
                     except Exception as exc:
@@ -1318,6 +1342,7 @@ class ToolResourcePredictor:
         try:
             self.flush_kb_updates(timeout_seconds=30.0)
         finally:
+            self.command_features.close()
             store = getattr(self, "_state_store", None)
             if store is not None:
                 store.__exit__(None, None, None)

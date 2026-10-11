@@ -111,6 +111,7 @@ export type ResourceScope = {
 };
 
 export type ToolBeforeRequest = CommonEvent & {
+  command_context?: Record<string, string | null> | null;
   tool_call_id: string | null;
   tool_name: string;
   tool_kind: string | null;

@@ -255,6 +255,7 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
                       edges: Mapping[str, Sequence[float]],
                       parsed_clauses: Sequence[Mapping[str, Any]] | None = None,
                       edge_kappa: Any = None, edge_call_id: str | None = None,
+                      feature_service: Any = None, command_context: Any = None,
                       ) -> tuple[CallLoadPrediction, LoadDiagnostics]:
     """Return ToolKB for existing consumers and each configured independent result.
 
@@ -278,7 +279,7 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
             argv, env, assumptions, why = unwrap_argv(clause.get("argv", []))
             if not argv or not shell_bin_requires_exec_evidence(argv[0].rsplit("/", 1)[-1], argv[0]):
                 continue
-            normalized.append(dict(clause, argv=argv, bin=argv[0].rsplit("/", 1)[-1],
+            normalized.append(dict(clause, syntax_argv=clause.get("syntax_argv", clause["argv"]), argv=argv, bin=argv[0].rsplit("/", 1)[-1],
                 clause_index=clause.get("clause_index", index), env=env,
                 prediction_assumptions=assumptions, prediction_unavailable_reason=why))
         clauses, reason = tuple(normalized), None
@@ -287,6 +288,11 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
             clauses, reason = plain_execution(query.command) if query.tool_name in {"exec", "terminal_exec"} else ((), "not_a_shell_command")
         except Exception as exc:
             clauses, reason = (), f"parse_error:{type(exc).__name__}"
+    if not reason:
+        from command_parser import ParseContext, default_service
+        clauses = (feature_service or default_service()).prepare(
+            clauses, command_context or ParseContext(repo=query.repo), edge_call_id if feature_service else None,
+        )
     clause_backends = [("trie", trie), ("lattice", lattice)]
     if edge_kappa is not None:
         clause_backends.append(("edge_kappa", edge_kappa))

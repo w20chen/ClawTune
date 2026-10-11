@@ -1,0 +1,10 @@
+{
+  "fixture": "scripts/command_rules/fixed_feature_probe.py",
+  "baseline_commit": "b513e1d",
+  "byte_identical": true,
+  "sha256": "65f708f1061d4462202152f4c99870fbaddef2e98b0b2521755fed594660226e",
+  "includes": [
+    "Lattice node statistics and candidate/selection results",
+    "Edge learned snapshot and weighted prediction distributions"
+  ]
+}

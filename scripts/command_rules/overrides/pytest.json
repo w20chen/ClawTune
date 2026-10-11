@@ -1,0 +1,51 @@
+{
+  "grammar": {
+    "syntax": {
+      "clusters": true,
+      "intermixed": true,
+      "assignments": false
+    },
+    "positionals": [
+      {
+        "role": "operand",
+        "min": 0,
+        "max": null
+      }
+    ]
+  },
+  "options": {
+    "-q": {
+      "independent": true
+    },
+    "-s": {
+      "independent": true
+    },
+    "-m": {
+      "independent": true
+    },
+    "-k": {
+      "independent": true
+    },
+    "-x": {
+      "independent": true
+    },
+    "--tb": {
+      "independent": true
+    },
+    "--disable-warnings": {
+      "independent": true
+    },
+    "--collect-only": {
+      "independent": true
+    },
+    "--maxfail": {
+      "independent": true
+    },
+    "--durations": {
+      "independent": true
+    },
+    "-v": {
+      "independent": true
+    }
+  }
+}

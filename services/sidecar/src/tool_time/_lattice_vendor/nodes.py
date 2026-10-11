@@ -152,16 +152,21 @@ def build_nodes(
         # Split compound commands into clauses; each clause is an
         # independent simple command that inherits the observation's
         # total duration (best-effort when per-clause timing is unavailable).
-        if split_compounds:
+        if split_compounds and obs.command_features is None:
             clauses = split_all_clauses(obs.cmd)
         else:
             clauses = [obs.cmd]
 
         for clause_cmd in clauses:
-            features, core = normalize_command(
-                clause_cmd, repo=obs.repo, cwd=obs.cwd, env_id=obs.env_id,
-                is_clause=(split_compounds and len(clauses) > 1),
-            )
+            if obs.command_features is not None:
+                from command_parser.models import CommandFeatures
+                record = CommandFeatures.from_dict(obs.command_features)
+                features, core = record.features, record.core
+            else:
+                features, core = normalize_command(
+                    clause_cmd, repo=obs.repo, cwd=obs.cwd, env_id=obs.env_id,
+                    is_clause=not split_compounds or len(clauses) > 1,
+                )
             exact_feature_sets.add(features)
             if subset_coverage:
                 normalized.append((features, obs.duration_s, obs.timestamp))

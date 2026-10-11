@@ -215,8 +215,8 @@ def test_three_algorithms_match_vendored_lattice_core() -> None:
 
 def test_existing_node_receives_all_subset_covering_observations(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(lattice_config, "_MAX_OPTIONAL_FEATURES", 1)
-    simple_argv = ("python", "task.py", "--mode", "fast")
-    expanded_argv = (*simple_argv, "--verbose", "--seed", "1")
+    simple_argv = ("pytest", "-q", "tests")
+    expanded_argv = (*simple_argv, "-x", "--maxfail", "1")
     simple = _observation("r", simple_argv, 100.0, ts_start=1.0)
     expanded = _observation("r", expanded_argv, 1_000.0, ts_start=2.0)
     node, _ = normalize_command(shlex.join(simple_argv), repo="r")
@@ -279,9 +279,10 @@ def test_one_flat_kb_mixes_common_and_repo_specific_nodes() -> None:
     kb = LatticeTimeKB.fit(history)
     assert kb.node_count > 0
 
-    common = frozenset({"tool=python", "target=task.py"})
-    repo_a = common | {"repo=org/repo-a"}
-    repo_b = common | {"repo=org/repo-b"}
+    from command_parser.projection import atom
+    common = frozenset({"tool=python", atom("target", "task.py")})
+    repo_a = common | {atom("context", "repo", "org/repo-a")}
+    repo_b = common | {atom("context", "repo", "org/repo-b")}
     assert kb._nodes[common].durations == pytest.approx([1.0, 3.0])
     assert kb._nodes[repo_a].durations == pytest.approx([1.0])
     assert kb._nodes[repo_b].durations == pytest.approx([3.0])
@@ -505,17 +506,26 @@ def test_max_cardinality_global_fallback_matches_flat_corpus_median() -> None:
 
 
 def test_long_clause_bounds_node_generation_and_quadratic_shrinkage() -> None:
+    from dataclasses import replace
+
+    from command_parser.models import CommandFeatures
     training_argv = ("python", "task.py", *(f"--flag-{index}" for index in range(18)))
     query_argv = ("python", "task.py", "--unseen-flag", *training_argv[3:])
+    # Fixed feature inputs exercise KB limits independently of unknown-option parsing.
+    core = frozenset({"tool=python", 'target:["task.py"]'})
+    training = core | {f"test-flag:{index}" for index in range(18)}
+    querying = (training - {"test-flag:0"}) | {"test-unseen"}
+    def record(features):
+        return CommandFeatures("python", features, core, "0" * 64).to_dict()
     kb = LatticeTimeKB.fit(
-        [_observation("org/repo", training_argv, 500.0, ts_start=1.0)]
+        [replace(_observation("org/repo", training_argv, 500.0, ts_start=1.0), command_features=record(training))]
     )
 
     kb.prepare()
 
     assert kb.node_count <= 4_096
     outcome = _only_clause(
-        kb.predict_clauses("org/repo", [_clause(query_argv)], ts_start=3.0)
+        kb.predict_clauses("org/repo", [{**_clause(query_argv), "command_features": record(querying)}], ts_start=3.0)
     )
     shrinkage = _by_algorithm(outcome)["shrinkage"]
     _assert_unavailable(shrinkage, "lattice_candidate_limit_exceeded")

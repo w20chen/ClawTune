@@ -277,15 +277,19 @@ def test_shipped_seed_contains_four_finalized_kbs_and_ten_cases():
     for backend in ("tool", "trie", "lattice", "edge_kappa"):
         assert provenance["target_counts"][backend]["duration_ms"] > 0
         assert "memory_total_peak_bytes" in provenance["unavailable_targets"][backend]
-    edge = EdgeKappaRuntime.from_snapshot(json.loads((SEED / ALL_FILES[3]).read_text()), frozen=True)
-    assert not edge.to_snapshot()["tokens"]
-    assert edge.to_snapshot()["runtime"]["completed_calls"]
+    edge = json.loads((SEED / ALL_FILES[3]).read_text())
+    assert not edge["tokens"]
+    assert edge["runtime"]["completed_calls"]
 
 
 def test_initial_state_can_learn_without_mutating_release_seed(tmp_path):
     before = {name: digest(SEED / name) for name in (*ALL_FILES, "manifest.json")}
     state = tmp_path / "kb"
     initialize_state(state, SEED, owner="daily")
+    lattice = LatticeTimeKB.from_json_obj(json.loads((state / FILES[2]).read_text()))
+    edge = EdgeKappaRuntime.from_snapshot(json.loads((state / ALL_FILES[3]).read_text()))
+    assert lattice.node_count == 0
+    assert not edge.to_snapshot()["observations"]
     assert set(validate_seed(SEED)["snapshots"]) <= {p.name for p in state.iterdir()}
     trie = ClauseResourceKB.from_json_obj(json.loads((state / FILES[0]).read_text()))
     from tool_resource.runtime_kb import ClauseObservation

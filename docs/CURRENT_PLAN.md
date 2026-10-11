@@ -13,7 +13,7 @@ The active implementation specification is [COMMAND_PARSER_PLAN.md](COMMAND_PARS
   ```
 
 - On PowerShell, use `npm.cmd test` in `packages/clawtune-plugin`; `npm test` may be blocked by execution policy. Invoke WSL validation through a Bash script when inline Python quoting is not preserved.
-- Ruff validation remains outstanding. Run `python -m ruff check services/sidecar/src services/sidecar/tests tests cold_start offline scripts/build_bootstrap_seed.py swe_rebench/host_openclaw.py` in an environment with Ruff installed, and distinguish existing findings from changed-code findings.
+- Repository-wide Ruff cleanup remains separate work: `python -m ruff check services/sidecar/src services/sidecar/tests tests cold_start offline scripts/build_bootstrap_seed.py swe_rebench/host_openclaw.py`. Existing findings must be separated from parser-change findings.
 
 ## Target Linux runtime and collectors
 
@@ -67,3 +67,8 @@ Apply the matrix to `swe-rebench`, `swe-bench-verified`, `deep-research-bench`, 
 - `python3 scripts/clawtune.py setup` requires clean Ubuntu/openEuler images without preinstalled BCC/kernel tools. OpenClaw onboarding/Gateway/TUI requires interactive deployment; Ubuntu CI requires an actual remote workflow run.
 - The pristine task-image dependency check requires target-host access. Run `docker run --rm --pull never --network none --read-only --platform linux/amd64 --entrypoint /opt/miniconda3/envs/testbed/bin/python swerebench/sweb.eval.x86_64.0b01001001_1776_spectree-64 -B -c 'import sys,pydantic; print(sys.executable); print(sys.version); print(pydantic.__version__)'` on the target host.
 - CubeSandbox admission and delta restore require a patched ARM64 host and registered Runtime/Tool images: `clawbox --output-root /data/clawbox-results experiment run local.yaml --run-id clawtune-extra-memory`.
+
+## Command-rule target acceptance
+
+- Real isolated help cannot run here because Docker is unavailable. On a Linux Docker host with an already pulled image containing `python3`, run `CLAWTUNE_TEST_HELP_IMAGE=<image> PYTHONPATH=services/sidecar/src:. python -m pytest services/sidecar/tests/test_command_help_isolation.py -q -rs`. Extend target acceptance to output overflow, child-process cleanup, timeout and concurrent collector windows; local mocks establish command construction, not kernel isolation.
+- Live provider generation has not run; it requires a configured upstream URL/key/model and a registered runtime workspace. Run `PYTHONPATH=services/sidecar/src:. python scripts/command_rules/check_live_generation.py <workspace> <relative-script>` on a disposable test workspace containing an argument-parser script. Verify a cached rule activates after the initial partial parse and that an edited parser/helper invalidates it. Container source reads and image-backed unknown-tool help also require the target Docker environment. Mock-provider tests do not establish generation success rate, latency or cost.

@@ -698,6 +698,8 @@ class ClauseObservation:
     memory_measurement: str | None = None
     memory_environment_id: str | None = None
     memory_eligible: bool = False
+    command_features: dict | None = None
+    clause_index: int | None = None
     in_loop: bool = False
     in_pipe: bool = False
     in_subst: bool = False

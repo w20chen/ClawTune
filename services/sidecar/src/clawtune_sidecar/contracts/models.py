@@ -63,6 +63,7 @@ class ResourceScope(BaseModel):
 
 
 class ToolBeforeRequest(CommonEvent):
+    command_context: dict[str, Any] | None = None
     tool_call_id: str | None
     tool_name: str
     tool_kind: str | None

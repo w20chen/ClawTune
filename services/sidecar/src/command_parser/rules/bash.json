@@ -1,0 +1,141 @@
+{
+  "format": "command-rule.v1",
+  "canonical": "bash",
+  "names": [
+    "bash"
+  ],
+  "scope": {
+    "kind": "global"
+  },
+  "origin": {
+    "kind": "curated",
+    "source": "https://www.gnu.org/software/manual/",
+    "revision": "gnu-linux-initial",
+    "evidence": [
+      "overrides/bash.json"
+    ]
+  },
+  "grammar": {
+    "options": [
+      {
+        "names": [
+          "-c"
+        ],
+        "canonical": "-c",
+        "min": 1,
+        "max": 1,
+        "forms": [
+          "separate",
+          "attached",
+          "equals"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true,
+        "transition": {
+          "mode": "inline",
+          "action": "opaque"
+        }
+      },
+      {
+        "names": [
+          "-l"
+        ],
+        "canonical": "-l",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "attached",
+          "equals"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true
+      },
+      {
+        "names": [
+          "-e"
+        ],
+        "canonical": "-e",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "attached",
+          "equals"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true
+      },
+      {
+        "names": [
+          "-u"
+        ],
+        "canonical": "-u",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "attached",
+          "equals"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true
+      },
+      {
+        "names": [
+          "-x"
+        ],
+        "canonical": "-x",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "attached",
+          "equals"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true
+      },
+      {
+        "names": [
+          "-o"
+        ],
+        "canonical": "-o",
+        "min": 1,
+        "max": 1,
+        "forms": [
+          "separate",
+          "attached",
+          "equals"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true
+      }
+    ],
+    "positionals": [
+      {
+        "role": "script_entry",
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "subcommands": [],
+    "syntax": {
+      "clusters": true,
+      "intermixed": true,
+      "assignments": false
+    }
+  }
+}

@@ -125,6 +125,7 @@ def predict(
     loso_min_signatures: int = 3,
     specificity_risk_tolerance: float = 0.0,
     risk_weight: float = 1.0,
+    query_features: FeatureSet | None = None,
 ) -> PredictionResult:
     """Predict execution time for a command.
 
@@ -159,7 +160,8 @@ def predict(
     Returns:
         ``PredictionResult`` with prediction, frontier, and explanation data.
     """
-    query_features, _ = normalize_command(cmd, repo=repo, cwd=cwd, env_id=env_id)
+    if query_features is None:
+        query_features, _ = normalize_command(cmd, repo=repo, cwd=cwd, env_id=env_id)
 
     # ── LOSO uses the clean Reliable Specificity strategy ─────────────
     if risk_method == "loso":
