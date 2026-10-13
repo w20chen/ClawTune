@@ -24,10 +24,15 @@ wins — the evaluated baseline policy):
 3. repo binary/head
 4. repo outer tool name for commandless, non-shell tools
 5. public binary/head
-6. public outer tool name (also the honest landing spot for compound
-   commands with no single head, untokenizable commands, and non-shell
-   tools)
+6. public outer tool name for commandless calls
 7. public global
+
+Single-command queries skip prefixes that discard the known execution entry.
+Compound calls match prefixes of the whole token stream, whose samples describe
+complete calls rather than individual clauses. Shell queries skip outer-tool
+and global keys.
+The public/global steps remain available to commandless calls; Trie likewise
+excludes generic bins for known entries and never uses a global fallback.
 
 Binary/head identity is the generic basenamed command head from
 ``tool_time.command``. A compound shell call (``make && pytest``) has no
@@ -87,6 +92,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from command_parser.matching import argv_identity, identity_prefix_lengths
 from tool_resource.features import (
     parse_command_clauses,
     shell_bin_requires_exec_evidence,
@@ -474,10 +480,30 @@ class RuntimeToolResourceKB(_ReplayHistory):
         memory_measurement: str = "cgroup_v2_environment_union_v1"
     ) -> Iterator[tuple[str, NodeKey, Sequence[float]]]:
         repo_nodes = self._repo.get(repo, {}).get(target, {})
+        allowed = None
+        if command is not None:
+            tokens = tuple(shell_command_prefix_tokens(command))
+            heads = shell_command_heads(command)
+            if len(heads) > 1:
+                # A prefix groups complete calls sharing that token prefix;
+                # it does not attribute the call label to the first clause.
+                lengths = frozenset(range(1, min(len(tokens), _MAX_PREFIX_DEPTH) + 1))
+            elif tokens and len(heads) == 1:
+                lengths = identity_prefix_lengths(tokens, argv_identity(tokens, repo), repo)
+            else:
+                lengths = frozenset()
+            allowed = {"exact_command"}
+            allowed.update(f"command_prefix_depth_{n}" for n in lengths)
+            if 1 in lengths:
+                allowed.add("binary_head")
         for key in _repo_keys(tool_name, command):
+            if allowed is not None and key[0] not in allowed:
+                continue
             yield "repo", key, repo_nodes.get(_metric_key(target, key, memory_measurement), ())
         public_nodes = self._public[target]
         for key in _public_keys(tool_name, command):
+            if allowed is not None and key[0] not in allowed:
+                continue
             yield "public", key, public_nodes.get(_metric_key(target, key, memory_measurement), ())
 
     def _select(
@@ -494,7 +520,7 @@ class RuntimeToolResourceKB(_ReplayHistory):
             path.append(f"{scope}:{kind}")
             if values:
                 return values, scope, kind, tuple(path)
-        raise ValueError(f"no public global node for target {target!r}")
+        raise ValueError(f"no matching node for target {target!r}")
 
     def _predict_target(self, query: ToolCallQuery, target: str) -> TargetPrediction:
         try:
@@ -821,7 +847,7 @@ def _unavailable_clause_outcome(
 
 
 def _clause_unavailable_reason(exc: Exception) -> str:
-    if isinstance(exc, ValueError) and "no public global clause latency node" in str(
+    if isinstance(exc, ValueError) and "no matching clause latency node" in str(
         exc
     ):
         return "no_clause_latency_evidence"
@@ -1105,17 +1131,28 @@ class ClauseResourceKB(_ReplayHistory):
 
     def _select(
         self, repo: str, source: str, bin_: str, argv: Sequence[str],
-        memory_measurement: str = "cgroup_v2_environment_union_v1"
+        memory_measurement: str = "cgroup_v2_environment_union_v1",
     ) -> tuple[Sequence[float], str, str, tuple[str, ...]] | None:
         repo_nodes = self._repo.get(repo, {}).get(source, {})
         public_nodes = self._public[source]
+        tokens = _clause_tokens(bin_, argv)
+        # Compare identities in the same representation as the stored keys.
+        # command_features can retain launch wrappers and workspace-relative
+        # script identities that are absent from this normalized token index.
+        lengths = identity_prefix_lengths(tokens, argv_identity(tokens, repo), repo)
         path: list[str] = []
         for key in _clause_repo_keys(bin_, argv):
+            if key[0] == "bin" and 1 not in lengths:
+                continue
+            if key[0].startswith("argv_prefix_depth_") and int(key[0].rsplit("_", 1)[1]) not in lengths:
+                continue
             path.append(f"repo:{key[0]}")
             values = repo_nodes.get(_metric_key(source, key, memory_measurement))
             if values:
                 return values, "repo", key[0], tuple(path)
         for key in _clause_public_keys(bin_):
+            if key[0] == "global" or 1 not in lengths:
+                continue
             path.append(f"public:{key[0]}")
             values = public_nodes.get(_metric_key(source, key, memory_measurement))
             if values:
@@ -1149,7 +1186,7 @@ class ClauseResourceKB(_ReplayHistory):
         return tuple(outcomes)
 
     def _clause_median_latency_ms(
-        self, repo: str, bin_: str, argv: Sequence[str]
+        self, repo: str, bin_: str, argv: Sequence[str],
     ) -> float | None:
         """Median clause wall latency from the same evidence as the bucket."""
         selected = self._select(repo, _LATENCY_MS, bin_, argv)
@@ -1183,7 +1220,9 @@ class ClauseResourceKB(_ReplayHistory):
         for item in outcomes:
             if item.prediction is None:
                 return None
-            median = self._clause_median_latency_ms(repo, item.bin, item.argv)
+            median = self._clause_median_latency_ms(
+                repo, item.bin, item.argv,
+            )
             if median is None:
                 return None
             medians[item.clause_index] = median
@@ -1215,7 +1254,7 @@ class ClauseResourceKB(_ReplayHistory):
 
         selected = self._select(repo, _LATENCY_MS, bin_, argv)
         if selected is None:
-            raise ValueError("no public global clause latency node")
+            raise ValueError("no matching clause latency node")
         values, scope, kind, path = selected
         counts = [0] * buckets.bucket_count
         for value in values:

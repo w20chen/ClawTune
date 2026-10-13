@@ -26,6 +26,9 @@ def test_interpreter_and_module_options_have_separate_owners(service):
     (["pytest", "--maxfail=4"], ["pytest", "--maxfail", "4"]),
     (["pytest", "--collect-only"], ["pytest", "--co"]),
     (["grep", "-ne", "pattern", "file"], ["grep", "-n", "-e", "pattern", "file"]),
+    (["pytest", "-n8", "tests"], ["pytest", "--numprocesses=8", "tests"]),
+    (["pytest", "-n=8", "tests"], ["pytest", "-n", "8", "tests"]),
+    (["cargo", "t", "--release"], ["cargo", "test", "-r"]),
 ])
 def test_equivalent_declared_forms(service, left, right):
     assert service.argv(left).features == service.argv(right).features
@@ -36,6 +39,13 @@ def test_operands_are_ordered_but_not_core(service):
     right = service.argv(["grep", "file", "pattern"])
     assert left.core == right.core == {"tool=grep"}
     assert left.features != right.features
+
+
+def test_cargo_subcommands_have_distinct_core_identities(service):
+    records = [service.argv(["cargo", entry]) for entry in ["fmt", "test", "build"]]
+    assert len({record.core for record in records}) == 3
+    for entry, record in zip(["fmt", "test", "build"], records):
+        assert record.core == {"tool=cargo", atom("target", entry)}
 
 
 def test_repeated_values_preserve_order(service):

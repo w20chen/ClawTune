@@ -1,0 +1,553 @@
+{
+  "format": "command-rule.v1",
+  "canonical": "sort",
+  "names": [
+    "sort"
+  ],
+  "scope": {
+    "kind": "runtime",
+    "repo": "swe-rebench:tobymao/sqlglot",
+    "runtime_id": "study-source",
+    "entry": "sort"
+  },
+  "origin": {
+    "kind": "llm",
+    "source": "cube-sandbox-builder:ubuntu2004",
+    "revision": "80476fa37a334b597a5f17512d55a323de902884daa9f8a447779f0436365ee0",
+    "evidence": [
+      "cfc648c5adf56224481cc1291127a158b88f9315c49693dd87f03e145ce67a5d"
+    ]
+  },
+  "grammar": {
+    "options": [
+      {
+        "names": [
+          "-b",
+          "--ignore-leading-blanks"
+        ],
+        "canonical": "--ignore-leading-blanks",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "-d",
+          "--dictionary-order"
+        ],
+        "canonical": "--dictionary-order",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "-f",
+          "--ignore-case"
+        ],
+        "canonical": "--ignore-case",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "-g",
+          "--general-numeric-sort"
+        ],
+        "canonical": "--general-numeric-sort",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "-i",
+          "--ignore-nonprinting"
+        ],
+        "canonical": "--ignore-nonprinting",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "-M",
+          "--month-sort"
+        ],
+        "canonical": "--month-sort",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "-h",
+          "--human-numeric-sort"
+        ],
+        "canonical": "--human-numeric-sort",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "-n",
+          "--numeric-sort"
+        ],
+        "canonical": "--numeric-sort",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "-R",
+          "--random-sort"
+        ],
+        "canonical": "--random-sort",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "--random-source"
+        ],
+        "canonical": "--random-source",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate",
+          "equals"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "last"
+      },
+      {
+        "names": [
+          "-r",
+          "--reverse"
+        ],
+        "canonical": "--reverse",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "--sort"
+        ],
+        "canonical": "--sort",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate",
+          "equals"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "last"
+      },
+      {
+        "names": [
+          "-V",
+          "--version-sort"
+        ],
+        "canonical": "--version-sort",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "--batch-size"
+        ],
+        "canonical": "--batch-size",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate",
+          "equals"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "last"
+      },
+      {
+        "names": [
+          "-c",
+          "--check"
+        ],
+        "canonical": "--check",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate",
+          "equals"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "last"
+      },
+      {
+        "names": [
+          "-C"
+        ],
+        "canonical": "-C",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "--compress-program"
+        ],
+        "canonical": "--compress-program",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate",
+          "equals"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "last"
+      },
+      {
+        "names": [
+          "--debug"
+        ],
+        "canonical": "--debug",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "--files0-from"
+        ],
+        "canonical": "--files0-from",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate",
+          "equals"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "last"
+      },
+      {
+        "names": [
+          "-k",
+          "--key"
+        ],
+        "canonical": "--key",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate",
+          "equals"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "last"
+      },
+      {
+        "names": [
+          "-m",
+          "--merge"
+        ],
+        "canonical": "--merge",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "-o",
+          "--output"
+        ],
+        "canonical": "--output",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate",
+          "equals"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "last"
+      },
+      {
+        "names": [
+          "-s",
+          "--stable"
+        ],
+        "canonical": "--stable",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "-S",
+          "--buffer-size"
+        ],
+        "canonical": "--buffer-size",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate",
+          "equals"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "last"
+      },
+      {
+        "names": [
+          "-t",
+          "--field-separator"
+        ],
+        "canonical": "--field-separator",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate",
+          "equals"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "last"
+      },
+      {
+        "names": [
+          "-T",
+          "--temporary-directory"
+        ],
+        "canonical": "--temporary-directory",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate",
+          "equals"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "--parallel"
+        ],
+        "canonical": "--parallel",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate",
+          "equals"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "last"
+      },
+      {
+        "names": [
+          "-u",
+          "--unique"
+        ],
+        "canonical": "--unique",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "-z",
+          "--zero-terminated"
+        ],
+        "canonical": "--zero-terminated",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "--help"
+        ],
+        "canonical": "--help",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      },
+      {
+        "names": [
+          "--version"
+        ],
+        "canonical": "--version",
+        "min": 0,
+        "max": null,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "next",
+        "dash_values": "any",
+        "repeat": "count"
+      }
+    ],
+    "positionals": [
+      {
+        "min": 0,
+        "max": null,
+        "role": "operand"
+      }
+    ],
+    "subcommands": [],
+    "syntax": {
+      "clusters": true,
+      "intermixed": true,
+      "assignments": false
+    }
+  },
+  "fixtures": [
+    {
+      "argv": [
+        "sort"
+      ],
+      "status": "complete",
+      "target": []
+    },
+    {
+      "argv": [
+        "sort",
+        "-n",
+        "file.txt"
+      ],
+      "status": "complete",
+      "target": []
+    },
+    {
+      "argv": [
+        "sort",
+        "-k",
+        "2",
+        "-t",
+        ",",
+        "file.txt"
+      ],
+      "status": "complete",
+      "target": []
+    },
+    {
+      "argv": [
+        "sort",
+        "--files0-from=F"
+      ],
+      "status": "complete",
+      "target": []
+    },
+    {
+      "argv": [
+        "sort",
+        "-o",
+        "out.txt",
+        "in.txt"
+      ],
+      "status": "complete",
+      "target": []
+    }
+  ]
+}

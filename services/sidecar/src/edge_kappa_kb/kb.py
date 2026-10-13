@@ -9,6 +9,9 @@ from bisect import bisect_right
 from dataclasses import asdict, dataclass, field
 from typing import Iterable
 
+from kb_common import DEFAULT_MAX_OPTIONAL_FEATURES, validate_max_optional_features
+from kb_common.feature_index import SupersetIndex
+
 from .graph import FeatureGraph, bounded_nodes, node_id
 from .types import (
     BucketPrediction, DurationDistribution, FeatureQuery, ParentEvidence, TimeOutcome, TrainingEvent, UpdateReport,
@@ -24,7 +27,10 @@ MAX_KAPPA = 100.0
 @dataclass
 class _Node:
     counts: list[int]
+    # Coverage includes observations at all more-specific feature signatures.
     observations: set[str] = field(default_factory=set)
+    # Derived from the observation index; never serialized independently.
+    own_observations: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -54,8 +60,7 @@ class EdgeKappaKB:
         self, *, bucket_edges_ms: tuple[float, ...] = (100, 500, 2000, 10000),
         k0: float = 1.0, learning_rate: float = 0.1, learn_weights: bool = True,
         shared_child_weight: bool = False,
-        max_optional_features: int = 6, max_covered_nodes: int = 4096,
-        max_graph_nodes: int = 20_000,
+        max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES,
         replay_seed: int = 42,
         normalization_version: str = "command-features.v1",
     ) -> None:
@@ -66,16 +71,13 @@ class EdgeKappaKB:
             raise ValueError("k0 must be in (0, 100]")
         if not math.isfinite(learning_rate) or learning_rate < 0:
             raise ValueError("learning_rate must be nonnegative and finite")
-        if max_optional_features < 0 or max_covered_nodes < 1 or max_graph_nodes < 1:
-            raise ValueError("invalid node limit")
+        validate_max_optional_features(max_optional_features)
         self.bucket_edges_ms = tuple(bucket_edges_ms)
         self.k0 = k0
         self.learning_rate = learning_rate
         self.learn_weights = learn_weights
         self.shared_child_weight = shared_child_weight
         self.max_optional_features = max_optional_features
-        self.max_covered_nodes = max_covered_nodes
-        self.max_graph_nodes = max_graph_nodes
         self.replay_seed = replay_seed
         self.normalization_version = normalization_version
         self.graph = FeatureGraph(set())
@@ -91,6 +93,14 @@ class EdgeKappaKB:
         self._completion_rows: dict[str, dict] = {}
         self._observation_buckets: dict[str, int] = {}
         self._observation_features: dict[str, frozenset[str]] = {}
+        self._observation_index = SupersetIndex()
+        from .snapshot import RowTable
+        self._snapshot_nodes = RowTable()
+        self._snapshot_edges = RowTable()
+        self._dirty_snapshot_nodes = set()
+        self._dirty_snapshot_edges = set()
+        self._snapshot_ready = False
+        self._snapshot_new_nodes = []
         self._frozen = False
 
     @classmethod
@@ -99,23 +109,11 @@ class EdgeKappaKB:
         kb = cls(**(config or {}))
         for event in events:
             kb._check_query(event.query)
-        # Match bounded generation while keeping the per-query update budget explicit.
-        for limit in range(kb.max_optional_features, -1, -1):
-            signatures: set[frozenset[str]] = set()
-            for event in events:
-                signatures.update(bounded_nodes(event.query, limit))
-                if len(signatures) > kb.max_graph_nodes:
-                    break
-            if len(signatures) > kb.max_graph_nodes:
-                continue
-            candidate = FeatureGraph(signatures)
-            if all(len(candidate.subsets(event.query.features)) <= kb.max_covered_nodes
-                   for event in events):
-                kb.max_optional_features = limit
-                kb.graph = candidate
-                break
-        else:
-            raise ValueError("training graph exceeds covered node limit even with exact nodes")
+        # The configured combination order is fixed, just as in LatticeKB.
+        signatures: set[frozenset[str]] = set()
+        for event in events:
+            signatures.update(bounded_nodes(event.query, kb.max_optional_features))
+        kb.graph = FeatureGraph(signatures)
         kb.nodes = {key: _Node([0] * kb.bucket_count) for key in kb.graph.signatures}
         kb._init_edges()
         # Task order is deterministic; timestamps from different tasks are not globally comparable.
@@ -151,10 +149,7 @@ class EdgeKappaKB:
                     self.edges[(parent, child)] = _Edge(math.log(self.k0 / len(parents)))
 
     def _covered(self, features: frozenset[str]) -> set[str]:
-        covered = self.graph.subsets(features)
-        if len(covered) > self.max_covered_nodes:
-            raise ValueError("covered node limit exceeded")
-        return covered
+        return self.graph.subsets(features)
 
     @staticmethod
     def _query_row(query: FeatureQuery) -> dict:
@@ -167,19 +162,19 @@ class EdgeKappaKB:
         self._check_query(query)
         if query.features in self.graph.by_features:
             return
-        if len(self.graph.subsets(query.features)) + 1 > self.max_covered_nodes:
-            raise ValueError("covered node limit exceeded")
-        if len(self.graph.signatures) + 1 > self.max_graph_nodes:
-            raise ValueError("graph node limit exceeded")
         child = self.graph.add_full(query.features)
         self.nodes[child] = _Node([0] * self.bucket_count)
-        for prior_id, prior_features in self._observation_features.items():
-            if query.features <= prior_features:
-                self.nodes[child].observations.add(prior_id)
-                self.nodes[child].counts[self._observation_buckets[prior_id]] += 1
+        self._dirty_snapshot_nodes.add(child)
+        self._snapshot_new_nodes.append(child)
+        for prior_id in self._observation_index.supersets(query.features):
+            self.nodes[child].observations.add(prior_id)
+            self.nodes[child].counts[self._observation_buckets[prior_id]] += 1
+            if query.features == self._observation_features[prior_id]:
+                self.nodes[child].own_observations.add(prior_id)
         parents = self.graph.parents[child]
         for parent in parents:
             self.edges[(parent, child)] = _Edge(math.log(self.k0 / len(parents)))
+            self._dirty_snapshot_edges.add((parent, child))
         self.graph_version += 1
 
     def _predict(self, query: FeatureQuery, *, commit_projection: bool = False) -> BucketPrediction:
@@ -188,6 +183,8 @@ class EdgeKappaKB:
         child = exact or node_id(query.features)
         state = self.nodes.get(child, _Node([0] * self.bucket_count))
         parents = self.graph.parents[child] if exact else self.graph.query_parents(query.features)
+        parents = tuple(parent for parent in parents
+                        if query.core_features <= self.graph.signatures[parent])
         active: list[tuple[str, float, tuple[float, ...], set[str]]] = []
         for parent in parents:
             parent_state = self.nodes[parent]
@@ -210,6 +207,7 @@ class EdgeKappaKB:
             if commit_projection and exact:
                 for parent, value, _, _ in active:
                     self.edges[(parent, child)].log_kappa = math.log(value)
+                    self._dirty_snapshot_edges.add((parent, child))
         n = len(state.observations)
         if not n and not active:
             return BucketPrediction(None, None, child, bool(exact), 0, (), 0, 0.0,
@@ -235,17 +233,19 @@ class EdgeKappaKB:
         return self._predict(query)
 
     def predict_duration(self, query: FeatureQuery) -> DurationDistribution:
-        """Lift the same self/parent mixture to real, weighted duration atoms.
+        """Lift the same coverage/parent mixture to real duration atoms.
 
-        Each own event has weight 1; each parent-difference event has weight
+        Each child-coverage event has weight 1, including more-specific
+        observations. Exact-own observations are recorded separately; they do
+        not disable kappa sharing. Each parent-difference event has weight
         kappa/d. Overlapping parent evidence is one atom with summed weight.
         Censored and legacy bucket-only events are never assigned bucket midpoints.
         """
         prediction = self.predict(query)
-        own = self.nodes[prediction.node_id].observations if prediction.exact_match else set()
-        weights = {event_id: 1.0 for event_id in own}
+        covered = self.nodes[prediction.node_id].observations if prediction.exact_match else set()
+        weights = {event_id: 1.0 for event_id in covered}
         for evidence in prediction.evidence:
-            for event_id in self.nodes[evidence.parent_id].observations - own:
+            for event_id in self.nodes[evidence.parent_id].observations - covered:
                 weights[event_id] = weights.get(event_id, 0.0) + evidence.kappa / evidence.difference_count
         reason = prediction.unavailable_reason
         durations = {event_id: self._completion_rows.get(event_id, {}).get("duration_ms") for event_id in weights}
@@ -270,6 +270,20 @@ class EdgeKappaKB:
         return copy.deepcopy({"token": self._tokens[event_id],
                               "outcome": self._completion_rows[event_id]})
 
+    def cached_prediction_rejection(self, event_id: str) -> str | None:
+        """Do not serve cross-entry predictions retained by older snapshots.
+
+        Keep the original token for causal feedback; recomputing an in-flight
+        prediction with newly available observations would change its history.
+        """
+        token = self._tokens.get(event_id)
+        if token and token.get("prediction"):
+            core = frozenset(token["query"]["core_features"])
+            if any(not core <= frozenset(item["parent_features"])
+                   for item in token["prediction"]["evidence"]):
+                return "cached_prediction_crosses_execution_entry"
+        return None
+
     def replay_feedback(self, feedback: dict, source: EdgeKappaKB) -> dict:
         """Apply a saved pre-action gradient to current weights, never source weights.
 
@@ -282,7 +296,7 @@ class EdgeKappaKB:
             raise ValueError("frozen KB cannot replay feedback")
         if any(getattr(self, name) != getattr(source, name) for name in (
                 "bucket_edges_ms", "k0", "learning_rate", "learn_weights", "shared_child_weight",
-                "max_optional_features", "max_covered_nodes", "max_graph_nodes", "replay_seed",
+                "max_optional_features", "replay_seed",
                 "normalization_version")):
             raise ValueError("incompatible feedback KB configuration")
         token = copy.deepcopy(feedback["token"])
@@ -315,14 +329,18 @@ class EdgeKappaKB:
                 # prediction history. Only retain actual historical edges.
                 for parent in self.graph.parents[key]:
                     del self.edges[(parent, key)]
+                    self._snapshot_edges.pop((parent, key), None)
+                    self._dirty_snapshot_edges.discard((parent, key))
                 self.graph.parents[key] = ()
             existing = self.graph.parents[key]
             combined = tuple(sorted(set(existing).union(parents)))
             for parent in parents:
                 if parent not in existing:
                     self.edges[(parent, key)] = _Edge(math.log(self.k0 / len(parents)))
+                    self._dirty_snapshot_edges.add((parent, key))
             if combined != existing:
                 self.graph.parents[key] = combined
+                self._dirty_snapshot_nodes.add(key)
                 self.graph_version += 1
             imported.add(key)
 
@@ -355,6 +373,10 @@ class EdgeKappaKB:
                     value is not None and previous.get(name) != value for name, value in (
                         ("task_id", task_id), ("call_id", call_id), ("clause_id", clause_id))):
                 raise ValueError("event ID reused with different query or start time")
+            if reason := self.cached_prediction_rejection(event_id):
+                return BucketPrediction(None, None, node_id(query.features),
+                                        previous["prediction"]["exact_match"],
+                                        0, (), 0, 0.0, reason), event_id
             return self._prediction_from_token(self._tokens[event_id]), event_id
         if event_id in self._processed:
             raise ValueError("event already committed")
@@ -365,7 +387,8 @@ class EdgeKappaKB:
         # Save all pre-execution predictions before any count changes.
         for child in sorted(covered):
             local_query = FeatureQuery(self.graph.signatures[child],
-                self.graph.signatures[child], query.tool, query.normalization_version)
+                query.core_features & self.graph.signatures[child],
+                query.tool, query.normalization_version)
             local[child] = asdict(self._predict(local_query, commit_projection=True))
         self._tokens[event_id] = {"event_id": event_id, "start_time": start_time,
             "task_id": task_id, "call_id": call_id, "clause_id": clause_id,
@@ -475,6 +498,16 @@ class EdgeKappaKB:
                         skipped_nodes += 1
                         continue
                     active = saved["evidence"]
+                    core = (frozenset(token["query"]["core_features"])
+                            & self.graph.signatures[child])
+                    # Older snapshots/feedback can contain predictions made
+                    # using forbidden parents. Their saved probabilities are
+                    # not a valid basis for the constrained gradient. Keep
+                    # their observations but skip those historical updates.
+                    if any(not core <= self.graph.signatures[item["parent_id"]]
+                           for item in active):
+                        skipped_nodes += 1
+                        continue
                     if not self.learn_weights or not active:
                         continue
                     denominator = saved["observation_count"] + SMOOTHING + sum(
@@ -484,6 +517,8 @@ class EdgeKappaKB:
                         1 - item["distribution"][bucket] / truth) for item in active}
                     if self.shared_child_weight:
                         parents = list(token.get("parent_sets", {}).get(child, self.graph.parents[child]))
+                        parents = [parent for parent in parents
+                                   if core <= self.graph.signatures[parent]]
                         shared_gradient = max(-1.0, min(1.0, sum(gradients.values())))
                         for parent in parents:
                             edge = self.edges[(parent, child)]
@@ -505,13 +540,18 @@ class EdgeKappaKB:
                     boundary_hits += int(hit or any(value == lower for value in values))
                     for parent, value in zip(parents, values):
                         self.edges[(parent, child)].log_kappa = math.log(value)
+                        self._dirty_snapshot_edges.add((parent, child))
             for child in covered_now:
                 state = self.nodes[child]
+                self._dirty_snapshot_nodes.add(child)
                 if token_id not in state.observations:
                     state.observations.add(token_id)
                     state.counts[bucket] += 1
+                if self.graph.signatures[child] == frozenset(token["query"]["features"]):
+                    state.own_observations.add(token_id)
             self._observation_buckets[token_id] = bucket
             self._observation_features[token_id] = frozenset(token["query"]["features"])
+            self._observation_index.add(token_id, self._observation_features[token_id])
             self._processed.add(token_id)
             committed += 1
             self.generation += 1
@@ -534,8 +574,6 @@ class EdgeKappaKB:
                 "learning_rate": self.learning_rate, "learn_weights": self.learn_weights,
                 "shared_child_weight": self.shared_child_weight,
                 "max_optional_features": self.max_optional_features,
-                "max_covered_nodes": self.max_covered_nodes,
-                "max_graph_nodes": self.max_graph_nodes,
                 "replay_seed": self.replay_seed},
             "generation": self.generation, "replay_cursor": self.replay_cursor,
             "frozen": self._frozen,
@@ -555,13 +593,82 @@ class EdgeKappaKB:
             "observations": [{"event_id": key, "features": sorted(self._observation_features[key]),
                 "bucket": bucket} for key, bucket in sorted(self._observation_buckets.items())]}
 
+    def _capture_snapshot(self):
+        """Return an internal read-only payload factory for this exact revision.
+
+        The owner holds its lock here. Published token/outcome dictionaries are
+        append-or-replace, never edited in place; mutable counts and coverage
+        sets are copied only for changed nodes. Sorting and deep formatting can
+        then run outside the lock, even while new observations are committed.
+        Public to_snapshot retains its independently mutable-copy contract.
+        """
+        from .snapshot import NodeFrame, EdgeFrame, SnapshotPayload
+        node_keys = self._dirty_snapshot_nodes if self._snapshot_ready else self.graph.signatures
+        edge_keys = self._dirty_snapshot_edges if self._snapshot_ready else sorted(self.edges)
+        # Preserve insertion order when several new nodes appeared since the
+        # previous capture. Existing rows retain their chunk positions.
+        if self._snapshot_ready:
+            added = node_keys - self._snapshot_nodes.positions.keys()
+            if added:
+                node_keys = [key for key in node_keys if key not in added] + [
+                    key for key in self._snapshot_new_nodes if key in added]
+        for key in node_keys:
+            node = self.nodes[key]
+            self._snapshot_nodes[key] = NodeFrame(key, self.graph.signatures[key],
+                self.graph.parents[key], tuple(node.counts), frozenset(node.observations))
+        for parent, child in edge_keys:
+            edge = self.edges[(parent, child)]
+            self._snapshot_edges[(parent, child)] = EdgeFrame((parent, child), {
+                'parent_id': parent, 'child_id': child,
+                'dropped_features': sorted(self.graph.signatures[child] - self.graph.signatures[parent]),
+                'log_kappa': edge.log_kappa, 'update_count': edge.update_count,
+                'last_update_id': edge.last_update_id})
+        self._dirty_snapshot_nodes.clear()
+        self._snapshot_new_nodes.clear()
+        self._dirty_snapshot_edges.clear()
+        self._snapshot_ready = True
+        node_chunks = self._snapshot_nodes.capture()
+        edge_chunks = self._snapshot_edges.capture()
+        tokens, pending = dict(self._tokens), tuple(self._pending)
+        completed, processed = tuple(self._completed), tuple(self._processed)
+        outcomes = dict(self._completion_rows)
+        observations = tuple((key, self._observation_features[key], bucket)
+                             for key, bucket in self._observation_buckets.items())
+        metadata = {'schema': SCHEMA, 'graph_version': self.graph_version,
+            'normalization_version': self.normalization_version,
+            'config': {'bucket_edges_ms': list(self.bucket_edges_ms), 'k0': self.k0,
+                'learning_rate': self.learning_rate, 'learn_weights': self.learn_weights,
+                'shared_child_weight': self.shared_child_weight,
+                'max_optional_features': self.max_optional_features, 'replay_seed': self.replay_seed},
+            'generation': self.generation, 'replay_cursor': self.replay_cursor, 'frozen': self._frozen}
+        def materialize():
+            nodes = [frame for chunk in node_chunks for frame in chunk if frame is not None]
+            edges = sorted((frame for chunk in edge_chunks for frame in chunk if frame is not None),
+                           key=lambda frame: frame.key)
+            return SnapshotPayload({**metadata, 'nodes': [frame.row() for frame in nodes],
+                'edges': [frame.row() for frame in edges],
+                'tokens': copy.deepcopy(tokens), 'pending': copy.deepcopy([list(item) for item in pending]),
+                'processed_event_ids': sorted(processed), 'completed_event_ids': sorted(completed),
+                'completion_rows': copy.deepcopy(outcomes),
+                'observations': [{'event_id': key, 'features': sorted(features), 'bucket': bucket}
+                                 for key, features, bucket in sorted(observations)]}, nodes, edges)
+        return materialize
+
     @classmethod
     def from_snapshot(cls, obj: dict) -> EdgeKappaKB:
         if obj.get("schema") != SCHEMA or not isinstance(obj.get("graph_version"), int) or obj["graph_version"] < 1:
             raise ValueError("unsupported edge kappa snapshot version")
-        kb = cls(**obj["config"], normalization_version=obj["normalization_version"])
+        config = dict(obj["config"])
+        # Legacy capacity guards are retired. Keep the stored effective order,
+        # graph, historical parent relations and learned weights unchanged.
+        for key in ("max_covered_nodes", "max_graph_nodes"):
+            if key in config:
+                value = config.pop(key)
+                if type(value) is not int or value < 1:
+                    raise ValueError(f"invalid legacy {key}")
+        kb = cls(**config, normalization_version=obj["normalization_version"])
         signatures = {frozenset(row["features"]) for row in obj["nodes"]}
-        kb.graph = FeatureGraph(signatures)
+        kb.graph = FeatureGraph(signatures, build_parents=False)
         # A growing online graph retains the stored historical parent relation.
         kb.graph.parents = {key: () for key in kb.graph.signatures}
         if {row["id"] for row in obj["nodes"]} != set(kb.graph.signatures):
@@ -588,7 +695,7 @@ class EdgeKappaKB:
                 raise ValueError("snapshot edge/node parent mismatch")
         if len(obj["edges"]) != len(kb.edges):
             raise ValueError("duplicate edge")
-        if obj["graph_version"] == 1 and kb.graph.parents != FeatureGraph(signatures).parents:
+        if obj["graph_version"] == 1 and kb.graph.parents != kb.graph.canonical_parents():
             raise ValueError("missing or incorrect edge")
         for (parent, child) in kb.edges:
             if not kb.nodes[child].observations <= kb.nodes[parent].observations:
@@ -608,6 +715,7 @@ class EdgeKappaKB:
         kb._observation_buckets = {row["event_id"]: row["bucket"] for row in obj["observations"]}
         kb._observation_features = {row["event_id"]: frozenset(row["features"])
                                     for row in obj["observations"]}
+        kb._observation_index = SupersetIndex(kb._observation_features.items())
         for event_id in kb._observation_buckets:
             duration = kb._completion_rows.get(event_id, {}).get("duration_ms")
             if duration is not None and (not math.isfinite(duration) or duration < 0
@@ -619,6 +727,9 @@ class EdgeKappaKB:
         expected_ids: dict[str, set[str]] = {key: set() for key in kb.nodes}
         expected_counts = {key: [0] * kb.bucket_count for key in kb.nodes}
         for event_id, features in kb._observation_features.items():
+            exact = kb.graph.by_features.get(features)
+            if exact is not None:
+                kb.nodes[exact].own_observations.add(event_id)
             for key in kb.graph.subsets(features):
                 expected_ids[key].add(event_id)
                 expected_counts[key][kb._observation_buckets[event_id]] += 1

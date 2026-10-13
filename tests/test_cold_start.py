@@ -179,6 +179,7 @@ def test_completed_error_and_timeout_text_are_not_censored(tmp_path):
     loaded = read_task(path, repo="org/a", task_id="org__a-1", rss_unit="MB", trust_call_cgroup=True)
     assert not loaded.calls[0].censored and len(loaded.clauses) == 1
     runtime = RuntimeToolResourceKB.fit_public(loaded.calls)
+    runtime.merge_historical(loaded.calls)
     targets = runtime.predict_load_samples(ToolCallQuery("org/a", "exec", "python timeout_test.py", 100))
     assert targets["duration_ms"]["values"] == (1000,)
     assert targets["cpu_time_seconds"]["values"] == (2,)

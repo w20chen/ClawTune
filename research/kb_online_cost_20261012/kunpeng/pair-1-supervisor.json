@@ -1,0 +1,9 @@
+{
+  "model": "pair",
+  "limit": 1,
+  "returncode": 0,
+  "termination": null,
+  "wall_s": 49.010938248,
+  "observed_peak_rss_mib": 529.41796875,
+  "trial_time_budget_s": 300.0
+}

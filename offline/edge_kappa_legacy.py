@@ -16,6 +16,7 @@ from offline.runner import inventory, load_or_create_split
 from offline.edge_kappa_trace import read_v5_events
 from tool_resource.runtime_kb import ClauseObservation
 from tool_time.lattice_kb import LatticeTimeKB
+from kb_common import DEFAULT_MAX_OPTIONAL_FEATURES, validate_max_optional_features
 from tool_time._lattice_vendor.nodes import _loo_mse_log, _compute_loso_risk
 from tool_time._lattice_vendor.shrinkage import compute_shrinkage_variances
 
@@ -71,7 +72,9 @@ def run(dataset: Path, output: Path, *, benchmark: str = "swe-rebench", seed: in
         edges: tuple[float, ...] = (100, 500, 2000, 10000),
         split_cache_dir: Path | None = None,
         corrected_coverage: bool = False,
-        built_in_coverage: bool = False) -> dict:
+        built_in_coverage: bool = False,
+        max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES) -> dict:
+    validate_max_optional_features(max_optional_features)
     if corrected_coverage and built_in_coverage:
         raise ValueError("choose one coverage mode")
     if (not edges or any(not math.isfinite(edge) or edge <= 0 for edge in edges)
@@ -94,6 +97,7 @@ def run(dataset: Path, output: Path, *, benchmark: str = "swe-rebench", seed: in
     kb = LatticeTimeKB.fit(
         (_observation(event) for event in train),
         subset_coverage=built_in_coverage,
+        max_optional_features=max_optional_features,
     )
     kb.freeze()
     if corrected_coverage:
@@ -121,6 +125,7 @@ def run(dataset: Path, output: Path, *, benchmark: str = "swe-rebench", seed: in
         "bucket_edges_ms": list(edges),
         "corrected_coverage": corrected_coverage,
         "built_in_coverage": built_in_coverage,
+        "max_optional_features": max_optional_features,
         "train_clauses": len(train), "test_clauses": len(rows),
         "predicted": len(scored), "coverage": len(scored) / len(rows) if rows else 0,
         "accuracy": sum(row["actual_bucket"] == row["predicted_bucket"]
@@ -143,6 +148,7 @@ def main() -> None:
     parser.add_argument("--benchmark", default="swe-rebench")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--split-cache-dir", type=Path)
+    parser.add_argument("--kb-max-optional-features", type=int, default=DEFAULT_MAX_OPTIONAL_FEATURES)
     parser.add_argument("--bucket-edges-ms", type=float, nargs="+",
                         default=(100, 500, 2000, 10000))
     coverage = parser.add_mutually_exclusive_group()
@@ -153,7 +159,8 @@ def main() -> None:
                          seed=args.seed, split_cache_dir=args.split_cache_dir,
                          edges=tuple(args.bucket_edges_ms),
                          corrected_coverage=args.corrected_coverage,
-                         built_in_coverage=args.built_in_coverage), indent=2))
+                         built_in_coverage=args.built_in_coverage,
+                         max_optional_features=args.kb_max_optional_features), indent=2))
 
 
 if __name__ == "__main__":

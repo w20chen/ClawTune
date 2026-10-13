@@ -1,0 +1,30 @@
+{
+  "python": "3.14.4",
+  "regression_command": "wsl -e bash .runtime/entry-constraint-validation/run.sh services/sidecar/tests/test_lattice_performance_equivalence.py services/sidecar/tests/test_lattice_resources.py services/sidecar/tests/test_lattice_query_policy.py services/sidecar/tests/test_lattice_time_kb.py services/sidecar/tests/test_command_normalization.py services/sidecar/tests/test_kb_entry_constraints.py tests/test_lattice_snapshot_handoff.py tests/test_lattice_oracle.py",
+  "regression_passed": 152,
+  "integration_command": "wsl -e bash .runtime/entry-constraint-validation/run.sh services/sidecar/tests/test_call_load.py tests/test_demo_workflows.py::test_offline_lattice_variants_share_frozen_statistics_and_preserve_default_results services/sidecar/tests/test_tool_resource_predictor.py -k 'call_load or prepared or background or offline_lattice_variants'",
+  "integration_passed": 67,
+  "diff_check": "git diff --check: passed",
+  "oracle": "Unchanged; regression tests ran. Full dataset oracle experiment was intentionally not rerun.",
+  "source_snapshot": {
+    "clause-lattice-time-kb.json": "63c564551d86d38fd6165eff77f2763875fdf520ce160fd33033c825db57615a",
+    "edge-kappa-kb.json": "ed20768b03f7bab6ac1d757eab6001f72c3a100f8b27ddfdd308b4abc04805cb"
+  },
+  "previous_edge_config": {
+    "bucket_edges_ms": [
+      100,
+      500,
+      2000,
+      10000
+    ],
+    "k0": 1.0,
+    "learn_weights": true,
+    "learning_rate": 0.1,
+    "max_covered_nodes": 4096,
+    "max_graph_nodes": 20000,
+    "max_optional_features": 1,
+    "replay_seed": 42,
+    "shared_child_weight": false
+  },
+  "previous_edge_nodes": 12450
+}

@@ -12,6 +12,7 @@
     "source": "https://github.com/withfig/autocomplete/blob/aef52acff84c45edde61ae610cc2c964802b9a38/src/npm.ts",
     "revision": "aef52acff84c45edde61ae610cc2c964802b9a38",
     "evidence": [
+      "https://docs.npmjs.com/cli/using-npm/workspaces/",
       "overrides/npm.json"
     ]
   },
@@ -401,7 +402,7 @@
               ],
               "canonical": "--workspace",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",
@@ -464,7 +465,7 @@
               ],
               "canonical": "--workspace",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",
@@ -579,7 +580,7 @@
                 "equals",
                 "attached"
               ],
-              "optional_value": "attached",
+              "optional_value": "next",
               "dash_values": "attached",
               "repeat": "ordered",
               "independent": false,
@@ -743,7 +744,7 @@
               ],
               "canonical": "--workspace",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",
@@ -900,7 +901,7 @@
                     ],
                     "canonical": "--workspace",
                     "min": 1,
-                    "max": null,
+                    "max": 1,
                     "forms": [
                       "separate",
                       "equals",
@@ -1658,7 +1659,7 @@
               ],
               "canonical": "--workspace",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",
@@ -2335,7 +2336,7 @@
               ],
               "canonical": "--workspace",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",
@@ -2745,7 +2746,7 @@
               ],
               "canonical": "--workspace",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",
@@ -3034,7 +3035,7 @@
               ],
               "canonical": "--workspace",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",
@@ -3177,7 +3178,7 @@
                     ],
                     "canonical": "--workspace",
                     "min": 1,
-                    "max": null,
+                    "max": 1,
                     "forms": [
                       "separate",
                       "equals",
@@ -3257,7 +3258,7 @@
                     ],
                     "canonical": "--workspace",
                     "min": 1,
-                    "max": null,
+                    "max": 1,
                     "forms": [
                       "separate",
                       "equals",
@@ -3338,7 +3339,7 @@
                     ],
                     "canonical": "--workspace",
                     "min": 1,
-                    "max": null,
+                    "max": 1,
                     "forms": [
                       "separate",
                       "equals",
@@ -3886,7 +3887,7 @@
               ],
               "canonical": "--workspace",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",
@@ -3966,7 +3967,7 @@
               ],
               "canonical": "--workspace",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",
@@ -4102,7 +4103,7 @@
               ],
               "canonical": "--workspace",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",
@@ -4200,7 +4201,7 @@
               ],
               "canonical": "--workspace",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",
@@ -4669,7 +4670,7 @@
               ],
               "canonical": "--workspace",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",
@@ -5626,7 +5627,7 @@
               ],
               "canonical": "--workspace",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",
@@ -5984,7 +5985,7 @@
               ],
               "canonical": "--workspace",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",
@@ -6040,7 +6041,7 @@
               ],
               "canonical": "--workspace",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",
@@ -6207,7 +6208,7 @@
               ],
               "canonical": "--workspace",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",

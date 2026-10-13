@@ -22,8 +22,8 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from tool_resource.features import shell_bin_requires_exec_evidence
 from tool_resource.runtime_kb import ClauseObservation, is_pipeline_dependent_consumer
-from tool_time._lattice_vendor.features import estimate_node_count
 from tool_time._lattice_vendor.nodes import build_nodes
+from tool_time._lattice_vendor.features import CoverageIndex
 from tool_time._lattice_vendor.normalize import FeatureSet, normalize_command
 from command_parser import ParseContext, default_service
 from command_parser.models import CommandFeatures, FORMAT
@@ -31,6 +31,9 @@ from command_parser.service import observation_features, clause_features
 from tool_time._lattice_vendor.schemas import NodeStats, Observation, PredictionResult
 from tool_time._lattice_vendor.selector import predict as select_prediction
 from tool_time._lattice_vendor.shrinkage import compute_shrinkage_variances
+from tool_time.query import query_nodes
+from tool_time.build_cache import BuildStatisticsCache
+from kb_common import DEFAULT_MAX_OPTIONAL_FEATURES, validate_max_optional_features
 from tool_time.resource_lattice import (
     RESOURCE_TARGETS, LOAD_TARGETS, ResourcePrediction, ResourceState, build_resource_states,
     nonnegative, resource_values,
@@ -42,10 +45,7 @@ LATTICE_TIME_KB_SCHEMA = "clause_lattice_kb_v4"
 _LEGACY_SCHEMA = "clause_lattice_time_kb_v1"
 
 _NODE_MODE = "bounded"
-_MAX_OPTIONAL_FEATURES = 6
 _MIN_PARTIAL_SUPPORT = 1
-_MAX_NODES_PER_SIGNATURE = 4_096
-_NODE_OCCURRENCE_BUDGET = 20_000
 _MAX_SHRINKAGE_CANDIDATES = 512
 _SHRINKAGE_KAPPA = 0.5
 _CONTEXT_SAMPLE_ALPHA = 0.03
@@ -54,7 +54,7 @@ _SPECIFICITY_RISK_TOLERANCE = 0.5
 _LOSO_RISK_WEIGHT = 1.0
 
 _ObservationKey = tuple[Any, ...]
-_NodeState = tuple[dict[FeatureSet, NodeStats], float, float, float, dict[str, ResourceState]]
+_NodeState = tuple[Mapping[FeatureSet, NodeStats], float, float, float, dict[str, ResourceState], CoverageIndex]
 
 
 @dataclass(frozen=True)
@@ -106,15 +106,18 @@ class LatticeTimeKB:
     rebuild can exactly recompute LOSO signature medians after online updates.
     """
 
-    def __init__(self, *, subset_coverage: bool = True) -> None:
+    def __init__(self, *, subset_coverage: bool = True,
+                 max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES) -> None:
         if type(subset_coverage) is not bool:
             raise ValueError("subset_coverage must be boolean")
+        self.max_optional_features = validate_max_optional_features(max_optional_features)
         self._subset_coverage = subset_coverage
         self._observations: list[ClauseObservation] = []
         self._pending: list[tuple[float, int, ClauseObservation]] = []
         self._pending_seq = 0
         self._last_query_ts: float | None = None
-        self._nodes: dict[FeatureSet, NodeStats] = {}
+        self._nodes: Mapping[FeatureSet, NodeStats] = {}
+        self._query_index = CoverageIndex(())
         self._resource_states: dict[str, ResourceState] = {}
         self._global_log_var = 0.0
         self._global_log_std = 0.5
@@ -123,11 +126,15 @@ class LatticeTimeKB:
         self._data_generation = 0
         self._prepared_all_generation = -1
         self._prepared_all_state: _NodeState | None = None
+        self._statistics_cache = BuildStatisticsCache()
+        self._maintenance = None
+        self._prepared_maintenance = None
 
     @classmethod
     def fit(cls, observations: Iterable[ClauseObservation], *,
-            subset_coverage: bool = True) -> LatticeTimeKB:
-        kb = cls(subset_coverage=subset_coverage)
+            subset_coverage: bool = True,
+            max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES) -> LatticeTimeKB:
+        kb = cls(subset_coverage=subset_coverage, max_optional_features=max_optional_features)
         kb.merge_historical(observations)
         return kb
 
@@ -204,27 +211,40 @@ class LatticeTimeKB:
 
         The owner serializes this short copy with queries, builds the successor
         outside that lock, and publishes the prepared successor atomically.
-        Derived nodes are intentionally not copied or shared with the writer.
+        Completed derived states are read-only and can be shared until replaced.
         """
-        successor = type(self)(subset_coverage=self._subset_coverage)
+        successor = type(self)(subset_coverage=self._subset_coverage,
+                               max_optional_features=self.max_optional_features)
         successor._observations = list(self._observations)
         successor._pending = list(self._pending)
         successor._pending_seq = self._pending_seq
         successor._data_generation = self._data_generation
         successor._last_query_ts = self._last_query_ts
-        successor._dirty = True
+        successor._nodes = self._nodes
+        successor._query_index = self._query_index
+        successor._resource_states = self._resource_states
+        successor._global_log_var = self._global_log_var
+        successor._global_log_std = self._global_log_std
+        successor._global_median_s = self._global_median_s
+        successor._dirty = self._dirty
+        successor._prepared_all_state = self._prepared_all_state
+        successor._prepared_all_generation = self._prepared_all_generation
+        successor._statistics_cache = self._statistics_cache.fork()
+        successor._maintenance = self._maintenance
+        successor._prepared_maintenance = self._prepared_maintenance
         return successor
 
     def prepare(self) -> None:
         """Build nodes outside the latency-sensitive prediction path."""
 
         self._ensure_nodes()
-        if self._pending:
+        if self._pending and (
+            self._prepared_all_state is None
+            or self._prepared_all_generation != self._data_generation
+        ):
             pending = [observation for _, _, observation in self._pending]
-            self._prepared_all_state = _build_node_state(
-                [*self._observations, *pending],
-                subset_coverage=self._subset_coverage,
-            )
+            self._prepared_maintenance = self._maintain([*self._observations, *pending])
+            self._prepared_all_state = self._prepared_maintenance.state()
             self._prepared_all_generation = self._data_generation
 
     def predict_clauses(
@@ -342,11 +362,37 @@ class LatticeTimeKB:
                     result = state.predict(repo, clause["argv"], target, algorithm, command_features=clause_features(clause, repo))
                     if result.unavailable_reason is None:
                         node = state.nodes[frozenset(result.selected_features)]
-                        targets[target] = {"values": tuple(v * scale for v in node.durations),
+                        samples = node.prediction_samples(clause_features(clause, repo).features)
+                        targets[target] = {"values": tuple(v * scale for v in samples),
                                            "context": (algorithm, *result.selected_features)}
                 except (KeyError, TypeError, ValueError) as exc:
                     targets[target] = {"values": (), "unavailable_reason": f"target_error:{type(exc).__name__}"}
             outcomes.append(targets)
+        return tuple(outcomes)
+
+    def duration_candidate_samples(
+        self, repo: str, clauses: Sequence[Mapping[str, Any]], ts_start: float,
+    ) -> tuple[tuple[dict[str, Any], ...], ...]:
+        """Expose legal duration evidence for offline oracle selection.
+
+        This performs the same entry checks and exact-own preference as normal
+        queries. It does not score nodes or consume test labels.
+        """
+        self._advance(ts_start)
+        self._ensure_nodes()
+        state = self._resource_states.get("load:duration_ms")
+        outcomes = []
+        for clause in clauses:
+            if is_pipeline_dependent_consumer(clause):
+                continue
+            query = clause_features(clause, repo)
+            candidates = (query_nodes(state.nodes, query, global_log_std=state.global_log_std,
+                                      index=state.query_index)
+                          if state is not None else {})
+            outcomes.append(tuple({
+                "values": tuple(value * 1000.0 for value in node.durations),
+                "context": ("oracle", *sorted(features)),
+            } for features, node in sorted(candidates.items(), key=lambda item: tuple(sorted(item[0])))))
         return tuple(outcomes)
 
     def _predict_clause(
@@ -363,16 +409,24 @@ class LatticeTimeKB:
             )
 
         command = shlex.join(argv)
-        query_features = (command_features or default_service().argv(argv, ParseContext(repo=repo))).features
+        query = command_features or default_service().argv(argv, ParseContext(repo=repo))
+        query_features = query.features
+        candidates = query_nodes(self._nodes, query, global_log_std=self._global_log_std,
+                                 index=self._query_index)
+        if not candidates:
+            return tuple(
+                _unavailable_prediction(algorithm, "no_matching_time_context")
+                for algorithm in LATTICE_TIME_ALGORITHMS
+            )
         predictions: list[LatticeTimePrediction] = []
         for algorithm in LATTICE_TIME_ALGORITHMS:
             try:
                 if algorithm == "max_cardinality":
-                    prediction = self._predict_max_cardinality(query_features)
+                    prediction = self._predict_max_cardinality(query_features, candidates)
                 elif (
                     algorithm == "shrinkage"
                     and query_features not in self._nodes
-                    and _matching_node_count(self._nodes, query_features)
+                    and len(candidates)
                     > _MAX_SHRINKAGE_CANDIDATES
                 ):
                     prediction = _unavailable_prediction(
@@ -380,7 +434,7 @@ class LatticeTimeKB:
                         "lattice_candidate_limit_exceeded",
                     )
                 else:
-                    prediction = self._predict_vendored(command, repo, algorithm, query_features)
+                    prediction = self._predict_vendored(command, repo, algorithm, query_features, candidates)
             except (KeyError, TypeError, ValueError) as exc:
                 prediction = _unavailable_prediction(
                     algorithm,
@@ -395,10 +449,11 @@ class LatticeTimeKB:
         repo: str,
         algorithm: str,
         query_features: FeatureSet,
+        candidates: dict[FeatureSet, NodeStats],
     ) -> LatticeTimePrediction:
         result = select_prediction(
             command,
-            self._nodes,
+            candidates,
             query_features=query_features,
             repo=repo,
             global_log_var=self._global_log_var,
@@ -424,23 +479,16 @@ class LatticeTimeKB:
     def _predict_max_cardinality(
         self,
         query_features: FeatureSet,
+        candidates: dict[FeatureSet, NodeStats],
     ) -> LatticeTimePrediction:
         best: NodeStats | None = None
         best_count = -1
-        for features, stats in self._nodes.items():
+        for features, stats in candidates.items():
             if features.issubset(query_features) and len(features) > best_count:
                 best_count = len(features)
                 best = stats
         if best is None:
-            return LatticeTimePrediction(
-                algorithm="max_cardinality",
-                prediction_ms=self._global_median_s * 1000.0,
-                selected_features=(),
-                evidence_count=sum(nonnegative(row.latency_ms) and row.latency_ms > 0 for row in self._observations),
-                selected_risk=None,
-                exact_match=False,
-                fallback="global",
-            )
+            return _unavailable_prediction("max_cardinality", "no_matching_time_context")
         return LatticeTimePrediction(
             algorithm="max_cardinality",
             prediction_ms=best.median_s * 1000.0,
@@ -473,16 +521,49 @@ class LatticeTimeKB:
                 and self._prepared_all_generation == self._data_generation
             ):
                 self._install_node_state(self._prepared_all_state)
+                self._maintenance = self._prepared_maintenance
                 self._prepared_all_state = None
+                self._prepared_maintenance = None
             else:
                 self._dirty = True
 
     def _ensure_nodes(self) -> None:
         if not self._dirty:
             return
-        self._install_node_state(_build_node_state(
-            self._observations, subset_coverage=self._subset_coverage,
-        ))
+        self._maintenance = self._maintain(self._observations)
+        self._install_node_state(self._maintenance.state())
+
+    def _maintain(self, observations):
+        from tool_time.incremental import IncrementalLatticeState
+        # Several writer batches may arrive before a query activates pending
+        # rows. Reuse the longest valid prepared prefix too, without making its
+        # future observations visible to queries with an earlier timestamp.
+        versions = (self._maintenance, self._prepared_maintenance)
+        def has_prefix(version):
+            count = len(version.rows)
+            if len(observations) < count:
+                return False
+            current = observations[:count]
+            if all(a is b for a, b in zip(version.rows, current)):
+                return True
+            # A heap is not a sorted list: publishing all prepared pending
+            # rows changes their raw append order. Unique chronological keys
+            # still produce exactly the same training order. Equal-key ties
+            # must retain their identity order too before reuse is safe.
+            return all(a is b for a, b in zip(
+                sorted(version.rows, key=_observation_sort_key),
+                sorted(current, key=_observation_sort_key)))
+        reusable = [v for v in versions if v is not None and len(observations) >= len(v.rows)
+                    and has_prefix(v)]
+        if reusable:
+            previous = max(reusable, key=lambda v: len(v.rows))
+            return previous if len(previous.rows) == len(observations) else previous.extend(observations)
+        # Initial loading (or a changed equal-time delivery order) retains the
+        # full builder as the exact reference. Ordinary additions use deltas.
+        state = _build_node_state(observations, subset_coverage=self._subset_coverage,
+            max_optional_features=self.max_optional_features, statistics_cache=self._statistics_cache)
+        return IncrementalLatticeState(observations, state,
+            maximum=self.max_optional_features, subset_coverage=self._subset_coverage)
 
     def _install_node_state(self, state: _NodeState) -> None:
         (
@@ -491,6 +572,7 @@ class LatticeTimeKB:
             self._global_log_std,
             self._global_median_s,
             self._resource_states,
+            self._query_index,
         ) = state
         self._dirty = False
 
@@ -502,10 +584,9 @@ class LatticeTimeKB:
             "normalization_version": FORMAT,
             "node_generation": {
                 "mode": _NODE_MODE,
-                "max_optional_features": _MAX_OPTIONAL_FEATURES,
+                "max_optional_features": self.max_optional_features,
+                "optional_feature_policy": "fixed",
                 "min_partial_support": _MIN_PARTIAL_SUPPORT,
-                "max_nodes_per_signature": _MAX_NODES_PER_SIGNATURE,
-                "node_occurrence_budget": _NODE_OCCURRENCE_BUDGET,
                 "max_shrinkage_candidates": _MAX_SHRINKAGE_CANDIDATES,
                 "subset_coverage": self._subset_coverage,
             },
@@ -528,23 +609,28 @@ class LatticeTimeKB:
             raise ValueError(f"unsupported lattice KB schema {obj.get('schema')!r}")
         if obj.get("normalization_version") != FORMAT:
             raise ValueError("Lattice command feature format changed; start a new state directory")
-        expected_generation = {
-            "mode": _NODE_MODE,
-            "max_optional_features": _MAX_OPTIONAL_FEATURES,
-            "min_partial_support": _MIN_PARTIAL_SUPPORT,
-            "max_nodes_per_signature": _MAX_NODES_PER_SIGNATURE,
-            "node_occurrence_budget": _NODE_OCCURRENCE_BUDGET,
-            "max_shrinkage_candidates": _MAX_SHRINKAGE_CANDIDATES,
-        }
         generation = obj.get("node_generation")
         if not isinstance(generation, Mapping):
             raise ValueError("lattice KB node-generation configuration differs")
+        maximum = validate_max_optional_features(generation.get("max_optional_features"))
+        expected_generation = {
+            "mode": _NODE_MODE,
+            "max_optional_features": maximum,
+            "optional_feature_policy": "fixed",
+            "min_partial_support": _MIN_PARTIAL_SUPPORT,
+            "max_shrinkage_candidates": _MAX_SHRINKAGE_CANDIDATES,
+        }
         # Snapshots written before subset coverage existed have no marker and
         # must retain their original generated-node aggregation on reload.
         subset_coverage = generation.get("subset_coverage", False)
+        # Old snapshots contain raw observations, not materialized nodes. They
+        # can be rebuilt with the fixed bound without discarding learned data.
+        legacy_generation = {key: value for key, value in expected_generation.items()
+                             if key != "optional_feature_policy"}
+        legacy_generation.update(max_nodes_per_signature=4096, node_occurrence_budget=20000)
         if (type(subset_coverage) is not bool or
                 {key: value for key, value in generation.items()
-                 if key != "subset_coverage"} != expected_generation):
+                 if key != "subset_coverage"} not in (expected_generation, legacy_generation)):
             raise ValueError("lattice KB node-generation configuration differs")
         observation_rows = obj.get("observations")
         if not isinstance(observation_rows, list):
@@ -552,7 +638,7 @@ class LatticeTimeKB:
         pending_rows = obj.get("pending")
         if not isinstance(pending_rows, list):
             raise ValueError("lattice KB pending must be an array")
-        kb = cls(subset_coverage=subset_coverage)
+        kb = cls(subset_coverage=subset_coverage, max_optional_features=maximum)
         resource_only = obj.get("schema") == LATTICE_TIME_KB_SCHEMA
         kb.merge_historical(
             _observation_from_json(row, allow_resource_only=resource_only)
@@ -576,83 +662,86 @@ class LatticeTimeKB:
 
 def _build_node_state(
     observations: Sequence[ClauseObservation],
-    *, subset_coverage: bool = True,
+    *, subset_coverage: bool = True, statistics_cache=None,
+    max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES,
 ) -> _NodeState:
     ordered = sorted(observations, key=_observation_sort_key)
+    feature_cache = {}
+    def features_for(observation):
+        key = id(observation)
+        if key not in feature_cache:
+            feature_cache[key] = observation_features(observation)
+        return feature_cache[key]
     training = [
         Observation(
             cmd=shlex.join(observation.argv),
             duration_s=float(observation.latency_ms) / 1000.0,
             repo=observation.repo,
             clause_index=0,
-            command_features=observation_features(observation).to_dict(),
+            command_features=features_for(observation).to_dict(),
         )
         for observation in ordered
         if nonnegative(observation.latency_ms) and observation.latency_ms > 0
     ]
-    resources = build_resource_states(ordered, subset_coverage=subset_coverage)
+    # Reuse only identical ordered, target-qualified training sets. Resource
+    # scales are already applied in the cache key; eligibility stays per target.
+    state_cache: dict = {}
+    context_cache: dict = {}
+    base_targets = [target for target in RESOURCE_TARGETS if not target.startswith("memory_")]
+    memory_targets = [target for target in RESOURCE_TARGETS if target.startswith("memory_")]
+    resources = build_resource_states(ordered, subset_coverage=subset_coverage,
+                                     max_optional_features=max_optional_features,
+                                     targets=base_targets, state_cache=state_cache,
+                                     context_cache=context_cache, feature_cache=feature_cache,
+                                     statistics_cache=statistics_cache)
     resources.update({"load:" + target: state for target, state in build_resource_states(
         ordered, load=True, subset_coverage=subset_coverage,
+        max_optional_features=max_optional_features,
+        targets=["duration_ms", *base_targets], state_cache=state_cache,
+        context_cache=context_cache, feature_cache=feature_cache,
+        statistics_cache=statistics_cache,
     ).items()})
     for measurement in {row.memory_measurement for row in ordered if row.memory_measurement}:
         subset = [row for row in ordered if row.memory_measurement == measurement]
         for load, prefix in [(False, ""), (True, "load:")]:
             for target, state in build_resource_states(
                 subset, load=load, subset_coverage=subset_coverage,
+                max_optional_features=max_optional_features,
+                targets=memory_targets, state_cache=state_cache,
+                context_cache=context_cache, feature_cache=feature_cache,
+                statistics_cache=statistics_cache,
             ).items():
-                if target.startswith("memory_"):
-                    resources[prefix + target + ":" + measurement] = state
-    for key in list(resources):
-        if key.removeprefix("load:").startswith("memory_") and key.count(":") <= (1 if key.startswith("load:") else 0):
-            del resources[key]
+                resources[prefix + target + ":" + measurement] = state
 
     if not training:
-        return {}, 0.0, 0.5, 0.0, resources
-    effective_max_optional_features = _effective_max_optional_features(training)
+        return {}, 0.0, 0.5, 0.0, resources, CoverageIndex(())
+    order_metadata = {}
     nodes, global_log_var, global_log_std = build_nodes(
         training,
         mode=_NODE_MODE,
-        max_optional_features=effective_max_optional_features,
+        max_optional_features=max_optional_features,
         always_keep_exact=True,
         min_partial_support=_MIN_PARTIAL_SUPPORT,
         estimator="median",
         split_compounds=False,
         subset_coverage=subset_coverage,
+        context_cache=context_cache,
+        statistics_cache=statistics_cache,
+        order_metadata=order_metadata,
     )
+    query_index = CoverageIndex(nodes)
+    query_index.generation_order = order_metadata['generation_order']
+    query_index.first_cover = order_metadata['first_cover']
     compute_shrinkage_variances(
         nodes,
         kappa=_SHRINKAGE_KAPPA,
         global_log_var=global_log_var,
+        index=query_index, reuse_sample_std=True,
     )
     global_median_s = statistics.median(
         observation.duration_s for observation in training
     )
-    return nodes, global_log_var, global_log_std, global_median_s, resources
-
-
-def _effective_max_optional_features(
-    observations: Sequence[Observation],
-) -> int:
-    optional_counts: list[int] = []
-    for observation in observations:
-        if observation.command_features is not None:
-            record = CommandFeatures.from_dict(observation.command_features)
-            features, core = record.features, record.core
-        else:
-            features, core = normalize_command(observation.cmd, repo=observation.repo,
-                cwd=observation.cwd, env_id=observation.env_id, is_clause=True)
-        optional_counts.append(len(features - core))
-    for maximum in range(_MAX_OPTIONAL_FEATURES, -1, -1):
-        estimates = [
-            estimate_node_count(count, mode=_NODE_MODE, max_optional_features=maximum)
-            for count in optional_counts
-        ]
-        if (
-            max(estimates, default=0) <= _MAX_NODES_PER_SIGNATURE
-            and sum(estimates) <= _NODE_OCCURRENCE_BUDGET
-        ):
-            return maximum
-    return 0
+    return nodes, global_log_var, global_log_std, global_median_s, resources, query_index
 
 
 def _matching_node_count(

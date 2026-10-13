@@ -2022,14 +2022,14 @@ def _write_edge_snapshot(directory: Path, duration_ms: float = 50) -> bytes:
     from tool_resource.runtime_kb import ClauseObservation
 
     runtime = EdgeKappaRuntime.fit([
-        ClauseObservation(repo="repo", bin="python", argv=("python",),
-                          ts_start=1, ts_end=2, latency_ms=50),
         ClauseObservation(repo="repo", bin="python", argv=("python", "job.py"),
+                          ts_start=1, ts_end=2, latency_ms=50),
+        ClauseObservation(repo="repo", bin="python", argv=("python", "job.py", "--verbose"),
                           ts_start=3, ts_end=4, latency_ms=600),
     ], (100, 500, 2000, 10000))
-    runtime.predict_load_samples("repo", [{"argv": ["python", "job.py"]}], 5, call_id="call")
+    runtime.predict_load_samples("repo", [{"argv": ["python", "job.py", "--verbose"]}], 5, call_id="call")
     runtime.complete_call("call", [ClauseObservation(
-        repo="repo", bin="python", argv=("python", "job.py"),
+        repo="repo", bin="python", argv=("python", "job.py", "--verbose"),
         ts_start=5, ts_end=6, latency_ms=duration_ms,
     )], commit_time=7)
     assert any(edge.update_count for edge in runtime.kb.edges.values())

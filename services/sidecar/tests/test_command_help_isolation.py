@@ -5,7 +5,6 @@ import os
 import subprocess
 
 import pytest
-
 from command_parser import ParseContext
 from command_parser.help_runner import HelpRunner
 
@@ -48,6 +47,9 @@ def test_help_probe_pins_image_clears_secrets_and_cleans_up(monkeypatch, tmp_pat
 
 @pytest.mark.skipif(not os.getenv("CLAWTUNE_TEST_HELP_IMAGE"), reason="requires an isolated Docker image with python3")
 def test_real_help_probe_cannot_write_workspace_or_use_network(tmp_path):
+    # Docker runs without DAC override capabilities; its UID need not own the
+    # host pytest directory (normally mode 0700). This fixture must be readable.
+    tmp_path.chmod(0o755)
     script = tmp_path / "probe.py"
     script.write_text("""import os, socket
 assert not os.environ.get('CLAWTUNE_PROBE_SECRET')

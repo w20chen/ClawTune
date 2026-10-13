@@ -1272,15 +1272,17 @@ def _validate_lattice_time_kb_snapshot(path: Path, payload: dict[str, Any]) -> N
     expected_generation = {
         "mode": "bounded",
         "max_optional_features": 6,
+        "optional_feature_policy": "fixed",
         "min_partial_support": 1,
-        "max_nodes_per_signature": 4_096,
-        "node_occurrence_budget": 20_000,
         "max_shrinkage_candidates": 512,
     }
+    legacy_generation = {key: value for key, value in expected_generation.items()
+                         if key != "optional_feature_policy"}
+    legacy_generation.update(max_nodes_per_signature=4096, node_occurrence_budget=20000)
     generation = payload.get("node_generation")
     if not isinstance(generation, dict) or (
         {key: value for key, value in generation.items()
-         if key != "subset_coverage"} != expected_generation
+         if key != "subset_coverage"} not in (expected_generation, legacy_generation)
         or ("subset_coverage" in generation
             and type(generation["subset_coverage"]) is not bool)
     ):

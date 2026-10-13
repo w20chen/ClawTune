@@ -1,0 +1,12 @@
+{
+  "regression_command": "wsl -e bash .runtime/entry-constraint-validation/run.sh services/sidecar/tests/test_kb_algorithm_equivalence.py services/sidecar/tests/test_lattice_performance_equivalence.py services/sidecar/tests/test_lattice_resources.py services/sidecar/tests/test_lattice_query_policy.py services/sidecar/tests/test_lattice_time_kb.py services/sidecar/tests/test_command_normalization.py services/sidecar/tests/test_kb_entry_constraints.py tests/test_lattice_snapshot_handoff.py tests/test_lattice_oracle.py services/sidecar/tests/test_tool_resource_predictor.py services/sidecar/tests/test_edge_kappa_kb.py services/sidecar/tests/test_edge_kappa_runtime.py services/sidecar/tests/test_call_load.py services/sidecar/tests/test_kb_history.py tests/test_kb_ingress_parity.py tests/test_demo_workflows.py",
+  "regression_passed": 412,
+  "final_focused_passed": 65,
+  "final_focused_command": "wsl -e bash .runtime/entry-constraint-validation/run.sh services/sidecar/tests/test_kb_algorithm_equivalence.py services/sidecar/tests/test_lattice_performance_equivalence.py services/sidecar/tests/test_lattice_resources.py services/sidecar/tests/test_lattice_query_policy.py services/sidecar/tests/test_lattice_time_kb.py",
+  "synthetic_command": "wsl -e bash research/kb_algorithm_acceleration_20261012/synthetic_runs.sh",
+  "exact_comparison_command": "wsl -e /home/user-of-wsl/.cache/clawtune-parser-venv/bin/python research/kb_algorithm_acceleration_20261012/summarize.py",
+  "lint_new_findings": 0,
+  "new_files_lint": "passed",
+  "diff_check": "passed",
+  "blocked_validation_commands": []
+}

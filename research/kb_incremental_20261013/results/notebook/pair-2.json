@@ -1,0 +1,212 @@
+{
+  "model": "pair",
+  "limit": 2,
+  "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+  "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+  "gil_enabled": true,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21
+  ],
+  "host_cpu_count": 22,
+  "load_before": [
+    0.79736328125,
+    0.2763671875,
+    0.10107421875
+  ],
+  "memory_available_before": 15720751104,
+  "scope": "prepared clauses; actual KB algorithms and composition; excludes HTTP and raw shell parsing",
+  "corpus_sha256": "63c564551d86d38fd6165eff77f2763875fdf520ce160fd33033c825db57615a",
+  "inputs_sha256": "340ad41f3c1ab32fe5d1f8ad15d6070e52652de226575a2567e5648a4e1705a1",
+  "training_rows": 10856,
+  "test_calls": 128,
+  "optional_feature_histogram": {
+    "2": 3889,
+    "3": 1788,
+    "1": 119,
+    "5": 1070,
+    "4": 2541,
+    "7": 347,
+    "6": 825,
+    "8": 131,
+    "10": 27,
+    "9": 49,
+    "11": 14,
+    "18": 13,
+    "12": 10,
+    "13": 15,
+    "16": 5,
+    "14": 2,
+    "17": 4,
+    "15": 7
+  },
+  "phase": {
+    "stage": "done"
+  },
+  "elapsed_s": 15.683202922000007,
+  "peak_rss_mib": 888.52734375,
+  "process_cpu_s": 17.807011563,
+  "pair_baseline": {
+    "n": 128,
+    "mean_ms": 35.995497726561524,
+    "p50_ms": 15.68223350000153,
+    "p95_ms": 117.77148100000545,
+    "p99_ms": 291.0396350000042,
+    "max_ms": 307.0637739999995,
+    "total_ms": 4607.423708999875
+  },
+  "pair_baseline_lock_wait": {
+    "n": 128,
+    "mean_ms": 0.0005466640617957097,
+    "p50_ms": 0.0004440000083150153,
+    "p95_ms": 0.001273000009405223,
+    "p99_ms": 0.0016860000187080004,
+    "max_ms": 0.003440000000409782,
+    "total_ms": 0.06997299990985084
+  },
+  "update_visible_s": 0.7244207409999888,
+  "update_durable_s": 1.0995148979999954,
+  "pair_during_update": {
+    "n": 7,
+    "mean_ms": 43.59766957142597,
+    "p50_ms": 30.24478800000452,
+    "p95_ms": 94.75384600000325,
+    "p99_ms": 94.75384600000325,
+    "max_ms": 94.75384600000325,
+    "total_ms": 305.1836869999818
+  },
+  "pair_during_update_lock_wait": {
+    "n": 7,
+    "mean_ms": 0.0023037142804176775,
+    "p50_ms": 0.0011759999836158386,
+    "p95_ms": 0.00892499997462437,
+    "p99_ms": 0.00892499997462437,
+    "max_ms": 0.00892499997462437,
+    "total_ms": 0.016125999962923743
+  },
+  "pair_snapshot_capture": [
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 3.361447
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001191
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000375
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000526
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 4.09723
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001292
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000398
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000589
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 2.75639
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001821
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000362
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 64.854918
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 0.002567
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.000564
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00018
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000241
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 4.349955
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001478
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000528
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000706
+    }
+  ],
+  "published_added_observations": 32,
+  "detached_snapshots": [],
+  "first_queries_after_each_update_batch": []
+}

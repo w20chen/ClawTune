@@ -124,6 +124,7 @@
           },
           "target": {
             "type": "array",
+            "description": "Execution identity emitted by the parser, not the full argv: canonical subcommands and interpreter module/script transitions only. Exclude the initial executable and ordinary operands/options. Examples: apt-get update -> [update]; sort file.txt -> []; python -m unittest test_module -> [unittest]. Fixture argv is the complete invocation including its executable and interpreter if present.",
             "items": {
               "type": "string",
               "maxLength": 65536

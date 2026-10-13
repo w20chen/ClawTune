@@ -1,0 +1,67 @@
+{
+  "family": "edge",
+  "read_decode_ms": 431.883116,
+  "restore_ms": 10289.083279,
+  "prepare_ms": 0,
+  "ready_seconds": 10.720966395,
+  "optional_features": null,
+  "query": {
+    "edge": {
+      "match": {
+        "n": 384,
+        "mean_ms": 2.9737504505208334,
+        "p50_ms": 1.776742,
+        "p95_ms": 9.994555,
+        "p99_ms": 18.428894,
+        "max_ms": 29.380942,
+        "total_seconds": 1.141920173
+      },
+      "compose": {
+        "n": 384,
+        "mean_ms": 48.015374591145836,
+        "p50_ms": 1.318711,
+        "p95_ms": 217.286653,
+        "p99_ms": 345.636435,
+        "max_ms": 446.623601,
+        "total_seconds": 18.437903843
+      },
+      "combined": {
+        "n": 384,
+        "mean_ms": 50.98912504166667,
+        "p50_ms": 4.1731575,
+        "p95_ms": 223.546223,
+        "p99_ms": 361.734324,
+        "max_ms": 471.603533,
+        "total_seconds": 19.579824016
+      }
+    }
+  },
+  "maintenance": {
+    "observe_and_commit": {
+      "n": 32,
+      "mean_ms": 1.9986997499999999,
+      "p50_ms": 0.667505,
+      "p95_ms": 5.390641,
+      "p99_ms": 32.100406,
+      "max_ms": 32.100406,
+      "total_seconds": 0.063958392
+    },
+    "begin_including_prediction": {
+      "n": 32,
+      "mean_ms": 11.6993640625,
+      "p50_ms": 4.093164,
+      "p95_ms": 11.664266,
+      "p99_ms": 233.481659,
+      "max_ms": 233.481659,
+      "total_seconds": 0.37437965
+    }
+  },
+  "snapshot_serialize_ms": 111.140777,
+  "snapshot_json_encode_ms": 176.319087,
+  "snapshot_bytes": 33045369,
+  "peak_rss_mib": 308.4296875,
+  "elapsed_seconds": 31.07369297799994,
+  "sample_calls": 128,
+  "repeats": 3,
+  "scope": "prepared clauses; full target evidence retrieval and call composition, excluding parsing, HTTP, per-clause diagnostic assembly and disk persistence; no experimental cache and no oracle"
+}

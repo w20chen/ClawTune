@@ -11,6 +11,7 @@ import random
 import statistics
 from bisect import bisect_right
 from collections.abc import Mapping, Sequence
+from itertools import accumulate
 from typing import Any
 
 from clawtune_sidecar.contracts.load_prediction import (
@@ -188,6 +189,11 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
                 )
                 continue
             samples = []
+            # Preserve draw order and Random.choices' accumulation exactly;
+            # only move its repeated prefix sum outside the 2048-draw loop.
+            cumulative = [list(accumulate(row["weights"]))
+                          if row.get("weights") is not None else None
+                          for row in rows] if target != "cpu_avg_cores" else []
             for _ in range(2048):
                 if target == "cpu_avg_cores":
                     cpu_draw = [rng.choice(value) for value in cpu_values]
@@ -199,9 +205,9 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
                         continue
                     value = sum(cpu_draw) / (total_duration_ms / 1000.0)
                 else:
-                    draw = [rng.choices(v, weights=row["weights"], k=1)[0]
-                            if row.get("weights") is not None else rng.choice(v)
-                            for v, row in zip(values, rows)]
+                    draw = [rng.choices(v, cum_weights=weights, k=1)[0]
+                            if weights is not None else rng.choice(v)
+                            for v, weights in zip(values, cumulative)]
                     if target == "duration_ms":
                         value = sum(max(draw[i] for i in group) for group in groups)
                     elif target == "cpu_time_seconds":

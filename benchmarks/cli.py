@@ -85,6 +85,11 @@ def parser():
     off.add_argument("--dataset", type=Path, required=True)
     off.add_argument("--benchmark", choices=NAMES, help="Fallback identity for legacy traces, or select one dataset")
     off.add_argument("--seed", type=int, default=42)
+    from kb_common import DEFAULT_MAX_OPTIONAL_FEATURES
+    off.add_argument("--kb-max-optional-features", type=int, default=DEFAULT_MAX_OPTIONAL_FEATURES,
+                     help="Shared fixed optional-feature limit for Lattice and EdgeKappa (default: 6)")
+    off.add_argument("--lattice-variants", action="store_true",
+                     help="Also evaluate LOSO, max-cardinality, and a hindsight duration oracle on the same frozen Lattice KB")
     off.add_argument("--train-fraction", type=float, default=.8,
                      help="Per-group training fraction, greater than 0 and less than 1 (default: 0.8)")
     off.add_argument("--rss-unit", choices=("MB", "MiB"), required=True, help="Explicit historical trace RSS unit")
@@ -190,7 +195,8 @@ def main(argv=None):
             output = args.output or ROOT / ".runtime/offline" / (time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
             result = run(args.dataset, output, benchmark=args.benchmark, seed=args.seed,
                          rss_unit=args.rss_unit, split_cache_dir=args.split_cache_dir,
-                         train_fraction=args.train_fraction)
+                         train_fraction=args.train_fraction, lattice_variants=args.lattice_variants,
+                         max_optional_features=args.kb_max_optional_features)
             print(json.dumps(_offline_console_summary(result, output), indent=2))
             return 0
         from clawtune_kb import user_state_dir

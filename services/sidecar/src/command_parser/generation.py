@@ -142,15 +142,23 @@ class RuleGenerator:
                             raise ValueError("subcommand spelling absent from evidence")
                         check(sub["grammar"])
                 check(rule["grammar"])
-                isolated = RuleRegistry(bundled=False)
+                # Full invocation fixtures can require a bundled interpreter or
+                # wrapper before reaching this newly generated command rule.
+                isolated = RuleRegistry()
                 isolated.add(rule, persist=False)
                 if not rule.get("fixtures"):
                     raise ValueError("generated rules require verification fixtures")
                 for fixture in rule.get("fixtures", []):
                     # Validate deterministic consistency; this is not independent semantic proof.
-                    parsed = CommandParser(isolated).parse(fixture["argv"], context, script=script)
+                    direct_script = script and fixture["argv"][0] == entry
+                    parsed = CommandParser(isolated).parse(fixture["argv"], context, script=direct_script)
                     if parsed.status != fixture["status"] or parsed.target != fixture["target"]:
-                        raise ValueError("fixture mismatch")
+                        raise ValueError("fixture mismatch: " + canonical_json({
+                            "argv": fixture["argv"],
+                            "expected": {"status": fixture["status"], "target": fixture["target"]},
+                            "actual": {"status": parsed.status, "target": parsed.target},
+                            "diagnostics": parsed.diagnostics,
+                        }))
                 if source:
                     current = evidence.source(entry, context)
                     if not current or current["content_hash"] != source["content_hash"]:

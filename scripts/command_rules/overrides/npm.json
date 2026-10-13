@@ -6,5 +6,190 @@
       "assignments": false
     }
   },
-  "options": {}
+  "options": {},
+  "subcommand_options": {
+    "install": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "run": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "audit": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "audit/fix": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "docs": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "ls": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "outdated": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "pack": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "pkg/get": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "pkg/set": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "pkg/delete": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "prune": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "publish": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "rebuild": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "repo": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "set-script": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "unpublish": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "update": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "version": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "view": {
+      "update": {
+        "--workspace": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    }
+  },
+  "evidence": [
+    "https://docs.npmjs.com/cli/using-npm/workspaces/"
+  ]
 }

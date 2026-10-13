@@ -67,7 +67,8 @@ export function readSpec(filename, diagnostics = [], stack = new Set()) {
 
 function arity(args) {
   const slots = array(args);
-  if (slots.some(s => !s || s === unsupported)) return null;
+  if (slots.some(s => !s || typeof s !== 'object' || s.__partial ||
+      ['isOptional','isVariadic'].some(key => s[key] !== undefined && typeof s[key] !== 'boolean'))) return null;
   return {min: slots.filter(s => !s.isOptional).length, max: slots.some(s => s.isVariadic) ? null : slots.length};
 }
 
@@ -76,17 +77,21 @@ export function convert(spec, name, diagnostics = []) {
     const partial = [];
     const options = [];
     for (const o of array(value.options)) {
-      if (!o || o === unsupported || o.name === unsupported) {partial.push(location+':options'); continue;}
+      if (!o || o === unsupported || o.__partial || o.name === unsupported) {partial.push(location+':options'); continue;}
       const names = array(o.name).filter(n=>typeof n==='string');
       const a = arity(o.args);
       if (!names.length || !a) {partial.push(location+':option-arity'); continue;}
       const canonical = [...names].sort((a,b)=>(b.startsWith('--')-a.startsWith('--')) || a.localeCompare(b))[0];
-      options.push({names,canonical,...a,forms:['separate','equals','attached'],optional_value:'attached',dash_values:'attached',
+      options.push({names,canonical,...a,forms:['separate','equals','attached'],optional_value:a.max===null?'next':'attached',dash_values:'attached',
                     repeat:'ordered',independent:false,persistent:o.isPersistent===true});
     }
     const positions = [];
     for (const p of array(value.args)) {
-      if (!p || p===unsupported) {partial.push(location+':args'); continue;}
+      if (!arity(p)) {
+        positions.push({min:0,max:null,role:'opaque_payload'});
+        partial.push(location+':args');
+        break;
+      }
       positions.push({min: p.isOptional ? 0 : 1,max:p.isVariadic ? null : 1,role:'operand'});
     }
     const ambiguous = positions.findIndex((p,i)=>p.max===null && i<positions.length-1);
@@ -110,19 +115,19 @@ export function convert(spec, name, diagnostics = []) {
           grammar:grammar(spec,name)};
 }
 
-export function importRules(source, destination, names) {
+export function importRules(source, destination, names, overrides = path.join(path.dirname(fileURLToPath(import.meta.url)),'overrides')) {
   fs.mkdirSync(destination,{recursive:true});
   const diagnostics=[], manifest={source_revision:REVISION,rules:{},diagnostics};
-  const overrides=path.join(path.dirname(fileURLToPath(import.meta.url)),'overrides');
   for(const name of names) {
     const input=path.join(source,'src',name+'.ts');
-    let rule;
-    if(fs.existsSync(input)) rule=convert(readSpec(input,diagnostics),name,diagnostics);
     const patch=path.join(overrides,name+'.json');
-    if(fs.existsSync(patch)) {
-      const change=JSON.parse(fs.readFileSync(patch,'utf8'));
-      if(change.full) rule=change.full;
-      else {
+    const change=fs.existsSync(patch)?JSON.parse(fs.readFileSync(patch,'utf8')):null;
+    // A curated full rule also handles specs whose default export is dynamic.
+    // Never evaluate the source factory just to replace its result afterwards.
+    let rule=change?.full;
+    if(!rule && fs.existsSync(input)) rule=convert(readSpec(input,diagnostics),name,diagnostics);
+    if(change) {
+      if(!change.full) {
         if(!rule) throw new Error('override needs source: '+name);
         if(change.names) rule.names=change.names;
         Object.assign(rule.grammar,change.grammar ?? {});
@@ -131,7 +136,10 @@ export function importRules(source, destination, names) {
           if(!option) throw new Error('unmatched override '+name+' '+spelling);
           Object.assign(option,values);
         }
-        rule.grammar.options.push(...(change.add_options ?? []));
+        for(const option of change.add_options ?? []) {
+          if(rule.grammar.options.some(o=>o.names.some(n=>option.names.includes(n)))) throw new Error('duplicate added option '+option.canonical);
+          rule.grammar.options.push(option);
+        }
         rule.grammar.options=rule.grammar.options.filter(o=>!(change.remove_options??[]).some(n=>o.names.includes(n)));
         for(const [commandPath, patch] of Object.entries(change.subcommand_options ?? {})) {
           let grammar=rule.grammar;
@@ -140,6 +148,7 @@ export function importRules(source, destination, names) {
             if(!sub) throw new Error('unmatched subcommand override '+commandPath);
             grammar=sub.grammar;
           }
+          Object.assign(grammar,patch.grammar ?? {});
           for(const option of patch.add ?? []) {
             if(grammar.options.some(o=>o.names.some(n=>option.names.includes(n)))) throw new Error('duplicate added option '+option.canonical);
             grammar.options.push(option);
@@ -151,7 +160,7 @@ export function importRules(source, destination, names) {
           }
         }
       }
-      rule.origin.evidence=[...(rule.origin.evidence??[]),`overrides/${name}.json`];
+      rule.origin.evidence=[...(rule.origin.evidence??[]),...(change.evidence??[]),`overrides/${name}.json`];
     }
     if(!rule) {diagnostics.push({tool:name,reason:'missing_source'});continue;}
     const output=JSON.stringify(rule,null,2)+'\n';

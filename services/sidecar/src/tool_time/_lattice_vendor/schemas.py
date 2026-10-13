@@ -61,6 +61,13 @@ class NodeStats:
     cold_start: bool = False
     shrinkage_var: float = 0.0
     loso_risk: float = 0.0
+    # Observations with exactly this full feature set, excluding descendants.
+    own_durations: list[float] = field(default_factory=list)
+
+    def prediction_samples(self, query_features: frozenset[str]) -> list[float]:
+        if self.features == query_features and self.own_durations:
+            return self.own_durations
+        return self.durations
 
 
 @dataclass

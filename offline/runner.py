@@ -18,7 +18,18 @@ from clawtune_kb import FILES, create_seed
 from clawtune_kb.store import digest, write_json
 from cold_start.flat_loader import declared_sampling_interval_ms, read_task, LoadedTask, recorded_clause_structure
 from tool_resource.runtime_kb import ClauseResourceKB, RuntimeToolResourceKB, ToolCallQuery, _target_values, LOAD_TARGET_SOURCES
-from tool_time.lattice_kb import LatticeTimeKB
+from tool_time.lattice_kb import LatticeTimeKB, LATTICE_TIME_ALGORITHMS
+from kb_common import DEFAULT_MAX_OPTIONAL_FEATURES, validate_max_optional_features
+
+
+class _LatticeVariant:
+    """Select a supported algorithm on the same frozen Lattice statistics."""
+
+    def __init__(self, kb: LatticeTimeKB, algorithm: str) -> None:
+        self.kb, self.algorithm = kb, algorithm
+
+    def predict_load_samples(self, *args, **kwargs):
+        return self.kb.predict_load_samples(*args, algorithm=self.algorithm, **kwargs)
 
 
 def _call_actuals(call) -> dict[str, float]:
@@ -461,6 +472,19 @@ def _render_report(report: dict) -> str:
             lines.append(f"| {bucket['bucket']} | {interval} | {bucket['support']} | "
                          f"{bucket['predicted_count']} | {_display(bucket['precision'], percent=True)} | "
                          f"{_display(bucket['recall'], percent=True)} | {_display(bucket['f1'], percent=True)} |")
+    if report.get("models"):
+        lines.extend(["", "## Model comparison", "",
+                      "| Model | Target | Predicted / eligible | MAE | Bucket accuracy | Bucket macro recall |",
+                      "|---|---|---:|---:|---:|---:|"])
+        for name, model in report["models"].items():
+            for metric in model["metrics"]:
+                bucket = metric.get("bucket_metrics", {})
+                lines.append(f"| {name} | {metric['target']} | {metric['predicted']} / {metric['eligible']} | "
+                             f"{_display(metric['mae'])} | {_display(bucket.get('accuracy'), percent=True)} | "
+                             f"{_display(bucket.get('macro_recall'), percent=True)} |")
+        if "lattice_oracle" in report["models"]:
+            lines.extend(["", "lattice_oracle uses actual test duration to minimize composed call p50 absolute error. "
+                          "It is a hindsight reference, not an online predictor or a bucket-accuracy oracle."])
     lines.extend(["", "## Repository metrics", "",
                   "| Benchmark | Repository/category | Train tasks | Test tasks | Evaluated test tasks | Target | Predicted / eligible | MAE | RMSE | WAPE | Bucket accuracy | Bucket macro recall |",
                   "|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|"])
@@ -483,7 +507,9 @@ def _render_report(report: dict) -> str:
 
 def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int = 42,
         rss_unit: str = "MiB", split_cache_dir: Path | None = None,
-        train_fraction: float = .8) -> dict:
+        train_fraction: float = .8, lattice_variants: bool = False,
+        max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES) -> dict:
+    validate_max_optional_features(max_optional_features)
     from clawtune_kb.contracts import validate
     dataset, output = dataset.resolve(strict=True), output.resolve()
     if output.is_relative_to(dataset) or dataset.is_relative_to(output):
@@ -495,7 +521,8 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
         # Never share global fallback training between overlapping suites.
         output.mkdir(parents=True, exist_ok=False)
         reports = {name: run(dataset, output / name, benchmark=name, seed=seed, rss_unit=rss_unit,
-                             split_cache_dir=split_cache_dir, train_fraction=train_fraction)
+                             split_cache_dir=split_cache_dir, train_fraction=train_fraction,
+                             lattice_variants=lattice_variants, max_optional_features=max_optional_features)
                    for name in dataset_names}
         report = {"schema": "clawtune.offline-report.v1", "train_tasks": sum(r["train_tasks"] for r in reports.values()),
                   "test_tasks": sum(r["test_tasks"] for r in reports.values()), "test_updates": 0,
@@ -534,9 +561,10 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
         raise ValueError("training split contains no usable completed observations")
     trie._absorb_completed(float("inf"))
     runtime._absorb_completed(float("inf"))
-    lattice = LatticeTimeKB.fit(clauses)
+    lattice = LatticeTimeKB.fit(clauses, max_optional_features=max_optional_features)
     from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
-    edge_kappa = EdgeKappaRuntime.fit(clauses, (100, 500, 2000, 10000), frozen=True)
+    edge_kappa = EdgeKappaRuntime.fit(clauses, (100, 500, 2000, 10000), frozen=True,
+                                      max_optional_features=max_optional_features)
     payloads = dict(zip(FILES, (trie.to_json_obj(), runtime.to_json_obj(), lattice.to_json_obj())))
     payloads["edge-kappa-kb.json"] = edge_kappa.to_snapshot()
     bundle = create_seed(output / "seed", payloads,
@@ -559,6 +587,13 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
                 baselines[(call.tool_name, target)].append(value)
     rows = []
     model_rows = {name: [] for name in ("tool", "trie", "lattice", "edge_kappa")}
+    variants = {"lattice_" + algorithm: _LatticeVariant(lattice, algorithm)
+                for algorithm in LATTICE_TIME_ALGORITHMS if algorithm != "shrinkage"}
+    if not lattice_variants:
+        variants = {}
+    model_rows.update({name: [] for name in variants})
+    if lattice_variants:
+        model_rows["lattice_oracle"] = []
     availability = {name: {target: {"queries": 0, "labeled": 0, "predicted": 0, "scored": 0}
                            for target in LOAD_TARGET_SOURCES} for name in model_rows}
     pmu_availability = {
@@ -568,6 +603,7 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
     test_sampling = {}
     from command_parser import default_service
     default_service().metrics(reset=True)
+    parsing_counts = Counter()
     for key in manifest["test"]:
         task = tasks[key]
         loaded = load_task(dataset, task, rss_unit)
@@ -578,10 +614,31 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
             query = ToolCallQuery(call.repo, call.tool_name, call.command, 1e12)
             recorded_clauses = loaded.call_clauses[index] if index < len(loaded.call_clauses) else ()
             known_clauses = _safe_recorded_clause(call.command, recorded_clauses)
+            actual_target_values = _call_actuals(call)
+            if index < len(loaded.call_actuals):
+                actual_target_values.update(loaded.call_actuals[index])
+            parse_before = default_service().metrics()
             prediction, diagnostics = predict_call_load(
                 runtime=runtime, trie=trie, lattice=lattice, query=query, edges=edges,
                 parsed_clauses=known_clauses, edge_kappa=edge_kappa,
             )
+            parsing_counts.update({name: value - parse_before.get(name, 0)
+                                   for name, value in default_service().metrics().items()})
+            variant_estimates = {}
+            for name, variant in variants.items():
+                _, variant_diagnostics = predict_call_load(
+                    runtime=runtime, trie=trie, lattice=variant, query=query, edges=edges,
+                    parsed_clauses=known_clauses,
+                )
+                variant_estimates[name] = variant_diagnostics.backends["lattice"].targets
+            if lattice_variants:
+                from offline.lattice_oracle import LatticeOracle
+                _, oracle_diagnostics = predict_call_load(
+                    runtime=runtime, trie=trie,
+                    lattice=LatticeOracle(lattice, actual_target_values.get("duration_ms"), edges),
+                    query=query, edges=edges, parsed_clauses=known_clauses,
+                )
+                variant_estimates["lattice_oracle"] = oracle_diagnostics.backends["lattice"].targets
             estimates = dict(prediction.targets)
             pmu_evidence = runtime.predict_pmu_samples(query)
             for metric in ("ipc", "llc_mpki", "llc_miss_rate"):
@@ -595,15 +652,13 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
                     unavailable_reason=None if values else "no_quality_gated_pmu_history")
                 pmu_availability[metric]["queries"] += 1
                 pmu_availability[metric]["available_predictions"] += int(bool(values))
-            actual_target_values = _call_actuals(call)
-            if index < len(loaded.call_actuals):
-                actual_target_values.update(loaded.call_actuals[index])
             for metric in pmu_availability:
                 pmu_availability[metric]["labeled"] += int("pmu_" + metric in actual_target_values)
             for model, model_estimates in (("tool", estimates),
                                            ("trie", diagnostics.backends["trie"].targets),
                                            ("lattice", diagnostics.backends["lattice"].targets),
-                                           ("edge_kappa", diagnostics.backends["edge_kappa"].targets)):
+                                           ("edge_kappa", diagnostics.backends["edge_kappa"].targets),
+                                           *variant_estimates.items()):
                 for target, counters in availability[model].items():
                     labeled = target in actual_target_values
                     estimate = model_estimates.get(target)
@@ -654,7 +709,7 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
     if any(digest(output / "seed" / name) != bundle["snapshots"][name] for name in bundle["snapshots"]):
         raise RuntimeError("frozen test modified seed")
     report = {"schema": "clawtune.offline-report.v1", "train_tasks": len(manifest["train"]),
-              "command_parsing": {"scope": "pre-execution test clause parses; frozen bundled rules; no LLM", **default_service().metrics()},
+              "command_parsing": {"scope": "pre-execution test clause parses; frozen bundled rules; no LLM; excludes repeated variant evaluation", **parsing_counts},
               "test_tasks": len(manifest["test"]), "test_updates": 0, "metrics": summaries,
               "bucket_edges": {target: list(values) for target, values in edges.items()},
               "repositories": repositories,
@@ -672,6 +727,10 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
               "split_registry_status": manifest["split_registry_status"],
               "scope": "tool-call prediction using execution-before command features; unavailable targets are not scored",
               "split_sha256": manifest["assignment_sha256"]}
+    if lattice_variants:
+        from offline.lattice_oracle import ORACLE_DESCRIPTION
+        report["models"]["lattice_oracle"]["oracle"] = dict(ORACLE_DESCRIPTION)
+        report["scope"] += "; lattice_oracle uses actual test duration for hindsight selection only"
     validate(report, "offline-report.schema.json")
     write_json(output / "report.json", report)
     (output / "predictions.jsonl").write_text("".join(json.dumps(row, allow_nan=False) + "\n" for row in rows), encoding="utf-8")

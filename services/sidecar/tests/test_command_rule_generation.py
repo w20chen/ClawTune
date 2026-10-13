@@ -2,7 +2,6 @@ import copy
 import time
 
 import pytest
-
 from command_parser import CommandFeatureService, ParseContext
 from command_parser.evidence import local_source
 from command_parser.generation import GeneratorConfig, RuleGenerator
@@ -133,3 +132,50 @@ def test_local_parser_dependency_changes_source_identity(tmp_path):
     assert "--count COUNT" in before["text"]
     helper.write_text("# --count COUNT --verbose\n")
     assert source("task.py", context)["content_hash"] != before["content_hash"]
+
+
+def test_generated_module_fixture_retains_interpreter_rule():
+    class Help:
+        def acquire(self, argv, context):
+            from command_parser.evidence import record
+            return record("help", "study_module", "usage: study_module [-n COUNT]", "fixture")
+
+    rule = generated_rule("study_module")
+    rule["fixtures"] = [{"argv": ["python3", "-m", "study_module", "-n", "4"],
+                         "status": "complete", "target": ["study_module"]}]
+    generator = RuleGenerator(RuleRegistry(), GeneratorConfig("https://example.invalid", "test", "test"),
+                              client=lambda body: copy.deepcopy(rule), help_runner=Help())
+    generated = generator.generate("study_module", ParseContext(repo="r", runtime_id="r"),
+                                   argv=["python3", "-m", "study_module", "-n", "4"])
+    assert generated["fixtures"] == rule["fixtures"]
+
+
+def test_fixture_retry_reports_actual_parser_identity(tmp_path):
+    (tmp_path / "task.py").write_text("# -n COUNT")
+    context = ParseContext(repo="r", workspace=str(tmp_path), cwd=str(tmp_path))
+    seen = []
+
+    def response(body):
+        seen.append(copy.deepcopy(body))
+        rule = generated_rule()
+        if len(seen) == 1:
+            rule["fixtures"][0]["target"] = ["task.py", "4"]
+        return rule
+
+    generator = RuleGenerator(RuleRegistry(), GeneratorConfig("https://example.invalid", "test", "test"), client=response)
+    generator.generate("task.py", context, True)
+    assert len(seen) == 2
+    repair = seen[1]["messages"][-1]["content"]
+    assert '"actual":{"status":"complete","target":[]}' in repair
+    assert '"argv":["task.py","-n","4"]' in repair
+
+
+def test_generated_script_fixture_accepts_full_interpreter_invocation(tmp_path):
+    (tmp_path / "task.py").write_text("# -n COUNT")
+    context = ParseContext(repo="r", workspace=str(tmp_path), cwd=str(tmp_path))
+    rule = generated_rule()
+    rule["fixtures"] = [{"argv": ["python", "task.py", "-n", "4"],
+                         "status": "complete", "target": ["task.py"]}]
+    generator = RuleGenerator(RuleRegistry(), GeneratorConfig("https://example.invalid", "test", "test"),
+                              client=lambda body: copy.deepcopy(rule))
+    assert generator.generate("task.py", context, True)["fixtures"] == rule["fixtures"]

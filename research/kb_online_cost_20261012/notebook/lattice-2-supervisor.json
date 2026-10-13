@@ -1,0 +1,9 @@
+{
+  "model": "lattice",
+  "limit": 2,
+  "returncode": 0,
+  "termination": null,
+  "wall_s": 18.006984235000118,
+  "observed_peak_rss_mib": 534.8515625,
+  "trial_time_budget_s": 180.0
+}

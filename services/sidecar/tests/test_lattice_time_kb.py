@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import json
 import shlex
-import statistics
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -214,7 +213,6 @@ def test_three_algorithms_match_vendored_lattice_core() -> None:
 
 
 def test_existing_node_receives_all_subset_covering_observations(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(lattice_config, "_MAX_OPTIONAL_FEATURES", 1)
     simple_argv = ("pytest", "-q", "tests")
     expanded_argv = (*simple_argv, "-x", "--maxfail", "1")
     simple = _observation("r", simple_argv, 100.0, ts_start=1.0)
@@ -223,8 +221,8 @@ def test_existing_node_receives_all_subset_covering_observations(monkeypatch: py
     expanded_features, _ = normalize_command(shlex.join(expanded_argv), repo="r")
     assert node < expanded_features
 
-    legacy = LatticeTimeKB.fit((simple, expanded), subset_coverage=False)
-    corrected = LatticeTimeKB.fit((simple, expanded))
+    legacy = LatticeTimeKB.fit((simple, expanded), subset_coverage=False, max_optional_features=1)
+    corrected = LatticeTimeKB.fit((simple, expanded), max_optional_features=1)
     assert legacy.node_count == corrected.node_count
     assert set(legacy._nodes) == set(corrected._nodes)
     assert legacy._nodes[node].durations == pytest.approx([0.1])
@@ -242,7 +240,6 @@ def test_existing_node_receives_all_subset_covering_observations(monkeypatch: py
 
 
 def test_unmarked_v3_snapshot_restores_legacy_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(lattice_config, "_MAX_OPTIONAL_FEATURES", 1)
     simple_argv = ("python", "task.py", "--mode", "fast")
     expanded_argv = (*simple_argv, "--verbose", "--seed", "1")
     rows = (
@@ -250,7 +247,7 @@ def test_unmarked_v3_snapshot_restores_legacy_coverage(monkeypatch: pytest.Monke
         _observation("r", expanded_argv, 1_000.0, ts_start=2.0),
     )
     node, _ = normalize_command(shlex.join(simple_argv), repo="r")
-    original = LatticeTimeKB.fit(rows, subset_coverage=False)
+    original = LatticeTimeKB.fit(rows, subset_coverage=False, max_optional_features=1)
     snapshot = original.to_json_obj()
     del snapshot["node_generation"]["subset_coverage"]
 
@@ -442,7 +439,7 @@ def test_snapshot_rejects_bad_schema_generation_and_observation_shape() -> None:
         LatticeTimeKB.from_json_obj(bad_schema)
 
     bad_generation = copy.deepcopy(snapshot)
-    bad_generation["node_generation"]["max_optional_features"] = 5
+    bad_generation["node_generation"]["optional_feature_policy"] = "adaptive"
     with pytest.raises(ValueError, match="node-generation configuration differs"):
         LatticeTimeKB.from_json_obj(bad_generation)
 
@@ -480,7 +477,7 @@ def test_empty_kb_returns_explicit_unavailability_for_every_algorithm() -> None:
         _assert_unavailable(prediction, "no_lattice_time_evidence")
 
 
-def test_max_cardinality_global_fallback_matches_flat_corpus_median() -> None:
+def test_unrelated_tool_history_is_unavailable_for_all_algorithms() -> None:
     history = (
         _observation("org/a", ("python", "a.py"), 100.0, ts_start=1.0),
         _observation("org/b", ("pytest", "tests"), 900.0, ts_start=2.0),
@@ -494,15 +491,8 @@ def test_max_cardinality_global_fallback_matches_flat_corpus_median() -> None:
             ts_start=10.0,
         )
     )
-    prediction = _by_algorithm(outcome)["max_cardinality"]
-    assert prediction.prediction_ms == pytest.approx(
-        statistics.median(item.latency_ms for item in history if item.latency_ms is not None)
-    )
-    assert prediction.selected_features == ()
-    assert prediction.evidence_count == len(history)
-    assert prediction.exact_match is False
-    assert prediction.fallback == "global"
-    assert prediction.unavailable_reason is None
+    for prediction in outcome.predictions:
+        _assert_unavailable(prediction, "no_matching_time_context")
 
 
 def test_long_clause_bounds_node_generation_and_quadratic_shrinkage() -> None:
@@ -523,7 +513,9 @@ def test_long_clause_bounds_node_generation_and_quadratic_shrinkage() -> None:
 
     kb.prepare()
 
-    assert kb.node_count <= 4_096
+    # All subsets up to six optional features, plus the complete signature.
+    assert kb.node_count == 31_181
+    assert len(kb._resource_states["load:duration_ms"].nodes) == 31_181
     outcome = _only_clause(
         kb.predict_clauses("org/repo", [{**_clause(query_argv), "command_features": record(querying)}], ts_start=3.0)
     )
@@ -531,3 +523,23 @@ def test_long_clause_bounds_node_generation_and_quadratic_shrinkage() -> None:
     _assert_unavailable(shrinkage, "lattice_candidate_limit_exceeded")
     assert _by_algorithm(outcome)["loso"].prediction_ms is not None
     assert _by_algorithm(outcome)["max_cardinality"].prediction_ms is not None
+
+
+def test_optional_feature_bound_does_not_shrink_with_history_size() -> None:
+    row = _observation("r", ("python", "-m", "pytest", "-q", "tests"), 1000., ts_start=1.)
+    assert LatticeTimeKB.fit([row] * 20_001).max_optional_features == 6
+
+
+def test_legacy_budget_snapshot_rebuilds_with_fixed_feature_bound() -> None:
+    snapshot = LatticeTimeKB.fit([
+        _observation("r", ("python", "-m", "pytest", "-q", "tests"), 100., ts_start=1.),
+    ]).to_json_obj()
+    generation = snapshot["node_generation"]
+    del generation["optional_feature_policy"]
+    generation.update(max_nodes_per_signature=4096, node_occurrence_budget=20000)
+    restored = LatticeTimeKB.from_json_obj(snapshot)
+    restored.prepare()
+    result = restored.to_json_obj()
+    assert result["observations"] == snapshot["observations"]
+    assert result["node_generation"]["optional_feature_policy"] == "fixed"
+    assert "node_occurrence_budget" not in result["node_generation"]

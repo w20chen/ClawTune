@@ -1,0 +1,59 @@
+{
+  "main_commit": "664679885768edacf6caec23c7d3044fbfe4b879",
+  "phase1_commit": "b513e1d",
+  "dataset": "C:\\Users\\29068\\Desktop\\swe-rebench-original-flat-644-20260904\\swe-rebench-original-flat-644-20260904",
+  "scope": "post-hoc duration error attribution, no test-time learning or production code changes",
+  "commands": [
+    "PYTHONPATH=services/sidecar/src:. python scripts/command_rules/audit_duration_errors.py index --dataset <read-only-dataset> --output <audit-dir>",
+    "PYTHONPATH=services/sidecar/src:. python scripts/command_rules/audit_duration_errors.py evidence --version main --snapshot <main-run>/seed --output <audit-dir>",
+    "PYTHONPATH=<phase1-checkout>/services/sidecar/src:<phase1-checkout> python scripts/command_rules/audit_duration_errors.py evidence --version phase1 --snapshot <phase1-run>/seed --output <audit-dir>",
+    "PYTHONPATH=services/sidecar/src:. python scripts/command_rules/audit_duration_errors.py probes --snapshot <main-run>/seed --output <audit-dir>",
+    "PYTHONPATH=services/sidecar/src:. python scripts/command_rules/audit_duration_errors.py sources --dataset <read-only-dataset> --output <audit-dir>",
+    "PYTHONPATH=services/sidecar/src:. python scripts/command_rules/audit_duration_errors.py controls --snapshot <main-run>/seed --output <audit-dir>",
+    "python scripts/command_rules/render_duration_audit.py <audit-dir> research/command_parser_evaluation/duration_audit",
+    "ruff check scripts/command_rules/audit_duration_errors.py scripts/command_rules/render_duration_audit.py"
+  ],
+  "environment": "WSL Python 3.14 for KB replays; Windows Python 3.12 for packaging",
+  "validation": {
+    "lattice_edge_replays": 528,
+    "numeric_results": 520,
+    "unavailable_results": 8,
+    "tool_trie_replays": 264,
+    "node_multisets_main": 91,
+    "node_multisets_phase1": 107,
+    "training_signatures_source_located": 9776,
+    "index_reproduction_identical": true,
+    "html_anchors_and_local_links_valid": true,
+    "json_archives_valid": true,
+    "ruff": "passed",
+    "release_seeds_unchanged": true
+  },
+  "run_snapshot_sha256": {
+    "main": {
+      "clause-lattice-time-kb.json": "cefe595dba4bc78ab42bfc2b0a65351d78633b2a2e786636da34ba8541a9c24f",
+      "clause-resource-kb.json": "ff58dcdaa342cf7eea100c45a57814c57fe3e7ae32df9423c1bd972b8a9db890",
+      "edge-kappa-kb.json": "7d5e3c2a74397e432cb682f41f6442bf099761d76ccf7d96d42ffb44cc9e0380",
+      "runtime-tool-resource-kb.json": "ad78a23f612aaa7d30f53dfe555d0b7e7fa2f00185b352e920dd7a6cabdc3259"
+    },
+    "phase1": {
+      "clause-lattice-time-kb.json": "129f48de4078541cc06fddee29f05a4fcd82dd8d990d2e860d52540409a618bf",
+      "clause-resource-kb.json": "ff58dcdaa342cf7eea100c45a57814c57fe3e7ae32df9423c1bd972b8a9db890",
+      "edge-kappa-kb.json": "5c60cfa77f02bb43da7de6c0c6a8cd10031bb4e9b3a7e6b8eaec765d024c1458",
+      "runtime-tool-resource-kb.json": "ad78a23f612aaa7d30f53dfe555d0b7e7fa2f00185b352e920dd7a6cabdc3259"
+    }
+  },
+  "release_seed_sha256": {
+    "clause-lattice-time-kb.json": "a3cfb33e4f5c567430249791cfa12f1e0486ee64208aa3c3bd708ae98caa4fb3",
+    "clause-resource-kb.json": "41f6a61719b261d256d9a337a976481b0530e1125e31637e9639336770bdb4a5",
+    "edge-kappa-kb.json": "59c5bab2658ebfea7fe2893e9b2b513604db8bc98e994f9151465feb735340bb",
+    "manifest.json": "6dfa19c302653778e23645429c5cdcaf8e5ef4fc4a719725c31b0d614fd3ab96",
+    "runtime-tool-resource-kb.json": "6ba30767c8ebf712eb4ef5aed3cfe71272ecafc43afe0c4bc54269fee8708748"
+  },
+  "artifacts_sha256": {
+    "evidence.json.gz": "fe9a1837d108960e10fddfbfb94d8a690a9116a753750936138fe0c5dd155624",
+    "report.html": "b2f935c8c1a9c37d71c63104e977260a6b6faa6c4a7da7e5ce08e35221df8269",
+    "summary.json": "8ae9fceb169d48c7638c9337d18fd44c1c90eb693824866e29b77b243ca30291",
+    "training-sources.json.gz": "498616225c00739f958fdf864acb503bea9cc54dbcab9207555df9622aae6115",
+    "worst30.json.gz": "d93a0b93f77b967bd6c3af61ad3a66a52e093092fdbd48b6805f9ef4eb8a13c8"
+  }
+}

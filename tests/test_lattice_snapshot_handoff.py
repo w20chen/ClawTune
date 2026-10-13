@@ -35,12 +35,16 @@ def test_benchmark_handoff_accepts_resource_only_observations(latency):
     _validate_lattice_time_kb_snapshot(Path("kb.json"), snapshot)
 
 
-def test_benchmark_handoff_preserves_explicit_legacy_coverage_mode():
+@pytest.mark.parametrize("legacy_budget", [False, True])
+def test_benchmark_handoff_preserves_explicit_legacy_coverage_mode(legacy_budget):
     kb = LatticeTimeKB.fit([ClauseObservation(
         repo="org/repo", bin="python", argv=("python", "work.py"),
         ts_start=1, ts_end=2, latency_ms=100,
     )], subset_coverage=False)
     snapshot = json.loads(json.dumps(kb.to_json_obj()))
+    if legacy_budget:
+        del snapshot["node_generation"]["optional_feature_policy"]
+        snapshot["node_generation"].update(max_nodes_per_signature=4096, node_occurrence_budget=20000)
     assert snapshot["node_generation"]["subset_coverage"] is False
     _validate_lattice_time_kb_snapshot(Path("kb.json"), snapshot)
     assert LatticeTimeKB.from_json_obj(snapshot)._subset_coverage is False

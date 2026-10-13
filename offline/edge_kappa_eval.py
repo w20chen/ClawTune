@@ -13,6 +13,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from edge_kappa_kb import EdgeKappaKB, TimeOutcome, TrainingEvent
+from kb_common import DEFAULT_MAX_OPTIONAL_FEATURES, validate_max_optional_features
 from offline.runner import inventory, load_or_create_split, load_task
 from tool_resource.runtime_kb import is_pipeline_dependent_consumer
 from tool_resource.features import shell_bin_requires_exec_evidence
@@ -91,7 +92,9 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
         replay_seed: int = 42,
         event_clock: str = "record-order",
         rss_unit: str = "MiB", split_cache_dir: Path | None = None,
-        train_fraction: float = .8, bucket_edges_ms: tuple[float, ...] = (100, 500, 2000, 10000)) -> dict:
+        train_fraction: float = .8, bucket_edges_ms: tuple[float, ...] = (100, 500, 2000, 10000),
+        max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES) -> dict:
+    validate_max_optional_features(max_optional_features)
     dataset = dataset.resolve(strict=True)
     output = output.resolve()
     if output.is_relative_to(dataset) or dataset.is_relative_to(output):
@@ -121,7 +124,8 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
         raise ValueError("training split has no trusted clause duration labels")
     kb = EdgeKappaKB.fit(training, {"bucket_edges_ms": bucket_edges_ms,
         "k0": k0, "learning_rate": learning_rate, "learn_weights": learn_weights,
-        "shared_child_weight": shared_child_weight, "replay_seed": replay_seed})
+        "shared_child_weight": shared_child_weight, "replay_seed": replay_seed,
+        "max_optional_features": max_optional_features})
     kb.freeze()
     frozen = kb.to_snapshot()
     model = kb.fork_for_update() if online else kb
@@ -230,6 +234,7 @@ def main() -> None:
     parser.add_argument("--event-clock", choices=("record-order", "trace"), default="record-order")
     parser.add_argument("--rss-unit", choices=("MB", "MiB"), default="MiB")
     parser.add_argument("--split-cache-dir", type=Path)
+    parser.add_argument("--kb-max-optional-features", type=int, default=DEFAULT_MAX_OPTIONAL_FEATURES)
     parser.add_argument("--train-fraction", type=float, default=.8)
     parser.add_argument("--bucket-edges-ms", type=float, nargs="+", default=(100, 500, 2000, 10000))
     args = parser.parse_args()
@@ -241,7 +246,8 @@ def main() -> None:
                  event_clock=args.event_clock,
                  rss_unit=args.rss_unit,
                  split_cache_dir=args.split_cache_dir, train_fraction=args.train_fraction,
-                 bucket_edges_ms=tuple(args.bucket_edges_ms))
+                 bucket_edges_ms=tuple(args.bucket_edges_ms),
+                 max_optional_features=args.kb_max_optional_features)
     print(json.dumps(report["metrics"], indent=2))
 
 

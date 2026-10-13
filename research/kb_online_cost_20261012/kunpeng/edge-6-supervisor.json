@@ -1,0 +1,9 @@
+{
+  "model": "edge",
+  "limit": 6,
+  "returncode": -15,
+  "termination": "time_budget_exceeded",
+  "wall_s": 180.10252865700022,
+  "observed_peak_rss_mib": 1185.7421875,
+  "trial_time_budget_s": 180.0
+}

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 from clawtune_sidecar.prediction_config import DEFAULT_RESOURCE_BUCKETS, load_bucket_edges
+from kb_common import DEFAULT_MAX_OPTIONAL_FEATURES, validate_max_optional_features
 
 
 DEFAULT_LLM_UPSTREAM_BASE_URL = "https://api.deepseek.com"
@@ -38,6 +39,7 @@ class SidecarConfig:
     tool_resource_miss_penalty_s: float | None = None
     tool_resource_repo: str = "openclaw"
     tool_resource_frozen: bool = False
+    kb_max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES
     tool_resource_artifact_dir: Path | None = None
     tool_resource_container_executable: str = "docker"
     tool_resource_ebpf_required: bool = False
@@ -77,6 +79,7 @@ class SidecarConfig:
     llm_proxy_upstream_model: str | None = None
 
     def __post_init__(self) -> None:
+        validate_max_optional_features(self.kb_max_optional_features)
         load_bucket_edges(self.tool_resource_latency_buckets_ms, self.tool_resource_load_buckets)
 
     @classmethod
@@ -145,6 +148,8 @@ class SidecarConfig:
             tool_resource_miss_penalty_s=_optional_nonnegative_float_from_env(
                 "CLAWTUNE_TOOL_RESOURCE_MISS_PENALTY_S"
             ),
+            kb_max_optional_features=_nonnegative_int_from_env(
+                "CLAWTUNE_KB_MAX_OPTIONAL_FEATURES", DEFAULT_MAX_OPTIONAL_FEATURES),
             tool_resource_repo=os.getenv("CLAWTUNE_TOOL_RESOURCE_REPO", "openclaw"),
             tool_resource_frozen=os.getenv("CLAWTUNE_TOOL_RESOURCE_FROZEN", "false").lower() in {"1", "true", "yes", "on"},
             tool_resource_artifact_dir=(

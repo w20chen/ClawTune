@@ -1,0 +1,1348 @@
+{
+  "model": "pair",
+  "limit": 1,
+  "python": "3.14.4 (main, Apr 14 2026, 14:25:48) [Clang 22.1.3 ]",
+  "platform": "Linux-6.6.0-72.0.0.76.oe2403sp1.aarch64-aarch64-with-glibc2.38",
+  "gil_enabled": true,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79,
+    80,
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    87,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93,
+    94,
+    95,
+    96,
+    97,
+    98,
+    99,
+    100,
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    109,
+    110,
+    111,
+    112,
+    113,
+    114,
+    115,
+    116,
+    117,
+    118,
+    119,
+    120,
+    121,
+    122,
+    123,
+    124,
+    125,
+    126,
+    127,
+    128,
+    129,
+    130,
+    131,
+    132,
+    133,
+    134,
+    135,
+    136,
+    137,
+    138,
+    139,
+    140,
+    141,
+    142,
+    143,
+    144,
+    145,
+    146,
+    147,
+    148,
+    149,
+    150,
+    151,
+    152,
+    153,
+    154,
+    155,
+    156,
+    157,
+    158,
+    159,
+    160,
+    161,
+    162,
+    163,
+    164,
+    165,
+    166,
+    167,
+    168,
+    169,
+    170,
+    171,
+    172,
+    173,
+    174,
+    175,
+    176,
+    177,
+    178,
+    179,
+    180,
+    181,
+    182,
+    183,
+    184,
+    185,
+    186,
+    187,
+    188,
+    189,
+    190,
+    191,
+    192,
+    193,
+    194,
+    195,
+    196,
+    197,
+    198,
+    199,
+    200,
+    201,
+    202,
+    203,
+    204,
+    205,
+    206,
+    207,
+    208,
+    209,
+    210,
+    211,
+    212,
+    213,
+    214,
+    215,
+    216,
+    217,
+    218,
+    219,
+    220,
+    221,
+    222,
+    223,
+    224,
+    225,
+    226,
+    227,
+    228,
+    229,
+    230,
+    231,
+    232,
+    233,
+    234,
+    235,
+    236,
+    237,
+    238,
+    239,
+    240,
+    241,
+    242,
+    243,
+    244,
+    245,
+    246,
+    247,
+    248,
+    249,
+    250,
+    251,
+    252,
+    253,
+    254,
+    255,
+    256,
+    257,
+    258,
+    259,
+    260,
+    261,
+    262,
+    263,
+    264,
+    265,
+    266,
+    267,
+    268,
+    269,
+    270,
+    271,
+    272,
+    273,
+    274,
+    275,
+    276,
+    277,
+    278,
+    279,
+    280,
+    281,
+    282,
+    283,
+    284,
+    285,
+    286,
+    287,
+    288,
+    289,
+    290,
+    291,
+    292,
+    293,
+    294,
+    295,
+    296,
+    297,
+    298,
+    299,
+    300,
+    301,
+    302,
+    303,
+    304,
+    305,
+    306,
+    307,
+    308,
+    309,
+    310,
+    311,
+    312,
+    313,
+    314,
+    315,
+    316,
+    317,
+    318,
+    319
+  ],
+  "host_cpu_count": 320,
+  "load_before": [
+    4.8125,
+    4.66845703125,
+    4.32470703125
+  ],
+  "memory_available_before": 2101572689920,
+  "scope": "prepared clauses; actual KB algorithms and composition; excludes HTTP and raw shell parsing",
+  "corpus_sha256": "63c564551d86d38fd6165eff77f2763875fdf520ce160fd33033c825db57615a",
+  "inputs_sha256": "340ad41f3c1ab32fe5d1f8ad15d6070e52652de226575a2567e5648a4e1705a1",
+  "training_rows": 10856,
+  "test_calls": 128,
+  "optional_feature_histogram": {
+    "2": 3889,
+    "3": 1788,
+    "1": 119,
+    "5": 1070,
+    "4": 2541,
+    "7": 347,
+    "6": 825,
+    "8": 131,
+    "10": 27,
+    "9": 49,
+    "11": 14,
+    "18": 13,
+    "12": 10,
+    "13": 15,
+    "16": 5,
+    "14": 2,
+    "17": 4,
+    "15": 7
+  },
+  "phase": {
+    "stage": "done"
+  },
+  "elapsed_s": 47.12033867199989,
+  "peak_rss_mib": 546.140625,
+  "process_cpu_s": 53.30256458,
+  "pair_baseline": {
+    "n": 128,
+    "mean_ms": 111.48676419530545,
+    "p50_ms": 61.779905000094004,
+    "p95_ms": 293.621149000046,
+    "p99_ms": 407.1675819996017,
+    "max_ms": 407.5185040001088,
+    "total_ms": 14270.305816999098
+  },
+  "pair_baseline_lock_wait": {
+    "n": 128,
+    "mean_ms": 0.0007094062688395297,
+    "p50_ms": 0.0006000000212225132,
+    "p95_ms": 0.001279999651160324,
+    "p99_ms": 0.0018900000213761814,
+    "max_ms": 0.0018900000213761814,
+    "total_ms": 0.0908040024114598
+  },
+  "update_visible_s": 7.475786021999738,
+  "update_durable_s": 7.607253033999768,
+  "pair_during_update": {
+    "n": 55,
+    "mean_ms": 64.469673709085,
+    "p50_ms": 33.36818799971297,
+    "p95_ms": 148.55232700028864,
+    "p99_ms": 190.9450790003575,
+    "max_ms": 190.9450790003575,
+    "total_ms": 3545.832053999675
+  },
+  "pair_during_update_lock_wait": {
+    "n": 55,
+    "mean_ms": 0.00040183639694904826,
+    "p50_ms": 0.0003499999365885742,
+    "p95_ms": 0.0007100002221704926,
+    "p99_ms": 0.0011500001164677087,
+    "max_ms": 0.0011500001164677087,
+    "total_ms": 0.022101001832197653
+  },
+  "pair_snapshot_capture": [
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 172.824536
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00184
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00078
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00101
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 240.866137
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00195
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00064
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00085
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 167.062134
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00166
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.0006
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00084
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 168.558751
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00159
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00065
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00088
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 166.941486
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001491
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00066
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00073
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 257.083475
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00184
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00062
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00085
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 167.284388
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00159
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00066
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.0008
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 169.33132
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.0016
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00061
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000961
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 258.343207
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.0019
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00063
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00091
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 168.952416
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00168
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00062
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00082
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 172.547569
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00154
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00073
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00082
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 266.638843
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00157
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00081
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00084
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 169.93535
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001861
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00068
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00107
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 170.563961
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00171
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00069
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00091
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 268.935353
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001891
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00063
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00074
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 170.001834
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00158
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00068
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00081
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 169.373613
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00169
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00063
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.001091
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 182.747238
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00166
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00066
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00079
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 171.057752
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00208
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.0007
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00103
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 172.225968
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00171
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00062
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00073
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 268.787292
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00169
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00074
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00079
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 169.824862
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00165
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00067
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00085
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 171.082864
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00167
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00069
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00082
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 264.699029
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.002151
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00066
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00084
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 171.425496
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00148
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00063
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00073
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 266.462262
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00189
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00086
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000901
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 166.456165
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00145
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00067
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00087
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 167.561156
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00166
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00066
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00084
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 186.221663
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00156
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00072
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.0008
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 248.421766
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001831
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00068
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00085
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 171.662281
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00171
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00079
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00086
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 186.834362
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00167
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00075
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.0012
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 248.070482
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00162
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00062
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.0009
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 173.043961
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00176
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00064
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00095
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 265.744326
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.0022
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00067
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00082
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 177.984691
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001671
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00061
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00086
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 172.441462
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001531
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.0006
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00088
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 273.653238
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.002001
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00072
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00084
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 170.926994
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00165
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00068
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00079
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 174.219457
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00167
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00056
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00077
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 187.828397
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00169
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00068
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00084
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 250.119105
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00162
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00065
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00084
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 172.597812
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00159
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00061
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00084
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 0.00297
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00103
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.0005
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.0005
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 235.913316
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00164
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00066
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 129.577479
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 0.00261
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00094
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.0006
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00058
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 286.542121
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00173
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00055
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00084
+    }
+  ],
+  "published_added_observations": 32
+}

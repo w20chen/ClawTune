@@ -9,7 +9,7 @@
     "normalization_version": {"type": "string", "minLength": 1},
     "config": {
       "type": "object",
-      "required": ["bucket_edges_ms", "k0", "learning_rate", "learn_weights", "shared_child_weight", "max_optional_features", "max_covered_nodes", "max_graph_nodes", "replay_seed"],
+      "required": ["bucket_edges_ms", "k0", "learning_rate", "learn_weights", "shared_child_weight", "max_optional_features", "replay_seed"],
       "properties": {
         "bucket_edges_ms": {"type": "array", "minItems": 1, "items": {"type": "number", "exclusiveMinimum": 0}},
         "k0": {"type": "number", "exclusiveMinimum": 0, "maximum": 100},
@@ -17,8 +17,8 @@
         "learn_weights": {"type": "boolean"},
         "shared_child_weight": {"type": "boolean"},
         "max_optional_features": {"type": "integer", "minimum": 0},
-        "max_covered_nodes": {"type": "integer", "minimum": 1},
-        "max_graph_nodes": {"type": "integer", "minimum": 1},
+        "max_covered_nodes": {"type": "integer", "minimum": 1, "deprecated": true, "description": "Legacy snapshot field; no longer enforced."},
+        "max_graph_nodes": {"type": "integer", "minimum": 1, "deprecated": true, "description": "Legacy snapshot field; no longer enforced."},
         "replay_seed": {"type": "integer"}
       },
       "additionalProperties": false

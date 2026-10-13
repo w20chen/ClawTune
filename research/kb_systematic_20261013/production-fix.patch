@@ -1,0 +1,120 @@
+--- a/contracts/command-rule.schema.json
++++ b/contracts/command-rule.schema.json
+@@ -124,6 +124,7 @@
+           },
+           "target": {
+             "type": "array",
++            "description": "Execution identity emitted by the parser, not the full argv: canonical subcommands and interpreter module/script transitions only. Exclude the initial executable and ordinary operands/options. Examples: apt-get update -> [update]; sort file.txt -> []; python -m unittest test_module -> [unittest]. Fixture argv is the complete invocation including its executable and interpreter if present.",
+             "items": {
+               "type": "string",
+               "maxLength": 65536
+--- a/services/sidecar/src/command_parser/generation.py
++++ b/services/sidecar/src/command_parser/generation.py
+@@ -142,15 +142,23 @@
+                             raise ValueError("subcommand spelling absent from evidence")
+                         check(sub["grammar"])
+                 check(rule["grammar"])
+-                isolated = RuleRegistry(bundled=False)
++                # Full invocation fixtures can require a bundled interpreter or
++                # wrapper before reaching this newly generated command rule.
++                isolated = RuleRegistry()
+                 isolated.add(rule, persist=False)
+                 if not rule.get("fixtures"):
+                     raise ValueError("generated rules require verification fixtures")
+                 for fixture in rule.get("fixtures", []):
+                     # Validate deterministic consistency; this is not independent semantic proof.
+-                    parsed = CommandParser(isolated).parse(fixture["argv"], context, script=script)
++                    direct_script = script and fixture["argv"][0] == entry
++                    parsed = CommandParser(isolated).parse(fixture["argv"], context, script=direct_script)
+                     if parsed.status != fixture["status"] or parsed.target != fixture["target"]:
+-                        raise ValueError("fixture mismatch")
++                        raise ValueError("fixture mismatch: " + canonical_json({
++                            "argv": fixture["argv"],
++                            "expected": {"status": fixture["status"], "target": fixture["target"]},
++                            "actual": {"status": parsed.status, "target": parsed.target},
++                            "diagnostics": parsed.diagnostics,
++                        }))
+                 if source:
+                     current = evidence.source(entry, context)
+                     if not current or current["content_hash"] != source["content_hash"]:
+--- a/services/sidecar/tests/test_command_rule_generation.py
++++ b/services/sidecar/tests/test_command_rule_generation.py
+@@ -2,7 +2,6 @@
+ import time
+ 
+ import pytest
+-
+ from command_parser import CommandFeatureService, ParseContext
+ from command_parser.evidence import local_source
+ from command_parser.generation import GeneratorConfig, RuleGenerator
+@@ -133,3 +132,50 @@
+     assert "--count COUNT" in before["text"]
+     helper.write_text("# --count COUNT --verbose\n")
+     assert source("task.py", context)["content_hash"] != before["content_hash"]
++
++
++def test_generated_module_fixture_retains_interpreter_rule():
++    class Help:
++        def acquire(self, argv, context):
++            from command_parser.evidence import record
++            return record("help", "study_module", "usage: study_module [-n COUNT]", "fixture")
++
++    rule = generated_rule("study_module")
++    rule["fixtures"] = [{"argv": ["python3", "-m", "study_module", "-n", "4"],
++                         "status": "complete", "target": ["study_module"]}]
++    generator = RuleGenerator(RuleRegistry(), GeneratorConfig("https://example.invalid", "test", "test"),
++                              client=lambda body: copy.deepcopy(rule), help_runner=Help())
++    generated = generator.generate("study_module", ParseContext(repo="r", runtime_id="r"),
++                                   argv=["python3", "-m", "study_module", "-n", "4"])
++    assert generated["fixtures"] == rule["fixtures"]
++
++
++def test_fixture_retry_reports_actual_parser_identity(tmp_path):
++    (tmp_path / "task.py").write_text("# -n COUNT")
++    context = ParseContext(repo="r", workspace=str(tmp_path), cwd=str(tmp_path))
++    seen = []
++
++    def response(body):
++        seen.append(copy.deepcopy(body))
++        rule = generated_rule()
++        if len(seen) == 1:
++            rule["fixtures"][0]["target"] = ["task.py", "4"]
++        return rule
++
++    generator = RuleGenerator(RuleRegistry(), GeneratorConfig("https://example.invalid", "test", "test"), client=response)
++    generator.generate("task.py", context, True)
++    assert len(seen) == 2
++    repair = seen[1]["messages"][-1]["content"]
++    assert '"actual":{"status":"complete","target":[]}' in repair
++    assert '"argv":["task.py","-n","4"]' in repair
++
++
++def test_generated_script_fixture_accepts_full_interpreter_invocation(tmp_path):
++    (tmp_path / "task.py").write_text("# -n COUNT")
++    context = ParseContext(repo="r", workspace=str(tmp_path), cwd=str(tmp_path))
++    rule = generated_rule()
++    rule["fixtures"] = [{"argv": ["python", "task.py", "-n", "4"],
++                         "status": "complete", "target": ["task.py"]}]
++    generator = RuleGenerator(RuleRegistry(), GeneratorConfig("https://example.invalid", "test", "test"),
++                              client=lambda body: copy.deepcopy(rule))
++    assert generator.generate("task.py", context, True)["fixtures"] == rule["fixtures"]
+--- a/services/sidecar/tests/test_command_help_isolation.py
++++ b/services/sidecar/tests/test_command_help_isolation.py
+@@ -5,7 +5,6 @@
+ import subprocess
+ 
+ import pytest
+-
+ from command_parser import ParseContext
+ from command_parser.help_runner import HelpRunner
+ 
+@@ -48,6 +47,9 @@
+ 
+ @pytest.mark.skipif(not os.getenv("CLAWTUNE_TEST_HELP_IMAGE"), reason="requires an isolated Docker image with python3")
+ def test_real_help_probe_cannot_write_workspace_or_use_network(tmp_path):
++    # Docker runs without DAC override capabilities; its UID need not own the
++    # host pytest directory (normally mode 0700). This fixture must be readable.
++    tmp_path.chmod(0o755)
+     script = tmp_path / "probe.py"
+     script.write_text("""import os, socket
+ assert not os.environ.get('CLAWTUNE_PROBE_SECRET')

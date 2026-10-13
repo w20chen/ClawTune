@@ -1,0 +1,152 @@
+{
+  "model": "edge",
+  "limit": 2,
+  "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+  "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+  "gil_enabled": true,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21
+  ],
+  "host_cpu_count": 22,
+  "load_before": [
+    1.0732421875,
+    0.85205078125,
+    0.46435546875
+  ],
+  "memory_available_before": 15713480704,
+  "scope": "prepared clauses; actual KB algorithms and composition; excludes HTTP and raw shell parsing",
+  "corpus_sha256": "63c564551d86d38fd6165eff77f2763875fdf520ce160fd33033c825db57615a",
+  "inputs_sha256": "340ad41f3c1ab32fe5d1f8ad15d6070e52652de226575a2567e5648a4e1705a1",
+  "training_rows": 10856,
+  "test_calls": 128,
+  "optional_feature_histogram": {
+    "2": 3889,
+    "3": 1788,
+    "1": 119,
+    "5": 1070,
+    "4": 2541,
+    "7": 347,
+    "6": 825,
+    "8": 131,
+    "10": 27,
+    "9": 49,
+    "11": 14,
+    "18": 13,
+    "12": 10,
+    "13": 15,
+    "16": 5,
+    "14": 2,
+    "17": 4,
+    "15": 7
+  },
+  "phase": {
+    "stage": "done"
+  },
+  "elapsed_s": 13.477778735000015,
+  "peak_rss_mib": 549.13671875,
+  "process_cpu_s": 15.623225993,
+  "ready_s": 7.657916602,
+  "ready_rss_mib": 350.66015625,
+  "graph_nodes": 37744,
+  "graph_edges": 106124,
+  "learned_edge_count": 10764,
+  "read_only_query": {
+    "n": 384,
+    "mean_ms": 2.810482223958333,
+    "p50_ms": 1.4440080000000002,
+    "p95_ms": 9.577718,
+    "p99_ms": 14.035608,
+    "max_ms": 16.219173,
+    "total_ms": 1079.225174
+  },
+  "composition": {
+    "n": 384,
+    "mean_ms": 4.508816705729167,
+    "p50_ms": 1.647397,
+    "p95_ms": 12.544528,
+    "p99_ms": 16.720543,
+    "max_ms": 25.60645,
+    "total_ms": 1731.385615
+  },
+  "read_only_combined": {
+    "n": 384,
+    "mean_ms": 7.3192989296875,
+    "p50_ms": 4.3686609999999995,
+    "p95_ms": 20.228491,
+    "p99_ms": 29.535021999999998,
+    "max_ms": 40.539394,
+    "total_ms": 2810.610789
+  },
+  "duration_status": {
+    "available": 348,
+    "unavailable": 36
+  },
+  "online_begin": {
+    "n": 32,
+    "mean_ms": 8.23890534375,
+    "p50_ms": 3.3975584999999997,
+    "p95_ms": 16.07815,
+    "p99_ms": 131.223581,
+    "max_ms": 131.223581,
+    "total_ms": 263.644971
+  },
+  "online_begin_plus_compose": {
+    "n": 32,
+    "mean_ms": 9.151688499999999,
+    "p50_ms": 4.426925000000001,
+    "p95_ms": 16.422902,
+    "p99_ms": 131.411467,
+    "max_ms": 131.411467,
+    "total_ms": 292.85403199999996
+  },
+  "online_complete": {
+    "n": 32,
+    "mean_ms": 1.6102216875,
+    "p50_ms": 0.9082445,
+    "p95_ms": 6.835907,
+    "p99_ms": 7.175887,
+    "max_ms": 7.175887,
+    "total_ms": 51.527094
+  },
+  "snapshot_capture_ms": 100.945158,
+  "snapshot_json_ms": 472.872317,
+  "snapshot_bytes": 77238196,
+  "snapshot_write_fsync_ms": 105.407702,
+  "detached_snapshots": [
+    {
+      "capture_ms": 4.0621990000317965,
+      "materialize_ms": 208.45504499993694
+    },
+    {
+      "capture_ms": 8.39047700003448,
+      "materialize_ms": 91.79483499997332
+    }
+  ],
+  "first_queries_after_each_update_batch": [],
+  "stream_snapshot_cold_then_reused_ms": [
+    928.170942,
+    211.72225
+  ],
+  "stream_snapshot_bytes": 77238197
+}

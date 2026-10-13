@@ -19,5 +19,77 @@
     "--work-tree": {
       "independent": true
     }
-  }
+  },
+  "subcommand_options": {
+    "config": {
+      "update": {
+        "--local": {
+          "min": 0,
+          "max": 0
+        }
+      },
+      "grammar": {
+        "positionals": [
+          {
+            "min": 0,
+            "max": null,
+            "role": "operand"
+          }
+        ]
+      }
+    },
+    "branch": {
+      "update": {
+        "--delete": {
+          "min": 0,
+          "max": 0
+        },
+        "-D": {
+          "min": 0,
+          "max": 0
+        }
+      },
+      "grammar": {
+        "positionals": [
+          {
+            "min": 0,
+            "max": null,
+            "role": "operand"
+          }
+        ]
+      }
+    },
+    "rebase": {
+      "update": {
+        "--strategy": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "pull": {
+      "update": {
+        "--strategy": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    },
+    "merge": {
+      "update": {
+        "--strategy": {
+          "min": 1,
+          "max": 1,
+          "optional_value": "attached"
+        }
+      }
+    }
+  },
+  "evidence": [
+    "https://git-scm.com/docs/git-config",
+    "https://git-scm.com/docs/git-merge",
+    "https://git-scm.com/docs/git-branch"
+  ]
 }

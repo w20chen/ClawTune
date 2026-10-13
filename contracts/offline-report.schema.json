@@ -25,6 +25,12 @@
         "tool": {"$ref": "#/$defs/modelReport"},
         "trie": {"$ref": "#/$defs/modelReport"},
         "lattice": {"$ref": "#/$defs/modelReport"},
+        "lattice_loso": {"$ref": "#/$defs/modelReport"},
+        "lattice_max_cardinality": {"$ref": "#/$defs/modelReport"},
+        "lattice_oracle": {
+          "allOf": [{"$ref": "#/$defs/modelReport"}],
+          "required": ["oracle"]
+        },
         "edge_kappa": {"$ref": "#/$defs/modelReport"}
       }
     },
@@ -94,6 +100,16 @@
     "modelReport": {
       "type": "object", "required": ["metrics", "availability"], "additionalProperties": false,
       "properties": {
+        "oracle": {
+          "type": "object", "additionalProperties": false,
+          "required": ["uses_test_labels", "target", "objective", "candidate_policy"],
+          "properties": {
+            "uses_test_labels": {"const": true},
+            "target": {"const": "duration_ms"},
+            "objective": {"const": "min_absolute_call_p50_error"},
+            "candidate_policy": {"const": "execution_identity_subsets_exact_own_preference"}
+          }
+        },
         "metrics": {"$ref": "#/properties/metrics"},
         "availability": {
           "type": "object", "additionalProperties": {

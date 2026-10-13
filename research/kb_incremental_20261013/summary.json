@@ -1,0 +1,406 @@
+{
+  "notebook": {
+    "lattice-6": {
+      "source": "research\\kb_incremental_20261013\\results\\notebook\\lattice-6.json",
+      "peak_rss_mib": 5946.30859375,
+      "initial_ready_s": 75.652562123,
+      "before_update_total_ms": {
+        "1": 76217.744535,
+        "32": 59421.921091
+      },
+      "after_update_total_ms": {
+        "1": 295.943287,
+        "32": 1258.5742710000002
+      },
+      "first_queries_after_updates": [
+        {
+          "n": 128,
+          "mean_ms": 5.2199985546875,
+          "p50_ms": 1.5800394999999998,
+          "p95_ms": 13.933546999999999,
+          "p99_ms": 17.604483,
+          "max_ms": 19.009279000000003,
+          "total_ms": 668.159815
+        },
+        {
+          "n": 128,
+          "mean_ms": 5.2423290234375,
+          "p50_ms": 1.7876915,
+          "p95_ms": 12.978996,
+          "p99_ms": 16.096903,
+          "max_ms": 17.657368,
+          "total_ms": 671.018115
+        }
+      ],
+      "query_and_composition": {
+        "n": 384,
+        "mean_ms": 4.475060341145833,
+        "p50_ms": 1.4397350000000002,
+        "p95_ms": 10.92174,
+        "p99_ms": 13.399116000000001,
+        "max_ms": 14.414651999999998,
+        "total_ms": 1718.423171
+      }
+    },
+    "lattice-2": {
+      "source": "research\\kb_incremental_20261013\\results\\notebook\\lattice-2.json",
+      "peak_rss_mib": 416.30859375,
+      "initial_ready_s": 5.778041189999996,
+      "before_update_total_ms": {
+        "1": 4838.373854,
+        "32": 4962.624863
+      },
+      "after_update_total_ms": {
+        "1": 223.262966,
+        "32": 622.426654
+      },
+      "first_queries_after_updates": [
+        {
+          "n": 128,
+          "mean_ms": 5.0116910234375,
+          "p50_ms": 1.5869865,
+          "p95_ms": 12.088324,
+          "p99_ms": 16.062732,
+          "max_ms": 16.207996,
+          "total_ms": 641.496451
+        },
+        {
+          "n": 128,
+          "mean_ms": 4.6378982578125,
+          "p50_ms": 1.518922,
+          "p95_ms": 11.108115,
+          "p99_ms": 13.298344,
+          "max_ms": 14.321249,
+          "total_ms": 593.650977
+        }
+      ],
+      "query_and_composition": {
+        "n": 384,
+        "mean_ms": 5.010096372395833,
+        "p50_ms": 1.643663,
+        "p95_ms": 12.786557,
+        "p99_ms": 17.356303999999998,
+        "max_ms": 32.544319,
+        "total_ms": 1923.877007
+      }
+    },
+    "edge-6": {
+      "source": "research\\kb_incremental_20261013\\phase1\\notebook\\edge-6.json",
+      "peak_rss_mib": 10480.84765625,
+      "initial_ready_s": 244.58033360299999,
+      "graph_nodes": 745401,
+      "graph_edges": 4112187,
+      "online_begin_plus_compose": {
+        "n": 32,
+        "mean_ms": 6.33626284375,
+        "p50_ms": 5.712795,
+        "p95_ms": 12.835441,
+        "p99_ms": 12.875168,
+        "max_ms": 12.875168,
+        "total_ms": 202.760411
+      },
+      "online_complete": {
+        "n": 32,
+        "mean_ms": 2.35392378125,
+        "p50_ms": 1.314975,
+        "p95_ms": 8.69868,
+        "p99_ms": 9.155493,
+        "max_ms": 9.155493,
+        "total_ms": 75.325561
+      },
+      "detached_snapshots": [
+        {
+          "capture_ms": 24.685043999966183,
+          "materialize_ms": 2175.853163999932
+        },
+        {
+          "capture_ms": 57.845624999913525,
+          "materialize_ms": 1160.3643450000618
+        }
+      ],
+      "snapshot_cold_then_reused_ms": [
+        26500.156253,
+        3622.674841
+      ],
+      "snapshot_bytes": 2008060211
+    },
+    "edge-2": {
+      "source": "research\\kb_incremental_20261013\\phase1\\notebook\\edge-2.json",
+      "peak_rss_mib": 549.13671875,
+      "initial_ready_s": 7.657916602,
+      "graph_nodes": 37744,
+      "graph_edges": 106124,
+      "online_begin_plus_compose": {
+        "n": 32,
+        "mean_ms": 9.151688499999999,
+        "p50_ms": 4.426925000000001,
+        "p95_ms": 16.422902,
+        "p99_ms": 131.411467,
+        "max_ms": 131.411467,
+        "total_ms": 292.85403199999996
+      },
+      "online_complete": {
+        "n": 32,
+        "mean_ms": 1.6102216875,
+        "p50_ms": 0.9082445,
+        "p95_ms": 6.835907,
+        "p99_ms": 7.175887,
+        "max_ms": 7.175887,
+        "total_ms": 51.527094
+      },
+      "detached_snapshots": [
+        {
+          "capture_ms": 4.0621990000317965,
+          "materialize_ms": 208.45504499993694
+        },
+        {
+          "capture_ms": 8.39047700003448,
+          "materialize_ms": 91.79483499997332
+        }
+      ],
+      "snapshot_cold_then_reused_ms": [
+        928.170942,
+        211.72225
+      ],
+      "snapshot_bytes": 77238197
+    },
+    "pair-2": {
+      "source": "research\\kb_incremental_20261013\\results\\notebook\\pair-2.json",
+      "peak_rss_mib": 888.52734375,
+      "pair_baseline": {
+        "n": 128,
+        "mean_ms": 35.995497726561524,
+        "p50_ms": 15.68223350000153,
+        "p95_ms": 117.77148100000545,
+        "p99_ms": 291.0396350000042,
+        "max_ms": 307.0637739999995,
+        "total_ms": 4607.423708999875
+      },
+      "pair_during_update": {
+        "n": 7,
+        "mean_ms": 43.59766957142597,
+        "p50_ms": 30.24478800000452,
+        "p95_ms": 94.75384600000325,
+        "p99_ms": 94.75384600000325,
+        "max_ms": 94.75384600000325,
+        "total_ms": 305.1836869999818
+      },
+      "pair_during_update_lock_wait": {
+        "n": 7,
+        "mean_ms": 0.0023037142804176775,
+        "p50_ms": 0.0011759999836158386,
+        "p95_ms": 0.00892499997462437,
+        "p99_ms": 0.00892499997462437,
+        "max_ms": 0.00892499997462437,
+        "total_ms": 0.016125999962923743
+      },
+      "update_visible_s": 0.7244207409999888,
+      "update_durable_s": 1.0995148979999954,
+      "published_added_observations": 32
+    }
+  },
+  "kunpeng": {
+    "lattice-6": {
+      "source": "research\\kb_incremental_20261013\\results\\kunpeng\\lattice-6.json",
+      "peak_rss_mib": 5950.7421875,
+      "initial_ready_s": 96.62310576699929,
+      "before_update_total_ms": {
+        "1": 87643.85649500001,
+        "32": 85273.10274
+      },
+      "after_update_total_ms": {
+        "1": 396.810122,
+        "32": 939.3848290000001
+      },
+      "first_queries_after_updates": [
+        {
+          "n": 128,
+          "mean_ms": 7.72537378125,
+          "p50_ms": 2.059298,
+          "p95_ms": 18.830118,
+          "p99_ms": 23.65594,
+          "max_ms": 24.1097,
+          "total_ms": 988.847844
+        },
+        {
+          "n": 128,
+          "mean_ms": 7.826588453125,
+          "p50_ms": 2.063533,
+          "p95_ms": 18.814656,
+          "p99_ms": 23.51165,
+          "max_ms": 24.675206,
+          "total_ms": 1001.803322
+        }
+      ],
+      "query_and_composition": {
+        "n": 384,
+        "mean_ms": 7.5851381171875,
+        "p50_ms": 2.042217,
+        "p95_ms": 18.55984,
+        "p99_ms": 23.880605000000003,
+        "max_ms": 24.621471,
+        "total_ms": 2912.693037
+      }
+    },
+    "lattice-2": {
+      "source": "research\\kb_incremental_20261013\\results\\kunpeng\\lattice-2.json",
+      "peak_rss_mib": 422.04296875,
+      "initial_ready_s": 7.957948363999094,
+      "before_update_total_ms": {
+        "1": 7237.686154999999,
+        "32": 7104.339567
+      },
+      "after_update_total_ms": {
+        "1": 356.479665,
+        "32": 834.389941
+      },
+      "first_queries_after_updates": [
+        {
+          "n": 128,
+          "mean_ms": 7.5646029375,
+          "p50_ms": 1.998754,
+          "p95_ms": 18.770793,
+          "p99_ms": 23.536782,
+          "max_ms": 24.444011,
+          "total_ms": 968.269176
+        },
+        {
+          "n": 128,
+          "mean_ms": 7.6408698046875,
+          "p50_ms": 2.0120050000000003,
+          "p95_ms": 18.674357999999998,
+          "p99_ms": 24.346554,
+          "max_ms": 24.525485999999997,
+          "total_ms": 978.031335
+        }
+      ],
+      "query_and_composition": {
+        "n": 384,
+        "mean_ms": 7.523350380208333,
+        "p50_ms": 2.00454,
+        "p95_ms": 18.629845,
+        "p99_ms": 23.482299,
+        "max_ms": 24.89414,
+        "total_ms": 2888.966546
+      }
+    },
+    "edge-6": {
+      "source": "research\\kb_incremental_20261013\\phase1\\kunpeng\\edge-6.json",
+      "peak_rss_mib": 10492.4296875,
+      "initial_ready_s": 249.93405219099986,
+      "graph_nodes": 745401,
+      "graph_edges": 4112187,
+      "online_begin_plus_compose": {
+        "n": 32,
+        "mean_ms": 4.49713440625,
+        "p50_ms": 4.127232,
+        "p95_ms": 10.03791,
+        "p99_ms": 10.897795,
+        "max_ms": 10.897795,
+        "total_ms": 143.908301
+      },
+      "online_complete": {
+        "n": 32,
+        "mean_ms": 1.96661146875,
+        "p50_ms": 0.933711,
+        "p95_ms": 9.057396,
+        "p99_ms": 9.079817,
+        "max_ms": 9.079817,
+        "total_ms": 62.931567
+      },
+      "detached_snapshots": [
+        {
+          "capture_ms": 53.44046599930152,
+          "materialize_ms": 2788.5038830008853
+        },
+        {
+          "capture_ms": 70.25243300086004,
+          "materialize_ms": 1433.1980560000375
+        }
+      ],
+      "snapshot_cold_then_reused_ms": [
+        30899.675865,
+        1976.78661
+      ],
+      "snapshot_bytes": 2008060211
+    },
+    "edge-2": {
+      "source": "research\\kb_incremental_20261013\\phase1\\kunpeng\\edge-2.json",
+      "peak_rss_mib": 554.51953125,
+      "initial_ready_s": 6.668895130000237,
+      "graph_nodes": 37744,
+      "graph_edges": 106124,
+      "online_begin_plus_compose": {
+        "n": 32,
+        "mean_ms": 9.15459125,
+        "p50_ms": 4.302108,
+        "p95_ms": 20.182765,
+        "p99_ms": 132.083822,
+        "max_ms": 132.083822,
+        "total_ms": 292.94692
+      },
+      "online_complete": {
+        "n": 32,
+        "mean_ms": 1.91006278125,
+        "p50_ms": 0.9271244999999999,
+        "p95_ms": 9.198255,
+        "p99_ms": 9.565929,
+        "max_ms": 9.565929,
+        "total_ms": 61.122009
+      },
+      "detached_snapshots": [
+        {
+          "capture_ms": 4.227253999488312,
+          "materialize_ms": 195.55244600087462
+        },
+        {
+          "capture_ms": 8.577855000112322,
+          "materialize_ms": 116.01925299873983
+        }
+      ],
+      "snapshot_cold_then_reused_ms": [
+        1186.719875,
+        305.406521
+      ],
+      "snapshot_bytes": 77238197
+    },
+    "pair-2": {
+      "source": "research\\kb_incremental_20261013\\results\\kunpeng\\pair-2.json",
+      "peak_rss_mib": 888.3671875,
+      "pair_baseline": {
+        "n": 128,
+        "mean_ms": 59.1891561016098,
+        "p50_ms": 22.53314700010378,
+        "p95_ms": 211.7498940006044,
+        "p99_ms": 421.191147999707,
+        "max_ms": 453.99085999997624,
+        "total_ms": 7576.211981006054
+      },
+      "pair_during_update": {
+        "n": 9,
+        "mean_ms": 62.38003288874299,
+        "p50_ms": 43.37983499863185,
+        "p95_ms": 145.3155479994166,
+        "p99_ms": 145.3155479994166,
+        "max_ms": 145.3155479994166,
+        "total_ms": 561.4202959986869
+      },
+      "pair_during_update_lock_wait": {
+        "n": 9,
+        "mean_ms": 0.00044111079154794826,
+        "p50_ms": 0.00039999940781854093,
+        "p95_ms": 0.0005700003384845331,
+        "p99_ms": 0.0005700003384845331,
+        "max_ms": 0.0005700003384845331,
+        "total_ms": 0.003969997123931535
+      },
+      "update_visible_s": 1.5517109199990955,
+      "update_durable_s": 1.966188594000414,
+      "published_added_observations": 32
+    },
+    "pair-6": {
+      "status": "stopped_during_restore_to_finish_at_user_request",
+      "online_concurrent_latency": null
+    }
+  }
+}

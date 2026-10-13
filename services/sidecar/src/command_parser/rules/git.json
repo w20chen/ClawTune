@@ -12,6 +12,9 @@
     "source": "https://github.com/withfig/autocomplete/blob/aef52acff84c45edde61ae610cc2c964802b9a38/src/git.ts",
     "revision": "aef52acff84c45edde61ae610cc2c964802b9a38",
     "evidence": [
+      "https://git-scm.com/docs/git-config",
+      "https://git-scm.com/docs/git-merge",
+      "https://git-scm.com/docs/git-branch",
       "overrides/git.json"
     ]
   },
@@ -1832,14 +1835,14 @@
                 "--local"
               ],
               "canonical": "--local",
-              "min": 1,
-              "max": null,
+              "min": 0,
+              "max": 0,
               "forms": [
                 "separate",
                 "equals",
                 "attached"
               ],
-              "optional_value": "attached",
+              "optional_value": "next",
               "dash_values": "attached",
               "repeat": "ordered",
               "independent": false,
@@ -2374,13 +2377,8 @@
           ],
           "positionals": [
             {
-              "min": 1,
-              "max": 1,
-              "role": "operand"
-            },
-            {
-              "min": 1,
-              "max": 1,
+              "min": 0,
+              "max": null,
               "role": "operand"
             }
           ],
@@ -2696,7 +2694,7 @@
               ],
               "canonical": "--strategy",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",
@@ -5558,7 +5556,7 @@
               ],
               "canonical": "--strategy",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",
@@ -6452,7 +6450,7 @@
                 "equals",
                 "attached"
               ],
-              "optional_value": "attached",
+              "optional_value": "next",
               "dash_values": "attached",
               "repeat": "ordered",
               "independent": false,
@@ -10615,14 +10613,14 @@
                 "--delete"
               ],
               "canonical": "--delete",
-              "min": 1,
-              "max": null,
+              "min": 0,
+              "max": 0,
               "forms": [
                 "separate",
                 "equals",
                 "attached"
               ],
-              "optional_value": "attached",
+              "optional_value": "next",
               "dash_values": "attached",
               "repeat": "ordered",
               "independent": false,
@@ -10633,14 +10631,14 @@
                 "-D"
               ],
               "canonical": "-D",
-              "min": 1,
-              "max": null,
+              "min": 0,
+              "max": 0,
               "forms": [
                 "separate",
                 "equals",
                 "attached"
               ],
-              "optional_value": "attached",
+              "optional_value": "next",
               "dash_values": "attached",
               "repeat": "ordered",
               "independent": false,
@@ -11197,7 +11195,13 @@
               "persistent": false
             }
           ],
-          "positionals": [],
+          "positionals": [
+            {
+              "min": 0,
+              "max": null,
+              "role": "operand"
+            }
+          ],
           "subcommands": [],
           "syntax": {
             "clusters": false,
@@ -13569,7 +13573,7 @@
               ],
               "canonical": "--strategy",
               "min": 1,
-              "max": null,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",

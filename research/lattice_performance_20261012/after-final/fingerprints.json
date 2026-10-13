@@ -1,0 +1,76 @@
+{
+  "family": "lattice6",
+  "read_decode_ms": 163.597907,
+  "restore_ms": 354.100068,
+  "prepare_ms": 87110.850939,
+  "ready_seconds": 87.62854891399999,
+  "optional_features": 6,
+  "duration_nodes": 745401,
+  "raw_observations": 10856,
+  "ready_peak_rss_mib": 4681.55859375,
+  "state_fingerprints": {
+    "legacy": {
+      "count": 745556,
+      "sha256": "5fb8f9d6c609fd31c3503a40999fd030c0742207aa8b467f2269bfceb42b731b"
+    },
+    "cpu_time_seconds": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "global_log_var": 0.25,
+      "global_log_std": 0.5
+    },
+    "cpu_avg_cores": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "global_log_var": 0.25,
+      "global_log_std": 0.5
+    },
+    "cpu_peak_cores": {
+      "count": 618722,
+      "sha256": "caf8a54eb5cb1123e2520e1cad2040d630ae7b5a2038d19ca2d2a8c626fc4a5b",
+      "global_log_var": 1.1526535411018775,
+      "global_log_std": 1.0736170365180862
+    },
+    "sampled_peak_rss_bytes": {
+      "count": 683423,
+      "sha256": "f51d9eb20bf04c31e94ca2be6aa792c2379585b626496d797f87a95defc61689",
+      "global_log_var": 4.739057541592716,
+      "global_log_std": 2.1769376522061252
+    },
+    "load:duration_ms": {
+      "count": 745401,
+      "sha256": "7c72cbe096eb1c85fd2eb7de2f615a962a3015eb8ec6f171d2d084a1106650e0",
+      "global_log_var": 1.3996605651255036,
+      "global_log_std": 1.183072510510452
+    },
+    "load:cpu_time_seconds": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "global_log_var": 0.25,
+      "global_log_std": 0.5
+    },
+    "load:cpu_avg_cores": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "global_log_var": 0.25,
+      "global_log_std": 0.5
+    },
+    "load:cpu_peak_cores": {
+      "count": 618658,
+      "sha256": "9153012a0084daec00a1de6f47c0fe8aba748ecdbde131500c46c573d55779e6",
+      "global_log_var": 1.161057076995535,
+      "global_log_std": 1.0775235853546479
+    },
+    "load:sampled_peak_rss_bytes": {
+      "count": 683329,
+      "sha256": "a7a1ad16145e25ec1b01dca56a0a7ef65f492ed952609c2d163f44858bb14d3f",
+      "global_log_var": 4.746942766378422,
+      "global_log_std": 2.1787479813825237
+    }
+  },
+  "legacy_globals": [
+    1.3935891400614733,
+    1.1805037653736956,
+    0.009228154000000002
+  ]
+}

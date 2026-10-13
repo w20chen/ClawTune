@@ -100,7 +100,8 @@ def write_trace(path, benchmark, task_id, duration=1000):
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
 
 
-def test_all_datasets_offline_call_only_and_test_does_not_train(tmp_path):
+@pytest.mark.parametrize("max_optional_features", [1, 6])
+def test_all_datasets_offline_call_only_and_test_does_not_train(tmp_path, max_optional_features):
     from offline.runner import inventory, split_tasks, run
     dataset = tmp_path / "input"
     dataset.mkdir()
@@ -111,7 +112,8 @@ def test_all_datasets_offline_call_only_and_test_does_not_train(tmp_path):
     manifest = split_tasks(inventory(dataset.resolve(), None), 42)
     assert len(manifest["train"]) == 20 and len(manifest["test"]) == 5
     first = tmp_path / "first"
-    report = run(dataset, first, split_cache_dir=tmp_path / "splits")
+    report = run(dataset, first, split_cache_dir=tmp_path / "splits",
+                 max_optional_features=max_optional_features)
     assert report["test_updates"] == 0
     assert {metric["benchmark"] for metric in report["metrics"]} == set(NAMES)
     assert len(report["repositories"]) == len(NAMES)
@@ -119,14 +121,73 @@ def test_all_datasets_offline_call_only_and_test_does_not_train(tmp_path):
                for repo in report["repositories"])
     assert all(repo["metrics"][0]["bucket_metrics"]["accuracy"] == 1
                for repo in report["repositories"])
+    for benchmark in NAMES:
+        folder = first / benchmark / "seed"
+        lattice = json.loads((folder / "clause-lattice-time-kb.json").read_text())
+        edge = json.loads((folder / "edge-kappa-kb.json").read_text())
+        assert lattice["node_generation"]["max_optional_features"] == max_optional_features
+        assert edge["config"]["max_optional_features"] == max_optional_features
     for task in manifest["test"]:
         entry = manifest["tasks"][task]
         for file in entry["files"]:
             write_trace(dataset / file["path"], entry["benchmark"], entry["task_id"], 90000)
     second = tmp_path / "second"
-    run(dataset, second)
+    run(dataset, second, max_optional_features=max_optional_features)
     assert all(digest(first / benchmark / "seed" / name) == digest(second / benchmark / "seed" / name)
                for benchmark in NAMES for name in FILES)
+
+
+def test_offline_lattice_variants_share_frozen_statistics_and_preserve_default_results(tmp_path, monkeypatch):
+    from offline.runner import run
+    from offline.lattice_oracle import LatticeOracle
+    from test_cold_start import trace
+
+    dataset = tmp_path / "input"
+    dataset.mkdir()
+    for index in range(5):
+        records = [json.loads(line) for line in trace(f"org__repo-{index}").splitlines()]
+        # The qualified workload label is 1000 ms; raw hook time is different.
+        records[1]["data"]["duration_ms"] = 9000
+        (dataset / f"task-{index}.trace.jsonl").write_text(
+            "\n".join(json.dumps(row) for row in records) + "\n", encoding="utf-8")
+    baseline = run(dataset, tmp_path / "baseline", benchmark="swe-rebench",
+                   split_cache_dir=tmp_path / "splits")
+    observed = []
+    original = LatticeTimeKB.predict_load_samples
+
+    def record(kb, *args, **kwargs):
+        observed.append((id(kb), kwargs.get("algorithm", "shrinkage"), kb._frozen))
+        return original(kb, *args, **kwargs)
+
+    monkeypatch.setattr(LatticeTimeKB, "predict_load_samples", record)
+    oracle_inputs = []
+    original_oracle = LatticeOracle.__init__
+
+    def record_oracle(oracle, kb, actual, edges):
+        oracle_inputs.append((id(kb), actual, kb._frozen))
+        original_oracle(oracle, kb, actual, edges)
+
+    monkeypatch.setattr(LatticeOracle, "__init__", record_oracle)
+    output = tmp_path / "variants"
+    result = run(dataset, output, benchmark="swe-rebench", lattice_variants=True,
+                 split_cache_dir=tmp_path / "splits")
+    assert len({row[0] for row in observed}) == 1
+    assert {row[1] for row in observed} == {"shrinkage", "loso", "max_cardinality"}
+    assert all(row[2] for row in observed)
+    assert oracle_inputs == [(observed[0][0], 1000., True)]
+    assert result["test_updates"] == 0
+    assert result["split_sha256"] == baseline["split_sha256"]
+    for model, metrics in baseline["models"].items():
+        assert result["models"][model] == metrics
+    rows = [json.loads(line) for line in (output / "model-predictions.jsonl").read_text().splitlines()]
+    assert result["models"]["lattice_oracle"]["oracle"]["uses_test_labels"] is True
+    assert "lattice_oracle uses actual test duration" in (output / "report.md").read_text()
+    for model in ("lattice", "lattice_loso", "lattice_max_cardinality", "lattice_oracle"):
+        duration = [row for row in rows if row["model"] == model and row["target"] == "duration_ms"]
+        assert len(duration) == 1
+        assert duration[0]["actual_bucket"] == duration[0]["predicted_bucket"] == 2
+    assert all(digest(tmp_path / "baseline" / "seed" / name) == digest(output / "seed" / name)
+               for name in (*FILES, "edge-kappa-kb.json"))
 
 
 def test_nested_dataset_prefers_final_trace_and_keeps_raw_only_attempt(tmp_path):

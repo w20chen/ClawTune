@@ -10,8 +10,9 @@ import math
 import shlex
 import statistics
 from collections import defaultdict
-from dataclasses import asdict, dataclass
-from typing import Any, Sequence
+from dataclasses import asdict, dataclass, field
+from functools import lru_cache
+from typing import Any, Mapping, Sequence
 
 from command_parser import ParseContext, default_service
 from command_parser.models import CommandFeatures
@@ -23,6 +24,8 @@ from tool_time._lattice_vendor.normalize import FeatureSet
 from tool_time._lattice_vendor.schemas import NodeStats, Observation
 from tool_time._lattice_vendor.selector import predict as select_prediction
 from tool_time._lattice_vendor.shrinkage import compute_shrinkage_variances
+from tool_time.query import query_nodes
+from kb_common import DEFAULT_MAX_OPTIONAL_FEATURES, validate_max_optional_features
 
 # Scales are numerical conditioning only; public predictions use declared units.
 RESOURCE_TARGETS = {
@@ -82,9 +85,15 @@ class ResourcePrediction:
 
 @dataclass
 class ResourceState:
-    nodes: dict[FeatureSet, NodeStats]
+    nodes: Mapping[FeatureSet, NodeStats]
     global_log_var: float
     global_log_std: float
+    query_index: CoverageIndex | None = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        # Nodes are immutable after construction; replace the whole state on update.
+        if self.query_index is None:
+            self.query_index = CoverageIndex(self.nodes)
 
     def predict(
         self, repo: str, argv: Sequence[str], target: str, algorithm: str,
@@ -100,8 +109,10 @@ class ResourceState:
         if not self.nodes:
             return unavailable("no_lattice_resource_evidence")
         command = shlex.join(argv)
-        features = (command_features or default_service().argv(argv, ParseContext(repo=repo))).features
-        candidates = [node for fs, node in self.nodes.items() if fs.issubset(features)]
+        query = command_features or default_service().argv(argv, ParseContext(repo=repo))
+        features = query.features
+        candidates = query_nodes(self.nodes, query, global_log_std=self.global_log_std,
+                                 index=self.query_index)
         # An unrelated global workload is not a resource estimate for this tool.
         if not candidates:
             return unavailable("no_matching_resource_context")
@@ -111,13 +122,13 @@ class ResourceState:
         ):
             return unavailable("lattice_candidate_limit_exceeded")
         if algorithm == "max_cardinality":
-            selected = max(candidates, key=lambda node: (
+            selected = max(candidates.values(), key=lambda node: (
                 len(node.features), node.count, tuple(sorted(node.features))
             ))
             risk = None
         else:
             result = select_prediction(
-                command, self.nodes, repo=repo, query_features=features,
+                command, candidates, repo=repo, query_features=features,
                 global_log_var=self.global_log_var, global_log_std=self.global_log_std,
                 beta=0.0, gamma=0.0, delta=config._DOMINANCE_DELTA,
                 risk_method=algorithm, exact_match_shortcut=(algorithm == "shrinkage"),
@@ -126,7 +137,7 @@ class ResourceState:
                 specificity_risk_tolerance=config._SPECIFICITY_RISK_TOLERANCE,
                 risk_weight=config._LOSO_RISK_WEIGHT,
             )
-            selected = self.nodes[frozenset(result.selected_features)]
+            selected = candidates[frozenset(result.selected_features)]
             risk = result.selected_risk
         values = sorted(value * scale for value in selected.durations)
         return ResourcePrediction(
@@ -144,7 +155,13 @@ class ResourceState:
 
 
 def build_resource_states(observations: Sequence[ClauseObservation], *, load: bool = False,
-                          subset_coverage: bool = True) -> dict[str, ResourceState]:
+                          subset_coverage: bool = True,
+                          targets: Sequence[str] | None = None,
+                          state_cache: dict | None = None,
+                          context_cache: dict | None = None,
+                          feature_cache: dict | None = None,
+                          statistics_cache=None,
+                          max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES) -> dict[str, ResourceState]:
     """Build per-target statistics, retaining zero values and target eligibility.
 
 Use the vendored node/selector data model without its positive-duration-only
@@ -152,7 +169,14 @@ builder. Risk remains log1p(value/scale); zero CPU/RSS is a valid measurement.
 """
     from tool_time import lattice_kb as config
 
+    maximum = validate_max_optional_features(max_optional_features)
     states = {}
+    features_by_row = {} if feature_cache is None else feature_cache
+    def features_for(row):
+        key = id(row)
+        if key not in features_by_row:
+            features_by_row[key] = observation_features(row)
+        return features_by_row[key]
     def measured(row: ClauseObservation) -> dict[str, float]:
         if load and (
             row.in_loop or row.in_subst or is_pipeline_dependent_consumer(row)
@@ -163,45 +187,74 @@ builder. Risk remains log1p(value/scale); zero CPU/RSS is a valid measurement.
             values["duration_ms"] = float(row.latency_ms)
         return values
 
-    for target, (_unit, scale) in (LOAD_TARGETS if load else RESOURCE_TARGETS).items():
+    measured_rows = [(row, measured(row)) for row in observations]
+    target_config = LOAD_TARGETS if load else RESOURCE_TARGETS
+    for target in target_config if targets is None else targets:
+        _unit, scale = target_config[target]
         training = [
-            Observation(cmd=shlex.join(row.argv), repo=row.repo, duration_s=values[target] / scale, command_features=observation_features(row).to_dict())
-            for row in observations if target in (values := measured(row))
+            Observation(cmd=shlex.join(row.argv), repo=row.repo, duration_s=values[target] / scale, command_features=features_for(row).to_dict())
+            for row, values in measured_rows if target in values
         ]
-        maximum = config._effective_max_optional_features(training)
+        records = [CommandFeatures.from_dict(row.command_features) for row in training]
+        cache_key = (subset_coverage, maximum, tuple(
+            (record.features, record.core, row.duration_s.hex())
+            for record, row in zip(records, training)
+        ))
+        if state_cache is not None and cache_key in state_cache:
+            states[target] = state_cache[cache_key]
+            continue
         generated: dict[FeatureSet, None] = {}
+        contexts = {} if context_cache is None else context_cache
         normalized: list[tuple[FeatureSet, float, list[FeatureSet]]] = []
         all_logs = []
-        for row in training:
-            record = CommandFeatures.from_dict(row.command_features)
+        for row, record in zip(training, records):
             features, core = record.features, record.core
             all_logs.append(math.log1p(row.duration_s))
-            own_nodes = generate_context_nodes(
-                features, core, mode=config._NODE_MODE, max_optional_features=maximum,
-                always_keep_exact=True,
-            )
+            key = (features, core, config._NODE_MODE, maximum, True)
+            if key not in contexts:
+                contexts[key] = generate_context_nodes(
+                    features, core, mode=config._NODE_MODE, max_optional_features=maximum,
+                    always_keep_exact=True,
+                )
+            own_nodes = contexts[key]
             normalized.append((features, row.duration_s, own_nodes))
             generated.update(dict.fromkeys(own_nodes))
         coverage = CoverageIndex(generated)
+        @lru_cache(maxsize=4096)
+        def covered_nodes(features, _index=coverage):
+            return tuple(_index.subsets(features))
         samples: dict[FeatureSet, list[float]] = defaultdict(list)
         signatures: dict[FeatureSet, dict[FeatureSet, list[float]]] = defaultdict(
             lambda: defaultdict(list)
         )
-        for features, value, own_nodes in normalized:
-            for fs in coverage.subsets(features) if subset_coverage else own_nodes:
+        generation_order = {fs: i for i, fs in enumerate(generated)}
+        first_cover = {}
+        for position, (features, value, own_nodes) in enumerate(normalized):
+            for fs in covered_nodes(features) if subset_coverage else own_nodes:
+                if fs not in samples:
+                    first_cover[fs] = position
                 samples[fs].append(value)
                 signatures[fs][features].append(value)
+        covered_nodes.cache_clear()
+        del covered_nodes, coverage, contexts, normalized, generated
         global_std = statistics.stdev(all_logs) if len(all_logs) > 1 else 0.5
-        nodes = {}
-        for fs, values in samples.items():
+        @lru_cache(maxsize=4096)
+        def signature_log_mean(values):
+            return statistics.mean(math.log1p(value) for value in values)
+
+        @lru_cache(maxsize=4096)
+        def signature_log_median(values):
+            return math.log1p(statistics.median(values))
+
+        def compute_statistics(values, groups):
             logs = [math.log1p(value) for value in values]
             std = statistics.stdev(logs) if len(logs) > 1 else global_std
             signature_means = [
-                statistics.mean(math.log1p(value) for value in group)
-                for group in signatures[fs].values()
+                signature_log_mean(group)
+                for group in groups
             ]
-            nodes[fs] = NodeStats(
-                features=fs, durations=values, count=len(values),
+            return dict(
+                count=len(values),
                 mean_s=statistics.mean(values), median_s=statistics.median(values),
                 geometric_mean_s=(
                     math.exp(statistics.mean(math.log(v) for v in values))
@@ -214,10 +267,30 @@ builder. Risk remains log1p(value/scale); zero CPU/RSS is a valid measurement.
                 signature_log_mean_var=(
                     statistics.variance(signature_means) if len(signature_means) > 1 else 0.0
                 ),
-                loso_risk=_compute_loso_risk(signatures[fs]),
+                loso_risk=_compute_loso_risk(dict(enumerate(groups)), log_median=signature_log_median),
             )
-        compute_shrinkage_variances(
-            nodes, kappa=config._SHRINKAGE_KAPPA, global_log_var=global_std ** 2
-        )
+        @lru_cache(maxsize=4096)
+        def statistics_for(values, groups, _prior=global_std, _compute=compute_statistics):
+            if statistics_cache is None:
+                return _compute(values, groups)
+            key = ("resource", _prior.hex() if len(values) < 2 else None,
+                   tuple(v.hex() for v in values),
+                   tuple(tuple(v.hex() for v in group) for group in groups))
+            return statistics_cache.get_or_compute(key, lambda: _compute(values, groups))
+        nodes = {}
+        for fs, values in samples.items():
+            nodes[fs] = NodeStats(
+                features=fs, durations=values,
+                own_durations=list(signatures[fs].get(fs, [])),
+                **statistics_for(tuple(values), tuple(tuple(group) for group in signatures[fs].values())),
+            )
         states[target] = ResourceState(nodes, global_std ** 2, global_std)
+        states[target].query_index.generation_order = generation_order
+        states[target].query_index.first_cover = first_cover
+        compute_shrinkage_variances(
+            nodes, kappa=config._SHRINKAGE_KAPPA, global_log_var=global_std ** 2,
+            index=states[target].query_index, reuse_sample_std=True,
+        )
+        if state_cache is not None:
+            state_cache[cache_key] = states[target]
     return states

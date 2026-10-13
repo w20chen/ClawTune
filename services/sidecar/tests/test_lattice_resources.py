@@ -131,11 +131,9 @@ def test_resource_positive_statistics_match_existing_lattice_numerics():
 
 
 def test_resource_and_load_nodes_include_every_covering_observation(monkeypatch):
-    from tool_time import lattice_kb as config
     from tool_time._lattice_vendor.normalize import normalize_command
     import shlex
 
-    monkeypatch.setattr(config, "_MAX_OPTIONAL_FEATURES", 1)
     simple = ("pytest", "-q", "tests")
     expanded = (*simple, "-x", "--maxfail", "1")
     rows = [
@@ -145,7 +143,7 @@ def test_resource_and_load_nodes_include_every_covering_observation(monkeypatch)
                     cpu_ns_cumulative=1_000_000_000),
     ]
     features, _ = normalize_command(shlex.join(simple), repo="org/repo")
-    kb = LatticeTimeKB.fit(rows)
+    kb = LatticeTimeKB.fit(rows, max_optional_features=1)
     kb.freeze()
     assert kb._nodes[features].count == 2
     for key in ("cpu_time_seconds", "load:duration_ms"):
@@ -155,11 +153,9 @@ def test_resource_and_load_nodes_include_every_covering_observation(monkeypatch)
 
 
 def test_unmarked_snapshot_keeps_legacy_resource_and_load_coverage(monkeypatch):
-    from tool_time import lattice_kb as config
     from tool_time._lattice_vendor.normalize import normalize_command
     import shlex
 
-    monkeypatch.setattr(config, "_MAX_OPTIONAL_FEATURES", 1)
     simple = ("python", "task.py", "--mode", "fast")
     expanded = (*simple, "--verbose", "--seed", "1")
     rows = [
@@ -169,7 +165,7 @@ def test_unmarked_snapshot_keeps_legacy_resource_and_load_coverage(monkeypatch):
                     cpu_ns_cumulative=1_000_000_000),
     ]
     features, _ = normalize_command(shlex.join(simple), repo="org/repo")
-    original = LatticeTimeKB.fit(rows, subset_coverage=False)
+    original = LatticeTimeKB.fit(rows, subset_coverage=False, max_optional_features=1)
     snapshot = original.to_json_obj()
     del snapshot["node_generation"]["subset_coverage"]
     restored = LatticeTimeKB.from_json_obj(snapshot)

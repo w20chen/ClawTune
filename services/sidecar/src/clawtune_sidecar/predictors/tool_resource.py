@@ -28,6 +28,9 @@ from clawtune_sidecar.monitoring.tool_runtime import ToolRuntimeSample
 from clawtune_sidecar.prediction_config import load_bucket_edges
 from clawtune_sidecar.predictors.call_load import predict_call_load
 from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime, call_key
+from kb_common import (
+    DEFAULT_MAX_OPTIONAL_FEATURES, require_same_feature_limit, validate_max_optional_features,
+)
 from clawtune_sidecar.topology.linux import NumaCpuUsageSampler
 from clawtune_sidecar.tool_resource_commands import extract_command
 from tool_resource.features import (
@@ -291,7 +294,22 @@ class ToolResourcePredictor:
         numa_usage_sampler: NumaCpuUsageSampler | None = None,
         load_buckets: Mapping[str, Sequence[float]] | None = None,
         frozen: bool = False,
+        max_optional_features: int | None = None,
     ) -> None:
+        if max_optional_features is None:
+            if lattice_kb is not None:
+                max_optional_features = lattice_kb.max_optional_features
+            elif edge_kappa is not None:
+                max_optional_features = edge_kappa.kb.max_optional_features
+            else:
+                max_optional_features = DEFAULT_MAX_OPTIONAL_FEATURES
+        self.max_optional_features = validate_max_optional_features(max_optional_features)
+        if lattice_kb is not None:
+            require_same_feature_limit(lattice_kb.max_optional_features, max_optional_features,
+                                       source="Lattice KB")
+        if edge_kappa is not None:
+            require_same_feature_limit(edge_kappa.kb.max_optional_features, max_optional_features,
+                                       source="EdgeKappa KB")
         self.frozen = frozen
         # Historical attributes: kb is TrieKB; continuous_kb is ToolKB.
         self.kb = kb
@@ -312,8 +330,10 @@ class ToolResourcePredictor:
         self.container_executable = container_executable
         self.clause_kb_snapshot_path = clause_kb_snapshot_path
         self.runtime_kb_snapshot_path = runtime_kb_snapshot_path
-        self.lattice_kb = lattice_kb or LatticeTimeKB()
-        self.edge_kappa = edge_kappa or EdgeKappaRuntime.fit((), self.load_buckets["duration_ms"], frozen=frozen)
+        self.lattice_kb = lattice_kb or LatticeTimeKB(max_optional_features=max_optional_features)
+        self.edge_kappa = edge_kappa or EdgeKappaRuntime.fit(
+            (), self.load_buckets["duration_ms"], frozen=frozen,
+            max_optional_features=max_optional_features)
         self.edge_kappa_snapshot_path = artifact_dir / "edge-kappa-kb.json" if artifact_dir else None
         self._edge_kappa_version = 0
         self._edge_kappa_persisted_version = 0
@@ -419,7 +439,9 @@ class ToolResourcePredictor:
         numa_usage_sampler: NumaCpuUsageSampler | None = None,
         load_buckets: Mapping[str, Sequence[float]] | None = None,
         frozen: bool = False,
+        max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES,
     ) -> "ToolResourcePredictor":
+        validate_max_optional_features(max_optional_features)
         if frozen:
             if artifact_dir is None:
                 raise ValueError("frozen evaluation requires an explicit cold-start directory")
@@ -439,18 +461,10 @@ class ToolResourcePredictor:
             clause = ClauseResourceKB.from_json_obj(payloads[0])
             runtime = RuntimeToolResourceKB.from_json_obj(payloads[1])
             lattice = LatticeTimeKB.from_json_obj(payloads[2])
+            require_same_feature_limit(lattice.max_optional_features, max_optional_features,
+                                       source="Lattice snapshot")
             runtime.freeze()
-            result = cls(kb=clause, lattice_kb=lattice, buckets=buckets, repo=repo,
-                artifact_dir=artifact_dir, container_executable=container_executable,
-                load_buckets=load_buckets, ttl_by_bucket_s=ttl_by_bucket_s, miss_penalty_s=miss_penalty_s,
-                numa_usage_sampler=numa_usage_sampler, frozen=True,
-                report=ToolResourceLoadReport(ebpf_traces_seen=0, ebpf_traces_loaded=0,
-                    openclaw_traces_seen=0, openclaw_traces_accepted=0, openclaw_tool_spans_seen=0,
-                    observations_loaded=0, continuous_observations_loaded=0,
-                    kb_available=True, continuous_kb_available=True,
-                    lattice_observations_loaded=lattice.observation_count, lattice_kb_available=bool(lattice.observation_count),
-                    rejections=()))
-            result.continuous_kb = runtime
+            edge_kappa = None
             edge_path = artifact_dir / "edge-kappa-kb.json"
             if expected is not None and edge_path.name in expected and not edge_path.is_file():
                 raise ValueError("frozen edge kappa snapshot missing from declared seed")
@@ -461,9 +475,23 @@ class ToolResourcePredictor:
                 data = edge_path.read_bytes()
                 if edge_hashes is not None and hashlib.sha256(data).hexdigest() != edge_hashes.get(edge_path.name):
                     raise ValueError("frozen edge kappa snapshot hash mismatch")
-                result.edge_kappa = EdgeKappaRuntime.from_snapshot(json.loads(data), frozen=True)
-                if result.edge_kappa.kb.bucket_edges_ms != tuple(result.load_buckets["duration_ms"]):
+                edge_kappa = EdgeKappaRuntime.from_snapshot(json.loads(data), frozen=True,
+                    max_optional_features=max_optional_features)
+                expected_edges = load_bucket_edges(buckets.edges_ms, load_buckets)["duration_ms"]
+                if edge_kappa.kb.bucket_edges_ms != tuple(expected_edges):
                     raise ValueError("edge kappa bucket edges mismatch")
+            result = cls(kb=clause, lattice_kb=lattice, edge_kappa=edge_kappa, buckets=buckets, repo=repo,
+                artifact_dir=artifact_dir, container_executable=container_executable,
+                load_buckets=load_buckets, ttl_by_bucket_s=ttl_by_bucket_s, miss_penalty_s=miss_penalty_s,
+                numa_usage_sampler=numa_usage_sampler, frozen=True,
+                max_optional_features=max_optional_features,
+                report=ToolResourceLoadReport(ebpf_traces_seen=0, ebpf_traces_loaded=0,
+                    openclaw_traces_seen=0, openclaw_traces_accepted=0, openclaw_tool_spans_seen=0,
+                    observations_loaded=0, continuous_observations_loaded=0,
+                    kb_available=True, continuous_kb_available=True,
+                    lattice_observations_loaded=lattice.observation_count, lattice_kb_available=bool(lattice.observation_count),
+                    rejections=()))
+            result.continuous_kb = runtime
             return result
         openclaw_paths = list(_expand_trace_paths(openclaw_trace_paths))
         ebpf_paths = list(_expand_trace_paths(ebpf_trace_paths))
@@ -527,22 +555,18 @@ class ToolResourcePredictor:
         loaded_lattice_snapshot = _load_lattice_kb_snapshot(
             lattice_snapshot_path,
             rejections,
+            max_optional_features=max_optional_features,
         )
         if loaded_lattice_snapshot is None:
-            lattice_kb = LatticeTimeKB.fit(observations)
+            lattice_kb = LatticeTimeKB.fit(observations, max_optional_features=max_optional_features)
         else:
             lattice_kb = loaded_lattice_snapshot
             lattice_kb.merge_historical(observations)
         lattice_kb_available = lattice_kb.observation_count > 0
-        try:
-            lattice_kb.prepare()
-        except Exception as exc:
-            lattice_kb_available = False
-            rejections.append(f"prepare lattice KB: {type(exc).__name__}: {exc}")
-
         edge_path = artifact_dir / "edge-kappa-kb.json" if artifact_dir else None
         if edge_path is not None and edge_path.is_file():
-            edge_kappa = EdgeKappaRuntime.from_snapshot(json.loads(edge_path.read_text(encoding="utf-8")))
+            edge_kappa = EdgeKappaRuntime.from_snapshot(json.loads(edge_path.read_text(encoding="utf-8")),
+                max_optional_features=max_optional_features)
             if edge_kappa.kb.bucket_edges_ms != tuple(buckets.edges_ms):
                 raise ValueError("edge kappa bucket edges mismatch")
             edge_kappa.merge_historical(observations)
@@ -551,10 +575,17 @@ class ToolResourcePredictor:
             # observations, never from another backend's predictions.
             edge_training = [ClauseObservation(**dict(row, argv=tuple(row["argv"])))
                              for row in lattice_kb.to_json_obj()["observations"]]
-            edge_kappa = EdgeKappaRuntime.fit(edge_training, buckets.edges_ms)
+            edge_kappa = EdgeKappaRuntime.fit(edge_training, buckets.edges_ms,
+                                              max_optional_features=max_optional_features)
+        try:
+            lattice_kb.prepare()
+        except Exception as exc:
+            lattice_kb_available = False
+            rejections.append(f"prepare lattice KB: {type(exc).__name__}: {exc}")
         predictor = cls(
             kb=kb,
             edge_kappa=edge_kappa,
+            max_optional_features=max_optional_features,
             buckets=buckets,
             report=ToolResourceLoadReport(
                 ebpf_traces_seen=len(ebpf_paths),
@@ -609,6 +640,7 @@ class ToolResourcePredictor:
         ttl_by_bucket_s: tuple[float, ...] | None = None,
         miss_penalty_s: float | None = None,
         numa_usage_sampler: NumaCpuUsageSampler | None = None,
+        max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES,
     ) -> "ToolResourcePredictor":
         return cls.from_traces(
             openclaw_trace_paths=trace_paths,
@@ -618,6 +650,7 @@ class ToolResourcePredictor:
             ttl_by_bucket_s=ttl_by_bucket_s,
             miss_penalty_s=miss_penalty_s,
             numa_usage_sampler=numa_usage_sampler,
+            max_optional_features=max_optional_features,
         )
 
     def predict(
@@ -1360,7 +1393,7 @@ class ToolResourcePredictor:
         if self.frozen:
             return
         errors: list[str] = []
-        snapshots: list[tuple[str, Path, dict[str, Any], int]] = []
+        snapshots: list[tuple[str, Path, Any, int]] = []
 
         with self._kb_lock:
             candidate = self._lattice_staged
@@ -1396,7 +1429,7 @@ class ToolResourcePredictor:
             self._capture_kb_snapshot_locked(
                 snapshots, errors, name="edge_kappa", path=self.edge_kappa_snapshot_path,
                 version=self._edge_kappa_version, persisted_version=self._edge_kappa_persisted_version,
-                serializer=self.edge_kappa.to_snapshot,
+                serializer=self.edge_kappa.capture_snapshot,
             )
             self._capture_kb_snapshot_locked(
                 snapshots,
@@ -1429,6 +1462,8 @@ class ToolResourcePredictor:
 
         for name, path, payload, version in snapshots:
             try:
+                if callable(payload):
+                    payload = payload()
                 _write_json_atomic(path, payload)
             except Exception as exc:
                 errors.append(
@@ -1463,14 +1498,14 @@ class ToolResourcePredictor:
 
     def _capture_kb_snapshot_locked(
         self,
-        snapshots: list[tuple[str, Path, dict[str, Any], int]],
+        snapshots: list[tuple[str, Path, Any, int]],
         errors: list[str],
         *,
         name: str,
         path: Path | None,
         version: int,
         persisted_version: int,
-        serializer: Callable[[], dict[str, Any]],
+        serializer: Callable[[], Any],
     ) -> None:
         if path is None or version <= persisted_version:
             return
@@ -2996,19 +3031,31 @@ def _load_runtime_kb_snapshot(
 def _load_lattice_kb_snapshot(
     path: Path | None,
     rejections: list[str],
+    *, max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES,
 ) -> LatticeTimeKB | None:
     if path is None or not path.is_file():
         return None
     try:
-        return LatticeTimeKB.from_json_obj(json.loads(path.read_text(encoding="utf-8")))
+        kb = LatticeTimeKB.from_json_obj(json.loads(path.read_text(encoding="utf-8")))
     except Exception as exc:
         rejections.append(f"{path}: lattice KB snapshot rejected: {exc}")
         return None
+    # Configuration mismatches must not fall back to an empty KB and overwrite
+    # the user's observation history on the next persistence pass.
+    require_same_feature_limit(kb.max_optional_features, max_optional_features,
+                               source=f"Lattice snapshot {path}")
+    return kb
 
 
 def _write_json_atomic(path: Path, obj: Any) -> None:
+    from edge_kappa_kb.snapshot import SnapshotPayload
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    if isinstance(obj, SnapshotPayload):
+        with tmp.open('w', encoding='utf-8') as output:
+            output.writelines(obj.json_chunks())
+        os.replace(tmp, path)
+        return
     tmp.write_text(
         json.dumps(obj, sort_keys=True, separators=(",", ":")) + "\n",
         encoding="utf-8",

@@ -12,6 +12,8 @@ Two generation modes:
 
 from __future__ import annotations
 
+from kb_common import DEFAULT_MAX_OPTIONAL_FEATURES
+
 from itertools import combinations
 from typing import FrozenSet, Iterable, List
 
@@ -23,24 +25,101 @@ class CoverageIndex:
 
     def __init__(self, nodes: Iterable[FeatureSet]) -> None:
         self._trie: dict = {}
+        self.parent_sets: dict = {}
+        self.generation_order: dict = {}
+        self.first_cover: dict = {}
+        self._order = None
         for position, node in enumerate(nodes):
             branch = self._trie
-            for feature in sorted(node):
-                branch = branch.setdefault(feature, {})
-            branch[None] = (position, node)
+            ordered = sorted(node)
+            for feature in ordered[:-1]:
+                child = branch.get(feature)
+                if child is None:
+                    child = {}
+                    branch[feature] = child
+                elif isinstance(child, tuple):
+                    child = {None: child}
+                    branch[feature] = child
+                branch = child
+            terminal = (position, node)
+            if not ordered:
+                branch[None] = terminal
+            elif isinstance(branch.get(ordered[-1]), dict):
+                branch[ordered[-1]][None] = terminal
+            else:
+                # Most bounded-lattice nodes are leaves. Store their terminal
+                # directly, without a one-item dictionary for every leaf.
+                branch[ordered[-1]] = terminal
 
     def subsets(self, features: FeatureSet) -> Iterable[FeatureSet]:
         allowed = set(features)
         stack = [self._trie]
         matches: list[tuple[int, FeatureSet]] = []
         while stack:
-            for feature, child in stack.pop().items():
-                if feature is None:
-                    matches.append(child)
-                elif feature in allowed:
-                    stack.append(child)
-        for _, node in sorted(matches):
+            branch = stack.pop()
+            if len(branch) > len(allowed) + 1:
+                # A wide branch can contain thousands of unrelated arguments.
+                # Probe query features instead of scanning every child.
+                if None in branch:
+                    matches.append(branch[None])
+                for feature in allowed:
+                    if feature in branch:
+                        child = branch[feature]
+                        if isinstance(child, tuple):
+                            matches.append(child)
+                        else:
+                            stack.append(child)
+            else:
+                for feature, child in branch.items():
+                    if feature is None:
+                        matches.append(child)
+                    elif feature in allowed:
+                        if isinstance(child, tuple):
+                            matches.append(child)
+                        else:
+                            stack.append(child)
+        if self._order is None:
+            matches.sort()
+        else:
+            first, generation = self._order
+            matches.sort(key=lambda item: (first[item[1]], generation[item[1]]))
+        for _, node in matches:
             yield node
+
+    def fork_added(self, nodes, first_cover, generation_order):
+        """Copy only inserted trie paths; published generations stay intact."""
+        result = object.__new__(type(self))
+        result.__dict__ = self.__dict__.copy()
+        result._trie = self._trie.copy()
+        result._order = (first_cover, generation_order)
+        owned = {id(result._trie)}
+        for node in nodes:
+            branch = result._trie
+            ordered = sorted(node)
+            for feature in ordered[:-1]:
+                child = branch.get(feature)
+                if child is None:
+                    child = {}
+                elif isinstance(child, tuple):
+                    child = {None: child}
+                elif id(child) not in owned:
+                    child = child.copy()
+                owned.add(id(child))
+                branch[feature] = child
+                branch = child
+            terminal = (generation_order[node], node)
+            if not ordered:
+                branch[None] = terminal
+            elif isinstance(branch.get(ordered[-1]), dict):
+                child = branch[ordered[-1]]
+                if id(child) not in owned:
+                    child = child.copy()
+                    owned.add(id(child))
+                    branch[ordered[-1]] = child
+                child[None] = terminal
+            else:
+                branch[ordered[-1]] = terminal
+        return result
 
 
 def generate_context_nodes(
@@ -48,7 +127,7 @@ def generate_context_nodes(
     core: FeatureSet,
     *,
     mode: str = "bounded",
-    max_optional_features: int = 6,
+    max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES,
     always_keep_exact: bool = True,
 ) -> List[FeatureSet]:
     """Generate context nodes from a command's feature set.
@@ -92,7 +171,7 @@ def generate_context_nodes(
 def estimate_node_count(
     num_optional: int,
     mode: str = "bounded",
-    max_optional_features: int = 6,
+    max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES,
 ) -> int:
     """Estimate how many nodes would be generated for a command.
 

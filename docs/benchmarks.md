@@ -410,10 +410,18 @@ Mixed input is trained and evaluated separately per benchmark, with an aggregate
 
 Each benchmark's `report.json.models` reports `tool`, `trie`, `lattice`, and `edge_kappa` separately (Edge predicts duration only). The existing top-level `metrics` and `repositories` describe ToolKB. Per-target `availability` counts all uncensored queries (`queries`), queries with trusted labels (`labeled`), available predictions (`predicted`), and labeled predictions that can be scored (`scored`). Missing labels are never converted to zero; a target can have predictions without a measurable error.
 
+Add `--lattice-variants` to also report `lattice_loso`, `lattice_max_cardinality`, and `lattice_oracle`. They use the same frozen training statistics and call composer as `lattice` (the default shrinkage selector). Lattice always generates subsets with up to six optional features plus the core features, and retains full-feature nodes; this bound does not decrease as observations accumulate. Earlier raw-observation snapshots rebuild with this fixed bound on load.
+
+`lattice_oracle` is an offline diagnostic for duration only: it uses the actual test-call duration to exhaustively choose the candidate-node combination minimizing absolute error of the composed call p50. It retains execution-identity constraints and exact-own-sample preference. Missing duration labels produce unavailable predictions. It never updates training data and is not an online predictor. Its p90 and bucket probabilities come from the chosen historical distributions; it does not optimize bucket accuracy. Multi-clause search cost grows with the product of candidate counts. The existing 512-candidate computation guard applies to shrinkage scoring, not to oracle enumeration, so compare coverage as well as paired errors.
+
+Bucket predictions choose the largest probability, breaking ties toward the lower bucket. Reported bucket accuracy and recall use available predictions only; consult coverage alongside them. Count unavailable predictions as misses separately when measuring recall across all labeled calls.
+
 CPU-time labels require `availability.cpu_time == "ok"` and an execution-interval delta (`provenance.cpu_time_ns` or compact `cpu_time_seconds`). A historical `cpu_ns_cumulative` value alone is insufficient. Shell workload duration uses retained clause intervals (or a qualified single-clause elapsed label in v5); missing interval evidence leaves workload duration and average CPU unavailable. The original tool-call elapsed time remains separate. Environment-memory labels require their own eligible measurements; RSS cannot substitute for them. `--rss-unit` applies to v5 RSS; v6 compact RSS is already decimal MB.
 
 Rebuild seeds from the original traces after changing label ingestion rules. Existing snapshots retain previously imported values and cannot recover missing measurement evidence.
 
+
+The offline `--kb-max-optional-features <n>` option sets the same fixed combination limit for Lattice and EdgeKappa (default 6). It is recorded in both snapshots; the evaluator does not automatically reduce it. The standalone clause evaluators below accept the same option. Compare runs at the same limit. Use `CLAWTUNE_KB_MAX_OPTIONAL_FEATURES=<n>` when opening the resulting seed through the sidecar.
 
 ### EdgeKappa research evaluation
 

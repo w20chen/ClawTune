@@ -160,7 +160,10 @@ Common settings belong in root `.env`; restart the service after changes:
 | `CLAWTUNE_TOKEN` | Optional local API token; export the same value to OpenClaw and the service, separately from the provider key |
 | `CLAWTUNE_PMU_ENABLED` | Enable best-effort hardware counting |
 | `CLAWTUNE_TOOL_RESOURCE_FROZEN` | Freeze daily learning |
+| `CLAWTUNE_KB_MAX_OPTIONAL_FEATURES` | Shared fixed optional-feature combination limit for Lattice and EdgeKappa (default 6; nonnegative integer) |
 | `CLAWTUNE_TOOL_RESOURCE_MEMORY_MEASUREMENT` | Query memory evidence from `cgroup_v2_environment_union_v1` (default), `cgroup_v2_memory_current`, or `guest_memtotal_minus_memavailable`; selects a source without converting labels |
+
+Both feature KBs always retain complete signatures, including those exceeding the optional-feature limit. The limit controls combination order, not total nodes or memory; neither KB automatically lowers it as history grows. Larger values can substantially increase construction time and memory. Saved limits must match each other and the runtime setting. Changing the setting does not rewrite an existing graph or its learned weights: explicitly build a new seed from raw traces using offline `--kb-max-optional-features <n>`, and use it with new state. Legacy Edge snapshots retain their stored effective limit when loaded; old node-count caps are no longer enforced.
 
 The complete settings are maintained in [.env.example](../.env.example) and the [plugin configuration schema](../packages/clawtune-plugin/openclaw.plugin.json). Existing environment variables take precedence over `.env`. The service binds to loopback and is not configured for public exposure.
 

@@ -92,7 +92,10 @@ class CommandParser:
                 matched: list[tuple[dict, str | None]] = []
                 if not ended and token in options:
                     matched = [(options[token], None)]
-                elif not ended and token.startswith("--") and "=" in token:
+                elif not ended and token.startswith("-") and "=" in token and (
+                    token.split("=", 1)[0] in options
+                    and "equals" in options[token.split("=", 1)[0]]["forms"]
+                ):
                     spelling, value = token.split("=", 1)
                     if spelling in options and "equals" in options[spelling]["forms"]:
                         matched = [(options[spelling], value)]

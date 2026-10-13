@@ -1,0 +1,14 @@
+<!doctype html><meta charset="utf-8"><title>Lattice 等价加速验证</title>
+<style>body{font:16px system-ui;max-width:1100px;margin:40px auto;padding:0 20px;line-height:1.6}table{border-collapse:collapse}td,th{border:1px solid #bbb;padding:8px 16px;text-align:right}th{background:#edf2f7}</style>
+<h1>Lattice 固定 6：等价加速验证</h1>
+<p>同一训练快照、固定 6 个可选特征上限。128 条固定抽样调用，3 种选择算法，各重复 3 次；不运行全量 oracle。</p>
+<table><tr><th>算法</th><th>范围</th><th>旧 P50 ms</th><th>新 P50 ms</th><th>旧 P95 ms</th><th>新 P95 ms</th></tr><tr><td>shrinkage</td><td>match</td><td>160.916</td><td>0.712</td><td>496.262</td><td>2.859</td></tr><tr><td>shrinkage</td><td>combined</td><td>162.098</td><td>1.426</td><td>500.067</td><td>12.724</td></tr><tr><td>loso</td><td>match</td><td>162.064</td><td>0.645</td><td>503.450</td><td>2.234</td></tr><tr><td>loso</td><td>combined</td><td>163.038</td><td>1.404</td><td>513.573</td><td>12.165</td></tr><tr><td>max_cardinality</td><td>match</td><td>161.051</td><td>0.562</td><td>487.550</td><td>2.031</td></tr><tr><td>max_cardinality</td><td>combined</td><td>162.962</td><td>1.327</td><td>500.027</td><td>12.150</td></tr></table>
+<p>match 是全部目标的证据查询；combined 额外包含调用组合。排除公共外层解析、HTTP、诊断组装和磁盘写入。</p>
+<p>完整恢复与建库：223.15 → 87.63 秒。</p>
+<p>旧版验证全过程峰值 RSS：6088.4 MiB（未重建更新批次）。新版建库阶段峰值：4681.6 MiB；新版含两代状态共存更新的全过程峰值：8847.8 MiB。阶段不同，不将两代更新峰值与旧版单代峰值直接比较；这些数也不等于常驻 KB 净内存。</p>
+<p>新实现一次 32 条后台更新的 prepare：87.81 秒。这仍然重建新一代统计，不能解释成逐条增量更新。</p>
+<p>只查询时间的匹配 P50/P95：旧 47.894/140.462 ms；新 0.293/1.142 ms。</p>
+<p>验证：全部节点字段、样本顺序和节点顺序的 SHA-256 完全一致；1,152 次查询的全部证据、资源输出、分桶概率及不可预测结果完全一致；额外资源与因果更新测试逐字节一致。</p>
+<p>保持不变：候选生成上限 6、精确节点、执行入口约束、自身/覆盖样本、512 候选上限、统计与评分公式、候选顺序及可见时机。优化仅使用索引、重复计算复用与等价中位数下标运算。</p>
+<p>旧 Edge 实验实际将上限降到 1，并且只预测时间；其历史耗时不可当作与固定 6 Lattice 的同规模对照。Edge 固定 6 须另做实验。</p>
+<p><a href="summary.json">完整机器可读结果</a></p>

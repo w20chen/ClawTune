@@ -1,0 +1,71 @@
+{
+  "build_seconds": 227.182077472,
+  "peak_rss_mib": 6085.25,
+  "observations": 10856,
+  "duration_nodes": 745401,
+  "node_generation": {
+    "mode": "bounded",
+    "max_optional_features": 6,
+    "optional_feature_policy": "fixed",
+    "min_partial_support": 1,
+    "max_shrinkage_candidates": 512,
+    "subset_coverage": true
+  },
+  "queries": [
+    {
+      "rank": 8,
+      "actual_ms": 348586.756115,
+      "candidate_counts": [
+        16
+      ],
+      "shrinkage": {
+        "p50": 113442.210748,
+        "status": "available",
+        "seconds": 0.2886140159999968
+      },
+      "loso": {
+        "p50": 113442.210748,
+        "status": "available",
+        "seconds": 0.17438584999999307
+      },
+      "max_cardinality": {
+        "p50": 113442.210748,
+        "status": "available",
+        "seconds": 0.17171321000000717
+      },
+      "oracle": {
+        "p50": 113442.210748,
+        "status": "available",
+        "seconds": 0.06349818800001117
+      }
+    },
+    {
+      "rank": 30,
+      "actual_ms": 143991.79697036743,
+      "candidate_counts": [
+        48,
+        2
+      ],
+      "shrinkage": {
+        "p50": 95853.96136599999,
+        "status": "available",
+        "seconds": 0.38793298100000584
+      },
+      "loso": {
+        "p50": 95853.96136599999,
+        "status": "available",
+        "seconds": 0.40357554400000595
+      },
+      "max_cardinality": {
+        "p50": 95853.96136599999,
+        "status": "available",
+        "seconds": 0.44611974699998314
+      },
+      "oracle": {
+        "p50": 95854.185996,
+        "status": "available",
+        "seconds": 0.8718108269999902
+      }
+    }
+  ]
+}

@@ -21,9 +21,11 @@ Top-level nodes with single sample: marked as cold-start.
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 from statistics import median, stdev
 from typing import Dict, List
 
+from tool_time._lattice_vendor.features import CoverageIndex
 from tool_time._lattice_vendor.normalize import FeatureSet
 from tool_time._lattice_vendor.schemas import NodeStats
 
@@ -33,27 +35,15 @@ def find_immediate_parents(
     all_nodes: Dict[FeatureSet, NodeStats],
     *,
     _by_size: Dict[int, List[FeatureSet]] | None = None,
+    index: CoverageIndex | None = None,
 ) -> List[FeatureSet]:
-    """Find immediate proper-subset parents of a node.
+    """Return the largest-cardinality layer of existing strict subsets.
 
-    P is an **immediate parent** of C iff:
-    - P ⊂ C (P is a strict subset of C)
-    - There is no node D such that P ⊂ D ⊂ C
-
-    Only returns parents that exist in ``all_nodes``.
-
-    Uses subset-generation: immediate parents are formed by removing
-    features from C one at a time and checking if the result exists
-    in ``all_nodes``.  This is O(|C|) per node instead of scanning
-    the entire node set.
-
-    Args:
-        node_fs: The feature set of node C.
-        all_nodes: All context nodes keyed by feature set.
-        _by_size: Ignored (kept for backward compatibility).
-
-    Returns:
-        List of immediate parent FeatureSets (may be empty).
+    This preserves the original selector's layer policy, which can differ from
+    all inclusion-maximal subsets in a sparse lattice. Small layers use direct
+    combination lookup; an optional index avoids enumerating large absent layers.
+    Both paths return the original combinations(list(node_fs), size) order.
+    _by_size is ignored for backward compatibility.
     """
     k = len(node_fs)
     if k == 0:
@@ -63,6 +53,16 @@ def find_immediate_parents(
 
     # Try removing 1 feature at a time: O(k) hash lookups
     for size in range(k - 1, -1, -1):
+        if index is not None and math.comb(k, size) > max(64, min(4096, len(all_nodes))):
+            # Preserve the existing largest-cardinality-layer policy, including
+            # combinations() order, without enumerating absent intermediate nodes.
+            matches = [fs for fs in index.subsets(node_fs) if len(fs) <= size]
+            if not matches:
+                return []
+            largest = max(map(len, matches))
+            positions = {feature: i for i, feature in enumerate(features)}
+            return sorted((fs for fs in matches if len(fs) == largest),
+                          key=lambda fs: tuple(sorted(positions[f] for f in fs)))
         parents: List[FeatureSet] = []
         # Only check combinations of 'size' features removed from C
         # We need all (k - size)-element subsets, i.e., keep 'size' features
@@ -70,7 +70,9 @@ def find_immediate_parents(
         from itertools import combinations
         for combo in combinations(features, size):
             candidate = frozenset(combo)
-            if candidate in all_nodes and candidate not in parents:
+            # Combinations of a feature set are already unique. A list scan
+            # here makes wide full-feature nodes quadratic in parent count.
+            if candidate in all_nodes:
                 parents.append(candidate)
         if parents:
             return parents
@@ -83,6 +85,8 @@ def compute_shrinkage_variances(
     *,
     kappa: float = 5.0,
     global_log_var: float = 0.0,
+    index: CoverageIndex | None = None,
+    reuse_sample_std: bool = False,
 ) -> None:
     """Compute shrinkage variance R_C for all nodes, mutating NodeStats in-place.
 
@@ -102,24 +106,20 @@ def compute_shrinkage_variances(
     # Sort nodes by feature count (ascending) for topological processing
     sorted_fs = sorted(nodes.keys(), key=lambda fs: len(fs))
 
-    # Pre-compute log-space stats for each node
-    log_stats: Dict[FeatureSet, dict] = {}
-    for fs in sorted_fs:
-        stats = nodes[fs]
-        m = stats.count
-        if m >= 2:
-            logs = [math.log1p(v) for v in stats.durations]
-            s2 = stdev(logs) ** 2
-        else:
-            s2 = 0.0  # undefined for single sample; will use parent/global
-        log_stats[fs] = {"m": m, "s2": s2}
+    @lru_cache(maxsize=4096)
+    def sample_variance(values):
+        return stdev([math.log1p(v) for v in values]) ** 2
 
     for fs in sorted_fs:
-        m = log_stats[fs]["m"]
-        s2 = log_stats[fs]["s2"]
+        m = nodes[fs].count
+        s2 = (nodes[fs].std_log ** 2 if reuse_sample_std
+              else sample_variance(tuple(nodes[fs].durations))) if m >= 2 else 0.0
 
         # Find immediate parents that exist in the node structure
-        parents = find_immediate_parents(fs, nodes)
+        parents = find_immediate_parents(fs, nodes, index=index)
+        if index is not None:
+            # Retain canonical keys, not freshly allocated combination sets.
+            index.parent_sets[fs] = tuple(nodes[p].features for p in parents)
 
         if not parents:
             # ── Top-level node: no parents ──────────────────────────

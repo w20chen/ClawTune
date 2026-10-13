@@ -1,0 +1,364 @@
+{
+  "models": {
+    "edge": {
+      "identical_prediction_rows": 384,
+      "snapshot_identical": true,
+      "before": {
+        "ready_seconds": 10.500129915,
+        "restore_ms": 9964.443262,
+        "prepare_ms": 0,
+        "query": {
+          "edge": {
+            "match": {
+              "n": 384,
+              "mean_ms": 2.901452390625,
+              "p50_ms": 1.6861375,
+              "p95_ms": 10.451271,
+              "p99_ms": 15.595154,
+              "max_ms": 30.05695,
+              "total_seconds": 1.114157718
+            },
+            "compose": {
+              "n": 384,
+              "mean_ms": 45.140151609375,
+              "p50_ms": 1.3221569999999998,
+              "p95_ms": 200.962771,
+              "p99_ms": 355.675402,
+              "max_ms": 364.670179,
+              "total_seconds": 17.333818218
+            },
+            "combined": {
+              "n": 384,
+              "mean_ms": 48.041604,
+              "p50_ms": 3.8112285,
+              "p95_ms": 207.866781,
+              "p99_ms": 367.829694,
+              "max_ms": 376.85853000000003,
+              "total_seconds": 18.447975936
+            }
+          }
+        },
+        "maintenance": {
+          "observe_and_commit": {
+            "n": 32,
+            "mean_ms": 1.5402770625,
+            "p50_ms": 0.889508,
+            "p95_ms": 7.423835,
+            "p99_ms": 7.485576,
+            "max_ms": 7.485576,
+            "total_seconds": 0.049288866
+          },
+          "begin_including_prediction": {
+            "n": 32,
+            "mean_ms": 19.0334960625,
+            "p50_ms": 5.667232,
+            "p95_ms": 13.773894,
+            "p99_ms": 420.288657,
+            "max_ms": 420.288657,
+            "total_seconds": 0.609071874
+          }
+        },
+        "peak_rss_mib": 316.234375
+      },
+      "after": {
+        "ready_seconds": 7.331144018999999,
+        "restore_ms": 6873.384698,
+        "prepare_ms": 0,
+        "query": {
+          "edge": {
+            "match": {
+              "n": 384,
+              "mean_ms": 2.8102143932291668,
+              "p50_ms": 1.485093,
+              "p95_ms": 10.229397,
+              "p99_ms": 17.408503,
+              "max_ms": 33.598725,
+              "total_seconds": 1.079122327
+            },
+            "compose": {
+              "n": 384,
+              "mean_ms": 3.2627926796875,
+              "p50_ms": 1.3583375000000002,
+              "p95_ms": 9.03256,
+              "p99_ms": 12.601393,
+              "max_ms": 14.971987,
+              "total_seconds": 1.252912389
+            },
+            "combined": {
+              "n": 384,
+              "mean_ms": 6.073007072916667,
+              "p50_ms": 3.8849279999999995,
+              "p95_ms": 18.628995,
+              "p99_ms": 26.766832,
+              "max_ms": 43.771478,
+              "total_seconds": 2.332034716
+            }
+          }
+        },
+        "maintenance": {
+          "observe_and_commit": {
+            "n": 32,
+            "mean_ms": 2.287966875,
+            "p50_ms": 0.7017975,
+            "p95_ms": 7.340598,
+            "p99_ms": 34.673825,
+            "max_ms": 34.673825,
+            "total_seconds": 0.07321493999999999
+          },
+          "begin_including_prediction": {
+            "n": 32,
+            "mean_ms": 14.04975728125,
+            "p50_ms": 4.5774574999999995,
+            "p95_ms": 15.809565,
+            "p99_ms": 293.329518,
+            "max_ms": 293.329518,
+            "total_seconds": 0.449592233
+          }
+        },
+        "peak_rss_mib": 309.26171875
+      }
+    },
+    "lattice6": {
+      "identical_prediction_rows": 1152,
+      "snapshot_identical": true,
+      "before": {
+        "ready_seconds": 97.290651404,
+        "restore_ms": 475.015263,
+        "prepare_ms": 96634.337143,
+        "query": {
+          "shrinkage": {
+            "match": {
+              "n": 384,
+              "mean_ms": 1.09668740625,
+              "p50_ms": 0.841037,
+              "p95_ms": 2.828768,
+              "p99_ms": 5.60116,
+              "max_ms": 6.913786,
+              "total_seconds": 0.421127964
+            },
+            "compose": {
+              "n": 384,
+              "mean_ms": 4.07132703125,
+              "p50_ms": 0.46772199999999997,
+              "p95_ms": 11.923388,
+              "p99_ms": 14.609354,
+              "max_ms": 19.60518,
+              "total_seconds": 1.56338958
+            },
+            "combined": {
+              "n": 384,
+              "mean_ms": 5.1680144375,
+              "p50_ms": 1.5296669999999999,
+              "p95_ms": 13.742346,
+              "p99_ms": 17.166767,
+              "max_ms": 22.196367000000002,
+              "total_seconds": 1.984517544
+            }
+          },
+          "loso": {
+            "match": {
+              "n": 384,
+              "mean_ms": 0.9032808984375,
+              "p50_ms": 0.6730160000000001,
+              "p95_ms": 2.242753,
+              "p99_ms": 4.932569,
+              "max_ms": 9.802396,
+              "total_seconds": 0.346859865
+            },
+            "compose": {
+              "n": 384,
+              "mean_ms": 4.085966247395834,
+              "p50_ms": 0.4950405,
+              "p95_ms": 11.037433,
+              "p99_ms": 15.411868,
+              "max_ms": 22.779967,
+              "total_seconds": 1.569011039
+            },
+            "combined": {
+              "n": 384,
+              "mean_ms": 4.989247145833334,
+              "p50_ms": 1.5704935,
+              "p95_ms": 12.799967,
+              "p99_ms": 18.125222,
+              "max_ms": 25.214264,
+              "total_seconds": 1.9158709040000002
+            }
+          },
+          "max_cardinality": {
+            "match": {
+              "n": 384,
+              "mean_ms": 0.8690183411458333,
+              "p50_ms": 0.607102,
+              "p95_ms": 2.320007,
+              "p99_ms": 4.2716,
+              "max_ms": 5.909772,
+              "total_seconds": 0.333703043
+            },
+            "compose": {
+              "n": 384,
+              "mean_ms": 4.108561080729166,
+              "p50_ms": 0.4602705,
+              "p95_ms": 11.232518,
+              "p99_ms": 15.457781,
+              "max_ms": 18.273897,
+              "total_seconds": 1.577687455
+            },
+            "combined": {
+              "n": 384,
+              "mean_ms": 4.977579421875,
+              "p50_ms": 1.4463599999999999,
+              "p95_ms": 13.199746000000001,
+              "p99_ms": 17.801758999999997,
+              "max_ms": 19.656467000000003,
+              "total_seconds": 1.911390498
+            }
+          }
+        },
+        "maintenance": {
+          "fork_ms": 0.197328,
+          "enqueue_only": {
+            "n": 32,
+            "mean_ms": 7.7907341875,
+            "p50_ms": 0.420872,
+            "p95_ms": 5.193753,
+            "p99_ms": 225.218177,
+            "max_ms": 225.218177,
+            "total_seconds": 0.24930349400000001
+          },
+          "pending": 0,
+          "rebuild_measured_separately_as_prepare": true
+        },
+        "peak_rss_mib": 8802.6875,
+        "update_prepare_ms": 98636.991383,
+        "update_publish_ms": 0.045181,
+        "ready_peak_rss_mib": 4731.98046875,
+        "duration_nodes": 745401,
+        "raw_observations": 10856
+      },
+      "after": {
+        "ready_seconds": 64.752561994,
+        "restore_ms": 553.70366,
+        "prepare_ms": 64023.745745,
+        "query": {
+          "shrinkage": {
+            "match": {
+              "n": 384,
+              "mean_ms": 1.013193453125,
+              "p50_ms": 0.7294155,
+              "p95_ms": 2.769881,
+              "p99_ms": 5.522671,
+              "max_ms": 6.142828,
+              "total_seconds": 0.389066286
+            },
+            "compose": {
+              "n": 384,
+              "mean_ms": 3.6279455442708333,
+              "p50_ms": 0.436605,
+              "p95_ms": 10.797977,
+              "p99_ms": 12.688131,
+              "max_ms": 13.879587,
+              "total_seconds": 1.393131089
+            },
+            "combined": {
+              "n": 384,
+              "mean_ms": 4.641138997395833,
+              "p50_ms": 1.388751,
+              "p95_ms": 12.756732999999999,
+              "p99_ms": 15.318728,
+              "max_ms": 18.062311,
+              "total_seconds": 1.782197375
+            }
+          },
+          "loso": {
+            "match": {
+              "n": 384,
+              "mean_ms": 0.8375992057291667,
+              "p50_ms": 0.6397085,
+              "p95_ms": 2.080572,
+              "p99_ms": 3.562868,
+              "max_ms": 5.050743,
+              "total_seconds": 0.321638095
+            },
+            "compose": {
+              "n": 384,
+              "mean_ms": 3.6949200390625,
+              "p50_ms": 0.490059,
+              "p95_ms": 10.461354,
+              "p99_ms": 13.49219,
+              "max_ms": 17.701792,
+              "total_seconds": 1.418849295
+            },
+            "combined": {
+              "n": 384,
+              "mean_ms": 4.532519244791667,
+              "p50_ms": 1.4019105,
+              "p95_ms": 11.826914,
+              "p99_ms": 15.194087,
+              "max_ms": 19.313090000000003,
+              "total_seconds": 1.74048739
+            }
+          },
+          "max_cardinality": {
+            "match": {
+              "n": 384,
+              "mean_ms": 0.7938454609375,
+              "p50_ms": 0.6099815,
+              "p95_ms": 2.099244,
+              "p99_ms": 3.738898,
+              "max_ms": 4.586309,
+              "total_seconds": 0.304836657
+            },
+            "compose": {
+              "n": 384,
+              "mean_ms": 3.589416776041667,
+              "p50_ms": 0.3987935,
+              "p95_ms": 9.863471,
+              "p99_ms": 12.287674,
+              "max_ms": 15.037209,
+              "total_seconds": 1.378336042
+            },
+            "combined": {
+              "n": 384,
+              "mean_ms": 4.383262236979166,
+              "p50_ms": 1.348733,
+              "p95_ms": 11.850591000000001,
+              "p99_ms": 13.24333,
+              "max_ms": 17.993464,
+              "total_seconds": 1.683172699
+            }
+          }
+        },
+        "maintenance": {
+          "fork_ms": 5.3586,
+          "enqueue_only": {
+            "n": 32,
+            "mean_ms": 7.2751072812499995,
+            "p50_ms": 0.348471,
+            "p95_ms": 4.651959,
+            "p99_ms": 210.798555,
+            "max_ms": 210.798555,
+            "total_seconds": 0.23280343299999998
+          },
+          "pending": 0,
+          "rebuild_measured_separately_as_prepare": true
+        },
+        "peak_rss_mib": 8928.79296875,
+        "update_prepare_ms": 59099.030677,
+        "update_publish_ms": 0.110028,
+        "ready_peak_rss_mib": 4780.94140625,
+        "duration_nodes": 745401,
+        "raw_observations": 10856
+      },
+      "initial_and_updated_node_statistics_identical": true
+    }
+  },
+  "managed_flush": {
+    "before_seconds": 89.98894855200001,
+    "after_seconds": 67.59250300100007,
+    "all_four_committed_snapshots_identical": true,
+    "scope": "enqueue + background rebuild + all four snapshots + atomic managed checkpoint; temp files on WSL /tmp"
+  },
+  "synthetic_resources_and_partial_causal_updates_identical": true,
+  "scope": "Same seed and 128 fixed calls; three query passes per selector. Sequential processes with PYTHONHASHSEED=42. One full-build and one 32-observation rebuild per measured process; separate full managed flush run. Preliminary runs excluded from timing comparison.",
+  "limits": "Single-machine measurements, not confidence intervals or HTTP latency. Peak RSS is process high-water mark. Exact caches trade bounded additional memory and fork copying for avoided computation. Lattice still performs full coverage aggregation and shrinkage traversal."
+}

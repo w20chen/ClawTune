@@ -1,0 +1,1436 @@
+[
+  {
+    "cell": null,
+    "code": "UP035",
+    "end_location": {
+      "column": 58,
+      "row": 13
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from typing import Dict, FrozenSet, List, Tuple\r\nfrom collections.abc import Sequence",
+          "end_location": {
+            "column": 58,
+            "row": 13
+          },
+          "location": {
+            "column": 1,
+            "row": 13
+          }
+        }
+      ],
+      "message": "Import from `collections.abc`"
+    },
+    "location": {
+      "column": 1,
+      "row": 13
+    },
+    "message": "Import from `collections.abc` instead: `Sequence`",
+    "name": "deprecated-import",
+    "noqa_row": 13,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/deprecated-import"
+  },
+  {
+    "cell": null,
+    "code": "UP035",
+    "end_location": {
+      "column": 58,
+      "row": 13
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 13
+    },
+    "message": "`typing.Dict` is deprecated, use `dict` instead",
+    "name": "deprecated-import",
+    "noqa_row": 13,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/deprecated-import"
+  },
+  {
+    "cell": null,
+    "code": "UP035",
+    "end_location": {
+      "column": 58,
+      "row": 13
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 13
+    },
+    "message": "`typing.FrozenSet` is deprecated, use `frozenset` instead",
+    "name": "deprecated-import",
+    "noqa_row": 13,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/deprecated-import"
+  },
+  {
+    "cell": null,
+    "code": "UP035",
+    "end_location": {
+      "column": 58,
+      "row": 13
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 13
+    },
+    "message": "`typing.List` is deprecated, use `list` instead",
+    "name": "deprecated-import",
+    "noqa_row": 13,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/deprecated-import"
+  },
+  {
+    "cell": null,
+    "code": "UP035",
+    "end_location": {
+      "column": 58,
+      "row": 13
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 13
+    },
+    "message": "`typing.Tuple` is deprecated, use `tuple` instead",
+    "name": "deprecated-import",
+    "noqa_row": 13,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/deprecated-import"
+  },
+  {
+    "cell": null,
+    "code": "F401",
+    "end_location": {
+      "column": 35,
+      "row": 13
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from typing import Dict, List, Sequence, Tuple",
+          "end_location": {
+            "column": 58,
+            "row": 13
+          },
+          "location": {
+            "column": 1,
+            "row": 13
+          }
+        }
+      ],
+      "message": "Remove unused import: `typing.FrozenSet`"
+    },
+    "location": {
+      "column": 26,
+      "row": 13
+    },
+    "message": "`typing.FrozenSet` imported but unused",
+    "name": "unused-import",
+    "noqa_row": 13,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-import"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 17,
+      "row": 30
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "list",
+          "end_location": {
+            "column": 17,
+            "row": 30
+          },
+          "location": {
+            "column": 13,
+            "row": 30
+          }
+        }
+      ],
+      "message": "Replace with `list`"
+    },
+    "location": {
+      "column": 13,
+      "row": 30
+    },
+    "message": "Use `list` instead of `List` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 30,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 24,
+      "row": 60
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "dict",
+          "end_location": {
+            "column": 24,
+            "row": 60
+          },
+          "location": {
+            "column": 20,
+            "row": 60
+          }
+        }
+      ],
+      "message": "Replace with `dict`"
+    },
+    "location": {
+      "column": 20,
+      "row": 60
+    },
+    "message": "Use `dict` instead of `Dict` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 60,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 41,
+      "row": 60
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "list",
+          "end_location": {
+            "column": 41,
+            "row": 60
+          },
+          "location": {
+            "column": 37,
+            "row": 60
+          }
+        }
+      ],
+      "message": "Replace with `list`"
+    },
+    "location": {
+      "column": 37,
+      "row": 60
+    },
+    "message": "Use `list` instead of `List` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 60,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 19,
+      "row": 86
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "list",
+          "end_location": {
+            "column": 19,
+            "row": 86
+          },
+          "location": {
+            "column": 15,
+            "row": 86
+          }
+        }
+      ],
+      "message": "Replace with `list`"
+    },
+    "location": {
+      "column": 15,
+      "row": 86
+    },
+    "message": "Use `list` instead of `List` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 86,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 17,
+      "row": 94
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "list",
+          "end_location": {
+            "column": 17,
+            "row": 94
+          },
+          "location": {
+            "column": 13,
+            "row": 94
+          }
+        }
+      ],
+      "message": "Replace with `list`"
+    },
+    "location": {
+      "column": 13,
+      "row": 94
+    },
+    "message": "Use `list` instead of `List` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 94,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 11,
+      "row": 112
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "tuple",
+          "end_location": {
+            "column": 11,
+            "row": 112
+          },
+          "location": {
+            "column": 6,
+            "row": 112
+          }
+        }
+      ],
+      "message": "Replace with `tuple`"
+    },
+    "location": {
+      "column": 6,
+      "row": 112
+    },
+    "message": "Use `tuple` instead of `Tuple` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 112,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 16,
+      "row": 112
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "dict",
+          "end_location": {
+            "column": 16,
+            "row": 112
+          },
+          "location": {
+            "column": 12,
+            "row": 112
+          }
+        }
+      ],
+      "message": "Replace with `dict`"
+    },
+    "location": {
+      "column": 12,
+      "row": 112
+    },
+    "message": "Use `dict` instead of `Dict` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 112,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 25,
+      "row": 136
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "dict",
+          "end_location": {
+            "column": 25,
+            "row": 136
+          },
+          "location": {
+            "column": 21,
+            "row": 136
+          }
+        }
+      ],
+      "message": "Replace with `dict`"
+    },
+    "location": {
+      "column": 21,
+      "row": 136
+    },
+    "message": "Use `dict` instead of `Dict` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 136,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 42,
+      "row": 136
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "list",
+          "end_location": {
+            "column": 42,
+            "row": 136
+          },
+          "location": {
+            "column": 38,
+            "row": 136
+          }
+        }
+      ],
+      "message": "Replace with `list`"
+    },
+    "location": {
+      "column": 38,
+      "row": 136
+    },
+    "message": "Use `list` instead of `List` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 136,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 30,
+      "row": 137
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "dict",
+          "end_location": {
+            "column": 30,
+            "row": 137
+          },
+          "location": {
+            "column": 26,
+            "row": 137
+          }
+        }
+      ],
+      "message": "Replace with `dict`"
+    },
+    "location": {
+      "column": 26,
+      "row": 137
+    },
+    "message": "Use `dict` instead of `Dict` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 137,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 47,
+      "row": 137
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "dict",
+          "end_location": {
+            "column": 47,
+            "row": 137
+          },
+          "location": {
+            "column": 43,
+            "row": 137
+          }
+        }
+      ],
+      "message": "Replace with `dict`"
+    },
+    "location": {
+      "column": 43,
+      "row": 137
+    },
+    "message": "Use `dict` instead of `Dict` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 137,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 64,
+      "row": 137
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "list",
+          "end_location": {
+            "column": 64,
+            "row": 137
+          },
+          "location": {
+            "column": 60,
+            "row": 137
+          }
+        }
+      ],
+      "message": "Replace with `list`"
+    },
+    "location": {
+      "column": 60,
+      "row": 137
+    },
+    "message": "Use `list` instead of `List` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 137,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 29,
+      "row": 140
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "dict",
+          "end_location": {
+            "column": 29,
+            "row": 140
+          },
+          "location": {
+            "column": 25,
+            "row": 140
+          }
+        }
+      ],
+      "message": "Replace with `dict`"
+    },
+    "location": {
+      "column": 25,
+      "row": 140
+    },
+    "message": "Use `dict` instead of `Dict` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 140,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 46,
+      "row": 140
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "dict",
+          "end_location": {
+            "column": 46,
+            "row": 140
+          },
+          "location": {
+            "column": 42,
+            "row": 140
+          }
+        }
+      ],
+      "message": "Replace with `dict`"
+    },
+    "location": {
+      "column": 42,
+      "row": 140
+    },
+    "message": "Use `dict` instead of `Dict` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 140,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 63,
+      "row": 140
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "list",
+          "end_location": {
+            "column": 63,
+            "row": 140
+          },
+          "location": {
+            "column": 59,
+            "row": 140
+          }
+        }
+      ],
+      "message": "Replace with `list`"
+    },
+    "location": {
+      "column": 59,
+      "row": 140
+    },
+    "message": "Use `list` instead of `List` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 140,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 28,
+      "row": 143
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "dict",
+          "end_location": {
+            "column": 28,
+            "row": 143
+          },
+          "location": {
+            "column": 24,
+            "row": 143
+          }
+        }
+      ],
+      "message": "Replace with `dict`"
+    },
+    "location": {
+      "column": 24,
+      "row": 143
+    },
+    "message": "Use `dict` instead of `Dict` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 143,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 28,
+      "row": 144
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "list",
+          "end_location": {
+            "column": 28,
+            "row": 144
+          },
+          "location": {
+            "column": 24,
+            "row": 144
+          }
+        }
+      ],
+      "message": "Replace with `list`"
+    },
+    "location": {
+      "column": 24,
+      "row": 144
+    },
+    "message": "Use `list` instead of `List` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 144,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "F841",
+    "end_location": {
+      "column": 20,
+      "row": 213
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "unsafe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 23,
+            "row": 213
+          },
+          "location": {
+            "column": 5,
+            "row": 213
+          }
+        }
+      ],
+      "message": "Remove assignment to unused variable `global_log_mean`"
+    },
+    "location": {
+      "column": 5,
+      "row": 213
+    },
+    "message": "Local variable `global_log_mean` is assigned to but never used",
+    "name": "unused-variable",
+    "noqa_row": 213,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unused-variable"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 16,
+      "row": 218
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "dict",
+          "end_location": {
+            "column": 16,
+            "row": 218
+          },
+          "location": {
+            "column": 12,
+            "row": 218
+          }
+        }
+      ],
+      "message": "Replace with `dict`"
+    },
+    "location": {
+      "column": 12,
+      "row": 218
+    },
+    "message": "Use `dict` instead of `Dict` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 218,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "FURB162",
+    "end_location": {
+      "column": 64,
+      "row": 275
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/nodes.py",
+    "fix": {
+      "applicability": "unsafe",
+      "edits": [
+        {
+          "content": "",
+          "end_location": {
+            "column": 64,
+            "row": 275
+          },
+          "location": {
+            "column": 41,
+            "row": 275
+          }
+        }
+      ],
+      "message": "Remove `.replace()` call"
+    },
+    "location": {
+      "column": 39,
+      "row": 275
+    },
+    "message": "Unnecessary timezone replacement with zero offset",
+    "name": "fromisoformat-replace-z",
+    "noqa_row": 275,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/fromisoformat-replace-z"
+  },
+  {
+    "cell": null,
+    "code": "UP035",
+    "end_location": {
+      "column": 35,
+      "row": 6
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/schemas.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 6
+    },
+    "message": "`typing.FrozenSet` is deprecated, use `frozenset` instead",
+    "name": "deprecated-import",
+    "noqa_row": 6,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/deprecated-import"
+  },
+  {
+    "cell": null,
+    "code": "UP035",
+    "end_location": {
+      "column": 35,
+      "row": 6
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/schemas.py",
+    "fix": null,
+    "location": {
+      "column": 1,
+      "row": 6
+    },
+    "message": "`typing.List` is deprecated, use `list` instead",
+    "name": "deprecated-import",
+    "noqa_row": 6,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/deprecated-import"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 24,
+      "row": 48
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/schemas.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "frozenset",
+          "end_location": {
+            "column": 24,
+            "row": 48
+          },
+          "location": {
+            "column": 15,
+            "row": 48
+          }
+        }
+      ],
+      "message": "Replace with `frozenset`"
+    },
+    "location": {
+      "column": 15,
+      "row": 48
+    },
+    "message": "Use `frozenset` instead of `FrozenSet` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 48,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 20,
+      "row": 49
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/schemas.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "list",
+          "end_location": {
+            "column": 20,
+            "row": 49
+          },
+          "location": {
+            "column": 16,
+            "row": 49
+          }
+        }
+      ],
+      "message": "Replace with `list`"
+    },
+    "location": {
+      "column": 16,
+      "row": 49
+    },
+    "message": "Use `list` instead of `List` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 49,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 32,
+      "row": 89
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/schemas.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "frozenset",
+          "end_location": {
+            "column": 32,
+            "row": 89
+          },
+          "location": {
+            "column": 23,
+            "row": 89
+          }
+        }
+      ],
+      "message": "Replace with `frozenset`"
+    },
+    "location": {
+      "column": 23,
+      "row": 89
+    },
+    "message": "Use `frozenset` instead of `FrozenSet` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 89,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 33,
+      "row": 90
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/schemas.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "frozenset",
+          "end_location": {
+            "column": 33,
+            "row": 90
+          },
+          "location": {
+            "column": 24,
+            "row": 90
+          }
+        }
+      ],
+      "message": "Replace with `frozenset`"
+    },
+    "location": {
+      "column": 24,
+      "row": 90
+    },
+    "message": "Use `frozenset` instead of `FrozenSet` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 90,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 25,
+      "row": 100
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/schemas.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "list",
+          "end_location": {
+            "column": 25,
+            "row": 100
+          },
+          "location": {
+            "column": 21,
+            "row": 100
+          }
+        }
+      ],
+      "message": "Replace with `list`"
+    },
+    "location": {
+      "column": 21,
+      "row": 100
+    },
+    "message": "Use `list` instead of `List` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 100,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 28,
+      "row": 101
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/schemas.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "list",
+          "end_location": {
+            "column": 28,
+            "row": 101
+          },
+          "location": {
+            "column": 24,
+            "row": 101
+          }
+        }
+      ],
+      "message": "Replace with `list`"
+    },
+    "location": {
+      "column": 24,
+      "row": 101
+    },
+    "message": "Use `list` instead of `List` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 101,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 26,
+      "row": 106
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/schemas.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "list",
+          "end_location": {
+            "column": 26,
+            "row": 106
+          },
+          "location": {
+            "column": 22,
+            "row": 106
+          }
+        }
+      ],
+      "message": "Replace with `list`"
+    },
+    "location": {
+      "column": 22,
+      "row": 106
+    },
+    "message": "Use `list` instead of `List` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 106,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 25,
+      "row": 107
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/schemas.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "list",
+          "end_location": {
+            "column": 25,
+            "row": 107
+          },
+          "location": {
+            "column": 21,
+            "row": 107
+          }
+        }
+      ],
+      "message": "Replace with `list`"
+    },
+    "location": {
+      "column": 21,
+      "row": 107
+    },
+    "message": "Use `list` instead of `List` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 107,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "UP006",
+    "end_location": {
+      "column": 26,
+      "row": 108
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/_lattice_vendor/schemas.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "list",
+          "end_location": {
+            "column": 26,
+            "row": 108
+          },
+          "location": {
+            "column": 22,
+            "row": 108
+          }
+        }
+      ],
+      "message": "Replace with `list`"
+    },
+    "location": {
+      "column": 22,
+      "row": 108
+    },
+    "message": "Use `list` instead of `List` for type annotation",
+    "name": "non-pep585-annotation",
+    "noqa_row": 108,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/non-pep585-annotation"
+  },
+  {
+    "cell": null,
+    "code": "I001",
+    "end_location": {
+      "column": 2,
+      "row": 38
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/lattice_kb.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from __future__ import annotations\r\n\r\nimport heapq\r\nimport math\r\nimport shlex\r\nimport statistics\r\nfrom collections import Counter\r\nfrom dataclasses import asdict, dataclass, replace\r\nfrom typing import Any, Iterable, Mapping, Sequence\r\n\r\nfrom command_parser import ParseContext, default_service\r\nfrom command_parser.models import FORMAT, CommandFeatures\r\nfrom command_parser.service import clause_features, observation_features\r\nfrom tool_resource.features import shell_bin_requires_exec_evidence\r\nfrom tool_resource.runtime_kb import ClauseObservation, is_pipeline_dependent_consumer\r\nfrom tool_time._lattice_vendor.features import estimate_node_count\r\nfrom tool_time._lattice_vendor.nodes import build_nodes\r\nfrom tool_time._lattice_vendor.normalize import FeatureSet, normalize_command\r\nfrom tool_time._lattice_vendor.schemas import NodeStats, Observation, PredictionResult\r\nfrom tool_time._lattice_vendor.selector import predict as select_prediction\r\nfrom tool_time._lattice_vendor.shrinkage import compute_shrinkage_variances\r\nfrom tool_time.query import query_nodes\r\nfrom tool_time.resource_lattice import (\r\n    LOAD_TARGETS,\r\n    RESOURCE_TARGETS,\r\n    ResourcePrediction,\r\n    ResourceState,\r\n    build_resource_states,\r\n    nonnegative,\r\n    resource_values,\r\n)\r\n\r\n",
+          "end_location": {
+            "column": 1,
+            "row": 41
+          },
+          "location": {
+            "column": 1,
+            "row": 13
+          }
+        }
+      ],
+      "message": "Organize imports"
+    },
+    "location": {
+      "column": 1,
+      "row": 13
+    },
+    "message": "Import block is un-sorted or un-formatted",
+    "name": "unsorted-imports",
+    "noqa_row": 13,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/unsorted-imports"
+  },
+  {
+    "cell": null,
+    "code": "UP035",
+    "end_location": {
+      "column": 52,
+      "row": 21
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/lattice_kb.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from typing import Any\r\nfrom collections.abc import Iterable, Mapping, Sequence",
+          "end_location": {
+            "column": 52,
+            "row": 21
+          },
+          "location": {
+            "column": 1,
+            "row": 21
+          }
+        }
+      ],
+      "message": "Import from `collections.abc`"
+    },
+    "location": {
+      "column": 1,
+      "row": 21
+    },
+    "message": "Import from `collections.abc` instead: `Iterable`, `Mapping`, `Sequence`",
+    "name": "deprecated-import",
+    "noqa_row": 21,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/deprecated-import"
+  },
+  {
+    "cell": null,
+    "code": "UP037",
+    "end_location": {
+      "column": 49,
+      "row": 203
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/lattice_kb.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "LatticeTimeKB",
+          "end_location": {
+            "column": 49,
+            "row": 203
+          },
+          "location": {
+            "column": 34,
+            "row": 203
+          }
+        }
+      ],
+      "message": "Remove quotes"
+    },
+    "location": {
+      "column": 34,
+      "row": 203
+    },
+    "message": "Remove quotes from type annotation",
+    "name": "quoted-annotation",
+    "noqa_row": 203,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/quoted-annotation"
+  },
+  {
+    "cell": null,
+    "code": "TRY004",
+    "end_location": {
+      "column": 81,
+      "row": 544
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/lattice_kb.py",
+    "fix": null,
+    "location": {
+      "column": 13,
+      "row": 544
+    },
+    "message": "Prefer `TypeError` exception for invalid type",
+    "name": "type-check-without-type-error",
+    "noqa_row": 544,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/type-check-without-type-error"
+  },
+  {
+    "cell": null,
+    "code": "TRY004",
+    "end_location": {
+      "column": 73,
+      "row": 554
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/lattice_kb.py",
+    "fix": null,
+    "location": {
+      "column": 13,
+      "row": 554
+    },
+    "message": "Prefer `TypeError` exception for invalid type",
+    "name": "type-check-without-type-error",
+    "noqa_row": 554,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/type-check-without-type-error"
+  },
+  {
+    "cell": null,
+    "code": "TRY004",
+    "end_location": {
+      "column": 68,
+      "row": 557
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/lattice_kb.py",
+    "fix": null,
+    "location": {
+      "column": 13,
+      "row": 557
+    },
+    "message": "Prefer `TypeError` exception for invalid type",
+    "name": "type-check-without-type-error",
+    "noqa_row": 557,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/type-check-without-type-error"
+  },
+  {
+    "cell": null,
+    "code": "TRY004",
+    "end_location": {
+      "column": 69,
+      "row": 760
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/lattice_kb.py",
+    "fix": null,
+    "location": {
+      "column": 9,
+      "row": 760
+    },
+    "message": "Prefer `TypeError` exception for invalid type",
+    "name": "type-check-without-type-error",
+    "noqa_row": 760,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/type-check-without-type-error"
+  },
+  {
+    "cell": null,
+    "code": "TRY004",
+    "end_location": {
+      "column": 73,
+      "row": 788
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/lattice_kb.py",
+    "fix": null,
+    "location": {
+      "column": 9,
+      "row": 788
+    },
+    "message": "Prefer `TypeError` exception for invalid type",
+    "name": "type-check-without-type-error",
+    "noqa_row": 788,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/type-check-without-type-error"
+  },
+  {
+    "cell": null,
+    "code": "UP035",
+    "end_location": {
+      "column": 33,
+      "row": 14
+    },
+    "filename": "/mnt/c/Users/29068/Desktop/ClawTune/services/sidecar/src/tool_time/resource_lattice.py",
+    "fix": {
+      "applicability": "safe",
+      "edits": [
+        {
+          "content": "from typing import Any\r\nfrom collections.abc import Sequence",
+          "end_location": {
+            "column": 33,
+            "row": 14
+          },
+          "location": {
+            "column": 1,
+            "row": 14
+          }
+        }
+      ],
+      "message": "Import from `collections.abc`"
+    },
+    "location": {
+      "column": 1,
+      "row": 14
+    },
+    "message": "Import from `collections.abc` instead: `Sequence`",
+    "name": "deprecated-import",
+    "noqa_row": 14,
+    "severity": "error",
+    "url": "https://docs.astral.sh/ruff/rules/deprecated-import"
+  }
+]

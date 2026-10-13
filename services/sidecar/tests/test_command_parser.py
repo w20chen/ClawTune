@@ -103,3 +103,84 @@ def test_script_identity_is_relative_to_registered_workspace(service, tmp_path):
     second = service.argv(["python", str(sub / "task.py")], context)
     assert first.features == second.features
     assert 'target:["scripts/task.py"]' in first.core
+
+
+@pytest.mark.parametrize("workers", [["-n", "auto"], ["-n", "8"], ["-n8"], ["-n=8"],
+                                    ["--numprocesses", "8"], ["--numprocesses=8"]])
+def test_pytest_workers_preserve_following_options_and_paths(service, workers):
+    argv = ["python", "-m", "pytest", "-q", *workers, "--tb=short", "tests/devices", "tests/other"]
+    parsed = service.parser.parse(argv, ParseContext())
+    assert parsed.status == "complete"
+    assert parsed.target == ["pytest"]
+    layer = parsed.layers[-1]
+    assert layer["opaque"] == []
+    assert layer["args"] == ["tests/devices", "tests/other"]
+    options = {o["name"]: o["values"] for o in layer["options"]}
+    assert options["--numprocesses"] == ["auto" if "auto" in workers else "8"]
+    assert options["--tb"] == ["short"]
+
+
+@pytest.mark.parametrize("argv", [["pytest", "-n"], ["pytest", "-n", "--tb=short"]])
+def test_pytest_workers_require_a_value(service, argv):
+    parsed = service.parser.parse(argv, ParseContext())
+    assert parsed.status == "invalid"
+    assert "missing_option_value" in parsed.diagnostics
+
+
+@pytest.mark.parametrize("argv,target", [
+    (["cargo", "fmt", "--all", "--check"], "fmt"),
+    (["cargo", "test", "--test", "integration", "filter"], "test"),
+    (["cargo", "t", "-p", "my-package", "filter"], "test"),
+    (["cargo", "build", "--release", "--jobs=4"], "build"),
+    (["cargo", "check", "--all-targets"], "check"),
+])
+def test_cargo_known_entries(service, argv, target):
+    parsed = service.parser.parse(argv, ParseContext())
+    assert parsed.status == "complete"
+    assert parsed.target == [target]
+    validate("parsed-command", parsed.to_dict())
+
+
+@pytest.mark.parametrize("entry", ["test", "fmt"])
+def test_cargo_forwarded_tail_is_not_parsed_as_cargo_options(service, entry):
+    parsed = service.parser.parse(["cargo", entry, "--", "--check", "--test-threads", "3"], ParseContext())
+    assert parsed.status == "complete"
+    assert parsed.target == [entry]
+    assert parsed.layers[0]["options"] == []
+    assert parsed.layers[0]["args"] == ["--check", "--test-threads", "3"]
+
+
+def test_unknown_cargo_extension_is_not_guessed_as_entry(service):
+    parsed = service.parser.parse(["cargo", "unseen-plugin", "--flag"], ParseContext())
+    assert parsed.status == "partial"
+    assert parsed.target == []
+    assert parsed.layers[0]["opaque"] == ["unseen-plugin", "--flag"]
+
+
+def test_short_equals_is_not_stripped_without_declared_form(service):
+    rule, _ = service.registry.lookup("head", ParseContext())
+    option = next(o for o in rule["grammar"]["options"] if "-n" in o["names"])
+    option["forms"] = ["separate", "attached"]
+    registry = RuleRegistry(bundled=False)
+    registry.add(rule, persist=False)
+    parsed = CommandParser(registry).parse(["head", "-n=8", "file"], ParseContext())
+    assert parsed.layers[0]["options"][0]["values"] == ["=8"]
+
+
+@pytest.mark.parametrize("argv,spelling,values,operands", [
+    (["git", "config", "--local", "user.name", "Example"], "--local", [], ["user.name", "Example"]),
+    (["git", "config", "--local", "--get", "user.name"], "--local", [], ["user.name"]),
+    (["git", "config", "--local", "--list"], "--local", [], []),
+    (["git", "merge", "-s", "ort", "topic"], "--strategy", ["ort"], ["topic"]),
+    (["git", "rebase", "-s", "ort", "main"], "--strategy", ["ort"], ["main"]),
+    (["git", "pull", "-s", "ort", "origin", "main"], "--strategy", ["ort"], ["origin", "main"]),
+    (["git", "branch", "-d", "topic1", "topic2"], "--delete", [], ["topic1", "topic2"]),
+    (["npm", "install", "-w", "workspace-a", "package-b"], "--workspace", ["workspace-a"], ["package-b"]),
+])
+def test_completion_arguments_do_not_swallow_command_operands(service, argv, spelling, values, operands):
+    parsed = service.parser.parse(argv, ParseContext())
+    assert parsed.status == "complete"
+    layer = parsed.layers[-1]
+    assert next(o["values"] for o in layer["options"] if o["name"] == spelling) == values
+    assert layer["args"] == operands
+    assert not layer["opaque"]

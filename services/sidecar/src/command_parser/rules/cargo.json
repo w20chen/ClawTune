@@ -1,0 +1,2115 @@
+{
+  "format": "command-rule.v1",
+  "canonical": "cargo",
+  "names": [
+    "cargo"
+  ],
+  "scope": {
+    "kind": "global"
+  },
+  "origin": {
+    "kind": "curated",
+    "source": "https://doc.rust-lang.org/cargo/commands/cargo.html",
+    "revision": "curated-v1",
+    "evidence": [
+      "https://doc.rust-lang.org/cargo/commands/cargo-test.html",
+      "https://doc.rust-lang.org/cargo/commands/cargo-build.html",
+      "https://doc.rust-lang.org/cargo/commands/cargo-check.html",
+      "https://github.com/withfig/autocomplete/blob/aef52acff84c45edde61ae610cc2c964802b9a38/src/cargo.ts",
+      "overrides/cargo.json"
+    ]
+  },
+  "grammar": {
+    "options": [
+      {
+        "names": [
+          "-v",
+          "--verbose"
+        ],
+        "canonical": "--verbose",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false
+      },
+      {
+        "names": [
+          "-q",
+          "--quiet"
+        ],
+        "canonical": "--quiet",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false
+      },
+      {
+        "names": [
+          "--color"
+        ],
+        "canonical": "--color",
+        "min": 1,
+        "max": 1,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false
+      },
+      {
+        "names": [
+          "-h",
+          "--help"
+        ],
+        "canonical": "--help",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false
+      },
+      {
+        "names": [
+          "--locked"
+        ],
+        "canonical": "--locked",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false
+      },
+      {
+        "names": [
+          "--offline"
+        ],
+        "canonical": "--offline",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false
+      },
+      {
+        "names": [
+          "--frozen"
+        ],
+        "canonical": "--frozen",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false
+      },
+      {
+        "names": [
+          "--config"
+        ],
+        "canonical": "--config",
+        "min": 1,
+        "max": 1,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false
+      },
+      {
+        "names": [
+          "-V",
+          "--version"
+        ],
+        "canonical": "--version",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false
+      },
+      {
+        "names": [
+          "--list"
+        ],
+        "canonical": "--list",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate",
+          "equals",
+          "attached"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": false
+      }
+    ],
+    "positionals": [],
+    "subcommands": [
+      {
+        "names": [
+          "build",
+          "b"
+        ],
+        "canonical": "build",
+        "grammar": {
+          "options": [
+            {
+              "names": [
+                "-v",
+                "--verbose"
+              ],
+              "canonical": "--verbose",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-q",
+                "--quiet"
+              ],
+              "canonical": "--quiet",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--color"
+              ],
+              "canonical": "--color",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-h",
+                "--help"
+              ],
+              "canonical": "--help",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--locked"
+              ],
+              "canonical": "--locked",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--offline"
+              ],
+              "canonical": "--offline",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--frozen"
+              ],
+              "canonical": "--frozen",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--config"
+              ],
+              "canonical": "--config",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-p",
+                "--package"
+              ],
+              "canonical": "--package",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--workspace",
+                "--all"
+              ],
+              "canonical": "--workspace",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--exclude"
+              ],
+              "canonical": "--exclude",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--lib"
+              ],
+              "canonical": "--lib",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--bins"
+              ],
+              "canonical": "--bins",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--tests"
+              ],
+              "canonical": "--tests",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--examples"
+              ],
+              "canonical": "--examples",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--benches"
+              ],
+              "canonical": "--benches",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--all-targets"
+              ],
+              "canonical": "--all-targets",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--all-features"
+              ],
+              "canonical": "--all-features",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--no-default-features"
+              ],
+              "canonical": "--no-default-features",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-r",
+                "--release"
+              ],
+              "canonical": "--release",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--bin"
+              ],
+              "canonical": "--bin",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--test"
+              ],
+              "canonical": "--test",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--example"
+              ],
+              "canonical": "--example",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--bench"
+              ],
+              "canonical": "--bench",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--target"
+              ],
+              "canonical": "--target",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--profile"
+              ],
+              "canonical": "--profile",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--target-dir"
+              ],
+              "canonical": "--target-dir",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--manifest-path"
+              ],
+              "canonical": "--manifest-path",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--message-format"
+              ],
+              "canonical": "--message-format",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-F",
+                "--features"
+              ],
+              "canonical": "--features",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-j",
+                "--jobs"
+              ],
+              "canonical": "--jobs",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            }
+          ],
+          "positionals": [],
+          "subcommands": [],
+          "syntax": {
+            "clusters": true,
+            "intermixed": true,
+            "assignments": false
+          },
+          "partial": []
+        }
+      },
+      {
+        "names": [
+          "check",
+          "c"
+        ],
+        "canonical": "check",
+        "grammar": {
+          "options": [
+            {
+              "names": [
+                "-v",
+                "--verbose"
+              ],
+              "canonical": "--verbose",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-q",
+                "--quiet"
+              ],
+              "canonical": "--quiet",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--color"
+              ],
+              "canonical": "--color",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-h",
+                "--help"
+              ],
+              "canonical": "--help",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--locked"
+              ],
+              "canonical": "--locked",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--offline"
+              ],
+              "canonical": "--offline",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--frozen"
+              ],
+              "canonical": "--frozen",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--config"
+              ],
+              "canonical": "--config",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-p",
+                "--package"
+              ],
+              "canonical": "--package",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--workspace",
+                "--all"
+              ],
+              "canonical": "--workspace",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--exclude"
+              ],
+              "canonical": "--exclude",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--lib"
+              ],
+              "canonical": "--lib",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--bins"
+              ],
+              "canonical": "--bins",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--tests"
+              ],
+              "canonical": "--tests",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--examples"
+              ],
+              "canonical": "--examples",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--benches"
+              ],
+              "canonical": "--benches",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--all-targets"
+              ],
+              "canonical": "--all-targets",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--all-features"
+              ],
+              "canonical": "--all-features",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--no-default-features"
+              ],
+              "canonical": "--no-default-features",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-r",
+                "--release"
+              ],
+              "canonical": "--release",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--bin"
+              ],
+              "canonical": "--bin",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--test"
+              ],
+              "canonical": "--test",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--example"
+              ],
+              "canonical": "--example",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--bench"
+              ],
+              "canonical": "--bench",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--target"
+              ],
+              "canonical": "--target",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--profile"
+              ],
+              "canonical": "--profile",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--target-dir"
+              ],
+              "canonical": "--target-dir",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--manifest-path"
+              ],
+              "canonical": "--manifest-path",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--message-format"
+              ],
+              "canonical": "--message-format",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-F",
+                "--features"
+              ],
+              "canonical": "--features",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-j",
+                "--jobs"
+              ],
+              "canonical": "--jobs",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            }
+          ],
+          "positionals": [],
+          "subcommands": [],
+          "syntax": {
+            "clusters": true,
+            "intermixed": true,
+            "assignments": false
+          },
+          "partial": []
+        }
+      },
+      {
+        "names": [
+          "test",
+          "t"
+        ],
+        "canonical": "test",
+        "grammar": {
+          "options": [
+            {
+              "names": [
+                "-v",
+                "--verbose"
+              ],
+              "canonical": "--verbose",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-q",
+                "--quiet"
+              ],
+              "canonical": "--quiet",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--color"
+              ],
+              "canonical": "--color",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-h",
+                "--help"
+              ],
+              "canonical": "--help",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--locked"
+              ],
+              "canonical": "--locked",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--offline"
+              ],
+              "canonical": "--offline",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--frozen"
+              ],
+              "canonical": "--frozen",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--config"
+              ],
+              "canonical": "--config",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-p",
+                "--package"
+              ],
+              "canonical": "--package",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--workspace",
+                "--all"
+              ],
+              "canonical": "--workspace",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--exclude"
+              ],
+              "canonical": "--exclude",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--lib"
+              ],
+              "canonical": "--lib",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--bins"
+              ],
+              "canonical": "--bins",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--tests"
+              ],
+              "canonical": "--tests",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--examples"
+              ],
+              "canonical": "--examples",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--benches"
+              ],
+              "canonical": "--benches",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--all-targets"
+              ],
+              "canonical": "--all-targets",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--all-features"
+              ],
+              "canonical": "--all-features",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--no-default-features"
+              ],
+              "canonical": "--no-default-features",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-r",
+                "--release"
+              ],
+              "canonical": "--release",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--bin"
+              ],
+              "canonical": "--bin",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--test"
+              ],
+              "canonical": "--test",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--example"
+              ],
+              "canonical": "--example",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--bench"
+              ],
+              "canonical": "--bench",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--target"
+              ],
+              "canonical": "--target",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--profile"
+              ],
+              "canonical": "--profile",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--target-dir"
+              ],
+              "canonical": "--target-dir",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--manifest-path"
+              ],
+              "canonical": "--manifest-path",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--message-format"
+              ],
+              "canonical": "--message-format",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-F",
+                "--features"
+              ],
+              "canonical": "--features",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-j",
+                "--jobs"
+              ],
+              "canonical": "--jobs",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--no-run"
+              ],
+              "canonical": "--no-run",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--no-fail-fast"
+              ],
+              "canonical": "--no-fail-fast",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--doc"
+              ],
+              "canonical": "--doc",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            }
+          ],
+          "positionals": [
+            {
+              "min": 0,
+              "max": 1,
+              "role": "operand"
+            }
+          ],
+          "subcommands": [],
+          "syntax": {
+            "clusters": true,
+            "intermixed": true,
+            "assignments": false
+          },
+          "partial": [],
+          "literals": {
+            "--": {
+              "action": "opaque",
+              "mode": "command"
+            }
+          }
+        }
+      },
+      {
+        "names": [
+          "fmt"
+        ],
+        "canonical": "fmt",
+        "grammar": {
+          "options": [
+            {
+              "names": [
+                "-q",
+                "--quiet"
+              ],
+              "canonical": "--quiet",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-v",
+                "--verbose"
+              ],
+              "canonical": "--verbose",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-h",
+                "--help"
+              ],
+              "canonical": "--help",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--version"
+              ],
+              "canonical": "--version",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--check"
+              ],
+              "canonical": "--check",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--all"
+              ],
+              "canonical": "--all",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--manifest-path"
+              ],
+              "canonical": "--manifest-path",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "--message-format"
+              ],
+              "canonical": "--message-format",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            },
+            {
+              "names": [
+                "-p",
+                "--package"
+              ],
+              "canonical": "--package",
+              "min": 1,
+              "max": 1,
+              "forms": [
+                "separate",
+                "equals",
+                "attached"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": false
+            }
+          ],
+          "positionals": [],
+          "subcommands": [],
+          "syntax": {
+            "clusters": true,
+            "intermixed": true,
+            "assignments": false
+          },
+          "partial": [],
+          "literals": {
+            "--": {
+              "action": "opaque",
+              "mode": "command"
+            }
+          }
+        }
+      }
+    ],
+    "syntax": {
+      "clusters": true,
+      "intermixed": true,
+      "assignments": false
+    },
+    "partial": []
+  }
+}

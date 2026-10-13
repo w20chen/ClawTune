@@ -1,0 +1,890 @@
+{
+  "model": "pair",
+  "limit": 2,
+  "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+  "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+  "gil_enabled": true,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21
+  ],
+  "host_cpu_count": 22,
+  "load_before": [
+    1.0205078125,
+    1.0,
+    0.763671875
+  ],
+  "memory_available_before": 15729860608,
+  "scope": "prepared clauses; actual KB algorithms and composition; excludes HTTP and raw shell parsing",
+  "corpus_sha256": "63c564551d86d38fd6165eff77f2763875fdf520ce160fd33033c825db57615a",
+  "inputs_sha256": "340ad41f3c1ab32fe5d1f8ad15d6070e52652de226575a2567e5648a4e1705a1",
+  "training_rows": 10856,
+  "test_calls": 128,
+  "optional_feature_histogram": {
+    "2": 3889,
+    "3": 1788,
+    "1": 119,
+    "5": 1070,
+    "4": 2541,
+    "7": 347,
+    "6": 825,
+    "8": 131,
+    "10": 27,
+    "9": 49,
+    "11": 14,
+    "18": 13,
+    "12": 10,
+    "13": 15,
+    "16": 5,
+    "14": 2,
+    "17": 4,
+    "15": 7
+  },
+  "phase": {
+    "stage": "done"
+  },
+  "elapsed_s": 95.09846767599993,
+  "peak_rss_mib": 1004.17578125,
+  "process_cpu_s": 98.226264425,
+  "pair_baseline": {
+    "n": 128,
+    "mean_ms": 113.73012389845094,
+    "p50_ms": 50.150635500017415,
+    "p95_ms": 446.90802300010546,
+    "p99_ms": 500.7339530000081,
+    "max_ms": 555.4252980000456,
+    "total_ms": 14557.45585900172
+  },
+  "pair_baseline_lock_wait": {
+    "n": 128,
+    "mean_ms": 0.0010369687668543293,
+    "p50_ms": 0.0008504998731950764,
+    "p95_ms": 0.0023960001271916553,
+    "p99_ms": 0.003057999947486678,
+    "max_ms": 0.00363699996341893,
+    "total_ms": 0.13273200215735415
+  },
+  "update_visible_s": 6.356223025999952,
+  "update_durable_s": 7.331322323999984,
+  "pair_during_update": {
+    "n": 55,
+    "mean_ms": 48.9300441090894,
+    "p50_ms": 31.78439399994204,
+    "p95_ms": 110.31369200009067,
+    "p99_ms": 117.01969099999587,
+    "max_ms": 117.01969099999587,
+    "total_ms": 2691.152425999917
+  },
+  "pair_during_update_lock_wait": {
+    "n": 55,
+    "mean_ms": 0.0016808545255612858,
+    "p50_ms": 0.0016819999473227654,
+    "p95_ms": 0.002359000063734129,
+    "p99_ms": 0.003355999979248736,
+    "max_ms": 0.003355999979248736,
+    "total_ms": 0.09244699890587071
+  },
+  "pair_snapshot_capture": [
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 316.321348
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001806
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000486
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000662
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 458.00669
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001449
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000372
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000461
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 303.998636
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001512
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000301
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000513
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 326.390523
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.003007
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00036
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000429
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 473.268592
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.002582
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000882
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000943
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 301.134882
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001885
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000429
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000445
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 525.728271
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001582
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000396
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000503
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 290.874716
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001648
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000483
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000456
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 286.800789
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001401
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000365
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000442
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 493.850152
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001425
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000358
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000458
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 291.178119
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00157
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000395
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000478
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 295.752773
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001729
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000399
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000527
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 483.825255
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001829
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000366
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000444
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 299.651135
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001644
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000419
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000515
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 486.572209
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001384
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000306
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000484
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 294.720852
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.003094
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.001034
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00133
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 294.546505
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001943
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000472
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.00038
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 467.894607
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001631
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000414
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000506
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 294.498957
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001478
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00033
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000521
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 324.60991
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001708
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000323
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000394
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 427.302945
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001652
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000345
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000405
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 331.441985
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001491
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00033
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000445
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 441.693429
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001436
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000387
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000414
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 292.369012
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.0017
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000449
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000468
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 465.934427
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001512
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000324
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000444
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 302.963292
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001782
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000362
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000448
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 287.634289
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00142
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000267
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000362
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 431.096696
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001529
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000457
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000463
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 287.518715
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001693
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000334
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000461
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 471.231759
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001831
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000309
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000433
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 297.729465
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001529
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000351
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000385
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 325.806846
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001642
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.00033
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000399
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 469.28583
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001686
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000365
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000423
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 295.030497
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.00169
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000352
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000443
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 330.515245
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001601
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000349
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000464
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 439.995487
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001495
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000329
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000471
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 325.751961
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001441
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000306
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 63.151574
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 0.003802
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001178
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000553
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000605
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "edge_kappa",
+      "ms": 301.365134
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "runtime",
+      "ms": 0.001575
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "clause",
+      "ms": 0.000311
+    },
+    {
+      "kind": "locked_snapshot_capture",
+      "model": "lattice",
+      "ms": 0.000462
+    }
+  ],
+  "published_added_observations": 32
+}

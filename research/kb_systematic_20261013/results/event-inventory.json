@@ -1,0 +1,1 @@
+{"excluded": {"unsupported_shell_clause": 3004, "ineligible_resource_observation": 728, "no_exact_clause_duration": 10}, "by_partition": {"test": 5243, "train": 8219}, "by_repository": {"PennyLaneAI/pennylane": 5243, "tobymao/sqlglot": 8219}, "protocol": "existing offline.edge_kappa_trace.read_v5_events; exact real clause durations and timestamps"}

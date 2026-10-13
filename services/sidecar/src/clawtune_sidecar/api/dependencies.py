@@ -108,6 +108,7 @@ def build_state(config: SidecarConfig | None = None) -> AppState:
         ebpf_trace_paths=cfg.tool_resource_ebpf_trace_paths,
         buckets=LatencyBuckets(cfg.tool_resource_latency_buckets_ms),
         load_buckets=cfg.tool_resource_load_buckets,
+        max_optional_features=cfg.kb_max_optional_features,
         frozen=cfg.tool_resource_frozen,
         repo=cfg.tool_resource_repo,
         artifact_dir=(

@@ -1,0 +1,253 @@
+[
+  {
+    "repo": "swe-rebench:tobymao/sqlglot",
+    "argv": [
+      "python",
+      "-m",
+      "unittest"
+    ],
+    "query": {
+      "tool": "python",
+      "features": [
+        "context:[\"repo\",\"swe-rebench:tobymao/sqlglot\"]",
+        "mode:[\"module\"]",
+        "target:[\"unittest\"]",
+        "tool=python"
+      ],
+      "core": [
+        "target:[\"unittest\"]",
+        "tool=python"
+      ],
+      "parse_digest": "c6840e4d2601a2a0c04e09d72d8f12cd14451432ae29ed723028f0f1a8af5eb4",
+      "status": "partial",
+      "omitted_features": 0,
+      "format": "command-features.v1"
+    },
+    "prediction": {
+      "target": "duration_ms",
+      "unit": "ms",
+      "algorithm": "shrinkage",
+      "p50": 86408.306641,
+      "p90": 129263.792871,
+      "selected_features": [
+        "context:[\"repo\",\"swe-rebench:tobymao/sqlglot\"]",
+        "mode:[\"module\"]",
+        "target:[\"unittest\"]",
+        "tool=python"
+      ],
+      "evidence_count": 64,
+      "selected_risk": 0.0,
+      "exact_match": true,
+      "unavailable_reason": null,
+      "threshold": null,
+      "probability_ge": null
+    },
+    "coverage_count": 146,
+    "coverage_median_s": 2.1031472845000003,
+    "own_count": 64,
+    "own_median_s": 86.408306641
+  },
+  {
+    "repo": "swe-rebench:tobymao/sqlglot",
+    "argv": [
+      "pytest",
+      "-q"
+    ],
+    "query": {
+      "tool": "pytest",
+      "features": [
+        "context:[\"repo\",\"swe-rebench:tobymao/sqlglot\"]",
+        "flag:[\"L0/pytest\",\"--quiet\"]",
+        "tool=pytest"
+      ],
+      "core": [
+        "tool=pytest"
+      ],
+      "parse_digest": "e2a56c1f10156821cf2d0aa2d54acf6d28e4d2717860e48db021b5edd88e0665",
+      "status": "complete",
+      "omitted_features": 0,
+      "format": "command-features.v1"
+    },
+    "prediction": {
+      "target": "duration_ms",
+      "unit": "ms",
+      "algorithm": "shrinkage",
+      "p50": 92873.632323,
+      "p90": 138821.451287,
+      "selected_features": [
+        "context:[\"repo\",\"swe-rebench:tobymao/sqlglot\"]",
+        "flag:[\"L0/pytest\",\"--quiet\"]",
+        "tool=pytest"
+      ],
+      "evidence_count": 26,
+      "selected_risk": 0.0,
+      "exact_match": true,
+      "unavailable_reason": null,
+      "threshold": null,
+      "probability_ge": null
+    },
+    "coverage_count": 85,
+    "coverage_median_s": 1.4815454609999998,
+    "own_count": 26,
+    "own_median_s": 92.87363232300001
+  },
+  {
+    "repo": "swe-rebench:tobymao/sqlglot",
+    "argv": [
+      "python",
+      "-m",
+      "pytest",
+      "-q"
+    ],
+    "query": {
+      "tool": "python",
+      "features": [
+        "context:[\"repo\",\"swe-rebench:tobymao/sqlglot\"]",
+        "flag:[\"L1/pytest\",\"--quiet\"]",
+        "mode:[\"module\"]",
+        "target:[\"pytest\"]",
+        "tool=python"
+      ],
+      "core": [
+        "target:[\"pytest\"]",
+        "tool=python"
+      ],
+      "parse_digest": "1f64b97dd108c749a292a4fa94e1a229d7c9d2e80b31e380b7f8eee3b2b2eaae",
+      "status": "complete",
+      "omitted_features": 0,
+      "format": "command-features.v1"
+    },
+    "prediction": {
+      "target": "duration_ms",
+      "unit": "ms",
+      "algorithm": "shrinkage",
+      "p50": 4841.651968,
+      "p90": 127870.462157,
+      "selected_features": [
+        "context:[\"repo\",\"swe-rebench:tobymao/sqlglot\"]",
+        "flag:[\"L1/pytest\",\"--quiet\"]",
+        "mode:[\"module\"]",
+        "target:[\"pytest\"]",
+        "tool=python"
+      ],
+      "evidence_count": 73,
+      "selected_risk": 0.0,
+      "exact_match": true,
+      "unavailable_reason": null,
+      "threshold": null,
+      "probability_ge": null
+    },
+    "coverage_count": 213,
+    "coverage_median_s": 1.465910858,
+    "own_count": 73,
+    "own_median_s": 4.841651968
+  },
+  {
+    "repo": "swe-rebench:PennyLaneAI/pennylane",
+    "argv": [
+      "python",
+      "-m",
+      "pytest",
+      "-q",
+      "-n",
+      "auto"
+    ],
+    "query": {
+      "tool": "python",
+      "features": [
+        "context:[\"repo\",\"swe-rebench:PennyLaneAI/pennylane\"]",
+        "flag:[\"L1/pytest\",\"--quiet\"]",
+        "mode:[\"module\"]",
+        "opt:[\"L1/pytest\",\"--numprocesses\",[\"auto\"]]",
+        "target:[\"pytest\"]",
+        "tool=python"
+      ],
+      "core": [
+        "target:[\"pytest\"]",
+        "tool=python"
+      ],
+      "parse_digest": "fefb4c47e9b7cdf0eebf523d3799117a74464a0042429f5443bc0d30aa912a2a",
+      "status": "complete",
+      "omitted_features": 0,
+      "format": "command-features.v1"
+    },
+    "prediction": {
+      "target": "duration_ms",
+      "unit": "ms",
+      "algorithm": "shrinkage",
+      "p50": 117780.891512,
+      "p90": 302244.05106,
+      "selected_features": [
+        "context:[\"repo\",\"swe-rebench:PennyLaneAI/pennylane\"]",
+        "flag:[\"L1/pytest\",\"--quiet\"]",
+        "mode:[\"module\"]",
+        "opt:[\"L1/pytest\",\"--numprocesses\",[\"auto\"]]",
+        "target:[\"pytest\"]",
+        "tool=python"
+      ],
+      "evidence_count": 3,
+      "selected_risk": 0.0,
+      "exact_match": true,
+      "unavailable_reason": null,
+      "threshold": null,
+      "probability_ge": null
+    },
+    "coverage_count": 41,
+    "coverage_median_s": 90.103025528,
+    "own_count": 3,
+    "own_median_s": 117.780891512
+  },
+  {
+    "repo": "swe-rebench:PennyLaneAI/pennylane",
+    "argv": [
+      "python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/gradients"
+    ],
+    "query": {
+      "tool": "python",
+      "features": [
+        "arg:[\"L1/pytest\",0,\"tests/gradients\"]",
+        "context:[\"repo\",\"swe-rebench:PennyLaneAI/pennylane\"]",
+        "flag:[\"L1/pytest\",\"--quiet\"]",
+        "mode:[\"module\"]",
+        "target:[\"pytest\"]",
+        "tool=python"
+      ],
+      "core": [
+        "target:[\"pytest\"]",
+        "tool=python"
+      ],
+      "parse_digest": "45ec605aa45afe9ab28e00abf015a78ef686258c97dd8d186da8b1b32db0cb5f",
+      "status": "complete",
+      "omitted_features": 0,
+      "format": "command-features.v1"
+    },
+    "prediction": {
+      "target": "duration_ms",
+      "unit": "ms",
+      "algorithm": "shrinkage",
+      "p50": 3391.4005875,
+      "p90": 168439.194667,
+      "selected_features": [
+        "context:[\"repo\",\"swe-rebench:PennyLaneAI/pennylane\"]",
+        "flag:[\"L1/pytest\",\"--quiet\"]",
+        "mode:[\"module\"]",
+        "target:[\"pytest\"]",
+        "tool=python"
+      ],
+      "evidence_count": 642,
+      "selected_risk": 3.206811651665402,
+      "exact_match": false,
+      "unavailable_reason": null,
+      "threshold": null,
+      "probability_ge": null
+    },
+    "coverage_count": 642,
+    "coverage_median_s": 3.3914005874999997,
+    "own_count": 15,
+    "own_median_s": 33.964183989
+  }
+]

@@ -1,0 +1,232 @@
+{
+  "format": "command-rule.v1",
+  "canonical": "apt-cache",
+  "names": [
+    "apt-cache"
+  ],
+  "scope": {
+    "kind": "runtime",
+    "repo": "swe-rebench:tobymao/sqlglot",
+    "runtime_id": "study-source",
+    "entry": "apt-cache"
+  },
+  "origin": {
+    "kind": "llm",
+    "source": "cube-sandbox-builder:ubuntu2004",
+    "revision": "631d8bd7cde105de1b921f89c70411cfd79518c3a3004f5eef53dcf12d1f66c8",
+    "evidence": [
+      "63e2790515e52c3568cc4979303f29666c7a7ca0164624fb79c5004e07caaceb"
+    ]
+  },
+  "grammar": {
+    "options": [],
+    "positionals": [],
+    "subcommands": [
+      {
+        "names": [
+          "showsrc"
+        ],
+        "canonical": "showsrc",
+        "grammar": {
+          "options": [],
+          "positionals": [
+            {
+              "min": 1,
+              "max": null,
+              "role": "operand"
+            }
+          ],
+          "subcommands": [],
+          "syntax": {
+            "clusters": false,
+            "intermixed": true,
+            "assignments": false
+          }
+        }
+      },
+      {
+        "names": [
+          "search"
+        ],
+        "canonical": "search",
+        "grammar": {
+          "options": [],
+          "positionals": [
+            {
+              "min": 1,
+              "max": null,
+              "role": "operand"
+            }
+          ],
+          "subcommands": [],
+          "syntax": {
+            "clusters": false,
+            "intermixed": true,
+            "assignments": false
+          }
+        }
+      },
+      {
+        "names": [
+          "depends"
+        ],
+        "canonical": "depends",
+        "grammar": {
+          "options": [],
+          "positionals": [
+            {
+              "min": 1,
+              "max": null,
+              "role": "operand"
+            }
+          ],
+          "subcommands": [],
+          "syntax": {
+            "clusters": false,
+            "intermixed": true,
+            "assignments": false
+          }
+        }
+      },
+      {
+        "names": [
+          "rdepends"
+        ],
+        "canonical": "rdepends",
+        "grammar": {
+          "options": [],
+          "positionals": [
+            {
+              "min": 1,
+              "max": null,
+              "role": "operand"
+            }
+          ],
+          "subcommands": [],
+          "syntax": {
+            "clusters": false,
+            "intermixed": true,
+            "assignments": false
+          }
+        }
+      },
+      {
+        "names": [
+          "show"
+        ],
+        "canonical": "show",
+        "grammar": {
+          "options": [],
+          "positionals": [
+            {
+              "min": 1,
+              "max": null,
+              "role": "operand"
+            }
+          ],
+          "subcommands": [],
+          "syntax": {
+            "clusters": false,
+            "intermixed": true,
+            "assignments": false
+          }
+        }
+      },
+      {
+        "names": [
+          "pkgnames"
+        ],
+        "canonical": "pkgnames",
+        "grammar": {
+          "options": [],
+          "positionals": [
+            {
+              "min": 0,
+              "max": null,
+              "role": "operand"
+            }
+          ],
+          "subcommands": [],
+          "syntax": {
+            "clusters": false,
+            "intermixed": true,
+            "assignments": false
+          }
+        }
+      },
+      {
+        "names": [
+          "policy"
+        ],
+        "canonical": "policy",
+        "grammar": {
+          "options": [],
+          "positionals": [
+            {
+              "min": 0,
+              "max": null,
+              "role": "operand"
+            }
+          ],
+          "subcommands": [],
+          "syntax": {
+            "clusters": false,
+            "intermixed": true,
+            "assignments": false
+          }
+        }
+      }
+    ],
+    "syntax": {
+      "clusters": false,
+      "intermixed": true,
+      "assignments": false
+    }
+  },
+  "fixtures": [
+    {
+      "argv": [
+        "apt-cache",
+        "policy",
+        "python3-pytest"
+      ],
+      "status": "complete",
+      "target": [
+        "policy"
+      ]
+    },
+    {
+      "argv": [
+        "apt-cache",
+        "show",
+        "pkg1",
+        "pkg2"
+      ],
+      "status": "complete",
+      "target": [
+        "show"
+      ]
+    },
+    {
+      "argv": [
+        "apt-cache",
+        "search",
+        "regex"
+      ],
+      "status": "complete",
+      "target": [
+        "search"
+      ]
+    },
+    {
+      "argv": [
+        "apt-cache",
+        "pkgnames"
+      ],
+      "status": "complete",
+      "target": [
+        "pkgnames"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,72 @@
+{
+  "observations": 10724,
+  "distinct_feature_sets": 5664,
+  "optional_count_histogram": {
+    "1": 119,
+    "2": 3820,
+    "3": 1759,
+    "4": 2514,
+    "5": 1066,
+    "6": 822,
+    "7": 347,
+    "8": 131,
+    "9": 49,
+    "10": 27,
+    "11": 14,
+    "12": 10,
+    "13": 15,
+    "14": 2,
+    "15": 7,
+    "16": 5,
+    "17": 4,
+    "18": 13
+  },
+  "budgets": [
+    {
+      "maximum": 6,
+      "total_occurrences": 1036170,
+      "largest_per_observation": 31181,
+      "within_both_limits": false
+    },
+    {
+      "maximum": 5,
+      "total_occurrences": 606922,
+      "largest_per_observation": 12617,
+      "within_both_limits": false
+    },
+    {
+      "maximum": 4,
+      "total_occurrences": 357695,
+      "largest_per_observation": 4049,
+      "within_both_limits": false
+    },
+    {
+      "maximum": 3,
+      "total_occurrences": 216624,
+      "largest_per_observation": 989,
+      "within_both_limits": false
+    },
+    {
+      "maximum": 2,
+      "total_occurrences": 123790,
+      "largest_per_observation": 173,
+      "within_both_limits": false,
+      "distinct_generated_nodes": 37744
+    },
+    {
+      "maximum": 1,
+      "total_occurrences": 59855,
+      "largest_per_observation": 20,
+      "within_both_limits": false,
+      "distinct_generated_nodes": 12450
+    },
+    {
+      "maximum": 0,
+      "total_occurrences": 21448,
+      "largest_per_observation": 2,
+      "within_both_limits": false,
+      "distinct_generated_nodes": 5752
+    }
+  ],
+  "effective_maximum": 0
+}

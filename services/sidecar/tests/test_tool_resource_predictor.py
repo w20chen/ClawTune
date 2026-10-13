@@ -1169,7 +1169,7 @@ def test_public_clause_snapshot_produces_public_global_single_clause_bucket(
     ]
 
 
-def test_public_clause_snapshot_predicts_exec_clause_in_real_compound_command(
+def test_public_clause_snapshot_rejects_missing_entry_in_real_compound_command(
     tmp_path: Path,
 ) -> None:
     artifact_dir = tmp_path / "tool-resource"
@@ -1199,17 +1199,15 @@ def test_public_clause_snapshot_predicts_exec_clause_in_real_compound_command(
 
     tool_resource = result.tool_resource
     assert tool_resource["clause_bins"] == ["python3"]
-    assert tool_resource["prediction"] is not None
-    assert tool_resource["unavailable_reason"] is None
+    assert tool_resource["prediction"] is None
+    assert tool_resource["unavailable_reason"] == "no_clause_latency_evidence"
     assert tool_resource.get("composed", False) is False
     assert len(tool_resource["clause_predictions"]) == 1
     clause = tool_resource["clause_predictions"][0]
     assert clause["clause_index"] == 0
     assert clause["bin"] == "python3"
-    assert clause["prediction"]["scope"] == "public"
-    assert clause["prediction"]["key_kind"] in {"bin", "global"}
-    assert clause["prediction"]["evidence_count"] > 0
-    assert clause["unavailable_reason"] is None
+    assert clause["prediction"] is None
+    assert clause["unavailable_reason"] == "no_clause_latency_evidence"
 
 
 def test_ebpf_loader_uses_native_sdk_artifact_validation(tmp_path: Path) -> None:
@@ -3177,7 +3175,7 @@ def test_incomplete_finalization_distinguishes_expected_withholding_from_failure
         predictor.close()
 
 
-def test_edge_kappa_node_limit_does_not_drop_tool_kb_completion(tmp_path, monkeypatch, caplog):
+def test_edge_kappa_update_error_does_not_drop_tool_kb_completion(tmp_path, monkeypatch, caplog):
     from edge_kappa_kb import EdgeKappaKB
     from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
     from tool_time.edge_kappa_adapter import shell_query
@@ -3185,10 +3183,13 @@ def test_edge_kappa_node_limit_does_not_drop_tool_kb_completion(tmp_path, monkey
     predictor = ToolResourcePredictor.from_traces(
         openclaw_trace_paths=(), ebpf_trace_paths=(), artifact_dir=tmp_path,
         buckets=LatencyBuckets((100, 500, 2000, 10000)))
-    kb = EdgeKappaKB(max_graph_nodes=1)
+    kb = EdgeKappaKB()
     kb.begin(shell_query("python a.py", repo="openclaw"), "old", 1,
              task_id="old", call_id="old", clause_id="0")
     predictor.edge_kappa = EdgeKappaRuntime(kb)
+    def fail_edge_update(*args, **kwargs):
+        raise ValueError("injected EdgeKappa update failure")
+    monkeypatch.setattr(kb, "_ensure_full_node", fail_edge_update)
     predictor._telemetry_by_execution_id["execution"] = SimpleNamespace(artifact_path="unused.json")
     monkeypatch.setattr(tool_resource_predictor, "_read_ebpf_artifact", lambda _: {"calls": []})
     monkeypatch.setattr(tool_resource_predictor, "_ebpf_observations", lambda *args, **kwargs: [
@@ -3206,7 +3207,7 @@ def test_edge_kappa_node_limit_does_not_drop_tool_kb_completion(tmp_path, monkey
         event = _tool_completion("after", "call").model_copy(update={"execution_id": "execution"})
         assert predictor.observe_completion(event, _runtime_sample("after", "call")) == 1
         assert len(observed) == 1
-        assert "graph node limit exceeded" in caplog.text
+        assert "injected EdgeKappa update failure" in caplog.text
         predictor.flush_kb_updates()
         assert predictor._runtime_kb_persisted_version == predictor._runtime_kb_version == 1
         saved = json.loads((tmp_path / "runtime-tool-resource-kb.json").read_text())

@@ -14,6 +14,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from edge_kappa_kb import EdgeKappaKB, TimeOutcome, TrainingEvent
+from kb_common import DEFAULT_MAX_OPTIONAL_FEATURES, require_same_feature_limit
 from clawtune_sidecar.contracts.load_prediction import TARGET_UNITS
 from clawtune_sidecar.identity import correlation_key
 from tool_resource.commands import normalized_observation
@@ -51,31 +52,39 @@ class EdgeKappaRuntime:
         self.kb = kb
         self.frozen = frozen
         self._completed_calls = set(completed_calls)
-        self._observation_ids = set(kb.to_snapshot()["completed_event_ids"])
+        self._observation_ids = set(kb._completed)
         self._calls: dict[str, dict[str, dict[str, Any]]] = {}
         self._feedback: dict[str, dict] = {}
-        for event_id, token in kb.to_snapshot()["tokens"].items():
+        for event_id, token in kb._tokens.items():
             if not token.get("weight_update_skipped") and token["call_id"] not in self._completed_calls:
-                self._calls.setdefault(token["call_id"], {})[event_id] = token
+                self._calls.setdefault(token["call_id"], {})[event_id] = copy.deepcopy(token)
+        # Prime detached structural rows during loading, before serving queries.
+        kb._capture_snapshot()
 
     @classmethod
     def fit(cls, observations: Iterable[ClauseObservation], edges: Sequence[float], *,
-            frozen: bool = False) -> EdgeKappaRuntime:
+            frozen: bool = False,
+            max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES) -> EdgeKappaRuntime:
         events = {}
         for row in observations:
             event = training_event(row)
             if event is not None:
                 events[event.outcome.event_id] = event
-        kb = EdgeKappaKB.fit(events.values(), {"bucket_edges_ms": tuple(edges)})
+        kb = EdgeKappaKB.fit(events.values(), {"bucket_edges_ms": tuple(edges),
+                                             "max_optional_features": max_optional_features})
         if frozen:
             kb.freeze()
         return cls(kb, frozen=frozen)
 
     @classmethod
-    def from_snapshot(cls, obj: dict, *, frozen: bool = False) -> EdgeKappaRuntime:
+    def from_snapshot(cls, obj: dict, *, frozen: bool = False,
+                      max_optional_features: int | None = None) -> EdgeKappaRuntime:
         if obj.get("normalization_version") != NORMALIZATION_VERSION:
             raise ValueError("Edge shell normalization changed; rebuild the KB from raw observations "
                              "and start a new state directory (old weights cannot be relabeled)")
+        if max_optional_features is not None:
+            require_same_feature_limit(obj["config"]["max_optional_features"],
+                                       max_optional_features, source="EdgeKappa snapshot")
         kb = EdgeKappaKB.from_snapshot(obj)
         if frozen:
             kb.freeze()
@@ -95,6 +104,19 @@ class EdgeKappaRuntime:
                           "observation_ids": sorted(self._observation_ids), "calls": copy.deepcopy(self._calls),
                           "feedback": copy.deepcopy(self._feedback)}
         return obj
+
+    def capture_snapshot(self):
+        """Capture this causal revision under the owner's lock; encode outside."""
+        capture = self.kb._capture_snapshot()
+        completed, observations = tuple(self._completed_calls), tuple(self._observation_ids)
+        calls = {key: dict(value) for key, value in self._calls.items()}
+        feedback = dict(self._feedback)
+        def materialize():
+            obj = capture()
+            obj['runtime'] = {'completed_calls': sorted(completed), 'observation_ids': sorted(observations),
+                              'calls': copy.deepcopy(calls), 'feedback': copy.deepcopy(feedback)}
+            return obj
+        return materialize
 
     def predict_load_samples(self, repo: str, clauses: Sequence[Mapping[str, Any]], ts_start: float,
                              *, call_id: str | None = None) -> list[dict]:
@@ -117,7 +139,10 @@ class EdgeKappaRuntime:
                 if existing and "evidence" in existing:
                     if frozenset(existing["query"]["features"]) != query.features:
                         raise ValueError("call clause identity reused with different features")
-                    output.append(copy.deepcopy(existing["evidence"]))
+                    evidence = copy.deepcopy(existing["evidence"])
+                    if reason := self.kb.cached_prediction_rejection(event_id):
+                        evidence["duration_ms"] = {"values": (), "unavailable_reason": reason}
+                    output.append(evidence)
                     continue
                 start = existing["start_time"] if existing else ts_start
                 self.kb.begin(query, event_id, start, task_id=call_id, call_id=call_id,

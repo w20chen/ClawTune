@@ -187,6 +187,7 @@ def test_multi_clause_cpu_average_and_environment_memory_use_declared_approximat
 def test_all_backends_full_targets_and_schema():
     rows = [row(i) for i in range(3)]
     trie, lattice = ClauseResourceKB.fit_public(rows), LatticeTimeKB.fit(rows)
+    trie.merge_historical(rows)
     runtime = RuntimeToolResourceKB()
     runtime.observe_completed_call(CompletedCall("repo", "exec", "python job.py", 0, 1,
         cpu_time_seconds=2, cpu_time_eligible=True, cpu_peak_cores=4, cpu_peak_cores_eligible=True,
@@ -322,8 +323,10 @@ def test_only_downstream_consumers_are_excluded_from_learning_and_prediction(hea
                                 cpu_peak_cores=90, sampled_peak_rss_mb=90_000,
                                 memory_total_peak_bytes=90_000_000_000,
                                 memory_extra_peak_bytes=90_000_000_000))
+    trie = ClauseResourceKB.fit_public(observations)
+    trie.merge_historical(observations)
     _, diagnostics = predict_call_load(runtime=RuntimeToolResourceKB(),
-        trie=ClauseResourceKB.fit_public(observations), lattice=LatticeTimeKB.fit(observations),
+        trie=trie, lattice=LatticeTimeKB.fit(observations),
         query=ToolCallQuery("repo", "exec", " ".join(argv), 10), edges=EDGES,
         parsed_clauses=clauses)
     for name in ("trie", "lattice"):
@@ -354,7 +357,9 @@ def test_pre_filter_aggregated_clause_snapshot_is_rejected():
 def test_resource_only_training_and_per_target_fault_isolation(monkeypatch):
     rows = [row(latency_ms=None, memory_total_peak_bytes=0, memory_extra_peak_bytes=0)]
     clause = [{"bin": "python", "argv": ["python", "job.py"]}]
-    for kb in (ClauseResourceKB.fit_public(rows), LatticeTimeKB.fit(rows)):
+    trie = ClauseResourceKB.fit_public(rows)
+    trie.merge_historical(rows)
+    for kb in (trie, LatticeTimeKB.fit(rows)):
         result = kb.predict_load_samples("repo", clause, 3)[0]
         assert "duration_ms" not in result and "cpu_avg_cores" not in result
         assert result["cpu_time_seconds"]["values"] == (2,)

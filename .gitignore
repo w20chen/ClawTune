@@ -42,3 +42,21 @@ deep_research_bench/.runtime/
 /docs/resource-lattice-evaluation.json
 /cold_start/manifests/flat-644-seed42-v1.json
 /services/sidecar/sidecar-test-out.txt
+
+# Research source, reports and aggregate metrics are versioned. Keep bulky
+# replay data, model snapshots, source bundles and transient logs locally.
+/research/**/*.zip
+/research/**/*.so
+/research/**/*.jsonl
+/research/**/*.json.gz
+/research/**/*.jsonl.gz
+/research/**/*.log
+/research/**/logs/
+/research/**/pytest-*/
+/research/**/synthetic-before.json
+/research/**/synthetic-after.json
+/research/kb_systematic_20261013/results/adapter-before-guard-fix/
+/research/kb_systematic_20261013/results/llm/request-*.json
+/research/kb_systematic_20261013/results/llm/response-*.json
+/research/kb_systematic_20261013/results/llm/**/request-*.json
+/research/kb_systematic_20261013/results/llm/**/response-*.json

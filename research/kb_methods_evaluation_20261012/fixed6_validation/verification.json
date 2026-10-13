@@ -1,0 +1,20 @@
+{
+  "source_sha256": {
+    "services/sidecar/src/tool_time/lattice_kb.py": "375e463b5d135f2344d6d70c9c39961466a96c9de21ba4e5a3b677f5c0905f5b",
+    "services/sidecar/src/tool_time/_lattice_vendor/shrinkage.py": "ddeddd6231a87d33c0a7bf392dadb7c1adaf6a0bf91f83f3a18abb86d4e2a5ca",
+    "offline/lattice_oracle.py": "eab53d21e396e7e4de314980d3bedd122b28c08180ba43e74258d2d545f74c51",
+    "offline/runner.py": "ca90dc1273171e8024221f39f948f47f393e4620cd35cc18e593b05791273a1e",
+    "contracts/offline-report.schema.json": "9fec09c58f154b5afb1aac71b4109a438b5facd5a3175ab69a8ecedce62d0eba",
+    "swe_rebench/host_openclaw.py": "706a65b71b19051cd18997b873f1be349b88ae107264bbc93b33fba101927a39"
+  },
+  "validation": [
+    "76 targeted tests passed",
+    "205 integration and regression tests passed",
+    "8 handoff tests passed after adding legacy budget case",
+    "qualified-label oracle integration test passed after strengthening assertion",
+    "git diff --check passed",
+    "full historical training snapshot rebuilt and ranks 8 and 30 queried through all four Lattice variants"
+  ],
+  "distinct_passing_tests": 282,
+  "full_evaluation_rerun": false
+}

@@ -1,0 +1,150 @@
+{
+  "model": "lattice",
+  "limit": 1,
+  "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+  "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+  "gil_enabled": true,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21
+  ],
+  "host_cpu_count": 22,
+  "load_before": [
+    1.0556640625,
+    1.0,
+    0.74755859375
+  ],
+  "memory_available_before": 15700955136,
+  "scope": "prepared clauses; actual KB algorithms and composition; excludes HTTP and raw shell parsing",
+  "corpus_sha256": "63c564551d86d38fd6165eff77f2763875fdf520ce160fd33033c825db57615a",
+  "inputs_sha256": "340ad41f3c1ab32fe5d1f8ad15d6070e52652de226575a2567e5648a4e1705a1",
+  "training_rows": 10856,
+  "test_calls": 128,
+  "optional_feature_histogram": {
+    "2": 3889,
+    "3": 1788,
+    "1": 119,
+    "5": 1070,
+    "4": 2541,
+    "7": 347,
+    "6": 825,
+    "8": 131,
+    "10": 27,
+    "9": 49,
+    "11": 14,
+    "18": 13,
+    "12": 10,
+    "13": 15,
+    "16": 5,
+    "14": 2,
+    "17": 4,
+    "15": 7
+  },
+  "phase": {
+    "stage": "done"
+  },
+  "elapsed_s": 13.435798147000014,
+  "peak_rss_mib": 355.05859375,
+  "process_cpu_s": 15.567446692,
+  "ingest_ms": 123.054229,
+  "prepare_ms": 3583.928989,
+  "duration_nodes": 12450,
+  "view_node_counts": {
+    "cpu_time_seconds": 0,
+    "cpu_avg_cores": 0,
+    "cpu_peak_cores": 1928,
+    "sampled_peak_rss_bytes": 6436,
+    "load:duration_ms": 12450,
+    "load:cpu_time_seconds": 0,
+    "load:cpu_avg_cores": 0,
+    "load:cpu_peak_cores": 1922,
+    "load:sampled_peak_rss_bytes": 6420
+  },
+  "ready_s": 3.70753878000005,
+  "ready_rss_mib": 253.453125,
+  "read_only_query": {
+    "n": 384,
+    "mean_ms": 0.9627916692708334,
+    "p50_ms": 0.7399585,
+    "p95_ms": 2.378749,
+    "p99_ms": 3.448274,
+    "max_ms": 7.227135,
+    "total_ms": 369.712001
+  },
+  "composition": {
+    "n": 384,
+    "mean_ms": 3.802270578125,
+    "p50_ms": 0.8922755,
+    "p95_ms": 9.839283,
+    "p99_ms": 12.875187,
+    "max_ms": 19.339173,
+    "total_ms": 1460.071902
+  },
+  "read_only_combined": {
+    "n": 384,
+    "mean_ms": 4.765062247395833,
+    "p50_ms": 1.548781,
+    "p95_ms": 11.596677,
+    "p99_ms": 14.720657,
+    "max_ms": 21.147591,
+    "total_ms": 1829.783903
+  },
+  "duration_status": {
+    "available": 348,
+    "unavailable": 36
+  },
+  "updates": {
+    "1": {
+      "fork_ms": 3.860252,
+      "enqueue": {
+        "n": 1,
+        "mean_ms": 134.810739,
+        "p50_ms": 134.810739,
+        "p95_ms": 134.810739,
+        "p99_ms": 134.810739,
+        "max_ms": 134.810739,
+        "total_ms": 134.810739
+      },
+      "prepare_ms": 3472.970071,
+      "activate_ms": 0.03474
+    },
+    "32": {
+      "fork_ms": 3.537782,
+      "enqueue": {
+        "n": 32,
+        "mean_ms": 0.96818359375,
+        "p50_ms": 0.3699035,
+        "p95_ms": 5.728783,
+        "p99_ms": 5.992322,
+        "max_ms": 5.992322,
+        "total_ms": 30.981875
+      },
+      "prepare_ms": 3395.562849,
+      "activate_ms": 0.036037
+    }
+  },
+  "snapshot_capture_ms": 62.215157,
+  "snapshot_json_ms": 46.189634,
+  "snapshot_bytes": 10719967,
+  "snapshot_write_fsync_ms": 14.271296
+}

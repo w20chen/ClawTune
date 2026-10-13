@@ -1,0 +1,1 @@
+{"scope": "same generated rule body explicitly instantiated into each experimental repository/runtime; no automatic cross-repository deployment claim", "training_events": 6568, "training_observations": 8132, "features_changed_training": 387, "no_labels_in_prompts": true, "features_materialized_training": 8132}

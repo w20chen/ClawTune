@@ -12,7 +12,7 @@ Status: implemented on `main`. Usage is in [command-parsing.md](command-parsing.
 - Confirmed: unknown commands trigger asynchronous generation; the first prediction does not wait.
 - Confirmed: rule generation inherits the configured upstream provider/model, with independent overrides available.
 - Confirmed: automatic help execution is allowed in a restricted environment. Lack of an isolation provider makes this evidence source unavailable; it does not authorize unrestricted execution.
-- Confirmed: only executable and execution entry identities belong to `core`; ordinary files, search expressions, and other operands are optional features. Execution mode is also optional. No new hard barrier is added to subset matching.
+- Only executable and execution entry identities belong to `core`; ordinary files, search expressions, and other operands are optional features. Execution mode is also optional. Lattice candidates and Edge borrowing parents preserve the query's entire core. Trie and single-command Tool prefix fallback preserve known execution entries. Compound Tool calls retain whole-command prefix matching, with complete-call labels.
 - No unresolved product decision is currently blocking the first implementation milestone. Change this document and consult the user if implementation evidence requires changing these decisions.
 
 ## 2. One data path
@@ -217,7 +217,7 @@ Examples (context omitted):
 | `git -C repo status` | `tool=git`, `target:["status"]` | git cwd option with its value |
 | `grep -n pattern file` | `tool=grep` | line-number flag, ordered pattern/file operands |
 
-Adding mode makes narrower contexts possible; it does not prohibit fallback to an existing broader node. The established KB policy decides that fallback.
+Adding mode makes narrower contexts possible; it does not prohibit fallback to an existing broader node. Lattice permits fallback only to nodes retaining the query's entire core. A complete-feature match with own observations uses those samples before descendant coverage; other queries retain coverage statistics. These rules apply consistently to clause, resource, and composed-call predictions.
 
 ## 10. KB integration and feature lifetime
 

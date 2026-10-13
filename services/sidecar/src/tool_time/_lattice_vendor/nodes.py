@@ -6,7 +6,10 @@ from every command whose feature set contains the node's features.
 
 from __future__ import annotations
 
+from kb_common import DEFAULT_MAX_OPTIONAL_FEATURES
+
 import math
+from functools import lru_cache
 from collections import defaultdict
 from datetime import datetime
 from statistics import mean, median, stdev
@@ -33,12 +36,15 @@ def _loo_mse_log(values: Sequence[float], estimator: str = "median") -> float:
         # Precompute indices for median of n-1 elements after removing each position
         for i, v in enumerate(sorted_vals):
             # Median of remaining n-1 values
-            rest = sorted_vals[:i] + sorted_vals[i + 1:]
             mid = (n - 2) // 2
+            # Removing i shifts only indices at/after i; keep the same
+            # operands and arithmetic without allocating n-1 slices n times.
+            left = sorted_vals[mid + (i <= mid)]
             if (n - 1) % 2 == 1:
-                pred = rest[mid]
+                pred = left
             else:
-                pred = (rest[mid] + rest[mid + 1]) / 2.0
+                right = sorted_vals[mid + 1 + (i <= mid + 1)]
+                pred = (left + right) / 2.0
             errors.append((v - pred) ** 2)
     elif estimator == "mean":
         total = sum(values)
@@ -58,6 +64,7 @@ def _loo_mse_log(values: Sequence[float], estimator: str = "median") -> float:
 
 def _compute_loso_risk(
     signature_raw: Dict[FeatureSet, List[float]],
+    *, log_median=None,
 ) -> float:
     """Compute Leave-One-Signature-Out (LOSO) prediction risk for a node.
 
@@ -85,8 +92,8 @@ def _compute_loso_risk(
     # Step 1: compute z_q for each signature
     z_values: List[float] = []
     for raw_durations in signature_raw.values():
-        med = median(raw_durations)
-        z_q = math.log1p(med)
+        z_q = (math.log1p(median(raw_durations)) if log_median is None
+               else log_median(tuple(raw_durations)))
         z_values.append(z_q)
 
     # Step 2: LOSO prediction and squared error
@@ -103,12 +110,15 @@ def build_nodes(
     observations: Sequence[Observation],
     *,
     mode: str = "bounded",
-    max_optional_features: int = 6,
+    max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES,
     always_keep_exact: bool = True,
     min_partial_support: int = 1,
     estimator: str = "median",
     split_compounds: bool = True,
     subset_coverage: bool = False,
+    context_cache: dict | None = None,
+    statistics_cache=None,
+    order_metadata=None,
 ) -> Tuple[Dict[FeatureSet, NodeStats], float, float]:
     """Build context nodes from historical observations.
 
@@ -125,6 +135,8 @@ def build_nodes(
             observation's duration.
         subset_coverage: Reaggregate the generated node set using every
             observation whose features contain the node's features.
+        context_cache: Optional build-local reuse of immutable feature sets
+            across resource views. Never stores observations or statistics.
 
     Returns:
         Tuple of ``(nodes_dict, global_log_var, global_log_std)``.
@@ -144,8 +156,11 @@ def build_nodes(
     all_log_durations: List[float] = []
     exact_feature_sets: set[FeatureSet] = set()
     normalized: list[tuple[FeatureSet, float, str]] = []
+    contexts = {} if context_cache is None else context_cache
+    generated_counts: dict[FeatureSet, int] = defaultdict(int)
 
-    for obs in observations:
+    first_cover = {}
+    for observation_index, obs in enumerate(observations):
         if obs.duration_s <= 0:
             raise ValueError(f"Duration must be positive, got {obs.duration_s}: cmd={obs.cmd}")
 
@@ -173,12 +188,20 @@ def build_nodes(
             log_duration = math.log1p(obs.duration_s)
             all_log_durations.append(log_duration)
 
-            for node_fs in generate_context_nodes(
-                features, core,
-                mode=mode,
-                max_optional_features=max_optional_features,
-                always_keep_exact=always_keep_exact,
-            ):
+            key = (features, core, mode, max_optional_features, always_keep_exact)
+            if key not in contexts:
+                contexts[key] = generate_context_nodes(
+                    features, core, mode=mode, max_optional_features=max_optional_features,
+                    always_keep_exact=always_keep_exact,
+                )
+            for node_fs in contexts[key]:
+                generated_counts[node_fs] += 1
+                if subset_coverage:
+                    # This pass defines existence/support only. Samples are
+                    # accumulated once, by complete subset coverage below.
+                    continue
+                if order_metadata is not None and node_fs not in node_durations:
+                    first_cover[node_fs] = observation_index
                 node_durations[node_fs].append(obs.duration_s)
                 node_signature_logs[node_fs][features].append(log_duration)
                 node_signature_raw[node_fs][features].append(obs.duration_s)
@@ -188,19 +211,23 @@ def build_nodes(
                         obs.timestamp,
                     )
 
-    generated_counts = {fs: len(values) for fs, values in node_durations.items()}
     if subset_coverage:
         # Bounded generation defines which nodes exist.  It does not define
         # their coverage: an existing node can be a subset of an observation
         # even when that observation did not generate the node.
-        coverage = CoverageIndex(node_durations)
+        coverage = CoverageIndex(generated_counts)
+        @lru_cache(maxsize=4096)
+        def covered_nodes(features, _index=coverage):
+            return tuple(_index.subsets(features))
         node_durations = defaultdict(list)
         node_signature_logs = defaultdict(lambda: defaultdict(list))
         node_signature_raw = defaultdict(lambda: defaultdict(list))
         node_last_updated = {}
-        for features, duration, timestamp in normalized:
+        for observation_index, (features, duration, timestamp) in enumerate(normalized):
             log_duration = math.log1p(duration)
-            for node_fs in coverage.subsets(features):
+            for node_fs in covered_nodes(features):
+                if order_metadata is not None and node_fs not in node_durations:
+                    first_cover[node_fs] = observation_index
                 node_durations[node_fs].append(duration)
                 node_signature_logs[node_fs][features].append(log_duration)
                 node_signature_raw[node_fs][features].append(duration)
@@ -208,6 +235,9 @@ def build_nodes(
                     node_last_updated[node_fs] = _latest_timestamp(
                         node_last_updated.get(node_fs, ""), timestamp,
                     )
+        covered_nodes.cache_clear()
+        del covered_nodes, coverage
+    del contexts, normalized
 
     # Global statistics
     global_log_mean = mean(all_log_durations) if all_log_durations else 0.0
@@ -215,19 +245,22 @@ def build_nodes(
     global_log_var = global_log_std ** 2
 
     # Build NodeStats for each node
-    nodes: Dict[FeatureSet, NodeStats] = {}
-    for fs, durations in node_durations.items():
-        # Filter partial nodes by support, but never filter exact nodes
-        if fs not in exact_feature_sets and generated_counts[fs] < min_partial_support:
-            continue
+    @lru_cache(maxsize=4096)
+    def signature_log_mean(values):
+        return mean(values)
 
+    @lru_cache(maxsize=4096)
+    def signature_log_median(values):
+        return math.log1p(median(values))
+
+    def compute_statistics(durations, log_groups, signature_raw):
         logs = [math.log1p(v) for v in durations]
         std_log = stdev(logs) if len(logs) >= 2 else global_log_std
         stderr_log = std_log / math.sqrt(len(logs)) if len(logs) >= 2 else global_log_std
         geo_mean = math.exp(sum(math.log(v) for v in durations) / len(durations)) if durations else 0.0
         signature_log_means = [
-            mean(signature_logs)
-            for signature_logs in node_signature_logs.get(fs, {}).values()
+            signature_log_mean(signature_logs)
+            for signature_logs in log_groups
         ]
         signature_count = len(signature_log_means)
         signature_log_mean_var = (
@@ -236,9 +269,7 @@ def build_nodes(
             else 0.0
         )
 
-        nodes[fs] = NodeStats(
-            features=fs,
-            durations=list(durations),
+        return dict(
             mean_s=mean(durations),
             median_s=median(durations),
             geometric_mean_s=geo_mean,
@@ -247,12 +278,39 @@ def build_nodes(
             stderr_log=stderr_log,
             std_log=std_log,
             mean_log=mean(logs),
-            last_updated=node_last_updated.get(fs, ""),
             signature_count=signature_count,
             signature_log_mean_var=signature_log_mean_var,
-            loso_risk=_compute_loso_risk(node_signature_raw.get(fs, {})),
+            loso_risk=_compute_loso_risk(dict(enumerate(signature_raw)), log_median=signature_log_median),
         )
 
+    @lru_cache(maxsize=4096)
+    def statistics_for(durations, log_groups, signature_raw):
+        if statistics_cache is None:
+            return compute_statistics(durations, log_groups, signature_raw)
+        key = ("time", estimator, global_log_std.hex() if len(durations) < 2 else None,
+               tuple(v.hex() for v in durations),
+               tuple(tuple(v.hex() for v in group) for group in log_groups),
+               tuple(tuple(v.hex() for v in group) for group in signature_raw))
+        return statistics_cache.get_or_compute(
+            key, lambda: compute_statistics(durations, log_groups, signature_raw))
+
+    nodes: Dict[FeatureSet, NodeStats] = {}
+    for fs, durations in node_durations.items():
+        # Filter partial nodes by support, but never filter exact nodes.
+        if fs not in exact_feature_sets and generated_counts[fs] < min_partial_support:
+            continue
+        nodes[fs] = NodeStats(
+            features=fs, durations=list(durations),
+            own_durations=list(node_signature_raw.get(fs, {}).get(fs, [])),
+            last_updated=node_last_updated.get(fs, ""),
+            **statistics_for(tuple(durations),
+                tuple(tuple(group) for group in node_signature_logs.get(fs, {}).values()),
+                tuple(tuple(group) for group in node_signature_raw.get(fs, {}).values())),
+        )
+
+    if order_metadata is not None:
+        order_metadata.update(generation_order={fs: i for i, fs in enumerate(generated_counts)},
+                              first_cover=first_cover)
     return nodes, global_log_var, global_log_std
 
 

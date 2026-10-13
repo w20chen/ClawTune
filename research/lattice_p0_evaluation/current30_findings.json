@@ -1,0 +1,87 @@
+{
+  "ranking": "descending absolute error of after-fix call duration p50",
+  "calls": 30,
+  "tasks": 17,
+  "underestimates": 28,
+  "overestimates": 2,
+  "pytest_calls": 25,
+  "pytest_generalized": 17,
+  "pytest_exact_own": 8,
+  "partial_parse_call_ranks": [
+    2,
+    4,
+    6,
+    20,
+    23,
+    24,
+    30
+  ],
+  "groups": [
+    {
+      "label": "测试范围等信息在泛化时丢失",
+      "ranks": [
+        1,
+        2,
+        3,
+        6,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        16,
+        17,
+        18,
+        19,
+        22,
+        30
+      ],
+      "interpretation": "这 17 条 pytest 调用均使用泛化后的覆盖样本；部分丢掉全部测试范围、并行参数，甚至仓库。第 2、6 条还受到未知选项影响。"
+    },
+    {
+      "label": "精确 signature 内混合环境和执行工作量",
+      "ranks": [
+        15,
+        21,
+        24,
+        25,
+        26,
+        27,
+        29
+      ],
+      "interpretation": "5 条 pytest 和 2 条 make test 已使用自身样本。训练输出显示缺依赖退出和真正执行测试共存；解释器路径、依赖状态及仓库版本没有充分区分。"
+    },
+    {
+      "label": "精确匹配但自身历史稀少、代表性不足",
+      "ranks": [
+        5,
+        7,
+        28
+      ],
+      "interpretation": "均匹配到 pytest -q tests 的 2 条历史：33.50 秒和 51.89 秒。前者收集失败，后者运行约 6353 个通过测试；当前第 5 条运行约 16288 个通过测试。"
+    },
+    {
+      "label": "make 目标语义未被保留",
+      "ranks": [
+        4
+      ],
+      "interpretation": "make install-dev-rs 泛化到 tool=make，90 条历史中 85 条是 make test。编译阶段实际 575.34 秒，所选节点中位数仅 7.14 秒；命令链合成还计入未执行的 test-rs。"
+    },
+    {
+      "label": "条件命令链按全部阶段执行估算",
+      "ranks": [
+        20,
+        23
+      ],
+      "interpretation": "两条均高估。第 23 条 venv 因缺 ensurepip 在 0.097 秒退出；第 20 条 install-dev-rs 找不到 maturin，后续 test-rs 未执行。预测仍计入后续阶段。"
+    }
+  ],
+  "limitations": [
+    "This is attribution of the existing held-out set, not an ablation or fresh validation.",
+    "Primary groups partition the calls for readability; causes can overlap.",
+    "Interpreter path and environment correlations do not prove Python version alone caused duration differences.",
+    "Do not use observed future exit codes or test counts as pre-execution inputs."
+  ]
+}

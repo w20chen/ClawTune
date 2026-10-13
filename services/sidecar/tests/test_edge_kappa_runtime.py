@@ -154,14 +154,15 @@ def test_online_overlap_restart_retry_and_historical_deduplication():
 
 
 def test_online_learns_weights_but_missing_tokens_only_add_counts():
-    runtime = EdgeKappaRuntime.fit([row(0, 50, ("python",)), row(1, 600)], EDGES["duration_ms"])
-    command = clauses(("python", "job.py"))
+    argv = ("python", "job.py", "--verbose")
+    runtime = EdgeKappaRuntime.fit([row(0, 50), row(1, 600, argv)], EDGES["duration_ms"])
+    command = clauses(argv)
     runtime.predict_load_samples("repo", command, 20, call_id="observed")
     old = sum(edge.update_count for edge in runtime.kb.edges.values())
-    runtime.complete_call("observed", [row(3, 50)], commit_time=40)
+    runtime.complete_call("observed", [row(3, 50, argv)], commit_time=40)
     assert sum(edge.update_count for edge in runtime.kb.edges.values()) > old
     old = sum(edge.update_count for edge in runtime.kb.edges.values())
-    runtime.complete_call("no-token", [row(5, 600)], commit_time=60)
+    runtime.complete_call("no-token", [row(5, 600, argv)], commit_time=60)
     assert sum(edge.update_count for edge in runtime.kb.edges.values()) == old
 
 
@@ -299,7 +300,11 @@ def test_parallel_feedback_unions_different_historical_parents(reverse, shared, 
 
     merged = EdgeKappaRuntime.from_snapshot(baseline.to_snapshot())
     for task in tasks:
+        captured = merged.capture_snapshot()
+        previous = merged.to_snapshot()
         merged.merge_feedback(task)
+        assert captured() == previous
+        assert merged.capture_snapshot()() == merged.to_snapshot()
         merged = EdgeKappaRuntime.from_snapshot(json.loads(json.dumps(merged.to_snapshot())))
     assert set(merged.kb.edges) == set(expected)
     for key, edge in merged.kb.edges.items():
@@ -323,10 +328,11 @@ def test_parallel_feedback_unions_different_historical_parents(reverse, shared, 
 
 
 def test_legacy_learned_task_without_feedback_is_rejected():
-    baseline = EdgeKappaRuntime.fit([row(0, 50, ("python",)), row(1, 600)], EDGES["duration_ms"])
+    argv = ("python", "job.py", "--verbose")
+    baseline = EdgeKappaRuntime.fit([row(0, 50), row(1, 600, argv)], EDGES["duration_ms"])
     task = EdgeKappaRuntime.from_snapshot(baseline.to_snapshot())
-    task.predict_load_samples("repo", clauses(("python", "job.py")), 20, call_id="legacy")
-    task.complete_call("legacy", [row(3, 50)], commit_time=40)
+    task.predict_load_samples("repo", clauses(argv), 20, call_id="legacy")
+    task.complete_call("legacy", [row(3, 50, argv)], commit_time=40)
     saved = task.to_snapshot()
     del saved["runtime"]["feedback"]
     with pytest.raises(ValueError, match="without replayable feedback"):

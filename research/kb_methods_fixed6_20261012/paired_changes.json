@@ -1,0 +1,29 @@
+{
+  "lattice": {
+    "count": 1212,
+    "old_mae_ms": 12101.081236083133,
+    "new_mae_ms": 11309.905517863905,
+    "improved": 336,
+    "worsened": 230,
+    "lost": 1,
+    "gained": 0
+  },
+  "lattice_loso": {
+    "count": 1213,
+    "old_mae_ms": 12842.602171136003,
+    "new_mae_ms": 11995.820074052433,
+    "improved": 332,
+    "worsened": 208,
+    "lost": 0,
+    "gained": 0
+  },
+  "lattice_max_cardinality": {
+    "count": 1213,
+    "old_mae_ms": 12594.186079143186,
+    "new_mae_ms": 12329.112688143297,
+    "improved": 329,
+    "worsened": 236,
+    "lost": 0,
+    "gained": 0
+  }
+}

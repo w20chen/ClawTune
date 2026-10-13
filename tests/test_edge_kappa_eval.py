@@ -32,8 +32,9 @@ def test_edge_kappa_metrics_recompute_from_prediction_rows() -> None:
     assert result["macro_recall"] == .5
 
 
+@pytest.mark.parametrize("max_optional_features", [1, 6])
 def test_frozen_and_record_order_online_evaluation_share_training_snapshot(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, max_optional_features: int) -> None:
     dataset = tmp_path / "input"
     dataset.mkdir()
     tasks = {key: {"benchmark": "swe-rebench", "group": "repo", "task_id": key}
@@ -50,11 +51,13 @@ def test_frozen_and_record_order_online_evaluation_share_training_snapshot(
     monkeypatch.setattr(edge_kappa_eval, "inventory", lambda *_args: tasks)
     monkeypatch.setattr(edge_kappa_eval, "load_or_create_split", lambda *_args: split)
     monkeypatch.setattr(edge_kappa_eval, "load_task", load)
-    frozen = edge_kappa_eval.run(dataset, tmp_path / "frozen", benchmark="swe-rebench")
+    frozen = edge_kappa_eval.run(dataset, tmp_path / "frozen", benchmark="swe-rebench",
+                                max_optional_features=max_optional_features)
     online = edge_kappa_eval.run(dataset, tmp_path / "online", benchmark="swe-rebench",
-                                 online=True)
+                                 online=True, max_optional_features=max_optional_features)
     assert frozen["mode"] == "frozen" and frozen["test_updates"] == 0
     assert online["mode"] == "record_order_online" and online["test_updates"] == 2
+    assert frozen["effective_max_optional_features"] == max_optional_features
     assert json.loads((tmp_path / "frozen" / "edge-kappa-kb.json").read_text()) == \
            json.loads((tmp_path / "online" / "edge-kappa-kb.json").read_text())
     assert len((tmp_path / "online" / "predictions.jsonl").read_text().splitlines()) == 2
