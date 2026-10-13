@@ -106,6 +106,10 @@ class RealtimeToolMonitor:
         self._memory_poller = threading.Thread(target=self._poll_memory, daemon=True)
         self._memory_poller.start()
 
+    def prepare(self) -> None:
+        if self.ebpf_monitor is not None:
+            self.ebpf_monitor.prepare()
+
     def begin(self, request: ToolBeforeRequest, resource_class: str) -> None:
         key = correlation_key(request)
         self.environment_memory.begin(key, request.resource_scope)

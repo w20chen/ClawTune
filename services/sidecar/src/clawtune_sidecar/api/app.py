@@ -836,6 +836,12 @@ def create_app(state: AppState | None = None) -> FastAPI:
         import json
         kb_owner = json.loads((kb_store.path / "state.json").read_text(encoding="utf-8"))["owner"]
 
+    @app.on_event("startup")
+    async def prepare_collectors() -> None:
+        # Uvicorn does not accept requests until startup finishes. Compilation
+        # must not be charged to the first native tool or block its decision.
+        await asyncio.to_thread(app_state.tool_monitor.prepare)
+
     @app.on_event("shutdown")
     async def shutdown_state() -> None:
         if app_state._decision_tasks:

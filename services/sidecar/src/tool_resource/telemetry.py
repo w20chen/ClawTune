@@ -3772,14 +3772,11 @@ _shared_bpf_source: _SharedBpfSource | None = None
 _shared_bpf_source_lock = threading.Lock()
 
 
-def _acquire_shared_bpf_source(
+def _get_shared_bpf_source(
     BPF: Any,
     PerfType: Any,
     PerfSWConfig: Any,
-    *,
-    cgroup_ids: set[int],
-    pid_namespace_ids: set[int],
-) -> tuple[_SharedBpfSource, int, _SharedEventBuffer]:
+) -> _SharedBpfSource:
     global _shared_bpf_source
     with _shared_bpf_source_lock:
         if _shared_bpf_source is None or _shared_bpf_source.closed:
@@ -3793,7 +3790,24 @@ def _acquire_shared_bpf_source(
                 raise RuntimeError(
                     _bpf_setup_error_message("BPF collector attach failed", exc)
                 ) from exc
-        source = _shared_bpf_source
+        return _shared_bpf_source
+
+
+def prepare_shared_bpf_source() -> None:
+    """Load the collector without authorizing any process or opening a window."""
+    bcc = _ensure_bcc_importable()
+    _get_shared_bpf_source(bcc.BPF, bcc.PerfType, bcc.PerfSWConfig)
+
+
+def _acquire_shared_bpf_source(
+    BPF: Any,
+    PerfType: Any,
+    PerfSWConfig: Any,
+    *,
+    cgroup_ids: set[int],
+    pid_namespace_ids: set[int],
+) -> tuple[_SharedBpfSource, int, _SharedEventBuffer]:
+    source = _get_shared_bpf_source(BPF, PerfType, PerfSWConfig)
     lease_id, event_cursor = source.acquire(cgroup_ids, pid_namespace_ids)
     return source, lease_id, event_cursor
 

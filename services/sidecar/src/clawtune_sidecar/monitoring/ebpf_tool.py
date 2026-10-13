@@ -7,6 +7,7 @@ window opened. Sampling gaps alone never trigger a different backend.
 """
 from __future__ import annotations
 
+import logging
 import math
 import threading
 import time
@@ -21,6 +22,7 @@ _MAX_SAMPLE_GAP_NS = 150_000_000
 _CPU_WINDOW_NS = 500_000_000
 _RSS_BIN_NS = 20_000_000
 _COUNTER_EVENT_TYPES = {"perf", "exec_boundary", "exit_boundary"}
+_LOGGER = logging.getLogger(__name__)
 
 
 def _unavailable_metric(reason: str, *, measurement: str) -> dict[str, Any]:
@@ -629,9 +631,28 @@ class EbpfToolCallMonitor:
 
     def __init__(self, window_factory: Callable[[ResourceScope], Any] | None = None) -> None:
         self._network: Any | None = None
+        self._default_factory = window_factory is None
         self._factory = window_factory or self._open_default
         self._active: dict[Any, _Active] = {}
         self._lock = threading.RLock()
+
+    def prepare(self) -> None:
+        """Pay collector setup costs before serving decisions, without a scope."""
+        if not self._default_factory:
+            return
+        from clawtune_sidecar.monitoring.net_accounting import ProcessNetAccounting
+        from tool_resource.telemetry import prepare_shared_bpf_source
+
+        with self._lock:
+            try:
+                prepare_shared_bpf_source()
+                if self._network is None:
+                    candidate = ProcessNetAccounting(())
+                    self._network = candidate if candidate.available else None
+            except Exception as exc:  # noqa: BLE001 - collector failure must preserve fallback
+                # Keep the existing per-call unavailable/dedicated-cgroup
+                # fallback when this host cannot load eBPF.
+                _LOGGER.warning("Tool collector preparation unavailable: %s", exc)
 
     def _open_default(self, scope: ResourceScope) -> _KernelWindow:
         from clawtune_sidecar.monitoring.net_accounting import (

@@ -189,7 +189,7 @@ class ProcessNetAccounting:
 
     def add_namespace(self, pid_namespace_inode: int | None) -> None:
         """Allow another PID namespace (e.g. a parallel sandbox container)."""
-        if not self.available or not self._allowed or not pid_namespace_inode:
+        if not self.available or self._allowed is None or not pid_namespace_inode:
             return
         with self._lock:
             try:

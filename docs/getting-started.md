@@ -117,6 +117,10 @@ python3 scripts/clawtune.py agent --local --agent main \
 
 The wrapper forwards arguments to OpenClaw; consult `openclaw agent --help` for version-specific agent selection. If a service manager must own the privileged process, start `python3 scripts/clawtune.py sidecar` explicitly before OpenClaw.
 
+The sidecar prepares its eBPF collectors before reporting ready. A fresh process
+can take several seconds to start; subsequent tool calls reuse those collectors.
+Keep the service running across calls to avoid paying this startup cost again.
+
 ## 3. Output and persistent state
 
 Daily traces are JSONL files under `traces/`. Inspect a generated file and the saved prediction state:

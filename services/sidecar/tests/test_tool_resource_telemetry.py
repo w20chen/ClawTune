@@ -172,6 +172,33 @@ def test_shared_bpf_source_keeps_probe_and_poller_count_constant() -> None:
     assert source.bpf.cleanups == 1
 
 
+def test_prepared_source_has_no_scope_and_is_reused_by_first_execution(monkeypatch) -> None:
+    _FakeSharedBpf.constructions = 0
+    bcc = SimpleNamespace(
+        BPF=_FakeSharedBpf,
+        PerfType=SimpleNamespace(SOFTWARE=1),
+        PerfSWConfig=SimpleNamespace(CPU_CLOCK=2),
+    )
+    monkeypatch.setattr(telemetry_module, "_shared_bpf_source", None)
+    monkeypatch.setattr(telemetry_module, "_ensure_bcc_importable", lambda: bcc)
+    telemetry_module.prepare_shared_bpf_source()
+    source = telemetry_module._shared_bpf_source
+    try:
+        telemetry_module.prepare_shared_bpf_source()
+        assert source.bpf["allowed_cgroups"].values == {}
+        assert source.bpf["allowed_pid_namespaces"].values == {}
+        acquired, lease, _ = telemetry_module._acquire_shared_bpf_source(
+            bcc.BPF, bcc.PerfType, bcc.PerfSWConfig,
+            cgroup_ids={123}, pid_namespace_ids=set(),
+        )
+        assert acquired is source
+        assert _FakeSharedBpf.constructions == 1
+        assert set(source.bpf["allowed_cgroups"].values) == {123}
+        source.release(lease)
+    finally:
+        source.close()
+
+
 def test_bpf_exec_sequence_is_unbounded_by_a_prefilled_userspace_queue() -> None:
     assert "BPF_ARRAY(next_exec_sequence, u64, 1)" in BPF_PROGRAM
     assert "exec_sequences" not in BPF_PROGRAM
