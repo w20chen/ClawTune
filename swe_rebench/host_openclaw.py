@@ -1069,7 +1069,7 @@ def _start_sidecar(
     except BaseException:
         # Do not let an unreturned process keep mutating this task's KB while
         # the batch runner publishes it for the next task.
-        _stop_process(process)
+        _stop_process(process, timeout_seconds=5)
         raise
     return process
 
@@ -3265,12 +3265,13 @@ def _kill_agent_process_and_confirm(process: subprocess.Popen[str]) -> None:
         ) from exc
 
 
-def _stop_process(process: subprocess.Popen[str]) -> None:
+def _stop_process(process: subprocess.Popen[str], *, timeout_seconds: float | None = None) -> None:
+    """Allow normal shutdown to save the KB; bound failed-start cleanup explicitly."""
     if process.poll() is not None:
         return
     process.terminate()
     try:
-        process.wait(timeout=5)
+        process.wait(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
         process.kill()
         try:

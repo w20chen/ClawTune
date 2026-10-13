@@ -81,7 +81,7 @@ def parser():
     bench.add_argument("--task-timeout-seconds", type=int,
                        help="Advanced task-budget override; normally omit (default 1200 seconds)")
     bench.add_argument("--dry-run", action="store_true", help="Validate and show selected tasks/seed without Docker or an LLM")
-    off = sub.add_parser("offline", help="Split fixed-format traces, train, freeze, evaluate")
+    off = sub.add_parser("offline", help="Split fixed-format traces, train, freeze, evaluate shell calls only")
     off.add_argument("--dataset", type=Path, required=True)
     off.add_argument("--benchmark", choices=NAMES, help="Fallback identity for legacy traces, or select one dataset")
     off.add_argument("--seed", type=int, default=42)

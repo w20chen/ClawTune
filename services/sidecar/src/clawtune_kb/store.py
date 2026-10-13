@@ -12,7 +12,13 @@ OPTIONAL_FILES = ("edge-kappa-kb.json", "execution-context-kb.json")
 
 
 def digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    # Immutable experiment inputs still have content identities. Writable KB
+    # checkpoints do not use hashes; avoid a multi-GB allocation for seed checks.
+    result = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            result.update(chunk)
+    return result.hexdigest()
 
 
 def write_json(path: Path, value: dict) -> None:
@@ -101,9 +107,9 @@ def initialize_state(path: Path, seed: Path, *, owner: str) -> None:
         else:
             fresh = EdgeKappaRuntime.fit([], payload["config"]["bucket_edges_ms"]).to_snapshot()
         write_json(target, fresh)
-    write_json(path / "state.json", {"schema": "clawtune.kb-state.v1", "owner": owner,
+    write_json(path / "state.json", {"schema": "clawtune.kb-state.v2", "owner": owner,
                "seed_sha256": digest(seed / "manifest.json"), "generation": 0,
-               "snapshots": {name: digest(path / name) for name in manifest["snapshots"]}})
+               "snapshots": list(manifest["snapshots"])})
     with StateStore(path) as store:
         store.checkpoint()
 
@@ -120,8 +126,8 @@ def committed_state(path: Path) -> dict:
     from .contracts import validate
     validate(state, "kb-state.schema.json")
     for filename in state["snapshots"]:
-        if digest(folder / filename) != state["snapshots"].get(filename):
-            raise ValueError(f"corrupt committed KB generation: {filename}")
+        if not (folder / filename).is_file():
+            raise ValueError(f"missing committed KB snapshot: {filename}")
     return state
 
 
@@ -135,6 +141,7 @@ class StateStore:
     def __init__(self, path: Path):
         self.path = path.resolve(strict=True)
         self._lock = None
+        self._snapshot_stats = None
 
     def __enter__(self):
         self._lock = (self.path / ".writer.lock").open("a+b")
@@ -176,14 +183,21 @@ class StateStore:
                 (self.path / filename).unlink(missing_ok=True)
         for filename in (*committed["snapshots"], "state.json"):
             shutil.copyfile(folder / filename, self.path / filename)
+        self._snapshot_stats = self._working_snapshot_stats()
+
+    def _working_snapshot_stats(self) -> dict:
+        names = (*FILES, *(name for name in OPTIONAL_FILES if (self.path / name).is_file()))
+        # Writers replace complete files atomically. This is change detection,
+        # not a content-integrity check or a hash of learned state.
+        return {name: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns)
+                for name in names for s in [(self.path / name).stat()]}
 
     def checkpoint(self) -> dict:
         if self._lock is None:
             raise RuntimeError("KB checkpoint requires its writer lock")
         state = json.loads((self.path / "state.json").read_text(encoding="utf-8"))
-        names = (*FILES, *(name for name in OPTIONAL_FILES if (self.path / name).is_file()))
-        hashes = {name: digest(self.path / name) for name in names}
-        if (self.path / "CURRENT").exists() and hashes == state["snapshots"]:
+        snapshots = self._working_snapshot_stats()
+        if (self.path / "CURRENT").exists() and snapshots == self._snapshot_stats:
             return state
         # An interrupted commit may have left a directory without CURRENT.
         generation = state["generation"] + 1
@@ -191,9 +205,10 @@ class StateStore:
             generation += 1
         folder = self.path / "generations" / str(generation)
         folder.mkdir(parents=True)
-        for name in names:
+        for name in snapshots:
             shutil.copyfile(self.path / name, folder / name)
-        state = {**state, "generation": generation, "snapshots": hashes}
+        state = {**state, "schema": "clawtune.kb-state.v2",
+                 "generation": generation, "snapshots": list(snapshots)}
         write_json(folder / "state.json", state)
         temp = self.path / ".CURRENT.tmp"
         with temp.open("w", encoding="ascii") as stream:
@@ -202,6 +217,7 @@ class StateStore:
             os.fsync(stream.fileno())
         os.replace(temp, self.path / "CURRENT")
         write_json(self.path / "state.json", state)
+        self._snapshot_stats = snapshots
         # Bound storage to current + previous committed snapshots. Targets are
         # verified child directories; never follow a link during cleanup.
         generations = self.path / "generations"

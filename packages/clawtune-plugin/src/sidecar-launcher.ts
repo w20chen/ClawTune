@@ -43,8 +43,8 @@ const PRESERVED_RUNTIME_ENV = new Set([
 export interface SidecarLauncherResult {
   /** The spawned child process, or null if the sidecar was already running. */
   child: ChildProcess | null;
-  /** Call this to stop the auto-started sidecar (no-op for pre-existing). */
-  cleanup: () => void;
+  /** Release this owner and wait for the owned sidecar to finish shutdown. */
+  cleanup: () => Promise<void>;
 }
 
 export interface SidecarLaunchOptions {
@@ -87,6 +87,8 @@ const sharedLaunchesSymbol = Symbol.for(
 type SharedLaunchEntry = {
   launch: Promise<SidecarLauncherResult>;
   references: number;
+  releaseAll: () => void;
+  shutdown: Promise<void>;
 };
 
 type SharedLaunchRegistry = Map<string, SharedLaunchEntry>;
@@ -262,14 +264,24 @@ export function ensureSidecarRunning(
   const registry = sharedLaunches();
   const existing = registry.get(healthUrl);
   if (existing) {
+    if (existing.references === 0) {
+      return existing.shutdown.then(() => ensureSidecarRunning(opts));
+    }
     opts.logger.info("joining shared sidecar auto-start", {
       endpoint: opts.endpoint,
     });
     return acquireSharedSidecar(registry, healthUrl, existing);
   }
 
-  const launch = ensureSidecarRunningOnce(opts).then(makeCleanupIdempotent);
-  const entry: SharedLaunchEntry = {launch, references: 0};
+  const launch = ensureSidecarRunningOnce(opts);
+  let releaseAll!: () => void;
+  const released = new Promise<void>((resolve) => { releaseAll = resolve; });
+  const entry: SharedLaunchEntry = {
+    launch, references: 0, releaseAll,
+    shutdown: released.then(() => launch).then((result) => result.cleanup()).finally(() => {
+      if (registry.get(healthUrl) === entry) registry.delete(healthUrl);
+    }),
+  };
   registry.set(healthUrl, entry);
   void launch.catch(() => {
     if (registry.get(healthUrl) === entry) registry.delete(healthUrl);
@@ -288,12 +300,14 @@ function acquireSharedSidecar(
     return {
       child: result.child,
       cleanup: () => {
-        if (released) return;
-        released = true;
-        entry.references = Math.max(0, entry.references - 1);
-        if (entry.references !== 0) return;
-        result.cleanup();
-        if (registry.get(healthUrl) === entry) registry.delete(healthUrl);
+        if (!released) {
+          released = true;
+          entry.references -= 1;
+          if (entry.references === 0) entry.releaseAll();
+        }
+        // Duplicate plugin registrations must all await the same shutdown;
+        // an earlier release must not let its signal handler exit the host.
+        return entry.shutdown;
       },
     };
   }, (error: unknown) => {
@@ -363,7 +377,7 @@ async function ensureSidecarRunningOnce(
   const alreadyRunning = await pingHealth(healthUrl, 800);
   if (alreadyRunning) {
     logger.info("sidecar already running, skipping auto-start", {endpoint});
-    return {child: null, cleanup: () => {}};
+    return {child: null, cleanup: async () => {}};
   }
 
   // 2. Spawn the sidecar
@@ -377,7 +391,9 @@ async function ensureSidecarRunningOnce(
     child = spawn(resolvedCommand, {
       shell: true,
       stdio: ["ignore", "pipe", "pipe"],
-      detached: false,
+      // Give custom shell commands their own group so SIGTERM reaches the
+      // sidecar as well as its shell wrapper.
+      detached: process.platform !== "win32",
       env: {...process.env},
     });
   } else {
@@ -446,7 +462,7 @@ async function ensureSidecarRunningOnce(
           exitCode: child.exitCode,
           signal: child.signalCode,
         });
-        return {child: null, cleanup: () => {}};
+        return {child: null, cleanup: async () => {}};
       }
 
       healthEstablished = true;
@@ -455,31 +471,9 @@ async function ensureSidecarRunningOnce(
       return {
         child,
         cleanup: () => {
-          if (cleanupRequested) return;
           cleanupRequested = true;
           logger.info("stopping auto-started sidecar");
-          if (process.platform === "win32") {
-            child.kill();
-          } else {
-            child.kill("SIGTERM");
-          }
-          // Force kill after grace period.
-          // Windows does not support POSIX signals; use taskkill /F as a
-          // last resort when the initial kill did not terminate the child.
-          setTimeout(() => {
-            if (!hasExited(child)) {
-              if (process.platform === "win32") {
-                // On Windows, child.kill() without a signal already
-                // maps to TerminateProcess.  If the child survived
-                // that we try taskkill /F /PID as a forceful fallback.
-                spawn("taskkill", ["/F", "/PID", String(child.pid)], {
-                  stdio: "ignore",
-                });
-              } else {
-                child.kill("SIGKILL");
-              }
-            }
-          }, 3000).unref();
+          return stopSidecar(child, Boolean(command) && process.platform !== "win32");
         },
       };
     }
@@ -525,18 +519,35 @@ function hasExited(child: ChildProcess): boolean {
   return child.exitCode !== null || child.signalCode !== null;
 }
 
-function makeCleanupIdempotent(
-  result: SidecarLauncherResult,
-): SidecarLauncherResult {
-  let cleanedUp = false;
-  return {
-    child: result.child,
-    cleanup: () => {
-      if (cleanedUp) return;
-      cleanedUp = true;
-      result.cleanup();
-    },
-  };
+function stopSidecar(child: ChildProcess, processGroup: boolean): Promise<void> {
+  if (hasExited(child)) return Promise.resolve();
+  // Healthy children are unreferenced for one-shot CLI use. Keep shutdown
+  // alive until the final KB save and inherited output pipes have finished.
+  child.ref();
+  for (const stream of [child.stdout, child.stderr]) {
+    (stream as unknown as {ref?: () => void} | null)?.ref?.();
+  }
+  return new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      child.removeListener("close", onClose);
+      reject(error);
+    };
+    const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
+      child.removeListener("error", onError);
+      if (code === 0 || signal === "SIGTERM") resolve();
+      else reject(new Error(`sidecar shutdown failed: exit code ${code}, signal ${signal}`));
+    };
+    child.once("error", onError);
+    child.once("close", onClose);
+    try {
+      if (processGroup && child.pid !== undefined) process.kill(-child.pid, "SIGTERM");
+      else child.kill("SIGTERM");
+    } catch (error) {
+      child.removeListener("error", onError);
+      child.removeListener("close", onClose);
+      reject(error);
+    }
+  });
 }
 
 async function pingHealth(url: string, timeoutMs: number): Promise<boolean> {

@@ -12,6 +12,36 @@ import urllib.error
 import pytest
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX graceful shutdown")
+def test_sidecar_stop_waits_for_save_longer_than_five_seconds(tmp_path):
+    from swe_rebench.host_openclaw import _stop_process
+
+    script = tmp_path / "sidecar.py"
+    script.write_text(
+        "import signal,sys,time,pathlib\n"
+        "def shutdown(*args):\n"
+        "    time.sleep(6)\n"
+        "    pathlib.Path(sys.argv[1]).write_text('committed')\n"
+        "    sys.exit(0)\n"
+        "signal.signal(signal.SIGTERM, shutdown)\n"
+        "print('ready', flush=True)\n"
+        "signal.pause()\n"
+    )
+    saved = tmp_path / "saved"
+    process = subprocess.Popen([sys.executable, str(script), str(saved)],
+                               stdout=subprocess.PIPE, text=True)
+    try:
+        assert process.stdout.readline().strip() == "ready"
+        _stop_process(process)
+        assert process.returncode == 0
+        assert saved.read_text() == "committed"
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        process.stdout.close()
+
+
 def _supervisor_probe_script(cancelled: bool) -> str:
     """Probe agent that detaches a grandchild and publishes its pid.
 

@@ -965,13 +965,15 @@ def test_openclaw_trace_cold_start_persists_runtime_kb(tmp_path: Path) -> None:
     artifact_dir = tmp_path / "tool-resource"
     _write_trace(trace, command="python -m pytest tests -q")
 
-    ToolResourcePredictor.from_traces(
+    predictor = ToolResourcePredictor.from_traces(
         openclaw_trace_paths=(trace,),
         ebpf_trace_paths=(),
         buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
         repo="repo-1",
         artifact_dir=artifact_dir,
     )
+    assert not (artifact_dir / "runtime-tool-resource-kb.json").exists()
+    predictor.close()
 
     assert not (artifact_dir / "clause-resource-kb.json").is_file()
     assert (artifact_dir / "runtime-tool-resource-kb.json").is_file()
@@ -2354,7 +2356,8 @@ def test_tool_resource_predictor_concurrent_completions_persist_without_lost_upd
         artifact_dir=artifact_dir,
     )
     predictor._kb_writes = tool_resource_predictor._KnowledgeBaseWriteCoordinator(
-        predictor._flush_kb_batch,
+        predictor._apply_kb_batch,
+        persist=predictor._persist_kb_snapshots,
         batch_window_s=0.2,
     )
     writes: list[tuple[Path, str]] = []

@@ -8,4 +8,6 @@ This repository is an OpenClaw plugin and sidecar delivery project.
 - Do not modify `services\sidecar\src\tool_resource` unless it is necessary.
 - Keep JSON Schema as the public protocol source of truth.
 - Placement advice is advisory only in this MVP.
+- Offline dataset experiments report only shell calls (`exec` and `terminal_exec`); exclude non-shell
+  calls from prediction outputs and metric denominators while preserving training ingestion.
 - Document every validation command that cannot run in `docs/CURRENT_PLAN.md`.

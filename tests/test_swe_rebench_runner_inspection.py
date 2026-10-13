@@ -1589,7 +1589,7 @@ def test_stop_process_raises_when_process_never_exits():
             raise subprocess.TimeoutExpired("cmd", timeout)
 
     try:
-        host_openclaw._stop_process(_NeverExits())  # type: ignore[arg-type]
+        host_openclaw._stop_process(_NeverExits(), timeout_seconds=5)  # type: ignore[arg-type]
     except RuntimeError as exc:
         assert "sidecar did not exit after terminate and kill" in str(exc)
     else:

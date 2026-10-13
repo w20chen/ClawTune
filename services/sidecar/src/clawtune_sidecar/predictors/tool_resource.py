@@ -151,12 +151,12 @@ def _open_operation(method):
 
 
 class _KnowledgeBaseWriteCoordinator:
-    """Single-writer, batched persistence coordinator for one shared KB.
+    """Apply online batches; save snapshots only at explicit barriers.
 
     Caller threads update the cheap in-memory runtime/clause indexes under the
-    predictor lock, then enqueue a durability notification.  The worker owns
-    lattice preparation and all snapshot writes, coalescing bursts from many
-    sessions into one generation.  A barrier always retries dirty snapshots
+    predictor lock. The worker prepares and publishes lattice updates without
+    writing snapshots. A flush/close barrier saves all dirty backends after
+    applying preceding observations. A barrier always retries dirty snapshots
     before it resolves, so a sidecar drain can make all preceding observations
     durable without racing another completion writer.
     """
@@ -165,11 +165,13 @@ class _KnowledgeBaseWriteCoordinator:
         self,
         apply_batch: Callable[[tuple[ClauseObservation, ...]], None],
         *,
+        persist: Callable[[], None] | None = None,
         batch_window_s: float = 0.01,
         max_batch_size: int = 512,
         idle_timeout_s: float = 0.25,
     ) -> None:
         self._apply_batch = apply_batch
+        self._persist = persist
         self._batch_window_s = batch_window_s
         self._max_batch_size = max_batch_size
         self._idle_timeout_s = idle_timeout_s
@@ -304,6 +306,8 @@ class _KnowledgeBaseWriteCoordinator:
             # Even an empty barrier batch retries snapshots left dirty by a
             # prior transient persistence error.
             self._apply_batch(tuple(observations))
+            if barriers and self._persist is not None:
+                self._persist()
         except BaseException as exc:
             for barrier in barriers:
                 if not barrier.done():
@@ -487,7 +491,7 @@ class ToolResourcePredictor:
         self._context_histories = {}
         self._context_pending = {}
         self._kb_writes = _KnowledgeBaseWriteCoordinator(
-            self._flush_kb_batch,
+            self._apply_kb_batch, persist=self._persist_kb_snapshots,
         )
 
     @classmethod
@@ -620,9 +624,13 @@ class ToolResourcePredictor:
         snapshot_path = _clause_kb_snapshot_path(artifact_dir)
         runtime_snapshot_path = _runtime_kb_snapshot_path(artifact_dir)
         lattice_snapshot_path = _lattice_kb_snapshot_path(artifact_dir)
+        managed = artifact_dir is not None and (artifact_dir / "state.json").is_file()
         kb: ClauseResourceKB
         kb_has_public_evidence = False
-        loaded_snapshot = _load_clause_kb_snapshot(snapshot_path, rejections)
+        loaded_snapshot = _load_clause_kb_snapshot(snapshot_path, rejections, strict=managed)
+        loaded_runtime_snapshot = _load_runtime_kb_snapshot(
+            runtime_snapshot_path, rejections, strict=managed,
+        )
         if loaded_snapshot is not None:
             kb = loaded_snapshot
             if observations and not _has_public_clause_latency(kb):
@@ -647,6 +655,7 @@ class ToolResourcePredictor:
             lattice_snapshot_path,
             rejections,
             max_optional_features=max_optional_features,
+            strict=managed,
         )
         if loaded_lattice_snapshot is None:
             lattice_kb = LatticeTimeKB.fit(observations, max_optional_features=max_optional_features)
@@ -671,6 +680,8 @@ class ToolResourcePredictor:
         try:
             lattice_kb.prepare()
         except Exception as exc:
+            if managed:
+                raise ValueError(f"managed Lattice KB cannot be prepared: {exc}") from exc
             lattice_kb_available = False
             rejections.append(f"prepare lattice KB: {type(exc).__name__}: {exc}")
         predictor = cls(
@@ -704,21 +715,19 @@ class ToolResourcePredictor:
             numa_usage_sampler=numa_usage_sampler,
             load_buckets=load_buckets,
         )
-        loaded_runtime_snapshot = _load_runtime_kb_snapshot(
-            runtime_snapshot_path,
-            rejections,
-        )
         if loaded_runtime_snapshot is not None:
             predictor.continuous_kb = loaded_runtime_snapshot
         predictor.continuous_kb.merge_historical(continuous_observations)
+        # Imported/reloaded state is saved at the next explicit barrier, not
+        # rewritten during loading. The prediction state is already ready.
         if observations or loaded_snapshot is not None:
-            predictor._persist_clause_kb()
+            predictor._clause_kb_version += 1
         if continuous_observations or loaded_runtime_snapshot is not None:
-            predictor._persist_runtime_kb()
+            predictor._runtime_kb_version += 1
         if observations or loaded_lattice_snapshot is not None:
-            predictor._persist_lattice_kb()
+            predictor._lattice_kb_version += 1
         if predictor.edge_kappa_snapshot_path is not None:
-            _write_json_atomic(predictor.edge_kappa_snapshot_path, predictor.edge_kappa.to_snapshot())
+            predictor._edge_kappa_version += 1
         return predictor
 
     @classmethod
@@ -793,7 +802,6 @@ class ToolResourcePredictor:
                                                   duration_context=duration_context)
             if not self.frozen:
                 self._edge_kappa_version += 1
-                self._kb_writes.enqueue()
             from clawtune_sidecar.contracts.load_prediction import summarize_pmu_evidence
             try:
                 pmu = summarize_pmu_evidence(self.continuous_kb.predict_pmu_samples(query))
@@ -1090,7 +1098,6 @@ class ToolResourcePredictor:
                 self._feature_call_keys.pop(owner, None)
         if self.edge_kappa.cancel_call(key) and not self.frozen:
             self._edge_kappa_version += 1
-            self._kb_writes.enqueue()
 
     def finalize_runtime(self, runtime_id: str, gateway_id: str | None) -> None:
         """Retire only the named runtime's unfinished calls and history."""
@@ -1166,7 +1173,6 @@ class ToolResourcePredictor:
                             ident=before['id'], task=task, duration_ms=seconds * 1000,
                             failure=failure_label(text) if code else None):
                         self._duration_context_version += 1
-                        self._kb_writes.enqueue()
         # Add only newly measured environment labels. Existing clause CPU/time
         # observations were already ingested at eBPF finish and are not repeated.
         if sample.environment_memory and event.execution_id and completed_call and not completed_call.censored:
@@ -1217,13 +1223,10 @@ class ToolResourcePredictor:
         except Exception:
             import logging
             logging.getLogger(__name__).exception("edge kappa clause update failed")
-        self._kb_writes.enqueue()
         if completed_call is not None:
             with self._kb_lock:
                 self.continuous_kb.observe_completed_call(completed_call)
                 self._runtime_kb_version += 1
-            if self.runtime_kb_snapshot_path is not None:
-                self._kb_writes.enqueue()
         return 1 if completed_call is not None else 0
 
     @_open_operation
@@ -1551,10 +1554,14 @@ class ToolResourcePredictor:
 
         self._kb_writes.flush(timeout_seconds)
 
-    def close(self, timeout_seconds: float = 30.0) -> None:
-        """Make queued KB generations durable before sidecar shutdown."""
+    def close(self, timeout_seconds: float | None = None) -> None:
+        """Save before shutdown; large final snapshots have no default deadline."""
 
-        deadline = time.monotonic() + timeout_seconds
+        deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
+
+        def remaining() -> float | None:
+            return None if deadline is None else max(0, deadline - time.monotonic())
+
         with self._close_lock:
             if self._closed:
                 return
@@ -1562,7 +1569,7 @@ class ToolResourcePredictor:
                 self._closing = True
                 if not self._operations.wait_for(
                     lambda: self._active_operations == 0,
-                    timeout=max(0, deadline - time.monotonic()),
+                    timeout=remaining(),
                 ):
                     raise TimeoutError("timed out waiting for active predictor operations")
             with self._starts_lock, self._kb_lock:
@@ -1571,8 +1578,8 @@ class ToolResourcePredictor:
                 self._starts.clear()
                 self._feature_call_keys.clear()
                 self._context_histories.clear()
-            self.command_features.close(timeout_seconds=max(0, deadline - time.monotonic()))
-            self._kb_writes.close(max(0, deadline - time.monotonic()))
+            self.command_features.close(timeout_seconds=remaining())
+            self._kb_writes.close(remaining())
             store = getattr(self, "_state_store", None)
             if store is not None:
                 store.__exit__(None, None, None)
@@ -1580,7 +1587,10 @@ class ToolResourcePredictor:
             self._closed = True
 
     def kb_updates_pending(self) -> bool:
-        """Return whether the single writer has queued or in-flight work."""
+        """Return whether updates or an explicit save are queued/in flight.
+
+        An idle worker does not imply that current in-memory knowledge is saved.
+        """
 
         return self._kb_writes.pending()
 
@@ -1588,10 +1598,17 @@ class ToolResourcePredictor:
         self,
         lattice_observations: tuple[ClauseObservation, ...],
     ) -> None:
+        """Explicitly apply and save a batch (also used by offline callers)."""
+        self._apply_kb_batch(lattice_observations)
+        self._persist_kb_snapshots()
+
+    def _apply_kb_batch(
+        self,
+        lattice_observations: tuple[ClauseObservation, ...],
+    ) -> None:
         if self.frozen:
             return
         errors: list[str] = []
-        snapshots: list[tuple[str, Path, Any, int]] = []
 
         with self._kb_lock:
             candidate = self._lattice_staged
@@ -1623,6 +1640,14 @@ class ToolResourcePredictor:
                     self._lattice_staged = None
                     self._lattice_needs_prepare = False
 
+        if errors:
+            raise KnowledgeBaseFlushError("; ".join(errors))
+
+    def _persist_kb_snapshots(self) -> None:
+        if self.frozen:
+            return
+        errors: list[str] = []
+        snapshots: list[tuple[str, Path, Any, int]] = []
         with self._kb_lock:
             self._capture_kb_snapshot_locked(
                 snapshots, errors, name="duration_context", path=self.duration_context_snapshot_path,
@@ -3211,12 +3236,17 @@ def _discover_artifact_call_files(artifact_dir: Path) -> list[Path]:
 def _load_clause_kb_snapshot(
     path: Path | None,
     rejections: list[str],
+    *, strict: bool = False,
 ) -> ClauseResourceKB | None:
     if path is None or not path.is_file():
+        if strict:
+            raise ValueError(f"missing managed clause KB snapshot: {path}")
         return None
     try:
         return ClauseResourceKB.from_json_obj(json.loads(path.read_text(encoding="utf-8")))
     except Exception as exc:
+        if strict:
+            raise ValueError(f"{path}: managed clause KB snapshot rejected: {exc}") from exc
         rejections.append(f"{path}: clause KB snapshot rejected: {exc}")
         return None
 
@@ -3224,12 +3254,17 @@ def _load_clause_kb_snapshot(
 def _load_runtime_kb_snapshot(
     path: Path | None,
     rejections: list[str],
+    *, strict: bool = False,
 ) -> RuntimeToolResourceKB | None:
     if path is None or not path.is_file():
+        if strict:
+            raise ValueError(f"missing managed runtime KB snapshot: {path}")
         return None
     try:
         return RuntimeToolResourceKB.from_json_obj(json.loads(path.read_text(encoding="utf-8")))
     except Exception as exc:
+        if strict:
+            raise ValueError(f"{path}: managed runtime KB snapshot rejected: {exc}") from exc
         rejections.append(f"{path}: runtime KB snapshot rejected: {exc}")
         return None
 
@@ -3238,12 +3273,17 @@ def _load_lattice_kb_snapshot(
     path: Path | None,
     rejections: list[str],
     *, max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES,
+    strict: bool = False,
 ) -> LatticeTimeKB | None:
     if path is None or not path.is_file():
+        if strict:
+            raise ValueError(f"missing managed lattice KB snapshot: {path}")
         return None
     try:
         kb = LatticeTimeKB.from_json_obj(json.loads(path.read_text(encoding="utf-8")))
     except Exception as exc:
+        if strict:
+            raise ValueError(f"{path}: managed lattice KB snapshot rejected: {exc}") from exc
         rejections.append(f"{path}: lattice KB snapshot rejected: {exc}")
         return None
     # Configuration mismatches must not fall back to an empty KB and overwrite

@@ -441,7 +441,7 @@ def _display(value, *, percent: bool = False) -> str:
 
 def _render_report(report: dict) -> str:
     lines = [
-        "# Frozen task-held-out evaluation", "",
+        "# Frozen task-held-out shell-call evaluation", "",
         f"Train tasks: {report['train_tasks']}; test tasks: {report['test_tasks']}; test updates: 0.", "",
         "## Global metrics", "",
         "| Target | Unit | Predicted / eligible | MAE | Median AE | P90 AE | RMSE | Bias | WAPE | sMAPE | Within 2x | P90 coverage | P90 pinball | Bucket accuracy | Bucket macro recall |",
@@ -609,7 +609,7 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
         loaded = load_task(dataset, task, rss_unit)
         test_sampling[key] = _sampling_summary(loaded.sample_periods_ms)
         for index, call in enumerate(loaded.calls):
-            if call.censored:
+            if call.censored or call.tool_name not in {"exec", "terminal_exec"}:
                 continue
             query = ToolCallQuery(call.repo, call.tool_name, call.command, 1e12)
             recorded_clauses = loaded.call_clauses[index] if index < len(loaded.call_clauses) else ()
@@ -725,7 +725,7 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
               },
               "split_registry_path": manifest["split_registry_path"],
               "split_registry_status": manifest["split_registry_status"],
-              "scope": "tool-call prediction using execution-before command features; unavailable targets are not scored",
+              "scope": "shell calls only (exec, terminal_exec); prediction using execution-before command features; unavailable targets are not scored",
               "split_sha256": manifest["assignment_sha256"]}
     if lattice_variants:
         from offline.lattice_oracle import ORACLE_DESCRIPTION

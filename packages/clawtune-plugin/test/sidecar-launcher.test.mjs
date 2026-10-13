@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import {spawn} from "node:child_process";
+import {once} from "node:events";
 import {mkdir, mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
 import {createServer} from "node:http";
 import {tmpdir} from "node:os";
@@ -160,10 +162,50 @@ test("sidecar auto-start is single-flight and tolerates another launcher winning
     );
 
     // Each plugin receives a separate release handle for the shared launch.
-    first.cleanup();
-    second.cleanup();
+    await Promise.all([first.cleanup(), second.cleanup()]);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await rm(workDir, {recursive: true, force: true});
   }
 });
+
+for (const mode of ["beforeExit", "SIGTERM", "shared"]) {
+  test(`plugin ${mode} waits for a sidecar save longer than three seconds`, {
+    skip: process.platform === "win32" && "POSIX graceful shutdown",
+    timeout: 20_000,
+  }, async () => {
+    const workDir = await mkdtemp(join(tmpdir(), "clawtune-sidecar-shutdown-"));
+    const server = createServer();
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = server.address().port;
+    await new Promise((resolve) => server.close(resolve));
+    const fixture = fileURLToPath(new URL("./fixtures/plugin-shutdown.mjs", import.meta.url));
+    const child = spawn(process.execPath, [fixture, mode, String(port), workDir], {
+      stdio: ["ignore", "ignore", "pipe", "ipc"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    const exited = once(child, "exit");
+    try {
+      const [message] = await once(child, "message");
+      assert.equal(message, "ready");
+      if (mode !== "beforeExit") child.kill("SIGTERM");
+      const [code, signal] = await exited;
+      assert.equal(signal, null, stderr);
+      assert.equal(code, mode === "beforeExit" ? 0 : 143, stderr);
+      assert.equal(await readFile(join(workDir, "saved"), "utf8"), "committed\n");
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await exited;
+      }
+      try {
+        const pid = Number(await readFile(join(workDir, "pid"), "utf8"));
+        process.kill(pid, "SIGKILL");
+      } catch (error) {
+        if (!["ESRCH", "ENOENT"].includes(error.code)) throw error;
+      }
+      await rm(workDir, {recursive: true, force: true});
+    }
+  });
+}

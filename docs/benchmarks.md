@@ -369,6 +369,10 @@ docker ps --filter name=clawtune-srb                  # sandbox containers of ac
 
 Check run `status`, each result's `error`/`exit_code`, and `kb_flush_complete`. A completed run requires persisted KB state. `observation_issues` and collector logs report monitoring failures separately; unavailable targets can be valid, including empty cold-start history and EdgeKappa's unsupported CPU/memory targets. `resource_summary.prediction_models` records availability for `tool`, `trie`, `lattice`, and `edge_kappa`, not prediction accuracy.
 
+KB updates remain available to subsequent online queries before they are saved.
+The run saves shared knowledge at its final flush; task-level on-disk generation
+counters can remain unchanged despite active learning.
+
 Each task has one `trace.jsonl` containing all turns, full captured LLM messages, and inlined telemetry. Join `execution_telemetry` by `execution_id`; do not count its compact and full views twice. `incomplete_span`, `llm_proxy_unmatched`, and aborted profiles retain incomplete evidence, not successful observations. See the [trace reference](tool-profile.md).
 
 Timeout finalization follows confirmed producer shutdown. Tools lacking verified exit evidence remain incomplete and are withheld from learning. Abrupt failures can lose unacknowledged events; `trace_flushed: false` or `kb_flush_complete: false` means persistence is incomplete. A successful exit without tool calls or eligible measurements does not validate collection.
@@ -435,6 +439,8 @@ The split methodology is in the [technical report](technical-report.md#6-learnin
 | `report.json`, `report.md` | Availability, errors, baselines, and exclusions |
 
 Mixed input is trained and evaluated separately per benchmark, with an aggregate report. Check train/test counts and `test_updates: 0` before interpreting metrics. All-singleton groups can leave no test set.
+
+Offline evaluation reports only `exec` and `terminal_exec` calls. Non-shell calls are excluded from prediction outputs, coverage denominators, and all reported model metrics. Task splitting and training ingestion are unchanged; a test set containing no shell calls produces no scored results. `tools/summarize_offline_buckets.py` applies the same reporting scope when reading older mixed-tool results.
 
 Each benchmark's `report.json.models` reports `tool`, `trie`, `lattice`, and `edge_kappa` separately (Edge predicts duration only). The existing top-level `metrics` and `repositories` describe ToolKB. Per-target `availability` counts all uncensored queries (`queries`), queries with trusted labels (`labeled`), available predictions (`predicted`), and labeled predictions that can be scored (`scored`). Missing labels are never converted to zero; a target can have predictions without a measurable error.
 

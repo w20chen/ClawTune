@@ -101,7 +101,7 @@ def write_trace(path, benchmark, task_id, duration=1000):
 
 
 @pytest.mark.parametrize("max_optional_features", [1, 6])
-def test_all_datasets_offline_call_only_and_test_does_not_train(tmp_path, max_optional_features):
+def test_non_shell_datasets_have_no_offline_scores_and_test_does_not_train(tmp_path, max_optional_features):
     from offline.runner import inventory, split_tasks, run
     dataset = tmp_path / "input"
     dataset.mkdir()
@@ -115,13 +115,18 @@ def test_all_datasets_offline_call_only_and_test_does_not_train(tmp_path, max_op
     report = run(dataset, first, split_cache_dir=tmp_path / "splits",
                  max_optional_features=max_optional_features)
     assert report["test_updates"] == 0
-    assert {metric["benchmark"] for metric in report["metrics"]} == set(NAMES)
+    assert report["metrics"] == []
     assert len(report["repositories"]) == len(NAMES)
     assert all(repo["train_tasks"] == 4 and repo["test_tasks"] == 1
                for repo in report["repositories"])
-    assert all(repo["metrics"][0]["bucket_metrics"]["accuracy"] == 1
+    assert all(repo["metrics"] == [] and repo["evaluated_test_tasks"] == 0
                for repo in report["repositories"])
     for benchmark in NAMES:
+        child = report["datasets"][benchmark]
+        assert all(counter["queries"] == 0 for model in child["models"].values()
+                   for counter in model["availability"].values())
+        assert (first / benchmark / "model-predictions.jsonl").read_text() == ""
+        assert (first / benchmark / "predictions.jsonl").read_text() == ""
         folder = first / benchmark / "seed"
         lattice = json.loads((folder / "clause-lattice-time-kb.json").read_text())
         edge = json.loads((folder / "edge-kappa-kb.json").read_text())
@@ -137,7 +142,8 @@ def test_all_datasets_offline_call_only_and_test_does_not_train(tmp_path, max_op
                for benchmark in NAMES for name in FILES)
 
 
-def test_offline_lattice_variants_share_frozen_statistics_and_preserve_default_results(tmp_path, monkeypatch):
+@pytest.mark.parametrize("shell_tool", ["exec", "terminal_exec"])
+def test_offline_lattice_variants_share_frozen_statistics_and_preserve_default_results(tmp_path, monkeypatch, shell_tool):
     from offline.runner import run
     from offline.lattice_oracle import LatticeOracle
     from test_cold_start import trace
@@ -148,6 +154,10 @@ def test_offline_lattice_variants_share_frozen_statistics_and_preserve_default_r
         records = [json.loads(line) for line in trace(f"org__repo-{index}").splitlines()]
         # The qualified workload label is 1000 ms; raw hook time is different.
         records[1]["data"]["duration_ms"] = 9000
+        records[1]["data"]["tool_name"] = shell_tool
+        records.insert(1, {"type": "action", "action_type": "tool_exec", "action_id": "read-1",
+            "data": {"tool_name": "read_file", "tool_args": {"path": "work.py"},
+                     "duration_ms": 1, "success": True}})
         (dataset / f"task-{index}.trace.jsonl").write_text(
             "\n".join(json.dumps(row) for row in records) + "\n", encoding="utf-8")
     baseline = run(dataset, tmp_path / "baseline", benchmark="swe-rebench",
@@ -180,6 +190,11 @@ def test_offline_lattice_variants_share_frozen_statistics_and_preserve_default_r
     for model, metrics in baseline["models"].items():
         assert result["models"][model] == metrics
     rows = [json.loads(line) for line in (output / "model-predictions.jsonl").read_text().splitlines()]
+    assert {row["tool"] for row in rows} == {shell_tool}
+    assert all(counter["queries"] == 1 for model in result["models"].values()
+               for counter in model["availability"].values())
+    assert all(row["eligible"] == 1 for model in result["models"].values()
+               for row in model["metrics"] if row["target"] == "duration_ms")
     assert result["models"]["lattice_oracle"]["oracle"]["uses_test_labels"] is True
     assert "lattice_oracle uses actual test duration" in (output / "report.md").read_text()
     for model in ("lattice", "lattice_loso", "lattice_max_cardinality", "lattice_oracle"):
@@ -316,8 +331,9 @@ def test_offline_scores_pmu_separately_from_call_load(monkeypatch, tmp_path):
     for i in range(5):
         write_trace(source / f"{i}.jsonl", "bfcl", str(i))
     def load(*args):
-        return LoadedTask(calls=[CompletedCall("bfcl:dataset", "lookup", None, 0, 1,
-            pmu_eligible=True, pmu_ipc=.5, pmu_llc_mpki=1., pmu_llc_miss_rate=.1)])
+        return LoadedTask(calls=[CompletedCall("bfcl:dataset", "exec", "python work.py", 0, 1,
+            pmu_eligible=True, pmu_ipc=.5, pmu_llc_mpki=1., pmu_llc_miss_rate=.1)],
+            call_clauses=[({"argv": ["python", "work.py"]},)])
     monkeypatch.setattr(runner, "load_task", load)
     report = runner.run(source, tmp_path / "output", split_cache_dir=tmp_path / "splits")
     metrics = {row["target"]: row for row in report["metrics"]}

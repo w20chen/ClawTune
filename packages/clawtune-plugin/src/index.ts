@@ -1413,12 +1413,13 @@ export default definePluginEntry({
   // ── Shutdown handling ────────────────────────────────────────────────
   // Write interrupted spans and stop auto-started sidecar when plugin is
   // being unloaded.
-  let shuttingDown = false;
+  let shutdownPromise: Promise<void> | null = null;
 
-  async function performShutdown(): Promise<void> {
-    if (shuttingDown) return;
-    shuttingDown = true;
+  function performShutdown(): Promise<void> {
+    return shutdownPromise ??= shutdown();
+  }
 
+  async function shutdown(): Promise<void> {
     // Wait for the sidecar launch to complete (or fail) so the
     // launcher reference is populated before we try to clean it up.
     if (sidecarLaunchPromise) {
@@ -1429,12 +1430,10 @@ export default definePluginEntry({
       }
     }
 
-    // Clean up auto-started sidecar
-    if (sidecarLauncher) {
-      sidecarLauncher.cleanup();
-    }
-
     try {
+      if (sidecarLauncher) {
+        await sidecarLauncher.cleanup();
+      }
       if (traceCfg.trace_dir && registry.listActiveSpans().length > 0) {
         const activeSpans = registry.listActiveSpans();
         const endWall = wallClockNowNs();
@@ -1466,13 +1465,19 @@ export default definePluginEntry({
     }
   }
 
-  process.on("beforeExit", performShutdown);
+  const reportShutdownError = (error: unknown) => {
+    logger.error?.("sidecar shutdown failed", {error: String(error)});
+    process.exitCode = 1;
+  };
+  process.on("beforeExit", () => {
+    void performShutdown().catch(reportShutdownError);
+  });
 
   // On SIGINT (Ctrl+C) / SIGTERM, Node does not exit automatically when a
   // listener is registered.  Run the same cleanup and then exit.
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => {
-      performShutdown().finally(() => {
+      void performShutdown().catch(reportShutdownError).finally(() => {
         // Preserve conventional signal exit status instead of masking a
         // terminated OpenClaw process as a successful exit.
         process.exit(signal === "SIGINT" ? 130 : 143);

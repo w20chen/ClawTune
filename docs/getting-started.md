@@ -134,6 +134,17 @@ Expect model and tool events, pre-execution predictions, and post-execution meas
 | Online benchmark | A separate `<run>/kb/`, shared by tasks within that run |
 | Offline evaluation | Experiment-owned `seed/`, constructed from training data and frozen for testing |
 
+Online learning and queries continue in memory between saves. KB snapshots are
+written only by an explicit KB flush, a runtime drain with `flush_kb=true`, or
+normal sidecar shutdown. Benchmarks flush shared knowledge at run completion;
+individual task drains may omit that save. A forced process exit loses learning
+since the last completed save. An unchanged on-disk KB generation during a task
+does not mean that online learning has stopped. Offline evaluation remains frozen.
+Normal Linux shutdown waits for the final save to finish, so a large KB can delay exit.
+Managed KB snapshots that cannot be deserialized stop startup; they are not
+replaced by empty models. Writable checkpoints do not use content hashes, so
+this check does not detect every possible change to otherwise valid snapshot data.
+
 New daily state and online runs copy the bundled initialization prior by default. Override with `CLAWTUNE_KB_SEED` for daily use or `--seed <directory>` for benchmarks. Changing the prior does not reset existing state. Resuming an old run requires its original prior. The offline command's `--seed` is instead an integer split seed.
 
 The bundled seed contains Tool, Trie, Lattice, and Edge KBs after replaying 10 cases with eligible clause measurements, ordered by recorded start time. Each case contributes one complete recorded attempt; there is no train/test split. The current selection is entirely from `tobymao/sqlglot`. Tool and Trie retain repository-specific history, so they do not supply a public prior for other repositories. Missing or unqualified CPU, environment-memory, and PMU measurements remain unavailable.

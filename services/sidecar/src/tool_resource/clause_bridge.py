@@ -32,7 +32,8 @@ If a profile is missing/incompatible for an owned image, the target is returned
 only as diagnostics.
 
 **Full-proof, ambiguity-preserving mapping.** Only a runtime chain's initial
-invocation may match a static clause. Its executable and complete argv must
+invocation may match a static clause, after excluding a verified entry shell
+whose complete ``-c`` argument is the original command. Its executable and complete argv must
 align uniquely with the static word intents; later same-PID execs and forked
 descendants are ownership transitions. Runtime order, argv prefixes, wrapper
 subsequences, and bin-only identity never break ties. Any incomplete or
@@ -1076,6 +1077,25 @@ def bridge_command(
         si: (str(c["bin"]), tuple(str(word) for word in c["argv"]))
         for si, c in statics.items()
     }
+    # A shell may exec its last command without forking. Treat the verified
+    # entry `sh -c <original command>` as orchestration in that case too, just
+    # as for a shell that forks. Never search arbitrary later images for a
+    # match: explicit env/nice/script chains still start at their first image.
+    runtime_chains = dict(chains)
+    entry_chain = chains.get(entry_pid, [])
+    if len(entry_chain) > 1:
+        initial = entry_chain[0]
+        if (
+            initial.bin in _SHELL_BINS
+            and not _incomplete_capture(initial)
+            and len(initial.argv) == 3
+            and initial.argv[0].rsplit("/", 1)[-1] == initial.bin
+            and initial.argv[1:] == ("-c", command)
+            and initial.has_causal_end
+            and not initial.terminal
+            and not any(_alignment_evidence(c, initial)[0] is not None for c in statics.values())
+        ):
+            chains[entry_pid] = entry_chain[1:]
 
     def is_shell(pid: int) -> bool:
         if pid not in chains or not all(img.bin in _SHELL_BINS for img in chains[pid]):
@@ -1331,7 +1351,7 @@ def bridge_command(
             "from": [chain[index - 1].host_pid, chain[index - 1].exec_seq],
             "to": [image.host_pid, image.exec_seq],
         }
-        for chain in chains.values()
+        for chain in runtime_chains.values()
         for index, image in enumerate(chain)
         if index
     ]

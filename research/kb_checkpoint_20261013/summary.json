@@ -1,0 +1,193 @@
+{
+  "date": "2026-10-14",
+  "baseline_commit": "511de1d3db86a868328ff1cce7df2b26fec294ef",
+  "candidate_files_lf_sha256": {
+    "services/sidecar/src/clawtune_kb/store.py": "fe7dfec53548770737c2a002144b736a7bbbe7067584805887a316b4de0c4a2f",
+    "services/sidecar/src/clawtune_sidecar/predictors/tool_resource.py": "723787efc75d3de8faff7ff3d7a7db9651d1511885d1076f5bc58b87e5d36690",
+    "contracts/kb-state.schema.json": "dfb7c8cde8a292ac2ac3457527dc7db304342ea00df74cf271aee1dc319ec30e"
+  },
+  "workload": {
+    "source": "read-only SWE-rebench offline training seed clause-lattice-time-kb.json",
+    "corpus_sha256": "63c564551d86d38fd6165eff77f2763875fdf520ce160fd33033c825db57615a",
+    "history_rows": 2048,
+    "online_batches": 8,
+    "rows_per_batch": 4,
+    "order": 6,
+    "query_rows": 64,
+    "sequence": "Begin four overlapping Edge calls, complete in reverse order, enqueue their Lattice batch, wait for worker completion, query Lattice; repeat eight times, then explicitly save.",
+    "labels_and_features": "Original recorded values; incoming timestamps rebased to be causal after training.",
+    "timed_region": "Online learning and queries plus one final durable save; excludes corpus load, fitting, seed creation and restore setup."
+  },
+  "method": {
+    "repetitions_per_variant": 3,
+    "order": [
+      "before1",
+      "after1",
+      "after2",
+      "before2",
+      "before3",
+      "after3"
+    ],
+    "processes": "Separate fresh processes, sequential; no validation or heavy diagnostics ran concurrently.",
+    "python_hash_seed": "42",
+    "probe": "probe.py",
+    "baseline_setup": "git archive 511de1d3db86a868328ff1cce7df2b26fec294ef services/sidecar/src contracts, extracted to a separate directory",
+    "command_template": "PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=42 PYTHONPATH=<baseline-or-current>/services/sidecar/src:. python research/kb_checkpoint_20261013/probe.py --corpus <source-seed>/clause-lattice-time-kb.json --out <fresh-directory> --train-count 2048"
+  },
+  "timing_and_process_memory": {
+    "before": {
+      "online_s": {
+        "min": 11.926124847999972,
+        "median": 12.43754805499998,
+        "max": 12.504080640999973
+      },
+      "final_save_s": {
+        "min": 0.20764711300000727,
+        "median": 0.2119371379999393,
+        "max": 0.21830450499999188
+      },
+      "online_plus_save_s": {
+        "min": 12.144429352999964,
+        "median": 12.649485192999919,
+        "max": 12.71172775399998
+      },
+      "peak_rss_mib": {
+        "min": 942.5703125,
+        "median": 942.78515625,
+        "max": 943.421875
+      }
+    },
+    "after": {
+      "online_s": {
+        "min": 0.4428274160000001,
+        "median": 0.46904924900002243,
+        "max": 0.4962350199999719
+      },
+      "final_save_s": {
+        "min": 1.6142132519998995,
+        "median": 1.787900127999933,
+        "max": 2.2171499739999945
+      },
+      "online_plus_save_s": {
+        "min": 2.083262500999922,
+        "median": 2.284135147999905,
+        "max": 2.6599773899999946
+      },
+      "peak_rss_mib": {
+        "min": 952.828125,
+        "median": 952.85546875,
+        "max": 953.61328125
+      }
+    }
+  },
+  "median_total_speedup": 5.5379758085139565,
+  "io_examples": {
+    "before": {
+      "online_io": {
+        "snapshot_writes": 16,
+        "snapshot_bytes": 384189464,
+        "hash_reads": 32,
+        "hash_bytes": 392137224,
+        "copies": 32,
+        "copy_bytes": 392137224
+      },
+      "total_io": {
+        "snapshot_writes": 16,
+        "snapshot_bytes": 384189464,
+        "hash_reads": 36,
+        "hash_bytes": 441394768,
+        "copies": 32,
+        "copy_bytes": 392137224
+      }
+    },
+    "after": {
+      "online_io": {
+        "snapshot_writes": 0,
+        "snapshot_bytes": 0,
+        "hash_reads": 0,
+        "hash_bytes": 0,
+        "copies": 0,
+        "copy_bytes": 0
+      },
+      "total_io": {
+        "snapshot_writes": 2,
+        "snapshot_bytes": 48264069,
+        "hash_reads": 0,
+        "hash_bytes": 0,
+        "copies": 4,
+        "copy_bytes": 49257539
+      }
+    }
+  },
+  "equivalence": {
+    "all_six_full_state_and_prediction_fingerprints_equal": true,
+    "semantic_sha256": "d900b3ff0e0306d15a50ee3b5249a89d370aededda766619298fdc24ba49b479",
+    "fingerprint_scope": "Every recorded Lattice/Edge prediction plus final Lattice, Edge (including runtime tokens/feedback/weights), Trie and Runtime snapshots. Trie/Runtime are static in this writer workload.",
+    "initial_edge_counts": {
+      "nodes": 25875,
+      "edges": 90034,
+      "edge_updates": 9383
+    },
+    "final_edge_counts": {
+      "nodes": 25898,
+      "edges": 90060,
+      "edge_updates": 9728
+    },
+    "unchanged_algorithm_files_lf_sha256": {
+      "services/sidecar/src/tool_time/lattice_kb.py": "5cd079905f5c6d0e78a1f07606884503bb5a7764f0dad16c005afd7727f62a40",
+      "services/sidecar/src/tool_time/incremental.py": "a1e933a7d7268335390a118a99cfb934975e38e6847910928b80eb7d44483dbc",
+      "services/sidecar/src/tool_resource/runtime_kb.py": "38a8d15416190b6c549dda36a156c027c3e328ff3b5cf462d22e1ef7e9941557",
+      "services/sidecar/src/edge_kappa_kb/kb.py": "b38a1196df723191e74481d874d04f6f30865ae48a1df96728b54d3260a8cc3e",
+      "services/sidecar/src/edge_kappa_kb/graph.py": "4382c0bb2033aabd8f0d4ce76dd01b2b7738c7d94cca45ebc2187485dfefbe15",
+      "services/sidecar/src/edge_kappa_kb/snapshot.py": "6008c703fafffe79a908015e3f18b479d5ed66a46baa5473675978239c22dfb9",
+      "services/sidecar/src/clawtune_sidecar/predictors/edge_kappa.py": "a0de9265cdfeb2e0881cb93346ce32a42c43b09e030f33aef2419bdd1dca6cd0",
+      "services/sidecar/src/clawtune_sidecar/predictors/call_load.py": "f77d4b506bb078d7d6136d2f28c3a8f4b9598afe5ea916181ddd60d3faefdbad",
+      "services/sidecar/src/execution_context/duration.py": "d74b25f0c7b401f05b282ea8059160270f328d47ee544d509c034ac2ff2a22e6"
+    },
+    "reload_checks": "Saved Edge payload equals live state; restored Edge model equals live nodes/edges; restored Lattice future prediction equals live prediction. Overlapping feedback after restart is also checked in test_kb_checkpoint_policy.py."
+  },
+  "validation": {
+    "validation-20261014": {
+      "tests": "1747",
+      "failures": "1",
+      "errors": "0",
+      "skipped": "2",
+      "time": "385.071",
+      "failures_detail": [
+        {
+          "classname": "test_swe_rebench_runner_inspection",
+          "name": "test_wait_process_exit_tolerates_keyboard_interrupt",
+          "time": "0.036",
+          "message": "FileNotFoundError: [Errno 2] No such file or directory: 'python'"
+        }
+      ]
+    },
+    "validation-followup-20261014": {
+      "tests": "257",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "237.254",
+      "failures_detail": []
+    }
+  },
+  "combined_latest_test_results": {
+    "passed": 1746,
+    "failed": 0,
+    "skipped": 2
+  },
+  "validation_notes": [
+    "Full suite: all tests except one PATH-dependent subprocess test passed; two opt-in Docker/cgroup checks skipped.",
+    "Follow-up includes that subprocess test with the venv on PATH, the new normal-close test, predictor, writer, Edge runtime, lifecycle and HTTP API suites after the final close change.",
+    "New test/probe Ruff checks pass; changed production modules have 50 pre-existing findings and no added findings relative to baseline.",
+    "Unrun live checks and commands are recorded in docs/CURRENT_PLAN.md."
+  ],
+  "limits": [
+    "This is a model/writer component replay, not a full HTTP concurrency or long-duration acceptance test.",
+    "The final checkpoint is still a full snapshot and generation copy; its cost remains proportional to model size.",
+    "This 2048-row history produces a roughly 48 MB changed snapshot payload; do not extrapolate its timings to the earlier 2.08 GB full corpus.",
+    "Peak RSS includes setup, snapshot verification, and both live/restored models; it is not steady-state service memory.",
+    "Retention, Lattice reindexing, query locks, and memory growth are unchanged. Earlier update visibility can change wall-clock query results while preserving the algorithm for identical visible history.",
+    "Forced termination loses learning since the last completed explicit save, as authorized."
+  ]
+}
