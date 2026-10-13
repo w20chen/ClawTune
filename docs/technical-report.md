@@ -67,7 +67,7 @@ $$
 r_S=v_S+\frac{\alpha}{\sqrt{n_S}}.
 $$
 
-The penalty for a top-level singleton is $2\alpha$. The active prediction path disables time-drift penalties. A zero stored shrinkage variance falls back to the local or global variance. Defaults are $\kappa=5$ and $\alpha=0.03$.
+The penalty for a top-level singleton is $2\alpha$. The active prediction path disables time-drift penalties. A zero stored shrinkage variance falls back to the local or global variance. The active path uses $\kappa=0.5$ and $\alpha=0.03$.
 
 A more-specific context $T$ eliminates $S$ from selection when
 
@@ -116,7 +116,7 @@ Ties prefer more observations. This specificity baseline has no cross-validation
 
 ### 4.5 EdgeKappaKB
 
-EdgeKappa maintains a separate bounded feature graph. Node creation keeps the full feature set and bounded combinations of optional features with the core features. Committed observations accumulate in every existing node whose features are a subset of the observation's features. Querying does not create observations; an unseen full feature set uses matching parent contexts with initial weights.
+EdgeKappa maintains a separate bounded feature graph. Initial batch fitting creates full-feature nodes and bounded combinations of optional features with the core features. Online `begin` first commits earlier completed observations, creates a missing full-feature node with its nearest existing parents, backfills that node from matching committed observations, and saves a pre-execution prediction token. It does not generate all bounded subsets again or add the current call's duration observation. A query without `begin` can use matching parent contexts for an unseen full feature set without creating a node. Completion queues eligible observations; committing them accumulates samples in every existing node whose features are a subset of the observation's features and applies eligible saved-token feedback. A cancelled or rejected call discards unused tokens without adding outcomes or applying completion feedback.
 
 For query node $S$, let $O_S$ be its observations and $c_{S,b}$ its count in duration bucket $b$. Each parent $P$ contributes only $D_{P,S}=O_P\setminus O_S$, excluding evidence already counted at the child. Parents with empty differences contribute nothing. With $B$ buckets:
 

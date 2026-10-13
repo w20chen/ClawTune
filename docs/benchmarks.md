@@ -375,6 +375,8 @@ Timeout finalization follows confirmed producer shutdown. Tools lacking verified
 
 ## 5. Fixed-trace offline evaluation
 
+The ordinary `scripts/clawtune.py offline` workflow below evaluates the four base KBs and their call composer. It does not evaluate the live execution-context correction layer. The separate execution-context regression evaluates that shared correction on the saved Lattice shrinkage predictions and its recorded task split; it does not establish corrected accuracy for all four backends or new live workloads.
+
 The execution-context duration correction uses the same `execution_context` module
 as the sidecar. Reproduce its fixed-trace regression from the repository root:
 
@@ -396,6 +398,10 @@ without learning evaluation durations. Context correction affects the full durat
 distribution and retains the original prediction when support is insufficient.
 Missing history is unknown, and benchmark-specific failure frequencies should only
 be reused with a compatible training distribution.
+
+Online context samples count a `(gateway_id, runtime_id)` as one task instance across agent turns, retries, and session changes. Without a runtime, a stable session is used; a `run_id` alone supplies no independent-task support. This follows the offline rule that repeated calls and attempts of one task are not independent tasks. Loading an older context KB merges recoverable runtime/session identities while retaining durations and failure labels. Ambiguous old run-only identities retain their observations but do not count toward independent-task thresholds. A writable KB persists the normalized identities on its next flush; frozen loading leaves the input files unchanged.
+
+Frozen mode loads the bundled rules and any existing `command-rules/` cache once into a read-only registry. It disables automatic discovery/generation and never writes new rules to the seed, even when an upstream model is configured. Unknown syntax remains partial or invalid. Preserve the same bundled-rule checkout, rule-cache files, and tool versions alongside the KB seed for reproducible evaluation. Newly generated rules are scoped to a known `tool_version`; a different or missing version cannot use that rule. With no known version, the existing repository/runtime scope still applies.
 
 Install the [development dependencies](getting-started.md#5-development-checks). No provider key, Docker execution, or running collector is needed. Use the JSONL execution traces produced by ClawTune, retaining their metadata and adjacent task identity files, **not online task lists**.
 

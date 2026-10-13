@@ -121,15 +121,15 @@ def build_state(config: SidecarConfig | None = None) -> AppState:
         miss_penalty_s=cfg.tool_resource_miss_penalty_s,
         numa_usage_sampler=NumaCpuUsageSampler(),
     )
-    if predictor.artifact_dir is not None:
+    if predictor.artifact_dir is not None and not cfg.tool_resource_frozen:
         predictor.artifact_dir.mkdir(parents=True, exist_ok=True)
     from command_parser import CommandFeatureService
     from command_parser.generation import GeneratorConfig, RuleGenerator
     from command_parser.help_runner import HelpRunner
     from command_parser.registry import RuleRegistry
     rule_cache = predictor.artifact_dir / "command-rules" if predictor.artifact_dir else None
-    registry = RuleRegistry(rule_cache)
-    generator = RuleGenerator(registry, GeneratorConfig.from_sidecar(cfg),
+    registry = RuleRegistry(rule_cache, read_only=cfg.tool_resource_frozen)
+    generator = None if cfg.tool_resource_frozen else RuleGenerator(registry, GeneratorConfig.from_sidecar(cfg),
                               help_runner=HelpRunner(idle=lambda: not predictor.active_execution_ids(),
                                                      gate=predictor._execution_start_lock))
     predictor.command_features = CommandFeatureService(registry, generator)

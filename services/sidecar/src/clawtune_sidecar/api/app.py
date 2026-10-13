@@ -838,6 +838,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
 
     @app.on_event("shutdown")
     async def shutdown_state() -> None:
+        if app_state._decision_tasks:
+            await asyncio.gather(*list(app_state._decision_tasks.values()), return_exceptions=True)
         if runtime_abort_tasks:
             await asyncio.gather(*list(runtime_abort_tasks.values()), return_exceptions=True)
         fallbacks = list(app_state._ebpf_finalize_tasks.values())
@@ -1521,6 +1523,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
     ) -> dict[str, bool]:
         stored = s._sandbox_scopes_by_owner.pop((None, runtime_id), None) is not None
         await s.leases.release_runtime(runtime_id, None)
+        await asyncio.to_thread(s.predictor.finalize_runtime, runtime_id, None)
         if s.trace_writer is not None:
             s.trace_writer.release_runtime(runtime_id)
         s._completed_tool_event_ids.difference_update(
@@ -1559,6 +1562,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             is not None
         )
         await s.leases.release_runtime(runtime_id, gateway_id)
+        await asyncio.to_thread(s.predictor.finalize_runtime, runtime_id, gateway_id)
         if s.trace_writer is not None:
             s.trace_writer.release_runtime(runtime_id, gateway_id)
         s._completed_tool_event_ids.difference_update(
@@ -1787,6 +1791,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     observation_errors.append({"execution_id": execution_id, "error": telemetry.kb_update_error})
                 if not await cleanup_owned_cgroup(s, execution_id):
                     schedule_owned_cgroup_cleanup(s, execution_id)
+            await asyncio.to_thread(s.predictor.finalize_runtime, runtime_id, gateway_id)
             response = {"finalized": True, "gateway_id": gateway_id, "runtime_id": runtime_id,
                         "reason": request.reason, "aborted_execution_ids": sorted(aborted_ids),
                         "pmu_profiles": pmu_profiles, "observation_errors": observation_errors,
@@ -1870,19 +1875,31 @@ def create_app(state: AppState | None = None) -> FastAPI:
         else:
             app_state._runtime_activity.pop(key, None)
 
+    async def predictor_operation(method, *args):
+        task = asyncio.create_task(asyncio.to_thread(method, *args))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # Cancellation cannot stop the thread. Finish its state changes
+            # before a terminal handler releases its prediction bindings.
+            await task
+            raise
+
     async def calculate_tool_decision(
         request: ToolBeforeRequest,
         s: AppState,
         decision_key: tuple[str | None, ...],
     ) -> ToolDecision:
         activity_key = begin_runtime_activity(request)
+        retained = False
+        decision = None
         try:
             start = time.monotonic()
             s.metrics.inc("scheduler_tool_requests_total")
             if s.trace_writer is not None:
                 s.trace_writer.record_tool_started(request)
             s.predictor.record_tool_started(request)
-            prediction = await asyncio.to_thread(s.predictor.predict, request)
+            prediction = await predictor_operation(s.predictor.predict, request)
             if s.trace_writer is not None:
                 s.trace_writer.record_tool_prediction(request, prediction)
             decision = await s.policy.decide(
@@ -1892,23 +1909,28 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     placement=PlacementAdvice(),
                 ),
             )
-            s._tool_decisions_by_event_id[decision_key] = (
-                request.params_digest,
-                request.tool_name,
-                decision,
-            )
-            while len(s._tool_decisions_by_event_id) > 10_000:
-                oldest = next(iter(s._tool_decisions_by_event_id))
-                s._tool_decisions_by_event_id.pop(oldest, None)
             if decision.action == "allow":
                 s.tool_monitor.begin(request, prediction.resource_class)
                 if s.docker_exec_observer is not None and request.tool_name not in {"web_search", "web_fetch"}:
                     s.docker_exec_observer.begin_tool(request)
             s.metrics.inc("scheduler_tool_decisions_total")
             s.metrics.decision_latencies.append(time.monotonic() - start)
+            s._tool_decisions_by_event_id[decision_key] = (
+                request.params_digest, request.tool_name, decision,
+            )
+            while len(s._tool_decisions_by_event_id) > 10_000:
+                oldest = next(iter(s._tool_decisions_by_event_id))
+                s._tool_decisions_by_event_id.pop(oldest, None)
+            retained = decision.action == "allow"
             return decision
         finally:
-            end_runtime_activity(activity_key)
+            try:
+                if not retained:
+                    await asyncio.to_thread(s.predictor.finalize_call, request)
+                    if decision is not None:
+                        await s.leases.release(decision.lease_id, owner=owner_key(request))
+            finally:
+                end_runtime_activity(activity_key)
 
     @app.post("/v1/decisions/tool")
     async def decide_tool(
@@ -2122,7 +2144,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                             pmu_profile=pmu_profile.to_dict(),
                         )
                 try:
-                    await asyncio.to_thread(s.predictor.observe_completion, event, sample)
+                    await predictor_operation(s.predictor.observe_completion, event, sample)
                 except Exception:
                     logger.exception("KB observation failed for execution %s", event.execution_id)
                 s.metrics.observe_tool_runtime(sample)
@@ -2165,7 +2187,10 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     )
             raise
         finally:
-            end_runtime_activity(activity_key)
+            try:
+                await asyncio.to_thread(s.predictor.finalize_call, event)
+            finally:
+                end_runtime_activity(activity_key)
 
     @app.post("/v1/events/model")
     async def model_event(

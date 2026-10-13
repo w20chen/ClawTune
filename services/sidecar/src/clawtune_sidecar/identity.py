@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from typing import Any, TypeAlias
-
 
 OwnerKey: TypeAlias = tuple[str | None, str | None, str | None, str | None, str | None]
 CorrelationKey: TypeAlias = tuple[
@@ -13,6 +13,17 @@ CorrelationKey: TypeAlias = tuple[
     str | None,
     str,
 ]
+
+
+def task_instance_key(value: Any) -> str | None:
+    """Count runtime tasks (or legacy sessions), never individual agent turns."""
+    gateway, runtime, _agent, session, _run = owner_key(value)
+    if runtime is not None:
+        return json.dumps(["runtime", gateway, runtime], separators=(",", ":"))
+    if session is not None:
+        return json.dumps(["session", gateway, session], separators=(",", ":"))
+    # A run alone cannot establish independent-task support.
+    return None
 
 
 def owner_key(value: Any) -> OwnerKey:

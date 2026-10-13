@@ -94,9 +94,9 @@ class CommandFeatureService:
             self._discovered.add(identity)
         self.generator.discover(context)
 
-    def close(self) -> None:
+    def close(self, timeout_seconds=None) -> None:
         if self.generator:
-            self.generator.close()
+            self.generator.close(timeout_seconds=timeout_seconds)
         with self._lock:
             self._calls.clear()
 

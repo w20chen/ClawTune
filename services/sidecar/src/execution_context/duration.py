@@ -3,15 +3,45 @@
 First use sufficiently supported command/context evidence, then apply the
 conservative early-failure prior. The underlying KB algorithms are unchanged.
 """
-from collections import Counter, defaultdict
+import ast
 import json
 import math
 import statistics
+from collections import Counter, defaultdict
 
 from .history import finite, probe
 
 SNAPSHOT_NAME = "execution-context-kb.json"
 FORMAT = "clawtune.execution-context-kb.v1"
+
+
+def stable_task(task):
+    """Normalize the old live ((gateway, runtime, session), run) encoding.
+
+    Offline dataset task IDs and new canonical IDs are left intact. If an old
+    record has neither a runtime nor a provable session, retain its observation
+    but do not count it as evidence of an independent task.
+    """
+    if not task.startswith('(('):
+        return task
+    try:
+        value = ast.literal_eval(task)
+    except (ValueError, SyntaxError):
+        return task
+    if not (isinstance(value, tuple) and len(value) == 2
+            and isinstance(value[0], tuple) and len(value[0]) == 3
+            and all(v is None or isinstance(v, str) for v in (*value[0], value[1]))):
+        return task
+    (gateway, runtime, session_or_run), run_or_session = value
+    if runtime:
+        return json.dumps(['runtime', gateway, runtime], separators=(',', ':'))
+    if session_or_run and session_or_run != run_or_session:
+        return json.dumps(['session', gateway, session_or_run], separators=(',', ':'))
+    return None
+
+
+def independent_tasks(group):
+    return {task for sample in group if (task := stable_task(sample['task'])) is not None}
 
 
 def context_keys(repo, state, clauses):
@@ -62,12 +92,12 @@ class DurationContextKB:
             return None
         selected, reason, probability = [], None, None
         group = self.groups['evidence'].get(keys.get('evidence'), [])
-        if len(group) >= 3 and len({s['task'] for s in group}) >= 2:
+        if len(group) >= 3 and len(independent_tasks(group)) >= 2:
             selected, reason = group, 'command_evidence'
             baseline_ms = statistics.median(s['duration_ms'] for s in group)
         group = self.groups['failure'].get(keys.get('failure'), [])
         counts = Counter(s['failure'] for s in group if s['failure'])
-        if counts and len(group) >= 5 and len({s['task'] for s in group}) >= 3:
+        if counts and len(group) >= 5 and len(independent_tasks(group)) >= 3:
             label, n = counts.most_common(1)[0]
             failures = [s for s in group if s['failure'] == label]
             if n / len(group) >= .98 and statistics.median(s['duration_ms'] for s in failures) < baseline_ms:
@@ -89,7 +119,7 @@ class DurationContextKB:
         validate(value, 'execution-context-kb.schema.json')
         result = cls()
         for sample in value['samples']:
-            if not result.observe(sample['keys'], ident=sample['id'], task=sample['task'],
+            if not result.observe(sample['keys'], ident=sample['id'], task=stable_task(sample['task']) or sample['task'],
                                   duration_ms=sample['duration_ms'], failure=sample['failure']):
                 raise ValueError('duplicate or invalid execution-context observation')
         return result

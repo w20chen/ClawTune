@@ -166,6 +166,15 @@ class EdgeKappaRuntime:
             output.append(row)
         return output
 
+    def cancel_call(self, call_id: str) -> bool:
+        """Discard unused begin tokens without adding outcomes or feedback."""
+        tokens = self._calls.pop(call_id, {})
+        for event_id in tokens:
+            # A partially accepted completion still owns its queued token.
+            if event_id not in self.kb._completed:
+                self.kb.discard_prediction(event_id)
+        return bool(tokens)
+
     def complete_call(self, call_id: str, observations: Iterable[ClauseObservation], *, commit_time: float) -> None:
         """Unique feature matches learn from pre-action tokens; others count only.
 

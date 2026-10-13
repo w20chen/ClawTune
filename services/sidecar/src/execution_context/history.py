@@ -316,6 +316,14 @@ class ExecutionEvidence:
         self.started[event['id']] = parsed, mutation, self.generation
         return snapshots
 
+    def cancel(self, ident):
+        """Release an unfinished call without publishing outcome evidence."""
+        old = self.started.pop(ident, None)
+        self.active.discard(ident)
+        if old is not None and old[1]:
+            # The call may have changed its environment before cancellation.
+            self.generation += 1
+
     def complete(self, event):
         parsed, mutation, generation = self.started.pop(event['id'])
         stable = generation == self.generation and not (self.active - {event['id']})
@@ -466,6 +474,10 @@ class ContextHistory:
         result = {'parsed': declared, 'snapshots': self.evidence.begin(event), 'failure': failure}
         self.pending[event['id']] = event, result
         return result
+
+    def cancel(self, ident):
+        self.pending.pop(ident, None)
+        self.evidence.cancel(ident)
 
     def complete(self, event):
         old = self.pending.pop(event['id'], None)

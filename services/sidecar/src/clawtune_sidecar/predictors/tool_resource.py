@@ -11,6 +11,7 @@ import time
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from dataclasses import asdict, dataclass
+from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
 
@@ -128,6 +129,27 @@ class _KnowledgeBaseBarrier:
     future: Future[None]
 
 
+class _KnowledgeBaseStop(_KnowledgeBaseBarrier):
+    """Final durability barrier; the worker exits after processing it."""
+
+
+def _open_operation(method):
+    """Fence new work at shutdown and let admitted operations finish first."""
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._operations:
+            if self._closing:
+                raise RuntimeError("tool-resource predictor is closing")
+            self._active_operations += 1
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            with self._operations:
+                self._active_operations -= 1
+                self._operations.notify_all()
+    return wrapped
+
+
 class _KnowledgeBaseWriteCoordinator:
     """Single-writer, batched persistence coordinator for one shared KB.
 
@@ -154,29 +176,66 @@ class _KnowledgeBaseWriteCoordinator:
         self._queue: queue.Queue[_KnowledgeBaseUpdate | _KnowledgeBaseBarrier] = (
             queue.Queue()
         )
-        self._state_lock = threading.Lock()
+        self._state_lock = threading.RLock()
         self._worker: threading.Thread | None = None
         self._inflight = False
+        self._accepting = True
+        self._shutdown: Future[None] | None = None
 
     def enqueue(
         self,
         lattice_observations: Sequence[ClauseObservation] = (),
     ) -> None:
-        self._queue.put(
-            _KnowledgeBaseUpdate(tuple(lattice_observations))
-        )
-        self._ensure_worker()
+        with self._state_lock:
+            if not self._accepting:
+                raise RuntimeError("KB writer is closing")
+            self._queue.put(_KnowledgeBaseUpdate(tuple(lattice_observations)))
+            self._ensure_worker()
 
     def flush(self, timeout_seconds: float | None = None) -> None:
         barrier: Future[None] = Future()
-        self._queue.put(_KnowledgeBaseBarrier(barrier))
-        self._ensure_worker()
+        with self._state_lock:
+            if not self._accepting:
+                raise RuntimeError("KB writer is closing")
+            self._queue.put(_KnowledgeBaseBarrier(barrier))
+            self._ensure_worker()
         try:
             barrier.result(timeout=timeout_seconds)
         except FutureTimeoutError as exc:
             raise TimeoutError(
                 "timed out waiting for shared tool-resource KB flush"
             ) from exc
+
+    def close(self, timeout_seconds: float | None = None) -> None:
+        """Stop intake, persist preceding work, and join the owning writer.
+
+        Timeouts retain ownership. A failed final flush can be retried by a
+        subsequent close; no caller may submit more observations meanwhile.
+        """
+        deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
+        with self._state_lock:
+            self._accepting = False
+            if self._shutdown is None:
+                self._shutdown = Future()
+                self._queue.put(_KnowledgeBaseStop(self._shutdown))
+                self._ensure_worker()
+            barrier, worker = self._shutdown, self._worker
+        try:
+            barrier.result(timeout=timeout_seconds)
+        except BaseException as exc:
+            if isinstance(exc, FutureTimeoutError) and not barrier.done():
+                raise TimeoutError("timed out closing shared tool-resource KB writer") from exc
+            # Join before enabling a retry so it cannot enqueue behind an
+            # exiting worker. The owner retains its lock on persistence errors.
+            if worker is not None:
+                worker.join()
+            with self._state_lock:
+                self._shutdown = None
+            raise
+        if worker is not None:
+            worker.join(None if deadline is None else max(0, deadline - time.monotonic()))
+            if worker.is_alive():
+                raise TimeoutError("timed out joining shared tool-resource KB writer")
 
     def pending(self) -> bool:
         with self._state_lock:
@@ -226,6 +285,8 @@ class _KnowledgeBaseWriteCoordinator:
             finally:
                 with self._state_lock:
                     self._inflight = False
+            if any(isinstance(item, _KnowledgeBaseStop) for item in items):
+                return
 
     def _process(
         self,
@@ -376,6 +437,11 @@ class ToolResourcePredictor:
         self._execution_lock = threading.RLock()
         self._execution_start_lock = threading.Lock()
         self._starts_lock = threading.RLock()
+        self._operations = threading.Condition()
+        self._active_operations = 0
+        self._closing = False
+        self._closed = False
+        self._close_lock = threading.Lock()
         self._runtime_kb_version = 0
         self._runtime_kb_persisted_version = 0
         self._clause_kb_version = 0
@@ -391,12 +457,14 @@ class ToolResourcePredictor:
         self._runs_by_execution_id: dict[str, CommandRun] = {}
         self._execution_owners: dict[str, tuple[str | None, str | None]] = {}
         from command_parser import CommandFeatureService
-        self.command_features = CommandFeatureService()
+        from command_parser.registry import RuleRegistry
+        self.command_features = CommandFeatureService(RuleRegistry(read_only=frozen))
         self._feature_call_keys: dict[tuple, str] = {}
         self._telemetry_by_execution_id: dict[str, ExecutionTelemetrySummary] = {}
         self._starts: dict[CorrelationKey, ToolBeforeRequest] = {}
         from execution_context.duration import DurationContextKB, SNAPSHOT_NAME
         self.duration_context_kb = DurationContextKB()
+        context_identity_changed = False
         self.duration_context_snapshot_path = artifact_dir / SNAPSHOT_NAME if artifact_dir else None
         if frozen and artifact_dir and not self.duration_context_snapshot_path.is_file():
             for manifest_name in ('manifest.json', 'seed-manifest.json'):
@@ -411,8 +479,10 @@ class ToolResourcePredictor:
                     hashes = json.loads(manifest_path.read_text(encoding='utf8'))['snapshots']
                     if hashlib.sha256(path.read_bytes()).hexdigest() != hashes.get(path.name):
                         raise ValueError('frozen execution-context snapshot hash mismatch')
-            self.duration_context_kb = DurationContextKB.from_json_obj(json.loads(path.read_text(encoding='utf8')))
-        self._duration_context_version = 0
+            context_payload = json.loads(path.read_text(encoding='utf8'))
+            self.duration_context_kb = DurationContextKB.from_json_obj(context_payload)
+            context_identity_changed = self.duration_context_kb.to_json_obj() != context_payload
+        self._duration_context_version = int(context_identity_changed)
         self._duration_context_persisted_version = 0
         self._context_histories = {}
         self._context_pending = {}
@@ -674,7 +744,17 @@ class ToolResourcePredictor:
             max_optional_features=max_optional_features,
         )
 
+    @_open_operation
     def predict(
+        self, request: ToolBeforeRequest,
+    ) -> ToolPrediction:
+        try:
+            return self._predict(request)
+        except BaseException:
+            self.finalize_call(request)
+            raise
+
+    def _predict(
         self, request: ToolBeforeRequest,
     ) -> ToolPrediction:
         # All backends and diagnostics see one serialized causal transaction.
@@ -697,8 +777,9 @@ class ToolResourcePredictor:
             event = {'id': call_key(request), 'line': 0, 'start': time.time(),
                      'tool': request.tool_name, 'args': args}
             duration_context = history.begin(event)
+            from clawtune_sidecar.identity import task_instance_key
             self._context_pending[call_key(request)] = (scope, event, duration_context,
-                                                       request.run_id or request.session_id or request.runtime_id)
+                                                       task_instance_key(request))
             legacy = self._predict_legacy(request, command_context)
             query = ToolCallQuery(repo=request.repo or self.repo, tool_name=request.tool_name,
                                   command=_command_for_request(request), ts_start=time.time(),
@@ -985,25 +1066,68 @@ class ToolResourcePredictor:
             "miss_penalty_s": self.miss_penalty_s,
         }
 
+    @_open_operation
     def record_tool_started(self, request: ToolBeforeRequest) -> None:
         with self._starts_lock:
             self._starts[correlation_key(request)] = request
 
+    def finalize_call(self, value: ToolBeforeRequest | ToolCompletedEvent) -> None:
+        """Idempotently release prediction state; this operation never learns."""
+        with self._starts_lock:
+            start = self._starts.pop(correlation_key(value), None)
+            if start is None and value.tool_call_id is not None:
+                start = self._pop_start_by_tool_call_id(value.tool_call_id, value)
+        with self._kb_lock:
+            self._finalize_call_key(call_key(start or value))
+
+    def _finalize_call_key(self, key: str) -> None:
+        pending = self._context_pending.pop(key, None)
+        if pending is not None:
+            self._context_histories[pending[0]].cancel(pending[1]['id'])
+        self.command_features.bind_observations([], key, release=True)
+        for owner, feature_key in list(self._feature_call_keys.items()):
+            if feature_key == key:
+                self._feature_call_keys.pop(owner, None)
+        if self.edge_kappa.cancel_call(key) and not self.frozen:
+            self._edge_kappa_version += 1
+            self._kb_writes.enqueue()
+
+    def finalize_runtime(self, runtime_id: str, gateway_id: str | None) -> None:
+        """Retire only the named runtime's unfinished calls and history."""
+        with self._starts_lock, self._kb_lock:
+            for key, request in list(self._starts.items()):
+                if (request.gateway_id, request.runtime_id) == (gateway_id, runtime_id):
+                    self._starts.pop(key, None)
+                    self._finalize_call_key(call_key(request))
+            for key, pending in list(self._context_pending.items()):
+                if pending[0][:2] == (gateway_id, runtime_id):
+                    self._finalize_call_key(key)
+            for scope in list(self._context_histories):
+                if scope[:2] == (gateway_id, runtime_id):
+                    self._context_histories.pop(scope, None)
+
+    @_open_operation
     def observe_completion(
-        self,
-        event: ToolCompletedEvent,
-        sample: ToolRuntimeSample,
+        self, event: ToolCompletedEvent, sample: ToolRuntimeSample,
     ) -> int:
         with self._starts_lock:
             start = self._starts.pop(correlation_key(event), None)
             if start is None and event.tool_call_id is not None:
-                start = self._pop_start_by_tool_call_id(
-                    event.tool_call_id,
-                    event,
-                )
+                start = self._pop_start_by_tool_call_id(event.tool_call_id, event)
+        try:
+            return self._observe_completion(event, sample, start)
+        finally:
+            self.finalize_call(start or event)
+
+    def _observe_completion(
+        self,
+        event: ToolCompletedEvent,
+        sample: ToolRuntimeSample,
+        start: ToolBeforeRequest | None,
+    ) -> int:
         from execution_context.history import exit_label, failure_label, output_text
         with self._kb_lock:
-            pending = self._context_pending.pop(call_key(start or event), None)
+            pending = self._context_pending.get(call_key(start or event))
             if pending is not None:
                 scope, before, context, task = pending
                 text = output_text(event.raw_result)
@@ -1011,11 +1135,10 @@ class ToolResourcePredictor:
                 if code is None:
                     code = 0 if event.succeeded else 1
                     text += f'\nExit code: {code}'
-                self._context_histories[scope].complete({**before, 'end': time.time(), 'output': text})
+                if not _truncated_outcome(event.error_type):
+                    self._context_histories[scope].complete({**before, 'end': time.time(), 'output': text})
                 # Frozen evaluation still advances history, but never learns its durations.
         if self.frozen:
-            self.command_features.bind_observations([], call_key(start or event), release=True)
-            self._feature_call_keys.pop((event.gateway_id, event.runtime_id, event.tool_call_id), None)
             return 0
         artifact: dict[str, Any] | None = None
         if event.execution_id:
@@ -1040,7 +1163,7 @@ class ToolResourcePredictor:
                 with self._kb_lock:
                     if self.duration_context_kb.observe(
                             context.get('keys', {'evidence': None, 'failure': None}),
-                            ident=before['id'], task=str((scope, task)), duration_ms=seconds * 1000,
+                            ident=before['id'], task=task, duration_ms=seconds * 1000,
                             failure=failure_label(text) if code else None):
                         self._duration_context_version += 1
                         self._kb_writes.enqueue()
@@ -1095,7 +1218,6 @@ class ToolResourcePredictor:
             import logging
             logging.getLogger(__name__).exception("edge kappa clause update failed")
         self._kb_writes.enqueue()
-        self._feature_call_keys.pop((event.gateway_id, event.runtime_id, event.tool_call_id), None)
         if completed_call is not None:
             with self._kb_lock:
                 self.continuous_kb.observe_completed_call(completed_call)
@@ -1104,6 +1226,7 @@ class ToolResourcePredictor:
                 self._kb_writes.enqueue()
         return 1 if completed_call is not None else 0
 
+    @_open_operation
     def begin_execution(
         self,
         *,
@@ -1235,6 +1358,7 @@ class ToolResourcePredictor:
                 )
             return bool(getattr(observer, "telemetry_available", True))
 
+    @_open_operation
     def finish_execution(
         self,
         *,
@@ -1427,17 +1551,33 @@ class ToolResourcePredictor:
 
         self._kb_writes.flush(timeout_seconds)
 
-    def close(self) -> None:
+    def close(self, timeout_seconds: float = 30.0) -> None:
         """Make queued KB generations durable before sidecar shutdown."""
 
-        try:
-            self.flush_kb_updates(timeout_seconds=30.0)
-        finally:
-            self.command_features.close()
+        deadline = time.monotonic() + timeout_seconds
+        with self._close_lock:
+            if self._closed:
+                return
+            with self._operations:
+                self._closing = True
+                if not self._operations.wait_for(
+                    lambda: self._active_operations == 0,
+                    timeout=max(0, deadline - time.monotonic()),
+                ):
+                    raise TimeoutError("timed out waiting for active predictor operations")
+            with self._starts_lock, self._kb_lock:
+                for key in set(self._context_pending) | set(self.edge_kappa._calls) | set(self.command_features._calls):
+                    self._finalize_call_key(key)
+                self._starts.clear()
+                self._feature_call_keys.clear()
+                self._context_histories.clear()
+            self.command_features.close(timeout_seconds=max(0, deadline - time.monotonic()))
+            self._kb_writes.close(max(0, deadline - time.monotonic()))
             store = getattr(self, "_state_store", None)
             if store is not None:
                 store.__exit__(None, None, None)
                 self._state_store = None
+            self._closed = True
 
     def kb_updates_pending(self) -> bool:
         """Return whether the single writer has queued or in-flight work."""

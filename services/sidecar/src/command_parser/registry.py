@@ -11,8 +11,10 @@ from .validation import validate_rule
 
 
 class RuleRegistry:
-    def __init__(self, cache_dir: Path | None = None, *, bundled: bool = True) -> None:
+    def __init__(self, cache_dir: Path | None = None, *, bundled: bool = True,
+                 read_only: bool = False) -> None:
         self.cache_dir = cache_dir
+        self.read_only = False
         self._lock = threading.RLock()
         self._rules: dict[str, dict] = {}
         self.generation = 0
@@ -28,8 +30,11 @@ class RuleRegistry:
                     # A bad cache entry never makes the bundled registry unavailable.
                     import logging
                     logging.getLogger(__name__).warning("invalid command rule %s: %s", path.name, type(exc).__name__)
+        self.read_only = read_only
 
     def add(self, rule: dict, *, persist: bool = True) -> str:
+        if self.read_only:
+            raise RuntimeError("frozen command rule registry is read-only")
         validate_rule(rule)
         value = copy.deepcopy(rule)
         key = digest(value)

@@ -36,10 +36,8 @@ On the target host, run:
 python3 tools/check_ebpf.py
 python3 tools/validate_pmu.py --concurrency 4 --require-reliable
 PYTHONPATH=services/sidecar/src:. python3 -m pytest services/sidecar/tests tests -q -rs --basetemp /tmp/clawtune-tests
-CLAWTUNE_TEST_NATIVE_CGROUP=1 PYTHONPATH=services/sidecar/src:. python3 -m pytest tests/test_benchmark_scope_unification.py -q
 ```
 
-- The native-cgroup test requires delegated Linux cgroup v2 and remains opt-in. Use an interpreter with `os.pidfd_open` for descendant-cleanup validation. WSL tests do not validate the target kernel or remote CI.
 - Verify eBPF attach, event delivery/loss, drain timing, CPU boundary deltas, actual sampling gaps, four-event PMU running ratios, and per-execution ownership against independent counters. Include sleeping memory holders, short and long calls, concurrent calls, and shared-runtime non-exec tools.
 - Validate both normal collection and injected collector failure. Set `CLAWTUNE_TOOL_RESOURCE_EBPF_REQUIRED=false` for dedicated-cgroup fallback acceptance and `true` for strict eBPF acceptance. Missing/shared scopes must remain unavailable; never substitute container totals or cgroup charge peaks for action RSS.
 - Verify stable environment-memory scope across migration and cleanup, serial payloads longer than the sampler interval, missing baselines, overlapping executions, and native read/edit windows. Check actual monotonic clock compatibility. Missing/foreign clocks or sparse measurements must not produce eligible training labels.
@@ -68,7 +66,7 @@ Apply the matrix to `swe-rebench`, `swe-bench-verified`, `deep-research-bench`, 
 
 ## Remaining deployment checks
 
-- `python3 scripts/clawtune.py setup` requires clean Ubuntu/openEuler images without preinstalled BCC/kernel tools. OpenClaw onboarding/Gateway/TUI requires interactive deployment; Ubuntu CI requires an actual remote workflow run.
+- `python3 scripts/clawtune.py setup` requires clean Ubuntu/openEuler images without preinstalled BCC/kernel tools. Interactive OpenClaw onboarding and TUI still need deployment checks; Ubuntu CI requires an actual remote workflow run.
 - The pristine task-image dependency check requires target-host access. Run `docker run --rm --pull never --network none --read-only --platform linux/amd64 --entrypoint /opt/miniconda3/envs/testbed/bin/python swerebench/sweb.eval.x86_64.0b01001001_1776_spectree-64 -B -c 'import sys,pydantic; print(sys.executable); print(sys.version); print(pydantic.__version__)'` on the target host.
 - CubeSandbox admission and delta restore require a patched ARM64 host and registered Runtime/Tool images: `clawbox --output-root /data/clawbox-results experiment run local.yaml --run-id clawtune-extra-memory`.
 
@@ -79,5 +77,5 @@ Apply the matrix to `swe-rebench`, `swe-bench-verified`, `deep-research-bench`, 
 
 ## KB online latency acceptance
 
-- Default-order-6 shared-writer latency remains unmeasured: the additional Kunpeng stress probe was stopped during model restoration when the user requested prompt completion. Resume with `PYTHONHASHSEED=42 PYTHONPATH=services/sidecar/src:. python research/kb_incremental_20261013/run.py --root <immutable-study-root> --out <result-dir-with-edge-6-trained.json> --cases pair:6:900 --rss-gib 40`. The time and RSS limits belong only to this experiment. Standalone order-6 component timings and order-2 shared-writer timings completed on both hosts.
-- Prepared-clause component and shared-writer probes do not establish an HTTP latency or freshness SLA. Target acceptance still needs raw parsing, compatibility diagnostics, telemetry delivery, StateStore checkpointing, and sustained concurrent arrivals. Preserve actual labels and distinguish result visibility from durable persistence.
+- Default-order-6 shared-writer latency remains unmeasured. Resume the component probe with `PYTHONHASHSEED=42 PYTHONPATH=services/sidecar/src:. python research/kb_incremental_20261013/run.py --root <immutable-study-root> --out <result-dir-with-edge-6-trained.json> --cases pair:6:900 --rss-gib 40`. Its time and RSS limits apply only to this experiment.
+- At default order 6, measure the complete HTTP path under sustained concurrent arrivals at increasing history sizes: query latency, completion-to-prediction visibility, and durable checkpoint throughput separately. Include raw parsing, compatibility diagnostics, telemetry delivery, snapshot capture/serialization, and StateStore checkpointing. Preserve actual labels. Incremental local statistics and component probes do not establish an HTTP latency or freshness SLA; the missing measurements do not by themselves justify reducing order 6.

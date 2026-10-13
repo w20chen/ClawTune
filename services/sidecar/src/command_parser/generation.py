@@ -115,6 +115,8 @@ class RuleGenerator:
             raise ValueError("no_source_or_isolated_help")
         scope = {"kind": "script" if script else "runtime", "repo": context.repo,
                  "runtime_id": context.runtime_id, "entry": entry}
+        if context.tool_version:
+            scope["tool_version"] = context.tool_version
         if script:
             if source is None:
                 raise ValueError("script_identity_requires_source")
@@ -203,7 +205,9 @@ class RuleGenerator:
                 self._states[key] = {"status": status, "reason": reason, "time": time.monotonic()}
             self._queue.task_done()
 
-    def close(self):
+    def close(self, timeout_seconds=None):
         self._stop.set()
         if self._thread:
-            self._thread.join(timeout=self.config.timeout + 1)
+            self._thread.join(timeout=self.config.timeout + 1 if timeout_seconds is None else timeout_seconds)
+            if self._thread.is_alive():
+                raise TimeoutError("timed out closing command rule generator")
