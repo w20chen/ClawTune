@@ -375,6 +375,28 @@ Timeout finalization follows confirmed producer shutdown. Tools lacking verified
 
 ## 5. Fixed-trace offline evaluation
 
+The execution-context duration correction uses the same `execution_context` module
+as the sidecar. Reproduce its fixed-trace regression from the repository root:
+
+```sh
+python -m offline.evaluate_execution_context
+```
+
+Inputs are the systematic-study trace artifacts and the task split in
+`research/execution_context/split.json`. The command writes one model,
+`research/execution_context/execution-context-kb.json`, and the final predictions
+and metrics in the same directory. It does not execute traced commands. To rebuild
+context from the original read-only dataset, add `--refresh-context --dataset PATH`.
+
+The sidecar automatically loads `execution-context-kb.json` when included in its KB
+directory; include it in the snapshot manifest when building an immutable seed.
+Without this optional snapshot, context learning starts empty. Online completions
+update it using the saved pre-call context; frozen evaluation updates session history
+without learning evaluation durations. Context correction affects the full duration
+distribution and retains the original prediction when support is insufficient.
+Missing history is unknown, and benchmark-specific failure frequencies should only
+be reused with a compatible training distribution.
+
 Install the [development dependencies](getting-started.md#5-development-checks). No provider key, Docker execution, or running collector is needed. Use the JSONL execution traces produced by ClawTune, retaining their metadata and adjacent task identity files, **not online task lists**.
 
 For an online run, pass its task trace subtree:

@@ -2804,6 +2804,93 @@ def test_trace_writes_tool_prediction_payload(tmp_path: Path) -> None:
     ]
 
 
+def test_execution_context_live_learning_persistence_and_distribution(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from execution_context.duration import SNAPSHOT_NAME
+    from clawtune_sidecar.predictors.edge_kappa import call_key
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(), ebpf_trace_paths=(), artifact_dir=tmp_path,
+        buckets=LatencyBuckets((100, 500, 2000, 10000)), repo='repo-1')
+    monkeypatch.setattr(predictor.continuous_kb, 'predict_load_samples',
+                        lambda query: {'duration_ms': {'values': [3000]}})
+    try:
+        for i in range(5):
+            request = _tool_request(f'event-{i}', f'call-{i}', 'python3 -m pytest').model_copy(
+                update={'run_id': f'run-{i}', 'session_id': f'session-{i}'})
+            predictor.predict(request)
+            before = dict(predictor._context_pending[call_key(request)][2]['keys'])
+            predictor.record_tool_started(request)
+            completion = _tool_completion(f'done-{i}', f'call-{i}').model_copy(update={
+                'run_id': request.run_id, 'session_id': request.session_id,
+                'duration_ms': 20, 'succeeded': False,
+                'raw_result': {'content': [{'text': 'python3: No module named pytest'}],
+                               'details': {'exitCode': 1}}})
+            sample = replace(_runtime_sample(f'done-{i}', f'call-{i}'), ended_at=1000.02, duration_ms=20)
+            predictor.observe_completion(completion, sample)
+            assert predictor.duration_context_kb.samples[call_key(request)]['keys'] == before
+        prediction = predictor.predict(_tool_request('new', 'new', 'python3 -m pytest').model_copy(
+            update={'run_id': 'fresh-run', 'session_id': 'fresh-session'}))
+        assert prediction.duration_p50_ms == prediction.duration_p90_ms == 20
+        assert prediction.tool.targets['duration_ms'].buckets.probabilities == [1, 0, 0, 0, 0]
+        assert prediction.tool.targets['duration_ms'].sample_count == 5
+        predictor.flush_kb_updates()
+        assert (tmp_path / SNAPSHOT_NAME).is_file()
+    finally:
+        predictor.close()
+    reloaded = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(), ebpf_trace_paths=(), artifact_dir=tmp_path,
+        buckets=LatencyBuckets((100, 500, 2000, 10000)), repo='repo-1')
+    try:
+        assert len(reloaded.duration_context_kb.samples) == 5
+    finally:
+        reloaded.close()
+
+
+def test_execution_context_frozen_history_updates_without_learning(monkeypatch):
+    import itertools
+    monkeypatch.setattr(tool_resource_predictor.time, 'time', itertools.count(1000).__next__)
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(), ebpf_trace_paths=(),
+        buckets=LatencyBuckets((100, 500)), repo='repo-1')
+    predictor.frozen = True
+    try:
+        request = _tool_request('before', 'call-a', 'python3 -m pytest')
+        predictor.predict(request)
+        predictor.record_tool_started(request)
+        completion = _tool_completion('after', 'call-a').model_copy(update={
+            'succeeded': False, 'raw_result': 'python3: No module named pytest\nExit code: 1'})
+        predictor.observe_completion(completion, _runtime_sample('after', 'call-a'))
+        later = _tool_request('later', 'call-b', 'python3 -m pytest')
+        predictor.predict(later)
+        from clawtune_sidecar.predictors.edge_kappa import call_key
+        state = predictor._context_pending[call_key(later)][2]
+        assert state['failure']['features']['last_same_runner'] == 'missing_module'
+        assert not predictor.duration_context_kb.samples
+    finally:
+        predictor.close()
+
+
+@pytest.mark.parametrize('censored,zero', [(True, False), (False, True)])
+def test_execution_context_rejects_censored_or_missing_duration(censored, zero):
+    from dataclasses import replace
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(), ebpf_trace_paths=(),
+        buckets=LatencyBuckets((100, 500)), repo='repo-1')
+    try:
+        request = _tool_request('before', 'call-a', 'python3 -m pytest')
+        predictor.predict(request)
+        predictor.record_tool_started(request)
+        completion = _tool_completion('after', 'call-a').model_copy(update={
+            'error_type': 'timeout' if censored else None, 'duration_ms': 0 if zero else 20})
+        sample = _runtime_sample('after', 'call-a')
+        if zero:
+            sample = replace(sample, ended_at=sample.started_at, duration_ms=0)
+        predictor.observe_completion(completion, sample)
+        assert not predictor.duration_context_kb.samples
+    finally:
+        predictor.close()
+
+
 def _tool_request(event_id: str, tool_call_id: str, command: str) -> ToolBeforeRequest:
     return ToolBeforeRequest(
         schema_version="clawtune.v1",

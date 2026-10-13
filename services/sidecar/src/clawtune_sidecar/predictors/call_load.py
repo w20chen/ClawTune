@@ -262,6 +262,7 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
                       parsed_clauses: Sequence[Mapping[str, Any]] | None = None,
                       edge_kappa: Any = None, edge_call_id: str | None = None,
                       feature_service: Any = None, command_context: Any = None,
+                      duration_context_kb: Any = None, duration_context: dict | None = None,
                       ) -> tuple[CallLoadPrediction, LoadDiagnostics]:
     """Return ToolKB for existing consumers and each configured independent result.
 
@@ -342,4 +343,12 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
         except Exception as exc:
             backends[backend] = compose(backend, (), edges, reason=f"backend_error:{type(exc).__name__}")
     backends = {name: value.model_copy(update={"memory_measurement": query.memory_measurement}) for name, value in backends.items()}
+    if duration_context_kb is not None and duration_context is not None:
+        from execution_context.duration import context_keys, correct_call
+        keys = context_keys(query.repo, duration_context, clauses if not reason else ())
+        # Bind the exact pre-call keys for completion learning, never recompute
+        # them after installation or another command changes the environment.
+        duration_context['keys'] = keys
+        backends = {name: correct_call(value, duration_context_kb, keys)
+                    for name, value in backends.items()}
     return backends["runtime"], LoadDiagnostics(backends=backends)

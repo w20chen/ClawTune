@@ -395,6 +395,27 @@ class ToolResourcePredictor:
         self._feature_call_keys: dict[tuple, str] = {}
         self._telemetry_by_execution_id: dict[str, ExecutionTelemetrySummary] = {}
         self._starts: dict[CorrelationKey, ToolBeforeRequest] = {}
+        from execution_context.duration import DurationContextKB, SNAPSHOT_NAME
+        self.duration_context_kb = DurationContextKB()
+        self.duration_context_snapshot_path = artifact_dir / SNAPSHOT_NAME if artifact_dir else None
+        if frozen and artifact_dir and not self.duration_context_snapshot_path.is_file():
+            for manifest_name in ('manifest.json', 'seed-manifest.json'):
+                manifest_path = artifact_dir / manifest_name
+                if manifest_path.is_file() and SNAPSHOT_NAME in json.loads(manifest_path.read_text(encoding='utf8'))['snapshots']:
+                    raise ValueError('frozen execution-context snapshot missing from declared seed')
+        if self.duration_context_snapshot_path and self.duration_context_snapshot_path.is_file():
+            path = self.duration_context_snapshot_path
+            for manifest_name in ('manifest.json', 'seed-manifest.json'):
+                manifest_path = artifact_dir / manifest_name
+                if frozen and manifest_path.is_file():
+                    hashes = json.loads(manifest_path.read_text(encoding='utf8'))['snapshots']
+                    if hashlib.sha256(path.read_bytes()).hexdigest() != hashes.get(path.name):
+                        raise ValueError('frozen execution-context snapshot hash mismatch')
+            self.duration_context_kb = DurationContextKB.from_json_obj(json.loads(path.read_text(encoding='utf8')))
+        self._duration_context_version = 0
+        self._duration_context_persisted_version = 0
+        self._context_histories = {}
+        self._context_pending = {}
         self._kb_writes = _KnowledgeBaseWriteCoordinator(
             self._flush_kb_batch,
         )
@@ -667,6 +688,17 @@ class ToolResourcePredictor:
                                              "runtime_id": request.runtime_id})
             self._feature_call_keys[(request.gateway_id, request.runtime_id, request.tool_call_id)] = call_key(request)
             self.command_features.discover(command_context)
+            from execution_context.history import ContextHistory, params
+            scope = (request.gateway_id, request.runtime_id, request.session_id or request.run_id)
+            history = self._context_histories.setdefault(scope, ContextHistory(str(scope)))
+            args = dict(params(request.raw_params))
+            if not any(args.get(k) for k in ('cwd', 'workdir', 'working_dir', 'working_directory')):
+                args['cwd'] = command_context.cwd
+            event = {'id': call_key(request), 'line': 0, 'start': time.time(),
+                     'tool': request.tool_name, 'args': args}
+            duration_context = history.begin(event)
+            self._context_pending[call_key(request)] = (scope, event, duration_context,
+                                                       request.run_id or request.session_id or request.runtime_id)
             legacy = self._predict_legacy(request, command_context)
             query = ToolCallQuery(repo=request.repo or self.repo, tool_name=request.tool_name,
                                   command=_command_for_request(request), ts_start=time.time(),
@@ -675,7 +707,9 @@ class ToolResourcePredictor:
             call, diagnostics = predict_call_load(runtime=self.continuous_kb, trie=self.kb,
                                                   lattice=self.lattice_kb, query=query, edges=self.load_buckets,
                                                   edge_kappa=self.edge_kappa, edge_call_id=call_key(request),
-                                                  feature_service=self.command_features, command_context=command_context)
+                                                  feature_service=self.command_features, command_context=command_context,
+                                                  duration_context_kb=self.duration_context_kb,
+                                                  duration_context=duration_context)
             if not self.frozen:
                 self._edge_kappa_version += 1
                 self._kb_writes.enqueue()
@@ -967,6 +1001,18 @@ class ToolResourcePredictor:
                     event.tool_call_id,
                     event,
                 )
+        from execution_context.history import exit_label, failure_label, output_text
+        with self._kb_lock:
+            pending = self._context_pending.pop(call_key(start or event), None)
+            if pending is not None:
+                scope, before, context, task = pending
+                text = output_text(event.raw_result)
+                code = exit_label(text)
+                if code is None:
+                    code = 0 if event.succeeded else 1
+                    text += f'\nExit code: {code}'
+                self._context_histories[scope].complete({**before, 'end': time.time(), 'output': text})
+                # Frozen evaluation still advances history, but never learns its durations.
         if self.frozen:
             self.command_features.bind_observations([], call_key(start or event), release=True)
             self._feature_call_keys.pop((event.gateway_id, event.runtime_id, event.tool_call_id), None)
@@ -986,6 +1032,18 @@ class ToolResourcePredictor:
             start=start,
             workload_duration_seconds=_retained_workload_duration_seconds(artifact),
         )
+        if pending is not None and task and completed_call is not None and not completed_call.censored:
+            seconds = completed_call.workload_duration_seconds
+            if seconds is None and not completed_call.workload_duration_required:
+                seconds = completed_call.ts_end - completed_call.ts_start
+            if seconds is not None and math.isfinite(seconds) and seconds > 0:
+                with self._kb_lock:
+                    if self.duration_context_kb.observe(
+                            context.get('keys', {'evidence': None, 'failure': None}),
+                            ident=before['id'], task=str((scope, task)), duration_ms=seconds * 1000,
+                            failure=failure_label(text) if code else None):
+                        self._duration_context_version += 1
+                        self._kb_writes.enqueue()
         # Add only newly measured environment labels. Existing clause CPU/time
         # observations were already ingested at eBPF finish and are not repeated.
         if sample.environment_memory and event.execution_id and completed_call and not completed_call.censored:
@@ -1427,6 +1485,12 @@ class ToolResourcePredictor:
 
         with self._kb_lock:
             self._capture_kb_snapshot_locked(
+                snapshots, errors, name="duration_context", path=self.duration_context_snapshot_path,
+                version=self._duration_context_version,
+                persisted_version=self._duration_context_persisted_version,
+                serializer=self.duration_context_kb.to_json_obj,
+            )
+            self._capture_kb_snapshot_locked(
                 snapshots, errors, name="edge_kappa", path=self.edge_kappa_snapshot_path,
                 version=self._edge_kappa_version, persisted_version=self._edge_kappa_persisted_version,
                 serializer=self.edge_kappa.capture_snapshot,
@@ -1471,7 +1535,9 @@ class ToolResourcePredictor:
                 )
                 continue
             with self._kb_lock:
-                if name == "edge_kappa":
+                if name == "duration_context":
+                    self._duration_context_persisted_version = max(self._duration_context_persisted_version, version)
+                elif name == "edge_kappa":
                     self._edge_kappa_persisted_version = max(self._edge_kappa_persisted_version, version)
                 elif name == "runtime":
                     self._runtime_kb_persisted_version = max(

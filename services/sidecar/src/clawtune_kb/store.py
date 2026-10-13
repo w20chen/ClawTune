@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 
 FILES = ("clause-resource-kb.json", "runtime-tool-resource-kb.json", "clause-lattice-time-kb.json")
-OPTIONAL_FILES = ("edge-kappa-kb.json",)
+OPTIONAL_FILES = ("edge-kappa-kb.json", "execution-context-kb.json")
 
 
 def digest(path: Path) -> str:
@@ -62,7 +62,7 @@ def validate_seed(path: Path) -> dict:
 
 def create_seed(path: Path, payloads: dict[str, dict], *, provenance: dict) -> dict:
     if not set(FILES) <= set(payloads) <= set(FILES + OPTIONAL_FILES):
-        raise ValueError("a seed must contain the three legacy KBs and may include EdgeKappaKB")
+        raise ValueError("a seed must contain the three base KBs and only registered optional snapshots")
     path.mkdir(parents=True, exist_ok=False)
     for name, payload in payloads.items():
         write_json(path / name, payload)

@@ -46,6 +46,7 @@ deep_research_bench/.runtime/
 # Research source, reports and aggregate metrics are versioned. Keep bulky
 # replay data, model snapshots, source bundles and transient logs locally.
 /research/**/*.zip
+/research/.archive/
 /research/**/*.so
 /research/**/*.jsonl
 /research/**/*.json.gz
