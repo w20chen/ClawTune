@@ -315,6 +315,8 @@ Each event contains `supported`, `semantics`, `raw_count`, `scaled_count`, `time
 
 The remaining PMU fields are `schema`, `execution_id`, `source`, `mode`, `scope`, `root_pid`, `started_at`, `ended_at`, `architecture`, `pmu_devices`, `llc_semantics`, `llc_semantics_confirmed`, `collector_errors`, describing the version, identity, collection source / mode / scope, root process, Unix-second start and end, architecture, devices, whether the LLC semantics are confirmed, and errors. `coverage.status`, `reason`, `running_ratio`, `multiplexed`, `kernel_included`, `root_and_future_descendants`, `eligible_for_kb` describe reliability, reason, running ratio, multiplexing, whether the kernel and descendants are included, and whether it can be used for learning. Process sampling coverage cannot substitute for this determination.
 
+A tool timeout, nonzero exit or signal does not by itself invalidate PMU counts. An explicit OpenClaw timeout closes the counting window immediately at its terminal notification, before asynchronous cleanup; `coverage.reason: tool_timeout` can be `reliable` and does not assert natural process-tree completion. An authenticated execution-exit report uses `execution_exited`; this does not imply tool success either. Both retain normal metrics for the observed window. Missing end evidence without an explicit timeout, counter errors and multiplexing still affect quality; raw counts remain recorded even when the profile is partial.
+
 ## Prediction: `span_start.prediction`
 
 Four independent outputs use the [call-load contract](../contracts/call-load.schema.json):

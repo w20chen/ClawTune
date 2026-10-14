@@ -553,7 +553,7 @@ class PmuCollector:
             )
         elif errors:
             status, quality_reason = "partial", "collector_error"
-        elif reason != "execution_exited":
+        elif reason not in {"execution_exited", "tool_timeout"}:
             status, quality_reason = "partial", reason
         elif not group.kernel_included:
             status, quality_reason = "partial", "kernel_excluded"
@@ -672,7 +672,9 @@ def quality_gated_pmu_metrics(profile: Any) -> dict[str, Any]:
         return unavailable
     expected = {"status": "reliable", "eligible_for_kb": True, "multiplexed": False,
                 "kernel_included": True, "root_and_future_descendants": True,
-                "running_ratio": 1.0, "reason": "execution_exited"}
+                "running_ratio": 1.0}
+    if coverage.get("reason") not in {"execution_exited", "tool_timeout"}:
+        return unavailable
     if any(coverage.get(key) != value or (type(value) is bool and coverage.get(key) is not value)
            for key, value in expected.items()) or isinstance(coverage.get("running_ratio"), bool):
         return unavailable

@@ -407,6 +407,33 @@ Online context samples count a `(gateway_id, runtime_id)` as one task instance a
 
 Frozen mode loads the bundled rules and any existing `command-rules/` cache once into a read-only registry. It disables automatic discovery/generation and never writes new rules to the seed, even when an upstream model is configured. Unknown syntax remains partial or invalid. Preserve the same bundled-rule checkout, rule-cache files, and tool versions alongside the KB seed for reproducible evaluation. Newly generated rules are scoped to a known `tool_version`; a different or missing version cannot use that rule. With no known version, the existing repository/runtime scope still applies.
 
+### Execution replay
+
+`swe_rebench.runner replay` accepts the existing v6 span format and v5 action JSONL with recorded `llm_call` responses and `tool_exec` arguments. Supply one recorded attempt or a flat directory; `--task-id` selects the matching v5 task. Use the original task image and a Linux host with Docker, OpenClaw and the normal telemetry prerequisites.
+
+Run from the repository root with its installed Python environment and root telemetry privileges:
+
+```sh
+PYTHON="$PWD/.venv/bin/python"
+export PYTHONPATH="$PWD/services/sidecar/src:$PWD"
+export CLAWTUNE_PMU_ENABLED=true
+sudo -E env "PATH=$PATH" "$PYTHON" -m swe_rebench.runner replay --config /path/to/config.yaml \
+  --trace /data/recorded-traces --tasks /data/tasks.json \
+  --task-id <instance-id> --timing none
+```
+
+Replace the paths and task ID with your inputs. Runtime assets are built automatically when needed; `--prepare` forces rebuilding them. The task roster must identify the original image. For x86 task images on Kunpeng/ARM, install and check the [QEMU setup](getting-started.md#arm-hosts), and configure `docker.platform: linux/amd64`. Use `runtime.mode: host-openclaw` and `runtime.kb_frozen: false` for a new writable run with the bundled seed. A working Docker daemon, OpenClaw executable on `PATH`, cgroup delegation, eBPF dependencies and PMU access are prerequisites; the command reports preflight failures instead of bypassing them.
+
+V5 replay adapts `exec`/`terminal_exec`, `read_file`, `write_file`, `edit_file`, `list_dir`, and local `message` output. File operations run inside the task sandbox; `/testbed` aliases the writable workspace and shell calls honor their recorded working directory. Other v5 tools are rejected before execution. Recorded model responses and requested arguments are required; changing a version number alone does not convert a trace.
+
+V5 tool batches execute in recorded request order, one call per model response, retaining each source model delay once. An unfinished final response receives a synthetic zero-delay closing turn. Consequently the mock request count can exceed the source model-turn count in `replay_manifest.json`. `--timing exact` preserves recorded LLM delays; `--timing none` removes them. Replay executes tools anew and does not reuse historical resource measurements. V6 dispatch, PMU configuration and offline KB ingestion retain their existing behavior.
+
+For v5 with `runtime.kb_frozen: false`, replay uses the standard new-state initializer: incompatible feature-dependent Lattice/Edge components start empty in the run directory, while the source seed stays unchanged. Frozen replay requires already-compatible snapshots. With Docker/QEMU on ARM, PMU counts describe host execution of the emulated workload, not guest x86 instruction counts.
+
+PMU collection quality is independent of tool success: an explicit OpenClaw timeout closes a normal measurement window with reason `tool_timeout`, while an authenticated execution exit uses `execution_exited` regardless of exit code or signal. Both are eligible when counter quality passes. Other completions without an execution-exit result retain the existing `completion_fallback` behavior and raw counts without certifying a complete boundary. `time_running_ns` is monitored CPU time, not the wall-clock timeout.
+
+### Offline trace evaluation
+
 Install the [development dependencies](getting-started.md#5-development-checks). No provider key, Docker execution, or running collector is needed. Use the JSONL execution traces produced by ClawTune, retaining their metadata and adjacent task identity files, **not online task lists**.
 
 For an online run, pass its task trace subtree:

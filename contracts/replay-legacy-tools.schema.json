@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/replay-legacy-tools.schema.json",
+  "title": "Legacy replay tool arguments",
+  "description": "Arguments remain optional so historically failed calls can reproduce their runtime error. File paths are resolved inside the task sandbox, never on the host.",
+  "$defs": {
+    "read_file": {"type": "object", "properties": {"path": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}}},
+    "write_file": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}},
+    "edit_file": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}, "replace_all": {"type": "boolean"}}},
+    "list_dir": {"type": "object", "properties": {"path": {"type": "string"}, "recursive": {"type": "boolean"}, "max_entries": {"type": "integer"}}},
+    "clawtune_replay_message": {"type": "object", "properties": {"content": {"type": "string"}}}
+  }
+}

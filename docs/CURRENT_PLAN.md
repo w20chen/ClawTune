@@ -48,6 +48,8 @@ PYTHONPATH=services/sidecar/src:. python3 -m pytest services/sidecar/tests tests
 
 ## Live benchmark acceptance
 
+- Serial v5 PMU batch: confirming the first three real replays is blocked by SSH connection timeouts to `kunpeng`. After connectivity returns, complete and verify the source transfer, then run `ssh kunpeng 'cd /home/weitianc/clawtune-v5-20261014; .venv-test/bin/python .runtime/serial-pmu-20261014/check.py'`. Require three successful validations and `first-three-ok.json`; the existing nohup launch alone is not acceptance evidence.
+
 - Cold-start transfer study: fresh measurements could not run locally because neither Windows nor WSL exposes Docker (`command -v docker` returned no path). On a prepared Linux collector host, run `python3 scripts/clawtune.py benchmark --benchmark swe-rebench --dataset <multi-repository-task-roster.json> --sample 30 --parallelism 1 --output <new-study-run>`; retain multiple independent tasks per repository, native/QEMU identity, quota, and eligible environment extra-memory labels. Do not substitute a dry-run for this validation. Existing-trace findings are in `research/cold_start_transfer`.
 
 Use plugin and sidecar from the same checkout and a fresh run-local KB. These commands remain unvalidated on the final target deployment:

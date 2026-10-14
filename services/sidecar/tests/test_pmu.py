@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import copy
 import ctypes
+import json
 from types import SimpleNamespace
 import pytest
 
@@ -51,6 +52,83 @@ class FakePerfBackend:
 
     def close(self, fd):
         self.closed.append(fd)
+
+
+@pytest.mark.parametrize("signal,exit_code", [(None, 124), (15, None), (9, None)])
+def test_authenticated_timeout_exit_keeps_valid_pmu(signal, exit_code, tmp_path):
+    from fastapi.testclient import TestClient
+    from clawtune_sidecar.api.app import create_app
+    from clawtune_sidecar.api.dependencies import build_state
+    from clawtune_sidecar.config import SidecarConfig
+    state = build_state(SidecarConfig(trace_dir=tmp_path / "trace"))
+    state.pmu_collector = PmuCollector(backend=FakePerfBackend())
+    with TestClient(create_app(state)) as client:
+        registered = client.post("/v2/executions", json={
+            "execution_id": "timeout", "tool_call_id": "call-timeout", "run_id": "run",
+            "session_key_hash": None, "runtime_id": "runtime", "gateway_id": "test",
+            "command_digest": "sha256:" + "a" * 64, "command": "sleep 30", "backend": "managed-wrapper",
+        })
+        assert registered.status_code == 200, registered.text
+        claimed = client.post("/v2/executions/claim", json={"execution_id": "timeout",
+            "token": registered.json()["one_time_token"], "launcher_pid": 1234})
+        assert claimed.status_code == 200, claimed.text
+        state.pmu_collector.begin("timeout", 4242)
+        response = client.post("/v2/executions/timeout/exited", json={
+            "update_token": claimed.json()["update_token"], "exit_code": exit_code, "signal": signal})
+        assert response.status_code == 200, response.text
+        profile = state.pmu_collector.take("timeout")
+        assert profile.coverage.status == "reliable"
+        assert _quality_gated_pmu_metrics(profile.to_dict())["eligible"]
+        assert state.executions.get("timeout").signal == signal
+        assert state.executions.get("timeout").exit_code == exit_code
+
+
+@pytest.mark.parametrize("failure_kind", ["overall-timeout", "no-output-timeout"])
+def test_openclaw_timeout_closes_normal_counting_window(failure_kind, monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+    from clawtune_sidecar.api.app import create_app, _completion_reports_timeout
+    from clawtune_sidecar.api.dependencies import build_state
+    from clawtune_sidecar.config import SidecarConfig
+    from clawtune_kb.contracts import validate
+    state = build_state(SidecarConfig(trace_dir=tmp_path / "trace"))
+    backend = FakePerfBackend()
+    state.pmu_collector = PmuCollector(backend=backend)
+    monkeypatch.setattr(state.tool_monitor, "complete", lambda *a, **kw: None)
+    with TestClient(create_app(state)) as client:
+        registered = client.post("/v2/executions", json={
+            "execution_id": "timeout", "tool_call_id": "call-timeout", "run_id": "run",
+            "session_key_hash": None, "runtime_id": "runtime", "gateway_id": "test",
+            "command_digest": "sha256:" + "a" * 64, "command": "sleep 30", "backend": "managed-wrapper",
+        })
+        assert registered.status_code == 200
+        state.pmu_collector.begin("timeout", 4242)
+        body = {"schema_version": "clawtune.v1", "event_id": "timeout-event",
+            "occurred_at": "2026-10-14T12:00:00Z", "plugin_version": "0.1.0",
+            "run_id": "run", "session_id": None, "session_key": None, "agent_id": None,
+            "gateway_id": "test", "runtime_id": "runtime", "tool_call_id": "call-timeout",
+            "decision_id": None, "lease_id": None, "execution_id": "timeout", "tool_name": "exec",
+            "duration_ms": 8000, "succeeded": False, "error_type": "timeout", "error_digest": None,
+            "raw_result": {"details": {"status": "error", "failureKind": failure_kind}}}
+        response = client.post("/v1/events/tool-completed", json=body)
+        assert response.status_code == 200, response.text
+        result = state.pmu_collector.take("timeout")
+        assert result.coverage.status == "reliable"
+        assert result.coverage.reason == "tool_timeout"
+        assert _quality_gated_pmu_metrics(result.to_dict())["eligible"]
+        validate(json.loads(json.dumps(result.to_dict())), "pmu-profile.schema.json")
+        assert len(backend.closed) == 4
+        assert client.post("/v1/events/tool-completed", json=body).json() == {"stored": False}
+        assert len(backend.closed) == 4
+    assert not _completion_reports_timeout({"content": "overall-timeout"})
+    assert not _completion_reports_timeout({"details": {"status": "running", "failureKind": failure_kind}})
+
+
+def test_timeout_does_not_override_counter_quality():
+    collector = PmuCollector(backend=FakePerfBackend(ratio=.5))
+    collector.begin("timeout", 4242)
+    result = collector.finish("timeout", reason="tool_timeout")
+    assert result.coverage.status == "multiplexed"
+    assert not _quality_gated_pmu_metrics(result.to_dict())["eligible"]
 
 
 def test_native_perf_attributes_preserve_inheritance_compatible_read_format():

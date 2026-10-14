@@ -47,6 +47,7 @@ class ReplayPlan:
     turns: tuple[ReplayModelTurn, ...]
     tool_count: int
     incomplete_tool_count: int
+    source_format: str = "v6"
 
     @property
     def model(self) -> str:
@@ -64,8 +65,12 @@ def discover_trace_paths(value: str | Path) -> list[Path]:
     return paths
 
 
-def load_replay_plan(value: str | Path) -> ReplayPlan:
+def load_replay_plan(value: str | Path, *, task_id: str | None = None) -> ReplayPlan:
     paths = discover_trace_paths(value)
+    from swe_rebench.replay_v5 import select_v5_paths, load_v5_plan
+    v5_paths = select_v5_paths(paths, task_id=task_id, directory=Path(value).is_dir())
+    if v5_paths is not None:
+        return load_v5_plan(v5_paths)
     records: list[dict[str, Any]] = []
     digest = hashlib.sha256()
     for path in paths:
@@ -318,7 +323,7 @@ class ReplayLLMServer:
                 if message.get("content") is not None:
                     delta["content"] = message["content"]
                 if message.get("tool_calls"):
-                    delta["tool_calls"] = message["tool_calls"]
+                    delta["tool_calls"] = [{"index": index, **call} for index, call in enumerate(message["tool_calls"])]
                 chunk = {"id": f"replay-{turn.span_id}", "object": "chat.completion.chunk", "choices": [{"index": 0, "delta": delta, "finish_reason": None}]}
                 self.send_response(200)
                 self.send_header("content-type", "text/event-stream")
@@ -340,7 +345,7 @@ class ReplayLLMServer:
 
 
 def _completion_payload(turn: ReplayModelTurn) -> dict[str, Any]:
-    message: dict[str, Any] = {"role": "assistant", "content": turn.content if isinstance(turn.content, (str, list, dict)) else str(turn.content)}
+    message: dict[str, Any] = {"role": "assistant", "content": turn.content if isinstance(turn.content, (str, list, dict)) or turn.content is None else str(turn.content)}
     if turn.tool_calls:
         message["tool_calls"] = [
             {

@@ -9,6 +9,7 @@ workspace.
 from __future__ import annotations
 
 import errno
+import copy
 import hashlib
 import json
 import math
@@ -419,7 +420,8 @@ def run_host_openclaw_replay_task(
     server; OpenClaw, its Docker sandbox, the plugin, sidecar, launcher, cgroup
     scope, and eBPF collector remain the normal production path.
     """
-    from swe_rebench.replay import ReplayLLMServer, load_replay_plan, write_replay_manifest
+    from swe_rebench.replay import ReplayLLMServer, ReplayTraceError, load_replay_plan, write_replay_manifest
+    from swe_rebench.replay_v5 import adapt_v5_plan
 
     started = time.monotonic()
     deadline = _task_deadline(config, started)
@@ -431,12 +433,19 @@ def run_host_openclaw_replay_task(
     sidecar = None
     sandbox_image: str | None = None
     server = None
+    bridge = None
+    backend = None
     exit_code = -1
     error: str | None = None
     agent_stopped = threading.Event()
     agent_cancelled = False
     try:
-        plan = load_replay_plan(source_trace)
+        plan = load_replay_plan(source_trace, task_id=task.instance_id)
+        runtime_plan = adapt_v5_plan(plan)
+        if plan.source_format == "v5":
+            config = copy.copy(config)
+            config.replay_legacy = True
+            config.replay_tool_names = sorted({call.name for turn in runtime_plan.turns for call in turn.tool_calls})
         if plan.incomplete_tool_count:
             _log(
                 f"[replay] source has {plan.incomplete_tool_count} incomplete tool spans; "
@@ -493,7 +502,11 @@ def run_host_openclaw_replay_task(
             sandbox_image=sandbox_image,
             deadline=deadline,
         )
-        _seed_runtime_tool_resource_kb(trace_dir, config)
+        if plan.source_format == "v5" and not config.runtime.kb_frozen:
+            from clawtune_kb import initialize_state
+            initialize_state(trace_dir / "tool-resource", config.repo_root / "seeds/bootstrap-v1", owner="replay")
+        else:
+            _seed_runtime_tool_resource_kb(trace_dir, config)
         sidecar_port = _free_port()
         sidecar = _start_sidecar(
             trace_dir=trace_dir,
@@ -503,7 +516,17 @@ def run_host_openclaw_replay_task(
             repo=task_repo_key(task),
             deadline=deadline,
         )
-        server = ReplayLLMServer(plan, timing=timing, scale=timing_scale)
+        if plan.source_format == "v5":
+            from benchmarks.tool_bridge import ToolBridge
+            from swe_rebench.replay_tools import LegacyReplayTools
+            backend = LegacyReplayTools(workspace=workspace, deadline=deadline, names=set(config.replay_tool_names))
+            if backend.tools:
+                bridge = ToolBridge(backend)
+                bridge.__enter__()
+                manifest = trace_dir / "replay-tools.json"
+                bridge.manifest(manifest)
+                config.benchmark_tools_manifest = str(manifest)
+        server = ReplayLLMServer(runtime_plan, timing=timing, scale=timing_scale)
         server.start()
         _configure_openclaw(
             trace_dir=trace_dir,
@@ -537,6 +560,10 @@ def run_host_openclaw_replay_task(
             stopped_event=agent_stopped,
         )
         _remaining_task_seconds(deadline, phase="replay result collection")
+        if backend is not None and backend.errors:
+            raise ReplayTraceError(f"legacy tool bridge failure: {backend.errors[0]}")
+        if plan.source_format == "v5" and exit_code == 0 and server.requests != len(runtime_plan.turns):
+            raise ReplayTraceError(f"replay consumed {server.requests}/{len(runtime_plan.turns)} model turns")
         _cleanup_runtime_artifacts(workspace, deadline=deadline)
         _collect_patch(trace_dir, workspace, task, deadline=deadline)
         write_replay_manifest(
@@ -580,6 +607,11 @@ def run_host_openclaw_replay_task(
         except Exception as exc:
             if error is None:
                 error = f"replay sandbox cleanup failed: {exc}"
+        if bridge is not None:
+            try:
+                bridge.__exit__(None, None, None)
+            except Exception as exc:
+                error = error or f"replay tool bridge cleanup failed: {exc}"
         if sandbox_stopped and agent_stopped.is_set() and (exit_code == 124 or agent_cancelled):
             try:
                 _abort_runtime(
@@ -1943,6 +1975,8 @@ def _openclaw_config(
                             "network": "bridge",
                             "extraHosts": ["host.docker.internal:host-gateway"],
                             "dangerouslyAllowExternalBindSources": True,
+                            **({"binds": [f"{workspace}:/testbed:rw"]}
+                               if getattr(config, "replay_legacy", False) else {}),
                         },
                     },
                 },
@@ -1952,6 +1986,8 @@ def _openclaw_config(
                 # plugin. The default coding profile filters unknown tools
                 # before the explicit allowlist is applied.
                 "profile": "full",
+                **({"sandbox": {"tools": {"allow": config.replay_tool_names}}}
+                   if getattr(config, "replay_legacy", False) else {}),
                 # Background process sessions split one logical command across
                 # exec/process calls and therefore cannot provide an exact
                 # one-call/one-process resource lifecycle.  Keep this required

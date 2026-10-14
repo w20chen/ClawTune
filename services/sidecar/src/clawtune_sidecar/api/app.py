@@ -172,6 +172,18 @@ def _completion_reports_running(raw_result: object) -> bool:
     return isinstance(status, str) and status.lower() == "running"
 
 
+def _completion_reports_timeout(raw_result: object) -> bool:
+    if not isinstance(raw_result, dict) or _completion_reports_running(raw_result):
+        return False
+    details = raw_result.get("details")
+    if not isinstance(details, dict):
+        return False
+    # Runtime-owned structured fields, never a substring of command output.
+    return any(details.get(key) in {"overall-timeout", "no-output-timeout"}
+               for key in ("exitReason", "failureKind")
+               if isinstance(details.get(key), str))
+
+
 def _safe_cgroup_name(value: str) -> str:
     safe = "".join(char if char.isalnum() or char in "._-" else "_" for char in value)
     return safe[:128] or "execution"
@@ -2021,6 +2033,11 @@ def create_app(state: AppState | None = None) -> FastAPI:
             # snapshot or trace flush performed by this completion.
             cancel_owned_cgroup_cleanup(s, event.execution_id)
         try:
+            if event.execution_id is not None and _completion_reports_timeout(event.raw_result):
+                # The completed tool window is the observation boundary even
+                # if OpenClaw terminated its launcher before an /exited POST.
+                # Read before eBPF's reconciliation wait or other async cleanup.
+                s.pmu_collector.finish(event.execution_id, reason="tool_timeout")
             # Finalize before the scope lookup's async wait.  The plugin may
             # time out its completion POST and issue a telemetry GET; keeping
             # this synchronous section first prevents that GET from observing
@@ -2670,7 +2687,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
             response = s.executions.exited(execution_id, request)
             # Disable/read before any cgroup cleanup. perf task FDs retain counts
             # after process exit, so this is a constant-cost, non-polling read.
-            s.pmu_collector.finish(execution_id, reason="signal_terminated" if request.signal else "execution_exited")
+            # The exit code/signal belongs to the tool outcome, not counter
+            # quality. An authenticated exit also finalizes timeout kills.
+            s.pmu_collector.finish(execution_id, reason="execution_exited")
             await s.leases.release_execution(execution_id)
             # The launcher knows process status first, but only OpenClaw's
             # subsequent completion event carries bounded stdout/stderr. Keep the

@@ -79,7 +79,8 @@
       ],
       "properties": {
         "status": {"enum": ["reliable", "multiplexed", "partial", "unavailable"]},
-        "reason": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1,
+          "description": "Measurement finalization reason, independent of tool success. execution_exited includes authenticated signal exits. tool_timeout closes the counting window at the explicit terminal timeout notification; it does not assert natural process-tree completion. Neither implies exit code zero."},
         "running_ratio": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
         "multiplexed": {"type": "boolean"},
         "kernel_included": {"type": "boolean"},
@@ -143,7 +144,7 @@
               "multiplexed": {"const": false},
               "kernel_included": {"const": true},
               "running_ratio": {"const": 1},
-              "reason": {"const": "execution_exited"}
+              "reason": {"enum": ["execution_exited", "tool_timeout"]}
             }
           }
         }

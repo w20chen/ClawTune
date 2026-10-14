@@ -3126,10 +3126,10 @@ def main() -> None:
     # 鈹€鈹€ replay 鈹€鈹€
     replay = sub.add_parser(
         "replay",
-        help="Replay one SWE-Rebench v6 trace through host-openclaw",
+        help="Replay one SWE-Rebench v5/v6 trace through host-openclaw",
     )
     add_config_arg(replay)
-    replay.add_argument("--trace", required=True, help="Source v6 JSONL file or trace directory")
+    replay.add_argument("--trace", required=True, help="Source v5/v6 JSONL file or trace directory (--task-id selects v5 task)")
     replay.add_argument("--dataset", default=None, help="Task dataset containing the source case")
     replay.add_argument("--tasks", default=None, help="Simple JSON task list containing the source case")
     replay.add_argument("--task-id", required=True, help="SWE-Rebench instance ID")
