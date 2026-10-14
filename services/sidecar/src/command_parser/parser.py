@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import PurePosixPath
 
 from .models import ParseContext, ParsedCommand, script_identity
@@ -34,6 +35,48 @@ class CommandParser:
             result.diagnostics.append(reason)
             result.status = "invalid" if invalid or result.status == "invalid" else "partial"
 
+        def heuristic(layer: dict, tokens: list[str], offset: int) -> None:
+            # Restore the generic option/value fallback for entries without a
+            # grammar. These are guesses, so retain partial/missing_rule status.
+            opaque(layer, [], "missing_rule:" + tokens[0])
+            result.diagnostics.append("heuristic_arguments:" + tokens[0])
+            i, ended = 1, False
+            while i < len(tokens):
+                token = tokens[i]
+                if offset + i in unresolved:
+                    opaque(layer, tokens[i:], "unresolved_expansion")
+                    return
+                if not ended and token == "--":
+                    ended = True
+                    i += 1
+                    continue
+                if ended or token == "-" or not token.startswith("-") or _number(token):
+                    layer["args"].append(token)
+                    add_role(layer, "operand", offset + i, offset + i + 1)
+                    i += 1
+                    continue
+                names, values, next_i = [token], [], i + 1
+                if "=" in token:
+                    name, value = token.split("=", 1)
+                    names, values = [name], [value]
+                elif re.fullmatch(r"-[a-zA-Z]{2,3}", token):
+                    names = ["-" + char for char in token[1:]]
+                elif next_i < len(tokens):
+                    if offset + next_i in unresolved:
+                        # An expansion may supply zero or many words; do not
+                        # infer either an option arity or subsequent positions.
+                        opaque(layer, tokens[i:], "unresolved_option_value")
+                        return
+                    value = tokens[next_i]
+                    if value != "--" and (not value.startswith("-") or value == "-" or _number(value)):
+                        values = [value]
+                        next_i += 1
+                for name in names:
+                    layer["options"].append({"name": name, "values": values,
+                                              "repeat": "ordered", "independent": True})
+                add_role(layer, "option", offset + i, offset + next_i)
+                i = next_i
+
         def invoke(tokens: list[str], offset: int, *, script: bool = False) -> None:
             rule, key = self.registry.lookup(tokens[0], context, script=script)
             name = rule["canonical"] if rule else tokens[0]
@@ -50,7 +93,7 @@ class CommandParser:
                 opaque(layer, tokens, "unresolved_executable")
                 return
             if rule is None:
-                opaque(layer, tokens[1:], "missing_rule:" + tokens[0])
+                heuristic(layer, tokens, offset)
                 return
             result.rules.append(key)
             grammar = rule["grammar"]
@@ -92,6 +135,11 @@ class CommandParser:
                 matched: list[tuple[dict, str | None]] = []
                 if not ended and token in options:
                     matched = [(options[token], None)]
+                elif not ended and i == 1 and re.fullmatch(r"-[0-9]+", token) and any(
+                    option.get("leading_numeric_short") for option in grammar.get("options", [])
+                ):
+                    option = next(o for o in grammar["options"] if o.get("leading_numeric_short"))
+                    matched = [(option, token[1:])]
                 elif not ended and token.startswith("-") and "=" in token and (
                     token.split("=", 1)[0] in options
                     and "equals" in options[token.split("=", 1)[0]]["forms"]
@@ -206,6 +254,8 @@ class CommandParser:
             # Completion schemas often omit requiredness. Check only explicit minima.
             for slot_index, slot in enumerate(grammar.get("positionals", [])):
                 if seen.intersection(slot.get("skip_if_options", [])):
+                    continue
+                if seen.intersection(slot.get("optional_if_options", [])):
                     continue
                 if slot_index >= pos and slot["min"] > (consumed if slot_index == pos else 0):
                     opaque(layer, [], "missing_operand", invalid=True)

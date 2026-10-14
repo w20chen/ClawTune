@@ -82,11 +82,18 @@ def test_option_values_remain_bound(command, name, value):
     assert atom("opt", f"L0/{tool}", name, [value]) in features
 
 
-@pytest.mark.parametrize("command", ["other -q value", "pytest --unknown-plugin-option value", "git -n 2"])
-def test_unknown_grammar_never_invents_an_option_value(command):
+@pytest.mark.parametrize("command", ["pytest --unknown-plugin-option value", "git -n 2"])
+def test_unknown_options_in_known_grammar_remain_opaque(command):
     features, _ = normalize_command(command)
     assert any(f.startswith("opaque:") for f in features)
     assert not any(f.startswith("opt:") for f in features)
+
+
+def test_missing_grammar_uses_generic_value_heuristic():
+    features, core = normalize_command("other -q value")
+    assert core == {"tool=other"}
+    assert features == {"tool=other", atom("opt", "L0/other", "-q", ["value"])}
+    assert default_service().argv(["other", "-q", "value"]).status == "partial"
 
 
 @pytest.mark.parametrize("command", ["python script.py -m pytest -q value", "python -u script.py -m pytest -q value",
@@ -123,7 +130,8 @@ def test_end_of_options_and_mixed_cluster():
     assert atom("opt", "L0/grep", "--regexp", ["needle"]) in features
 
 
-@pytest.mark.parametrize("command", ["pytest -q tests/unit", "python -u -m pytest -q tests/unit"])
+@pytest.mark.parametrize("command", ["pytest -q tests/unit", "python -u -m pytest -q tests/unit",
+                                    "other --jobs 8 input", "python task.py --jobs=8 input"])
 def test_training_query_and_snapshot_reload_share_features(command):
     argv = tuple(shlex.split(command))
     row = ClauseObservation(repo="repo", bin=argv[0], argv=argv, ts_start=1., ts_end=2., latency_ms=50.)

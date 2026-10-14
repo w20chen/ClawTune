@@ -1,0 +1,98 @@
+{
+  "scope": "Bundled rule corrections and bounded overflow representation; no dataset or persisted KB modifications.",
+  "replay": {
+    "counts": {
+      "clauses": 16673,
+      "feature_changes": 3569,
+      "unchanged_untruncated_parses": 10196
+    },
+    "transitions": {
+      "complete->complete": 10014,
+      "partial->partial": 3138,
+      "partial->complete": 3446,
+      "invalid->complete": 75
+    },
+    "regressions": [],
+    "source_sha256": "7c11c662861e359c3d8e44d4ee2f442885e1235260fff3a8c7117d4a27a34c5d",
+    "baseline_rule_revision": "3958c2834b5984d4ddfae4954b6fa764f251b0f9",
+    "scope": "Shell clauses only; parse-status and feature consistency, not prediction accuracy."
+  },
+  "after_parse_counts": {
+    "shell_calls": 6543,
+    "calls_with_extracted_clauses": 6543,
+    "clauses": 16673,
+    "complete": 13535,
+    "truncated_clauses": 14,
+    "omitted_features": 57,
+    "clauses_with_opaque": 1084,
+    "partial": 3138
+  },
+  "source_manifest": {
+    "services\\sidecar\\src\\command_parser\\__init__.py": "7538f9a7f87a594f5c41c79a8afca3595b7952440d4c72d3037f80b02f2d0620",
+    "services\\sidecar\\src\\command_parser\\__main__.py": "f7fcf689686f141f0c6e105a93db1c6540da284989bca8ff77bd35cf2f65850c",
+    "services\\sidecar\\src\\command_parser\\evidence.py": "1916420b9875f444adee506af0f4aa1e5505e4c51e9017d8aff17061efb6aaf5",
+    "services\\sidecar\\src\\command_parser\\generation.py": "f4d74fe72626934fec8c44b785732aa6f009b4f5ebb7e592bb0cdd14b05f9d2a",
+    "services\\sidecar\\src\\command_parser\\help_runner.py": "251783652f6869bce43d0bc41b5d455a4599f3f35365c82886be46013e93a4c8",
+    "services\\sidecar\\src\\command_parser\\matching.py": "acd348031c945df743128ddb83a0bfdb937a3f018ed5c6e9f2522878ab97ec87",
+    "services\\sidecar\\src\\command_parser\\models.py": "540cdf27dac1465b9e31ac1eeddb9519b83389c1dce1d19b5822351a976c5672",
+    "services\\sidecar\\src\\command_parser\\parser.py": "75b120d9018e252e45cc55e780c4ab832edda92f47b8686070ce42daaac58323",
+    "services\\sidecar\\src\\command_parser\\projection.py": "a0efe5e229d92337dcd507dde1d55a6494bdd53b9b12292c6009875b2b6b0d2b",
+    "services\\sidecar\\src\\command_parser\\registry.py": "62c082f3ed125a6c73b2e25313f14eaca3c0fd763131429ada91ae86b51eeb25",
+    "services\\sidecar\\src\\command_parser\\rules\\bash.json": "dfb83840154905eea320e6e891e6783c9d8f023c8eda258cfc701245c54b79d8",
+    "services\\sidecar\\src\\command_parser\\rules\\cargo.json": "cb387750b20d5b2166edb73ab4f2a03363819a33f600839512e00bb7c0d70734",
+    "services\\sidecar\\src\\command_parser\\rules\\cat.json": "a78063362569fa2bd1a51ae00e17529450d5afbc4a04d73c7d1caaa237b2b60f",
+    "services\\sidecar\\src\\command_parser\\rules\\env.json": "264f3e33d4aa181460d9cb56cd12d1d60d62869398bcb062e916db20cfa7cf1a",
+    "services\\sidecar\\src\\command_parser\\rules\\find.json": "9a36d1afeda226e4b3dc9cdd3bc6f35042f0dc5db042a42ece006f518ee833f8",
+    "services\\sidecar\\src\\command_parser\\rules\\git.json": "04194cb8a5a77bc523924dd22eb84499ecf1256735f1da1d24e718ef98acf6aa",
+    "services\\sidecar\\src\\command_parser\\rules\\grep.json": "67eab24eb4e5fc0b23cb3e13ead94fa1f8eddd0dc543b824d89ef0543ffc12e7",
+    "services\\sidecar\\src\\command_parser\\rules\\head.json": "2c7217be721729035b15119d86e6a48be51d30cf9cd938565d8fd079fb91dc59",
+    "services\\sidecar\\src\\command_parser\\rules\\ls.json": "804e2e89637699abc8aac5be605de2b438b34a72fe76a8040c2e8cecfa2c7420",
+    "services\\sidecar\\src\\command_parser\\rules\\make.json": "1cdad9e0833c1e61390e84269cfeafd2140419797c787386c1b56b266f99fd50",
+    "services\\sidecar\\src\\command_parser\\rules\\manifest.json": "b4a31f556725490001c3a7d800c67a984d503f0cc8b8d41c5bfaa7cf0ea3f269",
+    "services\\sidecar\\src\\command_parser\\rules\\nice.json": "18096450c86b099019781401651dba2fb98684b597984329789f067ffee12ec5",
+    "services\\sidecar\\src\\command_parser\\rules\\npm.json": "bbaf70859608fd86f7c60f7a15fd1cf0fad51f2f86e7a7c3f438261267c44a0d",
+    "services\\sidecar\\src\\command_parser\\rules\\pip.json": "2d21b60eee02f1d9c56c445af5c02a2c639a36db2da429d4b8adb2616ca88e3e",
+    "services\\sidecar\\src\\command_parser\\rules\\pytest.json": "385a66194094cceea9c9395477ce8b31106e8758234314dfdd5c6173d4c82811",
+    "services\\sidecar\\src\\command_parser\\rules\\python.json": "46969cc42fdcfe0b40c1c2a3b95ff3a10258f1aaefc338153c0d35dd8216a9c9",
+    "services\\sidecar\\src\\command_parser\\rules\\sed.json": "37607b1efbf282ae4347162532778493640c7d6e0c14f7270a67ad099a1b9943",
+    "services\\sidecar\\src\\command_parser\\rules\\tail.json": "84435c0ec6192b545109249e585d6129d2e662fbe358599ababbb92779ed34bb",
+    "services\\sidecar\\src\\command_parser\\rules\\timeout.json": "9537ad85bb8ea40c3333809d9943fb55a46f536ec5ec5b6526c16062450447a5",
+    "services\\sidecar\\src\\command_parser\\service.py": "25b0ddbe7d552d08ff1fe83c359a314b5e92c0f8a73500934fff897933b506fb",
+    "services\\sidecar\\src\\command_parser\\shell.py": "ff891a85ab0bb4cd6da3041f3a955d10f85cea7de4cbc2e484ca772a669ce47b",
+    "services\\sidecar\\src\\command_parser\\validation.py": "fa356bb440c08b5aeaf02a3fd20e570ec3262c1a9235ef87ede6197c4e5fa1e5"
+  },
+  "validation": {
+    "new_regression_tests": 36,
+    "final_related_python_tests_passed": 274,
+    "python_full_run": {
+      "passed": 1811,
+      "failed": 1,
+      "skipped": 2,
+      "failure": "Test subprocess could not find python in PATH; no parser failure.",
+      "failed_test_rerun": {
+        "passed": 1,
+        "environment_fix": "prepend the WSL virtualenv bin directory to PATH"
+      },
+      "skips": [
+        "isolated Docker image",
+        "opt-in Linux cgroup delegation"
+      ],
+      "note": "The final related-test run also covers the ten additional rule cases added after full-suite collection."
+    },
+    "plugin": {
+      "passed": 108,
+      "skipped": 3,
+      "reason": "POSIX graceful shutdown tests skipped on Windows"
+    },
+    "rule_importer_tests_passed": 9,
+    "bundled_rules_matching_regenerated_output_and_manifest": 18,
+    "ruff": "passed",
+    "git_diff_check": "passed"
+  },
+  "limitations": [
+    "Parse status counts are not semantic accuracy or prediction accuracy.",
+    "Unknown-tool heuristic and LLM generation/routing remain unchanged.",
+    "Overflow atoms distinguish their combined content, but cannot match their constituent parameters independently.",
+    "Previously bound observations keep their original feature representation."
+  ]
+}

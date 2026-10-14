@@ -1,0 +1,340 @@
+{
+  "selected": {
+    "evidence_samples": 2,
+    "evidence_tasks": 2,
+    "failure_samples": 5,
+    "failure_tasks": 3,
+    "failure_fraction": 0.98
+  },
+  "default_verified_calls": 3524,
+  "model_samples": 1531,
+  "test_updates": 0,
+  "target_commands_executed": 0,
+  "source_access": "read-only",
+  "results": {
+    "tuning": {
+      "metrics": {
+        "off": {
+          "calls": 1694,
+          "scored": 694,
+          "corrected": 0,
+          "scored_corrected": 0,
+          "reasons": {},
+          "mae_s": 12.08724317464611,
+          "bucket_accuracy": 0.7161383285302594,
+          "factor2": 0.6729106628242075,
+          "over10": 39,
+          "under10": 35,
+          "p90_coverage": 0.8256484149855908,
+          "improved": 0,
+          "worsened": 0
+        },
+        "evidence": {
+          "calls": 1694,
+          "scored": 694,
+          "corrected": 64,
+          "scored_corrected": 58,
+          "reasons": {
+            "evidence": 58
+          },
+          "mae_s": 10.343286682416283,
+          "bucket_accuracy": 0.7348703170028819,
+          "factor2": 0.6945244956772334,
+          "over10": 29,
+          "under10": 32,
+          "p90_coverage": 0.8242074927953891,
+          "improved": 35,
+          "worsened": 13
+        },
+        "failure": {
+          "calls": 1694,
+          "scored": 694,
+          "corrected": 16,
+          "scored_corrected": 16,
+          "reasons": {
+            "failure": 16
+          },
+          "mae_s": 11.810059577636745,
+          "bucket_accuracy": 0.7276657060518732,
+          "factor2": 0.69164265129683,
+          "over10": 26,
+          "under10": 35,
+          "p90_coverage": 0.8213256484149856,
+          "improved": 15,
+          "worsened": 1
+        },
+        "both": {
+          "calls": 1694,
+          "scored": 694,
+          "corrected": 70,
+          "scored_corrected": 64,
+          "reasons": {
+            "evidence": 53,
+            "failure": 11
+          },
+          "mae_s": 10.334753931313257,
+          "bucket_accuracy": 0.739193083573487,
+          "factor2": 0.7031700288184438,
+          "over10": 23,
+          "under10": 32,
+          "p90_coverage": 0.8213256484149856,
+          "improved": 40,
+          "worsened": 14
+        },
+        "tuned": {
+          "calls": 1694,
+          "scored": 694,
+          "corrected": 78,
+          "scored_corrected": 72,
+          "reasons": {
+            "evidence": 61,
+            "failure": 11
+          },
+          "mae_s": 10.286765241823344,
+          "bucket_accuracy": 0.739193083573487,
+          "factor2": 0.7060518731988472,
+          "over10": 23,
+          "under10": 32,
+          "p90_coverage": 0.8198847262247838,
+          "improved": 44,
+          "worsened": 17
+        }
+      },
+      "default_vs_off": {
+        "delta_mae_s": -1.752489243332853,
+        "ci95": [
+          -2.8191966394466292,
+          -0.8466399130351906
+        ],
+        "tasks": 32,
+        "draws": 2000
+      },
+      "tuned_vs_default": {
+        "delta_mae_s": -0.04798868948991354,
+        "ci95": [
+          -0.1715293650456587,
+          0.019510552441591795
+        ],
+        "tasks": 32,
+        "draws": 2000
+      }
+    },
+    "check": {
+      "metrics": {
+        "off": {
+          "calls": 1830,
+          "scored": 518,
+          "corrected": 0,
+          "scored_corrected": 0,
+          "reasons": {},
+          "mae_s": 10.268453135997396,
+          "bucket_accuracy": 0.7084942084942085,
+          "factor2": 0.637065637065637,
+          "over10": 25,
+          "under10": 26,
+          "p90_coverage": 0.8494208494208494,
+          "improved": 0,
+          "worsened": 0
+        },
+        "evidence": {
+          "calls": 1830,
+          "scored": 518,
+          "corrected": 45,
+          "scored_corrected": 36,
+          "reasons": {
+            "evidence": 36
+          },
+          "mae_s": 9.567317894117087,
+          "bucket_accuracy": 0.7142857142857143,
+          "factor2": 0.6563706563706564,
+          "over10": 25,
+          "under10": 21,
+          "p90_coverage": 0.8436293436293436,
+          "improved": 21,
+          "worsened": 9
+        },
+        "failure": {
+          "calls": 1830,
+          "scored": 518,
+          "corrected": 14,
+          "scored_corrected": 14,
+          "reasons": {
+            "failure": 14
+          },
+          "mae_s": 10.23581268653504,
+          "bucket_accuracy": 0.7277992277992278,
+          "factor2": 0.6583011583011583,
+          "over10": 14,
+          "under10": 26,
+          "p90_coverage": 0.8436293436293436,
+          "improved": 12,
+          "worsened": 2
+        },
+        "both": {
+          "calls": 1830,
+          "scored": 518,
+          "corrected": 54,
+          "scored_corrected": 45,
+          "reasons": {
+            "evidence": 34,
+            "failure": 11
+          },
+          "mae_s": 9.538022182315927,
+          "bucket_accuracy": 0.7316602316602316,
+          "factor2": 0.6737451737451737,
+          "over10": 16,
+          "under10": 21,
+          "p90_coverage": 0.8397683397683398,
+          "improved": 30,
+          "worsened": 10
+        },
+        "tuned": {
+          "calls": 1830,
+          "scored": 518,
+          "corrected": 58,
+          "scored_corrected": 49,
+          "reasons": {
+            "evidence": 38,
+            "failure": 11
+          },
+          "mae_s": 9.34121565693948,
+          "bucket_accuracy": 0.7335907335907336,
+          "factor2": 0.6756756756756757,
+          "over10": 15,
+          "under10": 21,
+          "p90_coverage": 0.8378378378378378,
+          "improved": 32,
+          "worsened": 12
+        }
+      },
+      "default_vs_off": {
+        "delta_mae_s": -0.7304309536814673,
+        "ci95": [
+          -1.4904650014260044,
+          -0.17517354553119088
+        ],
+        "tasks": 23,
+        "draws": 2000
+      },
+      "tuned_vs_default": {
+        "delta_mae_s": -0.19680652537644783,
+        "ci95": [
+          -0.5964940326446758,
+          0.019091691996190485
+        ],
+        "tasks": 23,
+        "draws": 2000
+      }
+    },
+    "all_retrospective": {
+      "metrics": {
+        "off": {
+          "calls": 3524,
+          "scored": 1212,
+          "corrected": 0,
+          "scored_corrected": 0,
+          "reasons": {},
+          "mae_s": 11.309905517863903,
+          "bucket_accuracy": 0.7128712871287128,
+          "factor2": 0.6575907590759076,
+          "over10": 64,
+          "under10": 61,
+          "p90_coverage": 0.8358085808580858,
+          "improved": 0,
+          "worsened": 0
+        },
+        "evidence": {
+          "calls": 3524,
+          "scored": 1212,
+          "corrected": 109,
+          "scored_corrected": 94,
+          "reasons": {
+            "evidence": 94
+          },
+          "mae_s": 10.01164325639402,
+          "bucket_accuracy": 0.7260726072607261,
+          "factor2": 0.6782178217821783,
+          "over10": 54,
+          "under10": 53,
+          "p90_coverage": 0.8325082508250825,
+          "improved": 56,
+          "worsened": 22
+        },
+        "failure": {
+          "calls": 3524,
+          "scored": 1212,
+          "corrected": 30,
+          "scored_corrected": 30,
+          "reasons": {
+            "failure": 30
+          },
+          "mae_s": 11.137237886555322,
+          "bucket_accuracy": 0.7277227722772277,
+          "factor2": 0.6773927392739274,
+          "over10": 40,
+          "under10": 61,
+          "p90_coverage": 0.8308580858085809,
+          "improved": 27,
+          "worsened": 3
+        },
+        "both": {
+          "calls": 3524,
+          "scored": 1212,
+          "corrected": 124,
+          "scored_corrected": 109,
+          "reasons": {
+            "evidence": 87,
+            "failure": 22
+          },
+          "mae_s": 9.994236566642781,
+          "bucket_accuracy": 0.735973597359736,
+          "factor2": 0.6905940594059405,
+          "over10": 39,
+          "under10": 53,
+          "p90_coverage": 0.8292079207920792,
+          "improved": 70,
+          "worsened": 24
+        },
+        "tuned": {
+          "calls": 3524,
+          "scored": 1212,
+          "corrected": 136,
+          "scored_corrected": 121,
+          "reasons": {
+            "evidence": 99,
+            "failure": 22
+          },
+          "mae_s": 9.882644214620504,
+          "bucket_accuracy": 0.7367986798679867,
+          "factor2": 0.693069306930693,
+          "over10": 38,
+          "under10": 53,
+          "p90_coverage": 0.8275577557755776,
+          "improved": 76,
+          "worsened": 29
+        }
+      },
+      "default_vs_off": {
+        "delta_mae_s": -1.3156689512211222,
+        "ci95": [
+          -2.044723982469054,
+          -0.7104077606135338
+        ],
+        "tasks": 55,
+        "draws": 2000
+      },
+      "tuned_vs_default": {
+        "delta_mae_s": -0.1115923520222772,
+        "ci95": [
+          -0.2790198189002671,
+          0.00818488795489362
+        ],
+        "tasks": 55,
+        "draws": 2000
+      }
+    }
+  },
+  "production_defaults_changed": false,
+  "decision": "Retain defaults: the selected relaxation has small gains, its task-bootstrap check interval includes zero, and p90 coverage decreases. This is an interpretation of the results, not a preregistered deployment rule.",
+  "script_sha256": "28c3db0600dfafe45ae05ca7a8e8e05fbdce7115f0a241def5d442d3aee87b54"
+}

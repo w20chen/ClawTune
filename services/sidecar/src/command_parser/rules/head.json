@@ -12,6 +12,7 @@
     "source": "https://github.com/withfig/autocomplete/blob/aef52acff84c45edde61ae610cc2c964802b9a38/src/head.ts",
     "revision": "aef52acff84c45edde61ae610cc2c964802b9a38",
     "evidence": [
+      "https://www.gnu.org/software/coreutils/manual/html_node/head-invocation.html",
       "overrides/head.json"
     ]
   },
@@ -31,7 +32,7 @@
           "attached"
         ],
         "optional_value": "attached",
-        "dash_values": "attached",
+        "dash_values": "numeric",
         "repeat": "ordered",
         "independent": true,
         "persistent": false
@@ -50,10 +51,11 @@
           "attached"
         ],
         "optional_value": "attached",
-        "dash_values": "attached",
+        "dash_values": "numeric",
         "repeat": "ordered",
         "independent": true,
-        "persistent": false
+        "persistent": false,
+        "leading_numeric_short": true
       },
       {
         "names": [

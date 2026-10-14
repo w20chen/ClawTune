@@ -15,10 +15,16 @@
   },
   "options": {
     "-n": {
-      "independent": true
+      "independent": true,
+      "dash_values": "numeric",
+      "leading_numeric_short": true
     },
     "-c": {
-      "independent": true
+      "independent": true,
+      "dash_values": "numeric"
     }
-  }
+  },
+  "evidence": [
+    "https://www.gnu.org/software/coreutils/manual/html_node/head-invocation.html"
+  ]
 }

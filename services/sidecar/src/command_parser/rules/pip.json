@@ -13,6 +13,10 @@
     "source": "https://github.com/withfig/autocomplete/blob/aef52acff84c45edde61ae610cc2c964802b9a38/src/pip.ts",
     "revision": "aef52acff84c45edde61ae610cc2c964802b9a38",
     "evidence": [
+      "https://pip.pypa.io/en/stable/cli/pip_install/",
+      "https://pip.pypa.io/en/stable/cli/pip_list/",
+      "https://pip.pypa.io/en/stable/cli/pip_show/",
+      "https://pip.pypa.io/en/stable/cli/pip/",
       "overrides/pip.json"
     ]
   },
@@ -53,6 +57,23 @@
         "repeat": "ordered",
         "independent": true,
         "persistent": true
+      },
+      {
+        "names": [
+          "-V",
+          "--version"
+        ],
+        "canonical": "--version",
+        "min": 0,
+        "max": 0,
+        "forms": [
+          "separate"
+        ],
+        "optional_value": "attached",
+        "dash_values": "attached",
+        "repeat": "ordered",
+        "independent": true,
+        "persistent": false
       }
     ],
     "positionals": [
@@ -142,13 +163,35 @@
               "dash_values": "attached",
               "repeat": "ordered",
               "independent": true
+            },
+            {
+              "names": [
+                "--force-reinstall"
+              ],
+              "canonical": "--force-reinstall",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": true,
+              "persistent": false
             }
           ],
           "positionals": [
             {
               "min": 1,
               "max": null,
-              "role": "operand"
+              "role": "operand",
+              "optional_if_options": [
+                "-e",
+                "--editable",
+                "-r",
+                "--requirement"
+              ]
             }
           ],
           "subcommands": [],
@@ -932,8 +975,8 @@
                 "--format"
               ],
               "canonical": "--format",
-              "min": 0,
-              "max": 0,
+              "min": 1,
+              "max": 1,
               "forms": [
                 "separate",
                 "equals",
@@ -942,7 +985,7 @@
               "optional_value": "attached",
               "dash_values": "attached",
               "repeat": "ordered",
-              "independent": false,
+              "independent": true,
               "persistent": false
             },
             {
@@ -1129,7 +1172,13 @@
               "persistent": false
             }
           ],
-          "positionals": [],
+          "positionals": [
+            {
+              "min": 1,
+              "max": null,
+              "role": "operand"
+            }
+          ],
           "subcommands": [],
           "syntax": {
             "clusters": false,

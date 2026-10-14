@@ -15,11 +15,14 @@ The active implementation specification is [COMMAND_PARSER_PLAN.md](COMMAND_PARS
   ```
 
 - On PowerShell, use `npm.cmd test` in `packages/clawtune-plugin`; `npm test` may be blocked by execution policy. Invoke WSL validation through a Bash script when inline Python quoting is not preserved.
+- `npm.cmd test --prefix packages/clawtune-plugin` on Windows skips three POSIX graceful-shutdown cases. Complete `npm test --prefix packages/clawtune-plugin` with native Linux Node.js/npm; the current WSL environment exposes Windows npm but has no native `node` executable.
 - WSL's system `python3` lacks pytest: `wsl.exe --exec env PYTHONPATH=services/sidecar/src:. python3 -m pytest services/sidecar/tests tests -q -rs --basetemp /tmp/clawtune-review-20261012` cannot run with that interpreter. Use an activated Python environment with the sidecar test dependencies.
 - Repository-wide Ruff cleanup remains separate work: `python -m ruff check services/sidecar/src services/sidecar/tests tests cold_start offline scripts/build_bootstrap_seed.py swe_rebench/host_openclaw.py`. Existing findings must be separated from parser-change findings.
 - Native Windows Python lacks Ruff (`No module named ruff`). Run `python -m ruff check services/sidecar/src/tool_time/incremental.py services/sidecar/src/edge_kappa_kb/snapshot.py services/sidecar/src/kb_common/feature_index.py services/sidecar/tests/test_kb_incremental_equivalence.py research/kb_incremental_20261013` with the WSL validation environment.
 
 ## Target Linux runtime and collectors
+
+- The full Python regression run skips the opt-in native cgroup test. On a Linux host with delegated cgroup v2, run `CLAWTUNE_TEST_NATIVE_CGROUP=1 PYTHONPATH=services/sidecar/src:. python -m pytest tests/test_benchmark_scope_unification.py::test_live_native_worker_cgroup_and_memory -q`.
 
 - ClawBox's LatticeKB integration still needs a rebuilt Runtime/Tool image pair
   and a real CubeSandbox run using the same ClawTune source export. Run the image

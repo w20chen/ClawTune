@@ -53,5 +53,19 @@ def project(parsed: ParsedCommand, context: ParseContext, *, max_features: int =
             preferred.add(atom("context", key, value))
     ordered = sorted(core) + sorted(preferred - core) + sorted(optional - core - preferred)
     limit = max(len(core), max_features)
-    return CommandFeatures(parsed.tool, frozenset(ordered[:limit]), frozenset(core),
-                           digest(parsed.to_dict()), parsed.status, max(0, len(ordered) - limit))
+    omitted = 0
+    if len(ordered) > limit:
+        # Keep options independently matchable before long operand lists. Reserve
+        # one atom for all remaining features so distinct commands cannot become
+        # identical just because their distinguishing arguments exceed the budget.
+        option_kinds = {"opt", "flag", "repeat", "count", "sequence"}
+        ordered = sorted(core) + sorted(preferred - core) + sorted(
+            optional - core - preferred,
+            key=lambda value: (value.split(":", 1)[0] not in option_kinds, value),
+        )
+        limit = max(len(core) + 1, limit)
+        remainder = ordered[limit - 1:]
+        omitted = len(remainder)
+        ordered = ordered[:limit - 1] + [atom("overflow", _value(sorted(remainder)))]
+    return CommandFeatures(parsed.tool, frozenset(ordered), frozenset(core),
+                           digest(parsed.to_dict()), parsed.status, omitted)

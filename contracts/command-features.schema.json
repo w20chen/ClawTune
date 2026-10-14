@@ -41,6 +41,7 @@
     },
     "omitted_features": {
       "type": "integer",
+      "description": "Number of features not retained as independent matching atoms. Current projections preserve these in an overflow atom (hashed when large); older stored records may have dropped them.",
       "minimum": 0,
       "maximum": 16384
     }

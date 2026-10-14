@@ -54,6 +54,23 @@
       "repeat": "ordered",
       "independent": true,
       "persistent": true
+    },
+    {
+      "names": [
+        "-V",
+        "--version"
+      ],
+      "canonical": "--version",
+      "min": 0,
+      "max": 0,
+      "forms": [
+        "separate"
+      ],
+      "optional_value": "attached",
+      "dash_values": "attached",
+      "repeat": "ordered",
+      "independent": true,
+      "persistent": false
     }
   ],
   "subcommand_options": {
@@ -112,13 +129,70 @@
           "dash_values": "attached",
           "repeat": "ordered",
           "independent": true
+        },
+        {
+          "names": [
+            "--force-reinstall"
+          ],
+          "canonical": "--force-reinstall",
+          "min": 0,
+          "max": 0,
+          "forms": [
+            "separate"
+          ],
+          "optional_value": "attached",
+          "dash_values": "attached",
+          "repeat": "ordered",
+          "independent": true,
+          "persistent": false
         }
       ],
       "update": {
         "-r": {
           "independent": true
         }
+      },
+      "grammar": {
+        "positionals": [
+          {
+            "min": 1,
+            "max": null,
+            "role": "operand",
+            "optional_if_options": [
+              "-e",
+              "--editable",
+              "-r",
+              "--requirement"
+            ]
+          }
+        ]
+      }
+    },
+    "list": {
+      "update": {
+        "--format": {
+          "min": 1,
+          "max": 1,
+          "independent": true
+        }
+      }
+    },
+    "show": {
+      "grammar": {
+        "positionals": [
+          {
+            "min": 1,
+            "max": null,
+            "role": "operand"
+          }
+        ]
       }
     }
-  }
+  },
+  "evidence": [
+    "https://pip.pypa.io/en/stable/cli/pip_install/",
+    "https://pip.pypa.io/en/stable/cli/pip_list/",
+    "https://pip.pypa.io/en/stable/cli/pip_show/",
+    "https://pip.pypa.io/en/stable/cli/pip/"
+  ]
 }

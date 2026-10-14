@@ -33,9 +33,10 @@
         "equals"
       ],
       "optional_value": "attached",
-      "dash_values": "attached",
+      "dash_values": "numeric",
       "repeat": "ordered",
-      "independent": true
+      "independent": true,
+      "leading_numeric_short": true
     },
     {
       "names": [
@@ -51,7 +52,7 @@
         "equals"
       ],
       "optional_value": "attached",
-      "dash_values": "attached",
+      "dash_values": "numeric",
       "repeat": "ordered",
       "independent": true
     },
@@ -89,5 +90,8 @@
       "repeat": "ordered",
       "independent": true
     }
+  ],
+  "evidence": [
+    "https://www.gnu.org/software/coreutils/manual/html_node/tail-invocation.html"
   ]
 }

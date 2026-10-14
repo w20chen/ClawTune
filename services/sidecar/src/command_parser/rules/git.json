@@ -15,6 +15,10 @@
       "https://git-scm.com/docs/git-config",
       "https://git-scm.com/docs/git-merge",
       "https://git-scm.com/docs/git-branch",
+      "https://git-scm.com/docs/git-diff",
+      "https://git-scm.com/docs/git-apply",
+      "https://git-scm.com/docs/git-show",
+      "https://git-scm.com/docs/git-log",
       "overrides/git.json"
     ]
   },
@@ -6455,6 +6459,22 @@
               "repeat": "ordered",
               "independent": false,
               "persistent": false
+            },
+            {
+              "names": [
+                "--check"
+              ],
+              "canonical": "--check",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": true,
+              "persistent": false
             }
           ],
           "positionals": [
@@ -6868,17 +6888,28 @@
               "repeat": "ordered",
               "independent": false,
               "persistent": false
+            },
+            {
+              "names": [
+                "--all"
+              ],
+              "canonical": "--all",
+              "min": 0,
+              "max": 0,
+              "forms": [
+                "separate"
+              ],
+              "optional_value": "attached",
+              "dash_values": "attached",
+              "repeat": "ordered",
+              "independent": true,
+              "persistent": false
             }
           ],
           "positionals": [
             {
               "min": 0,
-              "max": 1,
-              "role": "operand"
-            },
-            {
-              "min": 0,
-              "max": 1,
+              "max": null,
               "role": "operand"
             }
           ],
@@ -10571,7 +10602,13 @@
         "canonical": "show",
         "grammar": {
           "options": [],
-          "positionals": [],
+          "positionals": [
+            {
+              "min": 0,
+              "max": null,
+              "role": "operand"
+            }
+          ],
           "subcommands": [],
           "syntax": {
             "clusters": false,
@@ -15864,7 +15901,7 @@
           ],
           "positionals": [
             {
-              "min": 1,
+              "min": 0,
               "max": null,
               "role": "operand"
             }

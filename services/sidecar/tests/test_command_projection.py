@@ -61,6 +61,49 @@ def test_budget_is_visible_and_keeps_core(service):
     assert record.omitted_features > 0
 
 
+def test_long_command_keeps_workers_and_distinguishes_overflow_operands(service):
+    paths = [f"tests/test_{i:02d}.py" for i in range(30)]
+    prefix = ["python", "-m", "pytest", "-q", "-n"]
+    left = service.argv([*prefix, "auto", *paths], ParseContext(repo="r"))
+    right = service.argv([*prefix, "1", *paths], ParseContext(repo="r"))
+    assert atom("opt", "L1/pytest", "--numprocesses", ["auto"]) in left.features
+    assert atom("flag", "L1/pytest", "--quiet") in left.features
+    assert left.features != right.features
+    assert len(left.features) == 20
+    overflow = [f for f in left.features if f.startswith("overflow:")]
+    assert len(overflow) == 1
+    # Changing a position that is not individually retained must change identity.
+    index = next(i for i, path in enumerate(paths) if atom("arg", "L1/pytest", i, path) not in left.features)
+    paths[index] += "::different_test"
+    changed = service.argv([*prefix, "auto", *paths], ParseContext(repo="r"))
+    assert left.features != changed.features
+    assert CommandFeatures.from_dict(left.to_dict()) == left
+
+
+def test_overflow_option_changes_are_not_lost(service):
+    # Too many independent options still preserve all distinctions in overflow.
+    argv = ["unknown-tool", *[f"--option-{i:02d}=value" for i in range(30)]]
+    left = service.argv(argv)
+    argv[-1] = "--option-29=changed"
+    right = service.argv(argv)
+    assert len(left.features) == len(right.features) == 20
+    assert left.features != right.features
+
+
+def test_small_budget_preserves_core_and_overflow_identity(service):
+    left = service.argv(["python", "-m", "pytest", "a"], max_features=1)
+    right = service.argv(["python", "-m", "pytest", "b"], max_features=1)
+    assert left.core <= left.features
+    assert left.features != right.features
+    assert len(left.features) == len(left.core) + 1
+
+
+def test_untruncated_features_do_not_gain_overflow(service):
+    argv = ["python", "-m", "pytest", "-q", "-n", "8", "tests"]
+    assert service.argv(argv).features == service.argv(argv, max_features=1000).features
+    assert not any(f.startswith("overflow:") for f in service.argv(argv).features)
+
+
 def test_rule_publication_does_not_change_bound_completion(tmp_path):
     service = CommandFeatureService()
     clauses = [{"argv": ["new-tool", "-n", "4"], "clause_index": 7}]

@@ -226,6 +226,10 @@
               "persistent": {
                 "type": "boolean"
               },
+              "leading_numeric_short": {
+                "type": "boolean",
+                "description": "Accept -DIGITS as this option's single value only as the first argument of this command layer. Does not apply after --."
+              },
               "transition": {
                 "type": "object",
                 "properties": {
@@ -297,6 +301,15 @@
               },
               "skip_if_options": {
                 "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 65536
+                },
+                "maxItems": 16384
+              },
+              "optional_if_options": {
+                "type": "array",
+                "description": "Waive this positional's minimum when one of these option aliases was consumed; still accept positional operands normally.",
                 "items": {
                   "type": "string",
                   "maxLength": 65536

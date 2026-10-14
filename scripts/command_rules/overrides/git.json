@@ -85,11 +85,86 @@
           "optional_value": "attached"
         }
       }
+    },
+    "diff": {
+      "add": [
+        {
+          "names": [
+            "--check"
+          ],
+          "canonical": "--check",
+          "min": 0,
+          "max": 0,
+          "forms": [
+            "separate"
+          ],
+          "optional_value": "attached",
+          "dash_values": "attached",
+          "repeat": "ordered",
+          "independent": true,
+          "persistent": false
+        }
+      ]
+    },
+    "apply": {
+      "grammar": {
+        "positionals": [
+          {
+            "min": 0,
+            "max": null,
+            "role": "operand"
+          }
+        ]
+      }
+    },
+    "show": {
+      "grammar": {
+        "positionals": [
+          {
+            "min": 0,
+            "max": null,
+            "role": "operand"
+          }
+        ]
+      }
+    },
+    "log": {
+      "grammar": {
+        "positionals": [
+          {
+            "min": 0,
+            "max": null,
+            "role": "operand"
+          }
+        ]
+      },
+      "add": [
+        {
+          "names": [
+            "--all"
+          ],
+          "canonical": "--all",
+          "min": 0,
+          "max": 0,
+          "forms": [
+            "separate"
+          ],
+          "optional_value": "attached",
+          "dash_values": "attached",
+          "repeat": "ordered",
+          "independent": true,
+          "persistent": false
+        }
+      ]
     }
   },
   "evidence": [
     "https://git-scm.com/docs/git-config",
     "https://git-scm.com/docs/git-merge",
-    "https://git-scm.com/docs/git-branch"
+    "https://git-scm.com/docs/git-branch",
+    "https://git-scm.com/docs/git-diff",
+    "https://git-scm.com/docs/git-apply",
+    "https://git-scm.com/docs/git-show",
+    "https://git-scm.com/docs/git-log"
   ]
 }

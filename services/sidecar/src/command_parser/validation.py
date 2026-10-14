@@ -35,12 +35,17 @@ def validate_rule(rule: dict) -> None:
         if depth > 16:
             raise ValueError("grammar too deep")
         names: set[str] = set()
+        numeric_short = 0
         for opt in grammar.get("options", []):
             if names.intersection(opt["names"]) or opt["canonical"] not in opt["names"]:
                 raise ValueError("duplicate option alias or unevidenced canonical name")
             names.update(opt["names"])
             if opt["max"] is not None and opt["min"] > opt["max"]:
                 raise ValueError("invalid option arity")
+            if opt.get("leading_numeric_short"):
+                numeric_short += 1
+                if numeric_short > 1 or opt["min"] != 1 or opt["max"] != 1 or opt.get("transition"):
+                    raise ValueError("numeric shorthand requires one unambiguous single-value option")
         positions = grammar.get("positionals", [])
         for i, slot in enumerate(positions):
             if slot["max"] is None and i != len(positions) - 1:

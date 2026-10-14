@@ -1,0 +1,533 @@
+{
+  "scope": "Current bundled argument parser replay on previously extracted shell clauses; not a new shell extraction, not semantic accuracy labels, not a prediction evaluation.",
+  "source": "research\\kb_systematic_20261013\\results\\calls.json.gz",
+  "source_sha256": "7c11c662861e359c3d8e44d4ee2f442885e1235260fff3a8c7117d4a27a34c5d",
+  "counts": {
+    "shell_calls": 6543,
+    "calls_with_extracted_clauses": 6543,
+    "clauses": 16673,
+    "complete": 10014,
+    "truncated_clauses": 14,
+    "omitted_features": 43,
+    "clauses_with_opaque": 4542,
+    "partial": 6584,
+    "invalid": 75
+  },
+  "diagnostics": {
+    "unknown_option:-100": 679,
+    "partial_grammar": 461,
+    "unknown_option:--check": 461,
+    "missing_rule:apt-get": 368,
+    "heuristic_arguments:apt-get": 368,
+    "unknown_option:-30": 357,
+    "missing_rule:command": 338,
+    "heuristic_arguments:command": 338,
+    "unknown_option:-80": 304,
+    "unknown_option:-50": 293,
+    "unresolved_expansion": 288,
+    "unknown_option:-20": 233,
+    "unknown_option:--no-flaky-report": 231,
+    "unknown_option:--version": 219,
+    "missing_rule:unittest": 191,
+    "heuristic_arguments:unittest": 191,
+    "unknown_option:-200": 169,
+    "unmodelled_operand": 139,
+    "unknown_option:-1": 126,
+    "missing_rule:apt-cache": 126,
+    "heuristic_arguments:apt-cache": 126,
+    "unknown_option:--force-reinstall": 123,
+    "unknown_option:--all": 119,
+    "missing_rule:ensurepip": 117,
+    "heuristic_arguments:ensurepip": 117,
+    "unknown_option:-120": 101,
+    "missing_rule:sort": 97,
+    "heuristic_arguments:sort": 97,
+    "unknown_option:-40": 95,
+    "missing_rule:which": 77,
+    "heuristic_arguments:which": 77,
+    "unknown_option:--stat": 68,
+    "missing_operand": 63,
+    "unknown_option:--format=fuller": 56,
+    "unknown_option:-60": 50,
+    "missing_rule:black": 48,
+    "heuristic_arguments:black": 48,
+    "unknown_option:-150": 34,
+    "unknown_option:-5": 31,
+    "unknown_option:-10": 31,
+    "unknown_option:-250": 31,
+    "unknown_option:-160": 30,
+    "missing_rule:nl": 30,
+    "heuristic_arguments:nl": 30,
+    "unknown_option:-8": 24,
+    "missing_rule:/opt/conda/bin/conda": 21,
+    "heuristic_arguments:/opt/conda/bin/conda": 21,
+    "unknown_option:-q": 16,
+    "missing_rule:ln": 16,
+    "heuristic_arguments:ln": 16,
+    "missing_rule:venv": 15,
+    "heuristic_arguments:venv": 15,
+    "missing_rule:ps": 15,
+    "heuristic_arguments:ps": 15,
+    "unknown_option:--format=": 15,
+    "missing_rule:/opt/conda/envs/testbed/bin/ruff": 15,
+    "heuristic_arguments:/opt/conda/envs/testbed/bin/ruff": 15,
+    "missing_rule:wc": 14,
+    "heuristic_arguments:wc": 14,
+    "unknown_option:-300": 12,
+    "unexpected_option_value": 12,
+    "unknown_option:-y": 12,
+    "unknown_option:--break-system-packages": 12,
+    "unknown_option:-180": 11,
+    "unknown_option:--quiet": 11,
+    "missing_rule:mkdir": 10,
+    "heuristic_arguments:mkdir": 10,
+    "missing_rule:xargs": 10,
+    "heuristic_arguments:xargs": 10,
+    "unknown_option:-s": 8,
+    "missing_rule:pgrep": 8,
+    "heuristic_arguments:pgrep": 8,
+    "unknown_option:--upgrade": 8,
+    "unknown_option:-240": 8,
+    "unknown_option:-n": 7,
+    "unknown_option:-12": 7,
+    "missing_rule:compileall": 7,
+    "heuristic_arguments:compileall": 7,
+    "missing_rule:du": 6,
+    "heuristic_arguments:du": 6,
+    "unknown_option:--contains": 6,
+    "missing_rule:awk": 6,
+    "heuristic_arguments:awk": 6,
+    "missing_rule:ruff": 6,
+    "heuristic_arguments:ruff": 6,
+    "missing_rule:uv": 5,
+    "heuristic_arguments:uv": 5,
+    "missing_rule:mktemp": 5,
+    "heuristic_arguments:mktemp": 5,
+    "unknown_option:--python": 5,
+    "unknown_option:--is-ancestor": 5,
+    "unknown_option:--no-reflogs": 5,
+    "missing_rule:dpkg": 4,
+    "heuristic_arguments:dpkg": 4,
+    "unknown_option:--device=default.qubit": 4,
+    "unknown_option:-f": 4,
+    "unknown_option:-140": 4,
+    "unknown_option:-15": 4,
+    "missing_rule:pylint": 4,
+    "heuristic_arguments:pylint": 4,
+    "unknown_option:-45": 4,
+    "unknown_option:--tags": 4,
+    "missing_rule:java": 4,
+    "heuristic_arguments:java": 4,
+    "missing_rule:/opt/conda/bin/ruff": 4,
+    "heuristic_arguments:/opt/conda/bin/ruff": 4,
+    "missing_rule:curl": 3,
+    "heuristic_arguments:curl": 3,
+    "unresolved_option_value": 3,
+    "missing_rule:setup.py": 3,
+    "heuristic_arguments:setup.py": 3,
+    "missing_rule:cut": 3,
+    "heuristic_arguments:cut": 3,
+    "unknown_option:-220": 3,
+    "unknown_option:-3": 3,
+    "unknown_option:-70": 3,
+    "missing_rule:pre-commit": 3,
+    "heuristic_arguments:pre-commit": 3,
+    "unknown_option:-S": 3,
+    "unknown_option:--ignore-space-at-eol": 2,
+    "unknown_option:-A": 2,
+    "unknown_option:--device=default.qubit.autograd": 2,
+    "missing_rule:nproc": 2,
+    "heuristic_arguments:nproc": 2,
+    "missing_rule:uniq": 2,
+    "heuristic_arguments:uniq": 2,
+    "unknown_option:--decorate": 2,
+    "unknown_option:--ancestry-path": 2,
+    "unknown_option:--device": 2,
+    "missing_rule:df": 2,
+    "heuristic_arguments:df": 2,
+    "unknown_option:-SNumpyMimic": 2,
+    "unknown_option:--show-toplevel": 2,
+    "unknown_option:-35": 2,
+    "missing_rule:.venv/bin/pylint": 2,
+    "heuristic_arguments:.venv/bin/pylint": 2,
+    "unknown_option:--no-ext-diff": 2,
+    "missing_rule:/opt/conda/envs/testbed/bin/pre-commit": 2,
+    "heuristic_arguments:/opt/conda/envs/testbed/bin/pre-commit": 2,
+    "missing_rule:mypy": 2,
+    "heuristic_arguments:mypy": 2,
+    "missing_rule:/opt/conda/envs/testbed/bin/mypy": 2,
+    "heuristic_arguments:/opt/conda/envs/testbed/bin/mypy": 2,
+    "unknown_option:-U": 1,
+    "missing_rule:cp": 1,
+    "heuristic_arguments:cp": 1,
+    "missing_rule:file": 1,
+    "heuristic_arguments:file": 1,
+    "unknown_option:-Spytest.approx(grad_auto": 1,
+    "unknown_option:-25": 1,
+    "unknown_option:--mock-use-standalone": 1,
+    "missing_rule:rmdir": 1,
+    "heuristic_arguments:rmdir": 1,
+    "unknown_option:--help": 1,
+    "unknown_option:-90": 1,
+    "missing_rule:/opt/conda/envs/testbed/bin/black": 1,
+    "heuristic_arguments:/opt/conda/envs/testbed/bin/black": 1,
+    "missing_rule:conda": 1,
+    "heuristic_arguments:conda": 1,
+    "unknown_option:-SSparseH": 1,
+    "unknown_option:-420": 1,
+    "unknown_option:-r": 1,
+    "unknown_option:-Scopy.deepcopy(qnode)": 1,
+    "missing_rule:basename": 1,
+    "heuristic_arguments:basename": 1,
+    "unknown_option:-a": 1,
+    "unknown_option:--reverse": 1,
+    "unknown_option:-400": 1,
+    "unknown_option:-Sautograd~=1.4": 1,
+    "unknown_option:--index-url": 1,
+    "missing_rule:.venv/bin/black": 1,
+    "heuristic_arguments:.venv/bin/black": 1,
+    "missing_rule:.venv/bin/isort": 1,
+    "heuristic_arguments:.venv/bin/isort": 1,
+    "missing_rule:isort": 1,
+    "heuristic_arguments:isort": 1,
+    "unknown_option:-Smight not be hermitian": 1,
+    "missing_rule:unzip": 1,
+    "heuristic_arguments:unzip": 1,
+    "unknown_option:-28": 1,
+    "unknown_option:-Sduckdb>=": 1,
+    "unknown_option:-Sexpression.join(series": 1,
+    "unknown_option:--sort=-version:refname": 1,
+    "unknown_option:-Sparent.args[key]": 1,
+    "unknown_option:-Sremove_where_true": 1,
+    "unknown_option:->>.*-\\|->.*-": 1,
+    "unknown_option:-S\"duckdb": 1,
+    "unknown_option:-Sany_token=any_token": 1,
+    "missing_rule:whereis": 1,
+    "heuristic_arguments:whereis": 1,
+    "unknown_option:-Stempdb.dbo": 1,
+    "unknown_option:-Sif sql[:1] != \"#\"": 1,
+    "missing_rule:pdb": 1,
+    "heuristic_arguments:pdb": 1,
+    "unknown_option:--ignore-installed": 1,
+    "missing_rule:sh": 1,
+    "heuristic_arguments:sh": 1,
+    "missing_rule:/root/.cargo/bin/rustup": 1,
+    "heuristic_arguments:/root/.cargo/bin/rustup": 1,
+    "missing_rule:chmod": 1,
+    "heuristic_arguments:chmod": 1,
+    "unknown_option:-145": 1,
+    "unknown_option:--binary": 1,
+    "unknown_option:--abbrev-ref": 1
+  },
+  "by_entry": {
+    "apply": {
+      "invalid": 13
+    },
+    "apt-cache": {
+      "partial": 126
+    },
+    "apt-get": {
+      "partial": 368
+    },
+    "awk": {
+      "partial": 6
+    },
+    "basename": {
+      "partial": 1
+    },
+    "bash": {
+      "complete": 35
+    },
+    "black": {
+      "partial": 50
+    },
+    "blame": {
+      "complete": 19
+    },
+    "branch": {
+      "complete": 76
+    },
+    "cache": {
+      "partial": 1
+    },
+    "cat": {
+      "complete": 681,
+      "partial": 2
+    },
+    "check": {
+      "complete": 1
+    },
+    "checkout": {
+      "complete": 9
+    },
+    "cherry-pick": {
+      "complete": 4
+    },
+    "chmod": {
+      "partial": 1
+    },
+    "clone": {
+      "partial": 2
+    },
+    "command": {
+      "partial": 338
+    },
+    "compileall": {
+      "partial": 7
+    },
+    "conda": {
+      "partial": 22
+    },
+    "config": {
+      "complete": 15
+    },
+    "cp": {
+      "partial": 1
+    },
+    "curl": {
+      "partial": 3
+    },
+    "cut": {
+      "partial": 3
+    },
+    "df": {
+      "partial": 2
+    },
+    "diff": {
+      "partial": 462,
+      "complete": 801
+    },
+    "dpkg": {
+      "partial": 4
+    },
+    "du": {
+      "partial": 6
+    },
+    "ensurepip": {
+      "partial": 117
+    },
+    "file": {
+      "partial": 1
+    },
+    "find": {
+      "partial": 464
+    },
+    "fmt": {
+      "complete": 2
+    },
+    "git": {
+      "partial": 31
+    },
+    "grep": {
+      "complete": 2676,
+      "partial": 130
+    },
+    "head": {
+      "partial": 2414,
+      "complete": 164
+    },
+    "install": {
+      "complete": 39,
+      "invalid": 1,
+      "partial": 1
+    },
+    "isort": {
+      "partial": 2
+    },
+    "java": {
+      "partial": 4
+    },
+    "list": {
+      "complete": 1
+    },
+    "ln": {
+      "partial": 16
+    },
+    "log": {
+      "partial": 296
+    },
+    "ls": {
+      "partial": 92,
+      "complete": 159
+    },
+    "ls-remote": {
+      "partial": 1
+    },
+    "make": {
+      "complete": 123
+    },
+    "mkdir": {
+      "partial": 10
+    },
+    "mktemp": {
+      "partial": 5
+    },
+    "mv": {
+      "complete": 2
+    },
+    "mypy": {
+      "partial": 4
+    },
+    "nl": {
+      "partial": 30
+    },
+    "nproc": {
+      "partial": 2
+    },
+    "pdb": {
+      "partial": 1
+    },
+    "pgrep": {
+      "partial": 8
+    },
+    "pip": {
+      "partial": 455,
+      "complete": 637,
+      "invalid": 61
+    },
+    "pip3": {
+      "partial": 1
+    },
+    "pre-commit": {
+      "partial": 5
+    },
+    "ps": {
+      "partial": 15
+    },
+    "pylint": {
+      "partial": 6
+    },
+    "pytest": {
+      "complete": 1816,
+      "partial": 285
+    },
+    "python": {
+      "complete": 255
+    },
+    "python3": {
+      "complete": 356
+    },
+    "python3.12": {
+      "complete": 3
+    },
+    "python3.9": {
+      "complete": 1
+    },
+    "remote": {
+      "complete": 25
+    },
+    "reset": {
+      "complete": 4
+    },
+    "rmdir": {
+      "partial": 1
+    },
+    "ruff": {
+      "partial": 25
+    },
+    "rustup": {
+      "partial": 1
+    },
+    "sed": {
+      "complete": 1521,
+      "partial": 4
+    },
+    "setup.py": {
+      "partial": 3
+    },
+    "sh": {
+      "partial": 1
+    },
+    "show": {
+      "partial": 236
+    },
+    "sort": {
+      "partial": 97
+    },
+    "status": {
+      "complete": 577
+    },
+    "tag": {
+      "partial": 7,
+      "complete": 6
+    },
+    "tail": {
+      "partial": 90,
+      "complete": 5
+    },
+    "test": {
+      "complete": 1
+    },
+    "uninstall": {
+      "partial": 2
+    },
+    "uniq": {
+      "partial": 2
+    },
+    "unittest": {
+      "partial": 191
+    },
+    "unzip": {
+      "partial": 1
+    },
+    "uv": {
+      "partial": 5
+    },
+    "venv": {
+      "partial": 15
+    },
+    "wc": {
+      "partial": 14
+    },
+    "whereis": {
+      "partial": 1
+    },
+    "which": {
+      "partial": 77
+    },
+    "xargs": {
+      "partial": 10
+    }
+  },
+  "dropped_feature_types": {
+    "arg": 19,
+    "flag": 10,
+    "opt": 10,
+    "opaque": 3,
+    "sequence": 1
+  },
+  "source_manifest": {
+    "services\\sidecar\\src\\command_parser\\__init__.py": "7538f9a7f87a594f5c41c79a8afca3595b7952440d4c72d3037f80b02f2d0620",
+    "services\\sidecar\\src\\command_parser\\__main__.py": "f7fcf689686f141f0c6e105a93db1c6540da284989bca8ff77bd35cf2f65850c",
+    "services\\sidecar\\src\\command_parser\\evidence.py": "1916420b9875f444adee506af0f4aa1e5505e4c51e9017d8aff17061efb6aaf5",
+    "services\\sidecar\\src\\command_parser\\generation.py": "f4d74fe72626934fec8c44b785732aa6f009b4f5ebb7e592bb0cdd14b05f9d2a",
+    "services\\sidecar\\src\\command_parser\\help_runner.py": "251783652f6869bce43d0bc41b5d455a4599f3f35365c82886be46013e93a4c8",
+    "services\\sidecar\\src\\command_parser\\matching.py": "acd348031c945df743128ddb83a0bfdb937a3f018ed5c6e9f2522878ab97ec87",
+    "services\\sidecar\\src\\command_parser\\models.py": "540cdf27dac1465b9e31ac1eeddb9519b83389c1dce1d19b5822351a976c5672",
+    "services\\sidecar\\src\\command_parser\\parser.py": "d842ab9a9bb246125c3ac7b1ea2d5d2d557cde8798007f5ee618cfca39614d2d",
+    "services\\sidecar\\src\\command_parser\\projection.py": "ad86e80da3019732d81957e9c513dd326ca5c36bf8fb28590fcd76f1c7158aa2",
+    "services\\sidecar\\src\\command_parser\\registry.py": "62c082f3ed125a6c73b2e25313f14eaca3c0fd763131429ada91ae86b51eeb25",
+    "services\\sidecar\\src\\command_parser\\rules\\bash.json": "dfb83840154905eea320e6e891e6783c9d8f023c8eda258cfc701245c54b79d8",
+    "services\\sidecar\\src\\command_parser\\rules\\cargo.json": "cb387750b20d5b2166edb73ab4f2a03363819a33f600839512e00bb7c0d70734",
+    "services\\sidecar\\src\\command_parser\\rules\\cat.json": "a78063362569fa2bd1a51ae00e17529450d5afbc4a04d73c7d1caaa237b2b60f",
+    "services\\sidecar\\src\\command_parser\\rules\\env.json": "264f3e33d4aa181460d9cb56cd12d1d60d62869398bcb062e916db20cfa7cf1a",
+    "services\\sidecar\\src\\command_parser\\rules\\find.json": "9a36d1afeda226e4b3dc9cdd3bc6f35042f0dc5db042a42ece006f518ee833f8",
+    "services\\sidecar\\src\\command_parser\\rules\\git.json": "c2683be2a1bc799217db0910da9f53a498810c8fa8f961ce1372dbb1c71f5ca7",
+    "services\\sidecar\\src\\command_parser\\rules\\grep.json": "67eab24eb4e5fc0b23cb3e13ead94fa1f8eddd0dc543b824d89ef0543ffc12e7",
+    "services\\sidecar\\src\\command_parser\\rules\\head.json": "4a1443fbdf2ef21732e8d4c0f85c4b496ed9dcc411ecd0d75ddde18a54dbe97a",
+    "services\\sidecar\\src\\command_parser\\rules\\ls.json": "804e2e89637699abc8aac5be605de2b438b34a72fe76a8040c2e8cecfa2c7420",
+    "services\\sidecar\\src\\command_parser\\rules\\make.json": "1cdad9e0833c1e61390e84269cfeafd2140419797c787386c1b56b266f99fd50",
+    "services\\sidecar\\src\\command_parser\\rules\\manifest.json": "88328375d441050b1d1734c38d8538772ff2b3ddcf36e6eff804c8a4252688f0",
+    "services\\sidecar\\src\\command_parser\\rules\\nice.json": "18096450c86b099019781401651dba2fb98684b597984329789f067ffee12ec5",
+    "services\\sidecar\\src\\command_parser\\rules\\npm.json": "bbaf70859608fd86f7c60f7a15fd1cf0fad51f2f86e7a7c3f438261267c44a0d",
+    "services\\sidecar\\src\\command_parser\\rules\\pip.json": "983ff4aa17dbc936810ec61ca0abc752c7cd7a564927fa900a722723a260f5f4",
+    "services\\sidecar\\src\\command_parser\\rules\\pytest.json": "385a66194094cceea9c9395477ce8b31106e8758234314dfdd5c6173d4c82811",
+    "services\\sidecar\\src\\command_parser\\rules\\python.json": "46969cc42fdcfe0b40c1c2a3b95ff3a10258f1aaefc338153c0d35dd8216a9c9",
+    "services\\sidecar\\src\\command_parser\\rules\\sed.json": "37607b1efbf282ae4347162532778493640c7d6e0c14f7270a67ad099a1b9943",
+    "services\\sidecar\\src\\command_parser\\rules\\tail.json": "57c3d41706b7684df65701f4b1ef37719c171f9739cb3ca8aa0d4b70521ca9d4",
+    "services\\sidecar\\src\\command_parser\\rules\\timeout.json": "9537ad85bb8ea40c3333809d9943fb55a46f536ec5ec5b6526c16062450447a5",
+    "services\\sidecar\\src\\command_parser\\service.py": "25b0ddbe7d552d08ff1fe83c359a314b5e92c0f8a73500934fff897933b506fb",
+    "services\\sidecar\\src\\command_parser\\shell.py": "ff891a85ab0bb4cd6da3041f3a955d10f85cea7de4cbc2e484ca772a669ce47b",
+    "services\\sidecar\\src\\command_parser\\validation.py": "d9d62f8573c844f3b569e7d48a421570a3a28110e9c022e39919773e05898d26"
+  }
+}
