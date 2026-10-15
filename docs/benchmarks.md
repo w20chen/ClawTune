@@ -389,10 +389,11 @@ python -m offline.evaluate_execution_context
 ```
 
 Inputs are the systematic-study trace artifacts and the task split in
-`research/execution_context/split.json`. The command writes one model,
-`research/execution_context/execution-context-kb.json`, and the final predictions
-and metrics in the same directory. It does not execute traced commands. To rebuild
-context from the original read-only dataset, add `--refresh-context --dataset PATH`.
+`research/execution_context/split.json`. The command writes one local, git-ignored
+model, `research/execution_context/execution-context-kb.json`, and the final
+predictions and metrics in the same directory. It does not execute traced commands.
+To rebuild context from the original read-only dataset, add
+`--refresh-context --dataset PATH`.
 
 The sidecar automatically loads `execution-context-kb.json` when included in its KB
 directory; include it in the snapshot manifest when building an immutable seed.

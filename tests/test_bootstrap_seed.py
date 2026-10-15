@@ -264,19 +264,39 @@ def test_recipe_rejects_insufficient_cases_without_creating_bundle(tmp_path, sim
     assert not (tmp_path / "seed").exists()
 
 
-def test_shipped_seed_contains_four_finalized_kbs_and_ten_cases():
+def test_shipped_seed_contains_four_finalized_kbs_and_four_fresh_replays():
     manifest = validate_seed(SEED)
     assert set(manifest["snapshots"]) == set(ALL_FILES)
     provenance = manifest["provenance"]
-    assert provenance["case_count"] == len(provenance["cases"]) == 10
-    assert len({c["task_id"] for c in provenance["cases"]}) == 10
-    assert all(len(c["files"]) == 1 for c in provenance["cases"])
+    assert provenance["kind"] == "fresh-trace-v6-causal-replay"
+    assert provenance["counts"]["tasks"] == len(provenance["sources"]) == 4
+    assert len({source["task_id"] for source in provenance["sources"]}) == 4
+    assert provenance["counts"]["execution_context_samples"] == 0
     for name in ALL_FILES:
         snapshot = json.loads((SEED / name).read_text(encoding="utf-8"))
         assert snapshot["pending"] == []
-    for backend in ("tool", "trie", "lattice", "edge_kappa"):
-        assert provenance["target_counts"][backend]["duration_ms"] > 0
-        assert "memory_total_peak_bytes" in provenance["unavailable_targets"][backend]
+    assert all(not nodes for nodes in json.loads(
+        (SEED / FILES[0]).read_text(encoding="utf-8")
+    )["public"].values())
+    assert all(not nodes for nodes in json.loads(
+        (SEED / FILES[1]).read_text(encoding="utf-8")
+    )["public"].values())
+    required = {
+        "latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores",
+        "sampled_peak_rss_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes",
+        "pmu_cycles", "pmu_instructions", "pmu_llc_read_accesses",
+        "pmu_llc_read_misses", "pmu_ipc", "pmu_llc_mpki", "pmu_llc_miss_rate",
+        "pmu_llc_read_accesses_per_cpu_second",
+        "pmu_llc_read_misses_per_cpu_second",
+    }
+    assert required <= {
+        target for target, count in provenance["call_target_counts"].items() if count
+    }
+    assert provenance["validation"]["passed"] is True
+    assert all(
+        target["labeled_coverage"] == 1.0
+        for target in provenance["validation"]["targets"].values()
+    )
     edge = json.loads((SEED / ALL_FILES[3]).read_text())
     assert not edge["tokens"]
     assert edge["runtime"]["completed_calls"]
@@ -288,8 +308,8 @@ def test_initial_state_can_learn_without_mutating_release_seed(tmp_path):
     initialize_state(state, SEED, owner="daily")
     lattice = LatticeTimeKB.from_json_obj(json.loads((state / FILES[2]).read_text()))
     edge = EdgeKappaRuntime.from_snapshot(json.loads((state / ALL_FILES[3]).read_text()))
-    assert lattice.node_count == 0
-    assert not edge.to_snapshot()["observations"]
+    assert lattice.node_count > 0
+    assert edge.to_snapshot()["observations"]
     assert set(validate_seed(SEED)["snapshots"]) <= {p.name for p in state.iterdir()}
     trie = ClauseResourceKB.from_json_obj(json.loads((state / FILES[0]).read_text()))
     from tool_resource.runtime_kb import ClauseObservation
@@ -305,12 +325,10 @@ def test_cli_default_uses_release_seed():
     assert parser().parse_args(["benchmark"]).seed == SEED
 
 
-def test_unrecorded_resources_remain_unavailable_in_shipped_seed():
+def test_shipped_seed_keeps_causal_repo_history_without_public_prior():
     manifest = validate_seed(SEED)
-    repo = manifest["provenance"]["cases"][0]["repo"]
     tool = RuntimeToolResourceKB.from_json_obj(json.loads((SEED / FILES[1]).read_text()))
     tool.freeze()
-    evidence = tool.predict_load_samples(ToolCallQuery(repo, "exec", "python job.py", 1))
-    for target in ("cpu_time_seconds", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes"):
-        assert not evidence.get(target, {}).get("values")
-    assert tool.predict_pmu_samples(ToolCallQuery(repo, "exec", "python job.py", 1)) == {}
+    unrelated = ToolCallQuery("unseen/repository", "exec", "python job.py", 1)
+    assert tool.predict_load_samples(unrelated) == {}
+    assert tool.predict_pmu_samples(unrelated) == {}

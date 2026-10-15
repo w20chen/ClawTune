@@ -151,16 +151,25 @@ this check does not detect every possible change to otherwise valid snapshot dat
 
 New daily state and online runs copy the bundled initialization prior by default. Override with `CLAWTUNE_KB_SEED` for daily use or `--seed <directory>` for benchmarks. Changing the prior does not reset existing state. Resuming an old run requires its original prior. The offline command's `--seed` is instead an integer split seed.
 
-The bundled seed contains Tool, Trie, Lattice, and Edge KBs after replaying 10 cases with eligible clause measurements, ordered by recorded start time. Each case contributes one complete recorded attempt; there is no train/test split. The current selection is entirely from `tobymao/sqlglot`. Tool and Trie retain repository-specific history, so they do not supply a public prior for other repositories. Missing or unqualified CPU, environment-memory, and PMU measurements remain unavailable.
+The bundled seed is the finalized Tool, Trie, Lattice, and Edge state after causally replaying four fresh SWE-rebench trace-v6 runs from an empty KB. At every recorded tool start the replay predicts from only earlier completions; it observes that call at its recorded completion, then drains pending samples and freezes the KB after the fourth trace. The four repositories are `iterative/dvc`, `pydata/xarray`, `adamboche/python-marshmallow-union`, and `vertica/vertica-python`. Qualified call labels cover duration, CPU, process RSS, environment total/extra memory, and all nine PMU targets. Tool and Trie retain repository-specific history and deliberately contain no fitted public prior, so an unrelated repository can still begin without a prediction until it learns local evidence. Missing or unqualified measurements are never replaced with zeros.
 
-To rebuild from trace-v5 data on Linux/WSL, write to a new directory:
+To rebuild the causal seed from fresh trace-v6 replays on Linux, write to a new directory and repeat `--trace` once per task:
+
+```bash
+python3 scripts/build_replayed_seed.py \
+  --trace owner__repo-1=/path/to/replay-1/trace.jsonl \
+  --trace owner__repo-2=/path/to/replay-2/trace.jsonl \
+  --output /path/to/new-seed
+```
+
+For legacy trace-v5 data, use:
 
 ```bash
 python3 scripts/build_bootstrap_seed.py --dataset /path/to/traces \
   --cases 10 --rss-unit MiB --output /path/to/new-seed
 ```
 
-Set `--rss-unit` to the source measurements' unit. The manifest records selected files, hashes, and available targets. Point `CLAWTUNE_KB_SEED` or benchmark `--seed` at this directory to use it for new state.
+Set `--rss-unit` to the trace-v5 source measurements' unit. Both builders record source hashes and available targets in the manifest. Point `CLAWTUNE_KB_SEED` or benchmark `--seed` at the new directory to use it for new state.
 
 Resource KB snapshots use Runtime v4, Trie v7, and Lattice v4; Edge uses `edge-kappa-kb.v1` with `shell-normalize-v4`. Older incompatible snapshots are rejected. Rebuild from raw observations into a new seed, then start a new benchmark run or use a new `CLAWTUNE_STATE_DIR`; changing a seed does not migrate existing state.
 
