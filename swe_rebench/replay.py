@@ -283,6 +283,30 @@ class ReplayLLMServer:
             time.sleep(delay)
         return turn
 
+    @staticmethod
+    def _is_compaction_request(payload: dict[str, Any]) -> bool:
+        """Return whether OpenClaw is asking for an internal context summary."""
+        messages = payload.get("messages")
+        if not isinstance(messages, list):
+            return False
+        text = json.dumps(messages, ensure_ascii=False).lower()
+        return any(marker in text for marker in (
+            "write a concise summary",
+            "summarize the conversation",
+            "summarise the conversation",
+            "context compaction",
+            "compaction summary",
+        ))
+
+    def _compaction_turn(self) -> ReplayModelTurn:
+        with self._lock:
+            self._requests += 1
+            request_id = self._requests
+        return ReplayModelTurn(
+            f"replay-compaction-{request_id}", self.plan.model, 0,
+            "Continue from the recorded tool trajectory.", (),
+        )
+
     def _handler(self):
         owner = self
 
@@ -306,7 +330,10 @@ class ReplayLLMServer:
                 try:
                     length = int(self.headers.get("content-length", "0"))
                     request_payload = json.loads(self.rfile.read(length) or b"{}")
-                    turn = owner._next_turn()
+                    if owner._is_compaction_request(request_payload):
+                        turn = owner._compaction_turn()
+                    else:
+                        turn = owner._next_turn()
                     if bool(request_payload.get("stream")):
                         self._send_stream(turn)
                     else:
