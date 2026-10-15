@@ -404,7 +404,13 @@ def test_abort_script_verifies_identity_and_stops_descendants(tmp_path, slow_kil
         assert process.wait(timeout=5) == -9
         assert not resumed_file.exists()
         stat = Path(f"/proc/{child}/stat")
-        assert not stat.exists() or stat.read_text().rsplit(")", 1)[1].split()[0] == "Z"
+        try:
+            child_state = stat.read_text().rsplit(")", 1)[1].split()[0]
+        except (FileNotFoundError, ProcessLookupError):
+            # The child may be reaped between resolving /proc/<pid>/stat and
+            # reading it.  A missing process is the successful terminal state.
+            child_state = None
+        assert child_state in (None, "Z")
     finally:
         if process.poll() is None:
             process.kill()
