@@ -288,7 +288,10 @@ class ReplayLLMServer:
         """Return whether OpenClaw is asking for an internal context summary."""
         messages = payload.get("messages")
         if not isinstance(messages, list):
-            return False
+            # OpenClaw's internal compaction path can send a prompt/input
+            # envelope instead of an OpenAI chat `messages` array.  Normal
+            # replay requests always use `messages`.
+            return "input" in payload or "prompt" in payload
         text = json.dumps(messages, ensure_ascii=False).lower()
         return any(marker in text for marker in (
             "write a concise summary",
