@@ -14,6 +14,12 @@ Read the [technical report](docs/technical-report.md) for the system design, mea
 
 The repository contains configuration templates, protocols, test fixtures, and a small initialization prior.
 
+Keep runtime code, installation/build files, JSON Schemas, bundled command rules
+and their generators, tests/fixtures, reusable evaluation tools, and the
+`seeds/bootstrap-v1/` cold-start knowledge base under version control. Store local
+experiments, reports, historical code copies, and one-off analysis scripts in
+git-ignored `research/`; generated runs and logs belong in `.runtime/`.
+
 [JSON Schemas](contracts/) define the public protocol.
 
 See [command rules](docs/command-parsing.md) for parsing inspection, automatic rule generation, runtime context and fresh-state behavior.

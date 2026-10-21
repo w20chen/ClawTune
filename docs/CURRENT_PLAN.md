@@ -6,6 +6,8 @@ The active implementation specification is [COMMAND_PARSER_PLAN.md](COMMAND_PARS
 
 ## Local validation prerequisites
 
+- Repository cleanup check (2026-10-21): `wsl.exe --list --quiet` reports that WSL is not installed on this workstation. The full Linux/POSIX validation command below cannot run here until WSL or a Linux host is available; the Windows cleanup checks do not replace it.
+
 - Native Windows cannot complete `python -m pytest -p no:cacheprovider services/sidecar/tests/test_kb_shared_config.py services/sidecar/tests/test_edge_kappa_kb.py services/sidecar/tests/test_lattice_time_kb.py services/sidecar/tests/test_kb_algorithm_equivalence.py services/sidecar/tests/test_lattice_resources.py -q`: parser-dependent cases require POSIX pipe polling (`WinError 10038`). Run this selection in the Linux/WSL environment below.
 
 - Run parser/POSIX tests in Linux or WSL with the sidecar on `PYTHONPATH`, an activated Python environment, pytest, setuptools, and a working mvdan parser. Native Windows parser tests fail with `WinError 10038`; Windows-mounted temporary directories do not preserve POSIX permission bits. Use:
@@ -18,7 +20,7 @@ The active implementation specification is [COMMAND_PARSER_PLAN.md](COMMAND_PARS
 - `npm.cmd test --prefix packages/clawtune-plugin` on Windows skips three POSIX graceful-shutdown cases. Complete `npm test --prefix packages/clawtune-plugin` with native Linux Node.js/npm; the current WSL environment exposes Windows npm but has no native `node` executable.
 - WSL's system `python3` lacks pytest: `wsl.exe --exec env PYTHONPATH=services/sidecar/src:. python3 -m pytest services/sidecar/tests tests -q -rs --basetemp /tmp/clawtune-review-20261012` cannot run with that interpreter. Use an activated Python environment with the sidecar test dependencies.
 - Repository-wide Ruff cleanup remains separate work: `python -m ruff check services/sidecar/src services/sidecar/tests tests cold_start offline scripts/build_bootstrap_seed.py swe_rebench/host_openclaw.py`. Existing findings must be separated from parser-change findings.
-- Native Windows Python lacks Ruff (`No module named ruff`). Run `python -m ruff check services/sidecar/src/tool_time/incremental.py services/sidecar/src/edge_kappa_kb/snapshot.py services/sidecar/src/kb_common/feature_index.py services/sidecar/tests/test_kb_incremental_equivalence.py research/kb_incremental_20261013` with the WSL validation environment.
+- Native Windows Python lacks Ruff (`No module named ruff`). Run `python -m ruff check services/sidecar/src/tool_time/incremental.py services/sidecar/src/edge_kappa_kb/snapshot.py services/sidecar/src/kb_common/feature_index.py services/sidecar/tests/test_kb_incremental_equivalence.py` with a Linux validation environment.
 
 ## Target Linux runtime and collectors
 
@@ -50,7 +52,7 @@ PYTHONPATH=services/sidecar/src:. python3 -m pytest services/sidecar/tests tests
 
 - Serial v5 PMU batch: confirming the first three real replays is blocked by SSH connection timeouts to `kunpeng`. After connectivity returns, complete and verify the source transfer, then run `ssh kunpeng 'cd /home/weitianc/clawtune-v5-20261014; .venv-test/bin/python .runtime/serial-pmu-20261014/check.py'`. Require three successful validations and `first-three-ok.json`; the existing nohup launch alone is not acceptance evidence.
 
-- Cold-start transfer study: fresh measurements could not run locally because neither Windows nor WSL exposes Docker (`command -v docker` returned no path). On a prepared Linux collector host, run `python3 scripts/clawtune.py benchmark --benchmark swe-rebench --dataset <multi-repository-task-roster.json> --sample 30 --parallelism 1 --output <new-study-run>`; retain multiple independent tasks per repository, native/QEMU identity, quota, and eligible environment extra-memory labels. Do not substitute a dry-run for this validation. Existing-trace findings are in `research/cold_start_transfer`.
+- Cold-start transfer study: fresh measurements could not run locally because neither Windows nor WSL exposes Docker (`command -v docker` returned no path). On a prepared Linux collector host, run `python3 scripts/clawtune.py benchmark --benchmark swe-rebench --dataset <multi-repository-task-roster.json> --sample 30 --parallelism 1 --output <new-study-run>`; retain multiple independent tasks per repository, native/QEMU identity, quota, and eligible environment extra-memory labels. Do not substitute a dry-run for this validation. Historical study findings are not shipped with the repository.
 
 Use plugin and sidecar from the same checkout and a fresh run-local KB. These commands remain unvalidated on the final target deployment:
 
@@ -82,5 +84,5 @@ Apply the matrix to `swe-rebench`, `swe-bench-verified`, `deep-research-bench`, 
 
 ## KB online latency acceptance
 
-- Default-order-6 shared-writer latency remains unmeasured. Resume the component probe with `PYTHONHASHSEED=42 PYTHONPATH=services/sidecar/src:. python research/kb_incremental_20261013/run.py --root <immutable-study-root> --out <result-dir-with-edge-6-trained.json> --cases pair:6:900 --rss-gib 40`. Its time and RSS limits apply only to this experiment.
+- Default-order-6 shared-writer latency remains unmeasured. The historical component probe is no longer shipped; this acceptance check requires a maintained load harness on the target Linux host.
 - At default order 6, measure the complete HTTP path under sustained concurrent arrivals at increasing history sizes: query latency, completion-to-prediction visibility, and durable checkpoint throughput separately. Include raw parsing, compatibility diagnostics, telemetry delivery, snapshot capture/serialization, and StateStore checkpointing. Preserve actual labels. Incremental local statistics and component probes do not establish an HTTP latency or freshness SLA; the missing measurements do not by themselves justify reducing order 6.

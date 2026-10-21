@@ -43,39 +43,8 @@ deep_research_bench/.runtime/
 /cold_start/manifests/flat-644-seed42-v1.json
 /services/sidecar/sidecar-test-out.txt
 
-# Research source, reports and aggregate metrics are versioned. Keep bulky
-# replay data, model snapshots, source bundles and transient logs locally.
-/research/**/*.zip
-/research/.archive/
-/research/**/*.so
-/research/**/*.jsonl
-/research/**/*.json.gz
-/research/**/*.jsonl.gz
-/research/**/*.log
-/research/**/logs/
-/research/**/pytest-*/
-/research/**/artifacts/
-/research/**/checkpoints/
-/research/**/outputs/
-/research/**/runs/
-/research/**/*-kb.json
-/research/**/predictions.json
-/research/**/*.npy
-/research/**/*.npz
-/research/**/*.pkl
-/research/**/*.pickle
-/research/**/*.pt
-/research/**/*.pth
-/research/**/*.parquet
-/research/**/*.zst
-/research/**/*.tar
-/research/**/*.tar.gz
-/research/**/*.tgz
-/research/**/synthetic-before.json
-/research/**/synthetic-after.json
-/research/edge_continuous_20261015/
-/research/kb_systematic_20261013/results/adapter-before-guard-fix/
-/research/kb_systematic_20261013/results/llm/request-*.json
-/research/kb_systematic_20261013/results/llm/response-*.json
-/research/kb_systematic_20261013/results/llm/**/request-*.json
-/research/kb_systematic_20261013/results/llm/**/response-*.json
+# Local experiments and generated logs are not release assets.
+# Keep reusable tooling outside research/; keep release seeds and fixtures tracked.
+/research/
+/legacy_eval/
+*.log

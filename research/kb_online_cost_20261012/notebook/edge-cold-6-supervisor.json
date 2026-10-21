@@ -1,9 +1,0 @@
-{
-  "model": "edge-cold",
-  "limit": 6,
-  "returncode": 0,
-  "termination": null,
-  "wall_s": 12.004591632000029,
-  "observed_peak_rss_mib": 226.01953125,
-  "trial_time_budget_s": 180.0
-}

@@ -1,9 +1,0 @@
-{
-  "model": "edge",
-  "limit": 1,
-  "returncode": 0,
-  "termination": null,
-  "wall_s": 11.004928662999873,
-  "observed_peak_rss_mib": 257.26171875,
-  "trial_time_budget_s": 180.0
-}

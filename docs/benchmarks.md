@@ -379,21 +379,7 @@ Timeout finalization follows confirmed producer shutdown. Tools lacking verified
 
 ## 5. Fixed-trace offline evaluation
 
-The ordinary `scripts/clawtune.py offline` workflow below evaluates the four base KBs and their call composer. It does not evaluate the live execution-context correction layer. The separate execution-context regression evaluates that shared correction on the saved Lattice shrinkage predictions and its recorded task split; it does not establish corrected accuracy for all four backends or new live workloads.
-
-The execution-context duration correction uses the same `execution_context` module
-as the sidecar. Reproduce its fixed-trace regression from the repository root:
-
-```sh
-python -m offline.evaluate_execution_context
-```
-
-Inputs are the systematic-study trace artifacts and the task split in
-`research/execution_context/split.json`. The command writes one local, git-ignored
-model, `research/execution_context/execution-context-kb.json`, and the final
-predictions and metrics in the same directory. It does not execute traced commands.
-To rebuild context from the original read-only dataset, add
-`--refresh-context --dataset PATH`.
+The ordinary `scripts/clawtune.py offline` workflow below evaluates the four base KBs and their call composer. It does not evaluate the live execution-context correction layer. Historical study artifacts and their one-off regression scripts are not shipped with the repository. The shared execution-context implementation is covered by `tests/test_execution_context.py`; these tests do not establish prediction accuracy on new live workloads.
 
 The sidecar automatically loads `execution-context-kb.json` when included in its KB
 directory; include it in the snapshot manifest when building an immutable seed.

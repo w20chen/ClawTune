@@ -1,5 +1,0 @@
-{
-  "bit_exact_cases": 1000,
-  "elapsed_seconds": 5.867922502000056,
-  "definition": "same CPython Random(0) index draws, 2048 samples, grouping, compensated sum, median; no tolerance used"
-}

@@ -1,6 +1,6 @@
 # Command parser implementation plan
 
-Status: implemented on `main`. Usage is in [command-parsing.md](command-parsing.md); evaluation is in [the command parser study](../research/command_parser_evaluation/README.md). Target-runtime checks remain in [CURRENT_PLAN.md](CURRENT_PLAN.md).
+Status: implemented on `main`. Usage is in [command-parsing.md](command-parsing.md). Historical experiment reports are not part of the source distribution. Target-runtime checks remain in [CURRENT_PLAN.md](CURRENT_PLAN.md).
 
 ## 1. Scope and decisions
 
