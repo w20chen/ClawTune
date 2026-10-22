@@ -48,3 +48,8 @@ deep_research_bench/.runtime/
 /research/
 /legacy_eval/
 *.log
+
+# Local agent instructions and development planning documents.
+/AGENTS.md
+/docs/CURRENT_PLAN.md
+/docs/COMMAND_PARSER_PLAN.md
