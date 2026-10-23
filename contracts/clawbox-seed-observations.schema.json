@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/clawbox-seed-observations.schema.json",
+  "type": "object",
+  "required": ["schema", "producer", "validation", "admission", "observations"],
+  "properties": {
+    "schema": {"const": "clawtune.seed_observations.v1"},
+    "producer": {
+      "type": "object",
+      "required": ["name", "clawtune_revision", "exporter_sha256"],
+      "properties": {
+        "name": {"const": "ClawBox"},
+        "clawtune_revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "exporter_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "validation": {
+      "type": "object",
+      "required": [
+        "environment_calibration_result",
+        "environment_calibration_result_sha256",
+        "qualification_receipt",
+        "qualification_receipt_sha256",
+        "qualification_cleanup_verified",
+        "covered_case_count",
+        "paired_command_count",
+        "paired_session_count",
+        "maintenance_measurement_count",
+        "public_prior_scope",
+        "public_prior_completed_call_count",
+        "public_prior_memory_label_count",
+        "lattice_clause_observation_count",
+        "lattice_memory_label_count",
+        "public_prior_repository_count",
+        "public_prior_execution_ids_sha256"
+      ],
+      "properties": {
+        "environment_calibration_result": {"type": "string", "minLength": 1},
+        "environment_calibration_result_sha256": {"$ref": "#/$defs/sha256"},
+        "qualification_receipt": {"type": "string", "minLength": 1},
+        "qualification_receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "qualification_cleanup_verified": {"const": true},
+        "covered_case_count": {"type": "integer", "minimum": 1},
+        "paired_command_count": {"type": "integer", "minimum": 1},
+        "paired_session_count": {"type": "integer", "minimum": 1},
+        "maintenance_measurement_count": {"type": "integer", "minimum": 1},
+        "public_prior_scope": {"const": "cross_repository_tool_class"},
+        "public_prior_completed_call_count": {"type": "integer", "minimum": 1},
+        "public_prior_memory_label_count": {"type": "integer", "minimum": 1},
+        "lattice_clause_observation_count": {"type": "integer", "minimum": 1},
+        "lattice_memory_label_count": {"type": "integer", "minimum": 1},
+        "public_prior_repository_count": {"type": "integer", "minimum": 1},
+        "public_prior_execution_ids_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "admission": {
+      "type": "object",
+      "required": [
+        "sandbox_identities",
+        "sandbox_identities_sha256",
+        "host_calibration",
+        "non_command_tool_memory_calibration"
+      ],
+      "properties": {
+        "sandbox_identities": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/sandboxIdentity"}
+        },
+        "sandbox_identities_sha256": {"$ref": "#/$defs/sha256"},
+        "host_calibration": {"$ref": "#/$defs/hostCalibration"},
+        "non_command_tool_memory_calibration": {
+          "type": "object",
+          "required": ["target", "sample_count", "p90_bytes", "p99_bytes", "recommended_mib"],
+          "properties": {
+            "target": {"const": "host_cgroup_memory_current_increment"},
+            "sample_count": {"type": "integer", "minimum": 1},
+            "p90_bytes": {"type": "number", "minimum": 0},
+            "p99_bytes": {"type": "number", "minimum": 0},
+            "recommended_mib": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "observations": {
+      "type": "object",
+      "required": ["completed_calls", "clauses"],
+      "properties": {
+        "completed_calls": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/completedCallRecord"}
+        },
+        "clauses": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/clauseRecord"}
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "sandboxIdentity": {
+      "type": "object",
+      "required": ["template_id", "image_digest", "vcpu", "memory_mib", "architecture"],
+      "properties": {
+        "template_id": {"type": "string", "minLength": 1},
+        "image_digest": {"type": "string", "minLength": 1},
+        "vcpu": {"type": "integer", "minimum": 1},
+        "memory_mib": {"type": "integer", "minimum": 1},
+        "architecture": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "hostCalibration": {
+      "type": "object",
+      "required": ["target", "method", "sample_count", "scale", "offset_bytes"],
+      "properties": {
+        "target": {"const": "host_cgroup_memory_current_increment"},
+        "method": {"const": "heterogeneous_environment_p90_ratio_plus_p90_residual"},
+        "sample_count": {"type": "integer", "minimum": 1},
+        "scale": {"type": "number", "minimum": 0},
+        "offset_bytes": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "completedCallRecord": {
+      "type": "object",
+      "required": ["execution_id", "host_cgroup_execution_increment_bytes", "call"],
+      "properties": {
+        "execution_id": {"type": "string", "minLength": 1},
+        "host_cgroup_execution_increment_bytes": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "call": {
+          "type": "object",
+          "required": [
+            "repo", "tool_name", "command", "ts_start", "ts_end",
+            "memory_extra_peak_bytes", "memory_measurement", "memory_eligible"
+          ],
+          "properties": {
+            "repo": {"type": "string", "minLength": 1},
+            "tool_name": {"type": "string", "minLength": 1},
+            "command": {"type": ["string", "null"]},
+            "ts_start": {"type": "number"},
+            "ts_end": {"type": "number"},
+            "memory_extra_peak_bytes": {"type": ["integer", "null"], "minimum": 0},
+            "memory_measurement": {"type": ["string", "null"]},
+            "memory_eligible": {"type": "boolean"}
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "clauseRecord": {
+      "type": "object",
+      "required": ["execution_id", "clause_index", "observation"],
+      "properties": {
+        "execution_id": {"type": "string", "minLength": 1},
+        "clause_index": {"type": "integer", "minimum": 0},
+        "observation": {
+          "type": "object",
+          "required": [
+            "repo", "bin", "argv", "ts_start", "ts_end",
+            "memory_extra_peak_bytes", "memory_measurement", "memory_eligible"
+          ],
+          "properties": {
+            "repo": {"type": "string", "minLength": 1},
+            "bin": {"type": "string", "minLength": 1},
+            "argv": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"type": "string"}
+            },
+            "ts_start": {"type": "number"},
+            "ts_end": {"type": "number"},
+            "memory_extra_peak_bytes": {"type": ["integer", "null"], "minimum": 0},
+            "memory_measurement": {"type": ["string", "null"]},
+            "memory_eligible": {"type": "boolean"}
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -15,7 +15,7 @@ def test_source_release_includes_seed_and_public_contracts(tmp_path):
     (module / "__init__.py").write_text("", encoding="utf-8")
     shutil.copyfile(root / "services/sidecar/setup.py", package / "setup.py")
     shutil.copytree(root / "contracts", fixture / "contracts")
-    shutil.copytree(root / "seeds/bootstrap-v1", fixture / "seeds/bootstrap-v1")
+    shutil.copytree(root / "seeds/bootstrap-v2", fixture / "seeds/bootstrap-v2")
     output = tmp_path / "dist"
     result = subprocess.run([sys.executable, "setup.py", "sdist", "--dist-dir", str(output)],
                             cwd=package, capture_output=True, text=True)
@@ -26,7 +26,7 @@ def test_source_release_includes_seed_and_public_contracts(tmp_path):
         assert len(seeds) == 5
         assert any(member.name.endswith("/edge-kappa-kb.json") for member in seeds)
         for member in seeds:
-            assert "/seeds/bootstrap-v1/" in member.name
-            assert archive.extractfile(member).read() == (root / "seeds/bootstrap-v1" / Path(member.name).name).read_bytes()
+            assert "/seeds/bootstrap-v2/" in member.name
+            assert archive.extractfile(member).read() == (root / "seeds/bootstrap-v2" / Path(member.name).name).read_bytes()
         schemas = [member for member in files if "/_data/contracts/" in member.name and member.name.endswith(".schema.json")]
         assert {Path(member.name).name for member in schemas} == {p.name for p in (root / "contracts").glob("*.schema.json")}

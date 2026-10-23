@@ -1112,7 +1112,7 @@ def _prepare_batch_tool_resource_kb(
 ) -> None:
     """Initialize one run-scoped shared KB from the tracked cold-start seed."""
 
-    source_dir = config.repo_root / "seeds" / "bootstrap-v1"
+    source_dir = config.repo_root / "seeds" / "bootstrap-v2"
     try:
         _validate_kb_snapshot_pair(source_dir)
         shared_kb_dir.mkdir(parents=True, exist_ok=False)
@@ -1145,7 +1145,7 @@ def _seed_runtime_tool_resource_kb(
     """
     dest_dir = trace_dir / "tool-resource"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    source_dir = source_dir or config.repo_root / "seeds" / "bootstrap-v1"
+    source_dir = source_dir or config.repo_root / "seeds" / "bootstrap-v2"
     try:
         _validate_kb_snapshot_pair(source_dir)
         for filename in _kb_snapshot_names(source_dir):

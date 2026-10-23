@@ -184,6 +184,47 @@ def test_multi_clause_cpu_average_and_environment_memory_use_declared_approximat
     )
 
 
+def test_partial_clause_memory_is_available_and_explicitly_marked():
+    evidence = [
+        {
+            "duration_ms": {"values": [1000]},
+            "memory_extra_peak_bytes": {"values": [40]},
+            "sampled_peak_rss_bytes": {"values": [100]},
+        },
+        {"duration_ms": {"values": [3000]}},
+    ]
+
+    result = compose("lattice", evidence, EDGES)
+
+    assert result.targets["duration_ms"].status == "available"
+    assert result.targets["memory_extra_peak_bytes"].p50 == 40
+    assert result.targets["sampled_peak_rss_bytes"].p50 == 100
+    assert "partial_clause_evidence" in (
+        result.targets["memory_extra_peak_bytes"].assumptions
+    )
+    assert "covered_retained_clauses:1/2" in (
+        result.targets["memory_extra_peak_bytes"].assumptions
+    )
+
+
+def test_dynamic_structure_keeps_available_memory_evidence_only():
+    result = compose(
+        "lattice",
+        [{
+            "duration_ms": {"values": [1000]},
+            "memory_extra_peak_bytes": {"values": [40]},
+        }],
+        EDGES,
+        reason="dynamic_execution_structure",
+    )
+
+    assert result.targets["duration_ms"].status == "unavailable"
+    memory = result.targets["memory_extra_peak_bytes"]
+    assert memory.p50 == 40
+    assert "partial_dynamic_structure_evidence" in memory.assumptions
+    assert "ignored_structure_reason:dynamic_execution_structure" in memory.assumptions
+
+
 def test_all_backends_full_targets_and_schema():
     rows = [row(i) for i in range(3)]
     trie, lattice = ClauseResourceKB.fit_public(rows), LatticeTimeKB.fit(rows)

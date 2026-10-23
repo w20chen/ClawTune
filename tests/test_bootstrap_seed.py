@@ -17,6 +17,7 @@ from tool_time.lattice_kb import LatticeTimeKB
 
 SEED = ROOT / "seeds/bootstrap-v1"
 ALL_FILES = (*FILES, "edge-kappa-kb.json")
+DEFAULT_SEED = ROOT / "seeds/bootstrap-v2"
 
 
 @pytest.fixture
@@ -322,7 +323,16 @@ def test_initial_state_can_learn_without_mutating_release_seed(tmp_path):
 
 def test_cli_default_uses_release_seed():
     from benchmarks.cli import parser
-    assert parser().parse_args(["benchmark"]).seed == SEED
+    assert parser().parse_args(["benchmark"]).seed == DEFAULT_SEED
+
+
+def test_default_seed_is_clawbox_qualified_and_loadable():
+    manifest = validate_seed(DEFAULT_SEED)
+    assert manifest["provenance"]["kind"] == "clawbox-qualified-observation-import"
+    lattice = LatticeTimeKB.from_json_obj(json.loads(
+        (DEFAULT_SEED / "clause-lattice-time-kb.json").read_text(encoding="utf-8")
+    ))
+    assert lattice.observation_count == manifest["provenance"]["coverage"]["output_lattice_observations"]
 
 
 def test_shipped_seed_keeps_causal_repo_history_without_public_prior():

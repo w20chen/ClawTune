@@ -149,9 +149,55 @@ Managed KB snapshots that cannot be deserialized stop startup; they are not
 replaced by empty models. Writable checkpoints do not use content hashes, so
 this check does not detect every possible change to otherwise valid snapshot data.
 
-New daily state and online runs copy the bundled initialization prior by default. Override with `CLAWTUNE_KB_SEED` for daily use or `--seed <directory>` for benchmarks. Changing the prior does not reset existing state. Resuming an old run requires its original prior. The offline command's `--seed` is instead an integer split seed.
+New daily state and online runs copy `seeds/bootstrap-v2`, the bundled
+ClawBox-qualified initialization prior, by default. Override it with
+`CLAWTUNE_KB_SEED` for daily use or `--seed <directory>` for benchmarks.
+Changing the prior does not reset existing state. Resuming an old run requires
+its original prior. The offline command's `--seed` is instead an integer split
+seed.
 
-The bundled seed is the finalized Tool, Trie, Lattice, and Edge state after causally replaying four fresh SWE-rebench trace-v6 runs from an empty KB. At every recorded tool start the replay predicts from only earlier completions; it observes that call at its recorded completion, then drains pending samples and freezes the KB after the fourth trace. The four repositories are `iterative/dvc`, `pydata/xarray`, `adamboche/python-marshmallow-union`, and `vertica/vertica-python`. Qualified call labels cover duration, CPU, process RSS, environment total/extra memory, and all nine PMU targets. Tool and Trie retain repository-specific history and deliberately contain no fitted public prior, so an unrelated repository can still begin without a prediction until it learns local evidence. Missing or unqualified measurements are never replaced with zeros.
+To publish validated CubeSandbox observations as a new cold-start prior, first
+use ClawBox's `scripts/export-cold-start-calibration.py` on a successful
+qualification result. Then run:
+
+```bash
+python3 scripts/build_clawbox_seed.py \
+  --observations /path/to/clawbox-observations.json \
+  --base-seed seeds/bootstrap-v2 \
+  --output /path/to/next-bootstrap-seed
+```
+
+The output directory must not exist. The command validates the interchange
+schema, preserves the base Lattice observations, imports measured clause
+observations into LatticeKB, and builds repository-neutral public ClauseKB and
+ToolKB layers. Registered optional snapshots such as Edge Kappa are retained
+from the base seed. The manifest records source hashes, measurement coverage,
+sandbox identities, and ClawBox admission calibration. Its declared admission
+order is Lattice guest extra-memory, Lattice sampled-RSS proxy, ToolKB guest
+extra-memory, then ToolKB's tool-class guest extra-memory fallback. The RSS
+proxy retains its native semantics and uses a separate paired host calibration;
+the imported artifacts do not provide a call-level RSS label for ToolKB. For multi-clause calls,
+memory and RSS remain available from the clauses with evidence when another
+retained clause is missing or a dynamic structure is only partly representable;
+those predictions declare the partial-evidence assumption and covered-clause
+count. Other targets still require complete evidence.
+Point ClawBox
+`resources.prediction_artifact` or ClawTune `CLAWTUNE_KB_SEED` at the resulting
+directory. A new seed affects only new state and new experiment run IDs; it
+does not rewrite an existing writable KB.
+
+The historical `seeds/bootstrap-v1` seed is the finalized Tool, Trie, Lattice,
+and Edge state after causally replaying four fresh SWE-rebench trace-v6 runs
+from an empty KB. At every recorded tool start the replay predicts from only
+earlier completions; it observes that call at its recorded completion, then
+drains pending samples and freezes the KB after the fourth trace. The four
+repositories are `iterative/dvc`, `pydata/xarray`,
+`adamboche/python-marshmallow-union`, and `vertica/vertica-python`. Qualified
+call labels cover duration, CPU, process RSS, environment total/extra memory,
+and all nine PMU targets. Missing or unqualified measurements are never
+replaced with zeros. `bootstrap-v2` retains this seed's Lattice and Edge
+evidence, adds the qualified ClawBox observations to Lattice, and replaces the
+Tool and Trie layers with repository-neutral public priors.
 
 To rebuild the causal seed from fresh trace-v6 replays on Linux, write to a new directory and repeat `--trace` once per task:
 

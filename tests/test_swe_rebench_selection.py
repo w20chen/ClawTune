@@ -1939,7 +1939,7 @@ def _kb_pair_markers(directory: Path) -> dict[str, str]:
 
 
 def test_host_openclaw_seeds_runtime_and_clause_predictor_kbs(tmp_path: Path) -> None:
-    source_dir = tmp_path / "seeds" / "bootstrap-v1"
+    source_dir = tmp_path / "seeds" / "bootstrap-v2"
     _write_test_kb_pair(source_dir, "tracked-seed")
     runtime_payload = (source_dir / "runtime-tool-resource-kb.json").read_text(
         encoding="utf-8"
@@ -1976,7 +1976,7 @@ def test_batch_shared_kb_prepare_copy_in_and_publish_reaches_next_task(
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
-    tracked_seed = tmp_path / "seeds" / "bootstrap-v1"
+    tracked_seed = tmp_path / "seeds" / "bootstrap-v2"
     shared_kb_dir = tmp_path / "kb-batches" / "batch-1"
     _write_test_kb_pair(tracked_seed, "tracked-seed")
 
@@ -2043,7 +2043,7 @@ def test_fourth_kb_seed_and_task_publication_preserve_learned_state(tmp_path, fr
     from types import SimpleNamespace
 
     config = SimpleNamespace(repo_root=tmp_path, runtime=SimpleNamespace(kb_frozen=frozen))
-    seed = tmp_path / "seeds" / "bootstrap-v1"
+    seed = tmp_path / "seeds" / "bootstrap-v2"
     _write_test_kb_pair(seed, "seed")
     original = _write_edge_snapshot(seed)
     shared = tmp_path / "shared"
@@ -2167,7 +2167,7 @@ def test_batch_shared_kb_rejects_schema_only_snapshot_as_unloadable(
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
-    tracked_seed = tmp_path / "seeds" / "bootstrap-v1"
+    tracked_seed = tmp_path / "seeds" / "bootstrap-v2"
     _write_test_kb_pair(tracked_seed, "tracked-seed")
     (tracked_seed / "runtime-tool-resource-kb.json").write_text(
         json.dumps(
@@ -2192,7 +2192,7 @@ def test_batch_shared_kb_rejects_invalid_lattice_observation(
     config_path = tmp_path / "config.yaml"
     config_path.write_text("", encoding="utf-8")
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
-    tracked_seed = tmp_path / "seeds" / "bootstrap-v1"
+    tracked_seed = tmp_path / "seeds" / "bootstrap-v2"
     _write_test_kb_pair(tracked_seed, "tracked-seed")
     lattice_path = tracked_seed / "clause-lattice-time-kb.json"
     payload = json.loads(lattice_path.read_text(encoding="utf-8"))

@@ -16,7 +16,8 @@ The repository contains configuration templates, protocols, test fixtures, and a
 
 Keep runtime code, installation/build files, JSON Schemas, bundled command rules
 and their generators, tests/fixtures, reusable evaluation tools, and the
-`seeds/bootstrap-v1/` cold-start knowledge base under version control. Store local
+`seeds/bootstrap-v2/` default cold-start knowledge base under version control;
+`seeds/bootstrap-v1/` remains the historical causal-replay baseline. Store local
 experiments, reports, historical code copies, and one-off analysis scripts in
 git-ignored `research/`; generated runs and logs belong in `.runtime/`.
 

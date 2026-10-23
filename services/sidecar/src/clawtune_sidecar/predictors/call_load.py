@@ -21,6 +21,13 @@ from tool_resource.features import parse_command_clauses, shell_bin_requires_exe
 from tool_resource.runtime_kb import ToolCallQuery, is_pipeline_dependent_consumer
 
 
+_PARTIAL_MEMORY_TARGETS = {
+    "sampled_peak_rss_bytes",
+    "memory_total_peak_bytes",
+    "memory_extra_peak_bytes",
+}
+
+
 def summarize(target: str, edges: Sequence[float], backend: str,
               samples: Sequence[float] = (), *, method: str = "direct",
               evidence_counts: Sequence[int] = (), context: Sequence[str] = (),
@@ -136,6 +143,16 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
     for target, boundaries in edges.items():
         why = reason
         rows = [row.get(target) for row in evidence]
+        partial_structure_reason = None
+        if (
+            why and target in _PARTIAL_MEMORY_TARGETS
+            and any(row and row.get("values") for row in rows)
+        ):
+            partial_structure_reason = str(why)
+            why = None
+        target_clauses = clauses
+        partial_clause_count = 0
+        original_clause_count = len(rows)
         cpu_rows: list[Mapping[str, Any] | None] = []
         duration_rows: list[Mapping[str, Any] | None] = []
         if not why and len(rows) > 1 and target == "cpu_avg_cores":
@@ -146,6 +163,26 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
             ) or _missing_evidence_reason(
                 duration_rows, "missing_clause_duration_evidence"
             )
+        elif not why and target in _PARTIAL_MEMORY_TARGETS:
+            available = [
+                index for index, row in enumerate(rows)
+                if row and row.get("values")
+            ]
+            if available:
+                partial_clause_count = len(rows) - len(available)
+                rows = [rows[index] for index in available]
+                retained_clauses = [
+                    clause for clause in clauses
+                    if not is_pipeline_dependent_consumer(clause)
+                ]
+                if len(retained_clauses) == original_clause_count:
+                    target_clauses = [retained_clauses[index] for index in available]
+                elif partial_clause_count:
+                    # Evidence is still usable for a max/peak estimate even
+                    # when a caller did not provide clause structure.
+                    target_clauses = ()
+            else:
+                why = _missing_evidence_reason(rows, "missing_clause_evidence")
         elif not why:
             why = _missing_evidence_reason(rows, "missing_clause_evidence")
         if why:
@@ -168,11 +205,21 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
                        "listed_downstream_consumers_excluded"]
         assumptions += [
             assumption
-            for clause in clauses
+            for clause in target_clauses
             if not is_pipeline_dependent_consumer(clause)
             for assumption in clause.get("prediction_assumptions", [])
         ]
         assumptions += [a for row in rows if row for a in row.get("assumptions", ())]
+        if partial_clause_count:
+            assumptions += [
+                "partial_clause_evidence",
+                f"covered_retained_clauses:{len(rows)}/{original_clause_count}",
+            ]
+        if partial_structure_reason:
+            assumptions += [
+                "partial_dynamic_structure_evidence",
+                f"ignored_structure_reason:{partial_structure_reason}",
+            ]
         sample_weights = None
         if len(values) == 1:
             samples = values[0]
@@ -182,7 +229,7 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
             # Fixed seed: repeatable query results. Generated samples are not
             # counted as historical evidence. Never sum medians or p90 values.
             rng = random.Random(0)
-            groups = _composition_groups(clauses, len(values))
+            groups = _composition_groups(target_clauses, len(values))
             if groups is None:
                 targets[target] = summarize(
                     target, boundaries, backend, reason="clause_evidence_alignment_error"

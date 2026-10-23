@@ -8,7 +8,7 @@ import shutil
 def bundle_data(target):
     repo = Path(__file__).resolve().parents[2]
     source = repo if (repo / "contracts").is_dir() else Path(__file__).resolve().parent / "src/clawtune_kb/_data"
-    for directory in ("contracts", "seeds/bootstrap-v1"):
+    for directory in ("contracts", "seeds/bootstrap-v2"):
         shutil.copytree(source / directory, target / directory, dirs_exist_ok=True)
 
 
