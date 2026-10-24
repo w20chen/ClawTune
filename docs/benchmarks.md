@@ -61,17 +61,14 @@ For an existing key file elsewhere, set `llm.api_key_file` to its path; `swe_reb
 
 Dry-run checks task structure, selection, and initialization data, not image availability, credentials, or live collection.
 
-All adapters use the shared SWE runtime identity and resource-monitoring path.
-Terminal Bench keeps each task's Compose environment and uses the same host
-cgroup execution gate as SWE. `docker.cgroup_required` also applies to Terminal.
-BFCL keeps a persistent worker for multi-turn state; online runs require Linux
-cgroup v2 with delegated CPU and memory controllers. The sidecar admits that
-worker into a dedicated task cgroup, then starts a fresh Python interpreter there
-before task initialization; failed admission
-stops setup instead of sampling the host service. Native function calls use
-tool-window measurements, not exec-triggered PMU or shell-clause labels.
-Environment memory means cgroup charges (including cache), not process RSS. Insufficient
-sampling coverage still produces unavailable metrics, not zero-valued labels.
+Live collection requires Linux cgroup v2 with delegated CPU and memory
+controllers. Terminal Bench uses each task's Compose environment and honors
+`docker.cgroup_required`. BFCL keeps a persistent worker for multi-turn state
+and measures native function calls over their call windows; these calls do not
+provide shell-subcommand observations or per-call PMU measurements.
+Environment memory includes cgroup charges and cache. Missing measurements
+remain marked as unavailable in raw output, while training retains approximate
+values and fills missing numeric targets with zero.
 
 Per-task output is saved under `.runtime/benchmarks/<benchmark>/<run>/traces/<task-digest>/` (under `--output` when set); [Inspect online output](#4-inspect-online-output) lists every file and the per-benchmark differences. The harness does not stream agent output to the terminal: benchmark runs keep the plugin console quiet and discard agent stdout, so a task prints only a few harness lines while it runs. Use `less <path>` to inspect the per-task files.
 
@@ -263,7 +260,7 @@ A Compose build failure fails that case and allows the batch to continue after s
 
 ### PMU results
 
-Terminal and repository shell commands can supply tool-level PMU profiles; BFCL functions and native research tools have no per-call PMU. Compound commands produce one execution-tree profile, not per-clause counters. Only `coverage.eligible_for_kb=true` profiles train ToolKB. Its nine PMU targets include LLC accesses and misses per counter running second; see [definitions and units](tool-profile.md#pmu-resourcespmu). On ARM hosts running amd64 images, counters include QEMU overhead. Availability does not establish prediction accuracy.
+Terminal and repository shell commands can supply tool-level PMU profiles; BFCL functions and native research tools have no per-call PMU measurement. Compound commands produce one execution-tree profile, not per-clause counters. Collector quality is separate from the available-or-zero training policy; imputed labels are not measured hardware counts. Its nine PMU targets include LLC accesses and misses per counter running second; see [definitions and units](tool-profile.md#pmu-resourcespmu). On ARM hosts running amd64 images, counters include QEMU overhead. Availability does not establish prediction accuracy.
 
 ## 3. Selection, concurrency, and resume
 
@@ -305,7 +302,7 @@ python3 scripts/clawtune.py benchmark --resume .runtime/my-run
 
 Resume requires the original configuration and prior; repeat `--seed` if it was customized. Saved task selection and parallelism are reused. Recorded failures are not retried. Ctrl+C stops tasks and attempts cleanup. A run with interrupted in-flight tasks or incompletely saved final state cannot resume; start a new run.
 
-Where task snapshots are merged, Edge feedback is replayed in task-ID order, then completion-time/event-ID order. Saved pre-execution gradients update shared weights; duplicate feedback is ignored and original parent edges are retained. Legacy learned task snapshots without replayable feedback require rerunning the affected tasks.
+Resume preserves saved learning state. If a legacy run reports incompatible learning data, start a new run from the original traces or task inputs rather than reusing incomplete state.
 
 ## 4. Inspect online output
 
@@ -313,7 +310,7 @@ Defaults are under `.runtime/benchmarks/<benchmark>/<run>/` (or `--output`). All
 
 Agent progress is file-based: follow `trace.jsonl` and agent stderr while `run.json` tracks task status. The console prints startup diagnostics and a result line per task; agent stdout is not duplicated.
 
-Run-level layout (`<task-digest>` is a stable 20-hex digest of `<benchmark>:<task-id>`):
+Run-level layout (`<task-digest>` identifies one task):
 
 | Location | Semantics |
 | --- | --- |
@@ -321,11 +318,11 @@ Run-level layout (`<task-digest>` is a stable 20-hex digest of `<benchmark>:<tas
 | `report.json` | The same manifest written when the run ends, on every exit path (completed, failed, or interrupted). Read this for the final state; `status: completed` requires `kb_flush_complete: true`. |
 | `traces/<task-digest>/` | Per-task files (next table). |
 | `kb/` | The run's shared learned statistics; `state.json` records the committed generation. Operational learning state, not a trace export. |
-| `sidecar/` | Working directory of the shared local service: `sidecar-stdout.txt` and `sidecar-stderr.txt` (service logs), `sidecar.sqlite3`, and `runtime-case-map.json` (maps each runtime id to its task instance id while the batch runs). Canonical traces are written directly to `traces/<task-digest>/trace.jsonl`, not copied here. |
-| `runtime-assets/` | Per-run staging of plugin and sidecar sources, generated entrypoint/setup scripts, and the generated OpenClaw configuration; rebuilt when sources change and installed into each task's sandbox. Not an experiment artifact. |
-| `workspaces/<task-digest>/` | Task workspace: the testbed exported from the task image for repository tasks, or the working directory handed to the agent for the other adapters. |
-| `runtime/<task-digest>/openclaw-home/` | OpenClaw session state for repository, BFCL, and Terminal Bench tasks; runtime-owned, not an experiment export. Deep Research Bench keeps `openclaw-home/` inside its trace directory instead. |
-| `terminal-environments/<task-digest>/`, `terminal-logs/<task-digest>/` | Terminal Bench only: the copied Compose task and its logs (`compose-up.log`, `compose-down.log`, `terminal-gate.log`, and the task's `agent/` log mount). |
+| `sidecar/` | Local service logs and working state. Task traces are in `traces/<task-digest>/trace.jsonl`. |
+| `runtime-assets/` | Generated configuration and runtime dependencies used by task environments. |
+| `workspaces/<task-digest>/` | Task working directory. |
+| `runtime/<task-digest>/openclaw-home/` | Agent session state. Deep Research Bench keeps its `openclaw-home/` inside the trace directory. |
+| `terminal-environments/<task-digest>/`, `terminal-logs/<task-digest>/` | Terminal Bench Compose environments and logs. |
 
 Per-task files in `traces/<task-digest>/` (BFCL and Terminal Bench tasks are "bridged": one agent process per conversation turn):
 
@@ -375,24 +372,18 @@ counters can remain unchanged despite active learning.
 
 Each task has one `trace.jsonl` containing all turns, full captured LLM messages, and inlined telemetry. Join `execution_telemetry` by `execution_id`; do not count its compact and full views twice. `incomplete_span`, `llm_proxy_unmatched`, and aborted profiles retain incomplete evidence, not successful observations. See the [trace reference](tool-profile.md).
 
-Timeout finalization follows confirmed producer shutdown. Tools lacking verified exit evidence remain incomplete and are withheld from learning. Abrupt failures can lose unacknowledged events; `trace_flushed: false` or `kb_flush_complete: false` means persistence is incomplete. A successful exit without tool calls or eligible measurements does not validate collection.
+Timeout finalization follows confirmed producer shutdown. Incomplete tools retain their available observations for training and their interruption markers; unavailable numeric targets use the documented zero-fill policy. Abrupt failures can lose unacknowledged events; `trace_flushed: false` or `kb_flush_complete: false` means persistence is incomplete. A successful exit without tool calls or measurements does not validate collection.
 
 ## 5. Fixed-trace offline evaluation
 
-The ordinary `scripts/clawtune.py offline` workflow below evaluates the four base KBs and their call composer. It does not evaluate the live execution-context correction layer. Historical study artifacts and their one-off regression scripts are not shipped with the repository. The shared execution-context implementation is covered by `tests/test_execution_context.py`; these tests do not establish prediction accuracy on new live workloads.
+`scripts/clawtune.py offline` evaluates the four base prediction models and
+subcommand composition. It does not evaluate the optional online duration
+correction based on recent execution context; see the
+[prediction reference](tool-profile.md#prediction-span_startprediction).
 
-The sidecar automatically loads `execution-context-kb.json` when included in its KB
-directory; include it in the snapshot manifest when building an immutable seed.
-Without this optional snapshot, context learning starts empty. Online completions
-update it using the saved pre-call context; frozen evaluation updates session history
-without learning evaluation durations. Context correction affects the full duration
-distribution and retains the original prediction when support is insufficient.
-Missing history is unknown, and benchmark-specific failure frequencies should only
-be reused with a compatible training distribution.
-
-Online context samples count a `(gateway_id, runtime_id)` as one task instance across agent turns, retries, and session changes. Without a runtime, a stable session is used; a `run_id` alone supplies no independent-task support. This follows the offline rule that repeated calls and attempts of one task are not independent tasks. Loading an older context KB merges recoverable runtime/session identities while retaining durations and failure labels. Ambiguous old run-only identities retain their observations but do not count toward independent-task thresholds. A writable KB persists the normalized identities on its next flush; frozen loading leaves the input files unchanged.
-
-Frozen mode loads the bundled rules and any existing `command-rules/` cache once into a read-only registry. It disables automatic discovery/generation and never writes new rules to the seed, even when an upstream model is configured. Unknown syntax remains partial or invalid. Preserve the same bundled-rule checkout, rule-cache files, and tool versions alongside the KB seed for reproducible evaluation. Newly generated rules are scoped to a known `tool_version`; a different or missing version cannot use that rule. With no known version, the existing repository/runtime scope still applies.
+Offline evaluation freezes the knowledge base and available command rules.
+It does not generate rules or call a model provider. Preserve the rule files,
+tool versions, and original traces with an evaluation to make it reproducible.
 
 ### Execution replay
 
@@ -413,11 +404,11 @@ Replace the paths and task ID with your inputs. Runtime assets are built automat
 
 V5 replay adapts `exec`/`terminal_exec`, `read_file`, `write_file`, `edit_file`, `list_dir`, and local `message` output. File operations run inside the task sandbox; `/testbed` aliases the writable workspace and shell calls honor their recorded working directory. Other v5 tools are rejected before execution. Recorded model responses and requested arguments are required; changing a version number alone does not convert a trace.
 
-V5 tool batches execute in recorded request order, one call per model response, retaining each source model delay once. An unfinished final response receives a synthetic zero-delay closing turn. Consequently the mock request count can exceed the source model-turn count in `replay_manifest.json`. `--timing exact` preserves recorded LLM delays; `--timing none` removes them. Replay executes tools anew and does not reuse historical resource measurements. V6 dispatch, PMU configuration and offline KB ingestion retain their existing behavior.
+V5 tool batches execute in recorded request order. `--timing exact` preserves recorded model delays; `--timing none` removes them. Replay executes tools again and collects new measurements; it does not reuse historical resource values. Adapted tool batches can change the number of model turns shown in `replay_manifest.json`.
 
-For v5 with `runtime.kb_frozen: false`, replay uses the standard new-state initializer: incompatible feature-dependent Lattice/Edge components start empty in the run directory, while the source seed stays unchanged. Frozen replay requires already-compatible snapshots. With Docker/QEMU on ARM, PMU counts describe host execution of the emulated workload, not guest x86 instruction counts.
+Use `--seed /path/to/seed` to choose an initialization bundle; the default is `seeds/bootstrap-v2`. With `runtime.kb_frozen: true`, replay collects measurements without updating the knowledge base and requires compatible saved models. Use `runtime.kb_frozen: false` for a new learning run. The source bundle remains unchanged. With Docker/QEMU on ARM, PMU counts describe host execution of the emulated workload, not guest x86 instructions.
 
-PMU collection quality is independent of tool success: an explicit OpenClaw timeout closes a normal measurement window with reason `tool_timeout`, while an authenticated execution exit uses `execution_exited` regardless of exit code or signal. Both are eligible when counter quality passes. Other completions without an execution-exit result retain the existing `completion_fallback` behavior and raw counts without certifying a complete boundary. `time_running_ns` is monitored CPU time, not the wall-clock timeout.
+Timeouts and nonzero exits do not by themselves invalidate PMU measurements. Interpret counter quality and observation windows using the [PMU field reference](tool-profile.md#pmu-resourcespmu); a reliable counter window does not imply that a task completed successfully.
 
 ### Offline trace evaluation
 
@@ -444,11 +435,27 @@ Offline grouping uses `repo`, otherwise `category`, otherwise `dataset`. Observa
 
 The split methodology is in the [technical report](technical-report.md#6-learning-initialization-and-evaluation). `--train-fraction` defaults to 0.8 and must lie strictly between 0 and 1. Each group assigns `max(1, floor(fraction*N))` tasks to training and the rest to testing. Assignments are reused by task roster, seed, and fraction. The registry defaults to `.runtime/offline/splits/`; use `--split-cache-dir` to relocate it.
 
+For a cold-start seed evaluated on unseen repositories, add `--split-by repository`. This assigns the requested fraction of repositories to training and all remaining repositories to testing; all tasks and attempts from a repository stay together. It requires repository identities and at least two repositories per benchmark. The split registry is separate from the default `--split-by task`, which measures new tasks in known repositories. Keep these two results separate: their training data and evaluation populations differ. The generated `seed/` contains only training data and remains frozen throughout testing.
+
+The evaluation seed uses benchmark-prefixed repository names. To export a runtime seed from a single benchmark's fresh trace-v6 dataset, use the evaluation's repository split:
+
+```bash
+python3 scripts/build_replayed_seed.py --dataset /data/fresh-traces \
+  --split /data/evaluation/split.json --output /data/new-runtime-seed
+```
+
+This exports only training traces, checks their recorded hashes, and uses
+ordinary repository names for runtime matching. The output directory must be new.
+For deployment, `--include-test` also imports the test partition. That larger
+bundle must not be evaluated as though those tasks were held out. The bundled
+`bootstrap-v2` already includes its former test partition; use new independent
+traces to evaluate it, or use the training-only bundle for the original split.
+
 | Output | Purpose |
 | --- | --- |
 | `split.json` | Task assignments and input hashes |
 | `seed/` | Statistics constructed only from training data |
-| `predictions.jsonl` | ToolKB test predictions and eligible labels, including PMU |
+| `predictions.jsonl` | ToolKB test predictions and training-policy labels, including PMU |
 | `model-predictions.jsonl` | ToolKB, TrieKB, LatticeKB, and EdgeKappaKB predictions with a `model` field |
 | `report.json`, `report.md` | Availability, errors, baselines, and exclusions |
 
@@ -456,18 +463,29 @@ Mixed input is trained and evaluated separately per benchmark, with an aggregate
 
 Offline evaluation reports only `exec` and `terminal_exec` calls. Non-shell calls are excluded from prediction outputs, coverage denominators, and all reported model metrics. Task splitting and training ingestion are unchanged; a test set containing no shell calls produces no scored results. `tools/summarize_offline_buckets.py` applies the same reporting scope when reading older mixed-tool results.
 
-Each benchmark's `report.json.models` reports `tool`, `trie`, `lattice`, and `edge_kappa` separately (Edge predicts duration only). The existing top-level `metrics` and `repositories` describe ToolKB. Per-target `availability` counts all uncensored queries (`queries`), queries with trusted labels (`labeled`), available predictions (`predicted`), and labeled predictions that can be scored (`scored`). Missing labels are never converted to zero; a target can have predictions without a measurable error.
+Each benchmark's `report.json.models` reports `tool`, `trie`, `lattice`, and `edge_kappa` separately (Edge predicts duration only). The existing top-level `metrics` and `repositories` describe ToolKB. Per-target `availability` counts all uncensored queries (`queries`), queries with effective labels (`labeled`), available predictions (`predicted`), and labeled predictions that can be scored (`scored`). Effective labels can include explicit zero imputation, so coverage is not a count of direct measurements. Partial executions remain training inputs but are excluded from completed-task MAE/WAPE.
 
-Add `--lattice-variants` to also report `lattice_loso`, `lattice_max_cardinality`, and `lattice_oracle`. They use the same frozen training statistics and call composer as `lattice` (the default shrinkage selector). Lattice always generates subsets with up to six optional features plus the core features, and retains full-feature nodes; this bound does not decrease as observations accumulate. Earlier raw-observation snapshots rebuild with this fixed bound on load.
+`availability.unavailable_reasons` counts failed predictions over all queries, including those without labels. Prediction rows contain `task` and `call_index` for matching the same call across models on an unchanged dataset.
+Each model also reports labeled metrics and prediction availability by repository in `models.<model>.repositories`. Repositories without labels still have query and prediction counts. Inspect these alongside pooled metrics when repository sizes differ substantially; a large repository can dominate the pooled result.
+
+EdgeKappa training uses deterministic task and subcommand order. This supports repeatable frozen evaluation but does not reproduce the original timing of concurrent calls.
+
+Add `--lattice-variants` to report `lattice_loso`, `lattice_max_cardinality`, and `lattice_oracle`. They use the same frozen training data and subcommand composition as the default `lattice` shrinkage method. The optional-feature limit defaults to six and can be changed as described below; complete feature sets are always retained.
 
 `lattice_oracle` is an offline diagnostic for duration only: it uses the actual test-call duration to exhaustively choose the candidate-node combination minimizing absolute error of the composed call p50. It retains execution-identity constraints and exact-own-sample preference. Missing duration labels produce unavailable predictions. It never updates training data and is not an online predictor. Its p90 and bucket probabilities come from the chosen historical distributions; it does not optimize bucket accuracy. Multi-clause search cost grows with the product of candidate counts. The existing 512-candidate computation guard applies to shrinkage scoring, not to oracle enumeration, so compare coverage as well as paired errors.
 
 Bucket predictions choose the largest probability, breaking ties toward the lower bucket. Reported bucket accuracy and recall use available predictions only; consult coverage alongside them. Count unavailable predictions as misses separately when measuring recall across all labeled calls.
 
-CPU-time labels require `availability.cpu_time == "ok"` and an execution-interval delta (`provenance.cpu_time_ns` or compact `cpu_time_seconds`). A historical `cpu_ns_cumulative` value alone is insufficient. Shell workload duration uses retained clause intervals (or a qualified single-clause elapsed label in v5); missing interval evidence leaves workload duration and average CPU unavailable. The original tool-call elapsed time remains separate. Environment-memory labels require their own eligible measurements; RSS cannot substitute for them. `--rss-unit` applies to v5 RSS; v6 compact RSS is already decimal MB.
+Recorded execution-interval CPU deltas provide CPU-time measurements; a
+historical cumulative process counter alone does not. Shell workload duration
+uses the retained subcommand intervals, separately from tool-call elapsed time.
+Missing numeric training targets are filled with zero, and available approximate
+values are retained. Environment-memory measurements keep their own definition;
+RSS is not a substitute. `--rss-unit` applies to v5 RSS; v6 compact RSS is already
+decimal MB. When judging resource accuracy, inspect measured, approximate, and
+imputed counts separately: a zero-filled test label is not measurement ground truth.
 
 Rebuild seeds from the original traces after changing label ingestion rules. Existing snapshots retain previously imported values and cannot recover missing measurement evidence.
-
 
 The offline `--kb-max-optional-features <n>` option sets the same fixed combination limit for Lattice and EdgeKappa (default 6). It is recorded in both snapshots; the evaluator does not automatically reduce it. The standalone clause evaluators below accept the same option. Compare runs at the same limit. Use `CLAWTUNE_KB_MAX_OPTIONAL_FEATURES=<n>` when opening the resulting seed through the sidecar.
 

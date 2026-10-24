@@ -21,6 +21,7 @@ per-image scalar peaks — that under-counts and can flip a heavy/light label.
 Each exec image exports compact time-aligned profiles:
 
 - ``cpu_windows``: ``(absolute_500ms_window_index, cpu_ns)`` contributions;
+- ``cpu_segments``: ``(start_ns, end_ns, cpu_ns)`` counter-delta segments;
 - ``rss_bins``: ``(absolute_20ms_bin_index, mm_identity, rss_mb)`` samples.
 
 The bridge merges ALL owned images before reducing: for CPU it sums owned
@@ -36,14 +37,16 @@ invocation may match a static clause, after excluding a verified entry shell
 whose complete ``-c`` argument is the original command. Its executable and complete argv must
 align uniquely with the static word intents; later same-PID execs and forked
 descendants are ownership transitions. Runtime order, argv prefixes, wrapper
-subsequences, and bin-only identity never break ties. Any incomplete or
-ambiguous proof withholds every observation from that tool call.
+subsequences, and bin-only identity never break ties. Incomplete or ambiguous
+parts remain quality gaps; already mapped observations retain their measured
+values for the shared ingestion policy.
 """
 
 from __future__ import annotations
 
 import math
 import re
+from bisect import bisect_right
 from fnmatch import fnmatchcase
 from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Sequence
@@ -56,7 +59,6 @@ from tool_resource.runtime_kb import ClauseObservation
 
 # Kept in sync with the eBPF collector's windowing constants.
 _WINDOW_NS = 500_000_000
-_MIN_ELIGIBLE_SPAN_NS = 1_000_000_000  # resource_timeline: clause >= 1 s
 _MIN_WINDOW_SPAN_NS = 100_000_000
 _MAX_CAPTURED_ARGS = 16
 
@@ -106,6 +108,7 @@ class ExecImageRecord:
     terminal: bool
     cpu_windows: tuple[tuple[int, int], ...] | None  # (abs_window_idx, cpu_ns)
     rss_bins: tuple[tuple[int, int, float], ...] | None  # (abs_bin, mm, rss_mb)
+    cpu_segments: tuple[tuple[int, int, int], ...] | None = None
     peak_cpu_cores: float | None = None  # diagnostic only
     peak_cpu_reason: str = "ok"
     sampled_peak_rss_mb: float | None = None  # diagnostic only
@@ -237,16 +240,9 @@ class BridgeResult:
 
     @property
     def observations(self) -> list[ClauseObservation]:
-        if not self.data_valid:
-            return []
-        return [
-            bc.observation
-            for bc in self.bridged
-            if not all(
-                reason == "unknown:protocol_timeout"
-                for reason in bc.availability.values()
-            )
-        ]
+        # Mapping/coverage and timeout flags remain diagnostics. Already mapped
+        # partial observations must reach the shared KB ingestion policy.
+        return [bc.observation for bc in self.bridged]
 
 
 # --------------------------------------------------------------------------
@@ -254,21 +250,28 @@ class BridgeResult:
 # --------------------------------------------------------------------------
 
 
-_MIN_RSS_SAMPLES = 2  # fail closed on insufficient merged RSS coverage
+_MIN_RSS_SAMPLES = 2  # fewer distinct sampled bins per mm imply sparse coverage
 _MAX_RSS_BIN_GAP = 7  # keep aligned-bin gaps below the 150ms eligibility limit
 
 
 def _merge_cpu(
     owned: Sequence[ExecImageRecord], t_exec: int, t_end: int, quota: float | None
 ) -> tuple[float | None, str]:
+    if all(i.cpu_segments is not None for i in owned):
+        return _fixed_window_cpu_peak(
+            [segment for image in owned for segment in image.cpu_segments or ()],
+            t_exec,
+            t_end,
+            quota,
+        )
     if any(i.cpu_windows is None for i in owned):
         return None, "missing_cpu_profile"
     # Quota must be present, finite, and positive; clipping is meaningless
     # otherwise. No inf fallback.
     if quota is None or not math.isfinite(quota) or quota <= 0.0:
         return None, "missing_or_inconsistent_quota"
-    if (t_end - t_exec) < _MIN_ELIGIBLE_SPAN_NS:
-        return None, "clause_shorter_than_1s_ineligible_for_peak"
+    if (t_end - t_exec) < _WINDOW_NS:
+        return None, "clause_shorter_than_500ms_ineligible_for_peak"
     merged: dict[int, int] = {}
     for img in owned:
         for widx, cpu_ns in img.cpu_windows or ():
@@ -294,13 +297,87 @@ def _merge_cpu(
     return peak, "ok"
 
 
-def _merge_rss(owned: Sequence[ExecImageRecord]) -> tuple[float | None, str]:
-    """Max over time of the summed RSS of concurrently-LIVE distinct mm.
+def _fixed_window_cpu_peak(
+    segments: Sequence[tuple[int, int, int]],
+    t_exec: int,
+    t_end: int,
+    quota: float | None,
+) -> tuple[float | None, str]:
+    """Maximum fixed 500 ms CPU integral, in O(N log N) time and O(N) space.
 
-    Each mm's RSS is held between its samples over its observed lifetime
-    ``[min_bin, max_bin]``; at each aligned bin only mm whose lifetime spans that
-    bin contribute. This prevents summing mm whose lifetimes do not overlap
-    (sequential peaks in adjacent bins are never added into one figure).
+    The sliding integral is piecewise linear; its extrema occur where either
+    edge meets a segment endpoint (or at the call boundaries). Integrating the
+    summed segment rates once lets us evaluate that same candidate set without
+    intersecting every segment with every window.
+    """
+
+    if quota is None or not math.isfinite(quota) or quota <= 0.0:
+        return None, "missing_or_inconsistent_quota"
+    if t_end - t_exec < _WINDOW_NS:
+        return None, "clause_shorter_than_500ms_ineligible_for_peak"
+    clean: list[tuple[int, int, float]] = []
+    for start, end, cpu_ns in segments:
+        if (
+            not isinstance(start, int)
+            or not isinstance(end, int)
+            or not isinstance(cpu_ns, int)
+            or end <= start
+            or cpu_ns < 0
+        ):
+            return None, "invalid_cpu_profile"
+        left, right = max(t_exec, start), min(t_end, end)
+        if right > left:
+            clean.append((left, right, cpu_ns / (end - start)))
+    if not clean:
+        return None, "insufficient_cpu_samples"
+    last_start = t_end - _WINDOW_NS
+    candidates = {t_exec, last_start}
+    for start, end, _rate in clean:
+        for value in (start, end, start - _WINDOW_NS, end - _WINDOW_NS):
+            candidates.add(min(last_start, max(t_exec, value)))
+    changes: dict[int, list[float]] = {}
+    counts: dict[int, int] = {}
+    for start, end, rate in clean:
+        changes.setdefault(start, []).append(rate)
+        changes.setdefault(end, []).append(-rate)
+        counts[start] = counts.get(start, 0) + 1
+        counts[end] = counts.get(end, 0) - 1
+    times = sorted(changes)
+    integrals: list[float] = []
+    rates: list[float] = []
+    total = rate = 0.0
+    active = 0
+    previous = times[0]
+    for timestamp in times:
+        total += rate * (timestamp - previous)
+        active += counts[timestamp]
+        # No CPU accumulates in gaps, including floating-point cancellation
+        # residue after all overlapping segments have ended.
+        rate = max(0.0, math.fsum((rate, *changes[timestamp]))) if active else 0.0
+        integrals.append(total)
+        rates.append(rate)
+        previous = timestamp
+
+    def integral(timestamp: int) -> float:
+        index = bisect_right(times, timestamp) - 1
+        if index < 0:
+            return 0.0
+        return integrals[index] + rates[index] * (timestamp - times[index])
+
+    peak_ns = max(
+        integral(start + _WINDOW_NS) - integral(start) for start in candidates
+    )
+    return min(max(0.0, peak_ns) / _WINDOW_NS, quota), "ok"
+
+
+def _merge_rss(owned: Sequence[ExecImageRecord]) -> tuple[float | None, str]:
+    """Reduce sampled RSS without inventing concurrency across sparse gaps.
+
+    Dense profiles retain the aligned, held-sample estimate over each mm's
+    observed lifetime. Sparse profiles use only the largest observed single-mm
+    value: neither holding across a gap nor summing asynchronous samples in one
+    20 ms bin can establish a lower bound on their simultaneous total. Kernel
+    RSS counters themselves remain approximate, as recorded by the collector.
     """
 
     if any(i.rss_bins is None for i in owned):
@@ -320,15 +397,22 @@ def _merge_rss(owned: Sequence[ExecImageRecord]) -> tuple[float | None, str]:
             slot = per_mm.setdefault(mm, {})
             slot[bidx] = max(slot.get(bidx, 0.0), rss_mb)
             n_samples += 1
-    if n_samples < _MIN_RSS_SAMPLES:
+    if n_samples < 1:
         return None, "insufficient_rss_samples"
-    for slots in per_mm.values():
-        ordered = sorted(slots)
-        if any(right - left > _MAX_RSS_BIN_GAP for left, right in zip(ordered, ordered[1:])):
-            return None, "rss_sampling_gap"
     all_bins = sorted({b for slots in per_mm.values() for b in slots})
-    if any(right - left > _MAX_RSS_BIN_GAP for left, right in zip(all_bins, all_bins[1:])):
-        return None, "rss_sampling_gap"
+    sparse = any(len(slots) < _MIN_RSS_SAMPLES for slots in per_mm.values()) or any(
+        right - left > _MAX_RSS_BIN_GAP
+        for slots in per_mm.values()
+        for left, right in zip(sorted(slots), sorted(slots)[1:])
+    ) or any(
+        right - left > _MAX_RSS_BIN_GAP
+        for left, right in zip(all_bins, all_bins[1:])
+    ) or any(
+        not image.rss_bins or image.sampled_rss_reason == "observed_sparse_lower_bound"
+        for image in owned
+    )
+    if sparse:
+        return max(value for slots in per_mm.values() for value in slots.values()), "observed_sparse_lower_bound"
     totals: dict[int, float] = dict.fromkeys(all_bins, 0.0)
     for slots in per_mm.values():
         sbins = sorted(slots)
@@ -345,6 +429,14 @@ def _merge_rss(owned: Sequence[ExecImageRecord]) -> tuple[float | None, str]:
     if not math.isfinite(peak):
         return None, "non_finite_rss"
     return peak, "ok"
+
+
+def _rss_reduction(reason: str) -> str:
+    return (
+        "max_observed_single_mm"
+        if reason == "observed_sparse_lower_bound"
+        else "sum_aligned_distinct_live_mm_then_max"
+    )
 
 
 def _call_resource_profile(
@@ -366,13 +458,11 @@ def _call_resource_profile(
         for image in exec_images
         if (image.host_pid, image.exec_seq) in owned_keys
     ]
-    if not data_valid:
-        cpu_peak, cpu_reason = None, "invalid_call_mapping"
-        rss_peak, rss_reason = None, "invalid_call_mapping"
-    elif protocol_timeout:
-        cpu_peak, cpu_reason = None, "protocol_timeout"
-        rss_peak, rss_reason = None, "protocol_timeout"
-    elif not owned:
+    quality_reason = (
+        "invalid_call_mapping" if not data_valid else
+        "protocol_timeout" if protocol_timeout else None
+    )
+    if not owned:
         cpu_peak, cpu_reason = None, "no_owned_exec_images"
         rss_peak, rss_reason = None, "no_owned_exec_images"
     else:
@@ -393,13 +483,16 @@ def _call_resource_profile(
         "peak_cpu_cores": cpu_peak,
         "sampled_peak_rss_mb": rss_peak,
         "availability": {
-            "cpu": "ok" if cpu_peak is not None else f"unknown:{cpu_reason}",
-            "memory": "ok" if rss_peak is not None else f"unknown:{rss_reason}",
+            "cpu": f"unknown:{quality_reason}" if quality_reason else
+                   "ok" if cpu_peak is not None else f"unknown:{cpu_reason}",
+            "memory": f"unknown:{quality_reason}" if quality_reason else
+                      "ok" if rss_peak is not None else f"unknown:{rss_reason}",
         },
         "provenance": {
             "owned_exec_image_count": len(owned),
             "cpu_reduction": "sum_aligned_500ms_windows_then_max",
-            "memory_reduction": "sum_aligned_distinct_live_mm_then_max",
+            "memory_reduction": _rss_reduction(rss_reason),
+            "merged_rss_reason": rss_reason,
         },
     }
 
@@ -1037,16 +1130,16 @@ def bridge_command(
 ) -> BridgeResult:
     """Map exec images to static mvdan clauses and aggregate per clause.
 
-    Fails closed: a ``parse_failed`` command or a run with ``loss_count > 0``
-    (any collector loss makes the event stream untrustworthy) yields NO usable
-    KB observations — the clauses become coverage gaps instead.
+    A parse failure cannot establish clause ownership. Collector loss and
+    attribution gaps mark incomplete coverage while preserving the mapped
+    subset and its partial measurements.
     """
 
     parsed = parse_command_clauses(command)
     static = parsed["clauses"]
 
-    if parsed["parse_failed"] or loss_count > 0:
-        reason = "parse_failed" if parsed["parse_failed"] else "nonzero_loss"
+    if parsed["parse_failed"]:
+        reason = "parse_failed"
         return BridgeResult(
             bridged=[],
             no_runtime_exec=[],
@@ -1210,6 +1303,8 @@ def bridge_command(
     bridged: list[BridgedClause] = []
     no_runtime_exec: list[NoRuntimeExec] = []
     gaps: list[MappingGap] = list(control_gaps)
+    if loss_count > 0:
+        gaps.append(MappingGap("nonzero_loss", f"collector reported {loss_count} lost event(s)"))
     unobserved: list[str] = []
     owned_all: set[int] = set()
 
@@ -1458,7 +1553,7 @@ def _aggregate(
         argv=tuple(clause["argv"]),
         ts_start=epoch_offset + t_exec / 1e9,
         ts_end=epoch_offset + t_end / 1e9,
-        latency_ms=(None if protocol_timeout_terminated else (t_end - t_exec) / 1e6),
+        latency_ms=(t_end - t_exec) / 1e6,
         cpu_peak_cores=peak_cpu,
         sampled_peak_rss_mb=peak_rss,
         cpu_ns_cumulative=sum(i.cpu_ns_cumulative for i in owned_images),
@@ -1487,7 +1582,10 @@ def _aggregate(
     )
     cpu_totals = [img.provenance.get("cpu_total_ns") for img in owned_images]
     cpu_total_ok = all(isinstance(value, int) and value >= 0 for value in cpu_totals)
-    availability["cpu_time"] = "ok" if cpu_total_ok and not protocol_timeout_terminated else "unknown:missing_cpu_boundaries"
+    availability["cpu_time"] = (
+        "unknown:protocol_timeout" if protocol_timeout_terminated else
+        "ok" if cpu_total_ok else "unknown:missing_cpu_boundaries"
+    )
     provenance = {
         "t_exec_ns": t_exec,
         "t_end_ns": t_end,
@@ -1502,6 +1600,7 @@ def _aggregate(
         "exit_signals": exit_signals,
         "merged_cpu_reason": cpu_reason,
         "merged_rss_reason": rss_reason,
+        "memory_reduction": _rss_reduction(rss_reason),
         "merged_disk_io_reason": disk_io_reason,
         "disk_io_reduction": "sum_disjoint_owned_exec_image_totals",
         "per_image_diagnostics": [

@@ -316,7 +316,7 @@ class LatticeTimeKB:
                 continue
             predictions = []
             for target, (unit, _scale) in RESOURCE_TARGETS.items():
-                state_key = target + (":" + clause.get("memory_measurement", "cgroup_v2_environment_union_v1") if target.startswith("memory_") else "")
+                state_key = target + (":" + (clause.get("memory_measurement") or "cgroup_v2_environment_union_v1") if target.startswith("memory_") else "")
                 state = self._resource_states.get(state_key, ResourceState({}, 0.0, 0.5))
                 for algorithm in LATTICE_TIME_ALGORITHMS:
                     try:
@@ -354,7 +354,7 @@ class LatticeTimeKB:
             for target, (_, scale) in LOAD_TARGETS.items():
                 state_key = "load:" + target
                 if target.startswith("memory_"):
-                    state_key += ":" + clause.get("memory_measurement", "cgroup_v2_environment_union_v1")
+                    state_key += ":" + (clause.get("memory_measurement") or "cgroup_v2_environment_union_v1")
                 state = self._resource_states.get(state_key)
                 if state is None:
                     continue
@@ -701,8 +701,8 @@ def _build_node_state(
         context_cache=context_cache, feature_cache=feature_cache,
         statistics_cache=statistics_cache,
     ).items()})
-    for measurement in {row.memory_measurement for row in ordered if row.memory_measurement}:
-        subset = [row for row in ordered if row.memory_measurement == measurement]
+    for measurement in {row.memory_measurement or "cgroup_v2_environment_union_v1" for row in ordered}:
+        subset = [row for row in ordered if (row.memory_measurement or "cgroup_v2_environment_union_v1") == measurement]
         for load, prefix in [(False, ""), (True, "load:")]:
             for target, state in build_resource_states(
                 subset, load=load, subset_coverage=subset_coverage,
@@ -862,6 +862,7 @@ def _observation_from_json(row: Any, *, allow_resource_only: bool = True) -> Cla
         "stdin_from_pipe",
         "memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes",
         "memory_measurement", "memory_environment_id", "memory_eligible", "command_features", "clause_index",
+        "censored", "confirmed_timeout", "imputed_targets",
     }
     unknown = sorted(values.keys() - allowed)
     if unknown:
@@ -880,6 +881,7 @@ def _observation_from_json(row: Any, *, allow_resource_only: bool = True) -> Cla
     ) or not argv:
         raise ValueError("lattice KB observation argv must be non-empty strings")
     values["argv"] = tuple(argv)
+    values["imputed_targets"] = tuple(values.get("imputed_targets", ()))
     for field in ("ts_start", "ts_end", "latency_ms"):
         if allow_resource_only and field == "latency_ms" and values[field] is None and any(
             nonnegative(values.get(key)) for key in ("cpu_ns_cumulative", "cpu_peak_cores", "sampled_peak_rss_mb", "memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes")

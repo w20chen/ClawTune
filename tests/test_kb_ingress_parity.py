@@ -9,7 +9,11 @@ from test_cold_start import trace
 from cold_start.flat_loader import read_task
 from offline.runner import _call_actuals, load_task, run
 from clawtune_kb.store import digest
-from tool_resource.runtime_kb import CompletedCall
+from tool_resource.runtime_kb import CompletedCall, ClauseResourceKB, training_target_provenance
+from tool_time.lattice_kb import LatticeTimeKB
+from clawtune_sidecar.predictors.tool_resource import (
+    STRICT_TRACE_LABEL_POLICY, apply_trace_label_policy_to_clause,
+)
 
 
 def clause():
@@ -38,27 +42,46 @@ def test_cpu_uses_interval_evidence_and_compact_rss_alias():
     assert parse(compact)[0].cpu_ns_cumulative is None
 
 
-@pytest.mark.parametrize("metric,field", [("cpu_time", "cpu_ns_cumulative"), ("cpu", "cpu_peak_cores"), ("memory", "sampled_peak_rss_mb")])
-def test_unavailable_target_does_not_discard_other_labels(metric, field):
+@pytest.mark.parametrize("metric,field,value,target", [
+    ("cpu_time", "cpu_ns_cumulative", 500_000_000, "cpu_time_seconds"),
+    ("cpu", "cpu_peak_cores", 2., "cpu_peak_cores"),
+    ("memory", "sampled_peak_rss_mb", 8., "sampled_peak_rss_bytes"),
+])
+def test_approximate_target_retains_observed_value_and_only_missing_is_imputed(metric, field, value, target):
     row = clause()
     row["availability"][metric] = "insufficient_samples"
     parsed = parse(row)[0]
-    assert getattr(parsed, field) is None
+    assert getattr(parsed, field) == value
     assert parsed.latency_ms == 1000
+    retained = apply_trace_label_policy_to_clause(parsed, STRICT_TRACE_LABEL_POLICY)
+    assert getattr(retained, field) == value
+    assert target not in retained.imputed_targets
+    missing = apply_trace_label_policy_to_clause(replace(parsed, **{field: None}), STRICT_TRACE_LABEL_POLICY)
+    assert getattr(missing, field) == 0
+    assert target in missing.imputed_targets
+    assert missing.latency_ms == retained.latency_ms == 1000
 
 
-@pytest.mark.parametrize("changes,accepted", [({}, True), ({"ts_end": None}, False),
-    ({"status": {"state": "running"}}, False), ({"eligible_for_kb": False}, False),
-    ({"availability": {"latency": "protocol_timeout", "cpu_time": "ok"}}, False)])
-def test_partial_resource_requires_completion_and_valid_clocks(changes, accepted):
+@pytest.mark.parametrize("changes", [{}, {"ts_end": None},
+    {"status": {"state": "running"}}, {"eligible_for_kb": False},
+    {"availability": {"latency": "protocol_timeout", "cpu_time": "ok"}},
+    {"status": {"state": "signaled"}}])
+def test_partial_resource_keeps_values_but_requires_valid_recorded_clocks(changes):
     row = clause()
     row["availability"]["latency"] = "unavailable"
     row.update(changes)
+    if "ts_end" in changes:
+        with pytest.raises(ValueError, match="invalid ts_end"):
+            parse(row)
+        return
     result = parse(row)
-    assert bool(result) == accepted
-    if result:
-        assert result[0].latency_ms is None
-        assert result[0].cpu_ns_cumulative == 500_000_000
+    assert len(result) == 1
+    assert result[0].latency_ms == 1000
+    assert result[0].cpu_ns_cumulative == 500_000_000
+    assert result[0].cpu_peak_cores == 2
+    assert result[0].sampled_peak_rss_mb == 8
+    assert result[0].censored == (row["status"]["state"] == "signaled")
+    assert not result[0].imputed_targets
 
 
 @pytest.mark.parametrize("unit,scale", [("MB", 1_000_000), ("MiB", 1024**2)])
@@ -93,9 +116,14 @@ def test_call_actuals_preserve_workload_scope_and_missing_values():
                          cpu_time_seconds=.25, cpu_time_eligible=True)
     assert _call_actuals(call)["duration_ms"] == 500
     assert _call_actuals(call)["cpu_avg_cores"] == .5
-    missing = _call_actuals(replace(call, workload_duration_seconds=None))
-    assert "duration_ms" not in missing and "cpu_avg_cores" not in missing
+    missing_call = replace(call, workload_duration_seconds=None)
+    missing = _call_actuals(missing_call)
+    assert missing["duration_ms"] == missing["cpu_avg_cores"] == 0
     assert missing["cpu_time_seconds"] == .25
+    provenance = training_target_provenance(missing_call)
+    assert provenance["workload_latency_ms"] == provenance["cpu_avg_cores"] == "imputed_zero"
+    assert provenance["cpu_time_seconds"] == "observed"
+    assert provenance["latency_ms"] == "observed"
 
 
 def test_offline_scores_each_model_and_reports_missing_labels(tmp_path):
@@ -108,22 +136,78 @@ def test_offline_scores_each_model_and_reports_missing_labels(tmp_path):
     assert report["test_updates"] == 0
     for name, model in report["models"].items():
         counters = model["availability"]
-        assert counters["duration_ms"] == {"queries": 1, "labeled": 1, "predicted": 1, "scored": 1}
-        assert counters["memory_total_peak_bytes"]["labeled"] == 0
-        assert counters["memory_total_peak_bytes"]["scored"] == 0
+        assert counters["duration_ms"] == {"queries": 1, "labeled": 1, "predicted": 1,
+                                           "scored": 1, "unavailable_reasons": {}}
+        assert model["repositories"][0]["repo"] == "org/repo"
+        assert counters["memory_total_peak_bytes"]["labeled"] == 1
+        assert counters["memory_total_peak_bytes"]["scored"] == (0 if name == "edge_kappa" else 1)
+        if name != "edge_kappa":
+            memory_metric = next(m for m in model["metrics"] if m["target"] == "memory_total_peak_bytes")
+            assert memory_metric["mae"] == 0
         if name == "edge_kappa":
             assert counters["cpu_time_seconds"]["predicted"] == 0
             assert counters["cpu_time_seconds"]["scored"] == 0
+            assert counters["cpu_time_seconds"]["unavailable_reasons"] == {"edge_kappa_time_only": 1}
         elif name != "tool":
             assert counters["cpu_time_seconds"]["scored"] == 1
             metric = next(m for m in model["metrics"] if m["target"] == "cpu_time_seconds")
             assert metric["mae"] == 0
     rows = [json.loads(line) for line in (tmp_path / "output" / "model-predictions.jsonl").read_text().splitlines()]
     assert {row["model"] for row in rows} == {"tool", "trie", "lattice", "edge_kappa"}
+    assert all(row["tool"] in {"exec", "terminal_exec"} for row in rows)
+    assert all(row["actual"] == 0 for row in rows if row["target"] == "memory_total_peak_bytes")
+
+
+def test_static_import_projects_recorded_repo_features_without_reparsing():
+    from offline.runner import _static_clause
+    from command_parser.models import ParseContext
+    from command_parser.service import default_service, observation_features
+    from tool_resource.runtime_kb import ClauseObservation
+    record = default_service().argv(("python", "work.py"), ParseContext(repo="org/repo"))
+    row = ClauseObservation("org/repo", "python", ("python", "work.py"), 10., 11.,
+                            latency_ms=1000., command_features=record.to_dict())
+    imported = _static_clause(row, "swe-rebench:org/repo")
+    result = observation_features(imported)
+    assert 'context:["repo","swe-rebench:org/repo"]' in result.features
+    assert 'context:["repo","org/repo"]' not in result.features
+    assert result.core == record.core and result.parse_digest == record.parse_digest
+    assert imported.latency_ms == row.latency_ms and imported.ts_end == 1.
+    assert observation_features(row) == record
+
+
+@pytest.mark.parametrize("measurement", [
+    "cgroup_v2_environment_union_v1", "cgroup_v2_memory_current",
+    "guest_memtotal_minus_memavailable",
+])
+def test_offline_memory_query_uses_the_recorded_measurement(tmp_path, monkeypatch, measurement):
+    dataset = tmp_path / "input"
+    dataset.mkdir()
+    for index in range(5):
+        task = f"org__repo-{index}"
+        (dataset / f"{task}.trace.jsonl").write_text(trace(task), encoding="utf-8")
+    fields = dict(memory_baseline_bytes=100, memory_total_peak_bytes=300,
+                  memory_extra_peak_bytes=200, memory_measurement=measurement,
+                  memory_environment_id="test", memory_eligible=True)
+
+    def load_with_memory(*args, **kwargs):
+        loaded = load_task(*args, **kwargs)
+        loaded.calls = [replace(call, **fields) for call in loaded.calls]
+        loaded.clauses = [replace(row, **fields) for row in loaded.clauses]
+        return loaded
+
+    monkeypatch.setattr("offline.runner.load_task", load_with_memory)
+    report = run(dataset, tmp_path / "output", benchmark="swe-rebench", rss_unit="MB",
+                 split_cache_dir=tmp_path / "splits")
+    for model in ("tool", "trie", "lattice"):
+        for target in ("memory_total_peak_bytes", "memory_extra_peak_bytes"):
+            metric = next(row for row in report["models"][model]["metrics"]
+                          if row["target"] == target)
+            assert metric["coverage"] == 1
+            assert metric["mae"] == 0
 
 
 @pytest.mark.parametrize("censored", [False, True])
-def test_v6_offline_compact_cpu_rss_and_censor_gate(tmp_path, censored):
+def test_v6_offline_compact_cpu_rss_and_partial_labels(tmp_path, censored):
     row = clause()
     row.pop("provenance")
     row["cpu_time_seconds"] = .5
@@ -138,11 +222,27 @@ def test_v6_offline_compact_cpu_rss_and_censor_gate(tmp_path, censored):
     task = {"benchmark": "swe-rebench", "group": "org/repo", "task_id": "task",
             "files": [{"path": path.name, "sha256": digest(path), "version": 6}]}
     loaded = load_task(tmp_path, task, "MB")
-    assert len(loaded.clauses) == (0 if censored else 1)
-    if not censored:
-        assert loaded.clauses[0].cpu_ns_cumulative == 500_000_000
-        assert loaded.clauses[0].sampled_peak_rss_mb == 8
-        assert loaded.call_actuals[0]["duration_ms"] == 1000
+    assert len(loaded.clauses) == 1
+    observed = loaded.clauses[0]
+    assert observed.cpu_ns_cumulative == 500_000_000
+    assert observed.cpu_peak_cores == 2
+    assert observed.sampled_peak_rss_mb == 8
+    assert observed.latency_ms == loaded.call_actuals[0]["duration_ms"] == 1000
+    assert observed.censored == loaded.calls[0].censored == censored
+    assert observed.memory_total_peak_bytes == observed.memory_extra_peak_bytes == 0
+    assert set(observed.imputed_targets) == {"memory_total_peak_bytes", "memory_extra_peak_bytes"}
+    # Clause-owned CPU is not silently promoted to a whole-call measurement.
+    assert loaded.call_actuals[0]["cpu_time_seconds"] == 0
+    provenance = training_target_provenance(loaded.calls[0])
+    assert provenance["cpu_time_seconds"] == "imputed_zero"
+    assert provenance["workload_latency_ms"] == ("observed_partial" if censored else "observed")
+    for kb in (ClauseResourceKB(), LatticeTimeKB()):
+        assert kb.observe_completed_clause(observed)
+        evidence = kb.predict_load_samples(observed.repo, [{"bin": observed.bin, "argv": list(observed.argv)}], 3.)[0]
+        for target, value in (("duration_ms", 1000.), ("cpu_time_seconds", .5),
+                              ("cpu_peak_cores", 2.), ("sampled_peak_rss_bytes", 8_000_000.),
+                              ("memory_total_peak_bytes", 0.)):
+            assert evidence[target]["values"] == (value,)
 
 
 def test_missing_workload_does_not_reuse_tool_elapsed(tmp_path):
@@ -152,14 +252,27 @@ def test_missing_workload_does_not_reuse_tool_elapsed(tmp_path):
     path.write_text("\n".join(map(json.dumps, rows)), encoding="utf-8")
     loaded = read_task(path, repo="repo", task_id="org__repo-1", rss_unit="MB")
     assert loaded.calls[0].ts_end == 1
-    assert "duration_ms" not in _call_actuals(loaded.calls[0])
+    call = loaded.calls[0]
+    actuals = _call_actuals(call)
+    assert actuals["duration_ms"] == 0
+    assert actuals["cpu_time_seconds"] == 2
+    provenance = training_target_provenance(call)
+    assert provenance["workload_latency_ms"] == "imputed_zero"
+    assert provenance["cpu_time_seconds"] == "approximate_observation"
     assert loaded.call_actuals == [{}]
 
 
 def test_zero_cpu_is_a_valid_label_but_invalid_cpu_is_missing():
     row = clause()
     row["provenance"]["cpu_time_ns"] = 0
-    assert parse(row)[0].cpu_ns_cumulative == 0
+    observed_zero = apply_trace_label_policy_to_clause(parse(row)[0], STRICT_TRACE_LABEL_POLICY)
+    assert observed_zero.cpu_ns_cumulative == 0
+    assert "cpu_time_seconds" not in observed_zero.imputed_targets
     for value in (-1, True, float("nan")):
         row["provenance"]["cpu_time_ns"] = value
-        assert parse(row)[0].cpu_ns_cumulative is None
+        invalid = parse(row)[0]
+        assert invalid.cpu_ns_cumulative is None
+        imputed = apply_trace_label_policy_to_clause(invalid, STRICT_TRACE_LABEL_POLICY)
+        assert imputed.cpu_ns_cumulative == 0
+        assert "cpu_time_seconds" in imputed.imputed_targets
+        assert imputed.cpu_peak_cores == 2 and imputed.sampled_peak_rss_mb == 8

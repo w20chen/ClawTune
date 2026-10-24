@@ -207,6 +207,25 @@ def test_partial_clause_memory_is_available_and_explicitly_marked():
     )
 
 
+@pytest.mark.parametrize("middle", ["excluded_consumer", "missing_target"])
+def test_rss_preserves_pipeline_groups_across_filtered_stages(middle):
+    bins = ["python", "cat" if middle == "excluded_consumer" else "sleep", "python", "python"]
+    clauses = [dict(bin=bin_, argv=[bin_], in_pipe=i < 3,
+                    pipeline_position=i if i < 3 else -1)
+               for i, bin_ in enumerate(bins)]
+    evidence = [{"sampled_peak_rss_bytes": {"values": [100]}}]
+    if middle == "missing_target":
+        evidence.append({})
+    evidence.extend({"sampled_peak_rss_bytes": {"values": [value]}} for value in (200, 250))
+
+    target = compose("lattice", evidence, EDGES, clauses=clauses).targets["sampled_peak_rss_bytes"]
+
+    # The first and third stages remain parallel; the final command is serial.
+    assert target.p50 == 300
+    assert "parallel_peak_sum_is_conservative_not_calibrated" in target.assumptions
+    assert ("partial_clause_evidence" in target.assumptions) == (middle == "missing_target")
+
+
 def test_dynamic_structure_keeps_available_memory_evidence_only():
     result = compose(
         "lattice",
@@ -279,7 +298,8 @@ def test_runtime_independent_targets_causality_and_snapshot():
     assert kb.predict_load_samples(ToolCallQuery("r", "read", None, 1)) == {}
     values = kb.predict_load_samples(ToolCallQuery("r", "read", None, 2))
     assert values["cpu_time_seconds"]["values"] == (0,)
-    assert "cpu_peak_cores" not in values and "memory_total_peak_bytes" not in values
+    assert values["cpu_peak_cores"]["values"] == (0,)
+    assert values["memory_total_peak_bytes"]["values"] == (0,)
     restored = RuntimeToolResourceKB.from_json_obj(kb.to_json_obj())
     assert restored.predict_load_samples(ToolCallQuery("r", "read", None, 2)) == values
     with pytest.raises(ValueError):
@@ -442,8 +462,8 @@ def test_tool_kb_uses_retained_workload_duration_for_duration_and_cpu_average():
         cpu_time_eligible=True,
     ))
     assert missing["latency_ms"] == 10000
-    assert "workload_latency_ms" not in missing
-    assert "cpu_avg_cores" not in missing
+    assert missing["workload_latency_ms"] == 0
+    assert missing["cpu_avg_cores"] == 0
     assert missing["cpu_time_seconds"] == 1
 
 
@@ -463,13 +483,17 @@ def test_retained_workload_duration_unions_intervals_and_excludes_pipe_consumer(
     assert _retained_workload_duration_seconds(artifact) == 3.0
 
 
-def test_censored_resource_totals_not_used_as_complete_load():
+def test_censored_resource_totals_train_as_partial_observations():
     kb = RuntimeToolResourceKB()
     kb.observe_completed_call(CompletedCall("r", "read", None, 0, 1, censored=True,
         cpu_time_seconds=2, cpu_time_eligible=True, cpu_peak_cores=4, cpu_peak_cores_eligible=True,
         cpu_peak_window_ms=500, memory_total_peak_bytes=100, memory_eligible=True,
         memory_measurement="cgroup_v2_environment_union_v1", memory_baseline_bytes=0, memory_extra_peak_bytes=100, memory_environment_id="test", outcome="timeout"))
-    assert kb.predict_load_samples(ToolCallQuery("r", "read", None, 2)) == {}
+    values = kb.predict_load_samples(ToolCallQuery("r", "read", None, 2))
+    assert values["cpu_time_seconds"]["values"] == (2,)
+    assert values["cpu_peak_cores"]["values"] == (4,)
+    assert values["memory_total_peak_bytes"]["values"] == (100,)
+    assert values["duration_ms"]["values"] == (1000,)
 
 
 def test_call_level_evaluation_scores_and_metric_guard():

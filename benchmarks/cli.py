@@ -91,7 +91,9 @@ def parser():
     off.add_argument("--lattice-variants", action="store_true",
                      help="Also evaluate LOSO, max-cardinality, and a hindsight duration oracle on the same frozen Lattice KB")
     off.add_argument("--train-fraction", type=float, default=.8,
-                     help="Per-group training fraction, greater than 0 and less than 1 (default: 0.8)")
+                     help="Fraction of tasks within each group, or of repositories with --split-by repository (default: 0.8)")
+    off.add_argument("--split-by", choices=("task", "repository"), default="task",
+                     help="Hold out tasks within known groups, or entire unseen repositories")
     off.add_argument("--rss-unit", choices=("MB", "MiB"), required=True, help="Explicit historical trace RSS unit")
     off.add_argument("--output", type=Path)
     off.add_argument("--split-cache-dir", type=Path,
@@ -195,7 +197,8 @@ def main(argv=None):
             output = args.output or ROOT / ".runtime/offline" / (time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
             result = run(args.dataset, output, benchmark=args.benchmark, seed=args.seed,
                          rss_unit=args.rss_unit, split_cache_dir=args.split_cache_dir,
-                         train_fraction=args.train_fraction, lattice_variants=args.lattice_variants,
+                         train_fraction=args.train_fraction, split_by=args.split_by,
+                         lattice_variants=args.lattice_variants,
                          max_optional_features=args.kb_max_optional_features)
             print(json.dumps(_offline_console_summary(result, output), indent=2))
             return 0

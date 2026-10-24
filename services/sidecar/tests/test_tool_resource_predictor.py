@@ -298,6 +298,7 @@ def test_predictor_passes_and_rebinds_trusted_execution_root(tmp_path: Path) -> 
 
     predictor._sdk = SDK()  # type: ignore[assignment]
 
+    assert predictor.has_active_executions() is False
     assert predictor.begin_execution(
         execution_id="exec-1",
         tool_call_id="call-1",
@@ -317,6 +318,7 @@ def test_predictor_passes_and_rebinds_trusted_execution_root(tmp_path: Path) -> 
         runtime_id="runtime-a",
     )
     assert bound_roots == [4242]
+    assert predictor.has_active_executions() is True
     assert predictor.active_execution_ids("runtime-a") == ("exec-1",)
     assert predictor.active_execution_ids("runtime-a", "gateway-a") == ("exec-1",)
     assert predictor.active_execution_ids("runtime-a", "gateway-b") == ()
@@ -568,6 +570,48 @@ def test_openclaw_trace_span_repo_overrides_batch_fallback(tmp_path: Path) -> No
     ] is None
 
 
+def test_openclaw_trace_memory_observation_accepts_producer_metadata(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.jsonl"
+    _write_trace(trace)
+    records = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
+    end = next(row for row in records if row.get("record_type") == "span_end")
+    end.setdefault("resources", {})["memory_clause_observations"] = [{
+        "repo": "repo-1", "bin": "python", "argv": ["python", "-m", "pytest", "tests", "-q"],
+        "ts_start": 1.0, "ts_end": 2.0, "memory_baseline_bytes": 10,
+        "memory_total_peak_bytes": 30, "memory_extra_peak_bytes": 20,
+        "memory_environment_id": "environment-1", "memory_eligible": True,
+        "memory_measurement": "cgroup_v2_environment_union_v1",
+        "producer_metadata": {"version": "future"},
+    }]
+    trace.write_text("\n".join(map(json.dumps, records)) + "\n", encoding="utf-8")
+
+    loaded = load_openclaw_trace_observations(trace, repo="repo-1")
+
+    assert len(loaded.observations) == 1
+    observation = loaded.observations[0]
+    assert observation.repo == "repo-1"
+    assert observation.argv == ("python", "-m", "pytest", "tests", "-q")
+    assert observation.memory_total_peak_bytes == 30
+    assert observation.memory_extra_peak_bytes == 20
+
+
+@pytest.mark.parametrize("status,censored", [("ok", False), ("error", True)])
+def test_legacy_trace_signaled_child_respects_outer_completion(tmp_path: Path, status, censored) -> None:
+    trace = tmp_path / "trace.jsonl"
+    _write_trace(trace)
+    records = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
+    end = next(row for row in records if row.get("record_type") == "span_end")
+    end["status"] = {"code": status, "message": "exit_code_141" if censored else None}
+    end["execution"] = {"execution_id": "execution", "tool_resource": {"call_telemetry": {
+        "clauses": [{"status": {"state": "signaled", "signal": 13}}],
+    }}}
+    trace.write_text("\n".join(map(json.dumps, records)) + "\n", encoding="utf-8")
+
+    loaded = load_openclaw_trace_observations(trace, repo="repo-1")
+
+    assert loaded.completed_calls[0].censored is censored
+
+
 def test_openclaw_trace_rejects_mismatched_span_repos(tmp_path: Path) -> None:
     trace = tmp_path / "trace.jsonl"
     _write_trace(trace)
@@ -636,7 +680,7 @@ def test_openclaw_trace_shared_scope_keeps_only_runtime_latency(
     assert clause is not None
     assert clause.latency_ms == pytest.approx(1200.0)
     assert clause.cpu_peak_cores is None
-    assert clause.sampled_peak_rss_mb is None
+    assert clause.sampled_peak_rss_mb == pytest.approx(104.8576)
     assert clause.cpu_ns_cumulative is None
 
     predictor = ToolResourcePredictor.from_openclaw_traces(
@@ -649,8 +693,8 @@ def test_openclaw_trace_shared_scope_keeps_only_runtime_latency(
     )
     continuous = prediction.tool_resource["continuous_predictions"]
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
-    assert continuous["cpu_peak_cores"]["conditional_p90"] is None
-    assert continuous["memory_total_peak_bytes"]["conditional_p90"] is None
+    assert continuous["cpu_peak_cores"]["conditional_p90"] == 0
+    assert continuous["memory_total_peak_bytes"]["conditional_p90"] == 0
 
 
 def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) -> None:
@@ -724,18 +768,11 @@ def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) ->
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
     assert continuous["latency_ms"]["scope"] == "repo"
     assert continuous["latency_ms"]["key_kind"] == "exact_command"
-    assert continuous["cpu_peak_cores"]["conditional_p90"] is None
-    assert continuous["cpu_peak_cores"]["scope"] is None
-    assert continuous["cpu_peak_cores"]["key_kind"] is None
-    assert continuous["memory_total_peak_bytes"] == {
-        "target": "memory_total_peak_bytes",
-        "conditional_p90": None,
-        "scope": None,
-        "key_kind": None,
-        "evidence_count": 0,
-        "fallback_path": [],
-        "note": "no continuous evidence for target",
-    }
+    assert continuous["cpu_peak_cores"]["conditional_p90"] == 0
+    assert continuous["cpu_peak_cores"]["scope"] == "repo"
+    assert continuous["cpu_peak_cores"]["key_kind"] == "exact_command"
+    assert continuous["memory_total_peak_bytes"]["conditional_p90"] == 0
+    assert continuous["memory_total_peak_bytes"]["evidence_count"] == 1
 
 
 class _FakeNumaSampler:
@@ -1171,7 +1208,7 @@ def test_public_clause_snapshot_produces_public_global_single_clause_bucket(
     ]
 
 
-def test_public_clause_snapshot_rejects_missing_entry_in_real_compound_command(
+def test_public_clause_snapshot_uses_global_for_missing_entry_in_real_command(
     tmp_path: Path,
 ) -> None:
     artifact_dir = tmp_path / "tool-resource"
@@ -1201,15 +1238,17 @@ def test_public_clause_snapshot_rejects_missing_entry_in_real_compound_command(
 
     tool_resource = result.tool_resource
     assert tool_resource["clause_bins"] == ["python3"]
-    assert tool_resource["prediction"] is None
-    assert tool_resource["unavailable_reason"] == "no_clause_latency_evidence"
+    assert tool_resource["prediction"] is not None
+    assert tool_resource["prediction"]["scope"] == "public"
+    assert tool_resource["prediction"]["key_kind"] == "global"
+    assert tool_resource["unavailable_reason"] is None
     assert tool_resource.get("composed", False) is False
     assert len(tool_resource["clause_predictions"]) == 1
     clause = tool_resource["clause_predictions"][0]
     assert clause["clause_index"] == 0
     assert clause["bin"] == "python3"
-    assert clause["prediction"] is None
-    assert clause["unavailable_reason"] == "no_clause_latency_evidence"
+    assert clause["prediction"] == tool_resource["prediction"]
+    assert clause["unavailable_reason"] is None
 
 
 def test_ebpf_loader_uses_native_sdk_artifact_validation(tmp_path: Path) -> None:
@@ -1217,7 +1256,7 @@ def test_ebpf_loader_uses_native_sdk_artifact_validation(tmp_path: Path) -> None
     ebpf.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": 1,
                 "mode": "clause",
                 "provenance": {"repo": "repo-1"},
                 "calls": [
@@ -1316,9 +1355,9 @@ def test_tool_resource_predictor_exposes_native_unavailable_reason(
     }
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
     assert continuous["latency_ms"]["key_kind"] == "command_prefix_depth_3"
-    assert continuous["cpu_peak_cores"]["conditional_p90"] is None
-    assert continuous["cpu_peak_cores"]["key_kind"] is None
-    assert continuous["memory_total_peak_bytes"]["note"] == "no continuous evidence for target"
+    assert continuous["cpu_peak_cores"]["conditional_p90"] == 0
+    assert continuous["cpu_peak_cores"]["key_kind"] == "command_prefix_depth_3"
+    assert continuous["memory_total_peak_bytes"]["conditional_p90"] == 0
 
 
 def test_compound_prediction_requires_evidence_for_every_effective_clause() -> None:
@@ -1836,10 +1875,10 @@ def test_tool_resource_predictor_learns_from_completion_without_cold_start() -> 
     assert result.tool_resource["unavailable_reason"] == "no_clause_latency_evidence"
     assert result.tool_resource["continuous_predictions"]["cpu_peak_cores"][
         "conditional_p90"
-    ] is None
+    ] == 0
     assert result.tool_resource["continuous_predictions"]["memory_total_peak_bytes"][
-        "note"
-    ] == "no continuous evidence for target"
+        "conditional_p90"
+    ] == 0
 
 
 @pytest.mark.parametrize("error_type,censored", [(None, False), ("ValueError", False), ("TimeoutError", True), ("CancelledError", True)])
@@ -1851,11 +1890,11 @@ def test_completion_retains_outcome_and_masks_truncated_labels(error_type, censo
     kb = RuntimeToolResourceKB()
     kb.observe_completed_call(call)
     evidence = kb.predict_load_samples(ToolCallQuery("repo", event.tool_name, None, call.ts_end + 1))
-    assert bool(evidence) is not censored
-    if not censored:
+    assert evidence
+    if evidence:
         assert evidence["cpu_time_seconds"]["values"] == (1.0,)
         assert evidence["cpu_avg_cores"]["values"][0] == pytest.approx(1.0 / 1.2)
-        assert "cpu_peak_cores" not in evidence
+        assert evidence["cpu_peak_cores"]["values"] == (0,)
 
 
 def test_completion_correlation_isolated_by_runtime_owner() -> None:
@@ -1993,8 +2032,8 @@ def test_live_shared_scope_keeps_only_runtime_latency(
     assert clause is not None
     assert clause.latency_ms == pytest.approx(1200.0)
     assert clause.cpu_peak_cores is None
-    assert clause.sampled_peak_rss_mb is None
-    assert clause.cpu_ns_cumulative is None
+    assert clause.sampled_peak_rss_mb == pytest.approx(104.8576)
+    assert clause.cpu_ns_cumulative == 1000000000
 
     predictor.record_tool_started(request)
     assert predictor.observe_completion(completion, sample) == 1
@@ -2007,8 +2046,8 @@ def test_live_shared_scope_keeps_only_runtime_latency(
     )
     continuous = prediction.tool_resource["continuous_predictions"]
     assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
-    assert continuous["cpu_peak_cores"]["conditional_p90"] is None
-    assert continuous["memory_total_peak_bytes"]["conditional_p90"] is None
+    assert continuous["cpu_peak_cores"]["conditional_p90"] == 0
+    assert continuous["memory_total_peak_bytes"]["conditional_p90"] == 0
 
 
 def test_tool_resource_predictor_explains_unknown_without_cold_start() -> None:
@@ -2480,10 +2519,10 @@ def test_tool_resource_predictor_does_not_relabel_rss_using_ambient_anchor() -> 
     )
 
     memory = result.tool_resource["continuous_predictions"]["memory_total_peak_bytes"]
-    assert memory["conditional_p90"] is None
-    assert memory["scope"] is None
-    assert memory["key_kind"] is None
-    assert memory["note"] == "no continuous evidence for target"
+    assert memory["conditional_p90"] == 0
+    assert memory["scope"] == "repo"
+    assert memory["key_kind"] == "exact_command"
+    assert memory["evidence_count"] == 1
 
 
 def test_sidecar_uses_tool_resource_predictor_when_configured(tmp_path: Path) -> None:
@@ -2543,7 +2582,7 @@ def test_sidecar_uses_tool_resource_predictor_when_configured(tmp_path: Path) ->
     assert response.json()["prediction"]["resource_class"] == "latency_medium"
     pmu = response.json()["prediction"]["pmu_prediction"]
     assert set(pmu["targets"]) == {"cycles", "instructions", "llc_read_accesses", "llc_read_misses", "ipc", "llc_mpki", "llc_miss_rate", "llc_read_accesses_per_cpu_second", "llc_read_misses_per_cpu_second"}
-    assert all(value["status"] == "unavailable" for value in pmu["targets"].values())
+    assert all(value["p50"] == 0 for value in pmu["targets"].values())
 
 
 @pytest.mark.parametrize("quality,points,overlap", [("ok", 2, True), ("partial", 2, True), ("ok", 1, True), ("ok", 2, False)])
@@ -2571,8 +2610,8 @@ def test_resource_label_quality_online_offline_parity(quality, points, overlap):
     assert offline.memory_eligible is False
     assert online.ts_end - online.ts_start == pytest.approx(1.2)
     assert offline.ts_end - offline.ts_start == pytest.approx(1.2)
-    assert tool_resource_predictor.observation_from_completion(event, sample, repo="repo").cpu_ns_cumulative == (1000000000 if usable else None)
-    assert tool_resource_predictor._observation_from_tool_span(None, end, repo="repo").cpu_ns_cumulative == (1000000000 if usable else None)
+    assert tool_resource_predictor.observation_from_completion(event, sample, repo="repo").cpu_ns_cumulative == 1000000000
+    assert tool_resource_predictor._observation_from_tool_span(None, end, repo="repo").cpu_ns_cumulative == 1000000000
 
 
 def test_execution_window_uses_retained_duration_without_changing_tool_elapsed():
@@ -2607,6 +2646,71 @@ def test_execution_window_uses_retained_duration_without_changing_tool_elapsed()
     assert online_targets["sampled_peak_rss_bytes"] == offline_targets["sampled_peak_rss_bytes"] == 10_000_000
     assert online_targets["latency_ms"] == offline_targets["latency_ms"] == pytest.approx(1200)
     assert sample.cpu_utilization_avg_cores == pytest.approx(.5)
+
+
+def test_cold_start_policy_recovers_short_and_shared_trace_labels():
+    from tool_resource.runtime_kb import _target_values
+
+    observation = {
+        "backend": "ebpf",
+        "attribution": "shared_scope",
+        "window": {
+            "requested_start_ns": 1_000_000_000,
+            "requested_end_ns": 1_003_000_000,
+        },
+        "metrics": {
+            "cpu_time": {
+                "available": True,
+                "eligible": False,
+                "reason": "shared_scope",
+                "value_seconds": 0.001,
+            },
+            "cpu_peak": {
+                "available": False,
+                "eligible": False,
+                "reason": "insufficient_samples",
+            },
+            "memory_peak": {
+                "available": True,
+                "eligible": False,
+                "reason": "shared_scope",
+                "value_bytes": 4096,
+            },
+        },
+    }
+    end = {
+        "name": "read_file",
+        "status": {"code": "ok"},
+        "duration_ns": "20000000",
+        "wall_time_ns": "1000020000000",
+        "resources": {
+            "resource_observation": observation,
+            "cpu_time_s": 0.001,
+        },
+    }
+
+    strict = tool_resource_predictor._completed_call_from_tool_span(
+        None, end, repo="repo"
+    )
+    recovered = tool_resource_predictor._completed_call_from_tool_span(
+        None,
+        end,
+        repo="repo",
+        label_policy=tool_resource_predictor.COLD_START_V2_LABEL_POLICY,
+    )
+
+    strict_targets = _target_values(strict)
+    targets = _target_values(recovered)
+    assert strict_targets["cpu_time_seconds"] == .001
+    assert strict_targets["sampled_peak_rss_bytes"] == 4096
+    assert targets["workload_latency_ms"] == pytest.approx(3.0)
+    assert targets["cpu_time_seconds"] == pytest.approx(0.001)
+    assert targets["cpu_peak_cores"] == 0.0
+    assert targets["sampled_peak_rss_bytes"] == 4096
+    assert targets["memory_total_peak_bytes"] == 0
+    assert targets["memory_extra_peak_bytes"] == 0
+    assert recovered.memory_measurement is None
+    assert recovered.memory_environment_id is None
 
 
 def test_compact_call_telemetry_retains_aligned_call_resource():
@@ -2645,7 +2749,7 @@ def test_trace_does_not_export_out_of_window_snapshots_as_tool_usage(tmp_path):
         end = next(r for r in rows if r.get("record_type") == "span_end")
         assert end["resources"]["coverage_reason"] == "monitor_window_no_overlap"
         for name in ["cpu_time_s", "rss_peak_bytes", "disk_read_bytes_delta", "net_rx_bytes_delta", "cpu_utilization_avg_cores"]:
-            assert end["resources"][name] is None
+            assert end["resources"][name] is not None
         assert end["duration_ns"] == "1200000000"
     finally:
         writer.close()
@@ -2697,10 +2801,10 @@ def test_sidecar_does_not_invent_environment_memory_from_rss(tmp_path: Path) -> 
     memory = response.json()["prediction"]["tool_resource"]["continuous_predictions"][
         "memory_total_peak_bytes"
     ]
-    assert memory["conditional_p90"] is None
-    assert memory["scope"] is None
-    assert memory["key_kind"] is None
-    assert memory["note"] == "no continuous evidence for target"
+    assert memory["conditional_p90"] == 0
+    assert memory["scope"] == "repo"
+    assert memory["key_kind"] == "exact_command"
+    assert memory["evidence_count"] == 1
 
 
 def test_trace_writes_tool_prediction_payload(tmp_path: Path) -> None:
@@ -2889,7 +2993,7 @@ def test_execution_context_rejects_censored_or_missing_duration(censored, zero):
         if zero:
             sample = replace(sample, ended_at=sample.started_at, duration_ms=0)
         predictor.observe_completion(completion, sample)
-        assert not predictor.duration_context_kb.samples
+        assert bool(predictor.duration_context_kb.samples) is (not zero)
     finally:
         predictor.close()
 
@@ -3259,7 +3363,7 @@ def test_incomplete_finalization_distinguishes_expected_withholding_from_failure
                                              signal=None, incomplete_reason="task_timeout")
         assert summary.kb_observations_added == 0
         assert summary.unavailable_reason == "task_timeout"
-        assert (summary.kb_update_error is None) == (cleanup == "ok" and error_kind in {"incomplete", "invalid"})
+        assert summary.kb_update_error == error
         assert not predictor.execution_active("interrupted")
     finally:
         predictor.close()

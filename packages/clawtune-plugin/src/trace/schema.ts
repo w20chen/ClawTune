@@ -174,6 +174,8 @@ export interface SpanEndResources {
   plugin_window_ns?: string | null;
   /** OpenClaw-reported tool action duration (ns). */
   tool_body_ns?: string | null;
+  confirmed_timeout?: boolean;
+  timeout_duration_lower_bound_ms?: number | null;
   /** Plugin-measured before-hook sidecar round-trip overhead (ns). */
   decision_duration_ns?: string | null;
   /** Plugin-measured after-hook sidecar round-trip overhead (ns). */

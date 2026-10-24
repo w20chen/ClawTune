@@ -39,6 +39,8 @@ class ExecutionRecord:
     completed_at: datetime | None = None
     created_at: datetime | None = None
     aborted_reason: str | None = None
+    confirmed_timeout: bool = False
+    timeout_duration_lower_bound_ms: float | None = None
 
 
 class ExecutionRegistry:
@@ -272,6 +274,9 @@ class ExecutionRegistry:
         record = self._require_update(execution_id, request.update_token)
         record.exit_code = request.exit_code
         record.signal = request.signal
+        record.confirmed_timeout = record.confirmed_timeout or request.confirmed_timeout
+        if request.timeout_duration_lower_bound_ms is not None:
+            record.timeout_duration_lower_bound_ms = request.timeout_duration_lower_bound_ms
         record.exited = True
         record.completed_at = datetime.now(UTC)
         return ExecutionUpdateResponse(stored=True)

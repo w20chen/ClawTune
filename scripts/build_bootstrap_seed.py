@@ -23,7 +23,8 @@ from clawtune_sidecar.prediction_config import load_bucket_edges
 from clawtune_sidecar.predictors.call_load import plain_execution, predict_call_load
 from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime, training_event
 from cold_start.flat_loader import read_task, valid
-from offline.runner import inventory
+from offline.runner import inventory, merge_trace_clause_observations
+from clawtune_sidecar.predictors.tool_resource import STRICT_TRACE_LABEL_POLICY
 from tool_resource.runtime_kb import (
     ClauseResourceKB, RuntimeToolResourceKB, ToolCallQuery, _target_values,
     LOAD_TARGET_SOURCES, _clause_value,
@@ -52,15 +53,9 @@ def _candidate_start(dataset, task):
                 if valid(row.get("ts_start")):
                     start = min(start, row["ts_start"])
                 observation = (row.get("data") or {}).get("resource_observation") or {}
-                if (observation.get("eligible_for_kb") is not True
-                        or observation.get("telemetry_quality") != "ok"
-                        or observation.get("telemetry_status") != "ok"):
-                    continue
                 has_clause |= any(
-                    c.get("eligible_for_kb") is True
-                    and (c.get("availability") or {}).get("latency") == "ok"
-                    and valid(c.get("latency_ms"))
-                    for c in observation.get("clauses", [])
+                    isinstance(c, dict) and isinstance(c.get("argv"), list) and bool(c["argv"])
+                    for c in observation.get("clauses") or []
                 )
     return start if has_clause and math.isfinite(start) else None
 
@@ -88,7 +83,9 @@ def select_cases(dataset, count, rss_unit):
             raise ValueError(f"source changed: {file['path']}")
         loaded = read_task(path, repo=task["group"], task_id=task["task_id"],
                            rss_unit=rss_unit, preserve_timestamps=True)
-        if not any(training_event(row) is not None for row in loaded.clauses):
+        candidate_clauses = [row for action in loaded.actions
+                             for row in merge_trace_clause_observations(action.clauses, STRICT_TRACE_LABEL_POLICY)]
+        if not any(training_event(row) is not None for row in candidate_clauses):
             rejected.append({"task": key, "file": file["path"],
                              "reason": "no_eligible_timed_clause"})
             continue
@@ -131,7 +128,8 @@ def replay(selected, *, progress=print):
                         raise ValueError(f"{identity}: {backend}/{target}: {reason}")
             counts["prediction_calls"] += 1
         else:
-            for row in action.clauses:
+            clauses = merge_trace_clause_observations(action.clauses, STRICT_TRACE_LABEL_POLICY)
+            for row in clauses:
                 normalized = normalized_observation(row)
                 values = {target: value for target in LOAD_TARGETS
                           if (value := _clause_value(normalized, "load:" + target)) is not None}
@@ -139,7 +137,7 @@ def replay(selected, *, progress=print):
                     targets["trie"].update(values.keys())
                 if lattice.observe_completed_clause(row):
                     targets["lattice"].update(values.keys())
-            edge.complete_call(identity, action.clauses, commit_time=timestamp)
+            edge.complete_call(identity, clauses, commit_time=timestamp)
             if action.call_index is not None:
                 call = loaded.calls[action.call_index]
                 tool.observe_completed_call(call)
@@ -185,7 +183,7 @@ def build(output: Path, dataset: Path, *, cases: int = 10, rss_unit: str = "MiB"
     progress("selected: " + ", ".join(item[1]["task_id"] for item in selected), flush=True)
     payloads, counts, targets = replay(selected, progress=progress)
     return create_seed(output, payloads, provenance={
-        "kind": "recorded-case-prefix-replay", "recipe_version": 3,
+        "kind": "recorded-case-prefix-replay", "recipe_version": 4,
         "dataset": dataset.name, "case_count": cases, "rss_unit": rss_unit,
         "selection": "one earliest eligible complete attempt per case, ordered by first tool start time; task ID and path break ties",
         "replay": "empty KBs; predict from command before observing completion; recorded event-time order; no public-prior fitting",
@@ -196,7 +194,8 @@ def build(output: Path, dataset: Path, *, cases: int = 10, rss_unit: str = "MiB"
                           for name, values in targets.items()},
         "unavailable_targets": {name: [target for target in LOAD_TARGETS if not values[target]]
                                 for name, values in targets.items()},
-        "missing_data_policy": "skip absent or unqualified labels per target; no zeros or call-to-clause substitution; no PMU/environment-memory reconstruction",
+        "effective_training_policy": "available-or-zero-v1",
+        "missing_data_policy": "retain observed approximate/partial values; zero-fill missing targets after per-action clause coalescing; retain imputed provenance",
         "limitations": "recorded observations only, not rerunning commands or reconstructing unrecorded runtime state; repository-specific history is retained",
     })
 

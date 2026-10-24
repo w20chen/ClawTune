@@ -377,6 +377,7 @@ struct event_t {
     u64 cgroup_id;
     u64 pid_namespace_inode;
     u64 exec_seq;
+    u64 exec_started_ns; /* successful image boundary, including before lease */
     u64 cpu_ns;         /* per-task cumulative utime+stime at sample time */
     u64 rss_pages;      /* fast CURRENT rss = file+anon+shmem (not hiwater) */
     u64 mm_ptr;         /* address-space identity for dedup */
@@ -418,7 +419,11 @@ struct pending_exec_t {
     u64 argv_ptr;
     u64 argv_captured;
 };
-BPF_HASH(current_seq, struct task_key_t, u64);
+struct current_exec_t {
+    u64 seq;
+    u64 started_ns;
+};
+BPF_HASH(current_seq, struct task_key_t, struct current_exec_t);
 BPF_HASH(pending_seq, struct task_key_t, struct pending_exec_t);
 
 static u64 current_pid_namespace_inode(struct task_struct *task);
@@ -826,17 +831,23 @@ static int on_exec_return(long ret) {
         } else if (!pending->argv_captured) {
             argv_read_failed();
         }
+        u64 boundary_ns = bpf_ktime_get_ns();
         if (ret >= 0) {
-            current_seq.update(&task_key, &pending->seq);
+            struct current_exec_t image_state = {
+                .seq = pending->seq,
+                .started_ns = boundary_ns,
+            };
+            current_seq.update(&task_key, &image_state);
         }
         struct event_t *e = events.ringbuf_reserve(sizeof(*e));
         if (!e) {
             ringbuf_reserve_failed();
         } else {
             __builtin_memset(e, 0, sizeof(*e));
-            e->timestamp_ns = bpf_ktime_get_ns();
+            e->timestamp_ns = boundary_ns;
             fill_identity(e, (struct task_struct *)bpf_get_current_task());
             e->exec_seq = pending->seq;
+            e->exec_started_ns = ret >= 0 ? boundary_ns : 0;
             e->type = ret < 0 ? TYPE_FAILED_EXEC_ATTEMPT : TYPE_EXEC_BOUNDARY;
             e->host_pid = pid_tgid >> 32;
             e->host_tid = tid;
@@ -912,14 +923,15 @@ TRACEPOINT_PROBE(sched, sched_process_exit) {
         .tid = tid,
         .task_ptr = (u64)task,
     };
-    u64 *seq = current_seq.lookup(&task_key);
+    struct current_exec_t *image_state = current_seq.lookup(&task_key);
     struct event_t *e = events.ringbuf_reserve(sizeof(*e));
     if (!e) { ringbuf_reserve_failed(); return 0; }
     __builtin_memset(e, 0, sizeof(*e));
     fill_counters(e, task);
     e->timestamp_ns = bpf_ktime_get_ns();
     fill_identity(e, task);
-    e->exec_seq = seq ? *seq : ~0ULL;
+    e->exec_seq = image_state ? image_state->seq : ~0ULL;
+    e->exec_started_ns = image_state ? image_state->started_ns : 0;
     e->hiwater_pages = hiwater;
     e->type = TYPE_EXIT_BOUNDARY;
     e->host_pid = pid_tgid >> 32;
@@ -957,14 +969,15 @@ int on_cpu_clock(struct bpf_perf_event_data *ctx) {
         .tid = tid,
         .task_ptr = (u64)task,
     };
-    u64 *seq = current_seq.lookup(&task_key);
+    struct current_exec_t *image_state = current_seq.lookup(&task_key);
     struct event_t *e = events.ringbuf_reserve(sizeof(*e));
     if (!e) { ringbuf_reserve_failed(); return 0; }
     __builtin_memset(e, 0, sizeof(*e));
     fill_counters(e, task);
     e->timestamp_ns = bpf_ktime_get_ns();
     fill_identity(e, task);
-    e->exec_seq = seq ? *seq : ~0ULL;
+    e->exec_seq = image_state ? image_state->seq : ~0ULL;
+    e->exec_started_ns = image_state ? image_state->started_ns : 0;
     e->type = TYPE_PERF;
     e->host_pid = pid_tgid >> 32;
     e->host_tid = tid;
@@ -1720,6 +1733,7 @@ class ClauseMetrics:
     cpu_windows: tuple[tuple[int, int], ...]
     rss_bins: tuple[tuple[int, int, float], ...]
     provenance: dict[str, Any]
+    cpu_segments: tuple[tuple[int, int, int], ...] = ()
     argv_capture_flags: int = 0
 
 
@@ -1729,6 +1743,7 @@ def _attribute(
     fork_parent: dict[int, int],
     *,
     entry_pid: int | None = None,
+    initial_exec_before_ns: int | None = None,
 ) -> tuple[dict[tuple[int, int], list[dict[str, Any]]], list[dict[str, Any]]]:
     """Attribute perf + boundary samples to a clause; return (per_clause, gaps)."""
 
@@ -2045,15 +2060,34 @@ def _attribute(
             if target is None:
                 target = _ancestor_clause_pid(pid, ts, clause_by_pid, fork_parent)
         if target is None:
+            # A process-wide collector may have seen the gate's previous exec
+            # before this call acquired its own event buffer. Prove that image
+            # predates the call using its kernel-recorded successful boundary;
+            # never infer this merely from an unmatched sequence or early time.
+            existing_image_setup = (
+                seq != SENTINEL
+                and pid == entry_pid
+                and initial_exec_before_ns is not None
+                and 0 < e.get("exec_started_ns", 0) < initial_exec_before_ns <= ts
+                and bool(clause_by_pid.get(pid))
+                and ts < min(clause.t_exec_ns for clause in clause_by_pid[pid])
+            )
             trusted_root_setup = (
                 seq == SENTINEL
                 and pid == entry_pid
                 and bool(clause_by_pid.get(pid))
                 and ts < min(clause.t_exec_ns for clause in clause_by_pid[pid])
-            )
+            ) or existing_image_setup
+            existing_evidence = ({"preexisting_exec_evidence": {
+                "exec_started_ns": e["exec_started_ns"],
+                "call_started_ns": initial_exec_before_ns,
+                "sample_ts_ns": ts,
+                "first_owned_exec_ns": min(clause.t_exec_ns for clause in clause_by_pid[pid]),
+            }} if existing_image_setup else {})
             gaps.append(
                 {
                     **e,
+                    **existing_evidence,
                     "reason": (
                         "trusted_root_pre_exec_structural_setup"
                         if trusted_root_setup
@@ -2070,7 +2104,6 @@ def _attribute(
     return per_clause, gaps
 
 
-_MIN_ELIGIBLE_SPAN_NS = 1_000_000_000  # resource_timeline: clause >= 1 s
 _MIN_WINDOW_SPAN_NS = 100_000_000  # ignore <100 ms trailing windows (rate noise)
 
 
@@ -2133,6 +2166,19 @@ def cpu_window_profile(samples: list[dict[str, Any]]) -> tuple[tuple[int, int], 
     return tuple((w, int(round(v))) for w, v in sorted(windows.items()))
 
 
+def cpu_segment_profile(
+    samples: list[dict[str, Any]],
+) -> tuple[tuple[int, int, int], ...]:
+    """Per-thread counter deltas retained for exact fixed-window reduction."""
+
+    return tuple(
+        (t0, t1, c1 - c0)
+        for points in _cpu_counter_points(samples).values()
+        for (t0, c0), (t1, c1) in zip(points, points[1:])
+        if t1 > t0 and c1 >= c0
+    )
+
+
 def _peak_cpu_cores(
     samples: list[dict[str, Any]], clause: Clause, quota: float
 ) -> tuple[float | None, str, dict[str, Any]]:
@@ -2140,7 +2186,8 @@ def _peak_cpu_cores(
     cpu_counter_points = sum(
         len(points) for points in _cpu_counter_points(samples).values()
     )
-    profile = cpu_window_profile(samples)  # apportioned absolute windows
+    profile = cpu_window_profile(samples)  # compatibility/diagnostic profile
+    segments = cpu_segment_profile(samples)
     span = clause.t_end_ns - clause.t_exec_ns
     prov = {
         "cpu_sample_count": len(cpu_samples),
@@ -2148,24 +2195,13 @@ def _peak_cpu_cores(
         "cpu_windows": len(profile),
         "span_s": round(span / 1e9, 3),
     }
-    # resource_timeline eligibility: clause >= 1 s AND >= 2 CPU samples.
-    if span < _MIN_ELIGIBLE_SPAN_NS:
-        return None, "clause_shorter_than_1s_ineligible_for_peak", prov
-    if cpu_counter_points < 2 or not profile:
+    if span < WINDOW_NS:
+        return None, "clause_shorter_than_500ms_ineligible_for_peak", prov
+    if cpu_counter_points < 2 or not segments:
         return None, "insufficient_cpu_samples", prov
-    peak: float | None = None
-    for widx, cpu_ns in profile:
-        win_start = widx * WINDOW_NS
-        win_span = min(clause.t_end_ns, win_start + WINDOW_NS) - max(
-            clause.t_exec_ns, win_start
-        )
-        if win_span < _MIN_WINDOW_SPAN_NS:
-            continue
-        rate = min(cpu_ns / win_span, quota)
-        peak = rate if peak is None else max(peak, rate)
-    if peak is None:
-        return None, "no_eligible_merged_window", prov
-    return peak, "ok", prov
+    from tool_resource.clause_bridge import _fixed_window_cpu_peak
+    peak, reason = _fixed_window_cpu_peak(segments, clause.t_exec_ns, clause.t_end_ns, quota)
+    return peak, reason, prov
 
 
 def rss_bin_profile(
@@ -2226,12 +2262,15 @@ def _sampled_peak_rss(
         },
         "max_intersample_gap_frac": round(max_gap / span, 3),
     }
-    if len(rss_samples) < 2:
+    if not rss_samples:
         return None, "insufficient_rss_samples", prov
-    if max_gap > MAX_RSS_SAMPLE_GAP_NS:
-        return None, "rss_sampling_gap", prov
     peak_pages = max(sum(per_mm.values()) for per_mm in bins.values())
-    return peak_pages * PAGE / 1e6, "ok", prov
+    reason = (
+        "observed_sparse_lower_bound"
+        if len(rss_samples) < 2 or max_gap > MAX_RSS_SAMPLE_GAP_NS
+        else "ok"
+    )
+    return peak_pages * PAGE / 1e6, reason, prov
 
 
 _IO_COUNTER_FIELDS = (
@@ -2380,6 +2419,7 @@ def analyze(
     run: RawRun,
     *,
     entry_pid: int | None = None,
+    initial_exec_before_ns: int | None = None,
 ) -> tuple[list[ClauseMetrics], list[dict[str, Any]]]:
     clauses, fork_parent = _clauses_and_lineage(run.events)
     per_clause, gaps = _attribute(
@@ -2387,6 +2427,7 @@ def analyze(
         clauses,
         fork_parent,
         entry_pid=entry_pid,
+        initial_exec_before_ns=initial_exec_before_ns,
     )
     fork_io_baselines = _fork_io_baselines(run.events, clauses, fork_parent)
     boundary_index = _io_boundary_index(run.events)
@@ -2493,6 +2534,7 @@ def analyze(
                 disk_io_reason=io_reason,
                 cpu_windows=cpu_window_profile(samples),
                 rss_bins=rss_bin_profile(samples),
+                cpu_segments=cpu_segment_profile(samples),
                 provenance={
                     "cadence_ns": SAMPLE_PERIOD_NS,
                     "window_ns": WINDOW_NS,
@@ -3332,6 +3374,7 @@ def _event_row(table: Any, data: int) -> dict[str, Any]:
         "cgroup_id": int(event.cgroup_id),
         "pid_namespace_inode": int(event.pid_namespace_inode),
         "exec_seq": int(event.exec_seq),
+        "exec_started_ns": int(getattr(event, "exec_started_ns", 0)),
         "cpu_ns": int(event.cpu_ns),
         "rss_pages": int(event.rss_pages),
         "rss_counter_backend": int(event.rss_counter_backend),
@@ -3393,6 +3436,7 @@ def _exec_image_record(metric: ClauseMetrics) -> Any:
         terminal=metric.terminal,
         cpu_windows=metric.cpu_windows,
         rss_bins=metric.rss_bins,
+        cpu_segments=metric.cpu_segments,
         peak_cpu_cores=metric.peak_cpu_cores,
         peak_cpu_reason=metric.peak_cpu_cores_reason,
         sampled_peak_rss_mb=metric.sampled_peak_rss_mb,
@@ -4520,7 +4564,10 @@ class ClauseTelemetryCollector:
                 fork_records=fork_records,
                 trusted_root_pid=effective_trusted_root_pid,
             )
-        metrics, attribution_gaps = analyze(run, entry_pid=entry_pid)
+        metrics, attribution_gaps = analyze(
+            run, entry_pid=entry_pid,
+            initial_exec_before_ns=(token.started_ns if effective_trusted_root_pid == entry_pid else None),
+        )
 
         def command_descendant(pid: int) -> bool:
             current = pid
@@ -4583,6 +4630,8 @@ class ClauseTelemetryCollector:
                 payload["fork_ts_ns"] = event["fork_ts_ns"]
             if "pending_exec_evidence" in event:
                 payload["pending_exec_evidence"] = dict(event["pending_exec_evidence"])
+            if "preexisting_exec_evidence" in event:
+                payload["preexisting_exec_evidence"] = dict(event["preexisting_exec_evidence"])
             return payload
 
         gap_evidence = [gap_payload(event) for event in attribution_gaps]

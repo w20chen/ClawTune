@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 import shlex
 
 import pytest
@@ -11,7 +10,13 @@ from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
 from cold_start.flat_loader import read_task
 from scripts.build_bootstrap_seed import build, replay
 from tool_resource.runtime_kb import (
-    ClauseResourceKB, RuntimeToolResourceKB, ToolCallQuery, PIPELINE_DEPENDENT_CONSUMER_BINS,
+    LOAD_TARGET_SOURCES,
+    PMU_TARGET_SOURCES,
+    ClauseResourceKB,
+    RuntimeToolResourceKB,
+    ToolCallQuery,
+    PIPELINE_DEPENDENT_CONSUMER_BINS,
+    training_target_provenance,
 )
 from tool_time.lattice_kb import LatticeTimeKB
 
@@ -75,15 +80,28 @@ def test_replay_selects_one_eligible_attempt_per_case_and_is_deterministic(tmp_p
         assert provenance["counts"]["prediction_calls"] == 3
         assert provenance["target_counts"]["tool"]["duration_ms"] == 3
         assert provenance["target_counts"]["edge_kappa"]["duration_ms"] == 3
-        for counts in provenance["target_counts"].values():
-            assert counts["cpu_time_seconds"] == counts["memory_total_peak_bytes"] == 0
+        for model in ("tool", "trie", "lattice"):
+            counts = provenance["target_counts"][model]
+            assert counts["cpu_time_seconds"] == counts["memory_total_peak_bytes"] == 3
+            assert counts["cpu_peak_cores"] == counts["sampled_peak_rss_bytes"] == 3
+        # Edge remains a time-only predictor, even when resource labels train
+        # the other three backends.
+        edge_counts = provenance["target_counts"]["edge_kappa"]
+        assert edge_counts["cpu_time_seconds"] == edge_counts["memory_total_peak_bytes"] == 0
         edge = EdgeKappaRuntime.from_snapshot(json.loads((output / "edge-kappa-kb.json").read_text()))
         assert len(edge.to_snapshot()["runtime"]["completed_calls"]) == 3
         assert not edge.to_snapshot()["tokens"]
         assert len(edge.to_snapshot()["observations"]) == 3
         lattice = json.loads((output / FILES[2]).read_text())
         assert [r["ts_start"] for r in lattice["observations"]] == [10.1, 12.1, 20.1]
-        assert all(r["cpu_ns_cumulative"] is None for r in lattice["observations"])
+        assert all(r["cpu_ns_cumulative"] == 0 for r in lattice["observations"])
+        assert all(r["cpu_peak_cores"] == 99. for r in lattice["observations"])
+        for row in lattice["observations"]:
+            assert row["sampled_peak_rss_mb"] == row["memory_total_peak_bytes"] == 0
+            assert set(row["imputed_targets"]) == {
+                "cpu_time_seconds", "sampled_peak_rss_bytes",
+                "memory_total_peak_bytes", "memory_extra_peak_bytes",
+            }
         assert lattice["pending"] == []
         for name in FILES[:2]:
             snapshot = json.loads((output / name).read_text())
@@ -101,8 +119,12 @@ def test_recorded_clocks_preserve_distinct_equal_duration_observations_and_zero_
     assert [c.ts_start for c in loaded.calls] == [10., 20.]
     assert [c.ts_start for c in loaded.clauses] == [10.1, 20.1]
     assert all(c.cpu_ns_cumulative == 0 for c in loaded.clauses)
-    assert all(c.cpu_peak_cores is None and c.sampled_peak_rss_mb is None for c in loaded.clauses)
+    assert all(c.cpu_peak_cores == 99. and c.sampled_peak_rss_mb is None for c in loaded.clauses)
+    assert all(not c.imputed_targets for c in loaded.clauses)
     assert all(not c.cpu_time_eligible for c in loaded.calls)
+    assert all(c.cpu_time_seconds == 99. for c in loaded.calls)
+    assert all(training_target_provenance(c)["cpu_time_seconds"] == "approximate_observation"
+               for c in loaded.calls)
     data = [json.loads(line) for line in source.read_text().splitlines()]
     del data[1]["data"]["resource_observation"]["clauses"][0]["ts_start"]
     source.write_text("".join(json.dumps(r) + "\n" for r in data))
@@ -152,9 +174,10 @@ def test_tool_workload_uses_same_consumer_policy_online_and_offline(tmp_path, co
     if position > 0:
         assert online is None
         assert call.workload_duration_seconds is None
-        assert "workload_latency_ms" not in targets
+        assert targets["workload_latency_ms"] == 0
+        assert training_target_provenance(call)["workload_latency_ms"] == "imputed_zero"
         assert "duration_ms" not in loaded.call_actuals[0]
-        assert not evidence.get("duration_ms", {}).get("values")
+        assert evidence["duration_ms"]["values"] == (0.,)
     else:
         assert online == pytest.approx(.1)
         assert targets["workload_latency_ms"] == pytest.approx(100.)
@@ -225,7 +248,8 @@ def test_tool_workload_requires_all_clause_clocks(tmp_path, compound, clock, pre
         assert loaded.counts["withheld_clause_without_contained_clock"] == 1
         assert len(loaded.clauses) == int(compound)
         assert call.workload_duration_seconds is None
-        assert "workload_latency_ms" not in targets
+        assert targets["workload_latency_ms"] == 0
+        assert training_target_provenance(call)["workload_latency_ms"] == "imputed_zero"
         assert "duration_ms" not in loaded.call_actuals[0]
         # Preserve the independently recorded tool interval, but do not expose
         # it as the workload duration when clause telemetry was rejected.
@@ -233,7 +257,7 @@ def test_tool_workload_requires_all_clause_clocks(tmp_path, compound, clock, pre
         kb = RuntimeToolResourceKB()
         kb.observe_completed_call(call)
         evidence = kb.predict_load_samples(ToolCallQuery("owner/repo", "exec", call.command, 12.))
-        assert not evidence.get("duration_ms", {}).get("values")
+        assert evidence["duration_ms"]["values"] == (0.,)
 
 
 def test_replay_prediction_precedes_completion_and_no_future_labels(tmp_path, simple_parser, monkeypatch):
@@ -326,19 +350,52 @@ def test_cli_default_uses_release_seed():
     assert parser().parse_args(["benchmark"]).seed == DEFAULT_SEED
 
 
-def test_default_seed_is_clawbox_qualified_and_loadable():
+def test_default_seed_is_all_repository_replay_and_loadable():
     manifest = validate_seed(DEFAULT_SEED)
-    assert manifest["provenance"]["kind"] == "clawbox-qualified-observation-import"
+    provenance = manifest["provenance"]
+    assert provenance["kind"] == "repository-all-trace-v6"
+    assert "test_updates" not in provenance
+    assert provenance["test_repositories"] == []
+    assert provenance["included_original_test_tasks"] == 5
+    assert len(provenance["train_repositories"]) == 12
+    assert provenance["label_policy"]["name"] == "short-zero-shared-v1"
+    assert provenance["label_policy"]["effective_training_policy"] == "available-or-zero-v1"
+    assert provenance["counts"]["partial_calls"] == 1
+    assert provenance["counts"]["calls"] == 626
+    assert provenance["call_target_counts"]["sampled_peak_rss_bytes"] == 626
+    assert provenance["call_target_counts"]["cpu_peak_cores"] == 626
     lattice = LatticeTimeKB.from_json_obj(json.loads(
         (DEFAULT_SEED / "clause-lattice-time-kb.json").read_text(encoding="utf-8")
     ))
-    assert lattice.observation_count == manifest["provenance"]["coverage"]["output_lattice_observations"]
+    assert lattice.observation_count > 0
+    tool = json.loads(
+        (DEFAULT_SEED / "runtime-tool-resource-kb.json").read_text(encoding="utf-8")
+    )
+    trie = json.loads(
+        (DEFAULT_SEED / "clause-resource-kb.json").read_text(encoding="utf-8")
+    )
+    assert any(
+        row[0] == "semantic_call"
+        for nodes in tool["public"].values()
+        for row in nodes
+    )
+    assert any(
+        row[0] == "semantic_core"
+        for nodes in trie["public"].values()
+        for row in nodes
+    )
 
 
-def test_shipped_seed_keeps_causal_repo_history_without_public_prior():
-    manifest = validate_seed(SEED)
-    tool = RuntimeToolResourceKB.from_json_obj(json.loads((SEED / FILES[1]).read_text()))
+def test_shipped_seed_falls_back_to_all_repository_public_evidence():
+    validate_seed(DEFAULT_SEED)
+    tool = RuntimeToolResourceKB.from_json_obj(
+        json.loads((DEFAULT_SEED / FILES[1]).read_text(encoding="utf-8"))
+    )
     tool.freeze()
     unrelated = ToolCallQuery("unseen/repository", "exec", "python job.py", 1)
-    assert tool.predict_load_samples(unrelated) == {}
-    assert tool.predict_pmu_samples(unrelated) == {}
+    load = tool.predict_load_samples(unrelated)
+    pmu = tool.predict_pmu_samples(unrelated)
+    assert set(load) == set(LOAD_TARGET_SOURCES)
+    assert all(row["context"] == ("public", "tool_name") for row in load.values())
+    assert set(pmu) == set(PMU_TARGET_SOURCES)
+    assert all(row["context"] == ("public", "tool_name") for row in pmu.values())

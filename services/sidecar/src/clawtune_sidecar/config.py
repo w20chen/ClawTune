@@ -230,7 +230,12 @@ def _default_env_candidates() -> Iterable[Path]:
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[4]
+    parents = Path(__file__).resolve().parents
+    if len(parents) > 4 and [parent.name for parent in parents[:4]] == [
+        "clawtune_sidecar", "src", "sidecar", "services"
+    ]:
+        return parents[4]
+    return Path.cwd()
 
 
 def _load_dotenv(path: Path) -> None:

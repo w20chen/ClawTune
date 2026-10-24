@@ -119,7 +119,7 @@ def test_builds_standard_seed_with_lattice_and_public_tool_memory(tmp_path):
     assert validate_seed(tmp_path / "bootstrap-v2") == manifest
     provenance = manifest["provenance"]
     assert provenance["kind"] == "clawbox-qualified-observation-import"
-    assert provenance["recipe_version"] == 3
+    assert provenance["recipe_version"] == 4
     assert provenance["coverage"]["added_lattice_observations"] == 1
     assert provenance["retained_base_optional_snapshots"] == [
         "edge-kappa-kb.json"
@@ -161,3 +161,92 @@ def test_rejects_duplicate_execution_ids_before_creating_seed(tmp_path):
     with pytest.raises(ValueError, match="duplicate completed-call execution_id"):
         build(tmp_path / "bootstrap-v2", observations, base)
     assert not (tmp_path / "bootstrap-v2").exists()
+
+
+@pytest.mark.parametrize("missing", ["rss", "host"])
+def test_guest_memory_seed_does_not_require_paired_rss(tmp_path, missing):
+    base = tmp_path / "base"
+    _base_seed(base)
+    observations = tmp_path / "observations.json"
+    payload = _bundle(observations)
+    if missing == "rss":
+        payload["observations"]["clauses"][0]["observation"]["sampled_peak_rss_mb"] = None
+    else:
+        payload["observations"]["completed_calls"][0]["host_cgroup_execution_increment_bytes"] = None
+    observations.write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = build(tmp_path / "seed", observations, base)
+
+    assert validate_seed(tmp_path / "seed") == manifest
+    provenance = manifest["provenance"]
+    assert set(provenance["admission"]["host_calibrations"]) == {"guest_memory_extra_peak_bytes"}
+    assert all(row["semantics"] == "exact" for row in provenance["admission_prediction_policy"])
+    assert provenance["coverage"]["added_lattice_observations"] == 1
+
+
+def test_schema_extensions_do_not_break_portable_observation_import(tmp_path):
+    base = tmp_path / "base"
+    _base_seed(base)
+    path = tmp_path / "observations.json"
+    payload = _bundle(path)
+    payload["observations"]["completed_calls"][0]["call"]["producer_metadata"] = {"version": 2}
+    payload["observations"]["clauses"][0]["observation"]["producer_metadata"] = ["additional evidence"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    manifest = build(tmp_path / "seed", path, base)
+    assert manifest["provenance"]["coverage"]["completed_calls"] == 1
+    assert manifest["provenance"]["coverage"]["added_lattice_observations"] == 1
+
+
+@pytest.mark.parametrize("record", ["completed_calls", "clauses"])
+@pytest.mark.parametrize("defect", ["missing_baseline", "missing_environment", "inconsistent_extra"])
+def test_memory_qualification_matches_usable_training_labels(tmp_path, record, defect):
+    base = tmp_path / "base"
+    _base_seed(base)
+    path = tmp_path / "observations.json"
+    payload = _bundle(path)
+    row = payload["observations"][record][0]["call" if record == "completed_calls" else "observation"]
+    if defect == "missing_baseline":
+        row.pop("memory_baseline_bytes")
+    elif defect == "missing_environment":
+        row.pop("memory_environment_id")
+    else:
+        row["memory_extra_peak_bytes"] = 999
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError):
+        build(tmp_path / "seed", path, base)
+    assert not (tmp_path / "seed").exists()
+
+
+def test_rejects_memory_coverage_claim_inconsistent_with_labels(tmp_path):
+    base = tmp_path / "base"
+    _base_seed(base)
+    path = tmp_path / "observations.json"
+    payload = _bundle(path)
+    payload["validation"]["public_prior_memory_label_count"] = 2
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="label counts"):
+        build(tmp_path / "seed", path, base)
+
+
+def test_partial_call_preserves_measured_guest_memory_labels(tmp_path):
+    base = tmp_path / "base"
+    _base_seed(base)
+    path = tmp_path / "observations.json"
+    payload = _bundle(path)
+    payload["observations"]["completed_calls"][0]["call"]["censored"] = True
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    manifest = build(tmp_path / "seed", path, base)
+    assert manifest["provenance"]["coverage"]["completed_calls"] == 1
+
+
+def test_zero_imputation_cannot_qualify_missing_guest_measurements(tmp_path):
+    base = tmp_path / "base"
+    _base_seed(base)
+    path = tmp_path / "observations.json"
+    payload = _bundle(path)
+    call = payload["observations"]["completed_calls"][0]["call"]
+    call.update(memory_eligible=False, memory_baseline_bytes=None,
+                memory_total_peak_bytes=None, memory_extra_peak_bytes=None)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="must contain guest extra-memory"):
+        build(tmp_path / "seed", path, base)

@@ -12,7 +12,7 @@ import hashlib
 import json
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
@@ -261,6 +261,12 @@ class ReplayLLMServer:
         with self._lock:
             return self._requests
 
+    @property
+    def consumed_turns(self) -> int:
+        """Source turns consumed, excluding internal context summaries."""
+        with self._lock:
+            return self._turn_index
+
     def start(self) -> None:
         self._thread = threading.Thread(target=self._server.serve_forever, name="clawtune-replay-llm", daemon=True)
         self._thread.start()
@@ -292,13 +298,26 @@ class ReplayLLMServer:
             # envelope instead of an OpenAI chat `messages` array.  Normal
             # replay requests always use `messages`.
             return "input" in payload or "prompt" in payload
-        text = json.dumps(messages, ensure_ascii=False).lower()
-        return any(marker in text for marker in (
+        # Tool output and prior conversation can quote these instructions.
+        # Only current system instructions identify an internal summary call.
+        text = json.dumps([message.get("content") for message in messages
+                           if isinstance(message, dict)
+                           and message.get("role") in {"system", "developer"}],
+                          ensure_ascii=False).lower()
+        if any(marker in text for marker in (
+            "you are a context summarization assistant",
             "write a concise summary",
             "summarize the conversation",
             "summarise the conversation",
             "context compaction",
             "compaction summary",
+        )):
+            return True
+        last = messages[-1] if messages and isinstance(messages[-1], dict) else {}
+        prompt = str(last.get("content", "")).lower() if last.get("role") == "user" else ""
+        return any(prompt.startswith(marker) for marker in (
+            "the messages above are a conversation to summarize.",
+            "create a structured summary of this conversation branch",
         ))
 
     def _compaction_turn(self) -> ReplayModelTurn:

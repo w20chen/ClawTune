@@ -141,6 +141,8 @@ class ToolCompletedEvent(CommonEvent):
     execution_id: str | None = None
     tool_name: str
     duration_ms: int = Field(ge=0)
+    confirmed_timeout: bool = False
+    timeout_duration_lower_bound_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     plugin_window_ns: str | None = Field(default=None, pattern=r"^[0-9]+$")
     tool_body_ns: str | None = Field(default=None, pattern=r"^[0-9]+$")
     action_start_monotonic_ns: str | None = Field(default=None, pattern=r"^[0-9]+$")
@@ -256,6 +258,8 @@ class ExecutionExitedRequest(BaseModel):
     update_token: str
     exit_code: int | None = None
     signal: int | None = Field(default=None, ge=0)
+    confirmed_timeout: bool = False
+    timeout_duration_lower_bound_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
 
 class ExecutionUpdateResponse(BaseModel):

@@ -261,6 +261,98 @@ def test_split_rejects_invalid_train_fraction(tmp_path):
         split_tasks({"bfcl:1": {"benchmark": "bfcl", "group": "dataset"}}, 42, 1.0)
 
 
+def test_repository_split_keeps_repositories_and_attempts_disjoint(tmp_path):
+    from offline.runner import inventory, load_or_create_split, split_tasks
+    dataset = tmp_path / "traces"
+    dataset.mkdir()
+    for repo, size in (("a", 4), ("b", 2), ("c", 1), ("d", 3), ("e", 2)):
+        for index in range(size):
+            write_trace(dataset / f"{repo}-{index}.jsonl", "swe-rebench", f"org__{repo}-{index}")
+    tasks = inventory(dataset, None)
+    cache = tmp_path / "splits"
+    first = load_or_create_split(tasks, dataset, 42, cache, split_by="repository")
+    repeated = load_or_create_split(dict(reversed(list(tasks.items()))), dataset, 42, cache,
+                                    split_by="repository")
+    by_task = load_or_create_split(tasks, dataset, 42, cache)
+    train_repos = {tasks[key]["group"] for key in first["train"]}
+    test_repos = {tasks[key]["group"] for key in first["test"]}
+    assert len(train_repos) == 4 and len(test_repos) == 1
+    assert not train_repos & test_repos
+    assert set(first["train"]) | set(first["test"]) == set(tasks)
+    assert repeated["assignment_sha256"] == first["assignment_sha256"]
+    assert repeated["split_registry_status"] == "reused"
+    assert by_task["split_registry_path"] != first["split_registry_path"]
+    # A second task from a held-out repo must never leak into the training KB.
+    extra = dict(tasks)
+    extra["extra"] = {**tasks[first["test"][0]], "task_id": "extra"}
+    assert "extra" in split_tasks(extra, 42, split_by="repository")["test"]
+
+
+def test_offline_edge_preserves_identical_observations_and_task_identity():
+    from offline.runner import _edge_training_events
+    from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
+    from tool_resource.runtime_kb import ClauseObservation
+    row = ClauseObservation("repo", "python", ("python", "job.py"), 0., 1., latency_ms=1000.)
+    events = [*_edge_training_events([row, row], "task-a"),
+              *_edge_training_events([row], "task-b")]
+    assert len({event.outcome.event_id for event in events}) == 3
+    assert [event.outcome.task_id for event in events] == ["task-a", "task-a", "task-b"]
+    assert events[0].outcome.end_time < events[1].outcome.start_time
+    assert all(event.outcome.duration_ms == 1000. for event in events)
+    edge = EdgeKappaRuntime.fit_events(events, (100, 500, 2000, 10000), frozen=True)
+    snapshot = edge.to_snapshot()
+    assert len(snapshot["observations"]) == 3
+    assert len(snapshot["processed_event_ids"]) == 3
+    assert not snapshot["pending"]
+
+
+@pytest.mark.parametrize("tasks,reason", [
+    ({"x": {"benchmark": "bfcl", "group": "dataset", "grouping": "dataset"}}, "repository identity"),
+    ({"x": {"benchmark": "swe-rebench", "group": "org/a", "grouping": "repository"}}, "at least two"),
+])
+def test_repository_split_rejects_missing_or_single_repository(tasks, reason):
+    from offline.runner import split_tasks
+    with pytest.raises(ValueError, match=reason):
+        split_tasks(tasks, 42, split_by="repository")
+
+
+def test_repository_holdout_labels_do_not_change_seed(tmp_path):
+    from offline.runner import inventory, split_tasks, run
+    from test_cold_start import trace
+    dataset = tmp_path / "traces"
+    dataset.mkdir()
+    for index in range(3):
+        task = f"org__repo{index}-1"
+        (dataset / f"{task}.trace.jsonl").write_text(trace(task), encoding="utf-8")
+    manifest = split_tasks(inventory(dataset, "swe-rebench"), 42, split_by="repository")
+    options = dict(benchmark="swe-rebench", rss_unit="MB", split_by="repository",
+                   split_cache_dir=tmp_path / "splits")
+    first = run(dataset, tmp_path / "first", **options)
+    assert (tmp_path / "first" / "report.md").read_text().startswith(
+        "# Frozen repository-held-out shell-call evaluation")
+    for key in manifest["test"]:
+        for file in manifest["tasks"][key]["files"]:
+            path = dataset / file["path"]
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            for record in records:
+                record.get("data", {}).pop("resource_observation", None)
+            path.write_text("\n".join(map(json.dumps, records)), encoding="utf-8")
+    second = run(dataset, tmp_path / "second", **options)
+    assert first["split_by"] == "repository"
+    for name in (*FILES, "edge-kappa-kb.json"):
+        assert digest(tmp_path / "first" / "seed" / name) == digest(tmp_path / "second" / "seed" / name)
+    for model in first["models"].values():
+        for counter in model["availability"].values():
+            assert sum(counter["unavailable_reasons"].values()) == counter["queries"] - counter["predicted"]
+    for model in second["models"].values():
+        assert len(model["repositories"]) == 1
+        repository = model["repositories"][0]
+        assert repository["metrics"]  # Missing observations become explicit zero labels.
+        assert repository["availability"] == model["availability"]
+        assert repository["availability"]["duration_ms"]["queries"] == 1
+        assert repository["availability"]["duration_ms"]["labeled"] == 1
+
+
 def test_offline_metric_summary_reports_continuous_errors_and_bucket_recall():
     from offline.runner import _metric_summary
     rows = [
@@ -338,7 +430,8 @@ def test_offline_scores_pmu_separately_from_call_load(monkeypatch, tmp_path):
     report = runner.run(source, tmp_path / "output", split_cache_dir=tmp_path / "splits")
     metrics = {row["target"]: row for row in report["metrics"]}
     assert {"pmu_ipc", "pmu_llc_mpki", "pmu_llc_miss_rate"} <= metrics.keys()
-    assert all(row["mae"] == 0 for row in metrics.values())
+    assert all(row["mae"] == 0 for row in metrics.values() if row["mae"] is not None)
+    assert all(metrics[target]["mae"] == 0 for target in ("pmu_ipc", "pmu_llc_mpki", "pmu_llc_miss_rate"))
     assert report["test_updates"] == 0
 
 

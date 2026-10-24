@@ -74,5 +74,85 @@
       "description": "Optional tool prediction retained with an incomplete tool span."
     }
   },
-  "additionalProperties": false
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "execution_telemetry"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "replay_execution": {
+                "enum": [
+                  "completed",
+                  "failed",
+                  "incomplete",
+                  null
+                ],
+                "description": "Known workload outcome, retained even when collector finalization or artifact persistence fails. Incomplete observations retain partial provenance and may train."
+              },
+              "confirmed_timeout": {
+                "type": "boolean",
+                "description": "Timeout confirmed by the execution producer."
+              },
+              "timeout_duration_lower_bound_ms": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "exclusiveMinimum": 0,
+                "description": "Actual effective timeout limit when explicitly known, used as whole-call duration training value."
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "trainingTargetProvenance": {
+      "type": "object",
+      "description": "Per-target provenance emitted in tool span resources.training_target_provenance. Missing metrics train as zero without changing raw observations.",
+      "additionalProperties": {
+        "enum": [
+          "observed",
+          "observed_partial",
+          "approximate_observation",
+          "imputed_zero",
+          "timeout_lower_bound"
+        ]
+      }
+    },
+    "toolTrainingResources": {
+      "type": "object",
+      "properties": {
+        "censored": {
+          "type": "boolean",
+          "description": "Interrupted or incomplete observation; existing partial metrics remain trainable."
+        },
+        "confirmed_timeout": {
+          "type": "boolean",
+          "description": "Timeout confirmed by the execution producer."
+        },
+        "timeout_duration_lower_bound_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0,
+          "description": "Actual effective timeout limit when explicitly known, used as whole-call duration training value."
+        },
+        "training_target_provenance": {
+          "$ref": "#/$defs/trainingTargetProvenance",
+          "description": "Per-target observed, partial, approximate, imputed-zero, or timeout-bound origin."
+        }
+      }
+    }
+  }
 }

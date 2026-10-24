@@ -7,7 +7,7 @@
     "schema": {"enum": ["clawtune.split.v1", "clawtune.split.v2"]},
     "seed": {"type": "integer"},
     "train_fraction": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
-    "rule": {"enum": ["sha256-per-benchmark-group-task-v1", "sha256-fixed-name-per-benchmark-group-task-v2"]},
+    "rule": {"enum": ["sha256-per-benchmark-group-task-v1", "sha256-fixed-name-per-benchmark-group-task-v2", "sha256-per-benchmark-repository-v1"]},
     "tasks": {"type": "object"},
     "train": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
     "test": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
@@ -32,7 +32,7 @@
           "registered_source_path", "current_source_path", "split_registry_path",
           "split_registry_status"
         ],
-        "properties": {"rule": {"const": "sha256-fixed-name-per-benchmark-group-task-v2"}}
+        "properties": {"rule": {"enum": ["sha256-fixed-name-per-benchmark-group-task-v2", "sha256-per-benchmark-repository-v1"]}}
       }
     }
   ],

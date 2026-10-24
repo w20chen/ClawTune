@@ -2,7 +2,7 @@
 
 export type Mode = "observe" | "enforce";
 export type ExecutionBackend = "hook-only" | "marker" | "managed-wrapper";
-export type ProfilingMode = "off" | "proc" | "perf" | "ksys" | "vtune";
+export type ProfilingMode = "off";
 
 export type TracePluginConfig = {
   schema_version: number;
@@ -327,6 +327,8 @@ export type ToolCompletedEvent = CommonEvent & {
   execution_id: string | null;
   tool_name: string;
   duration_ms: number;
+  confirmed_timeout?: boolean;
+  timeout_duration_lower_bound_ms?: number | null;
   /** Plugin-observed full before->after tool hook window (ns). */
   plugin_window_ns?: string | null;
   /** OpenClaw-reported tool action duration (ns). */

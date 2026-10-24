@@ -27,6 +27,20 @@
   },
   "additionalProperties": true,
   "$defs": {
+    "rssProvenance": {
+      "type": "object",
+      "properties": {
+        "merged_rss_reason": {
+          "type": "string",
+          "description": "ok for a dense aligned sampled estimate, observed_sparse_lower_bound for an available conservative single-address-space observation, or the reason RSS is unavailable. Kernel RSS counter approximation still applies."
+        },
+        "memory_reduction": {
+          "enum": ["max_observed_single_mm", "sum_aligned_distinct_live_mm_then_max"],
+          "description": "Sparse coverage uses the largest actually observed single address-space value without temporal interpolation or asynchronous summation. Dense coverage retains the aligned held-sample aggregate."
+        }
+      },
+      "additionalProperties": true
+    },
     "clauseStatus": {
       "type": "object",
       "required": ["state", "exit_code", "signal", "succeeded", "reason", "source"],
@@ -65,6 +79,8 @@
         "ts_start": {"type": "number", "description": "Clause start as Unix seconds."},
         "ts_end": {"type": "number", "description": "Clause end as Unix seconds."},
         "latency_ms": {"type": ["number", "null"], "minimum": 0, "description": "Clause wall-clock latency in milliseconds."},
+        "censored": {"type": "boolean", "description": "The execution ended before ordinary completion. Partial measurements remain available for learning; this flag records their outcome quality."},
+        "confirmed_timeout": {"type": "boolean", "description": "Explicit timeout evidence, separate from an unclassified signal or cancellation."},
         "stdin_from_pipe": {"type": ["boolean", "null"], "description": "Optional evidence that stdin comes from the upstream pipe. Absent or null means unknown; downstream position alone is insufficient."},
         "status": {"$ref": "#/$defs/clauseStatus", "description": "Clause execution outcome and its evidence source."},
         "cpu_ns_cumulative": {
@@ -78,7 +94,8 @@
           "description": "Human-readable seconds form of cpu_ns_cumulative (cpu_ns_cumulative / 1e9)."
         },
         "peak_cpu_cores": {"type": ["number", "null"], "minimum": 0, "description": "Maximum fixed-window CPU utilization in cores when eligible."},
-        "peak_memory_mb": {"type": ["number", "null"], "minimum": 0, "description": "Sampled process-lineage RSS peak in decimal megabytes."},
+        "peak_memory_mb": {"type": ["number", "null"], "minimum": 0, "description": "Sampled process-lineage RSS in decimal megabytes; sparse coverage reports the largest observed single address-space value as a conservative lower bound, with reduction and quality in provenance."},
+        "provenance": {"$ref": "#/$defs/rssProvenance", "description": "Measurement and mapping evidence, including the RSS reduction and coverage quality."},
         "disk_read_bytes": {"type": ["integer", "null"], "minimum": 0, "description": "Attributed task I/O read-byte delta."},
         "disk_write_bytes": {"type": ["integer", "null"], "minimum": 0, "description": "Attributed task I/O write-byte delta."},
         "network_rx_bytes": {"type": ["integer", "null"], "minimum": 0, "description": "Attributed received bytes; currently null because clause network collection is not implemented."},
@@ -86,7 +103,7 @@
         "availability": {
           "type": ["object", "null"],
           "additionalProperties": true,
-          "description": "Per-target availability reasons. Stable target keys are latency, cpu_time, cpu, memory, disk_io, and status; diagnostic details may expand."
+          "description": "Per-target quality reasons. Stable target keys are latency, cpu_time, cpu, memory, disk_io, and status; diagnostic details may expand. Partial numeric observations are retained even when timeout or incomplete mapping makes quality unknown."
         }
       },
       "additionalProperties": true
@@ -111,10 +128,11 @@
       "required": ["peak_cpu_cores", "sampled_peak_rss_mb", "availability"],
       "properties": {
         "peak_cpu_cores": {"type": ["number", "null"], "minimum": 0, "description": "Maximum CPU utilization in cores after summing all owned exec-image contributions in aligned 500 ms windows."},
-        "sampled_peak_rss_mb": {"type": ["number", "null"], "minimum": 0, "description": "Maximum sampled RSS in decimal megabytes after summing distinct live address spaces in aligned bins."},
+        "sampled_peak_rss_mb": {"type": ["number", "null"], "minimum": 0, "description": "Dense sampled RSS is summed across distinct live address spaces in aligned bins. Sparse coverage reports the largest observed single address-space value as a conservative lower bound. Units are decimal megabytes; provenance identifies the reduction."},
+        "provenance": {"$ref": "#/$defs/rssProvenance", "description": "Call-level reduction evidence, including RSS coverage quality."},
         "availability": {
           "type": "object",
-          "description": "Per-target availability of the call-level CPU and sampled RSS peaks, including reasons when unavailable.",
+          "description": "Per-target quality of the call-level CPU and sampled RSS peaks. Timeout and incomplete mapping preserve already observed numeric values alongside an unknown:<reason> diagnostic; a null value means the metric itself is missing.",
           "required": ["cpu", "memory"],
           "properties": {
             "cpu": {"type": "string", "description": "ok or an unknown:<reason> value for the call-level CPU peak."},
@@ -138,7 +156,10 @@
         "tool_call_id": {"type": "string", "minLength": 1, "description": "OpenClaw tool-call identifier."},
         "command": {"type": "string", "description": "Original command associated with this telemetry record."},
         "telemetry_quality": {"enum": ["ok", "invalid", "unavailable"], "description": "Quality of this call's mapping and measurements."},
-        "eligible_for_kb": {"type": "boolean", "description": "Whether this complete call may contribute any KB observations; targets still apply their own eligibility checks."},
+        "eligible_for_kb": {"type": "boolean", "description": "Collector completeness diagnostic retained for compatibility. The shared ingestion policy retains observed partial measurements and zero-fills missing metrics rather than discarding this call solely on this flag."},
+        "censored": {"type": "boolean", "description": "The execution ended before ordinary completion. Observed partial values remain usable and the outcome is retained as provenance."},
+        "confirmed_timeout": {"type": "boolean", "description": "Explicit timeout evidence; an arbitrary signal or cancellation alone does not establish a timeout threshold."},
+        "timeout_duration_lower_bound_ms": {"type": ["number", "null"], "minimum": 0, "description": "Confirmed tool-execution timeout lower bound in milliseconds, when available. This is not an unrelated setup or whole-benchmark time budget."},
         "call_resource": {"$ref": "#/$defs/callResource", "description": "Call-level peak metrics reduced from aligned profiles across all mapped exec images."},
         "clauses": {
           "type": "array",

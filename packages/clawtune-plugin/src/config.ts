@@ -1,51 +1,15 @@
 import type {PluginConfig} from "./contracts.js";
-
-const defaults: PluginConfig = {
-  endpoint: "http://localhost:8765",
-  mode: "observe",
-  decisionTimeoutMs: 800,
-  reportTimeoutMs: 800,
-  failOpen: true,
-  logLevel: "info",
-  consoleMode: "verbose",
-  executionBackend: "managed-wrapper",
-  // Opt-in: only ClawBox hook-only runtimes set this so the exec command is
-  // wrapped in a bridge envelope carrying the execution_id.
-  sandboxExecEnvelope: false,
-  sandboxExecPredictionModel: "tool",
-  // Empty string = auto-resolve via `which clawtune-launch` at runtime.
-  launcherPath: "",
-  launcherInterpreter: null,
-  collectorSocket: "/run/clawtune/collector.sock",
-  instrumentHosts: ["gateway"],
-  instrumentTools: ["exec"],
-  enableCgroup: true,
-  enableAffinity: true,
-  enableNuma: true,
-  profilingMode: "off",
-  securityBoundaryAccepted: true,
-  // Automatic startup is opt-in at the package level. ClawTune setup enables
-  // it after constructing and validating the privileged Python/BCC runtime.
-  autoStartSidecar: false,
-  sidecarStartupTimeoutMs: 60_000,
-  sidecarCommand: "",
-  repo: null,
-  trace: {
-    schema_version: 6,
-    include_raw_events: false,
-    include_llm_messages: true,
-    include_tool_outputs: true,
-    redact_sensitive_data: true,
-    flush_span_start: true,
-    max_string_bytes: 16384,
-    max_messages_bytes: 131072,
-    max_tool_output_bytes: 65536,
-    trace_dir: "",  // disabled by default; scheduler is the primary writer
-  },
-};
+import {configDefaults, validateConfig} from "./config-schema.js";
 
 export function loadConfig(input: unknown): PluginConfig {
+  if (input !== undefined && !isRecord(input)) {
+    throw new Error("plugin configuration must be an object");
+  }
   const raw = isRecord(input) ? input : {};
+  if (raw.trace !== undefined && !isRecord(raw.trace)) {
+    throw new Error("trace must be an object");
+  }
+  const defaults = configDefaults();
   const rawTrace = isRecord(raw.trace) ? raw.trace : {};
   const env = envOverrides();
   const envTrace = isRecord(env.trace) ? env.trace : {};
@@ -83,8 +47,8 @@ export function loadConfig(input: unknown): PluginConfig {
   if (config.sandboxExecEnvelope && config.executionBackend !== "hook-only") {
     throw new Error("sandboxExecEnvelope is only valid with executionBackend=hook-only");
   }
-  if (!["off", "proc", "perf", "ksys", "vtune"].includes(String(config.profilingMode))) {
-    throw new Error(`invalid profilingMode: ${String(config.profilingMode)}`);
+  if (config.profilingMode !== "off") {
+    throw new Error(`unsupported profilingMode: ${String(config.profilingMode)}; only off is implemented (eBPF and PMU are configured independently)`);
   }
   if (typeof config.launcherPath !== "string") {
     throw new Error("launcherPath must be a string");
@@ -133,7 +97,11 @@ export function loadConfig(input: unknown): PluginConfig {
       validateAbsolutePath(config.launcherInterpreter, "launcherInterpreter");
     }
   }
-  return config as PluginConfig;
+  if (!validateConfig(config)) {
+    const error = validateConfig.errors?.[0];
+    throw new Error(`invalid plugin configuration ${error?.instancePath || "/"}: ${error?.message || "schema validation failed"}`);
+  }
+  return config;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -184,15 +152,17 @@ function setBoolean<K extends keyof PluginConfig>(
   key: K,
   value: string | undefined
 ): void {
-  const parsed = parseBoolean(value);
+  const parsed = parseBoolean(value, String(key));
   if (parsed === null) return;
   (output as Record<string, unknown>)[key] = parsed;
 }
 
-function parseBoolean(value: string | undefined): boolean | null {
+function parseBoolean(value: string | undefined, name: string): boolean | null {
   if (value === undefined || value.length === 0) return null;
-  const normalized = value.toLowerCase();
-  return ["1", "true", "yes", "on"].includes(normalized);
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  throw new Error(`invalid boolean environment override for ${name}: ${value}`);
 }
 
 function validateManagedWrapperLauncherPath(value: string): void {

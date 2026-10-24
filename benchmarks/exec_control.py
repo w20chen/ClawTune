@@ -260,6 +260,8 @@ class SidecarExecutions:
         *,
         exit_code: int | None,
         term_signal: int | None = None,
+        confirmed_timeout: bool = False,
+        timeout_duration_lower_bound_ms: float | None = None,
     ) -> None:
         """Finalize the execution (PMU profile, clause artifacts, scope)."""
 
@@ -270,6 +272,9 @@ class SidecarExecutions:
                 "update_token": update_token,
                 "exit_code": exit_code,
                 "signal": term_signal,
+                **({"confirmed_timeout": True,
+                    "timeout_duration_lower_bound_ms": timeout_duration_lower_bound_ms}
+                   if confirmed_timeout else {}),
             },
             timeout=self.exit_timeout,
         )

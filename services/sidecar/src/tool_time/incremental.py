@@ -52,18 +52,16 @@ def _view_samples(rows, offset=0):
         if load_ok and nonnegative(row.latency_ms):
             add('load:duration_ms', float(row.latency_ms) / 1000.0)
         for target, value in measured.items():
-            if target.startswith('memory_') and not row.memory_measurement:
-                continue
-            suffix = ':' + row.memory_measurement if target.startswith('memory_') else ''
+            suffix = ':' + (row.memory_measurement or 'cgroup_v2_environment_union_v1') if target.startswith('memory_') else ''
             add(target + suffix, value / RESOURCE_TARGETS[target][1])
             if load_ok:
                 add('load:' + target + suffix, value / RESOURCE_TARGETS[target][1])
         # Empty measured views are part of the existing state too.
-        if row.memory_measurement:
-            for target in RESOURCE_TARGETS:
-                if target.startswith('memory_'):
-                    output[target + ':' + row.memory_measurement]
-                    output['load:' + target + ':' + row.memory_measurement]
+        measurement = row.memory_measurement or 'cgroup_v2_environment_union_v1'
+        for target in RESOURCE_TARGETS:
+            if target.startswith('memory_'):
+                output[target + ':' + measurement]
+                output['load:' + target + ':' + measurement]
     output['time']
     for target in RESOURCE_TARGETS:
         if not target.startswith('memory_'):
@@ -353,7 +351,7 @@ class IncrementalLatticeState:
         names += ['load:' + t for t in LOAD_TARGETS if not t.startswith('memory_')]
         from tool_time.lattice_kb import _observation_sort_key
         ordered = sorted(self.rows, key=_observation_sort_key)
-        for measurement in {row.memory_measurement for row in ordered if row.memory_measurement}:
+        for measurement in {row.memory_measurement or 'cgroup_v2_environment_union_v1' for row in ordered}:
             for prefix in ('', 'load:'):
                 names += [prefix + t + ':' + measurement for t in RESOURCE_TARGETS if t.startswith('memory_')]
         for name in names:

@@ -8,7 +8,7 @@ import shlex
 import statistics
 from bisect import bisect_right
 from collections import Counter, defaultdict
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,7 +17,7 @@ from benchmarks.adapters import NAMES
 from clawtune_kb import FILES, create_seed
 from clawtune_kb.store import digest, write_json
 from cold_start.flat_loader import declared_sampling_interval_ms, read_task, LoadedTask, recorded_clause_structure
-from tool_resource.runtime_kb import ClauseResourceKB, RuntimeToolResourceKB, ToolCallQuery, _target_values, LOAD_TARGET_SOURCES
+from tool_resource.runtime_kb import ClauseObservation, ClauseResourceKB, RuntimeToolResourceKB, ToolCallQuery, _target_values, LOAD_TARGET_SOURCES
 from tool_time.lattice_kb import LatticeTimeKB, LATTICE_TIME_ALGORITHMS
 from kb_common import DEFAULT_MAX_OPTIONAL_FEATURES, validate_max_optional_features
 
@@ -149,23 +149,45 @@ def inventory(dataset: Path, benchmark: str | None, excluded: list | None = None
     return result
 
 
-def split_tasks(tasks: dict, seed: int, train_fraction: float = .8) -> dict:
+def split_tasks(tasks: dict, seed: int, train_fraction: float = .8,
+                split_by: str = "task") -> dict:
     if not math.isfinite(train_fraction) or not 0 < train_fraction < 1:
         raise ValueError("train fraction must be greater than 0 and less than 1")
     groups = defaultdict(list)
+    if split_by not in {"task", "repository"}:
+        raise ValueError("split_by must be task or repository")
+    if split_by == "repository" and any(task.get("grouping") != "repository" for task in tasks.values()):
+        raise ValueError("repository split requires repository identity for every task")
     for key, task in tasks.items():
         groups[(task["benchmark"], task["group"])].append(key)
+    training_repos = set()
+    if split_by == "repository":
+        by_benchmark = defaultdict(list)
+        for benchmark, group in groups:
+            by_benchmark[benchmark].append(group)
+        for benchmark, repos in sorted(by_benchmark.items()):
+            if len(repos) < 2:
+                raise ValueError(f"repository split requires at least two repositories: {benchmark}")
+            repos.sort(key=lambda repo: hashlib.sha256(
+                f"clawtune-repository-split-v1\0{seed}\0{benchmark}\0{repo}".encode()
+            ).hexdigest())
+            n = max(1, math.floor(train_fraction * len(repos)))
+            training_repos.update((benchmark, repo) for repo in repos[:n])
     train, test, counts = [], [], []
     for (benchmark, group), members in sorted(groups.items()):
         members.sort(key=lambda key: hashlib.sha256(
             f"clawtune-fixed-name-split-v2\0{seed}\0{benchmark}\0{group}\0{key}".encode()
         ).hexdigest())
-        n = max(1, math.floor(train_fraction * len(members)))
+        if split_by == "repository":
+            n = len(members) if (benchmark, group) in training_repos else 0
+        else:
+            n = max(1, math.floor(train_fraction * len(members)))
         train.extend(members[:n])
         test.extend(members[n:])
         counts.append({"benchmark": benchmark, "group": group, "train": n, "test": len(members) - n})
     return {"schema": "clawtune.split.v2", "seed": seed, "train_fraction": train_fraction,
-            "rule": "sha256-fixed-name-per-benchmark-group-task-v2", "tasks": tasks,
+            "rule": ("sha256-per-benchmark-repository-v1" if split_by == "repository"
+                     else "sha256-fixed-name-per-benchmark-group-task-v2"), "tasks": tasks,
             "train": sorted(train), "test": sorted(test), "groups": counts}
 
 
@@ -189,7 +211,7 @@ def _split_assignment_sha256(manifest: dict) -> str:
 
 
 def load_or_create_split(tasks: dict, dataset: Path, seed: int, cache_dir: Path,
-                         train_fraction: float = .8) -> dict:
+                         train_fraction: float = .8, split_by: str = "task") -> dict:
     """Persist the first deterministic assignment and reuse it by task roster."""
     from clawtune_kb.contracts import validate
     roster_sha256 = _task_roster_sha256(tasks)
@@ -198,8 +220,9 @@ def load_or_create_split(tasks: dict, dataset: Path, seed: int, cache_dir: Path,
     safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", "+".join(benchmark_names)) or "dataset"
     cache_dir = cache_dir.resolve()
     fraction_suffix = "" if train_fraction == .8 else f"-train{format(train_fraction, '.12g').replace('.', 'p')}"
-    cache_path = cache_dir / f"{safe_name}-{roster_sha256[:16]}{fraction_suffix}-seed{seed}.json"
-    base = split_tasks(tasks, seed, train_fraction)
+    unit_suffix = "-repositories" if split_by == "repository" else ""
+    cache_path = cache_dir / f"{safe_name}-{roster_sha256[:16]}{fraction_suffix}{unit_suffix}-seed{seed}.json"
+    base = split_tasks(tasks, seed, train_fraction, split_by)
     base["assignment_sha256"] = _split_assignment_sha256(base)
     metadata = {
         "dataset_id": dataset_id,
@@ -231,8 +254,68 @@ def load_or_create_split(tasks: dict, dataset: Path, seed: int, cache_dir: Path,
     return cached
 
 
+def merge_trace_clause_observations(observations, policy):
+    """Join complementary labels within one span before recovering missing targets.
+
+    Absolute clocks and clause indices keep separate executions distinct. Conflicting
+    measurements remain separate rows; a target present anywhere in that clause is
+    never zero-filled in another row.
+    """
+    from clawtune_sidecar.predictors.tool_resource import apply_trace_label_policy_to_clause
+
+    labels = ("latency_ms", "cpu_ns_cumulative", "cpu_peak_cores", "sampled_peak_rss_mb",
+              "memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes",
+              "memory_measurement", "memory_environment_id")
+    imputed_fields = {"duration_ms": "latency_ms", "cpu_time_seconds": "cpu_ns_cumulative",
+        "cpu_peak_cores": "cpu_peak_cores", "sampled_peak_rss_bytes": "sampled_peak_rss_mb",
+        "memory_total_peak_bytes": "memory_total_peak_bytes", "memory_extra_peak_bytes": "memory_extra_peak_bytes"}
+    groups = defaultdict(list)
+    for row in observations:
+        # A newer trace may already carry filled placeholders. Their explicit
+        # provenance lets real sibling measurements replace them before refill.
+        missing = {imputed_fields[target]: None for target in row.imputed_targets if target in imputed_fields}
+        if missing:
+            if ("memory_total_peak_bytes" in missing and "memory_extra_peak_bytes" in missing
+                    and row.memory_baseline_bytes is None):
+                missing.update(memory_measurement=None, memory_environment_id=None)
+            row = replace(row, **missing, imputed_targets=())
+        identity = (row.repo, row.bin, row.argv, row.ts_start, row.ts_end, row.clause_index)
+        rows = groups[identity]
+        for index, previous in enumerate(rows):
+            if any(getattr(previous, key) is not None and getattr(row, key) is not None
+                   and getattr(previous, key) != getattr(row, key) for key in labels):
+                continue
+            rows[index] = replace(previous, **{
+                key: getattr(row, key) for key in labels if getattr(previous, key) is None
+            }, memory_eligible=previous.memory_eligible or row.memory_eligible,
+                censored=previous.censored or row.censored,
+                confirmed_timeout=previous.confirmed_timeout or row.confirmed_timeout,
+                command_features=previous.command_features or row.command_features,
+                stdin_from_pipe=(previous.stdin_from_pipe if previous.stdin_from_pipe is not None
+                                 else row.stdin_from_pipe))
+            break
+        else:
+            rows.append(row)
+    merged = []
+    for rows in groups.values():
+        first = rows[0]
+        recovered = apply_trace_label_policy_to_clause(first, policy)
+        # A remaining row can carry an independently qualified memory source or
+        # a conflicting observation. Preserve it without inventing absent siblings.
+        updates = {}
+        for key in labels:
+            if all(getattr(row, key) is None for row in rows):
+                updates[key] = getattr(recovered, key)
+        if all(row.memory_total_peak_bytes is None and row.memory_extra_peak_bytes is None for row in rows):
+            updates["memory_eligible"] = recovered.memory_eligible
+        updates["imputed_targets"] = tuple(sorted(set(first.imputed_targets) | {
+            target for target in recovered.imputed_targets if imputed_fields.get(target) in updates}))
+        merged.extend([replace(first, **updates), *rows[1:]])
+    return merged
+
+
 def load_task(dataset: Path, task: dict, rss_unit: str, *,
-              recorded_clauses_only: bool = False) -> LoadedTask:
+              recorded_clauses_only: bool = False, trace_label_policy=None) -> LoadedTask:
     result = LoadedTask()
     seen = set()
     namespace = task["benchmark"] + ":" + task["group"]
@@ -246,18 +329,39 @@ def load_task(dataset: Path, task: dict, rss_unit: str, *,
         if file["version"] == 5:
             loaded = read_task(path, repo=namespace, task_id=task["task_id"], rss_unit=rss_unit,
                                recorded_clauses_only=recorded_clauses_only)
+            from clawtune_sidecar.predictors.tool_resource import (
+                STRICT_TRACE_LABEL_POLICY, apply_trace_label_policy_to_clause,
+            )
+            # V5 rows already combine each clause's recorded resources. Fill
+            # each independently so equal clocks from separate calls stay distinct.
+            loaded.clauses = [apply_trace_label_policy_to_clause(row, trace_label_policy or STRICT_TRACE_LABEL_POLICY)
+                              for row in loaded.clauses]
         else:
-            from clawtune_sidecar.predictors.tool_resource import load_openclaw_trace_observations, _completed_call_from_tool_span
-            loaded_v6 = load_openclaw_trace_observations(path, repo=namespace)
+            from clawtune_sidecar.predictors.tool_resource import (
+                STRICT_TRACE_LABEL_POLICY,
+                load_openclaw_trace_observations,
+                _completed_call_from_tool_span,
+                _repo_from_tool_span,
+            )
+            policy = trace_label_policy or STRICT_TRACE_LABEL_POLICY
+            loaded_v6 = load_openclaw_trace_observations(
+                path,
+                repo=namespace,
+                label_policy=policy,
+            )
             # V6 import uses the same ownership/quality gates as runtime import.
             calls_v6 = [replace(call, repo=namespace) for call in loaded_v6.completed_calls]
-            loaded = LoadedTask(calls=calls_v6, call_actuals=[_call_actuals(call) for call in calls_v6],
-                                clauses=[replace(row, repo=namespace) for row in loaded_v6.observations],
-                                call_clauses=[() for _ in calls_v6])
+            loaded = LoadedTask(
+                calls=calls_v6,
+                call_actuals=[_call_actuals(call) for call in calls_v6],
+                call_clauses=[() for _ in calls_v6],
+            )
+            loaded.counts.update(censored_calls=sum(call.censored for call in calls_v6),
+                                 confirmed_timeout_calls=sum(call.confirmed_timeout for call in calls_v6))
             from tool_resource.sdk import _observations_from_call
             starts = {}
             with path.open(encoding="utf-8-sig") as stream:
-                for line in stream:
+                for line_no, line in enumerate(stream, 1):
                     if not line.strip():
                         continue
                     row = json.loads(line)
@@ -270,23 +374,79 @@ def load_task(dataset: Path, task: dict, rss_unit: str, *,
                         loaded.sample_periods_ms.append(sample_interval_ms)
                     telemetry = (row.get("execution") or {}).get("tool_resource") or {}
                     call = telemetry.get("call_telemetry") or {}
-                    completed = _completed_call_from_tool_span(starts.get(row.get("span_id")), row, repo=namespace)
-                    if (completed is not None and not completed.censored
-                            and call.get("eligible_for_kb") is True and call.get("telemetry_quality") == "ok"):
+                    completed = _completed_call_from_tool_span(
+                        starts.get(row.get("span_id")),
+                        row,
+                        repo=namespace,
+                        label_policy=policy,
+                    )
+                    span_clauses = []
+                    if completed is not None:
+                        span_repo = _repo_from_tool_span(starts.get(row.get("span_id")), row,
+                            fallback_repo=namespace, span_id=row.get("span_id"), line_no=line_no)
+                        for memory in (row.get("resources") or {}).get("memory_clause_observations", []):
+                            if isinstance(memory, dict) and memory.get("repo") == span_repo:
+                                span_clauses.append(ClauseObservation(**{
+                                    **{field.name: memory[field.name] for field in fields(ClauseObservation)
+                                       if field.name in memory},
+                                    "repo": namespace, "argv": tuple(memory["argv"]),
+                                    "censored": completed.censored,
+                                    "confirmed_timeout": completed.confirmed_timeout}))
+                    if completed is not None and call.get("clauses") is not None:
                         clauses = recorded_clause_structure(
                             call.get("command"), call.get("clauses"),
                             recorded_only=recorded_clauses_only)
-                        loaded.clauses.extend(_observations_from_call(
-                            namespace, dict(call, clauses=list(clauses)),
-                            require_timestamps=False, enrich_structure=False))
+                        span_clauses.extend(_observations_from_call(
+                                namespace,
+                                dict(call, clauses=list(clauses), censored=completed.censored,
+                                     confirmed_timeout=completed.confirmed_timeout),
+                                require_timestamps=False,
+                                enrich_structure=False,
+                            ))
+                    loaded.clauses.extend(merge_trace_clause_observations(span_clauses, policy))
         # Static train/test has no chronological replay semantics.
         result.calls.extend(replace(call, ts_start=0., ts_end=call.ts_end - call.ts_start) for call in loaded.calls)
         result.call_actuals.extend(loaded.call_actuals)
         result.call_clauses.extend(loaded.call_clauses)
-        result.clauses.extend(replace(row, ts_start=0., ts_end=row.ts_end - row.ts_start) for row in loaded.clauses)
+        result.clauses.extend(_static_clause(row, namespace) for row in loaded.clauses)
         result.sample_periods_ms.extend(loaded.sample_periods_ms)
         result.counts.update(loaded.counts)
     return result
+
+
+def _static_clause(row, namespace):
+    # Recorded features keep their grammar and execution identity. Only the
+    # dataset's repository namespace changes, identically for train and query.
+    features = row.command_features
+    if features is not None:
+        from command_parser.models import CommandFeatures, canonical_json
+        record = CommandFeatures.from_dict(features)
+        repo_feature = "context:" + canonical_json(["repo", namespace])
+        def project(values):
+            return frozenset(repo_feature if value.startswith('context:["repo",') else value
+                             for value in values)
+        features = replace(record, features=project(record.features) | {repo_feature},
+                           core=project(record.core)).to_dict()
+    return replace(row, repo=namespace, ts_start=0., ts_end=row.ts_end - row.ts_start,
+                   command_features=features)
+
+
+def _edge_training_events(clauses, task_key: str):
+    """Give static observations distinct identities and a deterministic order.
+
+    Loader intervals start at zero and cannot identify events or their tasks.
+    The synthetic clock is only an offline replay order; measured duration is
+    retained as the label and does not determine when feedback becomes visible.
+    """
+    from clawtune_sidecar.predictors.edge_kappa import training_event
+    for index, clause in enumerate(clauses):
+        event = training_event(clause)
+        if event is None:
+            continue
+        identity = hashlib.sha256(f"{task_key}\0{index}".encode()).hexdigest()
+        yield replace(event, outcome=replace(event.outcome,
+            event_id=identity, task_id=task_key, call_id=identity,
+            start_time=float(index * 2), end_time=float(index * 2 + 1)))
 
 
 def _sampling_summary(values: list[float]) -> dict:
@@ -439,9 +599,25 @@ def _display(value, *, percent: bool = False) -> str:
     return f"{100 * value:.1f}%" if percent else f"{value:.6g}"
 
 
+def _availability_counts() -> dict:
+    return {target: {"queries": 0, "labeled": 0, "predicted": 0, "scored": 0,
+                     "unavailable_reasons": Counter()} for target in LOAD_TARGET_SOURCES}
+
+
+def _model_repository_metrics(rows: list[dict], duration_edges, availability: dict) -> list[dict]:
+    groups = defaultdict(list)
+    for row in rows:
+        groups[(row["benchmark"], row["repo"])].append(row)
+    return [{"benchmark": benchmark, "repo": repo,
+             "metrics": _summarize_rows(groups[(benchmark, repo)], duration_edges),
+             "availability": counters}
+            for (benchmark, repo), counters in sorted(availability.items())]
+
+
 def _render_report(report: dict) -> str:
+    unit = report.get("split_by", "task")
     lines = [
-        "# Frozen task-held-out shell-call evaluation", "",
+        f"# Frozen {unit}-held-out shell-call evaluation", "",
         f"Train tasks: {report['train_tasks']}; test tasks: {report['test_tasks']}; test updates: 0.", "",
         "## Global metrics", "",
         "| Target | Unit | Predicted / eligible | MAE | Median AE | P90 AE | RMSE | Bias | WAPE | sMAPE | Within 2x | P90 coverage | P90 pinball | Bucket accuracy | Bucket macro recall |",
@@ -507,7 +683,7 @@ def _render_report(report: dict) -> str:
 
 def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int = 42,
         rss_unit: str = "MiB", split_cache_dir: Path | None = None,
-        train_fraction: float = .8, lattice_variants: bool = False,
+        train_fraction: float = .8, split_by: str = "task", lattice_variants: bool = False,
         max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES) -> dict:
     validate_max_optional_features(max_optional_features)
     from clawtune_kb.contracts import validate
@@ -521,7 +697,7 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
         # Never share global fallback training between overlapping suites.
         output.mkdir(parents=True, exist_ok=False)
         reports = {name: run(dataset, output / name, benchmark=name, seed=seed, rss_unit=rss_unit,
-                             split_cache_dir=split_cache_dir, train_fraction=train_fraction,
+                             split_cache_dir=split_cache_dir, train_fraction=train_fraction, split_by=split_by,
                              lattice_variants=lattice_variants, max_optional_features=max_optional_features)
                    for name in dataset_names}
         report = {"schema": "clawtune.offline-report.v1", "train_tasks": sum(r["train_tasks"] for r in reports.values()),
@@ -535,7 +711,7 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
         (output / "report.md").write_text("# Independent dataset evaluations\n\n" + "\n".join(f"- [{name}]({name}/report.md)" for name in dataset_names) + "\n", encoding="utf-8")
         return report
     cache_dir = split_cache_dir or ROOT / ".runtime" / "offline" / "splits"
-    manifest = load_or_create_split(tasks, dataset, seed, cache_dir, train_fraction)
+    manifest = load_or_create_split(tasks, dataset, seed, cache_dir, train_fraction, split_by)
     manifest["excluded_files"] = excluded
     validate(manifest, "offline-split.schema.json")
     if not manifest["test"]:
@@ -543,10 +719,12 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
     output.mkdir(parents=True, exist_ok=False)
     write_json(output / "split.json", manifest)
     clauses, calls, call_actuals, counts = [], [], [], Counter()
+    edge_events = []
     train_sampling = {}
     for key in manifest["train"]:
         loaded = load_task(dataset, tasks[key], rss_unit)
         clauses.extend(loaded.clauses)
+        edge_events.extend(_edge_training_events(loaded.clauses, key))
         calls.extend(loaded.calls)
         call_actuals.extend(loaded.call_actuals)
         train_sampling[key] = _sampling_summary(loaded.sample_periods_ms)
@@ -557,20 +735,21 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
         trie.observe_completed_clause(row)
     for call in calls:
         runtime.observe_completed_call(call)
-    if not any(not call.censored for call in calls) and not clauses:
+    if not any(_target_values(call) for call in calls) and not clauses:
         raise ValueError("training split contains no usable completed observations")
     trie._absorb_completed(float("inf"))
     runtime._absorb_completed(float("inf"))
     lattice = LatticeTimeKB.fit(clauses, max_optional_features=max_optional_features)
     from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
-    edge_kappa = EdgeKappaRuntime.fit(clauses, (100, 500, 2000, 10000), frozen=True,
+    edge_kappa = EdgeKappaRuntime.fit_events(edge_events, (100, 500, 2000, 10000), frozen=True,
                                       max_optional_features=max_optional_features)
     payloads = dict(zip(FILES, (trie.to_json_obj(), runtime.to_json_obj(), lattice.to_json_obj())))
     payloads["edge-kappa-kb.json"] = edge_kappa.to_snapshot()
-    bundle = create_seed(output / "seed", payloads,
-        provenance={"split_sha256": manifest["assignment_sha256"], "train": manifest["train"],
+    provenance = {"split_sha256": manifest["assignment_sha256"], "split_by": split_by, "train": manifest["train"],
                     "test": manifest["test"], "rss_unit": rss_unit, "counts": dict(counts),
-                    "resource_sampling": {"unit": "ms", "per_task": train_sampling}})
+                    "edge_training_order": "sha256-task-order-within-task-clause-record-order",
+                    "resource_sampling": {"unit": "ms", "per_task": train_sampling}}
+    bundle = create_seed(output / "seed", payloads, provenance=provenance)
     trie.freeze()
     runtime.freeze()
     lattice.freeze()
@@ -594,8 +773,8 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
     model_rows.update({name: [] for name in variants})
     if lattice_variants:
         model_rows["lattice_oracle"] = []
-    availability = {name: {target: {"queries": 0, "labeled": 0, "predicted": 0, "scored": 0}
-                           for target in LOAD_TARGET_SOURCES} for name in model_rows}
+    availability = {name: _availability_counts() for name in model_rows}
+    repository_availability = {name: defaultdict(_availability_counts) for name in model_rows}
     pmu_availability = {
         metric: {"queries": 0, "available_predictions": 0, "labeled": 0}
         for metric in ("ipc", "llc_mpki", "llc_miss_rate")
@@ -611,7 +790,10 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
         for index, call in enumerate(loaded.calls):
             if call.censored or call.tool_name not in {"exec", "terminal_exec"}:
                 continue
-            query = ToolCallQuery(call.repo, call.tool_name, call.command, 1e12)
+            query = ToolCallQuery(
+                call.repo, call.tool_name, call.command, 1e12,
+                memory_measurement=call.memory_measurement or "cgroup_v2_environment_union_v1",
+            )
             recorded_clauses = loaded.call_clauses[index] if index < len(loaded.call_clauses) else ()
             known_clauses = _safe_recorded_clause(call.command, recorded_clauses)
             actual_target_values = _call_actuals(call)
@@ -659,14 +841,19 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
                                            ("lattice", diagnostics.backends["lattice"].targets),
                                            ("edge_kappa", diagnostics.backends["edge_kappa"].targets),
                                            *variant_estimates.items()):
-                for target, counters in availability[model].items():
+                repo_counts = repository_availability[model][(task["benchmark"], task["group"])]
+                for target in availability[model]:
                     labeled = target in actual_target_values
                     estimate = model_estimates.get(target)
                     predicted = estimate is not None and estimate.status == "available" and estimate.p50 is not None
-                    counters["queries"] += 1
-                    counters["labeled"] += int(labeled)
-                    counters["predicted"] += int(predicted)
-                    counters["scored"] += int(labeled and predicted)
+                    for counters in (availability[model][target], repo_counts[target]):
+                        counters["queries"] += 1
+                        counters["labeled"] += int(labeled)
+                        counters["predicted"] += int(predicted)
+                        counters["scored"] += int(labeled and predicted)
+                        if not predicted:
+                            reason = getattr(estimate, "unavailable_reason", None) or "missing_prediction"
+                            counters["unavailable_reasons"][reason] += 1
                 actuals = {target: value for target, value in actual_target_values.items()
                            if target in model_estimates}
                 for target, actual in actuals.items():
@@ -674,7 +861,7 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
                     bucket = getattr(estimate, "buckets", None)
                     probabilities = list(bucket.probabilities) if (target == "duration_ms" and bucket
                                                                    and bucket.probabilities is not None) else None
-                    row = {"task": key, "benchmark": task["benchmark"], "repo": task["group"],
+                    row = {"task": key, "call_index": index, "benchmark": task["benchmark"], "repo": task["group"],
                            "target": target, "unit": getattr(estimate, "unit", None),
                            "tool": call.tool_name, "actual": actual, "p50": estimate.p50, "p90": estimate.p90,
                            "status": estimate.status, "backend": estimate.backend,
@@ -711,10 +898,14 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
     report = {"schema": "clawtune.offline-report.v1", "train_tasks": len(manifest["train"]),
               "command_parsing": {"scope": "pre-execution test clause parses; frozen bundled rules; no LLM; excludes repeated variant evaluation", **parsing_counts},
               "test_tasks": len(manifest["test"]), "test_updates": 0, "metrics": summaries,
+              "split_by": split_by,
               "bucket_edges": {target: list(values) for target, values in edges.items()},
               "repositories": repositories,
               "models": {name: {"metrics": _summarize_rows(selected, edges["duration_ms"]),
-                                "availability": availability[name]} for name, selected in model_rows.items()},
+                                "availability": availability[name],
+                                "repositories": _model_repository_metrics(
+                                    selected, edges["duration_ms"], repository_availability[name])}
+                         for name, selected in model_rows.items()},
               "pmu": {"scope": "quality-gated ToolKB prediction availability",
                       "targets": pmu_availability},
               "resource_sampling": {

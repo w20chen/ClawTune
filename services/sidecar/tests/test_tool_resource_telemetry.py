@@ -435,6 +435,24 @@ def test_sampled_rss_provenance_marks_percpu_global_counter_as_approximate() -> 
     assert provenance["counter_exact"] is False
 
 
+def test_sampled_rss_keeps_sparse_observation_as_lower_bound() -> None:
+    value, reason, provenance = _sampled_peak_rss(
+        [{
+            "type": "perf",
+            "ts_ns": 110,
+            "rss_pages": 10,
+            "rss_counter_backend": 1,
+            "mm_ptr": 7,
+            "host_tid": 42,
+        }],
+        SimpleNamespace(t_exec_ns=100, t_end_ns=10_000_000_000),
+    )
+
+    assert value == pytest.approx(10 * telemetry_module.PAGE / 1e6)
+    assert reason == "observed_sparse_lower_bound"
+    assert provenance["rss_sample_count"] == 1
+
+
 def test_syscall_symbol_candidates_include_bcc_and_common_kernel_names() -> None:
     class FakeBPF:
         @staticmethod
@@ -686,7 +704,34 @@ def test_call_resource_profile_sums_aligned_exec_images_before_taking_peak() -> 
     )
 
     assert profile["peak_cpu_cores"] == pytest.approx(0.6)
-    assert profile["sampled_peak_rss_mb"] == 30.0
+    assert profile["sampled_peak_rss_mb"] == 20.0
+    assert profile["provenance"]["merged_rss_reason"] == "observed_sparse_lower_bound"
+    assert profile["availability"] == {"cpu": "ok", "memory": "ok"}
+
+
+def test_call_resource_profile_uses_a_real_fixed_500ms_window() -> None:
+    image = ExecImageRecord(
+        host_pid=41,
+        exec_seq=1,
+        t_exec_ns=0,
+        t_end_ns=600_000_000,
+        bin="python",
+        argv=("python", "work.py"),
+        terminal=True,
+        cpu_windows=(),
+        cpu_segments=((0, 600_000_000, 300_000_000),),
+        rss_bins=((1, 101, 10.0),),
+        provenance={"quota_cores": 4.0},
+    )
+    profile = _call_resource_profile(
+        (image,),
+        [SimpleNamespace(owned_exec_images=((41, 1),))],
+        data_valid=True,
+        protocol_timeout=False,
+    )
+
+    assert profile["peak_cpu_cores"] == pytest.approx(0.5)
+    assert profile["sampled_peak_rss_mb"] == 10.0
     assert profile["availability"] == {"cpu": "ok", "memory": "ok"}
 
 
@@ -1170,6 +1215,44 @@ def test_trusted_root_pre_exec_sample_is_structural_without_missing_generation()
         "trusted_root_pre_exec_structural_setup"
     ]
     assert all("fork_resolution_failure" not in gap for gap in gaps)
+
+
+@pytest.mark.parametrize("image_start,call_start,pid,sample_at,structural", [
+    (80, 90, 42, 99, True),       # old gated shell observed by shared source
+    (0, 90, 42, 99, False),       # old artifacts cannot supply the proof
+    (95, 90, 42, 99, False),      # an unknown image started during this call
+    (80, None, 42, 99, False),    # no authenticated call boundary
+    (80, 90, 43, 99, False),      # not the authenticated root
+    (80, 90, 42, 101, False),     # unknown seq after the payload exec
+])
+def test_preexisting_root_image_requires_kernel_boundary_evidence(
+    image_start, call_start, pid, sample_at, structural,
+) -> None:
+    old = dict(_event("perf", sample_at, pid, exec_seq=14), exec_started_ns=image_start)
+    events = sorted([
+        old,
+        _event("exec_arg", 100, 42, arg_index=0, arg="/bin/sh", exec_seq=22),
+        _event("exec_boundary", 101, 42, exec_seq=22),
+        _event("exit_boundary", 103, 42, exec_seq=22),
+    ], key=lambda event: event["ts_ns"])
+    clauses, parents = _clauses_and_lineage(events)
+    _, gaps = _attribute(events, clauses, parents, entry_pid=42,
+                         initial_exec_before_ns=call_start)
+    if structural:
+        assert len(gaps) == 1
+        assert gaps[0]["reason"] == "trusted_root_pre_exec_structural_setup"
+        assert gaps[0]["preexisting_exec_evidence"] == {
+            "exec_started_ns": 80, "call_started_ns": 90,
+            "sample_ts_ns": 99, "first_owned_exec_ns": 101,
+        }
+    elif sample_at < 101:
+        assert len(gaps) == 1
+        assert gaps[0]["reason"] == "exec_seq_without_matching_exec_image_or_owned_ancestor"
+        assert "preexisting_exec_evidence" not in gaps[0]
+    else:
+        # Existing temporal-image attribution remains available during an
+        # observed image; it must not be reclassified as structural setup.
+        assert not any("preexisting_exec_evidence" in gap for gap in gaps)
 
 
 def test_thread_samples_use_strict_later_endpoint_without_quadratic_scans():

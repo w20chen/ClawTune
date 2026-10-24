@@ -470,7 +470,11 @@ def _rss_peak(events: list[Mapping[str, Any]]) -> tuple[int | None, int]:
             continue
         bins.setdefault(ts // _RSS_BIN_NS, {})[mm] = rss_pages
         count += 1
-    if count < 2:
+    # One sampled address-space counter is still an observed RSS value.  It is
+    # deliberately only ``available``: the independent window-completeness
+    # gate below keeps it ineligible for strict training, while an explicit
+    # offline seed policy may retain the observed lower bound.
+    if count < 1:
         return None, count
     page_size = 4096
     try:

@@ -1,7 +1,9 @@
 """Prediction ownership, shutdown fencing, and independent learning evidence."""
 import asyncio
+import copy
 import json
 import threading
+import time
 from dataclasses import replace
 
 import httpx
@@ -267,7 +269,9 @@ def test_missing_monitor_sample_still_releases_prediction_state(tmp_path, monkey
 
 
 @pytest.mark.parametrize("runtime", ["runtime", None])
-def test_repeated_turns_do_not_count_as_independent_tasks(predictor, runtime):
+def test_repeated_turns_do_not_count_as_independent_tasks(predictor, runtime, monkeypatch):
+    # A coarse or adjusted wall clock must not hide already completed calls.
+    monkeypatch.setattr("clawtune_sidecar.predictors.tool_resource.time.time", lambda: 1000.)
     for i in range(6):
         req = request(str(i), "python -m pytest -q", runtime_id=runtime, run_id=f"turn-{i}")
         predictor.record_tool_started(req)
@@ -355,6 +359,39 @@ def test_frozen_rules_are_loaded_once_and_never_generated_or_written(tmp_path, p
     finally:
         state.predictor.close()
     assert {str(p.relative_to(seed)): p.read_bytes() for p in seed.rglob("*") if p.is_file()} == before
+
+
+def test_writable_service_generates_and_persists_rule_through_production_wiring(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "task.py").write_text(
+        "import argparse\np = argparse.ArgumentParser()\np.add_argument('-n')\np.parse_args()\n",
+        encoding="utf-8",
+    )
+    state = build_state(SidecarConfig(
+        trace_dir=tmp_path / "trace",
+        tool_resource_artifact_dir=tmp_path / "kb",
+        llm_proxy_upstream_base_url="https://example.invalid",
+        llm_proxy_upstream_api_key="shared-key",
+        llm_proxy_upstream_model="test-model",
+    ))
+    service = state.predictor.command_features
+    service.generator.client = lambda body: copy.deepcopy(generated_rule())
+    context = ParseContext(
+        repo="repo", runtime_id="runtime", workspace=str(workspace), cwd=str(workspace),
+    )
+    try:
+        before = service.argv(["python", "task.py", "-n", "4"], context)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and not any(
+                row["status"] in {"ready", "failed"} for row in service.generator.status().values()):
+            time.sleep(.01)
+        assert any(row["status"] == "ready" for row in service.generator.status().values()), service.generator.status()
+        after = service.argv(["python", "task.py", "-n", "4"], context)
+        assert before.status == "partial" and after.status == "complete"
+        assert list((tmp_path / "kb" / "command-rules").glob("*.json"))
+    finally:
+        state.predictor.close()
 
 
 @pytest.mark.parametrize("version", [None, "1.0"])

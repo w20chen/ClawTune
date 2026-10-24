@@ -5,6 +5,7 @@ import {SidecarClient} from "./client.js";
 import {registerBenchmarkTools} from "./benchmark-tools.js";
 import {formatCallLoadPrediction, formatTimeBuckets} from "./prediction-format.js";
 import {loadConfig, isRecord} from "./config.js";
+import {configSchema} from "./config-schema.js";
 import {CorrelationMap} from "./correlation.js";
 import type {CommonEvent, ModelEvent, PluginConfig, SidecarHealth, ToolBeforeRequest, ToolCompletedEvent, ToolDecision} from "./contracts.js";
 import {MIN_COMPATIBLE_SIDECAR_VERSION, REQUIRED_PROTOCOL_VERSIONS} from "./contracts.js";
@@ -33,7 +34,7 @@ import {
 import {
   sanitizeTraceData,
 } from "./trace/sanitizer.js";
-import {extractToolExitCode, traceExitCodeForTool} from "./tool-result.js";
+import {extractToolExitCode, extractToolTimeout, traceExitCodeForTool} from "./tool-result.js";
 import type {
   SpanStartRecord,
   SpanEndRecord,
@@ -57,59 +58,7 @@ export default definePluginEntry({
   id: "clawtune",
   name: "ClawTune",
   description: "Hardware-aware tracing and scheduling for OpenClaw.",
-  configSchema: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      endpoint: {type: "string", default: "http://localhost:8765"},
-      mode: {enum: ["observe", "enforce"], default: "observe"},
-      decisionTimeoutMs: {type: "integer", default: 3000, minimum: 200, maximum: 30000},
-      reportTimeoutMs: {type: "integer", default: 3000, minimum: 200, maximum: 30000},
-      failOpen: {type: "boolean", default: true},
-      logLevel: {enum: ["error", "warn", "info", "debug"], default: "info"},
-      consoleMode: {enum: ["verbose", "quiet"], default: "verbose"},
-      executionBackend: {enum: ["hook-only", "marker", "managed-wrapper"], default: "managed-wrapper"},
-      sandboxExecEnvelope: {type: "boolean", default: false, description: "In hook-only mode, mint a per-call execution_id and wrap the exec command in the ClawBox SSH bridge envelope so the tool bridge adopts the same execution_id."},
-      launcherPath: {type: "string", default: "", description: "Absolute path to clawtune-launch. Empty = auto-resolve from PATH."},
-      launcherInterpreter: {type: ["string", "null"], default: null},
-      collectorSocket: {type: "string", default: "/run/clawtune/collector.sock"},
-      instrumentHosts: {type: "array", items: {type: "string"}, default: ["gateway", "*"]},
-      instrumentTools: {type: "array", items: {type: "string"}, default: ["exec"]},
-      enableCgroup: {type: "boolean", default: true},
-      enableAffinity: {type: "boolean", default: true},
-      enableNuma: {type: "boolean", default: true},
-      profilingMode: {enum: ["off", "proc", "perf", "ksys", "vtune"], default: "off"},
-      securityBoundaryAccepted: {type: "boolean", default: true},
-      autoStartSidecar: {type: "boolean", default: false},
-      sidecarStartupTimeoutMs: {
-        type: "integer",
-        default: 60_000,
-        minimum: 1_000,
-        maximum: 600_000,
-      },
-      sidecarCommand: {type: "string", default: ""},
-      trace: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          schema_version: {type: "integer", default: 6},
-          include_raw_events: {type: "boolean", default: false},
-          include_llm_messages: {type: "boolean", default: true},
-          include_tool_outputs: {type: "boolean", default: true},
-          redact_sensitive_data: {type: "boolean", default: true},
-          flush_span_start: {type: "boolean", default: true},
-          max_string_bytes: {type: "integer", default: 16384},
-          max_messages_bytes: {type: "integer", default: 131072},
-          max_tool_output_bytes: {type: "integer", default: 65536},
-          // Default disabled: the Python scheduler is the primary trace
-          // writer. Set to a path (e.g. "traces/") to enable plugin-side
-          // trace writing as a fallback.  Uses append mode so it won't
-          // clobber scheduler-written data.
-          trace_dir: {type: "string", default: ""},
-        },
-      },
-    }
-  },
+  configSchema,
   register(api: HookApi): void {
   registerBenchmarkTools(api);
   const config = loadConfig(api.pluginConfig ?? {});
@@ -1041,6 +990,8 @@ export default definePluginEntry({
       action_duration_ns: durNs.toString(),
       plugin_window_ns: durNs.toString(),
       tool_body_ns: completion.tool_body_ns ?? null,
+      confirmed_timeout: completion.confirmed_timeout ?? false,
+      timeout_duration_lower_bound_ms: completion.timeout_duration_lower_bound_ms ?? null,
       decision_duration_ns: completion.decision_duration_ns ?? null,
       completion_duration_ns: completion.completion_duration_ns ?? null,
       sidecar_overhead_ns: completion.sidecar_overhead_ns ?? null,
@@ -1708,11 +1659,12 @@ function buildCompletion(
   const errorType = extractString(event, ["error_type", "errorType"]);
   const includeOutput = config.trace?.include_tool_outputs !== false; // default true
   const includeRaw = config.trace?.include_raw_events === true;
-  const rawResult = includeOutput && isRecord(event)
+  const rawResult = isRecord(event)
     ? (event as Record<string, unknown>).result ?? (event as Record<string, unknown>).output ?? (event as Record<string, unknown>).response ?? null
     : null;
   const toolName = extractString(event, ["tool_name", "toolName", "name"]) ?? "unknown";
   const exitCode = extractToolExitCode(rawResult, toolName);
+  const timeout = extractToolTimeout(event, rawResult);
   const explicitSucceeded = extractBoolean(event, ["succeeded", "success"]);
   const rawEvent = includeRaw && isRecord(event)
     ? (config.trace.redact_sensitive_data ? redact(event) : jsonSafe(event))
@@ -1725,8 +1677,9 @@ function buildCompletion(
     execution_id: prior?.executionId ?? null,
     tool_name: toolName,
     duration_ms: extractNumber(event, ["duration_ms", "durationMs"]) ?? 0,
-    succeeded: exitCode === 0 ? true : (explicitSucceeded ?? (errorType === null && exitCode === null)),
-    error_type: errorType,
+    ...timeout,
+    succeeded: timeout.confirmed_timeout ? false : exitCode === 0 ? true : (explicitSucceeded ?? (errorType === null && exitCode === null)),
+    error_type: timeout.confirmed_timeout ? "timeout" : errorType,
     error_digest: null,
     result_size_bytes: extractNumber(event, ["result_size_bytes", "resultSizeBytes"]),
     raw_result: includeOutput ? jsonSafe(rawResult) : null,

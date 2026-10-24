@@ -57,8 +57,12 @@ def resource_values(row: ClauseObservation) -> dict[str, float]:
         values["cpu_peak_cores"] = float(row.cpu_peak_cores)
     if nonnegative(row.sampled_peak_rss_mb):
         values["sampled_peak_rss_bytes"] = float(row.sampled_peak_rss_mb) * 1_000_000.0
-    from clawtune_sidecar.monitoring.environment_memory import memory_labels
-    values.update(memory_labels(asdict(row)))
+    for target in ("memory_total_peak_bytes", "memory_extra_peak_bytes"):
+        value = getattr(row, target)
+        if nonnegative(value):
+            values[target] = float(value)
+    if "cpu_avg_cores" not in values and "cpu_time_seconds" in row.imputed_targets:
+        values["cpu_avg_cores"] = 0.0
     return {key: value for key, value in values.items() if math.isfinite(value)}
 
 

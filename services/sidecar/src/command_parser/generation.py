@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import threading
@@ -17,6 +18,8 @@ from .parser import CommandParser
 from .registry import RuleRegistry
 from .validation import schema, validate_rule
 
+_SOURCE_UNREAD = object()
+
 
 @dataclass(frozen=True)
 class GeneratorConfig:
@@ -30,7 +33,7 @@ class GeneratorConfig:
     @classmethod
     def from_sidecar(cls, config):
         return cls(os.getenv("CLAWTUNE_COMMAND_RULE_LLM_BASE_URL") or config.llm_proxy_upstream_base_url,
-                   os.getenv("CLAWTUNE_COMMAND_RULE_LLM_API_KEY") or config.llm_proxy_upstream_api_key,
+                   config.llm_proxy_upstream_api_key,
                    os.getenv("CLAWTUNE_COMMAND_RULE_LLM_MODEL") or config.llm_proxy_upstream_model or config.llm_proxy_expose_model)
 
 
@@ -50,7 +53,13 @@ class RuleGenerator:
         if not (self.config.base_url and self.config.model and self.config.api_key):
             return False
         current = evidence.source(entry, context) if script and not context.container_id else None
-        key = digest([entry, context.__dict__, script, current["content_hash"] if current else None])
+        deferred_source = bool(script and context.container_id)
+        # Docker archive reads belong on the worker, not the prediction path.
+        # This temporary key deduplicates pending source checks; the worker
+        # applies provider cooldown/budget using the actual source identity.
+        key = digest([entry, context.__dict__, script,
+                      "pending_container_source" if deferred_source else
+                      current["content_hash"] if current else None])
         with self._lock:
             old = self._states.get(key)
             if old and (old["status"] in {"queued", "generating"} or time.monotonic()-old["time"] < self.config.cooldown):
@@ -61,7 +70,8 @@ class RuleGenerator:
                 self._queue.put_nowait((key, entry, context, script, list(argv)))
             except queue.Full:
                 return False
-            self._counts[context.repo] += 1
+            if not deferred_source:
+                self._counts[context.repo] += 1
             self._states[key] = {"status": "queued", "time": time.monotonic()}
             if self._thread is None:
                 self._thread = threading.Thread(target=self._worker, daemon=True, name="command-rule-generator")
@@ -100,8 +110,8 @@ class RuleGenerator:
             response.raise_for_status()
             return response.json()["choices"][0]["message"]["content"]
 
-    def generate(self, entry, context, script=False, argv=()):
-        source = evidence.source(entry, context) if script else None
+    def generate(self, entry, context, script=False, argv=(), *, _source=_SOURCE_UNREAD):
+        source = (evidence.source(entry, context) if script else None) if _source is _SOURCE_UNREAD else _source
         items = [source] if source else []
         if not items:
             interpreter = argv[0] if script and argv else None
@@ -187,23 +197,47 @@ class RuleGenerator:
                 finally:
                     self._queue.task_done()
                 continue
-            self._states[key] = {"status": "generating", "time": time.monotonic()}
+            with self._lock:
+                self._states[key] = {"status": "generating", "time": time.monotonic()}
             try:
                 while not getattr(self.help_runner, "idle", lambda: True)():
                     if self._stop.wait(.2):
                         break
                 if self._stop.is_set():
-                    self._queue.task_done()
-                    return
-                rule = self.generate(entry, context, script, argv)
-                if not self._stop.is_set():
-                    self.registry.add(rule)
-                status, reason = "ready", None
+                    raise RuntimeError("rule_generation_cancelled")
+                source = _SOURCE_UNREAD
+                if script and context.container_id:
+                    source = evidence.source(entry, context)
+                    actual_key = digest([entry, context.__dict__, script,
+                                         source["content_hash"] if source else None])
+                    with self._lock:
+                        self._states.pop(key, None)
+                        old = self._states.get(actual_key)
+                        if old and (old["status"] in {"queued", "generating"} or
+                                    time.monotonic() - old["time"] < self.config.cooldown):
+                            continue
+                        if self._counts[context.repo] >= self.config.repo_budget:
+                            continue
+                        key = actual_key
+                        self._counts[context.repo] += 1
+                        self._states[key] = {"status": "generating", "time": time.monotonic()}
+                if self._stop.is_set():
+                    raise RuntimeError("rule_generation_cancelled")
+                rule = self.generate(entry, context, script, argv, _source=source)
+                if self._stop.is_set():
+                    raise RuntimeError("rule_generation_cancelled")
+                self.registry.add(rule)
+                with self._lock:
+                    self._states[key] = {"status": "ready", "reason": None, "time": time.monotonic()}
             except Exception as exc:  # noqa: BLE001 - one failed provider must not terminate the queue
-                status, reason = "failed", str(exc)[:200]
-            with self._lock:
-                self._states[key] = {"status": status, "reason": reason, "time": time.monotonic()}
-            self._queue.task_done()
+                reason = str(exc)[:200]
+                logging.getLogger(__name__).warning(
+                    "command rule generation failed for %s: %s", entry, reason,
+                )
+                with self._lock:
+                    self._states[key] = {"status": "failed", "reason": reason, "time": time.monotonic()}
+            finally:
+                self._queue.task_done()
 
     def close(self, timeout_seconds=None):
         self._stop.set()
@@ -211,3 +245,14 @@ class RuleGenerator:
             self._thread.join(timeout=self.config.timeout + 1 if timeout_seconds is None else timeout_seconds)
             if self._thread.is_alive():
                 raise TimeoutError("timed out closing command rule generator")
+        # No worker remains to acknowledge queued discovery/source checks.
+        while True:
+            try:
+                key, *_ = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            if key is not None:
+                with self._lock:
+                    self._states[key] = {"status": "failed", "reason": "rule_generation_cancelled",
+                                         "time": time.monotonic()}
+            self._queue.task_done()

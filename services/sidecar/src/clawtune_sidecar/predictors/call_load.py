@@ -151,6 +151,7 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
             partial_structure_reason = str(why)
             why = None
         target_clauses = clauses
+        available_indices = None
         partial_clause_count = 0
         original_clause_count = len(rows)
         cpu_rows: list[Mapping[str, Any] | None] = []
@@ -169,6 +170,7 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
                 if row and row.get("values")
             ]
             if available:
+                available_indices = available
                 partial_clause_count = len(rows) - len(available)
                 rows = [rows[index] for index in available]
                 retained_clauses = [
@@ -229,7 +231,15 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
             # Fixed seed: repeatable query results. Generated samples are not
             # counted as historical evidence. Never sum medians or p90 values.
             rng = random.Random(0)
-            groups = _composition_groups(target_clauses, len(values))
+            # Preserve the original pipeline connectivity before selecting
+            # target-specific evidence. Removing an intermediate consumer or
+            # an unmeasured stage must not turn parallel stages into serial ones.
+            groups = _composition_groups(clauses, original_clause_count)
+            if groups is not None and available_indices is not None:
+                remap = {old: new for new, old in enumerate(available_indices)}
+                groups = [[remap[index] for index in group if index in remap]
+                          for group in groups]
+                groups = [group for group in groups if group]
             if groups is None:
                 targets[target] = summarize(
                     target, boundaries, backend, reason="clause_evidence_alignment_error"

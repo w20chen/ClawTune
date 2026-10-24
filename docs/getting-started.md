@@ -2,6 +2,31 @@
 
 Commands below run in Bash on Linux, from the repository root unless stated otherwise. Replace `<...>` with actual values.
 
+## Library and offline use
+
+Install the Python library without setting up OpenClaw or live collectors:
+
+```bash
+python -m pip install ./services/sidecar
+```
+
+The package includes the prediction modules, JSON Schemas, and the default
+initialization bundle. For example, locate and validate the bundled knowledge base:
+
+```python
+from clawtune_kb import default_seed_directory, validate_seed
+
+seed = default_seed_directory()
+manifest = validate_seed(seed)
+print(seed)
+print(manifest["provenance"]["counts"])
+```
+
+Offline trace evaluation needs Python dependencies and existing traces, without
+OpenClaw, a model API key, or running collectors. See the
+[offline evaluation guide](benchmarks.md#offline-trace-evaluation).
+The following sections cover live monitoring and OpenClaw integration.
+
 ## 1. Prepare a new machine
 
 Install Python 3.10+, Git, Docker Engine, Node.js/npm, and OpenClaw. Use a normal account with sudo access. The host needs cgroup v2 and development headers matching the running kernel; Linux 5.8+ is the intended baseline. Deployment targets include x86_64 Linux and arm64 openEuler.
@@ -81,6 +106,9 @@ Set the upstream model address in root `.env` when using a provider other than t
 
 ```dotenv
 CLAWTUNE_LLM_UPSTREAM_BASE_URL=https://your-provider.example
+# Shared by the LLM proxy and background command-rule generation.
+CLAWTUNE_LLM_UPSTREAM_API_KEY=<provider-api-key>
+CLAWTUNE_LLM_PROXY_UPSTREAM_MODEL=<model>
 ```
 
 Route OpenClaw model requests through the local proxy:
@@ -94,7 +122,19 @@ openclaw onboard --non-interactive --accept-risk --skip-health \
 openclaw config validate
 ```
 
-The proxy forwards the provider credential supplied by OpenClaw. If your version rejects these onboarding flags, use `openclaw onboard --help` to configure the same local endpoint, model, and provider key.
+The proxy uses `CLAWTUNE_LLM_UPSTREAM_API_KEY_OVERRIDE` first, then
+`CLAWTUNE_LLM_UPSTREAM_API_KEY`, then the credential supplied by OpenClaw.
+Background [command-rule generation](command-parsing.md#automatic-rule-generation)
+requires one of the two sidecar key settings; an OpenClaw request header alone
+cannot enable it. If your version rejects these onboarding flags, use
+`openclaw onboard --help` to configure the same local endpoint, model, and provider key.
+
+The proxy supports OpenAI-compatible chat completions, including JSON responses
+and streaming responses. Set the requested model in OpenClaw. To expose a different
+model name locally, set `CLAWTUNE_LLM_PROXY_EXPOSE_MODEL` to that name and
+`CLAWTUNE_LLM_PROXY_UPSTREAM_MODEL` to the provider's model name; setting only the
+latter does not rewrite the model in ordinary requests. Generation can use a
+separate model and URL as described in the command-rule guide.
 
 Start two terminals:
 
@@ -121,6 +161,15 @@ The sidecar prepares its eBPF collectors before reporting ready. A fresh process
 can take several seconds to start; subsequent tool calls reuse those collectors.
 Keep the service running across calls to avoid paying this startup cost again.
 
+Plugin configuration is validated against `openclaw.plugin.json`, including
+nested trace settings. `profilingMode` supports only `off`: this disables an
+additional external profiler, not execution eBPF collection or configured PMU
+counters. `proc`, `perf`, `ksys`, and `vtune` are rejected because their external
+profiler backends are not implemented. Configure the existing PMU collector
+with the sidecar PMU settings instead. `enableNuma: false` prevents explicit
+memory-node placement in the launcher; ordinary placement advice remains
+advisory regardless of this switch.
+
 ## 3. Output and persistent state
 
 Daily traces are JSONL files under `traces/`. Inspect a generated file and the saved prediction state:
@@ -130,7 +179,7 @@ Daily traces are JSONL files under `traces/`. Inspect a generated file and the s
 python3 scripts/clawtune.py kb status
 ```
 
-Expect model and tool events, pre-execution predictions, and post-execution measurements. Missing historical evidence or ineligible measurements produce unavailable targets. Use the [trace measurement and prediction quick guide](tool-profile.md#quick-guide-measurements-and-predictions) to identify the relevant fields; the prediction method is described in the [technical report](technical-report.md).
+Expect model and tool events, pre-execution predictions, and post-execution measurements. KB training retains approximate native-tool measurements, fills short/insufficient-sampling targets with zero, and retains partial timeout observations; raw quality and interruption markers remain visible. Missing historical evidence can still produce unavailable predictions. Use the [trace measurement and prediction quick guide](tool-profile.md#quick-guide-measurements-and-predictions) to distinguish measurements from training labels; the prediction method is described in the [technical report](technical-report.md).
 
 | Workflow | State location and lifetime |
 | --- | --- |
@@ -138,66 +187,45 @@ Expect model and tool events, pre-execution predictions, and post-execution meas
 | Online benchmark | A separate `<run>/kb/`, shared by tasks within that run |
 | Offline evaluation | Experiment-owned `seed/`, constructed from training data and frozen for testing |
 
-Online learning and queries continue in memory between saves. KB snapshots are
-written only by an explicit KB flush, a runtime drain with `flush_kb=true`, or
-normal sidecar shutdown. Benchmarks flush shared knowledge at run completion;
-individual task drains may omit that save. A forced process exit loses learning
-since the last completed save. An unchanged on-disk KB generation during a task
-does not mean that online learning has stopped. Offline evaluation remains frozen.
-Normal Linux shutdown waits for the final save to finish, so a large KB can delay exit.
-Managed KB snapshots that cannot be deserialized stop startup; they are not
-replaced by empty models. Writable checkpoints do not use content hashes, so
-this check does not detect every possible change to otherwise valid snapshot data.
+Online updates become available before they are saved to disk. Normal service
+shutdown and benchmark completion save the knowledge base; a forced exit can
+lose changes since the last save. Large knowledge bases can delay shutdown.
+Unreadable saved state stops startup rather than silently starting empty.
 
-New daily state and online runs copy `seeds/bootstrap-v2`, the bundled
-ClawBox-qualified initialization prior, by default. Override it with
+### Default knowledge base and custom initialization
+
+New daily state and online runs copy `seeds/bootstrap-v2` by default. This
+initial knowledge base contains 626 tool calls from 14 trace-v6 tasks across
+12 repositories, including the former test tasks. Those tasks can no longer
+measure independent test accuracy for this bundle.
+
+All supported training targets have numeric values, but some are approximate,
+partial, or filled with zero because no measurement was available. This applies
+to CPU, memory, and hardware counters as well as duration. The
+[manifest](../seeds/bootstrap-v2/manifest.json) records sources and target counts;
+the [measurement guide](tool-profile.md#quick-guide-measurements-and-predictions)
+explains how to distinguish training values from measurements.
+
+To export all tasks from a recorded repository split into a new deployment bundle:
+
+```bash
+python3 scripts/build_replayed_seed.py --dataset <trace-directory> \
+  --split <split.json> --include-test --output <new-seed-directory>
+```
+
+The output directory must be new. Omit `--include-test` to export only the training
+partition for held-out evaluation. Input traces are not modified.
+Select a different initialization bundle with
 `CLAWTUNE_KB_SEED` for daily use or `--seed <directory>` for benchmarks.
 Changing the prior does not reset existing state. Resuming an old run requires
 its original prior. The offline command's `--seed` is instead an integer split
 seed.
 
-To publish validated CubeSandbox observations as a new cold-start prior, first
-use ClawBox's `scripts/export-cold-start-calibration.py` on a successful
-qualification result. Then run:
+### Rebuilding and compatibility
 
-```bash
-python3 scripts/build_clawbox_seed.py \
-  --observations /path/to/clawbox-observations.json \
-  --base-seed seeds/bootstrap-v2 \
-  --output /path/to/next-bootstrap-seed
-```
-
-The output directory must not exist. The command validates the interchange
-schema, preserves the base Lattice observations, imports measured clause
-observations into LatticeKB, and builds repository-neutral public ClauseKB and
-ToolKB layers. Registered optional snapshots such as Edge Kappa are retained
-from the base seed. The manifest records source hashes, measurement coverage,
-sandbox identities, and ClawBox admission calibration. Its declared admission
-order is Lattice guest extra-memory, Lattice sampled-RSS proxy, ToolKB guest
-extra-memory, then ToolKB's tool-class guest extra-memory fallback. The RSS
-proxy retains its native semantics and uses a separate paired host calibration;
-the imported artifacts do not provide a call-level RSS label for ToolKB. For multi-clause calls,
-memory and RSS remain available from the clauses with evidence when another
-retained clause is missing or a dynamic structure is only partly representable;
-those predictions declare the partial-evidence assumption and covered-clause
-count. Other targets still require complete evidence.
-Point ClawBox
-`resources.prediction_artifact` or ClawTune `CLAWTUNE_KB_SEED` at the resulting
-directory. A new seed affects only new state and new experiment run IDs; it
-does not rewrite an existing writable KB.
-
-The historical `seeds/bootstrap-v1` seed is the finalized Tool, Trie, Lattice,
-and Edge state after causally replaying four fresh SWE-rebench trace-v6 runs
-from an empty KB. At every recorded tool start the replay predicts from only
-earlier completions; it observes that call at its recorded completion, then
-drains pending samples and freezes the KB after the fourth trace. The four
-repositories are `iterative/dvc`, `pydata/xarray`,
-`adamboche/python-marshmallow-union`, and `vertica/vertica-python`. Qualified
-call labels cover duration, CPU, process RSS, environment total/extra memory,
-and all nine PMU targets. Missing or unqualified measurements are never
-replaced with zeros. `bootstrap-v2` retains this seed's Lattice and Edge
-evidence, adds the qualified ClawBox observations to Lattice, and replaces the
-Tool and Trie layers with repository-neutral public priors.
+`seeds/bootstrap-v1` remains available as a historical replay baseline.
+It is separate from the current default bundle; consult each manifest before
+comparing data sources or measurement coverage.
 
 To rebuild the causal seed from fresh trace-v6 replays on Linux, write to a new directory and repeat `--trace` once per task:
 
@@ -217,9 +245,14 @@ python3 scripts/build_bootstrap_seed.py --dataset /path/to/traces \
 
 Set `--rss-unit` to the trace-v5 source measurements' unit. Both builders record source hashes and available targets in the manifest. Point `CLAWTUNE_KB_SEED` or benchmark `--seed` at the new directory to use it for new state.
 
-Resource KB snapshots use Runtime v4, Trie v7, and Lattice v4; Edge uses `edge-kappa-kb.v1` with `shell-normalize-v4`. Older incompatible snapshots are rejected. Rebuild from raw observations into a new seed, then start a new benchmark run or use a new `CLAWTUNE_STATE_DIR`; changing a seed does not migrate existing state.
+For incompatible saved formats, rebuild from original traces into a new bundle
+and start a new benchmark run or `CLAWTUNE_STATE_DIR`. New writable state can
+initialize incompatible feature-based components empty; it does not recover
+their prior learning. Frozen loading requires compatible snapshots. Changing the
+initialization directory does not migrate existing state, and a frozen bundle
+without EdgeKappa data leaves that model unavailable.
 
-Edge persists in `edge-kappa-kb.json`. A writable compatible three-KB state initializes it from committed clause history. A frozen legacy seed without Edge leaves that prediction unavailable; a seed declaring Edge must supply the file and matching hash.
+### Common settings
 
 Common settings belong in root `.env`; restart the service after changes:
 
@@ -233,7 +266,12 @@ Common settings belong in root `.env`; restart the service after changes:
 | `CLAWTUNE_KB_MAX_OPTIONAL_FEATURES` | Shared fixed optional-feature combination limit for Lattice and EdgeKappa (default 6; nonnegative integer) |
 | `CLAWTUNE_TOOL_RESOURCE_MEMORY_MEASUREMENT` | Query memory evidence from `cgroup_v2_environment_union_v1` (default), `cgroup_v2_memory_current`, or `guest_memtotal_minus_memavailable`; selects a source without converting labels |
 
-Both feature KBs always retain complete signatures, including those exceeding the optional-feature limit. The limit controls combination order, not total nodes or memory; neither KB automatically lowers it as history grows. Larger values can substantially increase construction time and memory. Saved limits must match each other and the runtime setting. Changing the setting does not rewrite an existing graph or its learned weights: explicitly build a new seed from raw traces using offline `--kb-max-optional-features <n>`, and use it with new state. Legacy Edge snapshots retain their stored effective limit when loaded; old node-count caps are no longer enforced.
+Lattice and EdgeKappa retain complete command feature sets. The optional-feature
+limit bounds the size of partial combinations used for matching; it is not a
+total-node or memory limit. Larger values can increase construction time and
+memory. The two saved models and the service must use the same setting. To change
+it, rebuild from raw traces with offline `--kb-max-optional-features <n>` and
+start new state with the matching environment setting.
 
 The complete settings are maintained in [.env.example](../.env.example) and the [plugin configuration schema](../packages/clawtune-plugin/openclaw.plugin.json). Existing environment variables take precedence over `.env`. The service binds to loopback and is not configured for public exposure.
 
@@ -247,7 +285,7 @@ The complete settings are maintained in [.env.example](../.env.example) and the 
 | No model events | Check the local `/v1` proxy address, upstream URL, model, and credential |
 | Conversation hook rejected | Check `openclaw config get plugins.entries.clawtune.hooks`; rerun setup and restart OpenClaw |
 | Image fails on ARM | Run the QEMU check above and verify image architecture |
-| PMU unavailable | Inspect the reason: event support, permissions, and multiplexing affect eligibility |
+| PMU unavailable | Check event support, permissions, and multiplexing; zero-filled training values do not confirm successful counting |
 | Benchmark input, search, or resume failure | Use the relevant section of the [benchmark guide](benchmarks.md) |
 
 API liveness does not validate kernel collection. Repeat the collector check after kernel, BCC, or Clang changes.

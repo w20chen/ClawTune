@@ -1142,20 +1142,20 @@ def _canonical_prediction():
     from tool_resource.runtime_kb import ClauseResourceKB, RuntimeToolResourceKB, ToolCallQuery, CompletedCall
     from tool_time.lattice_kb import LatticeTimeKB
 
-    # Explicit test-only call evidence; release bootstrap intentionally has
-    # no whole-call samples and must not carry a synthetic read_file prior.
+    # Explicit test-only call evidence. Missing resources train an imputed
+    # zero rather than becoming an unavailable prediction.
     runtime = RuntimeToolResourceKB.fit_public([
         CompletedCall("", "read_file", None, 0, .1),
     ])
     runtime.freeze()
     query = ToolCallQuery("review", "read_file", None, 1)
-    assert runtime.query(query)["cpu_peak_cores"].conditional_p90 is None
+    assert runtime.query(query)["cpu_peak_cores"].conditional_p90 == 0
     prediction, _ = predict_call_load(
         runtime=runtime, trie=ClauseResourceKB(), lattice=LatticeTimeKB(), query=query,
         edges=load_bucket_edges((100, 500, 2000, 10000)),
     )
     assert prediction.targets["duration_ms"].status == "available"
-    assert prediction.targets["cpu_peak_cores"].status == "unavailable"
+    assert prediction.targets["cpu_peak_cores"].status == "available"
     return prediction.model_dump()
 
 
@@ -1181,7 +1181,10 @@ def test_canonical_gate_accepts_migrated_seed_and_checks_update_accounting(tmp_p
     resources = result["resource_summary"]
     resources["launcher_tool_resource_eligible_span_ends"] = 0 if frozen else 1
     resources.update(_inspect_call_prediction(tmp_path, _canonical_prediction()))
-    assert resources["call_prediction_target_available_span_starts"] == {"duration_ms": 1}
+    assert resources["call_prediction_target_available_span_starts"] == {
+        name: 1 for name in ("duration_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores",
+                            "sampled_peak_rss_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes")
+    }
     # No legacy prediction coverage, CPU peak, or memory prior is required.
     assert _required_telemetry_error(config, result) is None
     resources["launcher_tool_resource_eligible_span_ends"] = 1 if frozen else 0

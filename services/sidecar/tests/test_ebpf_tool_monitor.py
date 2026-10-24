@@ -88,6 +88,22 @@ def test_metric_sampling_gap_and_shared_runtime_are_never_training_eligible():
     assert all(metric["eligible"] is False for metric in shared["metrics"].values())
 
 
+def test_single_ebpf_rss_sample_is_retained_as_available_lower_bound():
+    start, end = 1_000_000_000, 1_003_000_000
+    result = _reduce_events(
+        _events(start, start),
+        started_ns=start,
+        ended_ns=end,
+        shared=False,
+    )
+
+    memory = result["metrics"]["memory_peak"]
+    assert memory["available"] is True
+    assert memory["eligible"] is False
+    assert memory["value_bytes"] == 100 * 4096
+    assert memory["sample_count"] == 1
+
+
 def test_late_scope_binding_keeps_values_but_disqualifies_all_metrics():
     start, end = 1_000_000_000, 2_000_000_000
 
@@ -329,10 +345,16 @@ def test_promotion_preserves_eligible_metrics_and_rejects_cross_window_merge():
     assert promote_execution_observation(current, execution) is current
 
 
-def test_collector_failure_uses_dedicated_cgroup_with_truthful_window(tmp_path):
+@pytest.mark.parametrize("attribution_source", [
+    "exclusive-execution-cgroup",
+    "exclusive-task-cgroup",
+])
+def test_collector_failure_uses_dedicated_cgroup_with_truthful_window(
+    tmp_path, attribution_source,
+):
     _cgroup_files(tmp_path, 100, 10, 200)
     scope = ResourceScope(kind="cgroup-v2", cgroup_path=str(tmp_path),
-                          attribution_source="exclusive-execution-cgroup")
+                          attribution_source=attribution_source)
 
     def failed(_):
         raise RuntimeError("BCC permission denied")
@@ -344,6 +366,11 @@ def test_collector_failure_uses_dedicated_cgroup_with_truthful_window(tmp_path):
     _validator().validate(result)
     assert result["backend"] == "cgroup-v2"
     assert result["fallback_used"]
+    assert result["attribution"] == (
+        "exclusive_process_tree"
+        if attribution_source == "exclusive-execution-cgroup"
+        else "shared_scope"
+    )
     assert "permission denied" in result["fallback_reason"]
     assert result["metrics"]["cpu_time"]["value_seconds"] == .0002
     assert result["metrics"]["disk_io"]["read_bytes"] == 100

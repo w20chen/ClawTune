@@ -30,17 +30,25 @@ def _read(path: Path) -> dict[str, Any]:
 class CgroupFallbackWindow:
     path: Path
     before: dict[str, Any]
+    attribution: str
 
     @classmethod
     def open(cls, scope: ResourceScope | None) -> CgroupFallbackWindow | None:
         if (scope is None or scope.kind != "cgroup-v2" or not scope.cgroup_path
-                or scope.attribution_source != "exclusive-execution-cgroup"):
+                or scope.attribution_source not in {
+                    "exclusive-execution-cgroup", "exclusive-task-cgroup",
+                }):
             return None
         path = Path(scope.cgroup_path)
         if path.as_posix().rstrip("/") in {"/sys/fs/cgroup", "/sys/fs/cgroup/unified"}:
             return None
         try:
-            return cls(path, _read(path))
+            attribution = (
+                "exclusive_process_tree"
+                if scope.attribution_source == "exclusive-execution-cgroup"
+                else "shared_scope"
+            )
+            return cls(path, _read(path), attribution)
         except (OSError, ValueError):
             return None
 
@@ -54,7 +62,7 @@ class CgroupFallbackWindow:
         if after["identity"] != self.before["identity"]:
             return None
         result = unavailable_observation(
-            "cgroup_collector_window_only", attribution="exclusive_process_tree",
+            "cgroup_collector_window_only", attribution=self.attribution,
             started_ns=self.before["time"], ended_ns=after["time"],
         )
         result.pop("unavailable_reason")

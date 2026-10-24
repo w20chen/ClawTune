@@ -130,7 +130,7 @@ def build_state(config: SidecarConfig | None = None) -> AppState:
     rule_cache = predictor.artifact_dir / "command-rules" if predictor.artifact_dir else None
     registry = RuleRegistry(rule_cache, read_only=cfg.tool_resource_frozen)
     generator = None if cfg.tool_resource_frozen else RuleGenerator(registry, GeneratorConfig.from_sidecar(cfg),
-                              help_runner=HelpRunner(idle=lambda: not predictor.active_execution_ids(),
+                              help_runner=HelpRunner(idle=lambda: not predictor.has_active_executions(),
                                                      gate=predictor._execution_start_lock))
     predictor.command_features = CommandFeatureService(registry, generator)
     policy: SchedulingPolicy

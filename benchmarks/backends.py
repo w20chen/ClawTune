@@ -543,11 +543,17 @@ class TerminalBackend:
             self._check_cancelled()
             stdout, stderr = self._communicate(process, input="go\n", timeout=deadline_budget)
             exit_code = process.returncode
-        except BaseException:
+        except BaseException as exc:
             self._abort_payload(identity)
             self._terminate(process)
             self._report_exit(
-                execution_id, update_token, exit_code=None, term_signal=signal.SIGKILL
+                execution_id, update_token, exit_code=None, term_signal=signal.SIGKILL,
+                timeout_duration_lower_bound_ms=(
+                    float(exc.timeout) * 1000
+                    if isinstance(exc, subprocess.TimeoutExpired)
+                    and isinstance(exc.timeout, (int, float)) and exc.timeout > 0
+                    else None
+                ),
             )
             raise
         self._report_exit(execution_id, update_token, exit_code=exit_code, term_signal=None)
@@ -633,13 +639,17 @@ class TerminalBackend:
         *,
         exit_code: int | None,
         term_signal: int | None,
+        timeout_duration_lower_bound_ms: float | None = None,
     ) -> None:
         if self.sidecar is None or update_token is None:
             return
         for attempt in range(3):
             try:
                 self.sidecar.exited(
-                    execution_id, update_token, exit_code=exit_code, term_signal=term_signal
+                    execution_id, update_token, exit_code=exit_code, term_signal=term_signal,
+                    **({"confirmed_timeout": True,
+                        "timeout_duration_lower_bound_ms": timeout_duration_lower_bound_ms}
+                       if timeout_duration_lower_bound_ms is not None else {}),
                 )
                 return
             except SidecarUnavailable as exc:

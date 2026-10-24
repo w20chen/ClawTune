@@ -397,7 +397,7 @@ def test_completion_accepts_supported_timestamp_precision(timestamp):
 @pytest.mark.parametrize("duration", [10000, 1000, 20000, 0])
 def test_sparse_cpu_counter_is_unavailable_even_when_endpoints_look_aligned(duration):
     from clawtune_sidecar.predictors.tool_resource import completed_call_from_completion, _trace_cpu_window_aligned
-    from tool_resource.runtime_kb import _target_values
+    from tool_resource.runtime_kb import _target_values, training_target_provenance
     sampler = QueueSampler([
         _snapshot(captured_at=10, cpu_s=0, rss=100, available=True, source="psutil-process-tree"),
         _snapshot(captured_at=20, cpu_s=1, rss=100, available=True, source="psutil-process-tree"),
@@ -410,11 +410,15 @@ def test_sparse_cpu_counter_is_unavailable_even_when_endpoints_look_aligned(dura
         sample = monitor.complete(event)
         assert sample.cpu_time_delta_s is None
         assert sample.cpu_utilization_avg_cores is None
-        targets = _target_values(completed_call_from_completion(event, sample, repo="r", start=request))
-        assert "cpu_avg_cores" not in targets
-        assert "cpu_time_seconds" not in targets
-        if duration == 0:
-            assert "latency_ms" not in targets
+        call = completed_call_from_completion(event, sample, repo="r", start=request)
+        assert call.cpu_time_seconds is None and call.cpu_avg_cores is None
+        assert not call.cpu_time_eligible
+        targets = _target_values(call)
+        provenance = training_target_provenance(call)
+        assert targets["cpu_avg_cores"] == targets["cpu_time_seconds"] == 0
+        assert provenance["cpu_avg_cores"] == provenance["cpu_time_seconds"] == "imputed_zero"
+        assert targets["latency_ms"] == duration
+        assert provenance["latency_ms"] == ("observed" if duration else "imputed_zero")
         resources = {"monitor_start_wall_time_ns": "10000000000", "monitor_end_wall_time_ns": "20000000000"}
         assert _trace_cpu_window_aligned(resources, sample.started_at, sample.ended_at) == (duration == 10000)
     finally:
@@ -446,10 +450,16 @@ def test_dense_cpu_counter_is_interpolated_to_action_boundaries():
 
 
 def test_unknown_duration_does_not_discard_independent_pmu():
-    from tool_resource.runtime_kb import CompletedCall, _target_values
-    targets = _target_values(CompletedCall("r", "exec", None, 20, 20, pmu_cycles=123, pmu_eligible=True))
-    assert "latency_ms" not in targets
+    from tool_resource.runtime_kb import CompletedCall, _target_values, training_target_provenance
+    call = CompletedCall("r", "exec", None, 20, 20, pmu_cycles=123, pmu_eligible=True)
+    targets = _target_values(call)
+    assert targets["latency_ms"] == targets["workload_latency_ms"] == 0
     assert targets["pmu_cycles"] == 123
+    provenance = training_target_provenance(call)
+    assert provenance["latency_ms"] == provenance["workload_latency_ms"] == "imputed_zero"
+    assert provenance["pmu_cycles"] == "observed"
+    assert targets["pmu_instructions"] == 0
+    assert provenance["pmu_instructions"] == "imputed_zero"
 
 
 def test_cpu_peak_excludes_samples_outside_action():

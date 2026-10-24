@@ -151,6 +151,7 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
 def _run_forkexec_claimed(
     endpoint: str, execution_id: str, claim: dict[str, Any], launcher_pid: int,
 ) -> int:
+    _validate_profiling_mode(claim.get("profiling"))
     command = str(claim["command"])
     workdir = claim.get("workdir")
     cwd = str(workdir) if isinstance(workdir, str) and workdir else None
@@ -201,7 +202,7 @@ def _run_forkexec_claimed(
         placement = claim.get("placement")
         profiling = claim.get("profiling")
         cpu_set = _extract_cpu_set(placement)
-        mems = _extract_mems(placement)
+        mems = _extract_mems(placement) if _enabled(profiling, "enable_numa", True) else None
         cgroup_path = _prepare_cgroup_with_host_fallback(
             execution_id,
             cpu_set,
@@ -370,6 +371,7 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
 def _run_subprocess_claimed(
     endpoint: str, execution_id: str, claim: dict[str, Any], launcher_pid: int,
 ) -> int:
+    _validate_profiling_mode(claim.get("profiling"))
     command = str(claim["command"])
     workdir = claim.get("workdir")
     cwd = str(workdir) if isinstance(workdir, str) and workdir else None
@@ -377,7 +379,7 @@ def _run_subprocess_claimed(
     placement = claim.get("placement")
     profiling = claim.get("profiling")
     cpu_set = _extract_cpu_set(placement)
-    mems = _extract_mems(placement)
+    mems = _extract_mems(placement) if _enabled(profiling, "enable_numa", True) else None
     cgroup_path = _prepare_cgroup_with_host_fallback(
         execution_id,
         cpu_set,
@@ -859,6 +861,7 @@ def _prepare_cgroup_with_host_fallback(
     let ``/started`` enforce the same requirement on the host instead.
     """
 
+    _validate_profiling_mode(profiling)
     try:
         return _prepare_cgroup(execution_id, cpu_set, mems, profiling)
     except RuntimeError as exc:
@@ -1231,6 +1234,7 @@ def _prepare_cgroup(
     Set CLAWTUNE_ENABLE_CGROUP=0 to disable automatic cgroup creation.
     Set CLAWTUNE_CGROUP_REQUIRED=1 to fail hard when no root is writable.
     """
+    mems = mems if _enabled(profiling, "enable_numa", True) else None
     required = _env_enabled("CLAWTUNE_CGROUP_REQUIRED") and not _env_enabled("CLAWTUNE_TELEMETRY_FAIL_OPEN")
     if not _supports_posix_controls():
         if required:
@@ -1587,6 +1591,11 @@ def _extract_cpu_set(placement: object) -> str | None:
             cpus = {int(item) for item in value if isinstance(item, int) and item >= 0}
             return _format_cpu_set(cpus) if cpus else None
     return None
+
+
+def _validate_profiling_mode(profiling: object) -> None:
+    if isinstance(profiling, dict) and profiling.get("mode", "off") != "off":
+        raise ValueError("unsupported profiling mode; only off is implemented (eBPF and PMU are configured independently)")
 
 
 def _extract_mems(placement: object) -> str | None:

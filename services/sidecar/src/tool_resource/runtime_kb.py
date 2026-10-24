@@ -8,9 +8,9 @@ Public and repo layers intentionally use different key granularity because
 they encode different environment assumptions:
 
 - **Public layer** (frozen after fitting): heterogeneous repositories, so it
-  holds only coarse cold-start knowledge — per-binary/head, per outer tool
-  name, and global nodes. It never contains exact-command or command-prefix
-  nodes; parameter semantics do not transfer across environments.
+  holds repository-independent semantic entry identities, guarded binary/head
+  nodes, and final coverage fallbacks. It never contains exact-command or raw
+  command-prefix nodes.
 - **Repo layer** (accumulated causally online): same workspace, recurring
   command templates, so it may key by exact normalized command and ordered
   command prefixes before backing off to the local binary/head.
@@ -23,16 +23,17 @@ wins — the evaluated baseline policy):
    frozen depth budget shared with the evaluated lattice)
 3. repo binary/head
 4. repo outer tool name for commandless, non-shell tools
-5. public binary/head
-6. public outer tool name for commandless calls
-7. public global
+5. public whole-call semantic identity
+6. public binary/head when the binary alone preserves the parsed entry
+7. public outer tool name across all training repositories
+8. public global
 
 Single-command queries skip prefixes that discard the known execution entry.
 Compound calls match prefixes of the whole token stream, whose samples describe
-complete calls rather than individual clauses. Shell queries skip outer-tool
-and global keys.
-The public/global steps remain available to commandless calls; Trie likewise
-excludes generic bins for known entries and never uses a global fallback.
+complete calls rather than individual clauses. Shell queries use the public
+outer-tool and global nodes only after compatible command identities are
+exhausted. Trie uses the parallel clause hierarchy: repo exact/prefix/bin,
+public clause semantic identity, guarded public bin, then public global.
 
 Binary/head identity is the generic basenamed command head from
 ``tool_time.command``. A compound shell call (``make && pytest``) has no
@@ -70,14 +71,15 @@ physical composition rules. Shell builtins that create no exec image remain in
 the raw clause list but are excluded from the eBPF-evidence requirement.
 
 ``ClauseObservation`` is one *static mvdan clause* (identity = ``bin`` + ordered
-``argv``), aggregated by ``tool_resource.clause_bridge`` from the eBPF eBPF
+``argv``), aggregated by ``tool_resource.clause_bridge`` from the eBPF
 windowed sampler (`analysis/development/clause-telemetry-ebpf-ebpf-*`). A
 static clause may own a same-PID exec chain and descendants
 (``env -> nice -> workload`` is ONE clause headed by ``env``); the bridge folds
 all owned exec images into a single observation carrying latency plus canonical
 eBPF CPU/RSS measurements for the later bucket stages. The current latency
 API reads only ``latency_ms``. Backoff for clause identity is repo exact clause
--> repo argv prefixes -> repo bin -> public bin -> public global.
+-> repo argv prefixes -> repo bin -> public semantic entry -> guarded public
+bin -> public global.
 """
 
 from __future__ import annotations
@@ -90,9 +92,12 @@ from collections import Counter
 from bisect import bisect_right
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from typing import Any
 
+from command_parser import CommandFeatures, ParseContext, default_service
 from command_parser.matching import argv_identity, identity_prefix_lengths
+from command_parser.service import clause_features, observation_features
 from tool_resource.features import (
     parse_command_clauses,
     shell_bin_requires_exec_evidence,
@@ -168,6 +173,9 @@ class CompletedCall:
     outcome: str = "ok"
     workload_duration_seconds: float | None = None
     workload_duration_required: bool = False
+    confirmed_timeout: bool = False
+    timeout_duration_lower_bound_ms: float | None = None
+    cpu_avg_cores: float | None = None
 
     def __post_init__(self) -> None:
         if not (math.isfinite(self.ts_start) and math.isfinite(self.ts_end)):
@@ -201,65 +209,55 @@ class TargetPrediction:
     note: str | None = None
 
 
-def _target_values(call: CompletedCall) -> dict[str, float]:
-    """Eligible per-target values; an ineligible target is skipped alone."""
+def _raw_target_values(call: CompletedCall) -> dict[str, float | None]:
+    """Keep measured/approximate values separate from training imputation."""
+    elapsed = call.ts_end - call.ts_start
+    workload = (call.workload_duration_seconds if _valid_load_value(call.workload_duration_seconds)
+                else None if call.workload_duration_required else elapsed)
+    values = {
+        "latency_ms": elapsed * 1000 if elapsed > 0 else None,
+        "workload_latency_ms": workload * 1000 if workload and workload > 0 else None,
+        "cpu_time_seconds": call.cpu_time_seconds,
+        "cpu_avg_cores": (call.cpu_time_seconds / workload
+                          if _valid_load_value(call.cpu_time_seconds) and workload and workload > 0
+                          else call.cpu_avg_cores),
+        "cpu_peak_cores": call.cpu_peak_cores,
+        "sampled_peak_rss_bytes": call.sampled_peak_rss_bytes,
+        "memory_total_peak_bytes": call.memory_total_peak_bytes,
+        "memory_extra_peak_bytes": call.memory_extra_peak_bytes,
+    }
+    for target in ("pmu_cycles", "pmu_instructions", "pmu_llc_read_accesses", "pmu_llc_read_misses",
+                   "pmu_ipc", "pmu_llc_mpki", "pmu_llc_miss_rate",
+                   "pmu_llc_read_accesses_per_cpu_second", "pmu_llc_read_misses_per_cpu_second"):
+        values[target] = getattr(call, target)
+    if (call.confirmed_timeout and _valid_load_value(call.timeout_duration_lower_bound_ms)
+            and call.timeout_duration_lower_bound_ms > 0):
+        values["latency_ms"] = call.timeout_duration_lower_bound_ms
+        values["workload_latency_ms"] = call.timeout_duration_lower_bound_ms
+    return {target: float(value) if _valid_load_value(value) else None for target, value in values.items()}
 
-    values: dict[str, float] = {}
-    # The completion protocol uses zero for missing/sub-millisecond duration.
-    # Neither is a usable zero-latency training observation. Other targets
-    # (notably independently measured PMU) retain their own eligibility.
-    tool_duration_seconds = call.ts_end - call.ts_start
-    workload_duration_seconds: float | None = (
-        float(call.workload_duration_seconds)
-        if _valid_load_value(call.workload_duration_seconds)
-        and float(call.workload_duration_seconds) > 0
-        else None if call.workload_duration_required
-        else tool_duration_seconds
-    )
-    if not call.censored and tool_duration_seconds > 0:
-        values["latency_ms"] = tool_duration_seconds * 1000.0
-    if (
-        not call.censored
-        and workload_duration_seconds is not None
-        and workload_duration_seconds > 0
-    ):
-        values["workload_latency_ms"] = workload_duration_seconds * 1000.0
-    if not call.censored and call.cpu_time_eligible and _valid_load_value(call.cpu_time_seconds):
-        values["cpu_time_seconds"] = float(call.cpu_time_seconds)
-        if (
-            not call.censored
-            and workload_duration_seconds is not None
-            and workload_duration_seconds > 0
-        ):
-            values["cpu_avg_cores"] = (
-                float(call.cpu_time_seconds) / workload_duration_seconds
-            )
-    if not call.censored and call.cpu_peak_cores_eligible and call.cpu_peak_window_ms == 500:
-        if _valid_load_value(call.cpu_peak_cores):
-            values["cpu_peak_cores"] = float(call.cpu_peak_cores)
-    if not call.censored and call.sampled_peak_rss_eligible and _valid_load_value(call.sampled_peak_rss_bytes):
-        values["sampled_peak_rss_bytes"] = float(call.sampled_peak_rss_bytes)
-    if not call.censored:
-        from clawtune_sidecar.monitoring.environment_memory import memory_labels
-        values.update(memory_labels(asdict(call)))
-    if not call.censored and call.pmu_eligible:
-        for target, value in (
-            ("pmu_cycles", call.pmu_cycles),
-            ("pmu_instructions", call.pmu_instructions),
-            ("pmu_llc_read_accesses", call.pmu_llc_read_accesses),
-            ("pmu_llc_read_misses", call.pmu_llc_read_misses),
-            ("pmu_ipc", call.pmu_ipc),
-            ("pmu_llc_mpki", call.pmu_llc_mpki),
-            ("pmu_llc_miss_rate", call.pmu_llc_miss_rate),
-            ("pmu_llc_read_accesses_per_cpu_second", call.pmu_llc_read_accesses_per_cpu_second),
-            ("pmu_llc_read_misses_per_cpu_second", call.pmu_llc_read_misses_per_cpu_second),
-        ):
-            if target == "pmu_llc_miss_rate" and _valid_load_value(value) and value > 1:
-                continue
-            if _valid_load_value(value):
-                values[target] = float(value)
-    return {target: value for target, value in values.items()
-            if math.isfinite(value) and (value >= 0)}
+
+def _target_values(call: CompletedCall) -> dict[str, float]:
+    """Train available prefix/approximate observations and zero-fill missing metrics."""
+    return {target: 0.0 if value is None else value for target, value in _raw_target_values(call).items()}
+
+
+def training_target_provenance(call: CompletedCall) -> dict[str, str]:
+    """Imputed zeros remain distinguishable from actual zero observations."""
+    result = {target: ("imputed_zero" if value is None else
+                       "observed_partial" if call.censored else "observed")
+              for target, value in _raw_target_values(call).items()}
+    eligible = {"cpu_time_seconds": call.cpu_time_eligible, "cpu_avg_cores": call.cpu_time_eligible,
+        "cpu_peak_cores": call.cpu_peak_cores_eligible, "sampled_peak_rss_bytes": call.sampled_peak_rss_eligible,
+        "memory_total_peak_bytes": call.memory_eligible, "memory_extra_peak_bytes": call.memory_eligible}
+    for target in result:
+        if result[target] == "observed" and not eligible.get(target, call.pmu_eligible if target.startswith("pmu_") else True):
+            result[target] = "approximate_observation"
+    if (call.confirmed_timeout and _valid_load_value(call.timeout_duration_lower_bound_ms)
+            and call.timeout_duration_lower_bound_ms > 0):
+        result["latency_ms"] = "timeout_lower_bound"
+        result["workload_latency_ms"] = "timeout_lower_bound"
+    return result
 
 
 def _valid_load_value(value: Any) -> bool:
@@ -271,6 +269,89 @@ def _single_head(command: str | None) -> str | None:
         return None
     heads = shell_command_heads(command)
     return heads[0] if len(heads) == 1 else None
+
+
+def _semantic_core_key(features: CommandFeatures | None) -> NodeKey | None:
+    """Return a repository-independent identity for a completely parsed entry.
+
+    A tool-only core adds nothing beyond the guarded binary node. Partial
+    parses may contain repository-specific scripts or unknown option grammars,
+    so they deliberately fall through to the coarser coverage fallbacks.
+    """
+
+    if features is None or features.status != "complete":
+        return None
+    core = tuple(sorted(features.core))
+    if not any(not feature.startswith("tool=") for feature in core):
+        return None
+    return "semantic_core", json.dumps(core, ensure_ascii=False, separators=(",", ":"))
+
+
+@lru_cache(maxsize=16384)
+def _command_semantic_key(command: str) -> NodeKey | None:
+    """Semantic identity for a complete shell call, never just its first clause.
+
+    ToolKB owns whole-call observations, so a compound signature retains every
+    parsed entry and its operator. The standard OpenClaw working-directory
+    guard is removed as launch scaffolding. Other multiline commands are left
+    to the coarser coverage fallbacks because the lightweight tokenizer does
+    not retain newline operators.
+    """
+
+    if not command.strip():
+        return None
+    lines = command.splitlines()
+    if len(lines) > 1:
+        prelude = tuple(shell_command_prefix_tokens(lines[0]))
+        if not (
+            len(prelude) == 6
+            and prelude[0] == "cd"
+            and prelude[-3:] == ("||", "exit", "$?")
+        ):
+            return None
+        command = "\n".join(lines[1:]).strip()
+        if not command or "\n" in command or "\r" in command:
+            return None
+    tokens = tuple(shell_command_prefix_tokens(command))
+    if not tokens:
+        return None
+    signature: list[Any] = []
+    segment: list[str] = []
+    segment_cores: list[tuple[str, ...]] = []
+    operators = {";", "&&", "||", "|"}
+
+    def append_segment() -> bool:
+        if not segment:
+            return False
+        features = default_service().argv(tuple(segment), ParseContext())
+        if features.status != "complete":
+            return False
+        core = tuple(sorted(features.core))
+        signature.append(core)
+        segment_cores.append(core)
+        segment.clear()
+        return True
+
+    for token in tokens:
+        if token in operators:
+            if not append_segment():
+                return None
+            signature.append(token)
+        elif token and set(token) <= set(";&|()!"):
+            # Background jobs, grouping, and unrecognized shell operators need
+            # AST semantics before their whole-call labels can transfer safely.
+            return None
+        else:
+            segment.append(token)
+    if not append_segment():
+        return None
+    if len(segment_cores) == 1 and not any(
+        not feature.startswith("tool=") for feature in segment_cores[0]
+    ):
+        return None
+    return "semantic_call", json.dumps(
+        signature, ensure_ascii=False, separators=(",", ":"),
+    )
 
 
 def _repo_keys(tool_name: str, command: str | None) -> list[NodeKey]:
@@ -294,9 +375,11 @@ def _repo_keys(tool_name: str, command: str | None) -> list[NodeKey]:
 
 
 def _public_keys(tool_name: str, command: str | None) -> list[NodeKey]:
-    """Public-layer node keys: binary head (if honest), tool name, global."""
+    """Public keys: semantic entry, safe binary candidate, tool, global."""
 
     keys: list[NodeKey] = []
+    if isinstance(command, str) and (semantic := _command_semantic_key(command)) is not None:
+        keys.append(semantic)
     head = _single_head(command)
     if head is not None:
         keys.append(("binary_head", head))
@@ -492,7 +575,11 @@ class RuntimeToolResourceKB(_ReplayHistory):
                 lengths = identity_prefix_lengths(tokens, argv_identity(tokens, repo), repo)
             else:
                 lengths = frozenset()
-            allowed = {"exact_command"}
+            # Prefer compatible command identity, then use public evidence from
+            # all training repositories to preserve cold-start coverage. The
+            # outer-tool node (for example, all ``exec`` calls) precedes the
+            # final node that combines every tool call.
+            allowed = {"exact_command", "semantic_call", "tool_name", "global"}
             allowed.update(f"command_prefix_depth_{n}" for n in lengths)
             if 1 in lengths:
                 allowed.add("binary_head")
@@ -540,7 +627,7 @@ class RuntimeToolResourceKB(_ReplayHistory):
         )
 
     def predict_load_samples(self, query: ToolCallQuery) -> dict[str, dict[str, Any]]:
-        """Public per-target evidence API; no synthetic values or global mixing.
+        """Public per-target evidence API with all-repository cold-start fallback.
 
         Call-level labels keep compound commands intact. This API shares the
         causal watermark with the legacy query and returns copies of evidence.
@@ -555,9 +642,6 @@ class RuntimeToolResourceKB(_ReplayHistory):
         result = {}
         for target, source in LOAD_TARGET_SOURCES.items():
             for scope, (kind, _), values in self._levels(query.repo, source, query.tool_name, query.command, query.memory_measurement):
-                # Unrelated tools are not workload predictions, even at cold start.
-                if kind == "global":
-                    continue
                 valid = tuple(float(v) for v in values if _valid_load_value(v))
                 if valid:
                     result[target] = {"values": valid, "context": (scope, kind)}
@@ -583,8 +667,6 @@ class RuntimeToolResourceKB(_ReplayHistory):
             for scope, (kind, _), values in self._levels(
                 query.repo, source, query.tool_name, query.command
             ):
-                if kind == "global":
-                    continue
                 valid = tuple(float(value) for value in values if _valid_load_value(value))
                 if valid:
                     result[metric] = {"values": valid, "context": (scope, kind)}
@@ -652,7 +734,7 @@ class RuntimeToolResourceKB(_ReplayHistory):
 
 def _metric_key(target: str, key: NodeKey, measurement: str | None) -> NodeKey:
     if "memory_" in target:
-        return key[0], str(measurement) + "\x1f" + key[1]
+        return key[0], (measurement or "cgroup_v2_environment_union_v1") + "\x1f" + key[1]
     return key
 
 
@@ -731,6 +813,9 @@ class ClauseObservation:
     in_subst: bool = False
     pipeline_position: int = -1
     stdin_from_pipe: bool | None = None
+    censored: bool = False
+    confirmed_timeout: bool = False
+    imputed_targets: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.argv:
@@ -891,11 +976,13 @@ def _clause_value(obs: ClauseObservation, source: str) -> float | None:
         values = {"duration_ms": obs.latency_ms, "cpu_peak_cores": obs.cpu_peak_cores,
                   "cpu_time_seconds": None if obs.cpu_ns_cumulative is None else obs.cpu_ns_cumulative / 1e9,
                   "sampled_peak_rss_bytes": None if obs.sampled_peak_rss_mb is None else obs.sampled_peak_rss_mb * 1_000_000.0}
-        from clawtune_sidecar.monitoring.environment_memory import memory_labels
-        values.update(memory_labels(asdict(obs)))
+        values.update(memory_total_peak_bytes=obs.memory_total_peak_bytes,
+                      memory_extra_peak_bytes=obs.memory_extra_peak_bytes)
         cpu = values["cpu_time_seconds"]
         values["cpu_avg_cores"] = (cpu / (obs.latency_ms / 1000)
                                    if _valid_load_value(cpu) and _valid_load_value(obs.latency_ms) and obs.latency_ms > 0 else None)
+        if values["cpu_avg_cores"] is None and "cpu_time_seconds" in obs.imputed_targets:
+            values["cpu_avg_cores"] = 0.0
         value = values.get(target)
         return float(value) if _valid_load_value(value) else None
     if source == _LATENCY_MS:
@@ -932,10 +1019,17 @@ def _clause_repo_keys(bin_: str, argv: Sequence[str]) -> list[NodeKey]:
     return keys
 
 
-def _clause_public_keys(bin_: str) -> list[NodeKey]:
-    """Public clause keys: coarse bin prior then global."""
+def _clause_public_keys(
+    bin_: str,
+    features: CommandFeatures | None = None,
+) -> list[NodeKey]:
+    """Public clause keys: semantic entry, safe bin candidate, then global."""
 
-    return [("bin", bin_), ("global", "")]
+    keys: list[NodeKey] = []
+    if (semantic := _semantic_core_key(features)) is not None:
+        keys.append(semantic)
+    keys.extend((("bin", bin_), ("global", "")))
+    return keys
 
 
 # Downstream pipeline stages that only select, count, or present upstream output
@@ -1037,10 +1131,10 @@ def _compose_compound_latency_ms(
 class ClauseResourceKB(_ReplayHistory):
     """TrieKB: causal clause-prefix history for time and resource targets.
 
-    Public bin priors are frozen after construction; repo clause/prefix nodes
-    accumulate causally (strict ``ts_end < query ts_start``) under the same
-    monotonic-query guard as :class:`RuntimeToolResourceKB`. The latency-bucket
-    API is one view of this history.
+    Public semantic/bin/global priors are frozen after construction; repo
+    clause/prefix nodes accumulate causally (strict ``ts_end < query ts_start``)
+    under the same monotonic-query guard as :class:`RuntimeToolResourceKB`.
+    The latency-bucket API is one view of this history.
     """
 
     def __init__(self) -> None:
@@ -1065,7 +1159,7 @@ class ClauseResourceKB(_ReplayHistory):
         cls,
         observations: Iterable[ClauseObservation],
     ) -> ClauseResourceKB:
-        """Fit frozen public bin/global priors from historical clauses."""
+        """Fit frozen public semantic/bin/global priors from historical clauses."""
 
         acc: dict[str, dict[NodeKey, list[float]]] = {
             source: {} for source in _CLAUSE_SOURCES
@@ -1075,7 +1169,7 @@ class ClauseResourceKB(_ReplayHistory):
             obs = normalized_observation(obs)
             if is_pipeline_dependent_consumer(obs):
                 continue
-            keys = _clause_public_keys(obs.bin)
+            keys = _clause_public_keys(obs.bin, observation_features(obs))
             for source in _CLAUSE_SOURCES:
                 value = _clause_value(obs, source)
                 if value is None:
@@ -1132,6 +1226,7 @@ class ClauseResourceKB(_ReplayHistory):
     def _select(
         self, repo: str, source: str, bin_: str, argv: Sequence[str],
         memory_measurement: str = "cgroup_v2_environment_union_v1",
+        command_features: CommandFeatures | None = None,
     ) -> tuple[Sequence[float], str, str, tuple[str, ...]] | None:
         repo_nodes = self._repo.get(repo, {}).get(source, {})
         public_nodes = self._public[source]
@@ -1150,8 +1245,10 @@ class ClauseResourceKB(_ReplayHistory):
             values = repo_nodes.get(_metric_key(source, key, memory_measurement))
             if values:
                 return values, "repo", key[0], tuple(path)
-        for key in _clause_public_keys(bin_):
-            if key[0] == "global" or 1 not in lengths:
+        if command_features is None:
+            command_features = default_service().argv(argv, ParseContext(repo=repo))
+        for key in _clause_public_keys(bin_, command_features):
+            if key[0] == "bin" and 1 not in lengths:
                 continue
             path.append(f"public:{key[0]}")
             values = public_nodes.get(_metric_key(source, key, memory_measurement))
@@ -1171,14 +1268,14 @@ class ClauseResourceKB(_ReplayHistory):
         for clause in clauses:
             if is_pipeline_dependent_consumer(clause):
                 continue
+            features = clause_features(clause, repo)
             targets = {}
             for target, source in _CLAUSE_LOAD_SOURCES.items():
                 selected = self._select(repo, source, str(clause["bin"]), clause["argv"],
-                                        clause.get("memory_measurement", "cgroup_v2_environment_union_v1"))
+                                        clause.get("memory_measurement", "cgroup_v2_environment_union_v1"),
+                                        features)
                 if selected is not None:
                     values, scope, kind, _ = selected
-                    if kind == "global":
-                        continue
                     valid = tuple(float(v) for v in values if _valid_load_value(v))
                     if valid:
                         targets[target] = {"values": valid, "context": (scope, kind)}
@@ -1187,9 +1284,12 @@ class ClauseResourceKB(_ReplayHistory):
 
     def _clause_median_latency_ms(
         self, repo: str, bin_: str, argv: Sequence[str],
+        command_features: CommandFeatures | None = None,
     ) -> float | None:
         """Median clause wall latency from the same evidence as the bucket."""
-        selected = self._select(repo, _LATENCY_MS, bin_, argv)
+        selected = self._select(
+            repo, _LATENCY_MS, bin_, argv, command_features=command_features,
+        )
         if selected is None:
             return None
         values, _, _, _ = selected
@@ -1217,11 +1317,15 @@ class ClauseResourceKB(_ReplayHistory):
         or ``None`` when any clause lacks median latency evidence.
         """
         medians: dict[int, float] = {}
+        clauses_by_index = {index: clause for index, clause in executable}
         for item in outcomes:
             if item.prediction is None:
                 return None
             median = self._clause_median_latency_ms(
-                repo, item.bin, item.argv,
+                repo,
+                item.bin,
+                item.argv,
+                clause_features(clauses_by_index[item.clause_index], repo),
             )
             if median is None:
                 return None
@@ -1249,10 +1353,14 @@ class ClauseResourceKB(_ReplayHistory):
         bin_: str,
         argv: Sequence[str],
         buckets: LatencyBuckets,
+        *,
+        command_features: CommandFeatures | None = None,
     ) -> ClauseLatencyBucketPrediction:
         """Predict the modal empirical latency bucket for one clause."""
 
-        selected = self._select(repo, _LATENCY_MS, bin_, argv)
+        selected = self._select(
+            repo, _LATENCY_MS, bin_, argv, command_features=command_features,
+        )
         if selected is None:
             raise ValueError("no matching clause latency node")
         values, scope, kind, path = selected
@@ -1376,6 +1484,7 @@ class ClauseResourceKB(_ReplayHistory):
                 bin_,
                 argv,
                 buckets,
+                command_features=clause_features(clause, repo),
             )
         except (KeyError, TypeError, ValueError) as exc:
             return ClauseLatencyBucketOutcome(

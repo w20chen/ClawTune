@@ -6,7 +6,9 @@
   "properties": {
     "update_token": {"type": "string", "minLength": 1},
     "exit_code": {"type": ["integer", "null"]},
-    "signal": {"type": ["integer", "null"], "minimum": 0}
+    "signal": {"type": ["integer", "null"], "minimum": 0},
+    "confirmed_timeout": {"type": "boolean", "default": false},
+    "timeout_duration_lower_bound_ms": {"type": ["number", "null"], "exclusiveMinimum": 0, "description": "Actual effective timeout budget that triggered this exit, when known."}
   },
   "additionalProperties": false
 }

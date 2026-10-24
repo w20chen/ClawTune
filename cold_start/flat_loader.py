@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from tool_resource.runtime_kb import ClauseObservation, CompletedCall, is_pipeline_dependent_consumer
-from tool_resource.sdk import clause_cpu_time_ns
+from tool_resource.sdk import clause_cpu_time_ns, interrupted_workload_reason
 
 
 def valid(value) -> bool:
@@ -36,6 +36,11 @@ def _censored_call(data: dict) -> bool:
     records = [data]
     if isinstance(observation, dict):
         records.append(observation)
+        # A successful pipeline can intentionally terminate an upstream child
+        # with SIGPIPE. Only infer whole-call interruption from clause status
+        # when the outer call did not explicitly report successful completion.
+        if data.get("success") is not True:
+            records.extend(row for row in observation.get("clauses", []) if isinstance(row, dict))
     if isinstance(timeline, dict):
         records.append(timeline)
     for record in tuple(records):
@@ -43,13 +48,16 @@ def _censored_call(data: dict) -> bool:
         if isinstance(status, dict):
             records.append(status)
     for record in records:
+        if (record.get("state") == "signaled" or record.get("replay_execution") == "incomplete"
+                or interrupted_workload_reason({"signal": record.get("signal")}) is not None):
+            return True
         if any(record.get(flag) is True for flag in (
-            "censored", "timed_out", "timeout", "cancelled", "canceled", "aborted",
+            "censored", "confirmed_timeout", "timed_out", "timeout", "cancelled", "canceled", "aborted",
             "interrupted", "protocol_timeout",
         )):
             return True
-        for field in ("error_type", "outcome", "code", "reason", "unavailable_reason"):
-            value = record.get(field)
+        for key in ("error_type", "outcome", "code", "reason", "unavailable_reason"):
+            value = record.get(key)
             if isinstance(value, str) and any(marker in value.lower() for marker in (
                 "timeout", "timed out", "cancel", "abort", "interrupt", "killed",
             )):
@@ -187,7 +195,10 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
                 # call duration and paired CPU average stay numerically exact.
                 call = CompletedCall(repo, name, command, 0., duration / 1000,
                     censored=censored, workload_duration_required=command is not None,
-                    cpu_time_seconds=float(cpu) if eligible_cpu else None, cpu_time_eligible=eligible_cpu,
+                    cpu_time_seconds=float(cpu) if valid(cpu) else None, cpu_time_eligible=eligible_cpu,
+                    confirmed_timeout=data.get("confirmed_timeout") is True,
+                    timeout_duration_lower_bound_ms=(data.get("timeout_duration_lower_bound_ms")
+                        if valid(data.get("timeout_duration_lower_bound_ms")) else None),
                     outcome="ok" if data.get("success") is True else "error")
                 if action is not None:
                     call = replace(call, ts_start=action.ts_start, ts_end=action.ts_end)
@@ -203,14 +214,10 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
             if (observation.get("tool_call_id") != data.get("tool_call_id")
                     or (command is not None and observation.get("command") != command)):
                 raise ValueError(f"{path.name}:{line_number}: resource/action identity mismatch")
-            if censored:
-                result.counts["withheld_censored_clause_observations"] += 1
-                continue
             if (observation.get("eligible_for_kb") is not True
                     or observation.get("telemetry_quality") != "ok"
                     or observation.get("telemetry_status") != "ok"):
-                result.counts["ineligible_resource_observation"] += 1
-                continue
+                result.counts["approximate_resource_observation"] += 1
             enriched_clauses = recorded_clause_structure(
                 command, observation.get("clauses", []), recorded_only=recorded_clauses_only,
                 resolve_input_sources=not recorded_clauses_only)
@@ -221,33 +228,25 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
                 } for clause in enriched_clauses)
             accepted_clauses = []
             for clause in enriched_clauses:
-                availability = clause.get("availability") or {}
+                clause_status = clause.get("status") or {}
+                if (clause_status.get("state") == "signaled"
+                        or interrupted_workload_reason(clause_status) is not None):
+                    result.counts["partial_clause_observations"] += 1
                 if clause.get("eligible_for_kb") is not True or clause.get("telemetry_quality") != "ok":
-                    result.counts["ineligible_clause"] += 1
-                    continue
+                    result.counts["approximate_clause_observations"] += 1
                 argv = clause.get("argv")
                 if not isinstance(argv, list) or not argv or not all(isinstance(arg, str) for arg in argv):
                     raise ValueError(f"{path.name}: invalid clause argv")
                 elapsed = clause.get("latency_ms")
-                elapsed = float(elapsed) if availability.get("latency") == "ok" and valid(elapsed) else None
+                elapsed = float(elapsed) if valid(elapsed) else None
                 cpu_ns = clause_cpu_time_ns(clause)
                 if cpu_ns is None and valid(clause.get("cpu_ns_cumulative")):
                     result.counts["withheld_clause_cpu_without_interval_evidence"] += 1
                 peak = clause.get("peak_cpu_cores")
-                profile = clause.get("cpu_window_profile") or []
-                windows = [p.get("cpu_cores") for p in profile
-                           if valid(p.get("span_s")) and math.isclose(p["span_s"], .5, abs_tol=1e-6)
-                           and valid(p.get("cpu_cores"))]
-                if not (availability.get("cpu") == "ok" and valid(peak) and windows
-                        and math.isclose(max(windows), peak, rel_tol=1e-5, abs_tol=1e-6)):
-                    if valid(peak):
-                        result.counts["withheld_clause_peak_unverified_500ms"] += 1
-                    peak = None
+                peak = float(peak) if valid(peak) else None
                 memory = clause.get("sampled_peak_rss_mb")
                 # KB consumers interpret this historical field name as decimal MB.
-                memory = memory * rss_scale / 1_000_000 if valid(memory) and availability.get("memory") == "ok" else None
-                if elapsed is None and cpu_ns is None and peak is None and memory is None:
-                    continue
+                memory = memory * rss_scale / 1_000_000 if valid(memory) else None
                 start, end = 0., (elapsed or 0.) / 1000
                 # Validate recorded clocks even when storing zero-based training
                 # intervals. Fully clockless legacy rows retain their old path.
@@ -267,7 +266,9 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
                     cpu_peak_cores=peak, sampled_peak_rss_mb=memory,
                     in_loop=clause.get("in_loop") is True, in_pipe=clause.get("in_pipe") is True,
                     in_subst=clause.get("in_subst") is True, pipeline_position=int(clause.get("pipeline_position", -1)),
-                    stdin_from_pipe=clause.get("stdin_from_pipe"))
+                    stdin_from_pipe=clause.get("stdin_from_pipe"),
+                    censored=censored or clause_status.get("state") == "signaled",
+                    confirmed_timeout=data.get("confirmed_timeout") is True)
                 result.clauses.append(accepted)
                 accepted_clauses.append(accepted)
                 if action is not None:
@@ -283,14 +284,10 @@ def read_task(path: Path, *, repo: str, task_id: str, rss_unit: str,
                     only = workload_clauses[0]
                     elapsed = only.get("latency_ms")
                     if (not is_pipeline_dependent_consumer(only)
-                            and only.get("eligible_for_kb") is True and only.get("telemetry_quality") == "ok"
-                            and (only.get("availability") or {}).get("latency") == "ok"
                             and valid(elapsed) and elapsed > 0):
                         workload = elapsed / 1000
                 elif workload_clauses and all(
-                    c.get("eligible_for_kb") is True and c.get("telemetry_quality") == "ok"
-                    and (c.get("availability") or {}).get("latency") == "ok"
-                    and valid(c.get("ts_start")) and valid(c.get("ts_end"))
+                    valid(c.get("ts_start")) and valid(c.get("ts_end"))
                     and c["ts_end"] > c["ts_start"] for c in workload_clauses
                 ):
                     from clawtune_sidecar.predictors.tool_resource import _retained_workload_duration_seconds

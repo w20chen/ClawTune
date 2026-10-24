@@ -1634,10 +1634,14 @@ def test_host_openclaw_openclaw_config_uses_only_public_top_level_keys(tmp_path:
     assert parsed["tools"]["exec"]["pathPrepend"] == _SANDBOX_TASK_PATH.split(":")
 
 
-def test_host_openclaw_openclaw_config_omits_unsupported_docker_platform(tmp_path: Path) -> None:
+@pytest.mark.parametrize("platform", ["linux/amd64", "linux/arm64"])
+@pytest.mark.parametrize("cpus,memory", [(2, "1536m"), (0, "")])
+def test_host_openclaw_resource_limits_preserve_platform_selection(
+    tmp_path: Path, platform: str, cpus: int, memory: str,
+) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "docker:\n  platform: linux/amd64\n",
+        f'docker:\n  platform: {platform}\n  cpus: {cpus}\n  memory_limit: "{memory}"\n',
         encoding="utf-8",
     )
     config = RunnerConfig.from_yaml(config_path, repo_root=tmp_path)
@@ -1650,6 +1654,9 @@ def test_host_openclaw_openclaw_config_omits_unsupported_docker_platform(tmp_pat
     docker_cfg = json.loads(raw)["agents"]["defaults"]["sandbox"]["docker"]
 
     assert "platform" not in docker_cfg
+    assert config.docker.platform == platform
+    assert docker_cfg.get("cpus") == (cpus or None)
+    assert docker_cfg.get("memory") == (memory or None)
 
 
 def test_host_openclaw_propagates_required_cgroup_to_sandbox(tmp_path: Path) -> None:

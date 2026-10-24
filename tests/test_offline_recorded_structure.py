@@ -169,10 +169,22 @@ def test_v6_strict_structure_fails_without_parser(tmp_path, changes):
 
 
 @pytest.mark.parametrize("gates", [{"censored": True}, {"eligible": False}])
-def test_v6_quality_gates_precede_structure_validation(tmp_path, gates):
+def test_v6_partial_admission_still_requires_recorded_structure(tmp_path, gates):
     from offline.runner import load_task
     task = write_v6(tmp_path, changes={"in_pipe": None}, **gates)
-    assert not load_task(tmp_path, task, "MB", recorded_clauses_only=True).clauses
+    with pytest.raises(ValueError, match="requires recorded"):
+        load_task(tmp_path, task, "MB", recorded_clauses_only=True)
+    # Quality/censoring no longer drops valid mapped rows before validation.
+    task = write_v6(tmp_path, **gates)
+    loaded = load_task(tmp_path, task, "MB", recorded_clauses_only=True)
+    assert len(loaded.clauses) == 1
+    row = loaded.clauses[0]
+    assert row.latency_ms == 1000
+    assert row.cpu_ns_cumulative == 500_000_000
+    assert row.sampled_peak_rss_mb == 8
+    assert row.censored == gates.get("censored", False)
+    assert row.memory_total_peak_bytes == row.memory_extra_peak_bytes == 0
+    assert set(row.imputed_targets) == {"memory_total_peak_bytes", "memory_extra_peak_bytes"}
 
 
 @pytest.mark.parametrize("online", [False, True])

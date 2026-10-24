@@ -210,14 +210,26 @@ def test_environment_memory_contract():
     Draft202012Validator(schema).validate(labels())
 
 
-def test_live_clause_memory_reloads_from_trace_without_copying_cpu(tmp_path, monkeypatch):
+@pytest.mark.parametrize("frozen", [False, True])
+def test_live_clause_memory_reloads_from_trace_without_copying_cpu(tmp_path, monkeypatch, frozen):
     from types import SimpleNamespace
     from test_tool_resource_predictor import _tool_request, _tool_completion, _runtime_sample
     from clawtune_sidecar.predictors.tool_resource import ToolResourcePredictor, load_openclaw_trace_observations
     from clawtune_sidecar.trace import AgentTestBenchTraceWriter
     from tool_resource.runtime_kb import LatencyBuckets
+    if frozen:
+        seed = tmp_path / "kb"
+        seed.mkdir()
+        for name, kb in (("clause-resource-kb.json", ClauseResourceKB()),
+                         ("runtime-tool-resource-kb.json", RuntimeToolResourceKB()),
+                         ("clause-lattice-time-kb.json", LatticeTimeKB())):
+            (seed / name).write_text(json.dumps(kb.to_json_obj()), encoding="utf-8")
     predictor = ToolResourcePredictor.from_traces(openclaw_trace_paths=(), ebpf_trace_paths=(),
-        buckets=LatencyBuckets((100, 1000)), repo="r", artifact_dir=tmp_path / "kb")
+        buckets=LatencyBuckets((100, 1000)), repo="r", artifact_dir=tmp_path / "kb", frozen=frozen)
+    def snapshots():
+        return [predictor.kb.to_json_obj(), predictor.continuous_kb.to_json_obj(),
+                predictor.lattice_kb.to_json_obj(), predictor.edge_kappa.to_snapshot()]
+    before = snapshots() if frozen else None
     request = _tool_request("e", "c", "pytest tests/").model_copy(update={"repo": "r"})
     event = _tool_completion("e", "c").model_copy(update={"repo": "r", "execution_id": "x"})
     sample = replace(_runtime_sample("e", "c"), environment_memory=labels() | {
@@ -231,6 +243,8 @@ def test_live_clause_memory_reloads_from_trace_without_copying_cpu(tmp_path, mon
     predictor.flush_kb_updates(timeout_seconds=10)
     assert not predictor.kb_updates_pending()
     assert len(sample.environment_memory["memory_clause_observations"]) == 1
+    if frozen:
+        assert snapshots() == before
     writer = AgentTestBenchTraceWriter(tmp_path / "traces")
     writer.record_tool_started(request)
     writer.record_tool(event, sample)
@@ -246,7 +260,8 @@ def test_live_clause_memory_reloads_from_trace_without_copying_cpu(tmp_path, mon
     assert len(replay.clauses) == 1
     assert replay.clauses[0].repo == "swe-rebench:org/repo"
     assert replay.clauses[0].memory_extra_peak_bytes == 200
-    assert replay.clauses[0].cpu_ns_cumulative is None
+    assert replay.clauses[0].cpu_ns_cumulative == 0
+    assert "cpu_time_seconds" in replay.clauses[0].imputed_targets
     rows = [row for trace in loaded for row in trace.observations]
     assert len(rows) == 1 and rows[0].memory_extra_peak_bytes == 200
     assert rows[0].cpu_ns_cumulative is None and rows[0].latency_ms is None

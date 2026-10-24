@@ -200,7 +200,7 @@ def test_unsupported_llc_never_falls_back_to_generic_cache_misses() -> None:
     assert not any(spec.event_type == 0 and spec.config == 3 for spec in EVENT_SPECS)
 
 
-def test_permission_fallback_is_user_only_and_not_kb_eligible() -> None:
+def test_permission_fallback_is_user_only_with_partial_quality() -> None:
     backend = FakePerfBackend(deny_kernel=True)
     collector = PmuCollector(max_active=1, backend=backend)
     collector.begin("exec", 12)
@@ -268,7 +268,7 @@ def test_consumed_profile_remains_idempotent_for_a_delayed_exit() -> None:
     assert collector.finish("exec") is original
 
 
-def test_only_reliable_pmu_metrics_enter_online_kb() -> None:
+def test_reliable_pmu_metrics_enter_online_kb_and_roundtrip() -> None:
     profile = PmuCollector(max_active=1, backend=FakePerfBackend())
     profile.begin("exec", 12)
     metrics = _quality_gated_pmu_metrics(profile.finish("exec").to_dict())
@@ -340,7 +340,7 @@ def test_online_kb_rejects_generic_cache_miss_relabeling() -> None:
 
 
 @pytest.mark.parametrize("reason", ["aborted", "signal_terminated", "completion_fallback", "root_exited_before_callback"])
-def test_incomplete_lifecycle_never_produces_training_labels(reason):
+def test_incomplete_lifecycle_keeps_partial_quality_diagnostic(reason):
     collector = PmuCollector(backend=FakePerfBackend())
     collector.begin("exec", 12)
     profile = collector.finish("exec", reason=reason)
@@ -418,8 +418,16 @@ def test_llc_intensity_uses_inherited_perf_time_not_reporting_wall_time():
     assert _quality_gated_pmu_metrics(profile)["llc_read_accesses_per_cpu_second"] == 5000.
 
 
-@pytest.mark.parametrize("case", ["multiplex", "kernel", "missing", "aborted", "zero_time", "invalid_llc"])
-def test_unreliable_llc_intensity_is_null(case):
+@pytest.mark.parametrize("case,expected", [
+    ("multiplex", (10_000 / .99, 1_000 / .99)),
+    ("kernel", (10_000., 1_000.)),
+    ("missing", (None, 1_000.)),
+    ("aborted", (10_000., 1_000.)),
+    ("zero_time", (None, None)),
+    ("invalid_llc", (10_000., 20_000.)),
+])
+def test_unreliable_llc_quality_retained_while_available_intensity_trains(case, expected):
+    from tool_resource.runtime_kb import _target_values, training_target_provenance
     backend = FakePerfBackend(ratio=.99 if case == "multiplex" else 1.,
                               deny_kernel=case == "kernel",
                               unsupported={"llc_read_accesses"} if case == "missing" else set())
@@ -431,9 +439,35 @@ def test_unreliable_llc_intensity_is_null(case):
     collector.begin("bad", 12)
     profile = collector.finish("bad", reason="aborted" if case == "aborted" else "execution_exited")
     metrics = _quality_gated_pmu_metrics(profile.to_dict())
-    for name in ("llc_read_accesses_per_cpu_second", "llc_read_misses_per_cpu_second"):
+    assert not profile.coverage.eligible_for_kb
+    assert metrics["eligible"] is False
+    names = ("llc_read_accesses_per_cpu_second", "llc_read_misses_per_cpu_second")
+    for name, value in zip(names, expected):
+        # The collector still labels these profiles unreliable. Training keeps
+        # computable approximate rates; an absent counter/denominator stays
+        # missing until the shared KB policy fills it with a marked zero.
         assert profile.derived[name] is None
-        assert metrics[name] is None
+        if value is None:
+            assert metrics[name] is None
+        else:
+            assert metrics[name] == pytest.approx(value)
+    call = CompletedCall(
+        "repo", "exec", "python job.py", 0, 1,
+        censored=case == "aborted", pmu_eligible=metrics["eligible"],
+        **{"pmu_" + name: metrics[name] for name in names},
+    )
+    targets = _target_values(call)
+    provenance = training_target_provenance(call)
+    kb = RuntimeToolResourceKB()
+    kb.observe_completed_call(call)
+    evidence = kb.predict_pmu_samples(ToolCallQuery("repo", "exec", "python job.py", 2))
+    for name, value in zip(names, expected):
+        expected_value = 0. if value is None else value
+        assert targets["pmu_" + name] == pytest.approx(expected_value)
+        assert evidence[name]["values"] == pytest.approx((expected_value,))
+        assert provenance["pmu_" + name] == (
+            "imputed_zero" if value is None else
+            "observed_partial" if case == "aborted" else "approximate_observation")
 
 
 def test_llc_intensity_artifact_schema_and_old_profile_compatibility(tmp_path):

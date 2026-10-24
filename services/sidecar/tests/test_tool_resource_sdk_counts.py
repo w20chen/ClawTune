@@ -48,7 +48,7 @@ def test_finish_command_counts_only_accepted_observations(tmp_path: Path, monkey
     monkeypatch.setattr(sdk_module, "_validate_artifact", lambda *args, **kwargs: None)
     monkeypatch.setattr(sdk_module, "_observations_from_call", lambda *args, **kwargs: observations)
     result = sdk.finish_command(run, {})
-    expected = () if mode == "frozen" else (observations[0],)
+    expected = () if mode == "frozen" else (sdk_module._impute_execution_metrics(observations[0]),)
     assert result.kb_observations == expected
     assert result.kb_observations_added == len(expected) == len(kb._pending)
     assert result.kb_update_error == (

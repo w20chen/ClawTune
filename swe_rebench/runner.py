@@ -2728,6 +2728,7 @@ def run_replay(
     *,
     timing: str = "exact",
     timing_scale: float = 1.0,
+    seed_dir: Path | None = None,
 ) -> ContainerResult:
     """Replay one SWE-Rebench case through host-openclaw."""
     if normalize_runtime_mode(config.runtime.mode) != HOST_OPENCLAW_MODE:
@@ -2749,6 +2750,7 @@ def run_replay(
         source_trace=source_trace,
         timing=timing,
         timing_scale=timing_scale,
+        seed_dir=seed_dir,
     )
 
 
@@ -3133,6 +3135,7 @@ def main() -> None:
     replay.add_argument("--dataset", default=None, help="Task dataset containing the source case")
     replay.add_argument("--tasks", default=None, help="Simple JSON task list containing the source case")
     replay.add_argument("--task-id", required=True, help="SWE-Rebench instance ID")
+    replay.add_argument("--seed", default=None, help="Immutable KB seed bundle; defaults to seeds/bootstrap-v2")
     replay.add_argument("--timing", choices=("exact", "scale", "none"), default="exact")
     replay.add_argument("--timing-scale", type=float, default=1.0)
     replay.add_argument(
@@ -3267,6 +3270,7 @@ def main() -> None:
             _resolve_path(args.trace, repo_root),
             timing=args.timing,
             timing_scale=args.timing_scale,
+            seed_dir=_resolve_path(args.seed, repo_root) if args.seed else None,
         )
         _log(
             f"Replay {'OK' if result.exit_code == 0 and not result.error else 'FAIL'}: "

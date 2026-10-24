@@ -8,6 +8,7 @@
     "train_tasks": {"type": "integer", "minimum": 0},
     "test_tasks": {"type": "integer", "minimum": 0},
     "test_updates": {"const": 0},
+    "split_by": {"enum": ["task", "repository"]},
     "command_parsing": {
       "type": "object", "additionalProperties": false, "required": ["scope"],
       "properties": {
@@ -111,6 +112,18 @@
           }
         },
         "metrics": {"$ref": "#/properties/metrics"},
+        "repositories": {
+          "type": "array", "items": {
+            "type": "object", "required": ["benchmark", "repo", "metrics"],
+            "additionalProperties": false,
+            "properties": {
+              "benchmark": {"type": "string"},
+              "repo": {"type": "string"},
+              "metrics": {"$ref": "#/properties/metrics"},
+              "availability": {"$ref": "#/$defs/modelReport/properties/availability"}
+            }
+          }
+        },
         "availability": {
           "type": "object", "additionalProperties": {
             "type": "object", "required": ["queries", "labeled", "predicted", "scored"],
@@ -119,7 +132,8 @@
               "queries": {"type": "integer", "minimum": 0},
               "labeled": {"type": "integer", "minimum": 0},
               "predicted": {"type": "integer", "minimum": 0},
-              "scored": {"type": "integer", "minimum": 0}
+              "scored": {"type": "integer", "minimum": 0},
+              "unavailable_reasons": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
             }
           }
         }

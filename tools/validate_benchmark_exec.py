@@ -85,7 +85,6 @@ def main() -> int:
         call_id = "call-1"
         backend = TerminalBackend.__new__(TerminalBackend)
         backend.container = container
-        backend.timeout = 120
         backend.deadline = time.monotonic() + 180
         backend.sidecar = client
         backend.runtime_id = runtime_id
@@ -100,7 +99,7 @@ def main() -> int:
         common = dict(
             schema_version="clawtune.v1", occurred_at=datetime.now(timezone.utc).isoformat(),
             plugin_version="0.1.0", gateway_id="swe-rebench", runtime_id=runtime_id,
-            run_id="acceptance", session_id=runtime_id, session_key=None, agent_id=None,
+            run_id="acceptance", session_id=runtime_id, session_key=None, agent_id=None, repo=backend.repo,
             tool_call_id=call_id, tool_name="terminal_exec" if mode == "terminal" else "exec",
         )
         before = dict(common, event_id=f"{runtime_id}-before", tool_kind="shell",
@@ -161,8 +160,12 @@ def main() -> int:
                           raw_result=result, resource_scope=None)
         client._request("POST", "/v1/events/tool-completed", completion, timeout=60)
         if mode == "terminal" and index == 0:
-            backend.timeout = 1
             timeout_command = "sleep 30 & echo $! > /tmp/clawtune-timeout-child; wait"
+            timed_before = dict(before, tool_call_id="timeout-call", event_id=runtime_id+"-timeout-before",
+                                raw_params={"command": timeout_command})
+            timed_decision = client._request("POST", "/v1/decisions/tool", timed_before)
+            timed_started = time.monotonic()
+            backend.deadline = time.monotonic() + 5
             try:
                 backend.call("terminal_exec", {"command": timeout_command}, call_id="timeout-call")
                 raise AssertionError("timeout command unexpectedly completed")
@@ -176,11 +179,23 @@ def main() -> int:
             records = state.executions.for_runtime(runtime_id, "swe-rebench")
             timed = next(r for r in records if r.request.tool_call_id == "timeout-call")
             assert timed.exited and timed.signal, "timeout lifecycle was not finalized"
-            assert state.pmu_collector.take(timed.request.execution_id).coverage.eligible_for_kb is False
-            backend.timeout = 120
+            assert timed.confirmed_timeout and timed.timeout_duration_lower_bound_ms > 0
+            assert state.pmu_collector.take(timed.request.execution_id) is not None
+            timeout_completion = dict(completion, tool_call_id="timeout-call", event_id=runtime_id+"-timeout-after",
+                execution_id=timed.request.execution_id, decision_id=timed_decision["decision_id"],
+                lease_id=timed_decision["lease_id"], duration_ms=int((time.monotonic()-timed_started)*1000),
+                succeeded=False, error_type="timeout", raw_result=None, confirmed_timeout=True,
+                timeout_duration_lower_bound_ms=timed.timeout_duration_lower_bound_ms)
+            client._request("POST", "/v1/events/tool-completed", timeout_completion, timeout=60)
+            cancel_command = "sleep 60 & echo $! > /tmp/clawtune-cancel-child; wait"
+            cancel_before = dict(before, tool_call_id="cancel-call", event_id=runtime_id+"-cancel-before",
+                                 raw_params={"command": cancel_command})
+            cancel_decision = client._request("POST", "/v1/decisions/tool", cancel_before)
+            cancel_started = time.monotonic()
+            backend.deadline = time.monotonic() + 180
             with ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(backend.call, "terminal_exec", {
-                    "command": "sleep 60 & echo $! > /tmp/clawtune-cancel-child; wait"
+                    "command": cancel_command
                 }, call_id="cancel-call")
                 for _ in range(100):
                     ready = subprocess.run(["docker", "exec", container, "test", "-s",
@@ -204,9 +219,31 @@ def main() -> int:
             cancelled = next(r for r in state.executions.for_runtime(runtime_id, "swe-rebench")
                              if r.request.tool_call_id == "cancel-call")
             assert cancelled.exited and cancelled.signal
-            assert not state.pmu_collector.take(cancelled.request.execution_id).coverage.eligible_for_kb
-            drained = client._request("POST", f"/v1/gateways/swe-rebench/runtimes/{runtime_id}/drain?timeout_seconds=15&flush_kb=false", {}, timeout=20)
+            assert state.pmu_collector.take(cancelled.request.execution_id) is not None
+            client._request("POST", "/v1/events/tool-completed", dict(completion,
+                tool_call_id="cancel-call", event_id=runtime_id+"-cancel-after",
+                execution_id=cancelled.request.execution_id, decision_id=cancel_decision["decision_id"],
+                lease_id=cancel_decision["lease_id"], duration_ms=int((time.monotonic()-cancel_started)*1000),
+                succeeded=False, error_type="cancelled", raw_result=None), timeout=60)
+            drained = client._request("POST", f"/v1/gateways/swe-rebench/runtimes/{runtime_id}/drain?timeout_seconds=15&flush_kb=true", {}, timeout=20)
             assert drained["drained"], drained
+            for interrupted in (timed, cancelled):
+                summary = state.predictor.execution_telemetry(interrupted.request.execution_id)
+                assert summary is not None and summary.kb_observations_added > 0, summary
+                assert summary.kb_update_error is None, summary
+                if summary.artifact_path:
+                    artifact = json.loads(Path(summary.artifact_path).read_text())
+                    assert artifact["replay_execution"] == "incomplete", artifact
+            lattice = json.loads((args.output / "artifacts/clause-lattice-time-kb.json").read_text())
+            partial_rows = [row for key in ("observations", "pending") for row in lattice.get(key, [])
+                            if row.get("repo") == backend.repo and row.get("bin") == "sleep"]
+            assert partial_rows and all(row.get("censored") for row in partial_rows), partial_rows
+            assert any(row.get("cpu_ns_cumulative") is not None for row in partial_rows), partial_rows
+            from tool_resource.runtime_kb import ToolCallQuery
+            targets = state.predictor.continuous_kb.predict_load_samples(
+                ToolCallQuery(backend.repo, "terminal_exec", timeout_command, time.time()+1))
+            assert timed.timeout_duration_lower_bound_ms in targets["duration_ms"]["values"], targets
+            assert "cpu_time_seconds" in targets and "sampled_peak_rss_bytes" in targets, targets
         return runtime_id
 
     try:
@@ -239,7 +276,7 @@ def main() -> int:
                 execution = row.get("execution") or {}
                 if execution.get("execution_id"):
                     traced.add(execution["execution_id"])
-                    if args.require_ebpf and row.get("record_type") == "span_end":
+                    if args.require_ebpf and row.get("record_type") == "span_end" and not (row.get("resources") or {}).get("censored"):
                         telemetry = (execution.get("tool_resource") or {}).get("call_telemetry") or {}
                         if not telemetry.get("eligible_for_kb") or telemetry.get("telemetry_quality") != "ok":
                             failures.append(f"invalid clause telemetry: {execution['execution_id']}")

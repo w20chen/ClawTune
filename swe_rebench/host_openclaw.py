@@ -412,6 +412,7 @@ def run_host_openclaw_replay_task(
     source_trace: Path,
     timing: str = "exact",
     timing_scale: float = 1.0,
+    seed_dir: Path | None = None,
 ) -> ContainerResult:
     """Replay one trace using the normal host-openclaw topology.
 
@@ -440,6 +441,9 @@ def run_host_openclaw_replay_task(
     agent_stopped = threading.Event()
     agent_cancelled = False
     try:
+        if seed_dir is not None:
+            from clawtune_kb import validate_seed
+            validate_seed(seed_dir)
         plan = load_replay_plan(source_trace, task_id=task.instance_id)
         runtime_plan = adapt_v5_plan(plan)
         if plan.source_format == "v5":
@@ -504,9 +508,9 @@ def run_host_openclaw_replay_task(
         )
         if plan.source_format == "v5" and not config.runtime.kb_frozen:
             from clawtune_kb import initialize_state
-            initialize_state(trace_dir / "tool-resource", config.repo_root / "seeds/bootstrap-v1", owner="replay")
+            initialize_state(trace_dir / "tool-resource", seed_dir or config.repo_root / "seeds/bootstrap-v2", owner="replay")
         else:
-            _seed_runtime_tool_resource_kb(trace_dir, config)
+            _seed_runtime_tool_resource_kb(trace_dir, config, source_dir=seed_dir)
         sidecar_port = _free_port()
         sidecar = _start_sidecar(
             trace_dir=trace_dir,
@@ -562,8 +566,8 @@ def run_host_openclaw_replay_task(
         _remaining_task_seconds(deadline, phase="replay result collection")
         if backend is not None and backend.errors:
             raise ReplayTraceError(f"legacy tool bridge failure: {backend.errors[0]}")
-        if plan.source_format == "v5" and exit_code == 0 and server.requests != len(runtime_plan.turns):
-            raise ReplayTraceError(f"replay consumed {server.requests}/{len(runtime_plan.turns)} model turns")
+        if plan.source_format == "v5" and exit_code == 0 and server.consumed_turns != len(runtime_plan.turns):
+            raise ReplayTraceError(f"replay consumed {server.consumed_turns}/{len(runtime_plan.turns)} model turns")
         _cleanup_runtime_artifacts(workspace, deadline=deadline)
         _collect_patch(trace_dir, workspace, task, deadline=deadline)
         write_replay_manifest(
@@ -1139,9 +1143,8 @@ def _seed_runtime_tool_resource_kb(
 ) -> None:
     """Copy the repo's pre-seeded predictor KBs to the task trace directory.
 
-    The release seed contains small generic TrieKB/LatticeKB priors and an
-    empty ToolKB. Whole-call/PMU evidence accumulates online; clause priors
-    must not be relabeled as observed whole-call measurements.
+    Each backend retains its own qualified evidence. Clause priors must not
+    be relabeled as observed whole-call measurements.
     """
     dest_dir = trace_dir / "tool-resource"
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -1376,6 +1379,7 @@ def _validate_lattice_time_observation(
         "memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes",
         "memory_measurement", "memory_environment_id", "memory_eligible",
         "command_features", "clause_index",
+        "censored", "confirmed_timeout", "imputed_targets",
     }
     unknown = sorted(row.keys() - allowed)
     if unknown:
@@ -1383,6 +1387,12 @@ def _validate_lattice_time_observation(
             f"invalid lattice KB observation {location} in {path}: "
             f"unknown fields {unknown!r}"
         )
+    for field in ("censored", "confirmed_timeout"):
+        if field in row and not isinstance(row[field], bool):
+            raise KnowledgeBaseSyncError(f"invalid lattice {field} in {path}: must be boolean")
+    imputed = row.get("imputed_targets", [])
+    if not isinstance(imputed, list) or not all(isinstance(target, str) for target in imputed):
+        raise KnowledgeBaseSyncError(f"invalid lattice imputed_targets in {path}: must be a string array")
     if row.get("command_features") is not None:
         from command_parser.models import CommandFeatures
         from jsonschema import ValidationError
@@ -1973,6 +1983,8 @@ def _openclaw_config(
                             "containerPrefix": _sandbox_container_prefix(workspace),
                             "workdir": "/workspace",
                             "network": "bridge",
+                            **({"cpus": config.docker.cpus} if config.docker.cpus > 0 else {}),
+                            **({"memory": config.docker.memory_limit} if config.docker.memory_limit else {}),
                             "extraHosts": ["host.docker.internal:host-gateway"],
                             "dangerouslyAllowExternalBindSources": True,
                             **({"binds": [f"{workspace}:/testbed:rw"]}

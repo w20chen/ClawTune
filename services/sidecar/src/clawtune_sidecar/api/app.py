@@ -1127,10 +1127,20 @@ def create_app(state: AppState | None = None) -> FastAPI:
 
         try:
             await asyncio.sleep(_EBPF_COMPLETION_GRACE_SECONDS)
+            record = s.executions.get(execution_id)
+            # Preserve missing-hook provenance without dropping the measured
+            # prefix. Direct execution clients need no completion hook.
+            finish_kwargs = {}
+            if record is not None and s.predictor.awaiting_tool_completion(record.request):
+                finish_kwargs["incomplete_reason"] = "completion_hook_missing"
+            if record is not None and record.confirmed_timeout:
+                finish_kwargs.update(confirmed_timeout=True,
+                    timeout_duration_lower_bound_ms=record.timeout_duration_lower_bound_ms)
             await finish_ebpf(
                 s, execution_id,
                 exit_code=exit_code,
                 signal=signal,
+                **finish_kwargs,
             )
         finally:
             current = s._ebpf_finalize_tasks.get(execution_id)
@@ -1161,6 +1171,15 @@ def create_app(state: AppState | None = None) -> FastAPI:
         cancel_ebpf_fallback(s, execution_id)
         exit_code = getattr(record, "exit_code", None)
         signal = getattr(record, "signal", None)
+        confirmed_timeout = (event.confirmed_timeout or getattr(record, "confirmed_timeout", False)
+                             or _completion_reports_timeout(event.raw_result)
+                             or any(marker in str(event.error_type or "").lower() for marker in ("timeout", "timed out")))
+        if incomplete_reason is None:
+            if _completion_reports_timeout(event.raw_result):
+                incomplete_reason = "tool_timeout"
+            elif any(marker in str(event.error_type or "").lower()
+                     for marker in ("timeout", "timed out", "cancel", "abort", "interrupt", "killed")):
+                incomplete_reason = "tool_interrupted:" + str(event.error_type)
         if (
             incomplete_reason is None
             and exit_code is None
@@ -1170,13 +1189,19 @@ def create_app(state: AppState | None = None) -> FastAPI:
             exit_code = 0
         finish_kwargs: dict[str, Any] = {
             "execution_id": execution_id,
-            "exit_code": None if incomplete_reason is not None else exit_code,
-            "signal": None if incomplete_reason is not None else signal,
+            # Preserve authenticated exit evidence even when the workload was
+            # interrupted; its counters are diagnostic, not complete labels.
+            "exit_code": exit_code,
+            "signal": signal,
             "raw_result": event.raw_result,
             "succeeded": None if incomplete_reason is not None else event.succeeded,
         }
         if incomplete_reason is not None:
             finish_kwargs["incomplete_reason"] = incomplete_reason
+        if confirmed_timeout:
+            finish_kwargs.update(confirmed_timeout=True,
+                timeout_duration_lower_bound_ms=(event.timeout_duration_lower_bound_ms
+                                                or getattr(record, "timeout_duration_lower_bound_ms", None)))
         await finish_ebpf(s, **finish_kwargs)
 
     async def finalize_ebpf_from_completion(

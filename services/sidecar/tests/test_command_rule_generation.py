@@ -7,6 +7,7 @@ from command_parser.evidence import local_source
 from command_parser.generation import GeneratorConfig, RuleGenerator
 from command_parser.help_runner import HelpRunner, help_argv
 from command_parser.registry import RuleRegistry
+from clawtune_sidecar.config import SidecarConfig
 
 
 def generated_rule(entry="task.py"):
@@ -17,6 +18,25 @@ def generated_rule(entry="task.py"):
     rule["grammar"]["options"][0]["canonical"] = "-n"
     rule["fixtures"] = [{"argv": [entry, "-n", "4"], "status": "complete", "target": []}]
     return rule
+
+
+def test_generator_uses_same_api_key_as_llm_proxy(monkeypatch):
+    monkeypatch.setenv("CLAWTUNE_COMMAND_RULE_LLM_API_KEY", "obsolete-separate-key")
+    config = SidecarConfig(
+        llm_proxy_upstream_base_url="https://provider.example",
+        llm_proxy_upstream_api_key="shared-proxy-key",
+        llm_proxy_upstream_model="shared-model",
+    )
+
+    generated = GeneratorConfig.from_sidecar(config)
+
+    assert generated.api_key == config.llm_proxy_upstream_api_key
+    assert generated.base_url == config.llm_proxy_upstream_base_url
+    assert generated.model == config.llm_proxy_upstream_model
+    assert GeneratorConfig.from_sidecar(SidecarConfig(
+        llm_proxy_upstream_base_url="https://provider.example",
+        llm_proxy_upstream_model="shared-model",
+    )).api_key is None
 
 
 def test_repository_rule_uses_same_parser_and_cache(tmp_path):

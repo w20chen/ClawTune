@@ -46,7 +46,7 @@ def query_clause(argv):
     ("git", "status"),
 ])
 @pytest.mark.parametrize("public", [False, True])
-def test_prefix_kbs_reject_missing_entry_in_every_target(argv, public):
+def test_prefix_kbs_reject_unsafe_prefix_while_tool_uses_public_fallback(argv, public):
     history = (argv[0], "-c", "pass") if argv[0] == "python" else ("git", "diff")
     obs, completed = clause(history), call(" ".join(history))
     if public:
@@ -56,11 +56,31 @@ def test_prefix_kbs_reject_missing_entry_in_every_target(argv, public):
         trie.observe_completed_clause(obs)
         tool.observe_completed_call(completed)
     q = ToolCallQuery("r", "exec", " ".join(argv), 1000)
-    assert tool.predict_load_samples(q) == {}
-    assert all(result.conditional_p90 is None for result in tool.query(q).values())
-    assert trie.predict_load_samples("r", [query_clause(argv)], 1000) == ({},)
-    with pytest.raises(ValueError):
-        trie.predict_clause_latency_bucket("r", argv[0], argv, LatencyBuckets((100, 2000)))
+    evidence = tool.predict_load_samples(q)
+    predictions = tool.query(q)
+    if public:
+        assert evidence["duration_ms"] == {
+            "values": (1000,), "context": ("public", "tool_name"),
+        }
+        assert predictions["latency_ms"].scope == "public"
+        assert predictions["latency_ms"].key_kind == "tool_name"
+    else:
+        assert evidence == {}
+        assert all(result.conditional_p90 is None for result in predictions.values())
+    trie_load = trie.predict_load_samples("r", [query_clause(argv)], 1000)
+    if public:
+        assert trie_load[0]["duration_ms"] == {
+            "values": (1000.0,), "context": ("public", "global"),
+        }
+        assert trie.predict_clause_latency_bucket(
+            "r", argv[0], argv, LatencyBuckets((100, 2000)),
+        ).key_kind == "global"
+    else:
+        assert trie_load == ({},)
+        with pytest.raises(ValueError):
+            trie.predict_clause_latency_bucket(
+                "r", argv[0], argv, LatencyBuckets((100, 2000)),
+            )
 
 
 def test_prefix_kbs_keep_exact_and_same_entry_generalization_after_restore():
@@ -154,7 +174,9 @@ def test_trie_contextual_script_identity_preserves_same_script_backoff(restore):
 def test_tool_compound_prefix_fallback_exact_preference_and_commandless_history():
     tool = RuntimeToolResourceKB.fit_public([call("python a.py")])
     compound = "python a.py && python b.py"
-    assert tool.predict_load_samples(ToolCallQuery("r", "exec", compound, 10)) == {}
+    assert tool.predict_load_samples(ToolCallQuery("r", "exec", compound, 10))["duration_ms"] == {
+        "values": (1000,), "context": ("public", "tool_name"),
+    }
     tool.observe_completed_call(call("python a.py"))
     fallback = tool.predict_load_samples(ToolCallQuery("r", "exec", compound, 1000))["duration_ms"]
     assert fallback == {"values": (1000,), "context": ("repo", "command_prefix_depth_2")}
@@ -165,6 +187,84 @@ def test_tool_compound_prefix_fallback_exact_preference_and_commandless_history(
     assert fallback == {"values": (3000,), "context": ("repo", "command_prefix_depth_4")}
     tool.observe_completed_call(call(None, 13, seconds=2, tool="read"))
     assert tool.predict_load_samples(ToolCallQuery("r", "read", None, 1400))["duration_ms"]["values"] == (2000,)
+
+
+def test_tool_public_global_is_the_final_fallback_for_an_unseen_tool_name():
+    tool = RuntimeToolResourceKB.fit_public([call("python a.py")])
+    query = ToolCallQuery("unseen/repo", "terminal_exec", "ruby new.rb", 10)
+
+    load = tool.predict_load_samples(query)
+    pmu = tool.predict_pmu_samples(query)
+
+    assert load["duration_ms"] == {
+        "values": (1000,), "context": ("public", "global"),
+    }
+    # Missing PMU targets train explicit imputed zeros at the same global node.
+    assert len(pmu) == 9
+    assert all(row == {"values": (0,), "context": ("public", "global")} for row in pmu.values())
+
+
+def test_public_semantic_fallback_matches_entry_without_mixing_subcommands():
+    pytest_obs = clause(("python3", "-m", "pytest", "tests/a.py"), ms=1000)
+    diff_obs = replace(clause(("git", "diff", "a.py"), 1, ms=9000), repo="other")
+    trie = ClauseResourceKB.fit_public([pytest_obs, diff_obs])
+    tool = RuntimeToolResourceKB.fit_public([
+        call("python3 -m pytest tests/a.py", seconds=1),
+        replace(call("git diff a.py", 1, seconds=9), repo="other"),
+    ])
+
+    pytest_query = ("python", "-m", "pytest", "tests/b.py")
+    trie_evidence = trie.predict_load_samples(
+        "unseen", [query_clause(pytest_query)], 1000,
+    )[0]["duration_ms"]
+    tool_evidence = tool.predict_load_samples(
+        ToolCallQuery("unseen", "exec", "python -m pytest tests/b.py", 1000),
+    )["duration_ms"]
+    assert trie_evidence == {
+        "values": (1000.0,), "context": ("public", "semantic_core"),
+    }
+    assert tool_evidence == {
+        "values": (1000,), "context": ("public", "semantic_call"),
+    }
+
+    # A different git subcommand cannot borrow the git-diff semantic node.
+    status = ("git", "status")
+    assert trie.predict_load_samples(
+        "unseen", [query_clause(status)], 1001,
+    )[0]["duration_ms"]["context"] == ("public", "global")
+    assert tool.predict_load_samples(
+        ToolCallQuery("unseen", "exec", "git status", 1001),
+    )["duration_ms"]["context"] == ("public", "tool_name")
+
+
+def test_tool_compound_call_never_uses_a_single_clause_semantic_node():
+    tool = RuntimeToolResourceKB.fit_public([
+        call("python3 -m pytest tests/a.py", seconds=1),
+    ])
+
+    evidence = tool.predict_load_samples(ToolCallQuery(
+        "unseen", "exec", "python -m pytest tests/b.py && git status", 1000,
+    ))
+
+    assert evidence["duration_ms"]["context"] == ("public", "tool_name")
+
+
+def test_tool_semantic_fallback_retains_the_complete_compound_structure():
+    prefix = "cd -- /testbed || exit $?\n"
+    tool = RuntimeToolResourceKB.fit_public([
+        call(prefix + "python3 -m pytest tests/a.py && git diff a.py", seconds=7),
+    ])
+
+    evidence = tool.predict_load_samples(ToolCallQuery(
+        "unseen",
+        "exec",
+        prefix + "python -m pytest tests/b.py && git diff b.py",
+        1000,
+    ))
+
+    assert evidence["duration_ms"] == {
+        "values": (7000,), "context": ("public", "semantic_call"),
+    }
 
 
 @pytest.mark.parametrize("separator", ["&&", ";", "|", "||"])
@@ -192,10 +292,12 @@ def test_exact_sample_selection_is_per_target_and_zero_remains_valid():
     tool.observe_completed_call(call(" ".join((*full, "tests/a.py")), 1))
     evidence = [trie.predict_load_samples("r", [query_clause(full)], 1000)[0],
                 tool.predict_load_samples(ToolCallQuery("r", "exec", " ".join(full), 1000))]
-    for row in evidence:
+    # Raw clause fragments retain None until ingress coalesces and imputes;
+    # complete call records impute at their target boundary.
+    for row, expected_cpu in zip(evidence, (2, 0)):
         assert row["duration_ms"]["values"] == (80000,)
         assert row["cpu_peak_cores"]["values"] == (0,)
-        assert row["cpu_time_seconds"]["values"] == (2,)
+        assert row["cpu_time_seconds"]["values"] == (expected_cpu,)
 
 
 def edge_query(*optional, entry="pytest"):

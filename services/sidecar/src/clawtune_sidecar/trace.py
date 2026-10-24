@@ -368,15 +368,8 @@ class AgentTestBenchTraceWriter:
                     or (str(observed_window["kind"]) + "_window_only" if observed_window.get("kind") else "ebpf_sampling_gap")
                 )
 
-        if _cov_dur_ns == 0:
-            # Preserve the raw timeline for diagnosis, but never export a
-            # snapshot outside the action as its aggregate resource usage.
-            sample = replace(sample, **dict.fromkeys((
-                "cpu_time_delta_s", "rss_bytes_before", "rss_bytes_after", "rss_bytes_peak",
-                "read_bytes_delta", "write_bytes_delta", "net_rx_bytes_delta", "net_tx_bytes_delta",
-                "ctx_switches_delta", "cpu_utilization_avg_cores", "cpu_utilization_avg_pct",
-                "disk_read_bytes_per_s", "disk_write_bytes_per_s", "net_rx_bytes_per_s", "net_tx_bytes_per_s",
-            )))
+        # Coverage and attribution remain provenance. Preserve available
+        # approximate observations even when the sampler window is sparse.
 
         # Inline the independent sampler view; it is no longer written to a
         # second JSON artifact beside the same trace.
@@ -389,6 +382,18 @@ class AgentTestBenchTraceWriter:
             if sample.monitor_source in {"cgroup-v2", "psutil-process-tree"}
             else None
         )
+        from clawtune_sidecar.predictors.tool_resource import completed_call_from_completion, _retained_workload_duration_seconds
+        from tool_resource.runtime_kb import training_target_provenance
+        telemetry = tool_resource_telemetry or {}
+        partial = telemetry.get("replay_execution") == "incomplete"
+        timeout = event.confirmed_timeout or telemetry.get("confirmed_timeout") is True
+        timeout_bound = event.timeout_duration_lower_bound_ms or telemetry.get("timeout_duration_lower_bound_ms")
+        training_call = completed_call_from_completion(event, sample, repo=event.repo or self._default_repo,
+            start=start, workload_duration_seconds=_retained_workload_duration_seconds(
+                {"calls": [telemetry["call_telemetry"]]} if isinstance(telemetry.get("call_telemetry"), dict) else None))
+        training_provenance = (training_target_provenance(replace(training_call,
+            censored=training_call.censored or partial, confirmed_timeout=timeout,
+            timeout_duration_lower_bound_ms=timeout_bound)) if training_call is not None else {})
         # span_end
         self._append(filepath, {
             "schema_version": 6,
@@ -421,6 +426,10 @@ class AgentTestBenchTraceWriter:
                 "tool_resource": tool_resource_telemetry,
             },
             "resources": {
+                "censored": partial or (training_call.censored if training_call is not None else event.confirmed_timeout),
+                "confirmed_timeout": timeout,
+                "timeout_duration_lower_bound_ms": timeout_bound,
+                "training_target_provenance": training_provenance,
                 "attribution_status": _v6_attribution(sample, scope),
                 "attribution_source": scope.attribution_source if scope is not None else None,
                 "scope": (
@@ -896,12 +905,6 @@ class AgentTestBenchTraceWriter:
         """Release in-memory routing state after a runtime has drained."""
         self.finalize_pending(runtime_id, gateway_id, reason="runtime_finished_without_completion_hook")
 
-        runtime_files = {
-            str(path)
-            for key, path in self._files.items()
-            if owner_prefix_matches(key, runtime_id)
-            and (gateway_id is None or key[0] == gateway_id)
-        }
         for mapping in (
             self._model_starts,
             self._tool_starts,

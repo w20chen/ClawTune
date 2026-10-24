@@ -70,7 +70,15 @@ class EdgeKappaRuntime:
             event = training_event(row)
             if event is not None:
                 events[event.outcome.event_id] = event
-        kb = EdgeKappaKB.fit(events.values(), {"bucket_edges_ms": tuple(edges),
+        return cls.fit_events(events.values(), edges, frozen=frozen,
+                              max_optional_features=max_optional_features)
+
+    @classmethod
+    def fit_events(cls, events: Iterable[TrainingEvent], edges: Sequence[float], *,
+                   frozen: bool = False,
+                   max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES) -> EdgeKappaRuntime:
+        """Fit observations with caller-supplied task identity and replay order."""
+        kb = EdgeKappaKB.fit(events, {"bucket_edges_ms": tuple(edges),
                                              "max_optional_features": max_optional_features})
         if frozen:
             kb.freeze()

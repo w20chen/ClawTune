@@ -106,6 +106,25 @@
   },
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "memoryEvidence": {
+      "properties": {
+        "memory_baseline_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "memory_total_peak_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "memory_environment_id": {"type": ["string", "null"]}
+      },
+      "if": {"properties": {"memory_eligible": {"const": true}}, "required": ["memory_eligible"]},
+      "then": {
+        "required": ["memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes",
+                     "memory_environment_id", "memory_measurement"],
+        "properties": {
+          "memory_baseline_bytes": {"type": "integer", "minimum": 0},
+          "memory_total_peak_bytes": {"type": "integer", "minimum": 0},
+          "memory_extra_peak_bytes": {"type": "integer", "minimum": 0},
+          "memory_environment_id": {"type": "string", "minLength": 1},
+          "memory_measurement": {"enum": ["cgroup_v2_memory_current", "cgroup_v2_environment_union_v1", "guest_memtotal_minus_memavailable"]}
+        }
+      }
+    },
     "sandboxIdentity": {
       "type": "object",
       "required": ["template_id", "image_digest", "vcpu", "memory_mib", "architecture"],
@@ -141,6 +160,7 @@
         },
         "call": {
           "type": "object",
+          "allOf": [{"$ref": "#/$defs/memoryEvidence"}],
           "required": [
             "repo", "tool_name", "command", "ts_start", "ts_end",
             "memory_extra_peak_bytes", "memory_measurement", "memory_eligible"
@@ -168,6 +188,7 @@
         "clause_index": {"type": "integer", "minimum": 0},
         "observation": {
           "type": "object",
+          "allOf": [{"$ref": "#/$defs/memoryEvidence"}],
           "required": [
             "repo", "bin", "argv", "ts_start", "ts_end",
             "memory_extra_peak_bytes", "memory_measurement", "memory_eligible"

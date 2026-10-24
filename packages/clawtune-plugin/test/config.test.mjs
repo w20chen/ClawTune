@@ -2,10 +2,55 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {loadConfig} from "../dist/config.js";
+import {configSchema} from "../dist/config-schema.js";
 
 const manifest = JSON.parse(
   readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8")
 );
+
+test("entry and loader use the public manifest schema and defaults", () => {
+  assert.deepEqual(configSchema, manifest.configSchema);
+  const config = loadConfig({});
+  for (const [key, field] of Object.entries(configSchema.properties)) {
+    if ("default" in field) assert.deepEqual(config[key], field.default, key);
+  }
+  assert.equal(config.sandboxExecPredictionModel, "tool");
+  assert.equal(config.repo, null);
+});
+
+test("unsupported profiling modes fail before execution", () => {
+  assert.equal(loadConfig({profilingMode: "off"}).profilingMode, "off");
+  for (const mode of ["proc", "perf", "ksys", "vtune", "invalid"]) {
+    assert.throws(() => loadConfig({profilingMode: mode}), /unsupported profilingMode/);
+  }
+  assert.deepEqual(configSchema.properties.profilingMode.enum, ["off"]);
+});
+
+test("public schema rejects malformed configuration not covered by cross-field rules", () => {
+  for (const input of [
+    {unknownOption: true}, {logLevel: "trace"}, {consoleMode: "silent"}, {endpoint: 42},
+    {repo: []}, {securityBoundaryAccepted: "true", executionBackend: "hook-only"},
+    {trace: {include_llm_messages: "false"}}, {trace: {schema_version: 5}},
+    {trace: {max_string_bytes: -1}}, {trace: {max_messages_bytes: 0.5}},
+    {trace: {max_tool_output_bytes: null}}, {trace: {unknownOption: true}},
+  ]) assert.throws(() => loadConfig(input), /invalid plugin configuration/);
+  assert.throws(() => loadConfig({trace: null}), /trace must be an object/);
+  assert.throws(() => loadConfig([]), /must be an object/);
+  assert.equal(loadConfig({trace: {max_string_bytes: 0}}).trace.max_string_bytes, 0);
+});
+
+test("invalid boolean environment overrides are not silently false", () => {
+  const before = process.env.CLAWTUNE_FAIL_OPEN;
+  try {
+    process.env.CLAWTUNE_FAIL_OPEN = "flase";
+    assert.throws(() => loadConfig({}), /invalid boolean environment override/);
+    process.env.CLAWTUNE_FAIL_OPEN = " false ";
+    assert.equal(loadConfig({}).failOpen, false);
+  } finally {
+    if (before === undefined) delete process.env.CLAWTUNE_FAIL_OPEN;
+    else process.env.CLAWTUNE_FAIL_OPEN = before;
+  }
+});
 
 test("ClawBox prediction model is explicit and schema validated", () => {
   assert.equal(loadConfig({sandboxExecPredictionModel: "lattice"}).sandboxExecPredictionModel, "lattice");

@@ -6,10 +6,15 @@ from referencing import Registry, Resource
 
 
 def data_root() -> Path:
-    checkout = Path(__file__).resolve().parents[4]
-    if (checkout / "contracts/kb-seed.schema.json").is_file():
-        return checkout
-    return Path(__file__).resolve().parent / "_data"
+    module = Path(__file__).resolve()
+    parents = module.parents
+    if len(parents) > 4 and [parent.name for parent in parents[:4]] == [
+        "clawtune_kb", "src", "sidecar", "services"
+    ]:
+        checkout = parents[4]
+        if (checkout / "contracts/kb-seed.schema.json").is_file():
+            return checkout
+    return module.parent / "_data"
 
 
 def validate(value: dict, name: str) -> None:

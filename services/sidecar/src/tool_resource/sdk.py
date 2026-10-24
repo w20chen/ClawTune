@@ -7,7 +7,7 @@ import math
 import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,19 @@ from tool_resource.runtime_kb import (
     CommandLatencyBucketPrediction,
     LatencyBuckets,
 )
+
+
+def interrupted_workload_reason(result: Mapping[str, Any] | None) -> str | None:
+    """Keep observed counters separate from a complete workload label."""
+    if not isinstance(result, Mapping):
+        return None
+    signal = result.get("signal")
+    if isinstance(signal, int) and not isinstance(signal, bool) and signal > 0:
+        return f"execution_terminated_by_signal:{signal}"
+    from tool_resource.telemetry import _is_protocol_timeout, _runtime_response_exit_code
+    if _is_protocol_timeout(_runtime_response_exit_code(result), str(result.get("result") or "")):
+        return "protocol_timeout"
+    return None
 
 
 @dataclass(frozen=True)
@@ -311,8 +324,6 @@ class ToolResourceSDK:
                 artifact_observations: list[ClauseObservation] = []
                 artifact_eligible_calls = 0
                 for call in artifact["calls"]:
-                    if call.get("eligible_for_kb") is not True:
-                        continue
                     artifact_eligible_calls += 1
                     artifact_observations.extend(
                         _observations_from_call(
@@ -410,6 +421,8 @@ class ToolResourceSDK:
     ) -> CommandResult:
         """Finalize telemetry, then update the KB only from a valid artifact."""
 
+        if interrupted_workload_reason(workload_result) is not None:
+            replay_execution = "incomplete"
         with self._run_lock:
             if run._owner is not self._owner:
                 raise ValueError("command run belongs to a different SDK")
@@ -420,6 +433,12 @@ class ToolResourceSDK:
             run._observation_token,
             replay_response=workload_result,
         )
+        if isinstance(call_telemetry, dict):
+            call_telemetry.update(
+                censored=replay_execution == "incomplete",
+                confirmed_timeout=bool((workload_result or {}).get("confirmed_timeout")),
+                timeout_duration_lower_bound_ms=(workload_result or {}).get("timeout_duration_lower_bound_ms"),
+            )
         finalize_error = run._observer.finalize(replay_execution=replay_execution)
         artifact: dict[str, Any] | None = None
         accepted_observations: list[ClauseObservation] = []
@@ -445,13 +464,14 @@ class ToolResourceSDK:
             call = calls[0]
             if call.get("command") != run.command:
                 raise ValueError("final artifact command does not match the request")
-            if call.get("eligible_for_kb") is not True:
-                raise ValueError("final command telemetry is not eligible for KB")
             observations = _observations_from_call(
                 run._observer.context.repo,
                 call,
                 require_timestamps=True,
             )
+            # Environment-memory labels arrive separately with tool completion.
+            # Keep those absent here so a later real label is not counted twice.
+            observations = [_impute_execution_metrics(row) for row in observations]
             with self._kb_lock:
                 for observation in observations:
                     if self._kb.observe_completed_clause(observation):
@@ -500,33 +520,14 @@ def _validate_artifact(
 ) -> None:
     if artifact.get("mode") != "clause":
         raise ValueError(f"{path}: expected clause telemetry mode")
-    if artifact.get("replay_execution") not in {"completed", "failed"}:
-        raise ValueError(f"{path}: replay execution is incomplete")
-    if artifact.get("cleanup") != "ok":
-        raise ValueError(f"{path}: collector cleanup is not ok")
     calls = artifact.get("calls")
     if not isinstance(calls, list) or not all(
         isinstance(call, Mapping) for call in calls
     ):
         raise ValueError(f"{path}: calls must be a list of mappings")
     status_model = artifact.get("status_model")
-    if status_model == "call_granular_v1":
-        if artifact.get("telemetry_quality") != "ok":
-            raise ValueError(
-                f"{path}: artifact telemetry quality is "
-                f"{artifact.get('telemetry_quality')!r}; not eligible for KB"
-            )
-        if artifact.get("collection_validity") != "valid":
-            raise ValueError(f"{path}: collection is not valid")
-        if artifact.get("formal_completeness") not in {"complete", "partial"}:
-            raise ValueError(f"{path}: formal completeness is unavailable")
-        integrity = artifact.get("integrity")
-        if not isinstance(integrity, Mapping) or integrity.get("status") != "ok":
-            raise ValueError(f"{path}: collector integrity is not ok")
-    elif status_model is not None:
+    if status_model not in {None, "call_granular_v1"}:
         raise ValueError(f"{path}: unsupported status model {status_model!r}")
-    elif not _legacy_collector_healthy(artifact):
-        raise ValueError(f"{path}: legacy collector health is not usable")
     if (
         expected_container_id is not None
         and artifact.get("container_id") != expected_container_id
@@ -557,6 +558,17 @@ def _legacy_collector_healthy(artifact: Mapping[str, Any]) -> bool:
     )
 
 
+def _impute_execution_metrics(row: ClauseObservation) -> ClauseObservation:
+    values = {}
+    imputed = set(row.imputed_targets)
+    for name, target in (("latency_ms", "duration_ms"), ("cpu_ns_cumulative", "cpu_time_seconds"),
+                         ("cpu_peak_cores", "cpu_peak_cores"), ("sampled_peak_rss_mb", "sampled_peak_rss_bytes")):
+        if getattr(row, name) is None:
+            values[name] = 0
+            imputed.add(target)
+    return replace(row, **values, imputed_targets=tuple(sorted(imputed)))
+
+
 def _observations_from_call(
     repo: str,
     call: Mapping[str, Any],
@@ -573,24 +585,14 @@ def _observations_from_call(
         rows = enrich_clause_structure(command if isinstance(command, str) else None, rows)
     observations: list[ClauseObservation] = []
     for clause_index, row in enumerate(rows):
-        if row.get("eligible_for_kb") is False or row.get("telemetry_quality", "ok") != "ok":
-            continue
-        availability = row.get("availability")
-        if not isinstance(availability, Mapping):
-            raise ValueError("eligible clause has invalid availability")
         status = row.get("status") or {}
-        resource_only = (
-            isinstance(status, Mapping) and status.get("state") == "exited"
-            and not any("timeout" in str(value).lower() for value in availability.values())
-            and all(isinstance(row.get(key), (int, float)) and not isinstance(row[key], bool)
-                    and math.isfinite(row[key]) for key in ("ts_start", "ts_end"))
-            and row["ts_end"] > row["ts_start"]
-        )
-        if availability.get("latency") == "ok" or resource_only:
+        if row.get("ts_start") is not None and row.get("ts_end") is not None or not require_timestamps:
             observations.append(
                 _observation_from_clause(
                     repo,
-                    {**row, "clause_index": row.get("clause_index", clause_index)},
+                    {**row, "clause_index": row.get("clause_index", clause_index),
+                     "censored": bool(call.get("censored") or row.get("censored") or status.get("state") == "signaled"),
+                     "confirmed_timeout": bool(call.get("confirmed_timeout") or row.get("confirmed_timeout"))},
                     require_timestamps=require_timestamps,
                 )
             )
@@ -603,11 +605,7 @@ def _observation_from_clause(
     *,
     require_timestamps: bool,
 ) -> ClauseObservation:
-    availability = row.get("availability") or {}
-    latency_ms = (
-        _required_nonnegative_float(row.get("latency_ms"), "latency_ms")
-        if availability.get("latency") == "ok" else None
-    )
+    latency_ms = _measurement_value(row.get("latency_ms"))
     raw_start = row.get("ts_start")
     raw_end = row.get("ts_end")
     if raw_start is None and raw_end is None and not require_timestamps and latency_ms is not None:
@@ -630,11 +628,10 @@ def _observation_from_clause(
         ts_end=ts_end,
         latency_ms=latency_ms,
         cpu_peak_cores=(
-            _measurement_value(row.get("peak_cpu_cores")) if availability.get("cpu") == "ok" else None
+            _measurement_value(row.get("peak_cpu_cores"))
         ),
         sampled_peak_rss_mb=(
             _measurement_value(row.get("sampled_peak_rss_mb", row.get("peak_memory_mb")))
-            if availability.get("memory") == "ok" else None
         ),
         cpu_ns_cumulative=clause_cpu_time_ns(row),
         in_loop=bool(row.get("in_loop", False)),
@@ -643,6 +640,9 @@ def _observation_from_clause(
         pipeline_position=int(row.get("pipeline_position", -1)),
         stdin_from_pipe=row.get("stdin_from_pipe"),
         clause_index=row.get("clause_index"),
+        censored=row.get("censored") is True,
+        confirmed_timeout=row.get("confirmed_timeout") is True,
+        imputed_targets=tuple(row.get("imputed_targets") or ()),
     )
 
 
@@ -655,9 +655,6 @@ def _measurement_value(value: Any) -> float | None:
 
 def clause_cpu_time_ns(row: Mapping[str, Any]) -> int | None:
     """Read a qualified exec-interval delta, never the raw exit accumulator."""
-    availability = row.get("availability") or {}
-    if availability.get("cpu_time") != "ok":
-        return None
     provenance = row.get("provenance") or {}
     if isinstance(provenance, Mapping) and "cpu_time_ns" in provenance:
         value = provenance["cpu_time_ns"]

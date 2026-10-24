@@ -10,6 +10,21 @@ from tool_time.lattice_kb import LatticeTimeKB
 from swe_rebench.host_openclaw import KnowledgeBaseSyncError, _validate_lattice_time_kb_snapshot
 
 
+@pytest.mark.parametrize("field,value", [("censored", "true"), ("confirmed_timeout", 1),
+                                        ("imputed_targets", "cpu_peak_cores"), ("imputed_targets", [1])])
+def test_benchmark_handoff_rejects_malformed_training_provenance(field, value):
+    kb = LatticeTimeKB.fit([ClauseObservation(
+        repo="org/repo", bin="python", argv=("python", "work.py"),
+        ts_start=1, ts_end=2, latency_ms=100, censored=True,
+        confirmed_timeout=True, imputed_targets=("cpu_peak_cores",),
+    )])
+    snapshot = json.loads(json.dumps(kb.to_json_obj()))
+    _validate_lattice_time_kb_snapshot(Path("kb.json"), snapshot)
+    snapshot["observations"][0][field] = value
+    with pytest.raises(KnowledgeBaseSyncError, match=field):
+        _validate_lattice_time_kb_snapshot(Path("kb.json"), snapshot)
+
+
 @pytest.mark.parametrize("source", [None, False, True, "true"])
 def test_benchmark_handoff_validates_pipe_input_evidence(source):
     kb = LatticeTimeKB.fit([ClauseObservation(

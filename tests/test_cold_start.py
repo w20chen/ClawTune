@@ -147,7 +147,7 @@ def test_v6_sampling_period_uses_millisecond_declaration():
     {"resource_timeline": {"censored": True}},
     {"resource_observation": {"unavailable_reason": "protocol_timeout"}},
 ])
-def test_censored_flat_calls_cannot_train_any_backend(tmp_path, metadata):
+def test_censored_flat_calls_retain_partial_training(tmp_path, metadata):
     records = [json.loads(line) for line in trace("org__a-1").splitlines()]
     data = records[1]["data"]
     data.update(success=False, duration_ms=60000)
@@ -164,10 +164,12 @@ def test_censored_flat_calls_cannot_train_any_backend(tmp_path, metadata):
     assert len(loaded.calls) == 1 and loaded.calls[0].censored
     assert loaded.calls[0].cpu_time_seconds == 2  # retained as censored evidence
     assert loaded.counts["censored_calls"] == 1
-    assert loaded.clauses == []
+    assert len(loaded.clauses) == 1 and loaded.clauses[0].censored
     runtime = RuntimeToolResourceKB()
     runtime.observe_completed_call(loaded.calls[0])
-    assert runtime.predict_load_samples(ToolCallQuery("org/a", "exec", "python work.py", 100)) == {}
+    targets = runtime.predict_load_samples(ToolCallQuery("org/a", "exec", "python work.py", 100))
+    assert targets["cpu_time_seconds"]["values"] == (2,)
+    assert targets["duration_ms"]["values"] == (1000,)
 
 
 def test_completed_error_and_timeout_text_are_not_censored(tmp_path):
@@ -185,7 +187,43 @@ def test_completed_error_and_timeout_text_are_not_censored(tmp_path):
     assert targets["cpu_time_seconds"]["values"] == (2,)
 
 
-def test_exported_snapshots_exclude_timeout_labels(tmp_path):
+@pytest.mark.parametrize("status,censored", [
+    ({"state": "signaled", "signal": 9}, True),
+    ({"state": "exited", "exit_code": 7, "signal": None}, False),
+])
+def test_legacy_clause_status_preserves_interruption_boundary(tmp_path, status, censored):
+    records = [json.loads(line) for line in trace("org__a-1").splitlines()]
+    data = records[1]["data"]
+    data.update(success=False, error_type="exit_code_137" if censored else "exit_code_7")
+    data["resource_observation"]["clauses"][0].update(
+        status=status, in_loop=False, in_pipe=False, in_subst=False, pipeline_position=-1)
+    path = tmp_path / "legacy.trace.jsonl"
+    path.write_text("\n".join(map(json.dumps, records)), encoding="utf-8")
+    loaded = read_task(path, repo="org/a", task_id="org__a-1", rss_unit="MB", recorded_clauses_only=True)
+    assert loaded.calls[0].censored is censored
+    assert len(loaded.clauses) == 1 and loaded.clauses[0].censored is censored
+    from tool_resource.runtime_kb import _target_values
+    assert _target_values(loaded.calls[0])["workload_latency_ms"] == 1000
+
+
+def test_legacy_success_with_signaled_child_is_not_an_interrupted_call(tmp_path):
+    records = [json.loads(line) for line in trace("org__a-1").splitlines()]
+    data = records[1]["data"]
+    data["success"] = True
+    data["resource_observation"]["clauses"][0].update(
+        status={"state": "signaled", "signal": 13},
+        in_loop=False, in_pipe=False, in_subst=False, pipeline_position=-1)
+    path = tmp_path / "successful-pipeline.trace.jsonl"
+    path.write_text("\n".join(map(json.dumps, records)), encoding="utf-8")
+
+    loaded = read_task(path, repo="org/a", task_id="org__a-1", rss_unit="MB", recorded_clauses_only=True)
+
+    assert not loaded.calls[0].censored
+    assert len(loaded.clauses) == 1 and loaded.clauses[0].censored
+    assert loaded.counts["partial_clause_observations"] == 1
+
+
+def test_exported_snapshots_retain_timeout_prefix_labels(tmp_path):
     root = tmp_path / "dataset"
     root.mkdir()
     records = [json.loads(line) for line in trace("org__single-1").splitlines()]
@@ -202,11 +240,11 @@ def test_exported_snapshots_exclude_timeout_labels(tmp_path):
                               RuntimeToolResourceKB.from_json_obj(payloads[1]),
                               LatticeTimeKB.from_json_obj(payloads[2]))
     targets = runtime.predict_load_samples(ToolCallQuery("org/single", "exec", "python work.py", 100))
-    assert targets["duration_ms"]["values"] == (1000,)
-    assert targets["cpu_time_seconds"]["values"] == (2,)
+    assert targets["duration_ms"]["values"] == (1000, 1000)
+    assert targets["cpu_time_seconds"]["values"] == (2, 2)
     for kb in (trie, lattice):
         samples = kb.predict_load_samples("org/single", [{"bin": "python", "argv": ["python", "work.py"]}], 100)
-        assert samples[0]["duration_ms"]["values"] == (1000,)
+        assert samples[0]["duration_ms"]["values"] == (1000, 1000)
 
 
 def test_export_is_train_only_and_every_backend_freezes_without_mutation(tmp_path):

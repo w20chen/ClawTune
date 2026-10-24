@@ -2,9 +2,11 @@
 
 A tool profile consists of the prediction made when a call starts, the measurements taken when the call ends, and the associated execution and subcommand telemetry. The public structure is defined by the [JSON Schema](../contracts/); the following explains how to read the values and judge whether they are usable. The different collectors work independently, and a single overall coverage figure cannot substitute for the validity of every metric.
 
-`null` or a missing field means that measurement does not exist; `0` only means the count is zero within the current measurement scope. `available`, `eligible_for_kb`, and `memory_eligible` do not indicate prediction accuracy or resource limits. Timeouts and cancellations are incomplete executions and cannot serve as training labels for complete executions. Historical traces do not become accurate automatically just because the collector is upgraded; when validating a new collection, use a new run-local KB so that old labels do not keep influencing predictions.
+Raw `null` or missing fields mean the measurement was unavailable. KB ingestion retains available approximate measurements, including shared-runtime observations for native tools, and fills missing numeric targets caused by short or insufficient sampling with zero. A training zero therefore need not be a measured zero. Collector quality, attribution and interruption markers remain attached as provenance rather than blanket training exclusions. Timeout observations retain their partial resource measurements; a known effective timeout supplies the duration lower bound. These labels describe the observed or imputed execution prefix, not a guaranteed completed workload. Historical traces do not become accurate automatically when the collector changes; use a new run-local KB when comparing collection policies.
 
-This guide explains trace v6 fields needed to interpret predictions and measurements; the linked Schemas define the complete protocol. For `input.requested_args`, `input.messages[]`, `output.result`, `output.content`, `provider_metadata`, `request_options`, `raw_*`, `placement`, `profiling`, and fields marked as open diagnostic objects, the internal structure is determined by the tool, model provider, OpenClaw, or collector version; this document explains the meaning of the container and does not mislist external dynamic keys as part of the ClawTune stable protocol. Each line is an independent JSON object, and its structure is determined by `record_type`.
+`resources.training_target_provenance` distinguishes `observed`, `observed_partial`, `approximate_observation`, `imputed_zero`, and `timeout_lower_bound` per target. `confirmed_timeout` identifies a reported timeout; `timeout_duration_lower_bound_ms`, when present, records the effective limit rather than cleanup-inclusive elapsed time. The original raw values and quality flags remain available alongside these training labels.
+
+This guide covers trace v6. Each JSONL line is an independent record identified by `record_type`. The [JSON Schemas](../contracts/) define the complete protocol; tool arguments, model messages, and provider-specific response objects retain their upstream formats.
 
 ## Quick Guide: Measurements and Predictions
 
@@ -13,7 +15,7 @@ Read one tool call in three parts. `span_start.prediction` is the forecast made 
 | Question | Observation to inspect | Prediction target | Practical meaning |
 | --- | --- | --- | --- |
 | How long did it run? | Tool duration on `span_end`; clause `latency_ms` for an executable stage | `duration_ms` | The prediction target is retained-workload elapsed time, not necessarily the raw span duration. ToolKB uses a direct call-level label; TrieKB, LatticeKB, and EdgeKappaKB reconstruct it from retained executable clauses. |
-| How much CPU work accumulated? | `resource_observation.metrics.cpu_time.value_seconds`; clause `cpu_time_seconds` | `cpu_time_seconds` | Core-seconds, not CPU percentage. ToolKB uses the eligible owned call-level label; TrieKB and LatticeKB add retained-stage values. |
+| How much CPU work accumulated? | `resource_observation.metrics.cpu_time.value_seconds`; clause `cpu_time_seconds` | `cpu_time_seconds` | Core-seconds, not CPU percentage. ToolKB uses the call-level training value; TrieKB and LatticeKB add retained-stage values. |
 | What was average CPU use? | `resource_observation.metrics.cpu_time.average_cores` | `cpu_avg_cores` | CPU time divided by the matching duration. Multi-core values may exceed one. |
 | What was the CPU burst? | `resource_observation.metrics.cpu_peak.value_cores` | `cpu_peak_cores` | Maximum average core use over a 500 ms window. This is separate from cumulative CPU time. |
 | What process memory was resident? | `resource_observation.metrics.memory_peak.value_bytes` | `sampled_peak_rss_bytes` | Sampled, de-duplicated RSS of the owned process lineage. It is not environment memory and is not an exact allocation count. |
@@ -24,16 +26,29 @@ Read one tool call in three parts. `span_start.prediction` is the forecast made 
 
 For extra memory, always read `memory_baseline_bytes`, `memory_total_peak_bytes`, `memory_extra_peak_bytes`, `memory_measurement`, `memory_environment_id`, and `memory_eligible` together. Total and extra samples from different `memory_measurement` values are different metrics. Prediction evidence is namespaced by the same value, so an unavailable prediction can mean that history exists only under another measurement source.
 
-Use the status fields in this order: an observation is a training label only when that metric is `eligible`; a prediction exists only when its target is `available`; `evidence_counts` reports the historical support; and `calibration=unvalidated` means availability does not establish accuracy. `unavailable` is therefore a valid outcome, while a non-null p90 remains an empirical estimate rather than a resource limit.
+Collector `eligible` flags describe strict measurement quality; they do not veto the approximate and zero-filled training policy above. A prediction exists when its target is `available`; `evidence_counts` includes the admitted training labels and must not be interpreted as a count of exclusively attributed measurements. `calibration=unvalidated` means availability does not establish accuracy. A non-null p90 is an empirical estimate rather than a resource limit.
+
+## Shell and non-shell tools
+
+`exec` and `terminal_exec` support all four prediction models. Other OpenClaw
+tools, including native file operations, use whole-call history through ToolKB;
+the subcommand models report `not_a_shell_command`. Without a shell command,
+matching is by repository and tool name, then tool name across repositories,
+then the overall call history.
+
+Native tools can share the agent process, so their observed CPU and memory may
+include other activity. Those approximate values still enter training. Missing
+hardware counters and other numeric targets are filled with zero. Offline
+accuracy reports cover shell tools only and do not measure native-tool accuracy.
 
 ## Sampling Frequency and Measurement Scope
 
-The `occurred_at` of a completion event must be a valid timestamp with a time zone; invalid input returns 422 and is not replaced with the current time. `duration_ms=0` may indicate a missing value or insufficient millisecond precision and is not used as a zero-duration training sample; independently valid PMU labels are not subject to this restriction.
+The `occurred_at` of a completion event must be a valid timestamp with a time zone; invalid input returns 422 and is not replaced with the current time. `duration_ms=0` may indicate a missing value or insufficient millisecond precision. The training policy admits a zero label while retaining its missing/imputed provenance; it does not imply an exactly zero-duration workload.
 
 | Data source | Frequency or trigger | Interpretation |
 | --- | --- | --- |
 | Authoritative call-level eBPF observation | perf callback roughly every 10 ms of CPU time, plus exec / exit boundary events | Not wall-clock 100 Hz; each metric's `eligible` status is judged from its own evidence. |
-| cgroup-v2 fallback | takes start and end snapshots of the dedicated cgroup during the same period as eBPF, returned only when eBPF fails | Describes only the fallback collector's own window; even when CPU / I/O have values, they are not action training labels. |
+| cgroup-v2 fallback | takes start and end snapshots of the dedicated cgroup during the same period as eBPF, returned only when eBPF fails | Describes the fallback collector's own window. Available values may enter training as approximate observations. |
 | Compatibility cgroup / process-tree sampling | default polling wait of 50 ms, with separate snapshots at start and end | Used for legacy fields and historical traces; 20 Hz is the target, and the actual interval is determined by the difference between adjacent `ts` values in the timeline. |
 | Environment memory `memory.current` | independent thread with a default polling wait of 50 ms | Does not share a sampling thread with process-tree enumeration or network BCC initialization; still subject to system scheduling and file-read latency. |
 | Subcommand eBPF CPU / RSS | perf callback roughly every 10 ms of CPU time; plus exec / exit boundary events | Not wall-clock 100 Hz; sleeping, I/O waits, and multi-core execution change the wall-clock sampling density. |
@@ -42,9 +57,17 @@ The `occurred_at` of a completion event must be a valid timestamp with a time zo
 | Network | TCP kernel event counting; when unavailable, may fall back to namespace cumulative counting | Does not represent complete traffic for all protocols; the subcommand network fields are currently not implemented. |
 | Call and subcommand latency | difference of lifecycle events | Periodic sampling is not required. |
 
-The authoritative call-level CPU peak uses a fixed 500 ms window; it is trainable only when attribution is exclusive, the action window can be aligned, each task's cumulative CPU boundaries are complete, and sample intervals qualify. The compatibility polling path additionally requires at least three valid samples, a single source, monotonic cumulative CPU, adjacent sample intervals of no more than 150 ms, and an untruncated timeline. A trailing portion shorter than 500 ms does not form a complete window. The subcommand CPU peak is unavailable for executions shorter than 1 second; cumulative CPU time and latency remain available. Short calls are not all discarded; only targets with insufficient evidence are unavailable.
+CPU peak measures the maximum average CPU use over a complete 500 ms window. The collector checks process attribution, time alignment, cumulative CPU boundaries, and sampling gaps when assigning quality flags. Shorter calls have no complete peak window; cumulative CPU time and elapsed time may still be measured. Training retains available values and fills missing targets with zero, including a missing CPU peak.
 
-Memory label requirements: a confirmed task container or exclusive execution cgroup, no overlapping execution windows in the same environment, a baseline no more than 150 ms before the call starts, at least one in-call sample, and sampling gaps, including the start and end boundaries, of no more than 150 ms. Hook or finalizer lifetimes may overlap when verified execution windows do not. Samples after the end do not contribute to the peak. Totals include background processes and caches; the delta represents the growth of environment usage relative to the baseline and is not guaranteed to be caused entirely by the current tool.
+Subcommand RSS with `merged_rss_reason=observed_sparse_lower_bound` uses the
+largest actually sampled value of one distinct address space. It does not sum
+stale values across missing samples or assume that different address spaces'
+samples were simultaneous. This bound may be below the aggregate workload
+peak. Dense observations retain aligned sampled aggregation; inspect
+`memory_reduction` and `merged_rss_reason` in the artifact provenance when
+comparing these measurements.
+
+Strict environment-memory measurement requirements: a confirmed task container or exclusive execution cgroup, no overlapping execution windows in the same environment, a baseline no more than 150 ms before the call starts, at least one in-call sample, and sampling gaps, including the start and end boundaries, of no more than 150 ms. Hook or finalizer lifetimes may overlap when verified execution windows do not. Samples after the end do not contribute to the peak. Totals include background processes and caches; the delta represents the growth of environment usage relative to the baseline and is not guaranteed to be caused entirely by the current tool.
 
 ## JSONL Record Types
 
@@ -86,12 +109,8 @@ Only records produced by the sidecar's main writer carry `gateway_id`, `runtime_
 | `prediction` | The optional load / PMU / compatibility prediction saved by the sidecar before the tool executes; see the "Prediction" section for details. The plugin's local writer usually does not have this field, because its start is written to disk before the decision. |
 | `execution.mode` | `launcher`, `marker`, `in_process_or_runtime_managed`, or `null`. It can be `null` when the execution mode is not yet determined at start time. |
 | `execution.execution_id` | Optional ClawTune execution identity; `null` when no independent execution has been registered. |
-| `model_tool_call_observation.tool_call_id` | Reserved model-side tool-call identity diagnostic. |
-| `model_tool_call_observation.raw_arguments` | Reserved raw model tool arguments string. |
-| `model_tool_call_observation.parse_status` | `verified` or `damaged_or_unverified`; indicates whether the model-side arguments can be reliably parsed. |
 | `correlation.status`, `correlation.reason` | Whether the start/end correlation is `resolved`; when it cannot be correlated, it is `unresolved` with a reason, for example a missing tool-call ID. |
 
-`model_tool_call_observation` is usually not produced by the current writer and is kept in the v6 types for compatibility diagnostics; a missing field does not mean the tool call failed.
 
 ### Fields Exclusive to `span_end`
 
@@ -136,11 +155,11 @@ Telemetry summaries and full artifacts represent the same execution. `call_resou
 
 ## Authoritative Call-Level Measurements: `resources.resource_observation`
 
-See the [tool resource observation schema](../contracts/tool-resource-observation.schema.json). This object is the authoritative record of resource measurement source, window, attribution, and training eligibility. `available=true` only means a value exists under the current measurement definition; only `eligible=true` means the metric can serve as a training label for its exclusively attributed workload target. The two must be read per metric; an object-level coverage or another metric cannot substitute for them.
+See the [tool resource observation schema](../contracts/tool-resource-observation.schema.json). This object records measurement source, window, attribution and strict measurement eligibility. `available=true` means a value exists under the stated measurement definition; `eligible=true` additionally identifies evidence suitable for the exclusively attributed workload target. Approximate and zero-filled KB labels remain admitted under the training policy described above, without relabeling their raw measurement quality.
 
-Finalized execution observations may be eligible with `reason=execution_window_only` and `window.complete=false`: CPU totals and sampled peaks describe the owned workload, excluding unmeasured shell/hook overhead. Average cores uses the same CPU total divided by the full tool duration in both training and trace replay. Compare predictions against those same labels. Pipeline predictions exclude only listed downstream consumers; standalone `head`/`cat` and the first pipeline stage remain included. The whole-tool observation can still include consumer overhead.
+Finalized observations with `reason=execution_window_only` describe the process execution window and can omit shell or hook overhead. Average CPU training values use CPU time divided by the corresponding workload duration when available, with the recorded average as a fallback. A timeout duration label does not replace that denominator with the timeout limit: CPU averages still describe the measured execution prefix.
 
-Environment-memory baselines may reuse a sample from the same verified environment taken at most 150 ms before the tool window. Overlapping calls, stale baselines and missing in-window samples remain ineligible; a first call without a pre-start sample can still have no memory label.
+Environment-memory baselines may reuse a sample from the same verified environment taken at most 150 ms before the tool window. Overlapping calls, stale baselines and missing in-window samples remain ineligible; a first call without a pre-start sample can lack a measured memory delta. Available diagnostic values are retained for training; missing targets are filled with zero.
 
 | Field | Meaning |
 | --- | --- |
@@ -149,7 +168,7 @@ Environment-memory baselines may reuse a sample from the same verified environme
 | `fallback_used` | Whether the cgroup-v2 fallback was returned because the preferred eBPF failed. Sparse sampling by itself does not switch the backend. |
 | `fallback_reason` | When the fallback is used, the reason the preferred eBPF failed. |
 | `scope` | Actual measurement scope: `process_tree`, `cgroup-v2`, or `none`. |
-| `attribution` | `exclusive_process_tree`, `shared_scope`, or `unattributed`. Resource values from the latter two cannot be used for training. |
+| `attribution` | `exclusive_process_tree`, `shared_scope`, or `unattributed`. Shared or uncertain attribution is retained in training as approximate evidence. |
 | `unavailable_reason` | The reason the entire preferred observation is unavailable; each metric still has its own `reason`. A successful cgroup fallback removes this field and keeps `fallback_reason`. |
 | `window` | The observation's own time range and coverage information; see the table below for the fields. |
 | `metrics` | `cpu_time`, `cpu_peak`, `memory_peak`, `disk_io`, `network_io`, and the optional `memory_charge_peak`. |
@@ -167,16 +186,16 @@ All nanosecond timestamps in `window` belong to the clock domain declared by `cl
 | `coverage_ratio` | Span of actual evidence time / requested window duration; `null` means it cannot be computed. It is not sampling density, nor does it directly determine whether any metric is trainable. |
 | `max_sample_gap_ns` | The largest edge or inter-sample gap encountered by the object-level coverage check. |
 | `complete` | Whether the requested window is covered under the current coverage rules; each metric may still be disqualified by its own boundaries, samples, or attribution. |
-| `late_scope_binding` | The authoritative scope was bound only after collection started; existing values are kept, but no metric may be used for training. |
-| `action_clock_unusable` | The action boundaries cannot be safely aligned with the collection clock; existing values are kept, but they must not be used as action labels. |
+| `late_scope_binding` | The authoritative scope was bound only after collection started; existing values remain available for approximate training. |
+| `action_clock_unusable` | The action boundaries cannot be safely aligned with the collection clock; existing values can be retained as approximate training labels, without claiming an aligned measurement window. |
 
-Every `metrics.*` uses the same status shell:
+Every `metrics.*` object uses the following status fields:
 
 | Field | Meaning |
 | --- | --- |
 | `available` | Whether a measured value exists under the current `measurement` and window. |
-| `eligible` | Whether it can serve as a training label for its exclusively attributed workload target; fallback collector-window CPU / I/O can be available but is never eligible. |
-| `reason` | Metric-level reason for availability or eligibility; `ok` means eligible. Common rejection reasons include `shared_scope`, `sampling_gap`, `insufficient_samples`, `action_clock_window_unusable`, `scope_bound_after_action_start`, and `collector_window_only`. |
+| `eligible` | Strict measurement-quality flag for the exclusively attributed workload target. Fallback collector-window CPU / I/O can be available but not strictly eligible; the approximate training policy still retains the available value. |
+| `reason` | Metric-level reason for availability or eligibility; `ok` means eligible. Common quality reasons include `shared_scope`, `sampling_gap`, `insufficient_samples`, `action_clock_window_unusable`, `scope_bound_after_action_start`, and `collector_window_only`. |
 | `measurement` | Measurement semantics identifier; the definition must not be guessed from the field name alone. |
 | `value_seconds`, `average_cores` | Cumulative core-seconds for `cpu_time`, and the average core count over the complete action window. |
 | `value_cores`, `window_ms` | The fixed-window core count and window milliseconds for `cpu_peak`; the current window is 500 ms. |
@@ -190,7 +209,7 @@ The current measurement definitions are as follows:
 
 | Metric | eBPF measurement | Value semantics |
 | --- | --- | --- |
-| `cpu_time` | `ebpf_task_cpu_time` or `ebpf_owned_lineage_cpu_time` | Cumulative CPU of the owned task lineage; only a complete action window provides a trainable `average_cores`. |
+| `cpu_time` | `ebpf_task_cpu_time` or `ebpf_owned_lineage_cpu_time` | Cumulative CPU of the owned task lineage; interpret `average_cores` using the reported duration and measurement window. |
 | `cpu_peak` | `ebpf_task_cpu_500ms_peak` or `ebpf_owned_lineage_cpu_500ms_peak` | Maximum of the 500 ms average CPU; multi-clause calls sum owned exec-image contributions in aligned windows before taking the maximum. |
 | `memory_peak` | `ebpf_sampled_distinct_mm_rss` | Sampled RSS peak after de-duplicating mm across the owned lineage; it is neither environment memory nor cgroup charge. |
 | `disk_io` | `ebpf_task_io_accounting` | Read/write cumulative difference of owned task I/O accounting. |
@@ -200,11 +219,11 @@ The cgroup-v2 fallback is enabled only for exclusive, non-root execution cgroups
 
 ## Other Call-Level Fields and Legacy Fields: `span_end.resources`
 
-When `resource_observation` is present, the current training code relies on its per-metric `eligible` and `attribution`; compatibility values are projected from the same observation into legacy fields. Only historical traces without `resource_observation` use the old coverage / sampling rules. Environment memory and PMU are independent measurements, not legacy aliases of that object.
+When `resource_observation` is present, its per-metric values and attribution describe the original measurements; compatibility values are projected from the same observation into legacy fields. Ingestion preserves approximate values and fills unavailable training targets according to the stated policy. Environment memory and PMU are independent measurements, not legacy aliases of that object.
 
 | New field | Legacy / compatibility field | Migration meaning |
 | --- | --- | --- |
-| `window.*` | `monitor_*`, `coverage_*`, `action_monotonic_clock_domain` | The new object declares both the window kind and the clock domain; legacy fields alone are insufficient to prove a metric is trainable. |
+| `window.*` | `monitor_*`, `coverage_*`, `action_monotonic_clock_domain` | The new object declares both the window kind and the clock domain; legacy fields alone do not establish measurement quality. |
 | `metrics.cpu_time.value_seconds` | `cpu_time_s`, `cgroup_cpu_time_s` | `cpu_time_s` is a general compatibility projection; `cgroup_cpu_time_s` is only a legacy cgroup-source alias. |
 | `metrics.cpu_time.average_cores` | `cpu_utilization_avg_cores`, `cpu_utilization_avg_pct` | The percentage is the core count multiplied by 100; eligibility follows the new metric's `eligible`. |
 | `metrics.cpu_peak.value_cores` | `cpu_peak_cores` | Both currently represent the fixed 500 ms window peak; see `window_ms` / `cpu_peak_window_ms` for the window. |
@@ -230,18 +249,18 @@ When `resource_observation` is present, the current training code relies on its 
 | `quality`, `sampling_quality` | Compatibility window and sampling quality summary. They cannot override `metrics.*.eligible`; `ok` in legacy polling records also does not guarantee that 50 ms was actually achieved. |
 | `monitor_source`, `target_pid` | The actual resource sampler and target PID. |
 | `sampling_interval_ms`, `sampling_point_count` | ms, count; the nominal compatibility interval and CPU sample count. eBPF records usually show 10 ms and fallback shows 0; neither is the actual average wall-clock interval. |
-| `cpu_time_s`, `cgroup_cpu_time_s` | core-s; compatibility cumulative CPU values. For new records, `cpu_time_s` is projected from the authoritative observation; `cgroup_cpu_time_s` is a legacy cgroup-source alias and must not be added to the former. For training eligibility see `metrics.cpu_time.eligible`. |
+| `cpu_time_s`, `cgroup_cpu_time_s` | core-s; compatibility cumulative CPU values. For new records, `cpu_time_s` is projected from the authoritative observation; `cgroup_cpu_time_s` is a legacy cgroup-source alias and must not be added to the former. For measurement quality see `metrics.cpu_time.eligible`. |
 | `cpu_utilization_avg_cores` | cores; for new records it is projected from a qualifying `metrics.cpu_time.average_cores`. For legacy records it is computed only when the monitor and action start/end each differ by no more than 1 ms. |
 | `cpu_utilization_avg_pct` | %; `cpu_utilization_avg_cores * 100`; multi-core values can exceed 100%. |
-| `cpu_peak_cores`, `cpu_peak_window_ms` | cores, ms; the compatibility fixed-window CPU peak and the 500 ms window. For training eligibility see `metrics.cpu_peak.eligible`. |
+| `cpu_peak_cores`, `cpu_peak_window_ms` | cores, ms; the compatibility fixed-window CPU peak and the 500 ms window. For measurement quality see `metrics.cpu_peak.eligible`. |
 | `rss_peak_bytes`, `memory_rss_bytes_before`, `memory_rss_bytes_after` | bytes; historically named diagnostic values. For new eBPF records, `rss_peak_bytes` projects sampled distinct-mm RSS; older cgroup values may actually be `memory.current`. Do not mix across sources; when training on sampled RSS use `metrics.memory_peak`. |
 | `memory_baseline_bytes` | bytes; the most recent qualifying pre-call environment memory sample. |
 | `memory_total_peak_bytes` | bytes; maximum in-call environment memory sample, not an allocation limit. |
 | `memory_extra_peak_bytes` | bytes; `max(0, total_peak - baseline)`. It is an environment high-water delta, not the tool process's exclusive allocation or RSS delta. |
 | `memory_environment_id`, `memory_measurement` | Environment identity and measurement method: `cgroup_v2_memory_current` for one stable cgroup or `cgroup_v2_environment_union_v1` for the deduplicated base-plus-execution scope; the protocol also supports `guest_memtotal_minus_memavailable`, which is not host VM RSS. |
-| `memory_eligible`, `memory_unavailable_reason` | Whether there is evidence for a memory label and the reason it is unavailable, independent of the process window coverage. |
+| `memory_eligible`, `memory_unavailable_reason` | Strict memory-measurement quality and its reason, independent of process sampling coverage; this does not exclude approximate or zero-filled training values. |
 | `memory_timeline` | `[Unix seconds, bytes]` samples; qualifying output includes the baseline and in-call samples. |
-| `memory_diagnostics` | Present for a readable but ineligible memory window. It records the selected window, baseline sample, in-window samples, observed baseline/total/extra arithmetic, exclusivity, and truncation. These nested values are audit evidence only and never enter a KB. |
+| `memory_diagnostics` | Present for a readable but ineligible memory window. It records the selected window, baseline sample, in-window samples, observed baseline/total/extra arithmetic, exclusivity, and truncation. Available observed baseline, total, and extra-memory values can supply approximate training labels when the primary fields are missing. |
 | `memory_clause_observations` | Training observations generated from the same timeline for non-overlapping subcommands; they are not additional memory consumption and must not be summed repeatedly. |
 | `disk_read_bytes_delta`, `disk_write_bytes_delta` | bytes; cumulative storage I/O difference over the sampling interval. |
 | `disk_read_bytes_per_s`, `disk_write_bytes_per_s` | bytes/s; the above differences divided by the action duration in seconds. |
@@ -274,7 +293,7 @@ The entry points are `execution.tool_resource.call_telemetry` or `trace_event.ar
 | `cpu_ns_cumulative`, `cumulative_cpu_s` | Cumulative CPU in ns and the core-s value after `/1e9`; the latter is a human-readable form of the same number. |
 | `cpu_time_seconds` | Cumulative CPU seconds extracted by the execution summary from clause provenance; same source as the above fields but may be null when provenance is missing. |
 | `t_exec_ns`, `t_end_ns` | Linux monotonic exec / end boundaries kept by the execution summary, used to determine whether the whole action is covered. |
-| `peak_cpu_cores` | cores; subcommand fixed-window CPU peak; empty when the execution is shorter than 1 second or the quality is insufficient. |
+| `peak_cpu_cores` | cores; subcommand fixed-window CPU peak; the window is 500 ms; unavailable when no complete window or sufficient sampling evidence exists. |
 | `sampled_peak_rss_mb`, `peak_memory_mb` | Decimal MB (1 MB = 1,000,000 bytes); the former is the RSS diagnostic field of the raw artifact and the latter is the corresponding field in the summary; neither is an environment memory prediction target. |
 | `disk_read_bytes`, `disk_write_bytes` | Storage I/O bytes in the summary. |
 | `disk_io.read_bytes_total`, `disk_io.write_bytes_total`, `disk_io.read_write_bytes_total` | Cumulative reads, writes, and their sum from the raw artifact, in bytes. |
@@ -284,16 +303,16 @@ The entry points are `execution.tool_resource.call_telemetry` or `trace_event.ar
 | `status.reason`, `status.source` | The reason the state is missing or terminated, and the source of the state evidence. |
 | `availability.latency`, `availability.cpu_time`, `availability.cpu`, `availability.memory`, `availability.disk_io`, `availability.status` | Availability and reason for each target; `cpu_time` is cumulative CPU and `cpu` is the fixed-window peak, and the two are independent. |
 | `in_loop`, `in_pipe`, `in_subst`, `pipeline_position` | Whether it is in a loop, pipe, or substitution expression, and the pipeline position. |
-| `eligible_for_kb`, `telemetry_quality` | Whether it can be used for learning and the collection quality; downstream pipeline viewers etc. also apply independent semantic filtering. |
+| `eligible_for_kb`, `telemetry_quality` | Collector's strict quality assessment; approximate/partial observations may still be learned. Downstream pipeline viewers retain their independent semantic role. |
 | `mapping_evidence`, `owned_exec_image_count`, `provenance` | Evidence mapping static commands to running processes, the number of owned exec images, and lower-level collection diagnostics. |
 
 `execution.tool_resource` summary fields: `started` (whether collection started), `status` / `unavailable_reason` (telemetry status), `execution_id` / `tool_call_id` (associated identities), `artifact_path` (original path, which may be inaccessible after download), `artifact_summary` (collector summary), `call_telemetry` (command, quality, subcommands), `kb_observations_added` (number of observations written), `kb_update_error` (learning update error). `call_telemetry.clause_count` is the clause count before compacting, and `formal_completeness` indicates complete / partial / unavailable. The written count is not the number of valid samples for all targets.
 
-The raw artifact's `schema`, `version`, `mode`, `status_model` define the format; `container_id`, `cgroup_id`, `quota_cores` define the environment and CPU quota. `telemetry_quality`, `collection_validity`, `formal_completeness`, `replay_execution`, `integrity` respectively describe quality, collection validity, completeness, execution completion state, and consistency errors. `collector` contains status, health, disable reason, valid / invalid call counts, and `kprobe_total_hits`; the hit count is not a tool resource count. `cleanup` is the cleanup result, and `provenance` is the collection parameters and evidence.
+The full collector artifact includes process mapping, sample-loss, and cleanup diagnostics. Use the schema and metric fields above for analysis; internal diagnostic objects can change with the collector version.
 
-In `telemetry_loss_total`, `ringbuf_reserve_failures`, `argv_read_failures`, `argv_boundary_read_failures`, `total` are loss / read failure counts; `ring_loss_total` is the ring-loss diagnostic. In `call_coverage`, `eligible_call_count`, `withheld_call_count`, `total_call_count`, `eligible_fraction` are the learnable, withheld, and total call counts and the fraction, not periodic sampling coverage.
+In `telemetry_loss_total`, `ringbuf_reserve_failures`, `argv_read_failures`, `argv_boundary_read_failures`, `total` are loss / read failure counts; `ring_loss_total` is the ring-loss diagnostic. In `call_coverage`, `eligible_call_count`, `withheld_call_count`, `total_call_count`, `eligible_fraction` describe the collector's strict quality classification, not the final count of approximate/imputed training labels or periodic sampling coverage.
 
-Each artifact call additionally has `command`, `tool_call_id`, `version`, `tool_trace_ref` (input and correlation), `telemetry_quality`, `eligible_for_kb`, `target_availability`, `invalid_reasons`, `integrity`, `telemetry_loss`, `ring_loss` (quality), `mapping`, `candidate_rejections`, `coverage_gaps`, `no_runtime_exec`, `runtime_invocations`, `static_word_intent`, `transition_graph`, `provenance` (command mapping, rejected candidates, coverage gaps, unexecuted branches, and execution attribution evidence). These open diagnostic objects must not be used as stable resource metrics; in particular, unexecuted branches must not be counted as zero-duration training samples.
+Unexecuted command branches are not observations and must not be counted as zero-duration training samples. Zero-filling missing measurements of an observed execution does not create observations for commands that never ran.
 
 ## PMU: `resources.pmu`
 
@@ -313,7 +332,7 @@ See the [PMU profile schema](../contracts/pmu-profile.schema.json). Four `events
 
 Each event contains `supported`, `semantics`, `raw_count`, `scaled_count`, `time_enabled_ns`, `time_running_ns`, `running_ratio`, `error`, respectively indicating supportability, hardware semantics, raw count, scaled count, enabled time, running time, running / enabled ratio, and error. Ratios with a zero denominator are unavailable. These metrics are not DRAM bandwidth. When a simulator executes, the counts include the simulation work performed by the host and cannot be interpreted as a native guest instruction profile.
 
-The remaining PMU fields are `schema`, `execution_id`, `source`, `mode`, `scope`, `root_pid`, `started_at`, `ended_at`, `architecture`, `pmu_devices`, `llc_semantics`, `llc_semantics_confirmed`, `collector_errors`, describing the version, identity, collection source / mode / scope, root process, Unix-second start and end, architecture, devices, whether the LLC semantics are confirmed, and errors. `coverage.status`, `reason`, `running_ratio`, `multiplexed`, `kernel_included`, `root_and_future_descendants`, `eligible_for_kb` describe reliability, reason, running ratio, multiplexing, whether the kernel and descendants are included, and whether it can be used for learning. Process sampling coverage cannot substitute for this determination.
+The remaining PMU fields are `schema`, `execution_id`, `source`, `mode`, `scope`, `root_pid`, `started_at`, `ended_at`, `architecture`, `pmu_devices`, `llc_semantics`, `llc_semantics_confirmed`, `collector_errors`, describing the version, identity, collection source / mode / scope, root process, Unix-second start and end, architecture, devices, whether the LLC semantics are confirmed, and errors. `coverage.status`, `reason`, `running_ratio`, `multiplexed`, `kernel_included`, `root_and_future_descendants`, `eligible_for_kb` describe reliability, reason, running ratio, multiplexing, whether the kernel and descendants are included, and strict measurement quality. These flags describe the counter measurements; approximate values and zero-filled missing targets still enter training.
 
 A tool timeout, nonzero exit or signal does not by itself invalidate PMU counts. An explicit OpenClaw timeout closes the counting window immediately at its terminal notification, before asynchronous cleanup; `coverage.reason: tool_timeout` can be `reliable` and does not assert natural process-tree completion. An authenticated execution-exit report uses `execution_exited`; this does not imply tool success either. Both retain normal metrics for the observed window. Missing end evidence without an explicit timeout, counter errors and multiplexing still affect quality; raw counts remain recorded even when the profile is partial.
 
@@ -344,7 +363,7 @@ Each target has `status`, `unit`, `metric_definition`, `avg`, `p50`, `p90`, `buc
 
 Clause-derived tool predictions cover only the retained workload. Their composition ignores hook overhead and cross-clause correlation; individual clause predictions can remain available when a complete composition is unavailable. See [composition rules and exclusions](technical-report.md#5-from-commands-to-tool-calls).
 
-EdgeKappa's single-clause result uses a weighted mean, a midpoint median at exactly 50% cumulative weight, and inverse-CDF p90 (`weighted_midpoint_p50_inverse_cdf_p90`). Multiple clauses use the shared 2048-draw composer. Its histogram describes weighted observed durations, excluding the bucket smoothing used during weight training. Censored or missing exact-duration evidence returns `non_exact_duration_evidence`; bucket midpoints are never substituted. See [EdgeKappa's algorithm](technical-report.md#45-edgekappakb) and [state compatibility](getting-started.md#3-output-and-persistent-state).
+EdgeKappa's single-clause result uses a weighted mean, a midpoint median at exactly 50% cumulative weight, and inverse-CDF p90 (`weighted_midpoint_p50_inverse_cdf_p90`). Multiple clauses use the shared 2048-draw composer. Its histogram describes weighted observed durations, excluding the bucket smoothing used during weight training. Legacy evidence lacking individual duration values returns `non_exact_duration_evidence`; bucket midpoints are never substituted. See [EdgeKappa's algorithm](technical-report.md#45-edgekappakb) and [state compatibility](getting-started.md#3-output-and-persistent-state).
 
 Memory evidence is separated by `memory_measurement`. Select the query source with `CLAWTUNE_TOOL_RESOURCE_MEMORY_MEASUREMENT`; the default is `cgroup_v2_environment_union_v1`. History stored under another source can leave total/extra memory unavailable. Selection does not convert measurements between sources.
 

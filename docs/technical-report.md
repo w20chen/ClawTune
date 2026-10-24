@@ -2,17 +2,17 @@
 
 ## 1. System design
 
-ClawTune combines an OpenClaw plugin, a local monitoring service, and evaluation programs. The plugin correlates model requests and tool calls; the service collects execution measurements and predicts subsequent calls from historical evidence. It does not modify OpenClaw core. Placement advice is advisory.
+ClawTune provides a Python library, a local monitoring service, evaluation programs, and an OpenClaw integration plugin. The plugin correlates model requests and tool calls; the service collects execution measurements and predicts subsequent calls from historical evidence. It does not modify OpenClaw core. Placement advice is advisory.
 
 Docker supplies task environments, cgroups bound resource accounting, eBPF attributes executable clauses to processes, and perf supplies hardware counters. Daily operation learns continuously; online benchmarks share run-local history; the standard offline evaluation freezes models during testing.
 
 ## 2. Measurement scope and validity
 
-Raw tool-span duration includes the tool lifecycle and wrapper overhead. The prediction target is retained-workload duration: ToolKB learns its eligible call-level label, while clause models reconstruct it from executable stages. These scopes are not interchangeable.
+Raw tool-span duration includes the tool lifecycle and wrapper overhead. Shell prediction targets the executable subcommands included in the workload model, called clauses below. ToolKB learns the corresponding whole-call duration, while the other models reconstruct it from those clauses. Native tools use their call-level duration. These measurement scopes are not interchangeable.
 
 The [measurement reference](tool-profile.md#quick-guide-measurements-and-predictions) defines duration, cumulative and peak CPU, sampled process RSS, environment total/extra memory, and the nine ToolKB PMU targets. Environment memory includes background charges; extra memory is a high-water delta, not exclusive process attribution. Memory sources remain separate, and host VM RSS cannot substitute for guest memory.
 
-Labels require execution ownership and sufficient quality for each target. Missing values are not zeros. Incomplete or censored executions do not supply complete-execution labels; shared-container totals cannot become individual tool labels. PMU ratios require nonzero denominators, compatible event semantics, and eligible counters without multiplexing.
+Training retains approximate observations, including native-tool shared-runtime values, and zero-fills missing targets from short or insufficient sampling. Interrupted executions retain their observed prefix; a confirmed effective timeout supplies a duration lower bound. Raw ownership, collector quality and interruption metadata remain visible, and per-target provenance distinguishes measured, approximate, partial and imputed labels. These labels improve coverage but must not be described as exclusively attributed measurements or exact completed-execution truth. Undefined hardware ratios use the same explicit missing-target policy rather than division by zero.
 
 ## 3. Historical evidence and empirical predictions
 
@@ -20,12 +20,33 @@ The implementation maintains four independent models; they do not fill missing e
 
 | Index | Description | Observation scope |
 | --- | --- | --- |
-| ToolKB | Call-level history | Eligible call-level labels, including retained-workload duration and eligible hardware-counter metrics |
+| ToolKB | Call-level history | Whole-call training values, including workload duration and hardware counters |
 | TrieKB | Clause-prefix index | Executable clauses and ordered argument prefixes |
 | LatticeKB | Feature-subset index | Clause contexts ordered by feature-set inclusion |
 | EdgeKappaKB | Feature graph with learned parent-edge weights | Clause duration only; CPU and memory are unavailable |
 
-Whole-call history first retrieves a project's exact normalized call representation, then shorter prefixes, executable identity, or an applicable tool category. The clause-prefix index similarly backs off from an exact clause to argument prefixes and executable identity. When local evidence is absent, compatible public priors provide coarser executable- or tool-level evidence. Current call-level predictions do not fill missing targets from unrelated global samples.
+Each model searches its own history. ToolKB and TrieKB use the first nonempty
+match for each target, even if it has only one sample. Zero-filled values count
+as samples. Different targets can therefore use different matching levels.
+
+| Model | Matching and fallback |
+| --- | --- |
+| ToolKB | Repository-specific exact command, then command prefixes of up to four tokens, then a compatible executable. Next: a normalized whole-command match across repositories, a compatible executable, the outer tool name (such as `exec`), and finally all calls. Without a command, it uses repository/tool name, tool name across repositories, then all calls. |
+| TrieKB | Repository-specific exact subcommand, then argument prefixes of up to four tokens, then a compatible executable. Next: a normalized command match across repositories, a compatible executable, and finally all subcommand observations. |
+| LatticeKB | An exact feature set uses that set's own observations. Otherwise it selects one matching subset that retains the executable and entry identity, using the selection method below. It can omit repository and other optional features, but has no unrestricted global fallback. |
+| EdgeKappaKB | Combines matching-node observations with weighted observations from more general matching contexts that retain the executable and entry identity. It predicts duration only and has no unrestricted global fallback. |
+
+For single commands, compatible prefixes retain known module or script identities;
+`python -m pytest` does not use a generic Python prefix. ToolKB can still reach
+its broader tool-name or global fallback. A compound-call prefix describes the
+whole call, including later commands; it is not a measurement of the first
+subcommand. See [command parsing](command-parsing.md) for syntax coverage.
+
+An empty search produces an unavailable target. Lattice's default subset search
+also returns unavailable when its non-exact query exceeds 512 candidates.
+Memory matching keeps measurement sources separate, and unsupported shell
+structures can prevent a complete call prediction even when some subcommand
+predictions exist.
 
 For ToolKB, TrieKB, and LatticeKB, given the selected valid samples $y_1,\ldots,y_n$ for a target, the empirical distribution and mean are
 
@@ -41,15 +62,15 @@ For average CPU, samples are per-observation CPU-time/duration ratios; their mea
 
 ### 4.1 Context construction
 
-Normalize each executable clause into a feature set $F(x)$ containing its executable, target, options, and available project identity. A context $S$ aggregates historical clause observations satisfying $S\subseteq F(x_i)$. The active contexts for query $x$ are
+Normalize each executable clause into a feature set $F(x)$ containing its executable, target, options, and available project identity. A context $S$ aggregates historical clause observations satisfying $S\subseteq F(x_i)$. Let $C(x)$ contain the query's required executable and entry features. The matching contexts for query $x$ are
 
 $$
-\mathcal A(x)=\{S:S\subseteq F(x),\ n_S>0\}.
+\mathcal A(x)=\{S:C(x)\subseteq S\subseteq F(x),\ n_S>0\}.
 $$
 
 More features make a context more specific, generally reducing its sample size. Fewer features broaden coverage but can mix different workloads. Context selection therefore trades specificity against statistical stability.
 
-The implementation retains complete feature sets while bounding partial combinations. It maintains a bounded subset partial order rather than explicitly materializing a full power set. The normalizer treats `repo` as optional, so nodes with and without project identity coexist. It is not a hard isolation boundary. LatticeKB builds eligible sample views and selects contexts independently per target; EdgeKappa uses the same shell features. Offline identity fallback is described in the [benchmark guide](benchmarks.md#5-fixed-trace-offline-evaluation).
+The implementation retains complete feature sets while bounding partial combinations. It maintains a bounded subset partial order rather than explicitly materializing a full power set. The normalizer treats `repo` as optional, so nodes with and without project identity coexist. It is not a hard isolation boundary. LatticeKB groups training samples and selects contexts independently per target; EdgeKappa uses the same shell features. Offline identity fallback is described in the [benchmark guide](benchmarks.md#5-fixed-trace-offline-evaluation).
 
 ### 4.2 Variance shrinkage
 
@@ -116,7 +137,7 @@ Ties prefer more observations. This specificity baseline has no cross-validation
 
 ### 4.5 EdgeKappaKB
 
-EdgeKappa maintains a separate bounded feature graph. Initial batch fitting creates full-feature nodes and bounded combinations of optional features with the core features. Online `begin` first commits earlier completed observations, creates a missing full-feature node with its nearest existing parents, backfills that node from matching committed observations, and saves a pre-execution prediction token. It does not generate all bounded subsets again or add the current call's duration observation. A query without `begin` can use matching parent contexts for an unseen full feature set without creating a node. Completion queues eligible observations; committing them accumulates samples in every existing node whose features are a subset of the observation's features and applies eligible saved-token feedback. A cancelled or rejected call discards unused tokens without adding outcomes or applying completion feedback.
+EdgeKappa groups commands by feature sets and learns how strongly to use more general matching groups. A group includes observations whose feature sets contain its features, so an exact group can include more specific commands. This differs from Lattice's preference for only its own exact-feature observations. For an unseen command, EdgeKappa uses the nearest matching general groups without requiring an exact group.
 
 For query node $S$, let $O_S$ be its observations and $c_{S,b}$ its count in duration bucket $b$. Each parent $P$ contributes only $D_{P,S}=O_P\setminus O_S$, excluding evidence already counted at the child. Parents with empty differences contribute nothing. With $B$ buckets:
 
@@ -128,7 +149,7 @@ $$
 
 Here $\epsilon=\eta=0.01$. Initial edge weights divide $k_0=1$ among parents. Completion feedback updates log edge weights by bucket log-loss gradients computed from saved pre-execution predictions. Gradients are clipped to $[-1,1]$ with default learning rate 0.1; weights remain positive with a total-strength cap of 100. A cold query with no own or parent evidence is unavailable.
 
-Runtime duration predictions use actual durations: each child observation has weight 1, and each parent-difference observation receives $\kappa_{P,S}/|D_{P,S}|$. An observation shared by several parents is one duration atom with summed weight; evidence count remains the number of unique observations. Numerical bucket smoothing has no duration atom and is omitted from this distribution. Missing exact durations make it unavailable; bucket midpoints are never invented. The [prediction reference](tool-profile.md#prediction-span_startprediction) defines weighted quantiles and unsupported targets.
+Runtime duration predictions use individual duration labels: each child observation has weight 1, and each parent-difference observation receives $\kappa_{P,S}/|D_{P,S}|$. An observation shared by several parents is one duration atom with summed weight; evidence count remains the number of unique observations. Numerical bucket smoothing has no duration atom and is omitted from this distribution. Historical bucket-only data without individual duration labels makes it unavailable; bucket midpoints are never invented. The [prediction reference](tool-profile.md#prediction-span_startprediction) defines weighted quantiles and unsupported targets.
 
 ## 5. From commands to tool calls
 
@@ -148,7 +169,7 @@ This approximation assumes that foreground clauses cover the workload, ignores s
 
 An online query may use an observation only when $t_i^{end}<t_q^{start}$. Concurrent tasks share evidence in actual completion order; fixed task selection does not ensure identical learning interleavings. Standard offline testing freezes all models and cannot incorporate test outcomes; the separate EdgeKappa research evaluator offers an explicit online-update mode.
 
-Default seed contents, snapshot compatibility, and rebuild instructions are maintained in [Output and persistent state](getting-started.md#3-output-and-persistent-state). Source workloads and hardware conditions limit transfer to other environments.
+Default seed contents, snapshot compatibility, and rebuild instructions are maintained in [Output and persistent state](getting-started.md#3-output-and-persistent-state). The bundled default includes its former test samples and is intended for deployment; those samples cannot provide held-out accuracy for that bundle. Training also includes non-shell tools, while standard offline predictions and accuracy denominators include only `exec` and `terminal_exec`. Source workloads and hardware conditions limit transfer to other environments.
 
 Online execution evaluates collection and continuous learning behavior. Fixed-trace evaluation measures prediction error outside the training subset. The current offline protocol keeps each task and all its attempts on one side of a deterministic split, stratified by benchmark and repository, category, or dataset fallback. Singleton groups are training-only. The resulting overall fraction can differ from the requested fraction, and within-project tests do not establish unseen-project performance.
 
@@ -158,6 +179,6 @@ $$
 \ell_\tau(y,\widehat q)=(\tau-\mathbf1[y<\widehat q])(y-\widehat q).
 $$
 
-Compare methods on the same eligible labels and select hyperparameters within the training data. Histogram accuracy depends on boundaries and class balance and cannot alone establish better duration prediction. Hardware quotas, input sizes, sampling error, correlated commands, and platform changes limit applicability.
+Compare methods on the same labeled calls, separating measured and imputed values, and select hyperparameters within the training data. Histogram accuracy depends on boundaries and class balance and cannot alone establish better duration prediction. Hardware quotas, input sizes, sampling error, correlated commands, and platform changes limit applicability.
 
 Commands and output interpretation are centralized in the [benchmark guide](benchmarks.md). [JSON Schemas](../contracts/) define protocol fields. Algorithm provenance and licensing are recorded in the [vendoring notice](../services/sidecar/src/tool_time/_lattice_vendor/VENDORED.md).

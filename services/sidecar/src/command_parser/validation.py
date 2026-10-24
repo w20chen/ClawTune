@@ -2,17 +2,16 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
-from pathlib import Path
 
 from jsonschema import Draft202012Validator
+from clawtune_kb.contracts import data_root
 
 
 @lru_cache(maxsize=8)
 def schema(name: str) -> dict:
     # Wheel copies are generated from contracts/ by the packaging build.
-    local = Path(__file__).parent.parent / "clawtune_kb" / "_data" / "contracts" / (name + ".schema.json")
-    root = Path(__file__).resolve().parents[4] / "contracts" / (name + ".schema.json")
-    return json.loads((root if root.is_file() else local).read_text(encoding="utf-8"))
+    path = data_root() / "contracts" / (name + ".schema.json")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @lru_cache(maxsize=8)

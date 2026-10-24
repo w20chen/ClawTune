@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -26,6 +27,17 @@ HOP_BY_HOP_HEADERS = {
     "upgrade",
     "host",
     "content-length",
+}
+# httpx decodes Content-Encoding before exposing response.content, and the
+# proxy may also normalize or reserialize JSON. These describe the upstream
+# representation, not the bytes returned by this proxy.
+_REWRITTEN_BODY_HEADERS = {
+    "content-encoding",
+    "content-md5",
+    "digest",
+    "content-digest",
+    "repr-digest",
+    "etag",
 }
 _RUNTIME_API_KEY_PREFIX = "clawtune-runtime."
 
@@ -247,6 +259,12 @@ async def _stream_chat(
             events = [event for event in events if event is not None]
             if events:
                 yield _serialize_sse(events)
+    except (asyncio.CancelledError, GeneratorExit):
+        # A disconnected downstream or cancelled request is not a completed
+        # model response, even when the upstream sent a partial successful body.
+        status_code = 499
+        error = "stream_cancelled"
+        raise
     except Exception as exc:
         status_code = 502
         error = str(exc)
@@ -290,32 +308,34 @@ async def _stream_chat(
         if error is None and done_seen:
             yield _serialize_sse([None])
     finally:
-        message = _message_from_stream_chunks(chunks)
-        effective_error = error if error else (None if status_code < 400 else f"upstream_http_{status_code}")
-        _write_proxy_debug(
-            config,
-            action_id=action_id,
-            upstream=upstream,
-            payload=payload,
-            status_code=status_code,
-            chunk_count=len(chunks),
-            message=message,
-            raw_preview=bytes(raw_preview),
-            error=effective_error,
-        )
-        _record_proxy_trace(
-            trace_writer,
-            runtime_id=runtime_id,
-            action_id=action_id,
-            payload=payload,
-            response_payload={"message": message},
-            started_at=started_at,
-            status_code=status_code,
-            stream=True,
-            error=effective_error,
-        )
-        if trace_writer is not None:
-            trace_writer.end_proxy_activity(runtime_id)
+        try:
+            message = _message_from_stream_chunks(chunks)
+            effective_error = error if error else (None if status_code < 400 else f"upstream_http_{status_code}")
+            _write_proxy_debug(
+                config,
+                action_id=action_id,
+                upstream=upstream,
+                payload=payload,
+                status_code=status_code,
+                chunk_count=len(chunks),
+                message=message,
+                raw_preview=bytes(raw_preview),
+                error=effective_error,
+            )
+            _record_proxy_trace(
+                trace_writer,
+                runtime_id=runtime_id,
+                action_id=action_id,
+                payload=payload,
+                response_payload={"message": message},
+                started_at=started_at,
+                status_code=status_code,
+                stream=True,
+                error=effective_error,
+            )
+        finally:
+            if trace_writer is not None:
+                trace_writer.end_proxy_activity(runtime_id)
 
 
 def _record_proxy_trace(
@@ -533,10 +553,16 @@ def _forward_headers(request: Request, config: SidecarConfig) -> dict[str, str]:
 
 
 def _response_headers(response: httpx.Response) -> dict[str, str]:
+    connection_headers = {
+        name.strip().lower()
+        for name in response.headers.get("connection", "").split(",")
+        if name.strip()
+    }
+    excluded = HOP_BY_HOP_HEADERS | _REWRITTEN_BODY_HEADERS | connection_headers
     return {
         key: value
         for key, value in response.headers.items()
-        if key.lower() not in HOP_BY_HOP_HEADERS
+        if key.lower() not in excluded
     }
 
 

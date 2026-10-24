@@ -10,7 +10,7 @@ import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields, replace
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
@@ -113,6 +113,10 @@ class ExecutionTelemetrySummary:
     kb_update_error: str | None = None
     call_telemetry: dict[str, Any] | None = None
     artifact_summary: dict[str, Any] | None = None
+    # Known process/workload outcome survives collector or artifact failures.
+    replay_execution: str | None = None
+    confirmed_timeout: bool = False
+    timeout_duration_lower_bound_ms: float | None = None
 
 
 class KnowledgeBaseFlushError(RuntimeError):
@@ -465,6 +469,8 @@ class ToolResourcePredictor:
         self.command_features = CommandFeatureService(RuleRegistry(read_only=frozen))
         self._feature_call_keys: dict[tuple, str] = {}
         self._telemetry_by_execution_id: dict[str, ExecutionTelemetrySummary] = {}
+        self._memory_targets_committed: set[str] = set()
+        self._pending_memory_targets: dict[str, tuple[Any, tuple[ClauseObservation, ...]]] = {}
         self._starts: dict[CorrelationKey, ToolBeforeRequest] = {}
         from execution_context.duration import DurationContextKB, SNAPSHOT_NAME
         self.duration_context_kb = DurationContextKB()
@@ -783,7 +789,9 @@ class ToolResourcePredictor:
             args = dict(params(request.raw_params))
             if not any(args.get(k) for k in ('cwd', 'workdir', 'working_dir', 'working_directory')):
                 args['cwd'] = command_context.cwd
-            event = {'id': call_key(request), 'line': 0, 'start': time.time(),
+            # Process-local history needs a monotonic, high-resolution clock;
+            # coarse wall-clock ticks can hide a preceding completed call.
+            event = {'id': call_key(request), 'line': 0, 'start': time.perf_counter(),
                      'tool': request.tool_name, 'args': args}
             duration_context = history.begin(event)
             from clawtune_sidecar.identity import task_instance_key
@@ -1079,6 +1087,19 @@ class ToolResourcePredictor:
         with self._starts_lock:
             self._starts[correlation_key(request)] = request
 
+    def awaiting_tool_completion(self, value: Any) -> bool:
+        """Whether this execution still has one matching before-hook request."""
+        with self._starts_lock:
+            tool_call_id = getattr(value, "tool_call_id", None)
+            if tool_call_id is None:
+                return False
+            if correlation_key(value) in self._starts:
+                return True
+            return sum(
+                request.tool_call_id == tool_call_id and owners_compatible(request, value)
+                for request in self._starts.values()
+            ) == 1
+
     def finalize_call(self, value: ToolBeforeRequest | ToolCompletedEvent) -> None:
         """Idempotently release prediction state; this operation never learns."""
         with self._starts_lock:
@@ -1101,6 +1122,7 @@ class ToolResourcePredictor:
 
     def finalize_runtime(self, runtime_id: str, gateway_id: str | None) -> None:
         """Retire only the named runtime's unfinished calls and history."""
+        self._finalize_memory_targets(runtime_id, gateway_id)
         with self._starts_lock, self._kb_lock:
             for key, request in list(self._starts.items()):
                 if (request.gateway_id, request.runtime_id) == (gateway_id, runtime_id):
@@ -1133,6 +1155,12 @@ class ToolResourcePredictor:
         start: ToolBeforeRequest | None,
     ) -> int:
         from execution_context.history import exit_label, failure_label, output_text
+        execution_summary = self._telemetry_by_execution_id.get(event.execution_id) if event.execution_id else None
+        artifact_summary = getattr(execution_summary, "artifact_summary", None)
+        censored = _truncated_outcome(event.error_type) or getattr(execution_summary, "replay_execution", None) == "incomplete" or (
+            isinstance(artifact_summary, Mapping)
+            and artifact_summary.get("replay_execution") == "incomplete"
+        )
         with self._kb_lock:
             pending = self._context_pending.get(call_key(start or event))
             if pending is not None:
@@ -1142,11 +1170,8 @@ class ToolResourcePredictor:
                 if code is None:
                     code = 0 if event.succeeded else 1
                     text += f'\nExit code: {code}'
-                if not _truncated_outcome(event.error_type):
-                    self._context_histories[scope].complete({**before, 'end': time.time(), 'output': text})
+                self._context_histories[scope].complete({**before, 'end': time.perf_counter(), 'output': text})
                 # Frozen evaluation still advances history, but never learns its durations.
-        if self.frozen:
-            return 0
         artifact: dict[str, Any] | None = None
         if event.execution_id:
             summary = self._telemetry_by_execution_id.get(event.execution_id)
@@ -1162,8 +1187,15 @@ class ToolResourcePredictor:
             start=start,
             workload_duration_seconds=_retained_workload_duration_seconds(artifact),
         )
-        if pending is not None and task and completed_call is not None and not completed_call.censored:
+        if completed_call is not None:
+            completed_call = replace(completed_call, censored=censored or completed_call.censored,
+                confirmed_timeout=completed_call.confirmed_timeout or getattr(execution_summary, "confirmed_timeout", False),
+                timeout_duration_lower_bound_ms=(completed_call.timeout_duration_lower_bound_ms
+                    or getattr(execution_summary, "timeout_duration_lower_bound_ms", None)))
+        if not self.frozen and pending is not None and task and completed_call is not None:
             seconds = completed_call.workload_duration_seconds
+            if completed_call.confirmed_timeout and completed_call.timeout_duration_lower_bound_ms:
+                seconds = completed_call.timeout_duration_lower_bound_ms / 1000
             if seconds is None and not completed_call.workload_duration_required:
                 seconds = completed_call.ts_end - completed_call.ts_start
             if seconds is not None and math.isfinite(seconds) and seconds > 0:
@@ -1173,40 +1205,58 @@ class ToolResourcePredictor:
                             ident=before['id'], task=task, duration_ms=seconds * 1000,
                             failure=failure_label(text) if code else None):
                         self._duration_context_version += 1
-        # Add only newly measured environment labels. Existing clause CPU/time
-        # observations were already ingested at eBPF finish and are not repeated.
-        if sample.environment_memory and event.execution_id and completed_call and not completed_call.censored:
+        # Export measured clause-memory labels even when learning is frozen.
+        # Existing clause CPU/time observations are not repeated here.
+        if event.execution_id and completed_call and event.execution_id not in self._memory_targets_committed:
             if artifact is not None:
                 try:
                     from clawtune_sidecar.monitoring.environment_memory import clause_memory_labels
                     repo = event.repo or (start.repo if start else None) or self.repo
                     for call in artifact.get("calls", []):
-                        if call.get("eligible_for_kb") is not True:
-                            continue
                         clauses = call.get("clauses", [])
                         from tool_resource.features import enrich_input_sources
                         clauses = enrich_input_sources(call.get("command"), clauses)
-                        labels = clause_memory_labels(sample.environment_memory, clauses)
+                        environment = sample.environment_memory or {}
+                        labels = clause_memory_labels(environment, clauses)
                         for index, (row, labels_for_clause) in enumerate(zip(clauses, labels)):
-                            if not labels_for_clause:
-                                continue
+                            labels_for_clause = dict(labels_for_clause)
+                            # A single clause can reuse existing approximate call memory;
+                            # do not distribute a whole-call peak among concurrent clauses.
+                            source = environment if len(clauses) == 1 else row
+                            for name in ("memory_total_peak_bytes", "memory_extra_peak_bytes"):
+                                value = source.get(name)
+                                if name not in labels_for_clause and isinstance(value, (int, float)) and value >= 0:
+                                    labels_for_clause[name] = value
+                            missing = tuple(name for name in ("memory_total_peak_bytes", "memory_extra_peak_bytes")
+                                            if labels_for_clause.get(name) is None)
+                            labels_for_clause.update({name: 0 for name in missing})
+                            labels_for_clause.setdefault("memory_measurement", completed_call.memory_measurement
+                                                         or "cgroup_v2_environment_union_v1")
                             observation = ClauseObservation(repo=repo, bin=row["bin"], argv=tuple(row["argv"]),
                                 ts_start=row["ts_start"], ts_end=row["ts_end"],
                                 in_pipe=row.get("in_pipe", False), pipeline_position=row.get("pipeline_position", -1),
                                 in_loop=row.get("in_loop", False), in_subst=row.get("in_subst", False),
                                 stdin_from_pipe=row.get("stdin_from_pipe"),
                                 clause_index=row.get("clause_index", index),
-                                **labels_for_clause)
+                                censored=completed_call.censored, confirmed_timeout=completed_call.confirmed_timeout,
+                                imputed_targets=missing, **labels_for_clause)
                             observation = self.command_features.bind_observations([observation], call_key(start or event))[0]
-                            with self._kb_lock:
-                                self.kb.observe_completed_clause(observation)
-                                self._clause_kb_version += 1
+                            if sample.environment_memory is None:
+                                object.__setattr__(sample, "environment_memory", {})
                             sample.environment_memory.setdefault("memory_clause_observations", []).append(asdict(observation))
-                            self._kb_writes.enqueue((observation,))
+                            if not self.frozen:
+                                with self._kb_lock:
+                                    self.kb.observe_completed_clause(observation)
+                                    self._clause_kb_version += 1
+                                self._kb_writes.enqueue((observation,))
+                    self._memory_targets_committed.add(event.execution_id)
+                    self._pending_memory_targets.pop(event.execution_id, None)
                 except Exception:
-                    # Auxiliary learning cannot change the tool outcome.
+                    # Auxiliary label derivation cannot change the tool outcome.
                     import logging
-                    logging.getLogger(__name__).exception("environment memory clause update failed")
+                    logging.getLogger(__name__).exception("environment memory clause labels failed")
+        if self.frozen:
+            return 0
         try:
             try:
                 edge_observations = _ebpf_observations(artifact, fallback_repo=self.repo) if artifact is not None else []
@@ -1301,7 +1351,10 @@ class ToolResourcePredictor:
                 ] = ExecutionTelemetrySummary(
                     execution_id=execution_id,
                     tool_call_id=tool_call_id,
-                    artifact_path=str(artifact_path),
+                    # start_command did not produce an artifact. Publishing its
+                    # intended filename would make the trace writer read a
+                    # nonexistent file and permanently fail subsequent drains.
+                    artifact_path=None,
                     started=False,
                     status="unavailable",
                     unavailable_reason=f"start_failed:{type(exc).__name__}: {exc}",
@@ -1371,18 +1424,29 @@ class ToolResourcePredictor:
         raw_result: Any | None = None,
         succeeded: bool | None = None,
         incomplete_reason: str | None = None,
+        confirmed_timeout: bool = False,
+        timeout_duration_lower_bound_ms: float | None = None,
     ) -> ExecutionTelemetrySummary:
-        if incomplete_reason is not None and (
-            exit_code is not None or signal is not None
-        ):
-            raise ValueError(
-                "incomplete eBPF finalization cannot carry launcher exit status"
-            )
+        workload_result = _ebpf_workload_result(
+            raw_result, exit_code=exit_code, signal=signal,
+            succeeded=None if incomplete_reason is not None else succeeded,
+        )
+        from tool_resource.sdk import interrupted_workload_reason
+        incomplete_reason = incomplete_reason or interrupted_workload_reason(workload_result)
+        confirmed_timeout = confirmed_timeout or incomplete_reason == "protocol_timeout"
+        if confirmed_timeout and incomplete_reason is None:
+            incomplete_reason = "tool_timeout"
+        workload_result.update(censored=incomplete_reason is not None, confirmed_timeout=confirmed_timeout,
+                               timeout_duration_lower_bound_ms=timeout_duration_lower_bound_ms)
+        replay_execution = (
+            "incomplete" if incomplete_reason is not None
+            else ("completed" if exit_code == 0 else "failed")
+        )
         with self._execution_lock:
             run = self._runs_by_execution_id.pop(execution_id, None)
             feature_owner = self._execution_owners.pop(execution_id, None)
         if run is None:
-            return self._telemetry_by_execution_id.get(
+            summary = self._telemetry_by_execution_id.get(
                 execution_id,
                 ExecutionTelemetrySummary(
                     execution_id=execution_id,
@@ -1393,19 +1457,13 @@ class ToolResourcePredictor:
                     unavailable_reason="no_active_ebpf_run",
                 ),
             )
-        replay_execution = (
-            "incomplete"
-            if incomplete_reason is not None
-            else ("completed" if exit_code == 0 and signal is None else "failed")
-        )
-        workload_result = _ebpf_workload_result(
-            raw_result,
-            exit_code=exit_code,
-            signal=signal,
-            # A terminal OpenClaw hook is not an authoritative process exit.
-            # Do not copy its optimistic success bit into an orphaned run.
-            succeeded=None if incomplete_reason is not None else succeeded,
-        )
+            if summary.replay_execution is None or confirmed_timeout:
+                summary = replace(summary, replay_execution=summary.replay_execution or replay_execution,
+                                  confirmed_timeout=summary.confirmed_timeout or confirmed_timeout,
+                                  timeout_duration_lower_bound_ms=timeout_duration_lower_bound_ms or summary.timeout_duration_lower_bound_ms)
+                self._telemetry_by_execution_id[execution_id] = summary
+                self._trim_execution_telemetry()
+            return summary
         try:
             result = self._sdk.finish_command(
                 run,
@@ -1417,41 +1475,22 @@ class ToolResourcePredictor:
             summary = ExecutionTelemetrySummary(
                 execution_id=execution_id,
                 tool_call_id=run.tool_call_id,
-                artifact_path=str(run._observer.context.artifact_path),
+                artifact_path=(str(run._observer.context.artifact_path)
+                               if run._observer.context.artifact_path.is_file() else None),
                 started=True,
                 status="unavailable",
                 unavailable_reason=incomplete_reason or finish_error,
                 kb_update_error=(
                     finish_error if incomplete_reason is not None else None
                 ),
+                replay_execution=replay_execution,
+                confirmed_timeout=confirmed_timeout,
+                timeout_duration_lower_bound_ms=timeout_duration_lower_bound_ms,
             )
             self._telemetry_by_execution_id[execution_id] = summary
             self._trim_execution_telemetry()
             return summary
-        # The SDK deliberately withholds incomplete executions from learning.
-        # Its validation rejection is expected here, provided collector cleanup
-        # succeeded; genuine finalization/persistence errors must remain visible.
-        expected_incomplete_rejection = (
-            incomplete_reason is not None
-            and result.kb_update_error == (
-                f"ValueError: {run._observer.context.artifact_path}: replay execution is incomplete"
-            )
-            and isinstance(result.telemetry_artifact, dict)
-            and result.telemetry_artifact.get("replay_execution") == "incomplete"
-            and result.telemetry_artifact.get("cleanup") == "ok"
-        )
-        kb_update_errors = (
-            [result.kb_update_error]
-            if result.kb_update_error is not None and not expected_incomplete_rejection
-            and not (
-                isinstance(result.telemetry_artifact, dict)
-                and result.telemetry_artifact.get("cleanup") == "ok"
-                and result.kb_update_error == (
-                    f"ValueError: {run._observer.context.artifact_path}: artifact telemetry quality is "
-                    f"{result.telemetry_artifact.get('telemetry_quality')!r}; not eligible for KB"
-                )
-            ) else []
-        )
+        kb_update_errors = [result.kb_update_error] if result.kb_update_error is not None else []
         accepted_observations: list[ClauseObservation] = []
         if result.kb_observations_added and not self.frozen:
             with self._kb_lock:
@@ -1471,6 +1510,7 @@ class ToolResourcePredictor:
                     self._clause_kb_version += 1
             if accepted_observations:
                 self._kb_writes.enqueue(accepted_observations)
+                self._pending_memory_targets[execution_id] = (feature_owner, tuple(accepted_observations))
         kb_update_error = "; ".join(kb_update_errors) or None
         call_telemetry = (
             dict(result.call_telemetry)
@@ -1480,7 +1520,8 @@ class ToolResourcePredictor:
         summary = ExecutionTelemetrySummary(
             execution_id=execution_id,
             tool_call_id=run.tool_call_id,
-            artifact_path=str(run._observer.context.artifact_path),
+            artifact_path=(str(run._observer.context.artifact_path)
+                           if run._observer.context.artifact_path.is_file() else None),
             started=True,
             status=(
                 "unavailable"
@@ -1504,6 +1545,9 @@ class ToolResourcePredictor:
             kb_update_error=kb_update_error,
             call_telemetry=_compact_call_telemetry(call_telemetry),
             artifact_summary=_compact_artifact_summary(result.telemetry_artifact),
+            replay_execution=replay_execution,
+            confirmed_timeout=confirmed_timeout,
+            timeout_duration_lower_bound_ms=timeout_duration_lower_bound_ms,
         )
         self._telemetry_by_execution_id[execution_id] = summary
         self._trim_execution_telemetry()
@@ -1517,6 +1561,12 @@ class ToolResourcePredictor:
 
         with self._execution_lock:
             return execution_id in self._runs_by_execution_id
+
+    def has_active_executions(self) -> bool:
+        """Return whether any runtime owns an unfinished measured execution."""
+
+        with self._execution_lock:
+            return bool(self._runs_by_execution_id)
 
     def active_execution_ids(
         self,
@@ -1538,10 +1588,43 @@ class ToolResourcePredictor:
                 )
             )
 
+    def _finalize_memory_targets(self, runtime_id: str | None = None, gateway_id: str | None = None) -> None:
+        """Fill absent clause memory only when no later completion is expected.
+
+        A drain is a flush barrier, not a runtime close. Keeping these rows
+        pending lets a later completion supply real memory without a false zero
+        or a second CPU sample for the same clause.
+        """
+        with self._kb_lock:
+            for execution_id, (owner, rows) in list(self._pending_memory_targets.items()):
+                if runtime_id is not None and not _execution_owner_matches_runtime(
+                        owner, runtime_id=runtime_id, gateway_id=gateway_id):
+                    continue
+                if execution_id in self._memory_targets_committed:
+                    self._pending_memory_targets.pop(execution_id, None)
+                    continue
+                added = []
+                for row in rows:
+                    missing = tuple(name for name in ("memory_total_peak_bytes", "memory_extra_peak_bytes")
+                                    if getattr(row, name) is None)
+                    memory = replace(row, latency_ms=None, cpu_ns_cumulative=None, cpu_peak_cores=None,
+                        sampled_peak_rss_mb=None, memory_total_peak_bytes=row.memory_total_peak_bytes or 0,
+                        memory_extra_peak_bytes=row.memory_extra_peak_bytes or 0,
+                        memory_measurement=row.memory_measurement or "cgroup_v2_environment_union_v1",
+                        imputed_targets=missing)
+                    if self.kb.observe_completed_clause(memory):
+                        added.append(memory)
+                        self._clause_kb_version += 1
+                if added:
+                    self._kb_writes.enqueue(added)
+                self._memory_targets_committed.add(execution_id)
+                self._pending_memory_targets.pop(execution_id, None)
+
     def _trim_execution_telemetry(self) -> None:
         while len(self._telemetry_by_execution_id) > 10_000:
             oldest = next(iter(self._telemetry_by_execution_id))
             self._telemetry_by_execution_id.pop(oldest, None)
+            self._memory_targets_committed.discard(oldest)
 
     def flush_kb_updates(self, timeout_seconds: float | None = None) -> None:
         """Wait until every previously queued shared-KB update is durable.
@@ -1578,6 +1661,7 @@ class ToolResourcePredictor:
                 self._starts.clear()
                 self._feature_call_keys.clear()
                 self._context_histories.clear()
+            self._finalize_memory_targets()
             self.command_features.close(timeout_seconds=remaining())
             self._kb_writes.close(remaining())
             store = getattr(self, "_state_store", None)
@@ -1954,12 +2038,60 @@ class _LoadedTrace:
     completed_calls: tuple[CompletedCall, ...]
 
 
-def load_openclaw_trace_observations(path: Path, *, repo: str) -> _LoadedTrace:
+@dataclass(frozen=True)
+class TraceLabelPolicy:
+    """Explicit offline label recovery; strict runtime ingestion stays default."""
+
+    name: str = "strict"
+    accept_shared_scope: bool = False
+    accept_available_ebpf: bool = False
+    impute_short_zeros: bool = False
+    cpu_time_short_max_ms: float = 500.0
+    rss_short_max_ms: float = 500.0
+    cpu_peak_short_max_ms: float = 500.0
+    memory_short_max_ms: float = 500.0
+
+
+STRICT_TRACE_LABEL_POLICY = TraceLabelPolicy()
+COLD_START_V2_LABEL_POLICY = TraceLabelPolicy(
+    name="short-zero-shared-v1",
+    accept_shared_scope=True,
+    accept_available_ebpf=True,
+    impute_short_zeros=True,
+)
+
+
+def apply_trace_label_policy_to_clause(
+    observation: ClauseObservation,
+    policy: TraceLabelPolicy,
+) -> ClauseObservation:
+    """Fill absent labels after coalescing; keep observed approximate values."""
+    updates: dict[str, Any] = {}
+    imputed = set(observation.imputed_targets)
+    for field, target in (("latency_ms", "duration_ms"), ("cpu_ns_cumulative", "cpu_time_seconds"),
+        ("cpu_peak_cores", "cpu_peak_cores"), ("sampled_peak_rss_mb", "sampled_peak_rss_bytes"),
+        ("memory_total_peak_bytes", "memory_total_peak_bytes"), ("memory_extra_peak_bytes", "memory_extra_peak_bytes")):
+        if getattr(observation, field) is None:
+            updates[field] = 0
+            imputed.add(target)
+    updates["imputed_targets"] = tuple(sorted(imputed))
+    if observation.memory_measurement is None:
+        updates["memory_measurement"] = "cgroup_v2_environment_union_v1"
+    return replace(observation, **updates) if updates else observation
+
+
+def load_openclaw_trace_observations(
+    path: Path,
+    *,
+    repo: str,
+    label_policy: TraceLabelPolicy = STRICT_TRACE_LABEL_POLICY,
+) -> _LoadedTrace:
     if not path.is_file():
         raise ValueError("trace path is not a file")
     starts: dict[str, dict[str, Any]] = {}
     observations: list[ClauseObservation] = []
     completed_calls: list[CompletedCall] = []
+    observation_fields = {field.name for field in fields(ClauseObservation)}
     tool_spans_seen = 0
     with path.open(encoding="utf-8-sig") as fh:
         for line_no, line in enumerate(fh, start=1):
@@ -1992,18 +2124,19 @@ def load_openclaw_trace_observations(path: Path, *, repo: str) -> _LoadedTrace:
                 start,
                 record,
                 repo=span_repo,
+                label_policy=label_policy,
             )
             if completed_call is not None:
                 completed_calls.append(completed_call)
-                if not completed_call.censored:
-                    resources = record.get("resources") or {}
-                    from clawtune_sidecar.monitoring.environment_memory import memory_labels
-                    for row in resources.get("memory_clause_observations", []):
-                        if not isinstance(row, dict) or row.get("repo") != span_repo or not memory_labels(row):
-                            continue
-                        values = dict(row)
-                        values["argv"] = tuple(values["argv"])
-                        observations.append(ClauseObservation(**values))
+                resources = record.get("resources") or {}
+                for row in resources.get("memory_clause_observations", []):
+                    if not isinstance(row, dict) or row.get("repo") != span_repo:
+                        continue
+                    # Trace resources permit producer metadata extensions;
+                    # only observation fields belong in the KB constructor.
+                    values = {key: value for key, value in row.items() if key in observation_fields}
+                    values["argv"] = tuple(values["argv"])
+                    observations.append(ClauseObservation(**values))
     return _LoadedTrace(tool_spans_seen, tuple(observations), tuple(completed_calls))
 
 
@@ -2044,8 +2177,6 @@ def observation_from_completion(
     repo: str,
     start: ToolBeforeRequest | None = None,
 ) -> ClauseObservation | None:
-    if not event.succeeded:
-        return None
     raw_params = start.raw_params if start is not None else _raw_params_from_result(event.raw_event, event.raw_result)
     clauses, parse_failed = clauses_from_tool_request(event.tool_name, raw_params)
     if parse_failed or len(clauses) != 1:
@@ -2055,10 +2186,6 @@ def observation_from_completion(
     ts_end = sample.ended_at
     if ts_end < ts_start:
         ts_end = ts_start
-    exclude_resource_labels = _sample_attribution_ineligible(sample, event, start)
-    cpu_time_eligible = _sample_metric_eligible(sample, "cpu_time")
-    cpu_peak_eligible = _sample_metric_eligible(sample, "cpu_peak")
-    memory_peak_eligible = _sample_metric_eligible(sample, "memory_peak")
     return ClauseObservation(
         repo=repo,
         bin=str(clause["bin"]),
@@ -2066,15 +2193,15 @@ def observation_from_completion(
         ts_start=ts_start,
         ts_end=ts_end,
         latency_ms=max(0.0, float(event.duration_ms)),
-        cpu_peak_cores=(sample.cpu_peak_cores if cpu_peak_eligible and not exclude_resource_labels else None),
+        cpu_peak_cores=sample.cpu_peak_cores,
         sampled_peak_rss_mb=(
             sample.rss_bytes_peak / 1_000_000.0
-            if memory_peak_eligible and not exclude_resource_labels and sample.rss_bytes_peak is not None
+            if sample.rss_bytes_peak is not None
             else None
         ),
-        cpu_ns_cumulative=(
-            None if exclude_resource_labels or not cpu_time_eligible else _cpu_ns(sample.cpu_time_delta_s)
-        ),
+        cpu_ns_cumulative=_cpu_ns(sample.cpu_time_delta_s),
+        censored=_truncated_outcome(event.error_type) or event.confirmed_timeout,
+        confirmed_timeout=event.confirmed_timeout,
         in_loop=False,
         in_pipe=False,
         in_subst=False,
@@ -2090,7 +2217,7 @@ def _retained_workload_duration_seconds(
         return None
     intervals: list[tuple[float, float]] = []
     for call in artifact.get("calls", []):
-        if not isinstance(call, Mapping) or call.get("eligible_for_kb") is not True:
+        if not isinstance(call, Mapping):
             continue
         clauses = call.get("clauses")
         if not isinstance(clauses, list):
@@ -2147,6 +2274,16 @@ def completed_call_from_completion(
     memory_peak_eligible = _sample_metric_eligible(sample, "memory_peak")
     pmu = _quality_gated_pmu_metrics(sample.pmu_profile if event.execution_id else None,
                                    execution_id=event.execution_id)
+    memory_fields = {key: value for key, value in (sample.environment_memory or {}).items()
+        if key in {"memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes",
+                   "memory_measurement", "memory_environment_id", "memory_eligible"}}
+    memory_diagnostics = (sample.environment_memory or {}).get("memory_diagnostics")
+    if isinstance(memory_diagnostics, Mapping):
+        for name, source in (("memory_baseline_bytes", "observed_baseline_bytes"),
+                             ("memory_measurement", "memory_measurement"),
+                             ("memory_environment_id", "memory_environment_id")):
+            if memory_fields.get(name) is None and memory_diagnostics.get(source) is not None:
+                memory_fields[name] = memory_diagnostics[source]
     return CompletedCall(
         repo=repo,
         tool_name=event.tool_name,
@@ -2155,7 +2292,9 @@ def completed_call_from_completion(
         ts_end=ts_end,
         workload_duration_seconds=workload_duration_seconds,
         workload_duration_required=event.execution_id is not None,
-        censored=_truncated_outcome(event.error_type),
+        censored=_truncated_outcome(event.error_type) or event.confirmed_timeout,
+        confirmed_timeout=event.confirmed_timeout,
+        timeout_duration_lower_bound_ms=event.timeout_duration_lower_bound_ms,
         outcome="ok" if event.succeeded else "error",
         # A monitor average is not a fixed-window peak. Only explicitly measured
         # peak labels may populate either peak target.
@@ -2166,10 +2305,9 @@ def completed_call_from_completion(
         sampled_peak_rss_bytes=sample.rss_bytes_peak,
         sampled_peak_rss_eligible=(not exclude_resource_labels and memory_peak_eligible
                                    and sample.rss_bytes_peak is not None),
-        **{k: v for k, v in (sample.environment_memory or {}).items()
-           if k in {"memory_baseline_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes",
-                    "memory_measurement", "memory_environment_id", "memory_eligible"}},
+        **memory_fields,
         cpu_time_seconds=sample.cpu_time_delta_s,
+        cpu_avg_cores=sample.cpu_utilization_avg_cores,
         cpu_time_eligible=(not exclude_resource_labels and cpu_time_eligible
                            and sample.cpu_time_delta_s is not None),
         pmu_cycles=pmu.get("cycles"),
@@ -2206,8 +2344,6 @@ def _observation_from_tool_span(
     repo: str,
 ) -> ClauseObservation | None:
     status = end.get("status") if isinstance(end.get("status"), dict) else {}
-    if status.get("code") not in {"ok", "unknown"}:
-        return None
     tool_name = end.get("name")
     if not isinstance(tool_name, str) or not tool_name:
         return None
@@ -2221,10 +2357,8 @@ def _observation_from_tool_span(
         return None
     ts_start, ts_end = _span_times(end, duration_ms)
     resources = end.get("resources") if isinstance(end.get("resources"), dict) else {}
-    execution = end.get("execution") if isinstance(end.get("execution"), dict) else {}
     observation = resources.get("resource_observation")
     observation = observation if isinstance(observation, Mapping) else None
-    exclude_resource_labels = _trace_attribution_ineligible(resources, execution, observation)
     observed_memory = _resource_metric(observation, "memory_peak")
     return ClauseObservation(
         repo=repo,
@@ -2233,27 +2367,14 @@ def _observation_from_tool_span(
         ts_start=ts_start,
         ts_end=ts_end,
         latency_ms=duration_ms,
-        cpu_peak_cores=(
-            _optional_float(resources.get("cpu_peak_cores"))
-            if _trace_metric_eligible(resources, "cpu_peak") and not exclude_resource_labels
-            else None
-        ),
-        sampled_peak_rss_mb=(
-            float(observed_memory["value_bytes"]) / 1_000_000.0
-            if observed_memory.get("eligible") is True
-            and not exclude_resource_labels
-            and isinstance(observed_memory.get("value_bytes"), (int, float))
-            else None
-        ),
-        cpu_ns_cumulative=(
-            None
-            if exclude_resource_labels or not (
-                _trace_metric_eligible(resources, "cpu_time")
-                if observation is not None
-                else _trace_cpu_window_aligned(resources, ts_start, ts_end)
-            )
-            else _cpu_ns(resources.get("cpu_time_s"))
-        ),
+        cpu_peak_cores=_optional_float(resources.get("cpu_peak_cores")),
+        sampled_peak_rss_mb=(float(observed_memory["value_bytes"]) / 1_000_000.0
+            if isinstance(observed_memory.get("value_bytes"), (int, float)) else
+            _optional_float(resources.get("rss_peak_bytes", resources.get("rss_bytes_peak"))) / 1_000_000.0
+            if _optional_float(resources.get("rss_peak_bytes", resources.get("rss_bytes_peak"))) is not None else None),
+        cpu_ns_cumulative=_cpu_ns(resources.get("cpu_time_s", resources.get("cpu_time_delta_s"))),
+        censored=resources.get("censored") is True or _truncated_outcome(status.get("message")),
+        confirmed_timeout=resources.get("confirmed_timeout") is True,
         in_loop=False,
         in_pipe=False,
         in_subst=False,
@@ -2282,10 +2403,12 @@ def _completed_call_from_tool_span(
     end: dict[str, Any],
     *,
     repo: str,
+    label_policy: TraceLabelPolicy = STRICT_TRACE_LABEL_POLICY,
 ) -> CompletedCall | None:
+    # Impute at the final target boundary; never replace an available
+    # approximate number merely because its old eligibility flag is false.
+    label_policy = replace(label_policy, impute_short_zeros=False)
     status = end.get("status") if isinstance(end.get("status"), dict) else {}
-    if status.get("code") not in {"ok", "unknown", "error"}:
-        return None
     tool_name = end.get("name")
     if not isinstance(tool_name, str) or not tool_name:
         return None
@@ -2300,17 +2423,160 @@ def _completed_call_from_tool_span(
     execution = end.get("execution") if isinstance(end.get("execution"), dict) else {}
     observation = resources.get("resource_observation")
     observation = observation if isinstance(observation, Mapping) else None
-    exclude_resource_labels = _trace_attribution_ineligible(resources, execution, observation)
+    exclude_resource_labels = _trace_attribution_ineligible(
+        resources,
+        execution,
+        observation,
+        accept_shared_scope=label_policy.accept_shared_scope,
+    )
     observed_memory = _resource_metric(observation, "memory_peak")
     pmu = _quality_gated_pmu_metrics(resources.get("pmu") if execution.get("execution_id") else None,
                                    execution_id=execution.get("execution_id"))
     workload_required = execution.get("execution_id") is not None
     telemetry = execution.get("tool_resource") or {}
     call_telemetry = telemetry.get("call_telemetry") if isinstance(telemetry, Mapping) else None
+    artifact_summary = telemetry.get("artifact_summary") if isinstance(telemetry, Mapping) else None
+    execution_incomplete = (
+        isinstance(telemetry, Mapping) and telemetry.get("replay_execution") == "incomplete"
+    ) or (isinstance(artifact_summary, Mapping)
+          and artifact_summary.get("replay_execution") == "incomplete")
+    if status.get("code") != "ok" and isinstance(call_telemetry, Mapping):
+        from tool_resource.sdk import interrupted_workload_reason
+        # Legacy traces lack replay_execution. A signaled child establishes
+        # interruption only for a non-successful outer call; successful shell
+        # pipelines can intentionally stop upstream writers with SIGPIPE.
+        execution_incomplete = execution_incomplete or any(
+            isinstance(row, Mapping) and isinstance(row.get("status"), Mapping)
+            and (row["status"].get("state") == "signaled" or interrupted_workload_reason(row["status"]) is not None)
+            for row in call_telemetry.get("clauses", [])
+        )
     workload_duration = (
         _retained_workload_duration_seconds({"calls": [call_telemetry]})
         if workload_required else _observation_window_seconds(observation)
     )
+    if workload_duration is None:
+        # A successful execution may have no retained clause interval (for
+        # example, a native tool or a trace whose parser metadata was lost).
+        # The eBPF observation window is the same measured action interval and
+        # is a sound duration label; the outer OpenClaw span is not.
+        workload_duration = _observation_window_seconds(observation)
+    workload_duration_ms = (
+        workload_duration * 1000.0
+        if workload_duration is not None and math.isfinite(workload_duration)
+        else duration_ms
+    )
+    cpu_peak_metric = _resource_metric(observation, "cpu_peak")
+    if peak_cpu_cores is None:
+        peak_cpu_cores = _optional_float(cpu_peak_metric.get("value_cores"))
+    cpu_peak_eligible = (
+        not exclude_resource_labels
+        and peak_cpu_cores is not None
+        and resources.get("cpu_peak_window_ms") == 500
+        and (
+            _trace_metric_eligible(
+                resources,
+                "cpu_peak",
+                accept_shared_scope=label_policy.accept_shared_scope,
+                accept_available_ebpf=label_policy.accept_available_ebpf,
+            )
+            if observation is not None
+            else True
+        )
+    )
+    if (
+        label_policy.impute_short_zeros
+        and not cpu_peak_eligible
+        and workload_duration_ms <= label_policy.cpu_peak_short_max_ms
+    ):
+        peak_cpu_cores = 0.0
+        cpu_peak_eligible = True
+
+    sampled_peak_rss_bytes = (
+        int(observed_memory["value_bytes"])
+        if isinstance(observed_memory.get("value_bytes"), (int, float))
+        else _optional_float(resources.get("rss_peak_bytes", resources.get("rss_bytes_peak")))
+    )
+    sampled_peak_rss_eligible = (
+        not exclude_resource_labels
+        and sampled_peak_rss_bytes is not None
+        and _trace_metric_eligible(
+            resources,
+            "memory_peak",
+            accept_shared_scope=label_policy.accept_shared_scope,
+            accept_available_ebpf=label_policy.accept_available_ebpf,
+        )
+    )
+    sampling_interval_ms = _optional_float(resources.get("sampling_interval_ms"))
+    rss_short_max_ms = max(
+        label_policy.rss_short_max_ms,
+        sampling_interval_ms or 0.0,
+    )
+    if (
+        label_policy.impute_short_zeros
+        and not sampled_peak_rss_eligible
+        and sampled_peak_rss_bytes is None
+        and workload_duration_ms <= rss_short_max_ms
+    ):
+        sampled_peak_rss_bytes = 0
+        sampled_peak_rss_eligible = True
+
+    memory_baseline_bytes = resources.get("memory_baseline_bytes")
+    memory_total_peak_bytes = resources.get("memory_total_peak_bytes")
+    memory_extra_peak_bytes = resources.get("memory_extra_peak_bytes")
+    memory_measurement = resources.get("memory_measurement")
+    memory_environment_id = resources.get("memory_environment_id")
+    memory_eligible = resources.get("memory_eligible") is True
+    memory_diagnostics = resources.get("memory_diagnostics")
+    if isinstance(memory_diagnostics, Mapping):
+        if memory_baseline_bytes is None:
+            memory_baseline_bytes = memory_diagnostics.get("observed_baseline_bytes")
+        if memory_measurement is None:
+            memory_measurement = memory_diagnostics.get("memory_measurement")
+        if memory_environment_id is None:
+            memory_environment_id = memory_diagnostics.get("memory_environment_id")
+    if (
+        label_policy.impute_short_zeros
+        and not memory_eligible
+        and workload_duration_ms <= label_policy.memory_short_max_ms
+    ):
+        if (
+            not isinstance(memory_baseline_bytes, int)
+            or isinstance(memory_baseline_bytes, bool)
+            or memory_baseline_bytes < 0
+        ):
+            memory_baseline_bytes = 0
+        if not isinstance(memory_measurement, str) or not memory_measurement:
+            memory_measurement = "cgroup_v2_environment_union_v1"
+        if not isinstance(memory_environment_id, str) or not memory_environment_id:
+            memory_environment_id = f"short-zero:{repo}"
+        memory_total_peak_bytes = memory_baseline_bytes
+        memory_extra_peak_bytes = 0
+        memory_eligible = True
+    cpu_time_seconds = _optional_float(
+        resources.get("cpu_time_s", resources.get("cpu_time_delta_s"))
+    )
+    cpu_time_eligible = (
+        not exclude_resource_labels
+        and cpu_time_seconds is not None
+        and (
+            _trace_metric_eligible(
+                resources,
+                "cpu_time",
+                accept_shared_scope=label_policy.accept_shared_scope,
+                accept_available_ebpf=label_policy.accept_available_ebpf,
+            )
+            if observation is not None
+            else _trace_cpu_window_aligned(resources, ts_start, ts_end)
+        )
+    )
+    if (
+        label_policy.impute_short_zeros
+        and not cpu_time_eligible
+        and workload_duration_ms <= label_policy.cpu_time_short_max_ms
+    ):
+        cpu_time_seconds = 0.0
+        cpu_time_eligible = True
+
     return CompletedCall(
         repo=repo,
         tool_name=tool_name,
@@ -2319,35 +2585,26 @@ def _completed_call_from_tool_span(
         ts_end=ts_end,
         workload_duration_seconds=workload_duration,
         workload_duration_required=workload_required,
-        censored=_truncated_outcome(status.get("message")) or resources.get("censored") is True,
+        censored=execution_incomplete or _truncated_outcome(status.get("message")) or resources.get("censored") is True
+            or resources.get("confirmed_timeout") is True or telemetry.get("confirmed_timeout") is True,
+        confirmed_timeout=bool(resources.get("confirmed_timeout") or telemetry.get("confirmed_timeout")),
+        timeout_duration_lower_bound_ms=_optional_float(resources.get("timeout_duration_lower_bound_ms")
+            or telemetry.get("timeout_duration_lower_bound_ms")),
         outcome=str(status.get("code", "unknown")),
         cpu_peak_cores=peak_cpu_cores,
-        cpu_peak_cores_eligible=(not exclude_resource_labels and peak_cpu_cores is not None
-                                 and resources.get("cpu_peak_window_ms") == 500
-                                 and (_trace_metric_eligible(resources, "cpu_peak")
-                                      if observation is not None else True)),
-        cpu_peak_window_ms=resources.get("cpu_peak_window_ms"),
-        sampled_peak_rss_bytes=(
-            int(observed_memory["value_bytes"])
-            if observed_memory.get("available") is True
-            and isinstance(observed_memory.get("value_bytes"), (int, float))
-            else None
-        ),
-        sampled_peak_rss_eligible=(
-            not exclude_resource_labels
-            and observed_memory.get("eligible") is True
-        ),
-        cpu_time_seconds=_optional_float(resources.get("cpu_time_s", resources.get("cpu_time_delta_s"))),
-        cpu_time_eligible=(not exclude_resource_labels
-            and (_trace_metric_eligible(resources, "cpu_time")
-                 if observation is not None
-                 else _trace_cpu_window_aligned(resources, ts_start, ts_end))),
-        memory_baseline_bytes=resources.get("memory_baseline_bytes"),
-        memory_total_peak_bytes=resources.get("memory_total_peak_bytes"),
-        memory_extra_peak_bytes=resources.get("memory_extra_peak_bytes"),
-        memory_measurement=resources.get("memory_measurement"),
-        memory_environment_id=resources.get("memory_environment_id"),
-        memory_eligible=resources.get("memory_eligible") is True,
+        cpu_peak_cores_eligible=cpu_peak_eligible,
+        cpu_peak_window_ms=500 if cpu_peak_eligible else resources.get("cpu_peak_window_ms"),
+        sampled_peak_rss_bytes=sampled_peak_rss_bytes,
+        sampled_peak_rss_eligible=sampled_peak_rss_eligible,
+        cpu_time_seconds=cpu_time_seconds,
+        cpu_avg_cores=_optional_float(resources.get("cpu_utilization_avg_cores")),
+        cpu_time_eligible=cpu_time_eligible,
+        memory_baseline_bytes=memory_baseline_bytes,
+        memory_total_peak_bytes=memory_total_peak_bytes,
+        memory_extra_peak_bytes=memory_extra_peak_bytes,
+        memory_measurement=memory_measurement,
+        memory_environment_id=memory_environment_id,
+        memory_eligible=memory_eligible,
         pmu_cycles=pmu.get("cycles"),
         pmu_instructions=pmu.get("instructions"),
         pmu_llc_read_accesses=pmu.get("llc_read_accesses"),
@@ -2404,9 +2661,26 @@ def _sample_metric_eligible(sample: ToolRuntimeSample, name: str) -> bool:
     return _sample_resources_usable(sample)
 
 
-def _trace_metric_eligible(resources: Mapping[str, Any], name: str) -> bool:
+def _trace_metric_eligible(
+    resources: Mapping[str, Any],
+    name: str,
+    *,
+    accept_shared_scope: bool = False,
+    accept_available_ebpf: bool = False,
+) -> bool:
     observation = resources.get("resource_observation")
-    return _resource_metric(observation if isinstance(observation, Mapping) else None, name).get("eligible") is True
+    observation = observation if isinstance(observation, Mapping) else None
+    metric = _resource_metric(observation, name)
+    if metric.get("eligible") is True:
+        return True
+    if accept_available_ebpf and metric.get("available") is True:
+        return True
+    return bool(
+        accept_shared_scope
+        and observation is not None
+        and observation.get("attribution") == "shared_scope"
+        and metric.get("available") is True
+    )
 
 
 def _trace_resources_usable(resources: dict[str, Any]) -> bool:
@@ -2446,9 +2720,14 @@ def _trace_attribution_ineligible(
     resources: dict[str, Any],
     execution: dict[str, Any],
     observation: Mapping[str, Any] | None,
+    *,
+    accept_shared_scope: bool = False,
 ) -> bool:
     if observation is not None:
-        return observation.get("attribution") != "exclusive_process_tree"
+        allowed = {"exclusive_process_tree"}
+        if accept_shared_scope:
+            allowed.add("shared_scope")
+        return observation.get("attribution") not in allowed
     return (
         not _trace_resources_usable(resources)
         or _uses_shared_resources(resources)
@@ -2460,7 +2739,21 @@ def _quality_gated_pmu_metrics(profile: Any, *, execution_id: str | None = None)
     from clawtune_sidecar.monitoring.pmu import quality_gated_pmu_metrics
     if execution_id is not None and (not isinstance(profile, dict) or profile.get("execution_id") != execution_id):
         profile = None
-    return quality_gated_pmu_metrics(profile)
+    result = quality_gated_pmu_metrics(profile)
+    if not isinstance(profile, dict) or result["eligible"]:
+        return result
+    events = profile.get("events") or {}
+    for name in ("cycles", "instructions", "llc_read_accesses", "llc_read_misses"):
+        event = events.get(name) or {}
+        result[name] = _optional_float(event.get("raw_count"))
+    def ratio(numerator, denominator, scale=1.):
+        return numerator / denominator * scale if numerator is not None and denominator and denominator > 0 else None
+    result.update(ipc=ratio(result["instructions"], result["cycles"]),
+        llc_mpki=ratio(result["llc_read_misses"], result["instructions"], 1000),
+        llc_miss_rate=ratio(result["llc_read_misses"], result["llc_read_accesses"]))
+    for name in ("llc_read_accesses", "llc_read_misses"):
+        result[name + "_per_cpu_second"] = ratio(result[name], _optional_float((events.get(name) or {}).get("time_running_ns")), 1e9)
+    return result
 
 
 def _completion_uses_shared_resources(
@@ -2507,7 +2800,7 @@ def _ebpf_observations(
     )
     observations: list[ClauseObservation] = []
     for call in artifact.get("calls", []):
-        if not isinstance(call, dict) or call.get("eligible_for_kb") is not True:
+        if not isinstance(call, dict):
             continue
         observations.extend(
             _observations_from_call(
@@ -2532,7 +2825,7 @@ def _ebpf_completed_calls(
     )
     calls: list[CompletedCall] = []
     for call in artifact.get("calls", []):
-        if not isinstance(call, dict) or call.get("eligible_for_kb") is not True:
+        if not isinstance(call, dict):
             continue
         clauses = call.get("clauses")
         if not isinstance(clauses, list):
@@ -2546,9 +2839,6 @@ def _ebpf_completed_calls(
 
 def _ebpf_completed_call(repo: str, row: Any) -> CompletedCall | None:
     if not isinstance(row, dict):
-        return None
-    availability = row.get("availability")
-    if not isinstance(availability, dict) or availability.get("latency") != "ok":
         return None
     latency_ms = _optional_float(row.get("latency_ms"))
     if latency_ms is None:
@@ -2567,7 +2857,8 @@ def _ebpf_completed_call(repo: str, row: Any) -> CompletedCall | None:
         command=command,
         ts_start=ts_start,
         ts_end=ts_end,
-        censored=False,
+        censored=row.get("censored") is True or (row.get("status") or {}).get("state") == "signaled",
+        confirmed_timeout=row.get("confirmed_timeout") is True,
         cpu_peak_cores=peak_cpu_cores,
         cpu_peak_cores_eligible=peak_cpu_cores is not None,
     )
@@ -2710,6 +3001,9 @@ def _compact_call_telemetry(call: Mapping[str, Any] | None) -> dict[str, Any] | 
     clauses = call.get("clauses")
     return {
         "tool_call_id": call.get("tool_call_id"),
+        "censored": call.get("censored", False),
+        "confirmed_timeout": call.get("confirmed_timeout", False),
+        "timeout_duration_lower_bound_ms": call.get("timeout_duration_lower_bound_ms"),
         "command": call.get("command"),
         "telemetry_quality": call.get("telemetry_quality"),
         "formal_completeness": call.get("formal_completeness"),

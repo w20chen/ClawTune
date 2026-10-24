@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from dataclasses import fields
 import hashlib
 import json
 import math
 from pathlib import Path
 import sys
+from jsonschema.exceptions import ValidationError
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "services/sidecar/src"))
@@ -20,6 +22,7 @@ sys.path.insert(0, str(ROOT / "services/sidecar/src"))
 from clawtune_kb import FILES, create_seed, validate_seed
 from clawtune_kb.contracts import validate
 from clawtune_kb.store import OPTIONAL_FILES, digest
+from clawtune_sidecar.monitoring.environment_memory import memory_labels
 from tool_resource.runtime_kb import (
     ClauseObservation,
     ClauseResourceKB,
@@ -32,6 +35,12 @@ from tool_time.lattice_kb import LatticeTimeKB
 GUEST_MEMORY_MEASUREMENT = "guest_memtotal_minus_memavailable"
 
 
+def _record_fields(model, record: dict) -> dict:
+    """Schema permits producer metadata alongside the portable observation fields."""
+    accepted = {field.name for field in fields(model)}
+    return {key: value for key, value in record.items() if key in accepted}
+
+
 def _load_bundle(path: Path) -> tuple[dict, bytes]:
     raw = path.resolve(strict=True).read_bytes()
     try:
@@ -40,7 +49,10 @@ def _load_bundle(path: Path) -> tuple[dict, bytes]:
         raise ValueError(f"invalid ClawBox observation bundle {path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise ValueError("ClawBox observation bundle must be an object")
-    validate(payload, "clawbox-seed-observations.schema.json")
+    try:
+        validate(payload, "clawbox-seed-observations.schema.json")
+    except ValidationError as exc:
+        raise ValueError(f"invalid ClawBox observation bundle {path}: {exc.message}") from exc
     return payload, raw
 
 
@@ -56,7 +68,7 @@ def _observations(payload: dict) -> tuple[
         if execution_id in call_ids:
             raise ValueError(f"duplicate completed-call execution_id: {execution_id}")
         call_ids.add(execution_id)
-        calls.append(CompletedCall(**record["call"]))
+        calls.append(CompletedCall(**_record_fields(CompletedCall, record["call"])))
         host = record["host_cgroup_execution_increment_bytes"]
         if host is not None:
             host_by_execution[execution_id] = float(host)
@@ -71,7 +83,7 @@ def _observations(payload: dict) -> tuple[
         if key[0] not in call_ids:
             raise ValueError(f"clause observation has no completed call: {key[0]}")
         clause_keys.add(key)
-        row = dict(record["observation"])
+        row = _record_fields(ClauseObservation, record["observation"])
         row["argv"] = tuple(row["argv"])
         observation = ClauseObservation(**row)
         clauses.append(observation)
@@ -92,11 +104,10 @@ def _memory_counts(rows) -> dict[str, dict[str, int]]:
     for row in rows:
         measurement = row.memory_measurement or "unavailable"
         bucket = counts.setdefault(measurement, Counter())
-        if row.memory_eligible:
-            for target in ("memory_total_peak_bytes", "memory_extra_peak_bytes"):
-                if getattr(row, target) is not None:
-                    bucket[target] += 1
-        if getattr(row, "sampled_peak_rss_bytes", None) is not None:
+        eligible = memory_labels(vars(row))
+        bucket.update(target for target in ("memory_total_peak_bytes", "memory_extra_peak_bytes") if target in eligible)
+        if (isinstance(row, CompletedCall) and row.sampled_peak_rss_eligible
+                and row.sampled_peak_rss_bytes is not None):
             bucket["sampled_peak_rss_bytes"] += 1
         elif getattr(row, "sampled_peak_rss_mb", None) is not None:
             bucket["sampled_peak_rss_bytes"] += 1
@@ -141,19 +152,20 @@ def build(output: Path, bundle_path: Path, base_seed: Path) -> dict:
     calls, clauses, host_by_execution, clauses_by_execution = _observations(payload)
 
     call_guest_labels = sum(
-        call.memory_eligible
-        and call.memory_measurement == GUEST_MEMORY_MEASUREMENT
-        and call.memory_extra_peak_bytes is not None
+        call.memory_measurement == GUEST_MEMORY_MEASUREMENT
+        and "memory_extra_peak_bytes" in memory_labels(vars(call))
         for call in calls
     )
     clause_guest_labels = sum(
-        clause.memory_eligible
-        and clause.memory_measurement == GUEST_MEMORY_MEASUREMENT
-        and clause.memory_extra_peak_bytes is not None
+        clause.memory_measurement == GUEST_MEMORY_MEASUREMENT
+        and "memory_extra_peak_bytes" in memory_labels(vars(clause))
         for clause in clauses
     )
     if not call_guest_labels or not clause_guest_labels:
         raise ValueError("ClawBox bundle must contain guest extra-memory labels for ToolKB and LatticeKB")
+    if (call_guest_labels != payload["validation"]["public_prior_memory_label_count"]
+            or clause_guest_labels != payload["validation"]["lattice_memory_label_count"]):
+        raise ValueError("eligible guest-memory label counts differ from validation metadata")
 
     runtime = RuntimeToolResourceKB.fit_public(calls)
     runtime.freeze()
@@ -187,14 +199,15 @@ def build(output: Path, bundle_path: Path, base_seed: Path) -> dict:
         **payload["admission"],
         "host_calibrations": {
             "guest_memory_extra_peak_bytes": payload["admission"]["host_calibration"],
-            "lattice_sampled_peak_rss_bytes": _host_calibration(
-                lattice_rss_pairs, "lattice_sampled_peak_rss_bytes"
-            ),
         },
     }
+    if lattice_rss_pairs:
+        admission["host_calibrations"]["lattice_sampled_peak_rss_bytes"] = _host_calibration(
+            lattice_rss_pairs, "lattice_sampled_peak_rss_bytes"
+        )
     provenance = {
         "kind": "clawbox-qualified-observation-import",
-        "recipe_version": 3,
+        "recipe_version": 4,
         "base_seed_manifest_sha256": digest(base_seed / "manifest.json"),
         "observation_bundle_sha256": hashlib.sha256(raw).hexdigest(),
         "producer": payload["producer"],
@@ -241,6 +254,10 @@ def build(output: Path, bundle_path: Path, base_seed: Path) -> dict:
             "retains the base seed and imported clause observations."
         ),
     }
+    provenance["admission_prediction_policy"] = [
+        policy for policy in provenance["admission_prediction_policy"]
+        if policy["host_calibration"] in admission["host_calibrations"]
+    ]
     seed_payloads = dict(zip(FILES, (
         clause.to_json_obj(), runtime.to_json_obj(), lattice.to_json_obj(),
     )))

@@ -225,6 +225,38 @@ def test_terminal_backend_gated_call_drives_full_execution_lifecycle(monkeypatch
     assert result == {"exit_code": 0, "stdout": "payload out", "stderr": ""}
 
 
+def test_gated_timeout_reports_effective_payload_budget(monkeypatch, tmp_path):
+    import signal
+    monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
+    sidecar = _FakeSidecar()
+    backend = _terminal_backend(tmp_path, sidecar)
+    process = _FakeProcess()
+    reports = []
+    monkeypatch.setattr(backend, "_start_gated_process", lambda command: process)
+    monkeypatch.setattr(backend, "_communicate", lambda *a, **k: (_ for _ in ()).throw(
+        subprocess.TimeoutExpired("payload", 2.5)))
+    monkeypatch.setattr(backend, "_abort_payload", lambda identity: None)
+    monkeypatch.setattr(backend, "_terminate", lambda child: None)
+    monkeypatch.setattr(sidecar, "exited", lambda *a, **k: reports.append(k))
+    with pytest.raises(subprocess.TimeoutExpired):
+        backend.call("terminal_exec", {"command": "sleep 30"}, call_id="timed-out")
+    assert reports[0]["confirmed_timeout"] is True
+    assert reports[0]["timeout_duration_lower_bound_ms"] == 2500
+    assert reports[0]["term_signal"] == 9
+
+
+def test_exit_protocol_retains_timeout_budget(monkeypatch):
+    from benchmarks.exec_control import SidecarExecutions
+
+    client = SidecarExecutions(1)
+    sent = []
+    monkeypatch.setattr(client, "_request", lambda *a, **k: sent.append(a[2]))
+    client.exited("execution", "token", exit_code=None, term_signal=9,
+                  confirmed_timeout=True, timeout_duration_lower_bound_ms=2500)
+    assert sent[0]["confirmed_timeout"] is True
+    assert sent[0]["timeout_duration_lower_bound_ms"] == 2500
+
+
 def test_terminal_backend_degrades_when_gate_identity_is_unavailable(monkeypatch, tmp_path):
     sidecar = _FakeSidecar()
     backend = _terminal_backend(tmp_path, sidecar)
