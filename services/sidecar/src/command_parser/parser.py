@@ -14,7 +14,8 @@ class CommandParser:
     def parse(self, argv: list[str], context: ParseContext, *, word_intents: list | None = None, script: bool = False) -> ParsedCommand:
         if not argv:
             raise ValueError("empty command")
-        root, _ = self.registry.lookup(argv[0], context, script=script)
+        root, root_key = self.registry._lookup_for_parse(argv[0], context, script=script)
+        root_is_script = script
         result = ParsedCommand(root["canonical"] if root else PurePosixPath(argv[0]).name, list(argv))
         if len(argv) > 16384:
             result.status = "partial"
@@ -78,7 +79,10 @@ class CommandParser:
                 i = next_i
 
         def invoke(tokens: list[str], offset: int, *, script: bool = False) -> None:
-            rule, key = self.registry.lookup(tokens[0], context, script=script)
+            # Reuse the top-level read-only rule. A missing path command can
+            # switch to script lookup below, which still needs a new query.
+            rule, key = ((root, root_key) if offset == 0 and script == root_is_script
+                         else self.registry._lookup_for_parse(tokens[0], context, script=script))
             name = rule["canonical"] if rule else tokens[0]
             if script:
                 name = script_identity(tokens[0], context)

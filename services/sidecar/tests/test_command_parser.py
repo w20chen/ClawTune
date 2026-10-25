@@ -43,6 +43,27 @@ def test_unknown_option_does_not_consume_guessed_value(service):
     assert parsed.layers[0]["opaque"] == ["--new-plugin-option", "-q", "file"]
 
 
+def test_parser_borrowed_rules_preserve_edit_isolation_and_later_registration():
+    registry = RuleRegistry()
+    parser = CommandParser(registry)
+    context = ParseContext()
+    original, original_key = registry.lookup('git', context)
+    parsed = parser.parse(['git', '-C', 'repo', 'status'], context)
+    # Caller edits to a parse or a public lookup cannot modify registry rules.
+    parsed.layers[0]['options'][0]['values'].append('changed')
+    parsed.target.append('changed')
+    editable, _ = registry.lookup('git', context)
+    editable['grammar']['options'].clear()
+    assert registry.lookup('git', context) == (original, original_key)
+    assert 'changed' not in parser.parse(['git', '-C', 'repo', 'status'], context).target
+    # An installed rule remains detached from its input, and a newer rule is
+    # visible on the next parse without retaining an earlier borrowed result.
+    original['canonical'] = 'git-updated'
+    registry.add(original, persist=False)
+    original['canonical'] = 'caller-mutated'
+    assert parser.parse(['git', 'status'], context).tool == 'git-updated'
+
+
 def test_expansion_stops_static_argument_consumption(service):
     intents = [{"components": [{"kind": "literal"}]}, {"components": [{"kind": "parameter"}]}]
     parsed = service.parser.parse(["python", "$ARGS", "-m", "pytest"], ParseContext(), word_intents=intents)

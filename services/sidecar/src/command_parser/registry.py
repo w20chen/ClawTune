@@ -50,6 +50,16 @@ class RuleRegistry:
         return key
 
     def lookup(self, executable: str, context: ParseContext, *, script: bool = False) -> tuple[dict | None, str | None]:
+        value, key = self._lookup_for_parse(executable, context, script=script)
+        return copy.deepcopy(value), key
+
+    def _lookup_for_parse(self, executable: str, context: ParseContext, *, script: bool = False) -> tuple[dict | None, str | None]:
+        """Borrow a stable rule for the parser, which must only read it.
+
+        add() owns a deep copy and replaces entries instead of mutating them.
+        Public lookup() still returns an independent editable copy. The parser
+        builds its own result containers and never exposes rule containers.
+        """
         name = PurePosixPath(executable).name
         # Versioned Python names are declared family aliases, not arbitrary prefix matches.
         if re.fullmatch(r"python(?:[23](?:\.\d+)?)?", name):
@@ -81,4 +91,4 @@ class RuleRegistry:
         if not found:
             return None, None
         _, _, key, value = max(found, key=lambda item: (item[0], item[1]))
-        return copy.deepcopy(value), key
+        return value, key
