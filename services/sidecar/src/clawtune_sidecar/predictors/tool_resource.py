@@ -663,6 +663,14 @@ class ToolResourcePredictor:
             max_optional_features=max_optional_features,
             strict=managed,
         )
+        prepared_cache = None
+        if managed:
+            from clawtune_sidecar.predictors.startup_cache import load_prepared_cache
+            prepared_cache = load_prepared_cache(
+                artifact_dir, max_optional_features=max_optional_features,
+            )
+            if prepared_cache is not None:
+                loaded_lattice_snapshot = prepared_cache[0]
         if loaded_lattice_snapshot is None:
             lattice_kb = LatticeTimeKB.fit(observations, max_optional_features=max_optional_features)
         else:
@@ -671,8 +679,14 @@ class ToolResourcePredictor:
         lattice_kb_available = lattice_kb.observation_count > 0
         edge_path = artifact_dir / "edge-kappa-kb.json" if artifact_dir else None
         if edge_path is not None and edge_path.is_file():
-            edge_kappa = EdgeKappaRuntime.from_snapshot(json.loads(edge_path.read_text(encoding="utf-8")),
-                max_optional_features=max_optional_features)
+            edge_kappa = (
+                prepared_cache[1]
+                if prepared_cache is not None
+                else EdgeKappaRuntime.from_snapshot(
+                    json.loads(edge_path.read_text(encoding="utf-8")),
+                    max_optional_features=max_optional_features,
+                )
+            )
             if edge_kappa.kb.bucket_edges_ms != tuple(buckets.edges_ms):
                 raise ValueError("edge kappa bucket edges mismatch")
             edge_kappa.merge_historical(observations)

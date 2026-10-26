@@ -128,7 +128,15 @@ def build_state(config: SidecarConfig | None = None) -> AppState:
     from command_parser.help_runner import HelpRunner
     from command_parser.registry import RuleRegistry
     rule_cache = predictor.artifact_dir / "command-rules" if predictor.artifact_dir else None
-    registry = RuleRegistry(rule_cache, read_only=cfg.tool_resource_frozen)
+    if rule_cache is not None and rule_cache.is_dir() and any(rule_cache.glob("*.json")):
+        registry = RuleRegistry(rule_cache, read_only=cfg.tool_resource_frozen)
+    else:
+        # ToolResourcePredictor already constructed and validated the bundled
+        # registry. Fresh per-session state has no generated rules to merge;
+        # retain that registry and attach its future persistence directory.
+        registry = predictor.command_features.registry
+        registry.cache_dir = rule_cache
+        registry.read_only = cfg.tool_resource_frozen
     generator = None if cfg.tool_resource_frozen else RuleGenerator(registry, GeneratorConfig.from_sidecar(cfg),
                               help_runner=HelpRunner(idle=lambda: not predictor.has_active_executions(),
                                                      gate=predictor._execution_start_lock))
