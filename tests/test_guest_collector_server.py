@@ -16,6 +16,43 @@ def _module():
     return module
 
 
+@pytest.mark.parametrize("fails", [False, True])
+def test_prewarm_precedes_socket_readiness_and_failure_is_fatal(tmp_path, monkeypatch, fails):
+    module = _module()
+    calls = []
+    marker, token, socket = (tmp_path / name for name in ("ready", "token", "socket"))
+    marker.write_text("stale")
+    monkeypatch.setattr(module, "_prepare_guest_mounts", lambda: calls.append("mounts"))
+    def prepare():
+        assert not marker.exists()
+        calls.append("compile")
+        if fails:
+            raise RuntimeError("BPF unavailable")
+    monkeypatch.setattr(module, "prepare_shared_bpf_source", prepare)
+    monkeypatch.setattr(module.signal, "signal", lambda *_args: None)
+    class Server:
+        def __init__(self, path, service):
+            assert calls == ["mounts", "compile"]
+            assert len(token.read_text()) == 64
+            assert not marker.exists()
+            Path(path).touch()
+        def serve_forever(self, **kwargs):
+            assert json.loads(marker.read_text())["prewarmed"] is True
+            calls.append("serve")
+        def server_close(self):
+            pass
+    monkeypatch.setattr(module, "_Server", Server)
+    args = ["--socket", str(socket), "--artifact-root", str(tmp_path / "artifacts"),
+            "--prewarm", "--token-file", str(token), "--ready-file", str(marker)]
+    if fails:
+        with pytest.raises(RuntimeError, match="BPF unavailable"):
+            module.main(args)
+    else:
+        assert module.main(args) == 0
+        assert calls[-1] == "serve"
+    assert not marker.exists()
+
+
 class _FakeCollector:
     instances: list["_FakeCollector"] = []
 

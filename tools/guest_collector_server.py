@@ -6,6 +6,7 @@ import argparse
 import hmac
 import json
 import os
+import secrets
 import signal
 import socketserver
 import subprocess
@@ -22,6 +23,7 @@ if str(SIDECAR_SRC) not in sys.path:
 from tool_resource.telemetry import (  # noqa: E402
     ClauseTelemetryCollector,
     _bpf_runtime_diagnostics,
+    prepare_shared_bpf_source,
 )
 from clawtune_sidecar.monitoring.pmu import (  # noqa: E402
     PmuCollector,
@@ -387,9 +389,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--max-active", type=int, default=16)
     parser.add_argument("--pmu-max-fds", type=int)
+    parser.add_argument("--prewarm", action="store_true",
+                        help="compile and attach BPF before publishing readiness")
+    parser.add_argument("--token-file", type=Path,
+                        help="create a root-only token for a resident guest collector")
+    parser.add_argument("--ready-file", type=Path,
+                        help="publish readiness after initialization and socket binding")
     args = parser.parse_args(argv)
+    if args.ready_file:
+        args.ready_file.unlink(missing_ok=True)
     _prepare_guest_mounts()
     token = os.environ.get("CLAWTUNE_GUEST_COLLECTOR_TOKEN", "")
+    if args.token_file:
+        token = secrets.token_hex(32)
+        args.token_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(args.token_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            stream.write(token)
+    if args.prewarm:
+        # The process and guest kernel are snapshotted together. No execution
+        # scope or measurement window is opened while preparing the template.
+        prepare_shared_bpf_source()
     service = CollectorService(
         token=token,
         artifact_root=args.artifact_root,
@@ -416,8 +436,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     try:
+        if args.ready_file:
+            args.ready_file.write_text(json.dumps({
+                "pid": os.getpid(), "prewarmed": args.prewarm,
+                "bpf_runtime": _bpf_runtime_diagnostics(),
+            }))
         server.serve_forever(poll_interval=0.1)
     finally:
+        if args.ready_file:
+            args.ready_file.unlink(missing_ok=True)
         server.server_close()
         service.close()
         try:
