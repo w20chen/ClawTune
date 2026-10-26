@@ -80,12 +80,13 @@ class RealtimeToolMonitor:
         max_active: int = 10_000,
         poll_interval_s: float = 0.05,
         max_timeline_points: int = 2_000,
+        enable_ebpf: bool = True,
     ) -> None:
         # Passing a sampler explicitly selects the legacy diagnostic path used
         # by focused tests. Production constructs this class without one and
         # therefore prefers eBPF with an explicit dedicated-cgroup fallback.
         self.sampler = sampler or ProcessResourceSampler()
-        if sampler is None:
+        if sampler is None and enable_ebpf:
             from clawtune_sidecar.monitoring.ebpf_tool import EbpfToolCallMonitor
             self.ebpf_monitor = ebpf_monitor or EbpfToolCallMonitor()
         else:

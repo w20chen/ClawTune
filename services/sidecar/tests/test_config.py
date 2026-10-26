@@ -94,6 +94,22 @@ def test_sidecar_config_reads_ebpf_required(monkeypatch) -> None:
     assert config.tool_resource_ebpf_required is False
 
 
+def test_sidecar_config_can_disable_optional_ebpf_startup(monkeypatch) -> None:
+    monkeypatch.setenv("CLAWTUNE_TOOL_RESOURCE_EBPF_ENABLED", "false")
+
+    config = SidecarConfig.from_env()
+
+    assert config.tool_resource_ebpf_enabled is False
+
+
+def test_sidecar_config_rejects_required_but_disabled_ebpf() -> None:
+    with pytest.raises(ValueError, match="required cannot be true"):
+        SidecarConfig(
+            tool_resource_ebpf_enabled=False,
+            tool_resource_ebpf_required=True,
+        )
+
+
 def test_sidecar_config_reads_ebpf_trace_paths(
     tmp_path, monkeypatch
 ) -> None:

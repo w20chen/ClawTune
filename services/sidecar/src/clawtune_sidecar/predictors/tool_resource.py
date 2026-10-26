@@ -364,6 +364,7 @@ class ToolResourcePredictor:
         load_buckets: Mapping[str, Sequence[float]] | None = None,
         frozen: bool = False,
         max_optional_features: int | None = None,
+        command_registry: Any | None = None,
     ) -> None:
         if max_optional_features is None:
             if lattice_kb is not None:
@@ -466,7 +467,9 @@ class ToolResourcePredictor:
         self._execution_owners: dict[str, tuple[str | None, str | None]] = {}
         from command_parser import CommandFeatureService
         from command_parser.registry import RuleRegistry
-        self.command_features = CommandFeatureService(RuleRegistry(read_only=frozen))
+        self.command_features = CommandFeatureService(
+            command_registry or RuleRegistry(read_only=frozen)
+        )
         self._feature_call_keys: dict[tuple, str] = {}
         self._telemetry_by_execution_id: dict[str, ExecutionTelemetrySummary] = {}
         self._memory_targets_committed: set[str] = set()
@@ -723,6 +726,7 @@ class ToolResourcePredictor:
                 lattice_kb_available=lattice_kb_available,
                 rejections=tuple(rejections),
             ),
+            command_registry=(prepared_cache[2] if prepared_cache is not None else None),
             repo=repo,
             artifact_dir=artifact_dir,
             container_executable=container_executable,

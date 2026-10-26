@@ -42,6 +42,7 @@ class SidecarConfig:
     kb_max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES
     tool_resource_artifact_dir: Path | None = None
     tool_resource_container_executable: str = "docker"
+    tool_resource_ebpf_enabled: bool = True
     tool_resource_ebpf_required: bool = False
     auth_token: str | None = None
     trace_dir: Path = Path("traces")
@@ -81,6 +82,10 @@ class SidecarConfig:
     def __post_init__(self) -> None:
         validate_max_optional_features(self.kb_max_optional_features)
         load_bucket_edges(self.tool_resource_latency_buckets_ms, self.tool_resource_load_buckets)
+        if self.tool_resource_ebpf_required and not self.tool_resource_ebpf_enabled:
+            raise ValueError(
+                "tool_resource_ebpf_required cannot be true when eBPF is disabled"
+            )
 
     @classmethod
     def from_env(cls) -> "SidecarConfig":
@@ -161,6 +166,10 @@ class SidecarConfig:
                 "CLAWTUNE_TOOL_RESOURCE_CONTAINER_EXECUTABLE",
                 "docker",
             ),
+            tool_resource_ebpf_enabled=os.getenv(
+                "CLAWTUNE_TOOL_RESOURCE_EBPF_ENABLED", "true"
+            ).lower()
+            in {"1", "true", "yes", "on"},
             tool_resource_ebpf_required=os.getenv(
                 "CLAWTUNE_TOOL_RESOURCE_EBPF_REQUIRED", "false"
             ).lower()

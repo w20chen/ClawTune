@@ -27,6 +27,7 @@ def test_prepared_cache_is_loaded_only_for_exact_source_snapshots(tmp_path: Path
     assert cached is not None
     assert cached[0].max_optional_features == 6
     assert cached[1].kb.max_optional_features == 6
+    assert cached[2].prepared_snapshot()["rules"]
 
     (tmp_path / LATTICE_FILE).write_text(
         (tmp_path / LATTICE_FILE).read_text() + "\n",

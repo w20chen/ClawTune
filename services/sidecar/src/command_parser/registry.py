@@ -32,6 +32,36 @@ class RuleRegistry:
                     logging.getLogger(__name__).warning("invalid command rule %s: %s", path.name, type(exc).__name__)
         self.read_only = read_only
 
+    def prepared_snapshot(self) -> dict:
+        """Return rules already validated by this registry for a trusted cache."""
+        with self._lock:
+            return {
+                "rules": copy.deepcopy(self._rules),
+                "generation": self.generation,
+            }
+
+    @classmethod
+    def from_prepared_snapshot(
+        cls, snapshot: dict, *, cache_dir: Path | None = None,
+        read_only: bool = False,
+    ) -> "RuleRegistry":
+        """Restore an image-build cache without revalidating bundled rules."""
+        rules = snapshot.get("rules") if isinstance(snapshot, dict) else None
+        generation = snapshot.get("generation") if isinstance(snapshot, dict) else None
+        if (
+            not isinstance(rules, dict)
+            or not all(isinstance(key, str) and isinstance(rule, dict)
+                       for key, rule in rules.items())
+            or not isinstance(generation, int)
+            or generation < 0
+        ):
+            raise ValueError("invalid prepared command-rule snapshot")
+        registry = cls(cache_dir=cache_dir, bundled=False, read_only=False)
+        registry._rules = copy.deepcopy(rules)
+        registry.generation = generation
+        registry.read_only = read_only
+        return registry
+
     def add(self, rule: dict, *, persist: bool = True) -> str:
         if self.read_only:
             raise RuntimeError("frozen command rule registry is read-only")

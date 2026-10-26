@@ -149,6 +149,7 @@ def build_state(config: SidecarConfig | None = None) -> AppState:
     tool_monitor = RealtimeToolMonitor(
         poll_interval_s=max(0.01, cfg.resource_poll_interval_ms / 1000),
         max_timeline_points=max(1, cfg.resource_timeline_max_points),
+        enable_ebpf=cfg.tool_resource_ebpf_enabled,
     )
     pmu_max_active = cfg.pmu_max_active or max_active_tools
     pmu_max_fds = (
