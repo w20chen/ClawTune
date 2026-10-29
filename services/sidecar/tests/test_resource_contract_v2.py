@@ -228,7 +228,7 @@ def test_live_clause_memory_reloads_from_trace_without_copying_cpu(tmp_path, mon
         buckets=LatencyBuckets((100, 1000)), repo="r", artifact_dir=tmp_path / "kb", frozen=frozen)
     def snapshots():
         return [predictor.kb.to_json_obj(), predictor.continuous_kb.to_json_obj(),
-                predictor.lattice_kb.to_json_obj(), predictor.edge_kappa.to_snapshot()]
+                predictor.lattice_kb.to_json_obj()]
     before = snapshots() if frozen else None
     request = _tool_request("e", "c", "pytest tests/").model_copy(update={"repo": "r"})
     event = _tool_completion("e", "c").model_copy(update={"repo": "r", "execution_id": "x"})

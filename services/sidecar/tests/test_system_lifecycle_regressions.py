@@ -18,7 +18,7 @@ from clawtune_sidecar.api.app import create_app
 from clawtune_sidecar.api.dependencies import build_state
 from clawtune_sidecar.config import SidecarConfig
 from clawtune_sidecar.identity import task_instance_key
-from clawtune_sidecar.predictors.edge_kappa import call_key
+from clawtune_sidecar.identity import call_key
 from clawtune_sidecar.predictors.tool_resource import (
     ToolResourcePredictor,
     _KnowledgeBaseWriteCoordinator,
@@ -48,8 +48,6 @@ def assert_released(predictor):
     assert not predictor._context_pending
     assert not predictor._feature_call_keys
     assert not predictor.command_features._calls
-    assert not predictor.edge_kappa._calls
-    assert not predictor.edge_kappa.kb._tokens
     for history in predictor._context_histories.values():
         assert not history.pending
         assert not history.evidence.active
@@ -98,7 +96,6 @@ def test_runtime_abort_releases_only_its_owner(tmp_path):
         for _ in range(2):
             assert client.post("/v1/gateways/gateway/runtimes/runtime/abort", json=body).status_code == 200
         assert set(state.predictor._context_pending) == {call_key(foreign)}
-        assert call_key(own) not in state.predictor.edge_kappa._calls
         assert all(scope[0] == "other" for scope in state.predictor._context_histories)
         assert not state.predictor.duration_context_kb.samples
 

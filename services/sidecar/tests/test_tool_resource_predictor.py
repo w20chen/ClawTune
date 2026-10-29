@@ -2914,7 +2914,7 @@ def test_trace_writes_tool_prediction_payload(tmp_path: Path) -> None:
 def test_execution_context_live_learning_persistence_and_distribution(tmp_path, monkeypatch):
     from dataclasses import replace
     from execution_context.duration import SNAPSHOT_NAME
-    from clawtune_sidecar.predictors.edge_kappa import call_key
+    from clawtune_sidecar.identity import call_key
     predictor = ToolResourcePredictor.from_traces(
         openclaw_trace_paths=(), ebpf_trace_paths=(), artifact_dir=tmp_path,
         buckets=LatencyBuckets((100, 500, 2000, 10000)), repo='repo-1')
@@ -2969,7 +2969,7 @@ def test_execution_context_frozen_history_updates_without_learning(monkeypatch):
         predictor.observe_completion(completion, _runtime_sample('after', 'call-a'))
         later = _tool_request('later', 'call-b', 'python3 -m pytest')
         predictor.predict(later)
-        from clawtune_sidecar.predictors.edge_kappa import call_key
+        from clawtune_sidecar.identity import call_key
         state = predictor._context_pending[call_key(later)][2]
         assert state['failure']['features']['last_same_runner'] == 'missing_module'
         assert not predictor.duration_context_kb.samples
@@ -3367,84 +3367,3 @@ def test_incomplete_finalization_distinguishes_expected_withholding_from_failure
         assert not predictor.execution_active("interrupted")
     finally:
         predictor.close()
-
-
-def test_edge_kappa_update_error_does_not_drop_tool_kb_completion(tmp_path, monkeypatch, caplog):
-    from edge_kappa_kb import EdgeKappaKB
-    from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
-    from tool_time.edge_kappa_adapter import shell_query
-
-    predictor = ToolResourcePredictor.from_traces(
-        openclaw_trace_paths=(), ebpf_trace_paths=(), artifact_dir=tmp_path,
-        buckets=LatencyBuckets((100, 500, 2000, 10000)))
-    kb = EdgeKappaKB()
-    kb.begin(shell_query("python a.py", repo="openclaw"), "old", 1,
-             task_id="old", call_id="old", clause_id="0")
-    predictor.edge_kappa = EdgeKappaRuntime(kb)
-    def fail_edge_update(*args, **kwargs):
-        raise ValueError("injected EdgeKappa update failure")
-    monkeypatch.setattr(kb, "_ensure_full_node", fail_edge_update)
-    predictor._telemetry_by_execution_id["execution"] = SimpleNamespace(artifact_path="unused.json")
-    monkeypatch.setattr(tool_resource_predictor, "_read_ebpf_artifact", lambda _: {"calls": []})
-    monkeypatch.setattr(tool_resource_predictor, "_ebpf_observations", lambda *args, **kwargs: [
-        ClauseObservation(repo="openclaw", bin="python", argv=("python", "b.py"),
-                          ts_start=1000, ts_end=1001, latency_ms=1000)])
-    observed = []
-    original_observe = predictor.continuous_kb.observe_completed_call
-
-    def observe(call):
-        observed.append(call)
-        return original_observe(call)
-
-    monkeypatch.setattr(predictor.continuous_kb, "observe_completed_call", observe)
-    try:
-        event = _tool_completion("after", "call").model_copy(update={"execution_id": "execution"})
-        assert predictor.observe_completion(event, _runtime_sample("after", "call")) == 1
-        assert len(observed) == 1
-        assert "injected EdgeKappa update failure" in caplog.text
-        predictor.flush_kb_updates()
-        assert predictor._runtime_kb_persisted_version == predictor._runtime_kb_version == 1
-        saved = json.loads((tmp_path / "runtime-tool-resource-kb.json").read_text())
-        assert saved == predictor.continuous_kb.to_json_obj()
-    finally:
-        predictor.close()
-
-
-def test_edge_kappa_real_predict_completion_and_reload(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    from clawtune_sidecar.predictors import call_load
-    from clawtune_sidecar.predictors import tool_resource as module
-    from tool_resource.runtime_kb import ClauseObservation
-    monkeypatch.setattr(call_load, "plain_execution", lambda _: ((dict(
-        bin="python", argv=["python", "job.py"], clause_index=0,
-        in_pipe=False, pipeline_position=-1),), None))
-    clock = [999.0]
-    monkeypatch.setattr(module.time, "time", lambda: clock[0])
-    predictor = ToolResourcePredictor.from_traces(openclaw_trace_paths=(), ebpf_trace_paths=(),
-        buckets=LatencyBuckets((100, 500, 2000, 10000)), artifact_dir=tmp_path)
-    request = _tool_request("before-edge", "edge-call", "python job.py")
-    predictor.record_tool_started(request)
-    first = predictor.predict(request)
-    assert first.edge_kappa.targets["duration_ms"].status == "unavailable"
-    assert first.tool == first.call_prediction
-    predictor._telemetry_by_execution_id["edge-execution"] = SimpleNamespace(artifact_path="unused.json")
-    monkeypatch.setattr(module, "_read_ebpf_artifact", lambda _: {"calls": []})
-    observation = ClauseObservation(repo="openclaw", bin="python", argv=("python", "job.py"),
-        ts_start=1000., ts_end=1001., latency_ms=1000.)
-    monkeypatch.setattr(module, "_ebpf_observations", lambda *args, **kwargs: [observation])
-    event = _tool_completion("after-edge", "edge-call").model_copy(update={"execution_id": "edge-execution"})
-    clock[0] = 1002.
-    predictor.observe_completion(event, _runtime_sample("after-edge", "edge-call"))
-    second = predictor.predict(_tool_request("before-next", "edge-next", "python job.py"))
-    assert second.edge_kappa.targets["duration_ms"].avg == 1000
-    assert second.edge_kappa.targets["duration_ms"].buckets.probabilities == [0, 0, 1, 0, 0]
-    assert second.edge_kappa.targets["cpu_avg_cores"].status == "unavailable"
-    predictor.flush_kb_updates()
-    saved = json.loads((tmp_path / "edge-kappa-kb.json").read_text())
-    assert saved["generation"] == 1
-    predictor.close()
-    restored = ToolResourcePredictor.from_traces(openclaw_trace_paths=(), ebpf_trace_paths=(),
-        buckets=LatencyBuckets((100, 500, 2000, 10000)), artifact_dir=tmp_path)
-    assert not restored.report.rejections
-    assert restored.predict(_tool_request("again", "another", "python job.py")).edge_kappa.targets["duration_ms"].avg == 1000
-    restored.close()

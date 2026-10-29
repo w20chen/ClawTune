@@ -16,14 +16,13 @@ Training retains approximate observations, including native-tool shared-runtime 
 
 ## 3. Historical evidence and empirical predictions
 
-The implementation maintains four independent models; they do not fill missing evidence from one another:
+The implementation maintains three independent models; they do not fill missing evidence from one another:
 
 | Index | Description | Observation scope |
 | --- | --- | --- |
 | ToolKB | Call-level history | Whole-call training values, including workload duration and hardware counters |
 | TrieKB | Clause-prefix index | Executable clauses and ordered argument prefixes |
 | LatticeKB | Feature-subset index | Clause contexts ordered by feature-set inclusion |
-| EdgeKappaKB | Feature graph with learned parent-edge weights | Clause duration only; CPU and memory are unavailable |
 
 Each model searches its own history. ToolKB and TrieKB use the first nonempty
 match for each target, even if it has only one sample. Zero-filled values count
@@ -34,7 +33,6 @@ as samples. Different targets can therefore use different matching levels.
 | ToolKB | Repository-specific exact command, then command prefixes of up to four tokens, then a compatible executable. Next: a normalized whole-command match across repositories, a compatible executable, the outer tool name (such as `exec`), and finally all calls. Without a command, it uses repository/tool name, tool name across repositories, then all calls. |
 | TrieKB | Repository-specific exact subcommand, then argument prefixes of up to four tokens, then a compatible executable. Next: a normalized command match across repositories, a compatible executable, and finally all subcommand observations. |
 | LatticeKB | An exact feature set uses that set's own observations. Otherwise it selects one matching subset that retains the executable and entry identity, using the selection method below. It can omit repository and other optional features, but has no unrestricted global fallback. |
-| EdgeKappaKB | Combines matching-node observations with weighted observations from more general matching contexts that retain the executable and entry identity. It predicts duration only and has no unrestricted global fallback. |
 
 For single commands, compatible prefixes retain known module or script identities;
 `python -m pytest` does not use a generic Python prefix. ToolKB can still reach
@@ -70,7 +68,7 @@ $$
 
 More features make a context more specific, generally reducing its sample size. Fewer features broaden coverage but can mix different workloads. Context selection therefore trades specificity against statistical stability.
 
-The implementation retains complete feature sets while bounding partial combinations. It maintains a bounded subset partial order rather than explicitly materializing a full power set. The normalizer treats `repo` as optional, so nodes with and without project identity coexist. It is not a hard isolation boundary. LatticeKB groups training samples and selects contexts independently per target; EdgeKappa uses the same shell features. Offline identity fallback is described in the [benchmark guide](benchmarks.md#5-fixed-trace-offline-evaluation).
+The implementation retains complete feature sets while bounding partial combinations. It maintains a bounded subset partial order rather than explicitly materializing a full power set. The normalizer treats `repo` as optional, so nodes with and without project identity coexist. It is not a hard isolation boundary. LatticeKB groups training samples and selects contexts independently per target. Offline identity fallback is described in the [benchmark guide](benchmarks.md#5-fixed-trace-offline-evaluation).
 
 ### 4.2 Variance shrinkage
 
@@ -135,25 +133,9 @@ $$
 
 Ties prefer more observations. This specificity baseline has no cross-validation risk term. Resource targets with no matching context are unavailable. Historical whole-call duration diagnostics retain broader fallbacks, which do not establish compatible call-level resource evidence.
 
-### 4.5 EdgeKappaKB
-
-EdgeKappa groups commands by feature sets and learns how strongly to use more general matching groups. A group includes observations whose feature sets contain its features, so an exact group can include more specific commands. This differs from Lattice's preference for only its own exact-feature observations. For an unseen command, EdgeKappa uses the nearest matching general groups without requiring an exact group.
-
-For query node $S$, let $O_S$ be its observations and $c_{S,b}$ its count in duration bucket $b$. Each parent $P$ contributes only $D_{P,S}=O_P\setminus O_S$, excluding evidence already counted at the child. Parents with empty differences contribute nothing. With $B$ buckets:
-
-$$
-q_{P,S,b}=\frac{c_{P,b}-c_{S,b}+\epsilon/B}{|D_{P,S}|+\epsilon},\qquad
-p_{S,b}=\frac{c_{S,b}+\eta/B+\sum_P\kappa_{P,S}q_{P,S,b}}
-{|O_S|+\eta+\sum_P\kappa_{P,S}}.
-$$
-
-Here $\epsilon=\eta=0.01$. Initial edge weights divide $k_0=1$ among parents. Completion feedback updates log edge weights by bucket log-loss gradients computed from saved pre-execution predictions. Gradients are clipped to $[-1,1]$ with default learning rate 0.1; weights remain positive with a total-strength cap of 100. A cold query with no own or parent evidence is unavailable.
-
-Runtime duration predictions use individual duration labels: each child observation has weight 1, and each parent-difference observation receives $\kappa_{P,S}/|D_{P,S}|$. An observation shared by several parents is one duration atom with summed weight; evidence count remains the number of unique observations. Numerical bucket smoothing has no duration atom and is omitted from this distribution. Historical bucket-only data without individual duration labels makes it unavailable; bucket midpoints are never invented. The [prediction reference](tool-profile.md#prediction-span_startprediction) defines weighted quantiles and unsupported targets.
-
 ## 5. From commands to tool calls
 
-ToolKB uses call-level evidence. TrieKB, LatticeKB (shrinkage by default), and EdgeKappaKB reconstruct retained workloads from their own clause evidence; EdgeKappa contributes duration only.
+ToolKB uses call-level evidence. TrieKB and LatticeKB (shrinkage by default) reconstruct retained workloads from their own clause evidence.
 
 For supported foreground shell commands, unconditional serial lists, and simple pipelines, the composer independently samples clause distributions. Let $g$ index serial groups and $j$ index clauses within a pipeline group:
 
@@ -167,7 +149,7 @@ This approximation assumes that foreground clauses cover the workload, ignores s
 
 ## 6. Learning, initialization, and evaluation
 
-An online query may use an observation only when $t_i^{end}<t_q^{start}$. Concurrent tasks share evidence in actual completion order; fixed task selection does not ensure identical learning interleavings. Standard offline testing freezes all models and cannot incorporate test outcomes; the separate EdgeKappa research evaluator offers an explicit online-update mode.
+An online query may use an observation only when $t_i^{end}<t_q^{start}$. Concurrent tasks share evidence in actual completion order; fixed task selection does not ensure identical learning interleavings. Standard offline testing freezes all models and cannot incorporate test outcomes.
 
 Default seed contents, snapshot compatibility, and rebuild instructions are maintained in [Output and persistent state](getting-started.md#3-output-and-persistent-state). The bundled default includes its former test samples and is intended for deployment; those samples cannot provide held-out accuracy for that bundle. Training also includes non-shell tools, while standard offline predictions and accuracy denominators include only `exec` and `terminal_exec`. Source workloads and hardware conditions limit transfer to other environments.
 

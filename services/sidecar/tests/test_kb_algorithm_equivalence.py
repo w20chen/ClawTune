@@ -9,8 +9,6 @@ from itertools import combinations
 import pytest
 
 from clawtune_sidecar.predictors import call_load
-from edge_kappa_kb import EdgeKappaKB, FeatureQuery, TimeOutcome, TrainingEvent
-from edge_kappa_kb.graph import FeatureGraph
 from tool_resource.runtime_kb import ClauseObservation
 from tool_time._lattice_vendor.features import CoverageIndex
 from tool_time._lattice_vendor.schemas import NodeStats
@@ -19,14 +17,12 @@ from tool_time.build_cache import BuildStatisticsCache
 from tool_time.lattice_kb import LatticeTimeKB, _build_node_state
 
 
-@pytest.mark.parametrize("weighted", [(True, True), (True, False, True)])
-def test_composition_preserves_every_draw_and_rng_state(monkeypatch, weighted):
-    populations = [tuple(float(i * i) for i in range(1, 31 + j)) for j in range(len(weighted))]
-    weights = [tuple(10. ** ((i % 9) - 4) for i in range(len(v))) for v in populations]
+@pytest.mark.parametrize("clause_count", [2, 3])
+def test_composition_preserves_every_draw_and_rng_state(monkeypatch, clause_count):
+    populations = [tuple(float(i * i) for i in range(1, 31 + j)) for j in range(clause_count)]
     old_random = random.Random
     expected_rng = old_random(0)
-    expected_draws = [[expected_rng.choices(v, weights=w, k=1)[0] if use else expected_rng.choice(v)
-                       for v, w, use in zip(populations, weights, weighted)] for _ in range(2048)]
+    expected_draws = [[expected_rng.choice(v) for v in populations] for _ in range(2048)]
     draws, instances = [], []
     class RecordedRandom(old_random):
         def __init__(self, seed):
@@ -36,17 +32,12 @@ def test_composition_preserves_every_draw_and_rng_state(monkeypatch, weighted):
             value = super().choice(population)
             draws.append(value)
             return value
-        def choices(self, population, *args, **kwargs):
-            values = super().choices(population, *args, **kwargs)
-            draws.extend(values)
-            return values
     monkeypatch.setattr(call_load.random, "Random", RecordedRandom)
-    evidence = [{"duration_ms": {"values": v, **({"weights": w} if use else {})}}
-                for v, w, use in zip(populations, weights, weighted)]
-    result = call_load.compose("edge_kappa", evidence, {target: [100, 500] for target in call_load.TARGET_UNITS})
+    evidence = [{"duration_ms": {"values": v}} for v in populations]
+    result = call_load.compose("lattice", evidence, {target: [100, 500] for target in call_load.TARGET_UNITS})
     assert draws == [v for row in expected_draws for v in row]
     assert instances[0].getstate() == expected_rng.getstate()
-    expected = call_load.summarize("duration_ms", [100, 500], "edge_kappa",
+    expected = call_load.summarize("duration_ms", [100, 500], "lattice",
                                    [sum(row) for row in expected_draws])
     actual = result.targets["duration_ms"]
     assert (actual.p50, actual.p90, actual.buckets) == (expected.p50, expected.p90, expected.buckets)
@@ -165,33 +156,6 @@ def test_successor_reuses_unchanged_statistics_without_reusing_changed_prior():
     # the new global prior and must get distinct cache keys.
     assert not any(key in previous for key in computations)
     assert any(key[0] == 'time' and key[2] is not None for key in computations)
-
-
-def test_edge_restore_builds_canonical_parents_only_when_required(monkeypatch):
-    core = frozenset({'tool=python'})
-    query = FeatureQuery(core, core, 'python')
-    kb = EdgeKappaKB.fit([TrainingEvent(query, TimeOutcome('a', 0, 1, 'task', 'call', '0', duration_ms=10))])
-    old = FeatureGraph.canonical_parents
-    calls = []
-    def counted(self):
-        if self.signatures:
-            calls.append(1)
-        return old(self)
-    monkeypatch.setattr(FeatureGraph, 'canonical_parents', counted)
-    snapshot = kb.to_snapshot()
-    assert EdgeKappaKB.from_snapshot(snapshot).to_snapshot() == snapshot
-    assert len(calls) == 1
-    expanded = FeatureQuery(core | {'flag:x'}, core, 'python')
-    kb.begin(expanded, 'b', 2)
-    snapshot = kb.to_snapshot()
-    calls.clear()
-    assert EdgeKappaKB.from_snapshot(snapshot).to_snapshot() == snapshot
-    assert calls == []
-
-
-def test_stored_edge_restore_still_rejects_nodes_without_tool():
-    with pytest.raises(StopIteration):
-        FeatureGraph({frozenset({'flag:x'})}, build_parents=False)
 
 
 @pytest.mark.parametrize('capacity', [0, 1, 32])

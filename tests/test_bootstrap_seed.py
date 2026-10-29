@@ -6,7 +6,6 @@ import pytest
 from benchmarks.bootstrap import ROOT
 from clawtune_kb import FILES, initialize_state, validate_seed
 from clawtune_kb.store import digest
-from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
 from cold_start.flat_loader import read_task
 from scripts.build_bootstrap_seed import build, replay
 from tool_resource.runtime_kb import (
@@ -21,7 +20,7 @@ from tool_resource.runtime_kb import (
 from tool_time.lattice_kb import LatticeTimeKB
 
 SEED = ROOT / "seeds/bootstrap-v1"
-ALL_FILES = (*FILES, "edge-kappa-kb.json")
+ALL_FILES = FILES
 DEFAULT_SEED = ROOT / "seeds/bootstrap-v2"
 
 
@@ -79,19 +78,10 @@ def test_replay_selects_one_eligible_attempt_per_case_and_is_deterministic(tmp_p
         assert all(len(c["files"]) == 1 for c in provenance["cases"])
         assert provenance["counts"]["prediction_calls"] == 3
         assert provenance["target_counts"]["tool"]["duration_ms"] == 3
-        assert provenance["target_counts"]["edge_kappa"]["duration_ms"] == 3
         for model in ("tool", "trie", "lattice"):
             counts = provenance["target_counts"][model]
             assert counts["cpu_time_seconds"] == counts["memory_total_peak_bytes"] == 3
             assert counts["cpu_peak_cores"] == counts["sampled_peak_rss_bytes"] == 3
-        # Edge remains a time-only predictor, even when resource labels train
-        # the other three backends.
-        edge_counts = provenance["target_counts"]["edge_kappa"]
-        assert edge_counts["cpu_time_seconds"] == edge_counts["memory_total_peak_bytes"] == 0
-        edge = EdgeKappaRuntime.from_snapshot(json.loads((output / "edge-kappa-kb.json").read_text()))
-        assert len(edge.to_snapshot()["runtime"]["completed_calls"]) == 3
-        assert not edge.to_snapshot()["tokens"]
-        assert len(edge.to_snapshot()["observations"]) == 3
         lattice = json.loads((output / FILES[2]).read_text())
         assert [r["ts_start"] for r in lattice["observations"]] == [10.1, 12.1, 20.1]
         assert all(r["cpu_ns_cumulative"] == 0 for r in lattice["observations"])
@@ -185,27 +175,6 @@ def test_tool_workload_uses_same_consumer_policy_online_and_offline(tmp_path, co
         assert evidence["duration_ms"]["values"] == pytest.approx((100.,))
 
 
-@pytest.mark.parametrize("clock", ["record-order", "trace"])
-@pytest.mark.parametrize("parser_available", [False, True])
-@pytest.mark.parametrize("position", [-1, 0, 1])
-def test_edge_sed_admission_is_independent_of_clock_and_parser(
-    tmp_path, monkeypatch, clock, parser_available, position,
-):
-    from offline.edge_kappa_eval import _events
-    from tool_resource.mvdan_client import MvdanClientError
-
-    path = tmp_path / "case.jsonl"
-    _write_consumer_trace(path, "sed", position)
-    if not parser_available:
-        def unavailable(command):
-            raise MvdanClientError("parser unavailable")
-        monkeypatch.setattr("tool_resource.features.parse_command_clauses", unavailable)
-    task = dict(benchmark="swe-rebench", group="owner/repo", task_id="owner__repo-1",
-                files=[dict(path=path.name, version=5, sha256=digest(path))])
-    events, _ = _events(tmp_path, {"case": task}, ["case"], "MiB", clock)
-    assert len(events) == int(position <= 0)
-
-
 @pytest.mark.parametrize("compound", [False, True])
 @pytest.mark.parametrize("clock", ["missing", "before", "after", "reversed", "valid"])
 @pytest.mark.parametrize("preserve_timestamps", [False, True])
@@ -270,14 +239,14 @@ def test_replay_prediction_precedes_completion_and_no_future_labels(tmp_path, si
     observed = []
     def capture(**kwargs):
         result = actual(**kwargs)
-        snapshot = kwargs["edge_kappa"].to_snapshot()
+        snapshot = kwargs["lattice"].to_json_obj()
         observed.append(len(snapshot["observations"]))
         return result
     monkeypatch.setattr(builder, "predict_call_load", capture)
     payloads, _, _ = replay([("case", {"group": "owner/repo"}, 10.,
                              [({"path": source.name}, loaded)])], progress=lambda *a, **k: None)
     assert observed == [0, 0, 2]
-    assert len(payloads["edge-kappa-kb.json"]["observations"]) == 3
+    assert len(payloads[FILES[2]]["observations"]) == 3
 
 
 def test_recipe_rejects_insufficient_cases_without_creating_bundle(tmp_path, simple_parser):
@@ -289,7 +258,7 @@ def test_recipe_rejects_insufficient_cases_without_creating_bundle(tmp_path, sim
     assert not (tmp_path / "seed").exists()
 
 
-def test_shipped_seed_contains_four_finalized_kbs_and_four_fresh_replays():
+def test_shipped_seed_contains_three_finalized_kbs_and_four_fresh_replays():
     manifest = validate_seed(SEED)
     assert set(manifest["snapshots"]) == set(ALL_FILES)
     provenance = manifest["provenance"]
@@ -322,9 +291,6 @@ def test_shipped_seed_contains_four_finalized_kbs_and_four_fresh_replays():
         target["labeled_coverage"] == 1.0
         for target in provenance["validation"]["targets"].values()
     )
-    edge = json.loads((SEED / ALL_FILES[3]).read_text())
-    assert not edge["tokens"]
-    assert edge["runtime"]["completed_calls"]
 
 
 def test_initial_state_can_learn_without_mutating_release_seed(tmp_path):
@@ -332,9 +298,7 @@ def test_initial_state_can_learn_without_mutating_release_seed(tmp_path):
     state = tmp_path / "kb"
     initialize_state(state, SEED, owner="daily")
     lattice = LatticeTimeKB.from_json_obj(json.loads((state / FILES[2]).read_text()))
-    edge = EdgeKappaRuntime.from_snapshot(json.loads((state / ALL_FILES[3]).read_text()))
     assert lattice.node_count > 0
-    assert edge.to_snapshot()["observations"]
     assert set(validate_seed(SEED)["snapshots"]) <= {p.name for p in state.iterdir()}
     trie = ClauseResourceKB.from_json_obj(json.loads((state / FILES[0]).read_text()))
     from tool_resource.runtime_kb import ClauseObservation

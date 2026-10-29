@@ -5,7 +5,6 @@ import json
 import pytest
 
 from clawtune_kb import FILES, create_seed, validate_seed
-from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
 from scripts.build_clawbox_seed import build
 from tool_resource.runtime_kb import (
     ClauseObservation,
@@ -25,9 +24,6 @@ def _base_seed(path):
         RuntimeToolResourceKB().to_json_obj(),
         LatticeTimeKB().to_json_obj(),
     )))
-    payloads["edge-kappa-kb.json"] = EdgeKappaRuntime.fit(
-        [], (100, 500, 2000, 10000)
-    ).to_snapshot()
     return create_seed(path, payloads, provenance={"kind": "test-base"})
 
 
@@ -121,9 +117,7 @@ def test_builds_standard_seed_with_lattice_and_public_tool_memory(tmp_path):
     assert provenance["kind"] == "clawbox-qualified-observation-import"
     assert provenance["recipe_version"] == 4
     assert provenance["coverage"]["added_lattice_observations"] == 1
-    assert provenance["retained_base_optional_snapshots"] == [
-        "edge-kappa-kb.json"
-    ]
+    assert provenance["retained_base_optional_snapshots"] == []
     assert provenance["coverage"]["tool_memory_labels_by_measurement"][MEASUREMENT][
         "memory_extra_peak_bytes"
     ] == 1
@@ -141,10 +135,7 @@ def test_builds_standard_seed_with_lattice_and_public_tool_memory(tmp_path):
         (tmp_path / "bootstrap-v2" / FILES[2]).read_text(encoding="utf-8")
     ))
     assert lattice.observation_count == 1
-    assert "edge-kappa-kb.json" in manifest["snapshots"]
-    assert (
-        tmp_path / "bootstrap-v2" / "edge-kappa-kb.json"
-    ).read_bytes() == (base / "edge-kappa-kb.json").read_bytes()
+    assert set(manifest["snapshots"]) == set(FILES)
 
 
 def test_rejects_duplicate_execution_ids_before_creating_seed(tmp_path):

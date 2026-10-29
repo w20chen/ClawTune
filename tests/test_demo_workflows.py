@@ -129,9 +129,7 @@ def test_non_shell_datasets_have_no_offline_scores_and_test_does_not_train(tmp_p
         assert (first / benchmark / "predictions.jsonl").read_text() == ""
         folder = first / benchmark / "seed"
         lattice = json.loads((folder / "clause-lattice-time-kb.json").read_text())
-        edge = json.loads((folder / "edge-kappa-kb.json").read_text())
         assert lattice["node_generation"]["max_optional_features"] == max_optional_features
-        assert edge["config"]["max_optional_features"] == max_optional_features
     for task in manifest["test"]:
         entry = manifest["tasks"][task]
         for file in entry["files"]:
@@ -202,7 +200,7 @@ def test_offline_lattice_variants_share_frozen_statistics_and_preserve_default_r
         assert len(duration) == 1
         assert duration[0]["actual_bucket"] == duration[0]["predicted_bucket"] == 2
     assert all(digest(tmp_path / "baseline" / "seed" / name) == digest(output / "seed" / name)
-               for name in (*FILES, "edge-kappa-kb.json"))
+               for name in FILES)
 
 
 def test_nested_dataset_prefers_final_trace_and_keeps_raw_only_attempt(tmp_path):
@@ -288,24 +286,6 @@ def test_repository_split_keeps_repositories_and_attempts_disjoint(tmp_path):
     assert "extra" in split_tasks(extra, 42, split_by="repository")["test"]
 
 
-def test_offline_edge_preserves_identical_observations_and_task_identity():
-    from offline.runner import _edge_training_events
-    from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
-    from tool_resource.runtime_kb import ClauseObservation
-    row = ClauseObservation("repo", "python", ("python", "job.py"), 0., 1., latency_ms=1000.)
-    events = [*_edge_training_events([row, row], "task-a"),
-              *_edge_training_events([row], "task-b")]
-    assert len({event.outcome.event_id for event in events}) == 3
-    assert [event.outcome.task_id for event in events] == ["task-a", "task-a", "task-b"]
-    assert events[0].outcome.end_time < events[1].outcome.start_time
-    assert all(event.outcome.duration_ms == 1000. for event in events)
-    edge = EdgeKappaRuntime.fit_events(events, (100, 500, 2000, 10000), frozen=True)
-    snapshot = edge.to_snapshot()
-    assert len(snapshot["observations"]) == 3
-    assert len(snapshot["processed_event_ids"]) == 3
-    assert not snapshot["pending"]
-
-
 @pytest.mark.parametrize("tasks,reason", [
     ({"x": {"benchmark": "bfcl", "group": "dataset", "grouping": "dataset"}}, "repository identity"),
     ({"x": {"benchmark": "swe-rebench", "group": "org/a", "grouping": "repository"}}, "at least two"),
@@ -339,7 +319,7 @@ def test_repository_holdout_labels_do_not_change_seed(tmp_path):
             path.write_text("\n".join(map(json.dumps, records)), encoding="utf-8")
     second = run(dataset, tmp_path / "second", **options)
     assert first["split_by"] == "repository"
-    for name in (*FILES, "edge-kappa-kb.json"):
+    for name in FILES:
         assert digest(tmp_path / "first" / "seed" / name) == digest(tmp_path / "second" / "seed" / name)
     for model in first["models"].values():
         for counter in model["availability"].values():

@@ -21,7 +21,6 @@ from clawtune_kb import FILES, create_seed
 from clawtune_kb.store import digest
 from clawtune_sidecar.prediction_config import load_bucket_edges
 from clawtune_sidecar.predictors.call_load import plain_execution, predict_call_load
-from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime, training_event
 from cold_start.flat_loader import read_task, valid
 from offline.runner import inventory, merge_trace_clause_observations
 from clawtune_sidecar.predictors.tool_resource import STRICT_TRACE_LABEL_POLICY
@@ -34,6 +33,18 @@ from tool_time.resource_lattice import LOAD_TARGETS
 from tool_resource.commands import normalized_observation
 
 BUCKET_EDGES = (100, 500, 2000, 10000)
+
+
+def _eligible_timed_clause(observation):
+    from tool_resource.features import shell_bin_requires_exec_evidence
+    from tool_resource.runtime_kb import is_pipeline_dependent_consumer
+
+    row = normalized_observation(observation)
+    return (row.latency_ms is not None and math.isfinite(row.latency_ms) and row.latency_ms >= 0
+            and math.isfinite(row.ts_start) and math.isfinite(row.ts_end)
+            and row.ts_end >= row.ts_start and bool(row.argv)
+            and not is_pipeline_dependent_consumer(row) and not row.in_loop and not row.in_subst
+            and shell_bin_requires_exec_evidence(row.bin, row.argv[0]))
 
 
 def _candidate_start(dataset, task):
@@ -85,7 +96,7 @@ def select_cases(dataset, count, rss_unit):
                            rss_unit=rss_unit, preserve_timestamps=True)
         candidate_clauses = [row for action in loaded.actions
                              for row in merge_trace_clause_observations(action.clauses, STRICT_TRACE_LABEL_POLICY)]
-        if not any(training_event(row) is not None for row in candidate_clauses):
+        if not any(_eligible_timed_clause(row) for row in candidate_clauses):
             rejected.append({"task": key, "file": file["path"],
                              "reason": "no_eligible_timed_clause"})
             continue
@@ -98,10 +109,9 @@ def select_cases(dataset, count, rss_unit):
 
 def replay(selected, *, progress=print):
     trie, tool, lattice = ClauseResourceKB(), RuntimeToolResourceKB(), LatticeTimeKB()
-    edge = EdgeKappaRuntime.fit((), BUCKET_EDGES)
     edges = load_bucket_edges(BUCKET_EDGES)
     counts = Counter()
-    targets = {name: Counter() for name in ("tool", "trie", "lattice", "edge_kappa")}
+    targets = {name: Counter() for name in ("tool", "trie", "lattice")}
     events = []
     for index, (key, task, _, files) in enumerate(selected):
         for file, loaded in files:
@@ -117,9 +127,9 @@ def replay(selected, *, progress=print):
     for timestamp, phase, _, identity, repo, action, loaded in sorted(events, key=lambda e: e[:4]):
         if phase == 0:
             _, diagnostics = predict_call_load(
-                runtime=tool, trie=trie, lattice=lattice, edge_kappa=edge,
+                runtime=tool, trie=trie, lattice=lattice,
                 query=ToolCallQuery(repo, action.tool_name, action.command, timestamp),
-                edges=edges, edge_call_id=identity,
+                edges=edges,
             )
             for backend, result in diagnostics.backends.items():
                 for target, prediction in result.targets.items():
@@ -137,7 +147,6 @@ def replay(selected, *, progress=print):
                     targets["trie"].update(values.keys())
                 if lattice.observe_completed_clause(row):
                     targets["lattice"].update(values.keys())
-            edge.complete_call(identity, clauses, commit_time=timestamp)
             if action.call_index is not None:
                 call = loaded.calls[action.call_index]
                 tool.observe_completed_call(call)
@@ -153,17 +162,9 @@ def replay(selected, *, progress=print):
     trie._absorb_completed(horizon)
     tool._absorb_completed(horizon)
     lattice._advance(horizon)
-    edge.kb.commit_before(horizon)
     for kb in (trie, tool, lattice):
         kb.freeze()
-    edge.kb.freeze()
-    edge.frozen = True
-    edge_snapshot = edge.to_snapshot()
-    if edge_snapshot["tokens"] or edge_snapshot["pending"] or edge_snapshot["runtime"]["calls"]:
-        raise ValueError("replay left unfinished Edge predictions")
-    targets["edge_kappa"]["duration_ms"] = len(edge_snapshot["observations"])
     payloads = dict(zip(FILES, (trie.to_json_obj(), tool.to_json_obj(), lattice.to_json_obj())))
-    payloads["edge-kappa-kb.json"] = edge_snapshot
     return payloads, counts, targets
 
 

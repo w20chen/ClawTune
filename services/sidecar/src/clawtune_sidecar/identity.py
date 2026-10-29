@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable
 from typing import Any, TypeAlias
@@ -13,6 +14,12 @@ CorrelationKey: TypeAlias = tuple[
     str | None,
     str,
 ]
+
+
+def call_key(value: Any) -> str:
+    """Stable identity for per-call command features and execution context."""
+    payload = json.dumps(correlation_key(value), sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
 
 
 def task_instance_key(value: Any) -> str | None:

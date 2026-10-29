@@ -249,8 +249,7 @@ For incompatible saved formats, rebuild from original traces into a new bundle
 and start a new benchmark run or `CLAWTUNE_STATE_DIR`. New writable state can
 initialize incompatible feature-based components empty; it does not recover
 their prior learning. Frozen loading requires compatible snapshots. Changing the
-initialization directory does not migrate existing state, and a frozen bundle
-without EdgeKappa data leaves that model unavailable.
+initialization directory does not migrate existing state.
 
 ### Common settings
 
@@ -263,13 +262,13 @@ Common settings belong in root `.env`; restart the service after changes:
 | `CLAWTUNE_TOKEN` | Optional local API token; export the same value to OpenClaw and the service, separately from the provider key |
 | `CLAWTUNE_PMU_ENABLED` | Enable best-effort hardware counting |
 | `CLAWTUNE_TOOL_RESOURCE_FROZEN` | Freeze daily learning |
-| `CLAWTUNE_KB_MAX_OPTIONAL_FEATURES` | Shared fixed optional-feature combination limit for Lattice and EdgeKappa (default 6; nonnegative integer) |
+| `CLAWTUNE_KB_MAX_OPTIONAL_FEATURES` | Fixed optional-feature combination limit for Lattice (default 6; nonnegative integer) |
 | `CLAWTUNE_TOOL_RESOURCE_MEMORY_MEASUREMENT` | Query memory evidence from `cgroup_v2_environment_union_v1` (default), `cgroup_v2_memory_current`, or `guest_memtotal_minus_memavailable`; selects a source without converting labels |
 
-Lattice and EdgeKappa retain complete command feature sets. The optional-feature
+Lattice retains complete command feature sets. The optional-feature
 limit bounds the size of partial combinations used for matching; it is not a
 total-node or memory limit. Larger values can increase construction time and
-memory. The two saved models and the service must use the same setting. To change
+memory. The saved model and the service must use the same setting. To change
 it, rebuild from raw traces with offline `--kb-max-optional-features <n>` and
 start new state with the matching environment setting.
 

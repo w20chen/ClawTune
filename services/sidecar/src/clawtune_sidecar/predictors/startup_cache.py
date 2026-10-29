@@ -10,7 +10,6 @@ import pickle
 import sys
 from typing import Any
 
-from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
 from command_parser.registry import RuleRegistry
 from kb_common import require_same_feature_limit, validate_max_optional_features
 from tool_time.lattice_kb import LatticeTimeKB
@@ -19,8 +18,7 @@ from tool_time.lattice_kb import LatticeTimeKB
 CACHE_FILE = "prepared-predictor-cache.pkl"
 CACHE_MANIFEST = "prepared-predictor-cache.json"
 LATTICE_FILE = "clause-lattice-time-kb.json"
-EDGE_FILE = "edge-kappa-kb.json"
-SCHEMA = "clawtune.prepared-predictor-cache.v2"
+SCHEMA = "clawtune.prepared-predictor-cache.v3"
 
 
 def _digest(path: Path) -> str:
@@ -55,23 +53,16 @@ def build_prepared_cache(
 ) -> dict[str, Any]:
     maximum = validate_max_optional_features(max_optional_features)
     lattice_path = artifact_dir / LATTICE_FILE
-    edge_path = artifact_dir / EDGE_FILE
     lattice = LatticeTimeKB.from_json_obj(json.loads(lattice_path.read_text(encoding="utf-8")))
     require_same_feature_limit(
         lattice.max_optional_features, maximum, source="Lattice startup cache",
     )
     lattice.prepare()
-    edge = EdgeKappaRuntime.from_snapshot(
-        json.loads(edge_path.read_text(encoding="utf-8")),
-        frozen=False,
-        max_optional_features=maximum,
-    )
     command_registry = RuleRegistry()
     payload = pickle.dumps(
         {
             "schema": SCHEMA,
             "lattice": lattice,
-            "edge_kappa": edge,
             "command_rules": command_registry.prepared_snapshot(),
         },
         protocol=pickle.HIGHEST_PROTOCOL,
@@ -84,7 +75,6 @@ def build_prepared_cache(
         "max_optional_features": maximum,
         "source_sha256": {
             LATTICE_FILE: _digest(lattice_path),
-            EDGE_FILE: _digest(edge_path),
         },
         "cache_sha256": _digest(cache_path),
         "cache_bytes": cache_path.stat().st_size,
@@ -95,7 +85,7 @@ def build_prepared_cache(
 
 def load_prepared_cache(
     artifact_dir: Path | None, *, max_optional_features: int,
-) -> tuple[LatticeTimeKB, EdgeKappaRuntime, RuleRegistry] | None:
+) -> tuple[LatticeTimeKB, RuleRegistry] | None:
     if artifact_dir is None:
         return None
     configured_seed = os.getenv("CLAWTUNE_KB_SEED")
@@ -121,28 +111,23 @@ def load_prepared_cache(
         expected = manifest.get("source_sha256")
         if not isinstance(expected, dict) or any(
             expected.get(name) != _digest(artifact_dir / name)
-            for name in (LATTICE_FILE, EDGE_FILE)
+            for name in (LATTICE_FILE,)
         ):
             return None
         payload = pickle.loads(cache_path.read_bytes())
         lattice = payload.get("lattice") if isinstance(payload, dict) else None
-        edge = payload.get("edge_kappa") if isinstance(payload, dict) else None
         command_rules = payload.get("command_rules") if isinstance(payload, dict) else None
         if (
             not isinstance(payload, dict)
             or payload.get("schema") != SCHEMA
             or not isinstance(lattice, LatticeTimeKB)
-            or not isinstance(edge, EdgeKappaRuntime)
         ):
             return None
         require_same_feature_limit(
             lattice.max_optional_features, maximum, source="Cached Lattice KB",
         )
-        require_same_feature_limit(
-            edge.kb.max_optional_features, maximum, source="Cached EdgeKappa KB",
-        )
         registry = RuleRegistry.from_prepared_snapshot(command_rules)
-        return lattice, edge, registry
+        return lattice, registry
     except (OSError, ValueError, TypeError, KeyError, pickle.UnpicklingError):
         return None
 

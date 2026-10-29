@@ -1,15 +1,12 @@
-"""Differential checks against full Lattice builds and brute-force Edge lookup."""
+"""Differential checks against full Lattice builds."""
 import copy
 import hashlib
-import json
 import random
 from dataclasses import asdict, replace
 
 import pytest
 
 from command_parser.models import CommandFeatures
-from edge_kappa_kb import EdgeKappaKB, FeatureQuery, TimeOutcome
-from edge_kappa_kb.graph import FeatureGraph
 from tool_resource.runtime_kb import ClauseObservation
 from tool_time.lattice_kb import LatticeTimeKB, _build_node_state
 
@@ -93,61 +90,6 @@ def test_resource_partitions_pending_boundaries_and_snapshot_roundtrip():
     restored = LatticeTimeKB.from_json_obj(kb.to_json_obj())
     restored.prepare()
     assert_state(state(restored), state(kb))
-
-
-def brute_subsets(graph, features):
-    return {key for key, fs in graph.signatures.items() if fs <= features}
-
-
-def brute_maximal(graph, candidates):
-    return tuple(sorted(key for key in candidates if not any(
-        graph.signatures[key] < graph.signatures[other] for other in candidates)))
-
-
-def test_edge_index_retains_incomparable_parent_layers_and_dynamic_matches():
-    rng = random.Random(201)
-    signatures = {frozenset(['tool=t', *rng.sample(list('abcdefgh'), rng.randrange(1, 8))]) for _ in range(200)}
-    graph = FeatureGraph(signatures)
-    for fs in list(signatures) + [frozenset(['tool=t', *'abcdefgh'])]:
-        expected = brute_subsets(graph, fs)
-        assert graph.subsets(fs) == expected
-        expected.discard(graph.by_features.get(fs))
-        assert graph.query_parents(fs) == brute_maximal(graph, expected)
-    old = dict(graph.parents)
-    graph.add_full(frozenset(['tool=t', 'a', 'new']))
-    assert all(graph.parents[key] == ps for key, ps in old.items())
-    for fs in list(signatures) + [frozenset(['tool=t', *'abcdefgh', 'new'])]:
-        assert graph.subsets(fs) == brute_subsets(graph, fs)
-
-
-def test_edge_online_state_and_deferred_snapshots_match_reference(monkeypatch):
-    core = frozenset({'tool=t'})
-    actual, reference = EdgeKappaKB(), EdgeKappaKB()
-    rng = random.Random(37)
-    for i in range(40):
-        fs = core | frozenset(rng.sample(list('abcde'), rng.randrange(6)))
-        query = FeatureQuery(fs, core, 't')
-        predicted, _ = actual.begin(query, str(i), i * 10)
-        with monkeypatch.context() as patch:
-            patch.setattr(FeatureGraph, 'subsets', brute_subsets)
-            patch.setattr(FeatureGraph, '_maximal', brute_maximal)
-            expected, _ = reference.begin(query, str(i), i * 10)
-        assert predicted == expected
-        before = actual.to_snapshot()
-        captured = actual._capture_snapshot()
-        outcome = TimeOutcome(str(i), i * 10, i * 10 + 1, 'task', str(i), '0', duration_ms=(i + 1) * 73)
-        for kb in (actual, reference):
-            kb.complete(str(i), outcome)
-            kb.commit_before(i * 10 + 2)
-        assert captured() == before  # Formatting AFTER mutation retains captured revision.
-        payload = actual._capture_snapshot()()
-        assert payload == actual.to_snapshot()
-        assert ''.join(payload.json_chunks()) == json.dumps(payload, sort_keys=True, separators=(',', ':')) + '\n'
-        assert actual.to_snapshot() == reference.to_snapshot()
-        if i % 10 == 0:
-            actual = EdgeKappaKB.from_snapshot(actual.to_snapshot())
-            reference = EdgeKappaKB.from_snapshot(reference.to_snapshot())
-    assert actual.graph.parents == reference.graph.parents
 
 
 def test_repeated_pending_prepares_reuse_previous_delta_without_early_visibility(monkeypatch):
@@ -236,63 +178,3 @@ def test_new_nodes_follow_chronological_generation_order_inside_a_heap_batch():
     kb.prepare()
     kb._advance(10)
     assert_state(state(kb), _build_node_state([initial, *incoming]))
-
-
-def test_edge_snapshot_chunks_preserve_boundaries_and_changed_rows(tmp_path):
-    from clawtune_sidecar.predictors.tool_resource import _write_json_atomic
-    from edge_kappa_kb import TrainingEvent
-    core = frozenset({'tool=t'})
-    events = [TrainingEvent(FeatureQuery(core | {f'arg={i}'}, core, 't'),
-        TimeOutcome(str(i), i * 2, i * 2 + 1, 'task', str(i), '0', duration_ms=i + 1))
-        for i in range(520)]
-    kb = EdgeKappaKB.fit(events)
-    before = kb.to_snapshot()
-    captured = kb._capture_snapshot()
-    q = FeatureQuery(core | {'arg=new'}, core, 't')
-    kb.begin(q, 'new', 2000)
-    kb.complete('new', TimeOutcome('new', 2000, 2001, 'task', 'new', '0', duration_ms=500))
-    kb.commit_before(2002)
-    path = tmp_path / 'snapshot.json'
-    _write_json_atomic(path, captured())
-    assert json.loads(path.read_text()) == before
-    _write_json_atomic(path, kb._capture_snapshot()())
-    assert json.loads(path.read_text()) == kb.to_snapshot()
-    kb = EdgeKappaKB.from_snapshot(json.loads(path.read_text()))
-    assert kb._capture_snapshot()() == kb.to_snapshot()
-
-
-def test_deferred_format_failure_retries_latest_revision_outside_owner_lock(tmp_path, monkeypatch):
-    from clawtune_sidecar.predictors.tool_resource import (
-        KnowledgeBaseFlushError,
-        ToolResourcePredictor,
-    )
-    from tool_resource.runtime_kb import LatencyBuckets
-    owner = ToolResourcePredictor.from_traces(openclaw_trace_paths=(), ebpf_trace_paths=(),
-        artifact_dir=tmp_path, buckets=LatencyBuckets((100., 500., 2000.)), repo='r')
-    runtime = owner.edge_kappa
-    original = runtime.capture_snapshot
-    failures = [True]
-
-    def capture():
-        materialize = original()
-        def outside_lock():
-            assert not owner._kb_lock._is_owned()
-            if failures:
-                failures.pop()
-                raise OSError('injected deferred formatting failure')
-            return materialize()
-        return outside_lock
-
-    monkeypatch.setattr(runtime, 'capture_snapshot', capture)
-    core = frozenset({'tool=python'})
-    runtime.kb.begin(FeatureQuery(core | {'a'}, core, 'python'), 'first', 1)
-    owner._edge_kappa_version += 1
-    with pytest.raises(KnowledgeBaseFlushError, match='deferred formatting failure'):
-        owner._flush_kb_batch(())
-    assert owner._edge_kappa_persisted_version < owner._edge_kappa_version
-    runtime.kb.begin(FeatureQuery(core | {'b'}, core, 'python'), 'second', 2)
-    owner._edge_kappa_version += 1
-    owner._flush_kb_batch(())
-    assert json.loads(owner.edge_kappa_snapshot_path.read_text()) == json.loads(json.dumps(runtime.to_snapshot()))
-    assert owner._edge_kappa_persisted_version == owner._edge_kappa_version
-    owner.close()

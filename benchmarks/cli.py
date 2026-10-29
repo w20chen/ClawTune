@@ -87,7 +87,7 @@ def parser():
     off.add_argument("--seed", type=int, default=42)
     from kb_common import DEFAULT_MAX_OPTIONAL_FEATURES
     off.add_argument("--kb-max-optional-features", type=int, default=DEFAULT_MAX_OPTIONAL_FEATURES,
-                     help="Shared fixed optional-feature limit for Lattice and EdgeKappa (default: 6)")
+                     help="Fixed optional-feature limit for Lattice (default: 6)")
     off.add_argument("--lattice-variants", action="store_true",
                      help="Also evaluate LOSO, max-cardinality, and a hindsight duration oracle on the same frozen Lattice KB")
     off.add_argument("--train-fraction", type=float, default=.8,

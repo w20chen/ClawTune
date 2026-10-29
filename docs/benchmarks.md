@@ -364,7 +364,7 @@ tail -F "$RUN/sidecar/sidecar-stderr.txt"             # shared service log
 docker ps --filter name=clawtune-srb                  # sandbox containers of active repository/research tasks
 ```
 
-Check run `status`, each result's `error`/`exit_code`, and `kb_flush_complete`. A completed run requires persisted KB state. `observation_issues` and collector logs report monitoring failures separately; unavailable targets can be valid, including empty cold-start history and EdgeKappa's unsupported CPU/memory targets. `resource_summary.prediction_models` records availability for `tool`, `trie`, `lattice`, and `edge_kappa`, not prediction accuracy.
+Check run `status`, each result's `error`/`exit_code`, and `kb_flush_complete`. A completed run requires persisted KB state. `observation_issues` and collector logs report monitoring failures separately; unavailable targets can be valid, including empty cold-start history. `resource_summary.prediction_models` records availability for `tool`, `trie`, and `lattice`, not prediction accuracy.
 
 KB updates remain available to subsequent online queries before they are saved.
 The run saves shared knowledge at its final flush; task-level on-disk generation
@@ -376,7 +376,7 @@ Timeout finalization follows confirmed producer shutdown. Incomplete tools retai
 
 ## 5. Fixed-trace offline evaluation
 
-`scripts/clawtune.py offline` evaluates the four base prediction models and
+`scripts/clawtune.py offline` evaluates the three base prediction models and
 subcommand composition. It does not evaluate the optional online duration
 correction based on recent execution context; see the
 [prediction reference](tool-profile.md#prediction-span_startprediction).
@@ -431,7 +431,7 @@ python3 scripts/clawtune.py offline --dataset /data/fixed-traces \
 
 Choose `MB` or `MiB` according to original RSS units; explicit bytes retain their units. Tasks need `instance_id` or `task_id`. Adjacent `dataset-task.json` can supply identity. SWE datasets require `repo` or an ID from which it can be inferred.
 
-Offline grouping uses `repo`, otherwise `category`, otherwise `dataset`. Observations receive `repo="<benchmark>:<group>"`. Terminal traces with neither repo nor category therefore share `terminal-bench:dataset`, not a per-task repository. LatticeKB and EdgeKappa treat it as an optional context feature; command features still distinguish workloads, and nodes without repo can share evidence across contexts. Task IDs keep all attempts on one side of the split.
+Offline grouping uses `repo`, otherwise `category`, otherwise `dataset`. Observations receive `repo="<benchmark>:<group>"`. Terminal traces with neither repo nor category therefore share `terminal-bench:dataset`, not a per-task repository. LatticeKB treats it as an optional context feature; command features still distinguish workloads, and nodes without repo can share evidence across contexts. Task IDs keep all attempts on one side of the split.
 
 The split methodology is in the [technical report](technical-report.md#6-learning-initialization-and-evaluation). `--train-fraction` defaults to 0.8 and must lie strictly between 0 and 1. Each group assigns `max(1, floor(fraction*N))` tasks to training and the rest to testing. Assignments are reused by task roster, seed, and fraction. The registry defaults to `.runtime/offline/splits/`; use `--split-cache-dir` to relocate it.
 
@@ -456,19 +456,17 @@ traces to evaluate it, or use the training-only bundle for the original split.
 | `split.json` | Task assignments and input hashes |
 | `seed/` | Statistics constructed only from training data |
 | `predictions.jsonl` | ToolKB test predictions and training-policy labels, including PMU |
-| `model-predictions.jsonl` | ToolKB, TrieKB, LatticeKB, and EdgeKappaKB predictions with a `model` field |
+| `model-predictions.jsonl` | ToolKB, TrieKB, and LatticeKB predictions with a `model` field |
 | `report.json`, `report.md` | Availability, errors, baselines, and exclusions |
 
 Mixed input is trained and evaluated separately per benchmark, with an aggregate report. Check train/test counts and `test_updates: 0` before interpreting metrics. All-singleton groups can leave no test set.
 
 Offline evaluation reports only `exec` and `terminal_exec` calls. Non-shell calls are excluded from prediction outputs, coverage denominators, and all reported model metrics. Task splitting and training ingestion are unchanged; a test set containing no shell calls produces no scored results. `tools/summarize_offline_buckets.py` applies the same reporting scope when reading older mixed-tool results.
 
-Each benchmark's `report.json.models` reports `tool`, `trie`, `lattice`, and `edge_kappa` separately (Edge predicts duration only). The existing top-level `metrics` and `repositories` describe ToolKB. Per-target `availability` counts all uncensored queries (`queries`), queries with effective labels (`labeled`), available predictions (`predicted`), and labeled predictions that can be scored (`scored`). Effective labels can include explicit zero imputation, so coverage is not a count of direct measurements. Partial executions remain training inputs but are excluded from completed-task MAE/WAPE.
+Each benchmark's `report.json.models` reports `tool`, `trie`, and `lattice` separately. The existing top-level `metrics` and `repositories` describe ToolKB. Per-target `availability` counts all uncensored queries (`queries`), queries with effective labels (`labeled`), available predictions (`predicted`), and labeled predictions that can be scored (`scored`). Effective labels can include explicit zero imputation, so coverage is not a count of direct measurements. Partial executions remain training inputs but are excluded from completed-task MAE/WAPE.
 
 `availability.unavailable_reasons` counts failed predictions over all queries, including those without labels. Prediction rows contain `task` and `call_index` for matching the same call across models on an unchanged dataset.
 Each model also reports labeled metrics and prediction availability by repository in `models.<model>.repositories`. Repositories without labels still have query and prediction counts. Inspect these alongside pooled metrics when repository sizes differ substantially; a large repository can dominate the pooled result.
-
-EdgeKappa training uses deterministic task and subcommand order. This supports repeatable frozen evaluation but does not reproduce the original timing of concurrent calls.
 
 Add `--lattice-variants` to report `lattice_loso`, `lattice_max_cardinality`, and `lattice_oracle`. They use the same frozen training data and subcommand composition as the default `lattice` shrinkage method. The optional-feature limit defaults to six and can be changed as described below; complete feature sets are always retained.
 
@@ -487,24 +485,4 @@ imputed counts separately: a zero-filled test label is not measurement ground tr
 
 Rebuild seeds from the original traces after changing label ingestion rules. Existing snapshots retain previously imported values and cannot recover missing measurement evidence.
 
-The offline `--kb-max-optional-features <n>` option sets the same fixed combination limit for Lattice and EdgeKappa (default 6). It is recorded in both snapshots; the evaluator does not automatically reduce it. The standalone clause evaluators below accept the same option. Compare runs at the same limit. Use `CLAWTUNE_KB_MAX_OPTIONAL_FEATURES=<n>` when opening the resulting seed through the sidecar.
-
-### EdgeKappa research evaluation
-
-For clause-level bucket analysis, specify one benchmark and a new output directory. The following trace-clock command requires v5 input; use `--event-clock record-order` for v6:
-
-```bash
-PYTHONPATH=services/sidecar/src:. python3 -m offline.edge_kappa_eval \
-  --dataset /path/to/run/traces --benchmark swe-rebench \
-  --output .runtime/edge-kappa-frozen --seed 42 --event-clock trace
-```
-
-`--fixed-weights` holds every edge at its uniform initial weight; `--shared-child-weight` learns one total strength per child, divided equally among its parents. `--online` starts from the same training snapshot and updates after each test clause. Use separate output directories for these runs. `--k0`, `--learning-rate`, `--replay-seed`, `--bucket-edges-ms`, `--train-fraction`, and `--rss-unit` configure the model and input. Compare `split_sha256` before comparing metrics. `predictions.jsonl` contains the probability vector, actual bucket, parent difference counts, edge weights, mixture shares, and overlap; `report.json` contains log loss, Brier score, bucket accuracy, macro recall, far bucket error, and coverage.
-
-Clause evaluation uses recorded clauses and needs neither mvdan nor Go. `offline.edge_kappa_eval` supports v5 and v6 in record-order mode; `--event-clock trace` and `offline.edge_kappa_legacy` currently require v5. V6 clauses are read from `span_end.execution.tool_resource.call_telemetry`. Records must contain boolean `in_loop`, `in_pipe`, `in_subst` and integer `pipeline_position`; missing or invalid structure produces an explicit error instead of guessing. Older v6 writers omitted these fields; those traces need structure restored from their original telemetry artifacts or must be recollected before parser-free clause evaluation. This requirement does not change the general call-level evaluator's parsing behavior.
-
-`--event-clock trace` uses original clause start/end times and currently requires v5 traces with valid clause clocks. Without it, the common trace loader preserves clause record order but discards original timestamps. That compatibility mode reports `mode: record_order_online` for `--online`; it does not model overlapping executions or establish real-time causal accuracy.
-
-To compare two runs on identical test clauses with task-level bootstrap intervals, run `PYTHONPATH=services/sidecar/src:. python3 -m offline.edge_kappa_compare --baseline .runtime/edge-kappa-fixed --candidate .runtime/edge-kappa-learned --output .runtime/edge-kappa-comparison.json`. A negative log-loss difference favors the candidate; check coverage and bucket accuracy alongside it.
-
-The original point-prediction selector can be measured on the same v5 split with `PYTHONPATH=services/sidecar/src:. python3 -m offline.edge_kappa_legacy --dataset /path/to/run/traces --benchmark swe-rebench --output .runtime/edge-kappa-legacy`. Add `--built-in-coverage` to evaluate the current LatticeTimeKB subset coverage; add `--corrected-coverage` to independently recompute the same coverage on the old node set. Without either flag, the command measures the former generated-node aggregation. Pass the same `--bucket-edges-ms` to both evaluators when changing the default boundaries. Its bucket accuracy and coverage are comparable on paired clauses; it has no probability vector, so it has no comparable log loss or Brier score. Use `--bucket-only` with `edge_kappa_compare` for this comparison.
+The offline `--kb-max-optional-features <n>` option sets the fixed combination limit for Lattice (default 6). It is recorded in the Lattice snapshot; the evaluator does not automatically reduce it. Compare runs at the same limit. Use `CLAWTUNE_KB_MAX_OPTIONAL_FEATURES=<n>` when opening the resulting seed through the sidecar.

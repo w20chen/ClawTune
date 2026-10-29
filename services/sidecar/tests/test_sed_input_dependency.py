@@ -2,7 +2,6 @@ from dataclasses import replace
 
 import pytest
 
-from clawtune_sidecar.predictors.edge_kappa import training_event
 from tool_resource.features import parse_command_clauses
 from tool_resource.pipeline import pipe_stdin_from_syntax
 from tool_resource.runtime_kb import ClauseObservation, ClauseResourceKB, is_pipeline_dependent_consumer
@@ -51,16 +50,13 @@ def test_sed_admission_and_snapshot_use_same_evidence():
     row = ClauseObservation("repo", "sed", ("sed", "-n", "1,20p"), 1., 2.,
                             latency_ms=1000., in_pipe=True, pipeline_position=1,
                             stdin_from_pipe=True)
-    assert training_event(row) is None
     assert not ClauseResourceKB().observe_completed_clause(row)
     assert not LatticeTimeKB().observe_completed_clause(row)
     unknown = replace(row, stdin_from_pipe=None)
-    assert training_event(unknown) is None
     assert not ClauseResourceKB().observe_completed_clause(unknown)
     restored = LatticeTimeKB.from_json_obj(LatticeTimeKB.fit([unknown]).to_json_obj())
     assert restored.observation_count == 0
     standalone = replace(unknown, in_pipe=False, pipeline_position=-1)
-    assert training_event(standalone) is not None
     assert ClauseResourceKB().observe_completed_clause(standalone)
     restored = LatticeTimeKB.from_json_obj(LatticeTimeKB.fit([standalone]).to_json_obj())
     assert restored.observation_count == 1

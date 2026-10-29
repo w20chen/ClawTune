@@ -12,7 +12,6 @@ from test_tool_resource_predictor import _tool_request
 from clawtune_kb import FILES, StateStore, create_seed, initialize_state
 from clawtune_kb import store as storage
 from clawtune_sidecar.predictors import tool_resource as owner_module
-from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
 from clawtune_sidecar.predictors.tool_resource import ToolResourcePredictor
 from tool_resource.runtime_kb import ClauseResourceKB, LatencyBuckets, RuntimeToolResourceKB
 from tool_time.lattice_kb import LatticeTimeKB
@@ -58,7 +57,7 @@ def test_online_batches_and_predictions_do_not_capture_or_write_until_flush(tmp_
             assert captures == writes == []
             assert not list(tmp_path.glob('*.json'))
         owner.flush_kb_updates(5)
-        assert 'lattice' in captures and 'edge_kappa' in captures
+        assert 'lattice' in captures
         restored = LatticeTimeKB.from_json_obj(json.loads(owner.lattice_kb_snapshot_path.read_text()))
         assert restored.to_json_obj() == owner.lattice_kb.to_json_obj()
         count = len(writes)
@@ -106,46 +105,6 @@ def test_normal_close_waits_for_save_after_thirty_seconds(tmp_path, monkeypatch)
         release.set()
         thread.join(5)
     assert closed.is_set() and not errors
-    assert owner.edge_kappa_snapshot_path.is_file()
-
-
-def test_edge_save_frequency_preserves_overlapping_feedback_and_restart(tmp_path):
-    rows = [row(0, ['a']), row(1, ['a', 'b'])]
-    expected = EdgeKappaRuntime.fit(rows, (100, 500, 2000), max_optional_features=6)
-    actual = EdgeKappaRuntime.from_snapshot(expected.to_snapshot())
-    owner = ToolResourcePredictor(kb=ClauseResourceKB(), edge_kappa=actual,
-        buckets=LatencyBuckets((100, 500, 2000)), report=None, repo='r', artifact_dir=tmp_path)
-    try:
-        for base in (10, 20, 30):
-            # Overlap two calls, and complete them in the opposite order.
-            batch = [row(base + i, ['a', 'b'] if i else ['a']) for i in range(2)]
-            for observation in batch:
-                args = ('r', [asdict(observation)], observation.ts_start)
-                key = str(observation.ts_start)
-                assert actual.predict_load_samples(*args, call_id=key) == expected.predict_load_samples(*args, call_id=key)
-            for observation in reversed(batch):
-                for runtime in (actual, expected):
-                    runtime.complete_call(str(observation.ts_start), [observation], commit_time=base + 3)
-            owner._edge_kappa_version += 1
-            # Reference takes a complete snapshot every batch; actual saves once.
-            assert expected.capture_snapshot()() == expected.to_snapshot()
-            assert actual.to_snapshot() == expected.to_snapshot()
-        assert any(edge.update_count for edge in actual.kb.edges.values())
-        assert not owner.edge_kappa_snapshot_path.exists()
-        owner.flush_kb_updates(5)
-        saved = json.loads(owner.edge_kappa_snapshot_path.read_text())
-        assert saved == json.loads(json.dumps(expected.to_snapshot()))
-        restored = EdgeKappaRuntime.from_snapshot(saved)
-        expected = EdgeKappaRuntime.from_snapshot(json.loads(json.dumps(expected.to_snapshot())))
-        assert restored.to_snapshot() == expected.to_snapshot()
-        observation = row(40, ['a', 'b', 'new'])
-        args = ('r', [asdict(observation)], 40)
-        assert restored.predict_load_samples(*args, call_id='40') == expected.predict_load_samples(*args, call_id='40')
-        for runtime in (restored, expected):
-            runtime.complete_call('40', [observation], commit_time=42)
-        assert restored.to_snapshot() == expected.to_snapshot()
-    finally:
-        owner.close()
 
 
 @pytest.mark.parametrize('legacy', [False, True])

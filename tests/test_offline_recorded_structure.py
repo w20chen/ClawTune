@@ -1,12 +1,10 @@
 """Recorded clause evaluation must not depend on a shell parser or Go."""
 import json
-import shlex
 
 import pytest
 
 from cold_start.flat_loader import read_task, recorded_clause_structure
 from clawtune_kb.store import digest
-from offline.edge_kappa_trace import read_v5_events
 from tool_resource import features, mvdan_client
 from test_cold_start import trace
 
@@ -56,17 +54,11 @@ def test_strict_structure_rejects_missing_or_invalid_fields(field, invalid):
         recorded_clause_structure("python work.py", [row], recorded_only=True)
 
 
-@pytest.mark.parametrize("reader", ["flat", "trace"])
-def test_readers_reject_incomplete_structure_without_parser(tmp_path, reader):
+def test_reader_rejects_incomplete_structure_without_parser(tmp_path):
     path = write_trace(tmp_path, {"in_pipe": None})
     with pytest.raises(ValueError, match="requires recorded"):
-        if reader == "flat":
-            read_task(path, repo="repo", task_id="task", rss_unit="MiB",
-                      recorded_clauses_only=True)
-        else:
-            task = {"benchmark": "bfcl", "group": "repo", "task_id": "task",
-                    "files": [{"version": 5, "path": path.name, "sha256": digest(path)}]}
-            read_v5_events(tmp_path, task, "bfcl:task")
+        read_task(path, repo="repo", task_id="task", rss_unit="MiB",
+                  recorded_clauses_only=True)
 
 
 def test_compatibility_loader_can_still_backfill_old_records(monkeypatch):
@@ -77,49 +69,6 @@ def test_compatibility_loader_can_still_backfill_old_records(monkeypatch):
 
 def test_empty_recorded_clauses_do_not_require_parser():
     assert recorded_clause_structure("", [], recorded_only=True) == ()
-
-
-@pytest.mark.parametrize("shape", ["consumer_only", "pipeline", "standalone", "first"])
-@pytest.mark.parametrize("stdin_source", ["missing", None, False, True])
-@pytest.mark.parametrize("sed_args", [["-n", "1,20p"], ["s/a/b/"], ["-n", "1,20p", "file.txt"]])
-def test_edge_clock_modes_share_recorded_consumer_admission_without_parser(
-    tmp_path, shape, stdin_source, sed_args,
-):
-    from offline.edge_kappa_eval import _events
-
-    argv = ["sed", *sed_args]
-    command = shlex.join(argv)
-    if shape in {"consumer_only", "pipeline"}:
-        command = "python work.py | " + command
-    elif shape == "first":
-        command += " | cat"
-    records = [json.loads(line) for line in trace("task", command).splitlines()]
-    observation = records[1]["data"]["resource_observation"]
-    base = dict(observation["clauses"][0], in_loop=False, in_subst=False,
-                in_pipe=True, pipeline_position=0, ts_start=10., ts_end=11.)
-    sed = dict(base, bin="sed", argv=argv, in_pipe=shape != "standalone",
-               pipeline_position=1 if shape in {"consumer_only", "pipeline"}
-               else 0 if shape == "first" else -1)
-    if stdin_source != "missing":
-        sed["stdin_from_pipe"] = stdin_source
-    observation["clauses"] = [base, sed] if shape == "pipeline" else [sed]
-    path = tmp_path / "task.trace.jsonl"
-    path.write_text("\n".join(map(json.dumps, records)), encoding="utf-8")
-    task = dict(benchmark="bfcl", group="repo", task_id="task",
-                files=[dict(version=5, path=path.name, sha256=digest(path))])
-    selected = []
-    exclusions = []
-    for clock in ("record-order", "trace"):
-        events, excluded = _events(tmp_path, {"task": task}, ["task"], "MiB", clock)
-        selected.append([(event.query, event.source_command, event.outcome.duration_ms)
-                         for event in events])
-        exclusions.append(excluded)
-    assert selected[0] == selected[1]
-    assert exclusions[0] == exclusions[1]
-    assert len(selected[0]) == int(shape != "consumer_only")
-    if selected[0]:
-        expected = "python work.py" if shape == "pipeline" else shlex.join(argv)
-        assert selected[0][0][1:] == (expected, 1000.)
 
 
 def write_v6(tmp_path, task_id="task", *, changes=None, censored=False, eligible=True):
@@ -185,21 +134,6 @@ def test_v6_partial_admission_still_requires_recorded_structure(tmp_path, gates)
     assert row.censored == gates.get("censored", False)
     assert row.memory_total_peak_bytes == row.memory_extra_peak_bytes == 0
     assert set(row.imputed_targets) == {"memory_total_peak_bytes", "memory_extra_peak_bytes"}
-
-
-@pytest.mark.parametrize("online", [False, True])
-def test_v6_end_to_end_clause_evaluation_without_mvdan(tmp_path, online):
-    from offline.edge_kappa_eval import run
-    dataset = tmp_path / "input"
-    dataset.mkdir()
-    for index in range(5):
-        write_v6(dataset, f"task-{index}")
-    report = run(dataset, tmp_path / "output", benchmark="bfcl", online=online,
-                 split_cache_dir=tmp_path / "splits")
-    assert report["train_clauses"] == 4
-    assert report["test_clauses"] == 1
-    assert report["metrics"]["predicted"] == 1
-    assert report["test_updates"] == int(online)
 
 
 def test_v6_writer_preserves_structure_and_does_not_invent_missing_fields():

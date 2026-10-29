@@ -112,10 +112,8 @@ def test_disabled_generator_still_uses_fallback(service):
         fallback.close()
 
 
-def test_partial_parameter_match_reaches_lattice_and_edge(service):
-    from edge_kappa_kb import EdgeKappaKB, TimeOutcome, TrainingEvent
+def test_partial_parameter_match_reaches_lattice(service):
     from tool_resource.runtime_kb import ClauseObservation
-    from tool_time.edge_kappa_adapter import feature_query
     from tool_time.lattice_kb import LatticeTimeKB
 
     # The query changes --jobs but can still borrow the separate --mode feature.
@@ -132,9 +130,3 @@ def test_partial_parameter_match_reaches_lattice_and_edge(service):
     clause = {"bin": argv[0], "argv": query_argv, "command_features": query.to_dict()}
     predictions = lattice.predict_clauses("r", [clause], 10)[0].predictions
     assert all(p.prediction_ms == 1000 and shared in p.selected_features for p in predictions)
-    edge = EdgeKappaKB.fit([TrainingEvent(
-        feature_query(features), TimeOutcome("e", 0, 1, "t", "c", "0", duration_ms=1000),
-    )])
-    prediction = edge.predict(feature_query(query))
-    assert prediction.unavailable_reason is None
-    assert any(shared in evidence.parent_features for evidence in prediction.evidence)

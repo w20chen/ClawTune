@@ -5,12 +5,10 @@ import shlex
 
 import pytest
 
-from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime, training_event
 from command_parser import ParseContext, default_service
 from command_parser.projection import atom
 from tool_resource.runtime_kb import ClauseObservation
 from tool_time._lattice_vendor.normalize import normalize_command
-from tool_time.edge_kappa_adapter import shell_query
 from tool_time.lattice_kb import LatticeTimeKB
 
 
@@ -22,14 +20,6 @@ def test_python_paths_share_command_features_without_losing_arguments(executable
     unresolved, core = normalize_command("$VENV/bin/python -m pytest")
     assert atom("target", "pytest") not in core
     assert any(f.startswith("opaque:") for f in unresolved)
-
-
-@pytest.mark.parametrize("version", ["shell-normalize-v1", "shell-normalize-v2", "shell-normalize-v3", "shell-normalize-v4"])
-def test_edge_runtime_rejects_old_normalization_at_load(version):
-    snapshot = EdgeKappaRuntime.fit([], (100, 500, 2000, 10000)).to_snapshot()
-    snapshot["normalization_version"] = version
-    with pytest.raises(ValueError, match="rebuild the KB"):
-        EdgeKappaRuntime.from_snapshot(snapshot)
 
 
 @pytest.mark.parametrize("command,canonical,arguments", [
@@ -135,11 +125,9 @@ def test_end_of_options_and_mixed_cluster():
 def test_training_query_and_snapshot_reload_share_features(command):
     argv = tuple(shlex.split(command))
     row = ClauseObservation(repo="repo", bin=argv[0], argv=argv, ts_start=1., ts_end=2., latency_ms=50.)
-    query = shell_query(command, repo="repo")
-    event = training_event(row)
-    assert event is not None and event.query == query
+    from command_parser.service import observation_features
+    query = default_service().argv(argv, ParseContext(repo="repo"))
+    assert observation_features(row).features == query.features
     lattice = LatticeTimeKB.from_json_obj(LatticeTimeKB.fit([row]).to_json_obj())
     lattice.prepare()
     assert query.features in lattice._nodes
-    edge = EdgeKappaRuntime.from_snapshot(EdgeKappaRuntime.fit([row], (100, 500, 2000, 10000)).to_snapshot(), frozen=True)
-    assert edge.predict_load_samples("repo", [{"argv": argv}], 3.)[0]["duration_ms"]["values"] == (50.,)

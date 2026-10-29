@@ -24,7 +24,6 @@ from clawtune_kb import FILES, create_seed, validate_seed
 from clawtune_kb.store import digest
 from clawtune_sidecar.prediction_config import load_bucket_edges
 from clawtune_sidecar.predictors.call_load import predict_call_load
-from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
 from clawtune_sidecar.predictors.tool_resource import (
     COLD_START_V2_LABEL_POLICY,
     STRICT_TRACE_LABEL_POLICY,
@@ -65,7 +64,6 @@ class ReplayAction:
     ts_end: float
     call: object
     clauses: tuple
-    edge_clauses: tuple
 
 
 def _trace_version(path: Path) -> int:
@@ -117,7 +115,7 @@ def _load(task_id: str, path: Path, *, label_policy: TraceLabelPolicy = STRICT_T
             call = _completed_call_from_tool_span(start, record, repo=namespace, label_policy=label_policy)
             if call is None:
                 continue
-            edge_clauses = []
+            timed_clauses = []
             memory_clauses = []
             telemetry = (record.get("execution") or {}).get("tool_resource") or {}
             call_telemetry = telemetry.get("call_telemetry") or {}
@@ -127,7 +125,7 @@ def _load(task_id: str, path: Path, *, label_policy: TraceLabelPolicy = STRICT_T
                     call_telemetry.get("clauses"),
                     recorded_only=True,
                 )
-                edge_clauses = _observations_from_call(
+                timed_clauses = _observations_from_call(
                     namespace,
                     dict(call_telemetry, clauses=list(clauses), censored=call.censored,
                          confirmed_timeout=call.confirmed_timeout),
@@ -152,8 +150,7 @@ def _load(task_id: str, path: Path, *, label_policy: TraceLabelPolicy = STRICT_T
                 ts_start=call.ts_start,
                 ts_end=call.ts_end,
                 call=call,
-                clauses=tuple(merge_trace_clause_observations(edge_clauses + memory_clauses, label_policy)),
-                edge_clauses=tuple(edge_clauses),
+                clauses=tuple(merge_trace_clause_observations(timed_clauses + memory_clauses, label_policy)),
             ))
     actions.sort(key=lambda action: (action.ts_start, action.ts_end, action.identity))
     calls = [action.call for action in actions]
@@ -180,9 +177,6 @@ def _causal_payloads(tasks, context: DurationContextKB):
     trie = ClauseResourceKB()
     runtime = RuntimeToolResourceKB()
     lattice = LatticeTimeKB(max_optional_features=DEFAULT_MAX_OPTIONAL_FEATURES)
-    edge = EdgeKappaRuntime.fit(
-        (), BUCKET_EDGES, max_optional_features=DEFAULT_MAX_OPTIONAL_FEATURES,
-    )
     edges = load_bucket_edges(BUCKET_EDGES)
     events = []
     for _task_id, _repo, loaded in tasks:
@@ -195,7 +189,6 @@ def _causal_payloads(tasks, context: DurationContextKB):
                 runtime=runtime,
                 trie=trie,
                 lattice=lattice,
-                edge_kappa=edge,
                 query=ToolCallQuery(
                     action.call.repo,
                     action.tool_name,
@@ -207,7 +200,6 @@ def _causal_payloads(tasks, context: DurationContextKB):
                     ),
                 ),
                 edges=edges,
-                edge_call_id=identity,
             )
             for backend, result in diagnostics.backends.items():
                 for target, prediction in result.targets.items():
@@ -218,7 +210,6 @@ def _causal_payloads(tasks, context: DurationContextKB):
         for row in action.clauses:
             trie.observe_completed_clause(row)
             lattice.observe_completed_clause(row)
-        edge.complete_call(identity, action.edge_clauses, commit_time=timestamp)
         runtime.observe_completed_call(action.call)
     if not events:
         raise ValueError("source traces contain no replayable tool calls")
@@ -226,13 +217,9 @@ def _causal_payloads(tasks, context: DurationContextKB):
     trie._absorb_completed(horizon)
     runtime._absorb_completed(horizon)
     lattice._advance(horizon)
-    edge.kb.commit_before(horizon)
     for kb in (trie, runtime, lattice):
         kb.freeze()
-    edge.kb.freeze()
-    edge.frozen = True
     payloads = dict(zip(FILES, (trie.to_json_obj(), runtime.to_json_obj(), lattice.to_json_obj())))
-    payloads["edge-kappa-kb.json"] = edge.to_snapshot()
     if context.samples:
         payloads[SNAPSHOT_NAME] = context.to_json_obj()
     return payloads
@@ -389,10 +376,6 @@ def build(entries: list[tuple[str, Path]], output: Path, *, holdout_fraction: fl
         ("clause-lattice-time-kb.json", LatticeTimeKB.from_json_obj),
     ):
         loader(json.loads((output / name).read_text(encoding="utf-8")))
-    EdgeKappaRuntime.from_snapshot(
-        json.loads((output / "edge-kappa-kb.json").read_text(encoding="utf-8")), frozen=True,
-        max_optional_features=DEFAULT_MAX_OPTIONAL_FEATURES,
-    )
     if not validation["passed"]:
         raise RuntimeError("held-out prediction coverage failed: " + ", ".join(validation["failed_targets"]))
     return manifest
@@ -418,7 +401,7 @@ def build_repository_split(
 ) -> dict:
     """Export runtime priors; optionally include the held-out tasks for deployment."""
     from clawtune_kb.contracts import validate
-    from offline.runner import load_task, _static_clause, _edge_training_events
+    from offline.runner import load_task, _static_clause
 
     dataset, output = dataset.resolve(strict=True), output.resolve()
     if output.exists():
@@ -439,7 +422,7 @@ def build_repository_split(
     test_repos = {tasks[key]["group"] for key in test}
     if train_repos & test_repos:
         raise ValueError("test repositories must not participate in seed training")
-    calls, clauses, events, sources = [], [], [], []
+    calls, clauses, sources = [], [], []
     strict_call_targets: Counter = Counter()
     strict_clause_targets: Counter = Counter()
     selected_tasks = train | test if include_test else train
@@ -476,7 +459,6 @@ def build_repository_split(
         # repository identity that ordinary OpenClaw requests actually carry.
         rows = [_static_clause(row, repo) for row in loaded.clauses]
         clauses.extend(rows)
-        events.extend(_edge_training_events(rows, key))
         calls.extend(replace(call, repo=repo) for call in loaded.calls)
         sources.append({"task_id": task["task_id"], "repo": repo,
                         "files": task["files"], "calls": len(loaded.calls), "clauses": len(rows)})
@@ -494,10 +476,7 @@ def build_repository_split(
     runtime.freeze()
     lattice = LatticeTimeKB.fit(clauses, max_optional_features=DEFAULT_MAX_OPTIONAL_FEATURES)
     lattice.freeze()
-    edge = EdgeKappaRuntime.fit_events(events, BUCKET_EDGES, frozen=True,
-                                     max_optional_features=DEFAULT_MAX_OPTIONAL_FEATURES)
     payloads = dict(zip(FILES, (trie.to_json_obj(), runtime.to_json_obj(), lattice.to_json_obj())))
-    payloads["edge-kappa-kb.json"] = edge.to_snapshot()
     call_target_counts = Counter(
         target for call in calls for target in _target_values(call)
     )

@@ -16,7 +16,6 @@ def require_same_feature_limit(actual: int, expected: int, *, source: str) -> No
     if actual != expected:
         raise ValueError(
             f"{source} max_optional_features={actual}, configured={expected}; "
-            "Lattice and EdgeKappa must use the same limit. Use matching snapshots "
-            "or explicitly rebuild a new seed from raw observations; "
-            "existing EdgeKappa weights cannot be relabeled."
+            "Use snapshots matching the configured Lattice feature limit "
+            "or explicitly rebuild a new seed from raw observations."
         )

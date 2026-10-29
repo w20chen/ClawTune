@@ -1,6 +1,6 @@
 # Command rules
 
-Lattice and EdgeKappa extract command features from syntax rules. Bundled rules cover `python`, `pytest`, `git`, `grep`, `sed`, `find`, `ls`, `cat`, `pip`, `head`, `tail`, `bash`, `env`, `nice`, `timeout`, `make`, `npm`, and `cargo build/check/test/fmt`. Pytest includes `-n`/`--numprocesses`. Rules describe syntax; they do not execute shell-completion callbacks.
+Lattice extracts command features from syntax rules. Bundled rules cover `python`, `pytest`, `git`, `grep`, `sed`, `find`, `ls`, `cat`, `pip`, `head`, `tail`, `bash`, `env`, `nice`, `timeout`, `make`, `npm`, and `cargo build/check/test/fmt`. Pytest includes `-n`/`--numprocesses`. Rules describe syntax; they do not execute shell-completion callbacks.
 
 `python -`, `python -m pytest`, and `python script.py` have explicit execution modes and entry identities. Interpreter options stop at the entry boundary. Only the executable and execution entry chain are core matching features; ordinary operands can be dropped by the existing subset matcher. A partial parse can still produce a KB prediction.
 

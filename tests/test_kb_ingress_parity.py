@@ -140,20 +140,15 @@ def test_offline_scores_each_model_and_reports_missing_labels(tmp_path):
                                            "scored": 1, "unavailable_reasons": {}}
         assert model["repositories"][0]["repo"] == "org/repo"
         assert counters["memory_total_peak_bytes"]["labeled"] == 1
-        assert counters["memory_total_peak_bytes"]["scored"] == (0 if name == "edge_kappa" else 1)
-        if name != "edge_kappa":
-            memory_metric = next(m for m in model["metrics"] if m["target"] == "memory_total_peak_bytes")
-            assert memory_metric["mae"] == 0
-        if name == "edge_kappa":
-            assert counters["cpu_time_seconds"]["predicted"] == 0
-            assert counters["cpu_time_seconds"]["scored"] == 0
-            assert counters["cpu_time_seconds"]["unavailable_reasons"] == {"edge_kappa_time_only": 1}
-        elif name != "tool":
+        assert counters["memory_total_peak_bytes"]["scored"] == 1
+        memory_metric = next(m for m in model["metrics"] if m["target"] == "memory_total_peak_bytes")
+        assert memory_metric["mae"] == 0
+        if name != "tool":
             assert counters["cpu_time_seconds"]["scored"] == 1
             metric = next(m for m in model["metrics"] if m["target"] == "cpu_time_seconds")
             assert metric["mae"] == 0
     rows = [json.loads(line) for line in (tmp_path / "output" / "model-predictions.jsonl").read_text().splitlines()]
-    assert {row["model"] for row in rows} == {"tool", "trie", "lattice", "edge_kappa"}
+    assert {row["model"] for row in rows} == {"tool", "trie", "lattice"}
     assert all(row["tool"] in {"exec", "terminal_exec"} for row in rows)
     assert all(row["actual"] == 0 for row in rows if row["target"] == "memory_total_peak_bytes")
 

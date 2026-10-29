@@ -11,7 +11,6 @@ import random
 import statistics
 from bisect import bisect_right
 from collections.abc import Mapping, Sequence
-from itertools import accumulate
 from typing import Any
 
 from clawtune_sidecar.contracts.load_prediction import (
@@ -47,48 +46,6 @@ def summarize(target: str, edges: Sequence[float], backend: str,
                         p90=values[math.ceil(0.9 * len(values)) - 1],
                         buckets=LoadBuckets(edges=list(edges), probabilities=[n / len(values) for n in counts]),
                         sample_count=len(values), evidence_counts=list(evidence_counts or [len(values)]), **common)
-
-
-def summarize_weighted(target: str, edges: Sequence[float], backend: str,
-                       values: Sequence[float], weights: Sequence[float], **kwargs: Any) -> LoadEstimate:
-    """Exact summaries of weighted duration atoms; no resampling for one clause."""
-    if len(values) != len(weights) or any(not math.isfinite(w) or w <= 0 for w in weights):
-        raise ValueError("invalid empirical weights")
-    if any(not math.isfinite(v) or v < 0 for v in values):
-        raise ValueError("invalid empirical values")
-    result = summarize(target, edges, backend, values, **kwargs)
-    if not values:
-        return result
-    ordered = sorted(zip(values, weights))
-    total = math.fsum(weights)
-    bucket_weights: list[list[float]] = [[] for _ in range(len(edges) + 1)]
-    for value, weight in ordered:
-        bucket_weights[bisect_right(edges, value)].append(weight)
-    # Use the same stable summation for each bucket and the total: ordinary
-    # accumulation can make a bucket containing all atoms exceed probability 1.
-    counts = [math.fsum(bucket) for bucket in bucket_weights]
-    def quantile(probability):
-        cumulative = 0.0
-        correction = 0.0
-        threshold = probability * total
-        for index, (value, weight) in enumerate(ordered):
-            # Compensated prefix sums keep this linear in the number of atoms.
-            adjusted = weight - correction
-            updated = cumulative + adjusted
-            correction = (updated - cumulative) - adjusted
-            cumulative = updated
-            # Only allow rounding-sized differences, not a statistical tolerance
-            # that would turn genuinely unequal masses into a midpoint median.
-            at_boundary = math.isclose(cumulative, threshold, rel_tol=0.0,
-                                       abs_tol=2 * math.ulp(threshold))
-            if cumulative >= threshold or at_boundary:
-                if probability == .5 and at_boundary and index + 1 < len(ordered):
-                    return (value + ordered[index + 1][0]) / 2
-                return value
-        return ordered[-1][0]
-    return result.model_copy(update=dict(avg=math.fsum(v*w for v, w in ordered) / total,
-        p50=quantile(.5), p90=quantile(.9),
-        buckets=LoadBuckets(edges=list(edges), probabilities=[count / total for count in counts])))
 
 
 def plain_execution(command: str | None) -> tuple[tuple[dict[str, Any], ...], str | None]:
@@ -222,10 +179,8 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
                 "partial_dynamic_structure_evidence",
                 f"ignored_structure_reason:{partial_structure_reason}",
             ]
-        sample_weights = None
         if len(values) == 1:
             samples = values[0]
-            sample_weights = rows[0].get("weights")
             evidence_counts = [rows[0].get("evidence_count", len(values[0]))]
         else:
             # Fixed seed: repeatable query results. Generated samples are not
@@ -246,11 +201,6 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
                 )
                 continue
             samples = []
-            # Preserve draw order and Random.choices' accumulation exactly;
-            # only move its repeated prefix sum outside the 2048-draw loop.
-            cumulative = [list(accumulate(row["weights"]))
-                          if row.get("weights") is not None else None
-                          for row in rows] if target != "cpu_avg_cores" else []
             for _ in range(2048):
                 if target == "cpu_avg_cores":
                     cpu_draw = [rng.choice(value) for value in cpu_values]
@@ -262,9 +212,7 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
                         continue
                     value = sum(cpu_draw) / (total_duration_ms / 1000.0)
                 else:
-                    draw = [rng.choices(v, cum_weights=weights, k=1)[0]
-                            if weights is not None else rng.choice(v)
-                            for v, weights in zip(values, cumulative)]
+                    draw = [rng.choice(v) for v in values]
                     if target == "duration_ms":
                         value = sum(max(draw[i] for i in group) for group in groups)
                     elif target == "cpu_time_seconds":
@@ -307,17 +255,15 @@ def compose(backend: str, evidence: Sequence[Mapping[str, Mapping[str, Any]]],
                         "parallel_peak_sum_is_conservative_not_calibrated"
                     )
         kwargs = dict(method="composed", evidence_counts=evidence_counts, context=contexts, assumptions=assumptions)
-        targets[target] = (summarize_weighted(target, boundaries, backend, samples, sample_weights, **kwargs)
-                           if sample_weights is not None else summarize(target, boundaries, backend, samples, **kwargs))
-    quantile_method = ("weighted_midpoint_p50_inverse_cdf_p90" if backend == "edge_kappa" and len(evidence) == 1
-                       else "median_p50_nearest_rank_p90")
+        targets[target] = summarize(target, boundaries, backend, samples, **kwargs)
+    quantile_method = "median_p50_nearest_rank_p90"
     return CallLoadPrediction(targets=targets, quantile_method=quantile_method)
 
 
 def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQuery,
                       edges: Mapping[str, Sequence[float]],
                       parsed_clauses: Sequence[Mapping[str, Any]] | None = None,
-                      edge_kappa: Any = None, edge_call_id: str | None = None,
+                      feature_call_id: str | None = None,
                       feature_service: Any = None, command_context: Any = None,
                       duration_context_kb: Any = None, duration_context: dict | None = None,
                       ) -> tuple[CallLoadPrediction, LoadDiagnostics]:
@@ -355,16 +301,13 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
     if not reason:
         from command_parser import ParseContext, default_service
         clauses = (feature_service or default_service()).prepare(
-            clauses, command_context or ParseContext(repo=query.repo), edge_call_id if feature_service else None,
+            clauses, command_context or ParseContext(repo=query.repo), feature_call_id if feature_service else None,
         )
     clause_backends = [("trie", trie), ("lattice", lattice)]
-    if edge_kappa is not None:
-        clause_backends.append(("edge_kappa", edge_kappa))
     for backend, kb in clause_backends:
         try:
             clauses = tuple(dict(c, memory_measurement=query.memory_measurement) for c in clauses)
-            extra = {"call_id": edge_call_id} if backend == "edge_kappa" else {}
-            evidence = kb.predict_load_samples(query.repo, clauses, query.ts_start, **extra) if not reason else ()
+            evidence = kb.predict_load_samples(query.repo, clauses, query.ts_start) if not reason else ()
             retained = [c for c in clauses if not is_pipeline_dependent_consumer(c)]
             scoped = []
             for c, row in zip(retained, evidence):

@@ -1,16 +1,9 @@
 """Execution identity across prefix backoff and learned Edge sharing."""
-import copy
-import json
-from dataclasses import asdict, replace
-from pathlib import Path
+from dataclasses import replace
 
-import jsonschema
 import pytest
 
-from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
 from command_parser import CommandFeatureService, ParseContext
-from edge_kappa_kb import EdgeKappaKB, FeatureQuery, TimeOutcome, TrainingEvent
-from edge_kappa_kb.graph import node_id
 from tool_resource.runtime_kb import (
     ClauseObservation,
     ClauseResourceKB,
@@ -19,7 +12,6 @@ from tool_resource.runtime_kb import (
     RuntimeToolResourceKB,
     ToolCallQuery,
 )
-from tool_time.edge_kappa_adapter import feature_query
 
 
 def clause(argv, index=0, ms=1000, cpu=2):
@@ -298,113 +290,3 @@ def test_exact_sample_selection_is_per_target_and_zero_remains_valid():
         assert row["duration_ms"]["values"] == (80000,)
         assert row["cpu_peak_cores"]["values"] == (0,)
         assert row["cpu_time_seconds"]["values"] == (expected_cpu,)
-
-
-def edge_query(*optional, entry="pytest"):
-    core = frozenset({"tool=python"} | ({f'target:["{entry}"]'} if entry else set()))
-    return FeatureQuery(core | set(optional), core, "python")
-
-
-def event(i, query, ms):
-    return TrainingEvent(query, TimeOutcome(str(i), i * 10, i * 10 + 1,
-                                           "task", str(i), "0", duration_ms=ms))
-
-
-def test_edge_unseen_and_exact_nodes_cannot_borrow_across_entry():
-    generic, full = edge_query(entry=None), edge_query("a")
-    kb = EdgeKappaKB.fit([event(1, generic, 50)])
-    assert kb.predict_duration(full).unavailable_reason == "no_edge_lattice_evidence"
-    kb.begin(full, "new", 100)
-    assert kb.predict_duration(full).unavailable_reason == "no_edge_lattice_evidence"
-    kb.complete("new", TimeOutcome("new", 100, 101, "task", "new", "0", duration_ms=600))
-    kb.commit_before(102)
-    result = kb.predict_duration(full)
-    assert result.values_ms == (600,)
-    assert not result.bucket_prediction.evidence
-
-
-@pytest.mark.parametrize("shared", [False, True])
-def test_edge_learning_and_replay_keep_valid_borrowing_and_reject_invalid_parents(shared):
-    # Two incomparable parents: one retains the entry, one retains only a flag.
-    generic, entry, full = edge_query("a", entry=None), edge_query(), edge_query("a")
-    kb = EdgeKappaKB.fit([event(1, generic, 50), event(2, entry, 50), event(3, full, 600)],
-                         {"shared_child_weight": shared})
-    baseline = kb.to_snapshot()
-    child = node_id(full.features)
-    forbidden = (node_id(generic.features), child)
-    allowed = (node_id(entry.features), child)
-    before_bad = copy.deepcopy(kb.edges[forbidden])
-    before_good = kb.edges[allowed].update_count
-    kb.begin(full, "feedback", 100)
-    # Local predictions retain optional-feature borrowing during training.
-    local = kb._tokens["feedback"]["local"][child]
-    assert [e["parent_id"] for e in local["evidence"]] == [allowed[0]]
-    kb.complete("feedback", TimeOutcome("feedback", 100, 101, "task", "feedback", "0", duration_ms=600))
-    feedback = kb.completion_feedback("feedback")
-    kb.commit_before(102)
-    assert kb.edges[forbidden] == before_bad
-    assert kb.edges[allowed].update_count == before_good + 1
-    assert kb.predict_duration(full).values_ms == (50, 600, 600)
-    replayed = EdgeKappaKB.from_snapshot(baseline)
-    replayed.replay_feedback(feedback, kb)
-    assert replayed.edges == kb.edges
-    assert replayed.predict_duration(full) == kb.predict_duration(full)
-
-
-def test_edge_own_membership_does_not_disable_coverage_or_kappa_and_roundtrips():
-    parent, full, descendant = edge_query(), edge_query("a"), edge_query("a", "b")
-    kb = EdgeKappaKB.fit([event(1, parent, 50), event(2, full, 80000), event(3, descendant, 1000)])
-    state = kb.nodes[node_id(full.features)]
-    assert state.own_observations == {"2"}
-    assert state.observations == {"2", "3"}
-    prediction = kb.predict_duration(full)
-    assert prediction.values_ms == (50, 1000, 80000)
-    assert prediction.weights[1:] == (1, 1)
-    assert prediction.weights[0] > 0  # own singleton retains parent sharing
-    snapshot = kb.to_snapshot()
-    schema = json.loads((Path(__file__).resolve().parents[3] / "contracts/edge-kappa-kb.schema.json").read_text())
-    jsonschema.validate(snapshot, schema)
-    restored = EdgeKappaKB.from_snapshot(snapshot)
-    assert restored.nodes[node_id(full.features)].own_observations == {"2"}
-    assert restored.predict_duration(full) == prediction
-
-
-def test_old_feedback_with_cross_entry_probabilities_keeps_counts_without_bad_gradient():
-    generic, full = edge_query(entry=None), edge_query("a")
-    kb = EdgeKappaKB.fit([event(1, generic, 50), event(2, full, 600)])
-    kb.begin(full, "legacy", 100)
-    child = node_id(full.features)
-    # Reproduce a pre-fix local prediction and its forbidden-parent evidence.
-    old_query = FeatureQuery(full.features, generic.core_features, "python")
-    kb._tokens["legacy"]["local"][child] = asdict(kb.predict(old_query))
-    kb.complete("legacy", TimeOutcome("legacy", 100, 101, "task", "legacy", "0", duration_ms=600))
-    restored = EdgeKappaKB.from_snapshot(kb.to_snapshot())
-    bad_edges = {key: copy.deepcopy(value) for key, value in restored.edges.items()
-                 if key[1] == child}
-    restored.commit_before(102)
-    assert all(restored.edges[key] == value for key, value in bad_edges.items())
-    assert restored.nodes[child].own_observations == {"2", "legacy"}
-
-
-def test_restored_inflight_cache_does_not_serve_legacy_cross_entry_evidence():
-    argv = ("python", "-m", "pytest")
-    runtime = EdgeKappaRuntime.fit([clause(("python", "-c", "pass"))],
-                                   (100, 500, 2000, 10000))
-    runtime.predict_load_samples("r", [query_clause(argv)], 1000, call_id="pending")
-    query = feature_query(CommandFeatureService().argv(argv, ParseContext(repo="r")))
-    old_query = replace(query, core_features=frozenset({"tool=python"}))
-    old_prediction = runtime.kb.predict(old_query)
-    assert old_prediction.evidence
-    runtime.kb._tokens["pending:0"]["prediction"] = asdict(old_prediction)
-    runtime._calls["pending"]["pending:0"]["evidence"]["duration_ms"] = {
-        "values": (1000,), "weights": (1.0,),
-    }
-    restored = EdgeKappaRuntime.from_snapshot(runtime.to_snapshot())
-    snapshot = restored.to_snapshot()
-    reason = "cached_prediction_crosses_execution_entry"
-    prediction, _ = restored.kb.begin(query, "pending:0", 1000)
-    assert prediction.unavailable_reason == reason
-    assert prediction.probabilities is None
-    result = restored.predict_load_samples("r", [query_clause(argv)], 1000, call_id="pending")
-    assert result[0]["duration_ms"] == {"values": (), "unavailable_reason": reason}
-    assert restored.to_snapshot() == snapshot

@@ -14,7 +14,7 @@ Read one tool call in three parts. `span_start.prediction` is the forecast made 
 
 | Question | Observation to inspect | Prediction target | Practical meaning |
 | --- | --- | --- | --- |
-| How long did it run? | Tool duration on `span_end`; clause `latency_ms` for an executable stage | `duration_ms` | The prediction target is retained-workload elapsed time, not necessarily the raw span duration. ToolKB uses a direct call-level label; TrieKB, LatticeKB, and EdgeKappaKB reconstruct it from retained executable clauses. |
+| How long did it run? | Tool duration on `span_end`; clause `latency_ms` for an executable stage | `duration_ms` | The prediction target is retained-workload elapsed time, not necessarily the raw span duration. ToolKB uses a direct call-level label; TrieKB and LatticeKB reconstruct it from retained executable clauses. |
 | How much CPU work accumulated? | `resource_observation.metrics.cpu_time.value_seconds`; clause `cpu_time_seconds` | `cpu_time_seconds` | Core-seconds, not CPU percentage. ToolKB uses the call-level training value; TrieKB and LatticeKB add retained-stage values. |
 | What was average CPU use? | `resource_observation.metrics.cpu_time.average_cores` | `cpu_avg_cores` | CPU time divided by the matching duration. Multi-core values may exceed one. |
 | What was the CPU burst? | `resource_observation.metrics.cpu_peak.value_cores` | `cpu_peak_cores` | Maximum average core use over a 500 ms window. This is separate from cumulative CPU time. |
@@ -30,7 +30,7 @@ Collector `eligible` flags describe strict measurement quality; they do not veto
 
 ## Shell and non-shell tools
 
-`exec` and `terminal_exec` support all four prediction models. Other OpenClaw
+`exec` and `terminal_exec` support all three prediction models. Other OpenClaw
 tools, including native file operations, use whole-call history through ToolKB;
 the subcommand models report `not_a_shell_command`. Without a shell command,
 matching is by repository and tool name, then tool name across repositories,
@@ -338,20 +338,19 @@ A tool timeout, nonzero exit or signal does not by itself invalidate PMU counts.
 
 ## Prediction: `span_start.prediction`
 
-Four independent outputs use the [call-load contract](../contracts/call-load.schema.json):
+Three independent outputs use the [call-load contract](../contracts/call-load.schema.json):
 
 | Field | Model | Supported targets |
 | --- | --- | --- |
 | `prediction.tool` | ToolKB | All seven load targets; separate `pmu_prediction` for hardware metrics |
 | `prediction.trie` | TrieKB | All seven load targets from clause evidence |
 | `prediction.lattice` | LatticeKB | All seven load targets from clause evidence |
-| `prediction.edge_kappa` | EdgeKappaKB | Duration only; CPU/memory return `unavailable` with `edge_kappa_time_only` |
 
 Every `targets` object contains the seven entries defined in the [quick guide](#quick-guide-measurements-and-predictions), including unavailable entries. Models never fill missing targets or clauses from one another.
 
-After these four base predictions, a shared execution-context layer can replace each available call-level `duration_ms` distribution. It uses completed tool durations matched to saved pre-call command/context evidence. Command evidence requires at least three observations from two independent tasks. An early-failure correction requires at least five observations from three independent tasks, a dominant failure fraction of at least 0.98, and a failure median below the current baseline. Insufficient support preserves the base prediction; the layer does not fill an unavailable duration.
+After these three base predictions, a shared execution-context layer can replace each available call-level `duration_ms` distribution. It uses completed tool durations matched to saved pre-call command/context evidence. Command evidence requires at least three observations from two independent tasks. An early-failure correction requires at least five observations from three independent tasks, a dominant failure fraction of at least 0.98, and a failure median below the current baseline. Insufficient support preserves the base prediction; the layer does not fill an unavailable duration.
 
-Corrected durations include `execution_context:command_evidence` or `execution_context:early_failure:<label>` in `context`, plus `duration_corrected_from_pre_call_context` and `context_samples_are_completed_tool_durations` in `assumptions`. The replacement uses unweighted completed-call samples: p50 is their median, p90 is their sorted `ceil(0.9n)`-th value, and the mean and bucket probabilities are recomputed from those samples. `quantile_method` becomes `median_p50_nearest_rank_p90`, including for corrected EdgeKappa duration. The `backend` still identifies the base model. CPU, memory, and `clause_predictions` retain their original results, so clause durations need not reproduce a corrected call duration. Model comparisons should separate corrected and uncorrected calls.
+Corrected durations include `execution_context:command_evidence` or `execution_context:early_failure:<label>` in `context`, plus `duration_corrected_from_pre_call_context` and `context_samples_are_completed_tool_durations` in `assumptions`. The replacement uses unweighted completed-call samples: p50 is their median, p90 is their sorted `ceil(0.9n)`-th value, and the mean and bucket probabilities are recomputed from those samples. `quantile_method` becomes `median_p50_nearest_rank_p90`. The `backend` still identifies the base model. CPU, memory, and `clause_predictions` retain their original results, so clause durations need not reproduce a corrected call duration. Model comparisons should separate corrected and uncorrected calls.
 
 Each target has `status`, `unit`, `metric_definition`, `avg`, `p50`, `p90`, `buckets`, `backend`, `method`, `evidence_counts`, `sample_count`, `context`, `assumptions`, `calibration`, `unavailable_reason`: availability, unit, measurement definition, mean, median, empirical p90, histogram, backend, direct / synthetic method, historical evidence count, statistical sample count, matching context, assumptions, calibration status, and unavailability reason. Statistical values of an unavailable target must be empty. For unweighted samples, p50 is the median and p90 is the `ceil(0.9n)`-th value after sorting; it is not a guarantee that 90% of future values will fall below it. For synthetic predictions, `sample_count` can be 2048 simulation runs, while the historical sample count is in `evidence_counts`.
 
@@ -363,13 +362,11 @@ Each target has `status`, `unit`, `metric_definition`, `avg`, `p50`, `p90`, `buc
 
 Clause-derived tool predictions cover only the retained workload. Their composition ignores hook overhead and cross-clause correlation; individual clause predictions can remain available when a complete composition is unavailable. See [composition rules and exclusions](technical-report.md#5-from-commands-to-tool-calls).
 
-EdgeKappa's single-clause result uses a weighted mean, a midpoint median at exactly 50% cumulative weight, and inverse-CDF p90 (`weighted_midpoint_p50_inverse_cdf_p90`). Multiple clauses use the shared 2048-draw composer. Its histogram describes weighted observed durations, excluding the bucket smoothing used during weight training. Legacy evidence lacking individual duration values returns `non_exact_duration_evidence`; bucket midpoints are never substituted. See [EdgeKappa's algorithm](technical-report.md#45-edgekappakb) and [state compatibility](getting-started.md#3-output-and-persistent-state).
-
 Memory evidence is separated by `memory_measurement`. Select the query source with `CLAWTUNE_TOOL_RESOURCE_MEMORY_MEASUREMENT`; the default is `cgroup_v2_environment_union_v1`. History stored under another source can leave total/extra memory unavailable. Selection does not convert measurements between sources.
 
 ## Compatibility Prediction and Other Diagnostics
 
-Use the four model outputs above for load estimates. `call_prediction` aliases `tool`; `diagnostics.backends.runtime`, `.trie`, `.lattice`, and `.edge_kappa` copy the corresponding outputs. Top-level `duration_p50_ms` and `duration_p90_ms` are rounded ToolKB summaries, not a choice among models. `confidence` is not a calibrated probability.
+Use the three model outputs above for load estimates. `call_prediction` aliases `tool`; `diagnostics.backends.runtime`, `.trie`, and `.lattice` copy the corresponding outputs. Top-level `duration_p50_ms` and `duration_p90_ms` are rounded ToolKB summaries, not a choice among models. `confidence` is not a calibrated probability.
 
 `prediction.tool_resource` retains legacy clause, Lattice method, and TTL diagnostics defined by the [tool decision schema](../contracts/tool-decision.schema.json). `kv_ttl_cost` is a cache-policy simulation, not measured cache performance. Decision, lease, and placement fields are scheduler metadata; `placement_advisory` does not promise actual CPU pinning.
 

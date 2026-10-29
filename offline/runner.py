@@ -431,24 +431,6 @@ def _static_clause(row, namespace):
                    command_features=features)
 
 
-def _edge_training_events(clauses, task_key: str):
-    """Give static observations distinct identities and a deterministic order.
-
-    Loader intervals start at zero and cannot identify events or their tasks.
-    The synthetic clock is only an offline replay order; measured duration is
-    retained as the label and does not determine when feedback becomes visible.
-    """
-    from clawtune_sidecar.predictors.edge_kappa import training_event
-    for index, clause in enumerate(clauses):
-        event = training_event(clause)
-        if event is None:
-            continue
-        identity = hashlib.sha256(f"{task_key}\0{index}".encode()).hexdigest()
-        yield replace(event, outcome=replace(event.outcome,
-            event_id=identity, task_id=task_key, call_id=identity,
-            start_time=float(index * 2), end_time=float(index * 2 + 1)))
-
-
 def _sampling_summary(values: list[float]) -> dict:
     selected = sorted(value for value in values if math.isfinite(value) and value > 0)
     if not selected:
@@ -719,12 +701,10 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
     output.mkdir(parents=True, exist_ok=False)
     write_json(output / "split.json", manifest)
     clauses, calls, call_actuals, counts = [], [], [], Counter()
-    edge_events = []
     train_sampling = {}
     for key in manifest["train"]:
         loaded = load_task(dataset, tasks[key], rss_unit)
         clauses.extend(loaded.clauses)
-        edge_events.extend(_edge_training_events(loaded.clauses, key))
         calls.extend(loaded.calls)
         call_actuals.extend(loaded.call_actuals)
         train_sampling[key] = _sampling_summary(loaded.sample_periods_ms)
@@ -740,14 +720,9 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
     trie._absorb_completed(float("inf"))
     runtime._absorb_completed(float("inf"))
     lattice = LatticeTimeKB.fit(clauses, max_optional_features=max_optional_features)
-    from clawtune_sidecar.predictors.edge_kappa import EdgeKappaRuntime
-    edge_kappa = EdgeKappaRuntime.fit_events(edge_events, (100, 500, 2000, 10000), frozen=True,
-                                      max_optional_features=max_optional_features)
     payloads = dict(zip(FILES, (trie.to_json_obj(), runtime.to_json_obj(), lattice.to_json_obj())))
-    payloads["edge-kappa-kb.json"] = edge_kappa.to_snapshot()
     provenance = {"split_sha256": manifest["assignment_sha256"], "split_by": split_by, "train": manifest["train"],
                     "test": manifest["test"], "rss_unit": rss_unit, "counts": dict(counts),
-                    "edge_training_order": "sha256-task-order-within-task-clause-record-order",
                     "resource_sampling": {"unit": "ms", "per_task": train_sampling}}
     bundle = create_seed(output / "seed", payloads, provenance=provenance)
     trie.freeze()
@@ -765,7 +740,7 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
             for target, value in actuals.items():
                 baselines[(call.tool_name, target)].append(value)
     rows = []
-    model_rows = {name: [] for name in ("tool", "trie", "lattice", "edge_kappa")}
+    model_rows = {name: [] for name in ("tool", "trie", "lattice")}
     variants = {"lattice_" + algorithm: _LatticeVariant(lattice, algorithm)
                 for algorithm in LATTICE_TIME_ALGORITHMS if algorithm != "shrinkage"}
     if not lattice_variants:
@@ -802,7 +777,7 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
             parse_before = default_service().metrics()
             prediction, diagnostics = predict_call_load(
                 runtime=runtime, trie=trie, lattice=lattice, query=query, edges=edges,
-                parsed_clauses=known_clauses, edge_kappa=edge_kappa,
+                parsed_clauses=known_clauses,
             )
             parsing_counts.update({name: value - parse_before.get(name, 0)
                                    for name, value in default_service().metrics().items()})
@@ -839,7 +814,6 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
             for model, model_estimates in (("tool", estimates),
                                            ("trie", diagnostics.backends["trie"].targets),
                                            ("lattice", diagnostics.backends["lattice"].targets),
-                                           ("edge_kappa", diagnostics.backends["edge_kappa"].targets),
                                            *variant_estimates.items()):
                 repo_counts = repository_availability[model][(task["benchmark"], task["group"])]
                 for target in availability[model]:

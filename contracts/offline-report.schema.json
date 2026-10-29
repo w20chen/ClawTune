@@ -31,8 +31,7 @@
         "lattice_oracle": {
           "allOf": [{"$ref": "#/$defs/modelReport"}],
           "required": ["oracle"]
-        },
-        "edge_kappa": {"$ref": "#/$defs/modelReport"}
+        }
       }
     },
     "pmu": {
