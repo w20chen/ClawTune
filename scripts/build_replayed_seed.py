@@ -31,7 +31,6 @@ from clawtune_sidecar.predictors.tool_resource import (
     _completed_call_from_tool_span,
     _repo_from_tool_span,
 )
-from execution_context.duration import SNAPSHOT_NAME, DurationContextKB
 from kb_common import DEFAULT_MAX_OPTIONAL_FEATURES
 from cold_start.flat_loader import recorded_clause_structure
 from tool_resource.commands import normalized_observation
@@ -158,22 +157,7 @@ def _load(task_id: str, path: Path, *, label_policy: TraceLabelPolicy = STRICT_T
     return repo, SimpleNamespace(actions=actions, calls=calls, clauses=clauses)
 
 
-def _merge_execution_context(trace_paths: list[Path]) -> DurationContextKB:
-    merged = DurationContextKB()
-    for trace in trace_paths:
-        snapshot = trace.parent / "tool-resource" / SNAPSHOT_NAME
-        if not snapshot.is_file():
-            continue
-        current = DurationContextKB.from_json_obj(json.loads(snapshot.read_text(encoding="utf-8")))
-        for sample in current.samples.values():
-            merged.observe(
-                sample["keys"], ident=sample["id"], task=sample["task"],
-                duration_ms=sample["duration_ms"], failure=sample["failure"],
-            )
-    return merged
-
-
-def _causal_payloads(tasks, context: DurationContextKB):
+def _causal_payloads(tasks):
     trie = ClauseResourceKB()
     runtime = RuntimeToolResourceKB()
     lattice = LatticeTimeKB(max_optional_features=DEFAULT_MAX_OPTIONAL_FEATURES)
@@ -220,8 +204,6 @@ def _causal_payloads(tasks, context: DurationContextKB):
     for kb in (trie, runtime, lattice):
         kb.freeze()
     payloads = dict(zip(FILES, (trie.to_json_obj(), runtime.to_json_obj(), lattice.to_json_obj())))
-    if context.samples:
-        payloads[SNAPSHOT_NAME] = context.to_json_obj()
     return payloads
 
 
@@ -336,8 +318,7 @@ def build(entries: list[tuple[str, Path]], output: Path, *, holdout_fraction: fl
         })
     calls = [call for _task, _repo, loaded in loaded_tasks for call in loaded.calls]
     clauses = [row for _task, _repo, loaded in loaded_tasks for row in loaded.clauses]
-    context = _merge_execution_context([path.resolve() for _task, path in entries])
-    payloads = _causal_payloads(loaded_tasks, context)
+    payloads = _causal_payloads(loaded_tasks)
     call_targets = Counter()
     for call in calls:
         call_targets.update(_target_values(call).keys())
@@ -362,7 +343,6 @@ def build(entries: list[tuple[str, Path]], output: Path, *, holdout_fraction: fl
             "partial_calls": sum(call.censored for call in calls),
             "confirmed_timeout_calls": sum(call.confirmed_timeout for call in calls),
             "imputed_clause_rows": sum(bool(row.imputed_targets) for row in clauses),
-            "execution_context_samples": len(context.samples),
         },
         "call_target_counts": dict(sorted(call_targets.items())),
         "clause_target_counts": dict(sorted(clause_targets.items())),

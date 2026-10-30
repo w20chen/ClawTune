@@ -17,20 +17,9 @@ CorrelationKey: TypeAlias = tuple[
 
 
 def call_key(value: Any) -> str:
-    """Stable identity for per-call command features and execution context."""
+    """Stable identity for per-call command features."""
     payload = json.dumps(correlation_key(value), sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(payload).hexdigest()
-
-
-def task_instance_key(value: Any) -> str | None:
-    """Count runtime tasks (or legacy sessions), never individual agent turns."""
-    gateway, runtime, _agent, session, _run = owner_key(value)
-    if runtime is not None:
-        return json.dumps(["runtime", gateway, runtime], separators=(",", ":"))
-    if session is not None:
-        return json.dumps(["session", gateway, session], separators=(",", ":"))
-    # A run alone cannot establish independent-task support.
-    return None
 
 
 def owner_key(value: Any) -> OwnerKey:

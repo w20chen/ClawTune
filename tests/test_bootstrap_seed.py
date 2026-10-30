@@ -19,9 +19,8 @@ from tool_resource.runtime_kb import (
 )
 from tool_time.lattice_kb import LatticeTimeKB
 
-SEED = ROOT / "seeds/bootstrap-v1"
+SEED = ROOT / "seeds/bootstrap-v2"
 ALL_FILES = FILES
-DEFAULT_SEED = ROOT / "seeds/bootstrap-v2"
 
 
 @pytest.fixture
@@ -258,49 +257,14 @@ def test_recipe_rejects_insufficient_cases_without_creating_bundle(tmp_path, sim
     assert not (tmp_path / "seed").exists()
 
 
-def test_shipped_seed_contains_three_finalized_kbs_and_four_fresh_replays():
-    manifest = validate_seed(SEED)
-    assert set(manifest["snapshots"]) == set(ALL_FILES)
-    provenance = manifest["provenance"]
-    assert provenance["kind"] == "fresh-trace-v6-causal-replay"
-    assert provenance["counts"]["tasks"] == len(provenance["sources"]) == 4
-    assert len({source["task_id"] for source in provenance["sources"]}) == 4
-    assert provenance["counts"]["execution_context_samples"] == 0
-    for name in ALL_FILES:
-        snapshot = json.loads((SEED / name).read_text(encoding="utf-8"))
-        assert snapshot["pending"] == []
-    assert all(not nodes for nodes in json.loads(
-        (SEED / FILES[0]).read_text(encoding="utf-8")
-    )["public"].values())
-    assert all(not nodes for nodes in json.loads(
-        (SEED / FILES[1]).read_text(encoding="utf-8")
-    )["public"].values())
-    required = {
-        "latency_ms", "cpu_time_seconds", "cpu_avg_cores", "cpu_peak_cores",
-        "sampled_peak_rss_bytes", "memory_total_peak_bytes", "memory_extra_peak_bytes",
-        "pmu_cycles", "pmu_instructions", "pmu_llc_read_accesses",
-        "pmu_llc_read_misses", "pmu_ipc", "pmu_llc_mpki", "pmu_llc_miss_rate",
-        "pmu_llc_read_accesses_per_cpu_second",
-        "pmu_llc_read_misses_per_cpu_second",
-    }
-    assert required <= {
-        target for target, count in provenance["call_target_counts"].items() if count
-    }
-    assert provenance["validation"]["passed"] is True
-    assert all(
-        target["labeled_coverage"] == 1.0
-        for target in provenance["validation"]["targets"].values()
-    )
-
-
 def test_initial_state_can_learn_without_mutating_release_seed(tmp_path):
     before = {name: digest(SEED / name) for name in (*ALL_FILES, "manifest.json")}
     state = tmp_path / "kb"
     initialize_state(state, SEED, owner="daily")
-    lattice = LatticeTimeKB.from_json_obj(json.loads((state / FILES[2]).read_text()))
+    lattice = LatticeTimeKB.from_json_obj(json.loads((state / FILES[2]).read_text(encoding="utf-8")))
     assert lattice.node_count > 0
     assert set(validate_seed(SEED)["snapshots"]) <= {p.name for p in state.iterdir()}
-    trie = ClauseResourceKB.from_json_obj(json.loads((state / FILES[0]).read_text()))
+    trie = ClauseResourceKB.from_json_obj(json.loads((state / FILES[0]).read_text(encoding="utf-8")))
     from tool_resource.runtime_kb import ClauseObservation
     trie.observe_completed_clause(ClauseObservation(
         repo="new-project", bin="find", argv=("find", "."), ts_start=1, ts_end=2, latency_ms=1000))
@@ -311,11 +275,14 @@ def test_initial_state_can_learn_without_mutating_release_seed(tmp_path):
 
 def test_cli_default_uses_release_seed():
     from benchmarks.cli import parser
-    assert parser().parse_args(["benchmark"]).seed == DEFAULT_SEED
+    assert parser().parse_args(["benchmark"]).seed == SEED
 
 
 def test_default_seed_is_all_repository_replay_and_loadable():
-    manifest = validate_seed(DEFAULT_SEED)
+    manifest = validate_seed(SEED)
+    assert set(manifest["snapshots"]) == set(FILES)
+    for name in FILES:
+        assert json.loads((SEED / name).read_text(encoding="utf-8"))["pending"] == []
     provenance = manifest["provenance"]
     assert provenance["kind"] == "repository-all-trace-v6"
     assert "test_updates" not in provenance
@@ -329,14 +296,14 @@ def test_default_seed_is_all_repository_replay_and_loadable():
     assert provenance["call_target_counts"]["sampled_peak_rss_bytes"] == 626
     assert provenance["call_target_counts"]["cpu_peak_cores"] == 626
     lattice = LatticeTimeKB.from_json_obj(json.loads(
-        (DEFAULT_SEED / "clause-lattice-time-kb.json").read_text(encoding="utf-8")
+        (SEED / "clause-lattice-time-kb.json").read_text(encoding="utf-8")
     ))
     assert lattice.observation_count > 0
     tool = json.loads(
-        (DEFAULT_SEED / "runtime-tool-resource-kb.json").read_text(encoding="utf-8")
+        (SEED / "runtime-tool-resource-kb.json").read_text(encoding="utf-8")
     )
     trie = json.loads(
-        (DEFAULT_SEED / "clause-resource-kb.json").read_text(encoding="utf-8")
+        (SEED / "clause-resource-kb.json").read_text(encoding="utf-8")
     )
     assert any(
         row[0] == "semantic_call"
@@ -351,9 +318,9 @@ def test_default_seed_is_all_repository_replay_and_loadable():
 
 
 def test_shipped_seed_falls_back_to_all_repository_public_evidence():
-    validate_seed(DEFAULT_SEED)
+    validate_seed(SEED)
     tool = RuntimeToolResourceKB.from_json_obj(
-        json.loads((DEFAULT_SEED / FILES[1]).read_text(encoding="utf-8"))
+        json.loads((SEED / FILES[1]).read_text(encoding="utf-8"))
     )
     tool.freeze()
     unrelated = ToolCallQuery("unseen/repository", "exec", "python job.py", 1)

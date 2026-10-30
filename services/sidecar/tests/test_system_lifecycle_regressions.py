@@ -1,7 +1,6 @@
-"""Prediction ownership, shutdown fencing, and independent learning evidence."""
+"""Prediction ownership, shutdown fencing, and command-rule lifecycle."""
 import asyncio
 import copy
-import json
 import threading
 import time
 from dataclasses import replace
@@ -17,7 +16,6 @@ from clawtune_kb.store import StateStore
 from clawtune_sidecar.api.app import create_app
 from clawtune_sidecar.api.dependencies import build_state
 from clawtune_sidecar.config import SidecarConfig
-from clawtune_sidecar.identity import task_instance_key
 from clawtune_sidecar.identity import call_key
 from clawtune_sidecar.predictors.tool_resource import (
     ToolResourcePredictor,
@@ -26,7 +24,6 @@ from clawtune_sidecar.predictors.tool_resource import (
 from command_parser import CommandFeatureService, ParseContext
 from command_parser.generation import GeneratorConfig, RuleGenerator
 from command_parser.registry import RuleRegistry
-from execution_context.duration import SNAPSHOT_NAME, DurationContextKB, independent_tasks
 from tool_resource.runtime_kb import LatencyBuckets
 
 
@@ -45,24 +42,18 @@ def predictor():
 
 def assert_released(predictor):
     assert not predictor._starts
-    assert not predictor._context_pending
     assert not predictor._feature_call_keys
+    assert not predictor._feature_call_owners
     assert not predictor.command_features._calls
-    for history in predictor._context_histories.values():
-        assert not history.pending
-        assert not history.evidence.active
-        assert not history.evidence.started
 
 
 @pytest.mark.parametrize("failure", ["block", "policy_exception", "prediction_exception"])
 def test_decision_releases_all_prediction_state(tmp_path, monkeypatch, failure):
     state = build_state(SidecarConfig(trace_dir=tmp_path, policy="concurrency", admission_wait_ms=1))
-    snapshots = []
     original = state.predictor.predict
 
     def predict(req):
         result = original(req)
-        snapshots.append(state.predictor._context_pending[call_key(req)][2])
         if failure == "prediction_exception":
             raise ValueError("injected prediction failure")
         return result
@@ -82,8 +73,6 @@ def test_decision_releases_all_prediction_state(tmp_path, monkeypatch, failure):
             else:
                 assert response.status_code == 500
             assert_released(state.predictor)
-        assert snapshots[-1]["snapshots"][0]["history_blocked"] is False
-        assert not state.predictor.duration_context_kb.samples
 
 
 def test_runtime_abort_releases_only_its_owner(tmp_path):
@@ -95,9 +84,26 @@ def test_runtime_abort_releases_only_its_owner(tmp_path):
         body = {"reason": "task_timeout", "agent_stopped": True, "sandbox_cleaned": True}
         for _ in range(2):
             assert client.post("/v1/gateways/gateway/runtimes/runtime/abort", json=body).status_code == 200
-        assert set(state.predictor._context_pending) == {call_key(foreign)}
-        assert all(scope[0] == "other" for scope in state.predictor._context_histories)
-        assert not state.predictor.duration_context_kb.samples
+        assert set(state.predictor.command_features._calls) == {call_key(foreign)}
+        assert set(state.predictor._feature_call_keys.values()) == {call_key(foreign)}
+        assert all(owner[0] == "other" for owner in state.predictor._feature_call_keys)
+
+
+def test_runtime_finalization_releases_features_without_a_start_record(predictor):
+    own, foreign = request(), request(gateway_id="other")
+    later = own.model_copy(update={"run_id": "later-turn"})
+    predictor.predict(own)
+    predictor.predict(later)
+    predictor.predict(foreign)
+    assert not predictor._starts
+    assert set(predictor.command_features._calls) == {call_key(own), call_key(later), call_key(foreign)}
+    predictor.finalize_runtime("runtime", "gateway")
+    predictor.finalize_runtime("runtime", "gateway")
+    assert set(predictor.command_features._calls) == {call_key(foreign)}
+    assert set(predictor._feature_call_keys.values()) == {call_key(foreign)}
+    assert set(predictor._feature_call_owners) == {call_key(foreign)}
+    predictor.finalize_runtime("runtime", "other")
+    assert_released(predictor)
 
 
 @pytest.mark.parametrize("failed", [False, True])
@@ -250,7 +256,6 @@ def test_runtime_scope_deletion_releases_prediction_history(tmp_path, gateway):
         prefix = "/v1/runtime/runtime" if gateway is None else "/v1/gateways/gateway/runtimes/runtime"
         assert client.delete(prefix + "/sandbox-scope").status_code == 200
         assert_released(state.predictor)
-        assert not state.predictor._context_histories
 
 
 def test_missing_monitor_sample_still_releases_prediction_state(tmp_path, monkeypatch):
@@ -262,75 +267,12 @@ def test_missing_monitor_sample_still_releases_prediction_state(tmp_path, monkey
         event = _tool_completion("done", "call").model_copy(update={"gateway_id": "gateway", "runtime_id": "runtime"})
         assert client.post("/v1/events/tool-completed", json=event.model_dump(mode="json")).status_code == 200
         assert_released(state.predictor)
-        assert not state.predictor.duration_context_kb.samples
-
-
-@pytest.mark.parametrize("runtime", ["runtime", None])
-def test_repeated_turns_do_not_count_as_independent_tasks(predictor, runtime, monkeypatch):
-    # A coarse or adjusted wall clock must not hide already completed calls.
-    monkeypatch.setattr("clawtune_sidecar.predictors.tool_resource.time.time", lambda: 1000.)
-    for i in range(6):
-        req = request(str(i), "python -m pytest -q", runtime_id=runtime, run_id=f"turn-{i}")
-        predictor.record_tool_started(req)
-        predictor.predict(req)
-        event = _tool_completion("done-" + str(i), str(i)).model_copy(update={
-            "gateway_id": req.gateway_id, "runtime_id": runtime, "run_id": req.run_id,
-            "succeeded": False, "raw_result": "python: No module named pytest\nExit code: 1"})
-        predictor.observe_completion(event, _runtime_sample(str(i), str(i)))
-    group = max(predictor.duration_context_kb.groups["failure"].values(), key=len)
-    assert len(group) == 5
-    assert len(independent_tasks(group)) == 1
-    assert predictor.duration_context_kb.predict(group[0]["keys"], 5000) is None
-
-
-def test_runtime_identity_ignores_session_changes_and_run_only_is_unknown():
-    assert task_instance_key(request()) == task_instance_key(request(run_id="retry", session_id="new-session"))
-    assert task_instance_key(request(runtime_id=None, session_id=None)) is None
-
-
-def test_load_merges_legacy_task_identity_preserving_observations(tmp_path):
-    kb = DurationContextKB()
-    for i in range(6):
-        kb.observe({"evidence": "e", "failure": "f"}, ident=str(i),
-                   task=str((("gateway", "runtime", "session"), f"run-{i}")),
-                   duration_ms=20 + i, failure="missing_module")
-    payload = kb.to_json_obj()
-    (tmp_path / SNAPSHOT_NAME).write_text(json.dumps(payload))
-    predictor = ToolResourcePredictor.from_traces(
-        openclaw_trace_paths=(), ebpf_trace_paths=(), buckets=LatencyBuckets((100, 500)), artifact_dir=tmp_path)
-    try:
-        restored = predictor.duration_context_kb
-        assert len(independent_tasks(restored.samples.values())) == 1
-        assert restored.predict({"evidence": "e", "failure": "f"}, 5000) is None
-        for old, new in zip(payload["samples"], restored.samples.values()):
-            assert {k: v for k, v in old.items() if k != "task"} == {k: v for k, v in new.items() if k != "task"}
-    finally:
-        predictor.close()
-    saved = json.loads((tmp_path / SNAPSHOT_NAME).read_text())
-    assert len({row["task"] for row in saved["samples"]}) == 1
-    assert DurationContextKB.from_json_obj(saved).to_json_obj() == saved
-
-
-def test_ambiguous_legacy_runs_do_not_supply_task_support():
-    kb = DurationContextKB()
-    for i in range(6):
-        kb.observe({"evidence": "e", "failure": "f"}, ident=str(i),
-                   task=str((("gateway", None, f"run-{i}"), f"run-{i}")), duration_ms=20, failure="missing_module")
-    restored = DurationContextKB.from_json_obj(kb.to_json_obj())
-    assert len(restored.samples) == 6
-    assert not independent_tasks(restored.samples.values())
-    assert restored.predict({"evidence": "e", "failure": "f"}, 5000) is None
 
 
 def test_frozen_rules_are_loaded_once_and_never_generated_or_written(tmp_path, predictor, monkeypatch):
     seed = tmp_path / "seed"
-    context_kb = DurationContextKB()
-    for i in range(6):
-        context_kb.observe({"evidence": "e", "failure": "f"}, ident=str(i),
-            task=str((("gateway", "runtime", "session"), f"run-{i}")), duration_ms=20, failure="missing_module")
     payloads = dict(zip(FILES, (predictor.kb.to_json_obj(), predictor.continuous_kb.to_json_obj(),
                               predictor.lattice_kb.to_json_obj())))
-    payloads[SNAPSHOT_NAME] = context_kb.to_json_obj()
     create_seed(seed, payloads, provenance={})
     context = ParseContext(repo="repo", runtime_id="runtime", tool_version="1.0")
     rule = generated_rule("known-tool")
@@ -344,7 +286,6 @@ def test_frozen_rules_are_loaded_once_and_never_generated_or_written(tmp_path, p
         llm_proxy_upstream_api_key="test", llm_proxy_upstream_model="test"))
     try:
         service = state.predictor.command_features
-        assert len(independent_tasks(state.predictor.duration_context_kb.samples.values())) == 1
         assert service.generator is None
         assert service.argv(["known-tool", "-n", "4"], context).status == "complete"
         first = service.argv(["unknown-tool", "-n", "4"], context)

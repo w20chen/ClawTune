@@ -223,10 +223,6 @@ seed.
 
 ### Rebuilding and compatibility
 
-`seeds/bootstrap-v1` remains available as a historical replay baseline.
-It is separate from the current default bundle; consult each manifest before
-comparing data sources or measurement coverage.
-
 To rebuild the causal seed from fresh trace-v6 replays on Linux, write to a new directory and repeat `--trace` once per task:
 
 ```bash

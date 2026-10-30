@@ -459,34 +459,11 @@ class ToolResourcePredictor:
             command_registry or RuleRegistry(read_only=frozen)
         )
         self._feature_call_keys: dict[tuple, str] = {}
+        self._feature_call_owners: dict[str, tuple[str | None, str | None]] = {}
         self._telemetry_by_execution_id: dict[str, ExecutionTelemetrySummary] = {}
         self._memory_targets_committed: set[str] = set()
         self._pending_memory_targets: dict[str, tuple[Any, tuple[ClauseObservation, ...]]] = {}
         self._starts: dict[CorrelationKey, ToolBeforeRequest] = {}
-        from execution_context.duration import DurationContextKB, SNAPSHOT_NAME
-        self.duration_context_kb = DurationContextKB()
-        context_identity_changed = False
-        self.duration_context_snapshot_path = artifact_dir / SNAPSHOT_NAME if artifact_dir else None
-        if frozen and artifact_dir and not self.duration_context_snapshot_path.is_file():
-            for manifest_name in ('manifest.json', 'seed-manifest.json'):
-                manifest_path = artifact_dir / manifest_name
-                if manifest_path.is_file() and SNAPSHOT_NAME in json.loads(manifest_path.read_text(encoding='utf8'))['snapshots']:
-                    raise ValueError('frozen execution-context snapshot missing from declared seed')
-        if self.duration_context_snapshot_path and self.duration_context_snapshot_path.is_file():
-            path = self.duration_context_snapshot_path
-            for manifest_name in ('manifest.json', 'seed-manifest.json'):
-                manifest_path = artifact_dir / manifest_name
-                if frozen and manifest_path.is_file():
-                    hashes = json.loads(manifest_path.read_text(encoding='utf8'))['snapshots']
-                    if hashlib.sha256(path.read_bytes()).hexdigest() != hashes.get(path.name):
-                        raise ValueError('frozen execution-context snapshot hash mismatch')
-            context_payload = json.loads(path.read_text(encoding='utf8'))
-            self.duration_context_kb = DurationContextKB.from_json_obj(context_payload)
-            context_identity_changed = self.duration_context_kb.to_json_obj() != context_payload
-        self._duration_context_version = int(context_identity_changed)
-        self._duration_context_persisted_version = 0
-        self._context_histories = {}
-        self._context_pending = {}
         self._kb_writes = _KnowledgeBaseWriteCoordinator(
             self._apply_kb_batch, persist=self._persist_kb_snapshots,
         )
@@ -749,21 +726,8 @@ class ToolResourcePredictor:
             command_context = ParseContext(**{**raw_context, "repo": request.repo or self.repo,
                                              "runtime_id": request.runtime_id})
             self._feature_call_keys[(request.gateway_id, request.runtime_id, request.tool_call_id)] = call_key(request)
+            self._feature_call_owners[call_key(request)] = (request.gateway_id, request.runtime_id)
             self.command_features.discover(command_context)
-            from execution_context.history import ContextHistory, params
-            scope = (request.gateway_id, request.runtime_id, request.session_id or request.run_id)
-            history = self._context_histories.setdefault(scope, ContextHistory(str(scope)))
-            args = dict(params(request.raw_params))
-            if not any(args.get(k) for k in ('cwd', 'workdir', 'working_dir', 'working_directory')):
-                args['cwd'] = command_context.cwd
-            # Process-local history needs a monotonic, high-resolution clock;
-            # coarse wall-clock ticks can hide a preceding completed call.
-            event = {'id': call_key(request), 'line': 0, 'start': time.perf_counter(),
-                     'tool': request.tool_name, 'args': args}
-            duration_context = history.begin(event)
-            from clawtune_sidecar.identity import task_instance_key
-            self._context_pending[call_key(request)] = (scope, event, duration_context,
-                                                       task_instance_key(request))
             legacy = self._predict_legacy(request, command_context)
             query = ToolCallQuery(repo=request.repo or self.repo, tool_name=request.tool_name,
                                   command=_command_for_request(request), ts_start=time.time(),
@@ -772,9 +736,7 @@ class ToolResourcePredictor:
             call, diagnostics = predict_call_load(runtime=self.continuous_kb, trie=self.kb,
                                                   lattice=self.lattice_kb, query=query, edges=self.load_buckets,
                                                   feature_call_id=call_key(request),
-                                                  feature_service=self.command_features, command_context=command_context,
-                                                  duration_context_kb=self.duration_context_kb,
-                                                  duration_context=duration_context)
+                                                  feature_service=self.command_features, command_context=command_context)
             from clawtune_sidecar.contracts.load_prediction import summarize_pmu_evidence
             try:
                 pmu = summarize_pmu_evidence(self.continuous_kb.predict_pmu_samples(query))
@@ -1074,10 +1036,8 @@ class ToolResourcePredictor:
             self._finalize_call_key(call_key(start or value))
 
     def _finalize_call_key(self, key: str) -> None:
-        pending = self._context_pending.pop(key, None)
-        if pending is not None:
-            self._context_histories[pending[0]].cancel(pending[1]['id'])
         self.command_features.bind_observations([], key, release=True)
+        self._feature_call_owners.pop(key, None)
         for owner, feature_key in list(self._feature_call_keys.items()):
             if feature_key == key:
                 self._feature_call_keys.pop(owner, None)
@@ -1090,12 +1050,10 @@ class ToolResourcePredictor:
                 if (request.gateway_id, request.runtime_id) == (gateway_id, runtime_id):
                     self._starts.pop(key, None)
                     self._finalize_call_key(call_key(request))
-            for key, pending in list(self._context_pending.items()):
-                if pending[0][:2] == (gateway_id, runtime_id):
+            # Predictions can bind features before record_tool_started runs.
+            for key, owner in list(self._feature_call_owners.items()):
+                if owner == (gateway_id, runtime_id):
                     self._finalize_call_key(key)
-            for scope in list(self._context_histories):
-                if scope[:2] == (gateway_id, runtime_id):
-                    self._context_histories.pop(scope, None)
 
     @_open_operation
     def observe_completion(
@@ -1116,24 +1074,12 @@ class ToolResourcePredictor:
         sample: ToolRuntimeSample,
         start: ToolBeforeRequest | None,
     ) -> int:
-        from execution_context.history import exit_label, failure_label, output_text
         execution_summary = self._telemetry_by_execution_id.get(event.execution_id) if event.execution_id else None
         artifact_summary = getattr(execution_summary, "artifact_summary", None)
         censored = _truncated_outcome(event.error_type) or getattr(execution_summary, "replay_execution", None) == "incomplete" or (
             isinstance(artifact_summary, Mapping)
             and artifact_summary.get("replay_execution") == "incomplete"
         )
-        with self._kb_lock:
-            pending = self._context_pending.get(call_key(start or event))
-            if pending is not None:
-                scope, before, context, task = pending
-                text = output_text(event.raw_result)
-                code = exit_label(text)
-                if code is None:
-                    code = 0 if event.succeeded else 1
-                    text += f'\nExit code: {code}'
-                self._context_histories[scope].complete({**before, 'end': time.perf_counter(), 'output': text})
-                # Frozen evaluation still advances history, but never learns its durations.
         artifact: dict[str, Any] | None = None
         if event.execution_id:
             summary = self._telemetry_by_execution_id.get(event.execution_id)
@@ -1154,19 +1100,6 @@ class ToolResourcePredictor:
                 confirmed_timeout=completed_call.confirmed_timeout or getattr(execution_summary, "confirmed_timeout", False),
                 timeout_duration_lower_bound_ms=(completed_call.timeout_duration_lower_bound_ms
                     or getattr(execution_summary, "timeout_duration_lower_bound_ms", None)))
-        if not self.frozen and pending is not None and task and completed_call is not None:
-            seconds = completed_call.workload_duration_seconds
-            if completed_call.confirmed_timeout and completed_call.timeout_duration_lower_bound_ms:
-                seconds = completed_call.timeout_duration_lower_bound_ms / 1000
-            if seconds is None and not completed_call.workload_duration_required:
-                seconds = completed_call.ts_end - completed_call.ts_start
-            if seconds is not None and math.isfinite(seconds) and seconds > 0:
-                with self._kb_lock:
-                    if self.duration_context_kb.observe(
-                            context.get('keys', {'evidence': None, 'failure': None}),
-                            ident=before['id'], task=task, duration_ms=seconds * 1000,
-                            failure=failure_label(text) if code else None):
-                        self._duration_context_version += 1
         # Export measured clause-memory labels even when learning is frozen.
         # Existing clause CPU/time observations are not repeated here.
         if event.execution_id and completed_call and event.execution_id not in self._memory_targets_committed:
@@ -1602,11 +1535,10 @@ class ToolResourcePredictor:
                 ):
                     raise TimeoutError("timed out waiting for active predictor operations")
             with self._starts_lock, self._kb_lock:
-                for key in set(self._context_pending) | set(self.command_features._calls):
+                for key in set(self._feature_call_owners) | set(self.command_features._calls):
                     self._finalize_call_key(key)
                 self._starts.clear()
                 self._feature_call_keys.clear()
-                self._context_histories.clear()
             self._finalize_memory_targets()
             self.command_features.close(timeout_seconds=remaining())
             self._kb_writes.close(remaining())
@@ -1680,12 +1612,6 @@ class ToolResourcePredictor:
         snapshots: list[tuple[str, Path, Any, int]] = []
         with self._kb_lock:
             self._capture_kb_snapshot_locked(
-                snapshots, errors, name="duration_context", path=self.duration_context_snapshot_path,
-                version=self._duration_context_version,
-                persisted_version=self._duration_context_persisted_version,
-                serializer=self.duration_context_kb.to_json_obj,
-            )
-            self._capture_kb_snapshot_locked(
                 snapshots,
                 errors,
                 name="runtime",
@@ -1725,9 +1651,7 @@ class ToolResourcePredictor:
                 )
                 continue
             with self._kb_lock:
-                if name == "duration_context":
-                    self._duration_context_persisted_version = max(self._duration_context_persisted_version, version)
-                elif name == "runtime":
+                if name == "runtime":
                     self._runtime_kb_persisted_version = max(
                         self._runtime_kb_persisted_version,
                         version,

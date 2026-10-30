@@ -8,7 +8,6 @@ import uuid
 from pathlib import Path
 
 FILES = ("clause-resource-kb.json", "runtime-tool-resource-kb.json", "clause-lattice-time-kb.json")
-OPTIONAL_FILES = ("execution-context-kb.json",)
 
 
 def digest(path: Path) -> str:
@@ -52,7 +51,7 @@ def validate_seed(path: Path) -> dict:
     manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
     from .contracts import validate
     validate(manifest, "kb-seed.schema.json")
-    if manifest.get("schema") != "clawtune.seed.v1" or not set(FILES) <= set(manifest.get("snapshots", {})) <= set(FILES + OPTIONAL_FILES):
+    if manifest.get("schema") != "clawtune.seed.v1" or set(manifest.get("snapshots", {})) != set(FILES):
         raise ValueError(f"invalid seed bundle: {path}")
     for name in manifest["snapshots"]:
         target = (path / name).resolve(strict=True)
@@ -67,8 +66,8 @@ def validate_seed(path: Path) -> dict:
 
 
 def create_seed(path: Path, payloads: dict[str, dict], *, provenance: dict) -> dict:
-    if not set(FILES) <= set(payloads) <= set(FILES + OPTIONAL_FILES):
-        raise ValueError("a seed must contain the three base KBs and only registered optional snapshots")
+    if set(payloads) != set(FILES):
+        raise ValueError("a seed must contain exactly the three base KBs")
     path.mkdir(parents=True, exist_ok=False)
     for name, payload in payloads.items():
         write_json(path / name, payload)
@@ -174,19 +173,15 @@ class StateStore:
             raise ValueError("invalid KB CURRENT generation")
         folder = self.path / "generations" / name
         committed = committed_state(self.path)
-        for filename in OPTIONAL_FILES:
-            if filename not in committed["snapshots"]:
-                (self.path / filename).unlink(missing_ok=True)
         for filename in (*committed["snapshots"], "state.json"):
             shutil.copyfile(folder / filename, self.path / filename)
         self._snapshot_stats = self._working_snapshot_stats()
 
     def _working_snapshot_stats(self) -> dict:
-        names = (*FILES, *(name for name in OPTIONAL_FILES if (self.path / name).is_file()))
         # Writers replace complete files atomically. This is change detection,
         # not a content-integrity check or a hash of learned state.
         return {name: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns)
-                for name in names for s in [(self.path / name).stat()]}
+                for name in FILES for s in [(self.path / name).stat()]}
 
     def checkpoint(self) -> dict:
         if self._lock is None:

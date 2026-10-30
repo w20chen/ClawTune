@@ -3,7 +3,6 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import shlex
-import shutil
 import threading
 import time
 from pathlib import Path
@@ -1045,18 +1044,21 @@ def test_restarting_with_the_same_trace_does_not_duplicate_runtime_history(tmp_p
         predictor.close()
 
 
-def test_shipped_toolkb_starts_without_fabricated_whole_call_predictions(
+def test_clause_only_seed_does_not_fabricate_whole_call_predictions(
     tmp_path: Path,
 ) -> None:
     artifact_dir = tmp_path / "tool-resource"
     artifact_dir.mkdir()
-    source = (
-        Path(__file__).resolve().parents[3]
-        / "seeds"
-        / "bootstrap-v1"
-        / "runtime-tool-resource-kb.json"
+    clause = ClauseResourceKB.fit_public([ClauseObservation(
+        repo="", bin="git", argv=("git", "status"),
+        ts_start=0., ts_end=.2, latency_ms=200.,
+    )])
+    (artifact_dir / "clause-resource-kb.json").write_text(
+        json.dumps(clause.to_json_obj()), encoding="utf-8",
     )
-    shutil.copyfile(source, artifact_dir / "runtime-tool-resource-kb.json")
+    (artifact_dir / "runtime-tool-resource-kb.json").write_text(
+        json.dumps(RuntimeToolResourceKB().to_json_obj()), encoding="utf-8",
+    )
     predictor = ToolResourcePredictor.from_traces(
         openclaw_trace_paths=(),
         ebpf_trace_paths=(),
@@ -1065,9 +1067,13 @@ def test_shipped_toolkb_starts_without_fabricated_whole_call_predictions(
         artifact_dir=artifact_dir,
     )
 
-    result = predictor.predict(_tool_request("evt-public-runtime", "call-public-runtime", "git status"))
+    try:
+        result = predictor.predict(_tool_request("evt-public-runtime", "call-public-runtime", "git status"))
+    finally:
+        predictor.close()
 
     # Clause seed data must not be fabricated into whole-call labels.
+    assert result.tool_resource["prediction"] is not None
     continuous = result.tool_resource["continuous_predictions"]
     latency = continuous["latency_ms"]
     assert latency["scope"] is None
@@ -1080,16 +1086,7 @@ def test_shipped_toolkb_starts_without_fabricated_whole_call_predictions(
 
 
 def test_shared_snapshots_reuse_same_repo_evidence_but_isolate_other_repos() -> None:
-    snapshot_dir = (
-        Path(__file__).resolve().parents[3] / "seeds" / "bootstrap-v1"
-    )
-    runtime = RuntimeToolResourceKB.from_json_obj(
-        json.loads(
-            (snapshot_dir / "runtime-tool-resource-kb.json").read_text(
-                encoding="utf-8"
-            )
-        )
-    )
+    runtime = RuntimeToolResourceKB()
     runtime_base_ts = (runtime._last_query_ts or 0.0) + 1.0
     runtime.observe_completed_call(
         CompletedCall(
@@ -1135,13 +1132,7 @@ def test_shared_snapshots_reuse_same_repo_evidence_but_isolate_other_repos() -> 
     assert other_repo["memory_total_peak_bytes"].scope is None
     assert other_repo["memory_total_peak_bytes"].conditional_p90 is None
 
-    clause = ClauseResourceKB.from_json_obj(
-        json.loads(
-            (snapshot_dir / "clause-resource-kb.json").read_text(
-                encoding="utf-8"
-            )
-        )
-    )
+    clause = ClauseResourceKB()
     clause_base_ts = (clause._last_query_ts or 0.0) + 1.0
     clause.observe_completed_clause(
         ClauseObservation(
@@ -2911,91 +2902,50 @@ def test_trace_writes_tool_prediction_payload(tmp_path: Path) -> None:
     ]
 
 
-def test_execution_context_live_learning_persistence_and_distribution(tmp_path, monkeypatch):
+def test_completed_failures_preserve_independent_backend_predictions(tmp_path, monkeypatch):
     from dataclasses import replace
-    from execution_context.duration import SNAPSHOT_NAME
-    from clawtune_sidecar.identity import call_key
+    from clawtune_kb import FILES
+
     predictor = ToolResourcePredictor.from_traces(
         openclaw_trace_paths=(), ebpf_trace_paths=(), artifact_dir=tmp_path,
-        buckets=LatencyBuckets((100, 500, 2000, 10000)), repo='repo-1')
-    monkeypatch.setattr(predictor.continuous_kb, 'predict_load_samples',
-                        lambda query: {'duration_ms': {'values': [3000]}})
+        buckets=LatencyBuckets((100, 500, 2000, 10000)), repo="repo-1")
+    monkeypatch.setattr(predictor.continuous_kb, "predict_load_samples",
+                        lambda query: {"duration_ms": {"values": [3000]}})
+    monkeypatch.setattr(predictor.kb, "predict_load_samples",
+                        lambda *args: ({"duration_ms": {"values": [5000]}},))
+    monkeypatch.setattr(predictor.lattice_kb, "predict_load_samples",
+                        lambda *args: ({"duration_ms": {"values": [7000]}},))
     try:
-        for i in range(5):
-            request = _tool_request(f'event-{i}', f'call-{i}', 'python3 -m pytest').model_copy(
-                update={'run_id': f'run-{i}', 'session_id': f'session-{i}'})
-            predictor.predict(request)
-            before = dict(predictor._context_pending[call_key(request)][2]['keys'])
+        for i in range(6):
+            request = _tool_request(f"event-{i}", f"call-{i}", "python3 -m pytest").model_copy(
+                update={"run_id": f"run-{i}", "session_id": f"session-{i}"})
+            prediction = predictor.predict(request)
+            assert prediction.duration_p50_ms == prediction.duration_p90_ms == 3000
+            for name, expected in (("tool", 3000), ("trie", 5000), ("lattice", 7000)):
+                duration = getattr(prediction, name).targets["duration_ms"]
+                assert (duration.avg, duration.p50, duration.p90) == (expected,) * 3
+                assert duration.sample_count == 1
             predictor.record_tool_started(request)
-            completion = _tool_completion(f'done-{i}', f'call-{i}').model_copy(update={
-                'run_id': request.run_id, 'session_id': request.session_id,
-                'duration_ms': 20, 'succeeded': False,
-                'raw_result': {'content': [{'text': 'python3: No module named pytest'}],
-                               'details': {'exitCode': 1}}})
-            sample = replace(_runtime_sample(f'done-{i}', f'call-{i}'), ended_at=1000.02, duration_ms=20)
+            completion = _tool_completion(f"done-{i}", f"call-{i}").model_copy(update={
+                "run_id": request.run_id, "session_id": request.session_id,
+                "duration_ms": 20, "succeeded": False,
+                "raw_result": "python3: No module named pytest\nExit code: 1"})
+            sample = replace(_runtime_sample(f"done-{i}", f"call-{i}"),
+                             ended_at=1000.02, duration_ms=20)
             predictor.observe_completion(completion, sample)
-            assert predictor.duration_context_kb.samples[call_key(request)]['keys'] == before
-        prediction = predictor.predict(_tool_request('new', 'new', 'python3 -m pytest').model_copy(
-            update={'run_id': 'fresh-run', 'session_id': 'fresh-session'}))
-        assert prediction.duration_p50_ms == prediction.duration_p90_ms == 20
-        assert prediction.tool.targets['duration_ms'].buckets.probabilities == [1, 0, 0, 0, 0]
-        assert prediction.tool.targets['duration_ms'].sample_count == 5
         predictor.flush_kb_updates()
-        assert (tmp_path / SNAPSHOT_NAME).is_file()
+        assert sum(predictor.continuous_kb._observed_counts.values()) == 6
+        assert {p.name for p in tmp_path.glob("*.json")} <= set(FILES)
+        assert (tmp_path / "runtime-tool-resource-kb.json").is_file()
     finally:
         predictor.close()
     reloaded = ToolResourcePredictor.from_traces(
         openclaw_trace_paths=(), ebpf_trace_paths=(), artifact_dir=tmp_path,
-        buckets=LatencyBuckets((100, 500, 2000, 10000)), repo='repo-1')
+        buckets=LatencyBuckets((100, 500, 2000, 10000)), repo="repo-1")
     try:
-        assert len(reloaded.duration_context_kb.samples) == 5
+        assert sum(reloaded.continuous_kb._observed_counts.values()) == 6
     finally:
         reloaded.close()
-
-
-def test_execution_context_frozen_history_updates_without_learning(monkeypatch):
-    import itertools
-    monkeypatch.setattr(tool_resource_predictor.time, 'time', itertools.count(1000).__next__)
-    predictor = ToolResourcePredictor.from_traces(
-        openclaw_trace_paths=(), ebpf_trace_paths=(),
-        buckets=LatencyBuckets((100, 500)), repo='repo-1')
-    predictor.frozen = True
-    try:
-        request = _tool_request('before', 'call-a', 'python3 -m pytest')
-        predictor.predict(request)
-        predictor.record_tool_started(request)
-        completion = _tool_completion('after', 'call-a').model_copy(update={
-            'succeeded': False, 'raw_result': 'python3: No module named pytest\nExit code: 1'})
-        predictor.observe_completion(completion, _runtime_sample('after', 'call-a'))
-        later = _tool_request('later', 'call-b', 'python3 -m pytest')
-        predictor.predict(later)
-        from clawtune_sidecar.identity import call_key
-        state = predictor._context_pending[call_key(later)][2]
-        assert state['failure']['features']['last_same_runner'] == 'missing_module'
-        assert not predictor.duration_context_kb.samples
-    finally:
-        predictor.close()
-
-
-@pytest.mark.parametrize('censored,zero', [(True, False), (False, True)])
-def test_execution_context_rejects_censored_or_missing_duration(censored, zero):
-    from dataclasses import replace
-    predictor = ToolResourcePredictor.from_traces(
-        openclaw_trace_paths=(), ebpf_trace_paths=(),
-        buckets=LatencyBuckets((100, 500)), repo='repo-1')
-    try:
-        request = _tool_request('before', 'call-a', 'python3 -m pytest')
-        predictor.predict(request)
-        predictor.record_tool_started(request)
-        completion = _tool_completion('after', 'call-a').model_copy(update={
-            'error_type': 'timeout' if censored else None, 'duration_ms': 0 if zero else 20})
-        sample = _runtime_sample('after', 'call-a')
-        if zero:
-            sample = replace(sample, ended_at=sample.started_at, duration_ms=0)
-        predictor.observe_completion(completion, sample)
-        assert bool(predictor.duration_context_kb.samples) is (not zero)
-    finally:
-        predictor.close()
 
 
 def _tool_request(event_id: str, tool_call_id: str, command: str) -> ToolBeforeRequest:

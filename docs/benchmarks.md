@@ -377,8 +377,7 @@ Timeout finalization follows confirmed producer shutdown. Incomplete tools retai
 ## 5. Fixed-trace offline evaluation
 
 `scripts/clawtune.py offline` evaluates the three base prediction models and
-subcommand composition. It does not evaluate the optional online duration
-correction based on recent execution context; see the
+subcommand composition; see the
 [prediction reference](tool-profile.md#prediction-span_startprediction).
 
 Offline evaluation freezes the knowledge base and available command rules.

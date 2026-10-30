@@ -105,19 +105,18 @@ def _bundle(path):
 
 
 def test_builds_standard_seed_with_lattice_and_public_tool_memory(tmp_path):
-    base = tmp_path / "bootstrap-v1"
+    base = tmp_path / "base-seed"
     _base_seed(base)
     observations = tmp_path / "observations.json"
     _bundle(observations)
 
-    manifest = build(tmp_path / "bootstrap-v2", observations, base)
+    manifest = build(tmp_path / "imported-seed", observations, base)
 
-    assert validate_seed(tmp_path / "bootstrap-v2") == manifest
+    assert validate_seed(tmp_path / "imported-seed") == manifest
     provenance = manifest["provenance"]
     assert provenance["kind"] == "clawbox-qualified-observation-import"
     assert provenance["recipe_version"] == 4
     assert provenance["coverage"]["added_lattice_observations"] == 1
-    assert provenance["retained_base_optional_snapshots"] == []
     assert provenance["coverage"]["tool_memory_labels_by_measurement"][MEASUREMENT][
         "memory_extra_peak_bytes"
     ] == 1
@@ -128,18 +127,18 @@ def test_builds_standard_seed_with_lattice_and_public_tool_memory(tmp_path):
         "exact", "proxy", "exact", "exact",
     ]
     runtime = RuntimeToolResourceKB.from_json_obj(json.loads(
-        (tmp_path / "bootstrap-v2" / FILES[1]).read_text(encoding="utf-8")
+        (tmp_path / "imported-seed" / FILES[1]).read_text(encoding="utf-8")
     ))
     assert any(runtime.to_json_obj()["public"].values())
     lattice = LatticeTimeKB.from_json_obj(json.loads(
-        (tmp_path / "bootstrap-v2" / FILES[2]).read_text(encoding="utf-8")
+        (tmp_path / "imported-seed" / FILES[2]).read_text(encoding="utf-8")
     ))
     assert lattice.observation_count == 1
     assert set(manifest["snapshots"]) == set(FILES)
 
 
 def test_rejects_duplicate_execution_ids_before_creating_seed(tmp_path):
-    base = tmp_path / "bootstrap-v1"
+    base = tmp_path / "base-seed"
     _base_seed(base)
     observations = tmp_path / "observations.json"
     payload = _bundle(observations)
@@ -150,8 +149,8 @@ def test_rejects_duplicate_execution_ids_before_creating_seed(tmp_path):
     observations.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(ValueError, match="duplicate completed-call execution_id"):
-        build(tmp_path / "bootstrap-v2", observations, base)
-    assert not (tmp_path / "bootstrap-v2").exists()
+        build(tmp_path / "imported-seed", observations, base)
+    assert not (tmp_path / "imported-seed").exists()
 
 
 @pytest.mark.parametrize("missing", ["rss", "host"])

@@ -41,7 +41,6 @@ def test_source_release_includes_seed_and_public_contracts(tmp_path):
     shutil.copyfile(root / "services/sidecar/setup.py", package / "setup.py")
     shutil.copytree(root / "contracts", fixture / "contracts")
     shutil.copytree(root / "seeds/bootstrap-v2", fixture / "seeds/bootstrap-v2")
-    shutil.copytree(root / "seeds/clawbox-qualified-v1", fixture / "seeds/clawbox-qualified-v1")
     output = tmp_path / "dist"
     result = subprocess.run([sys.executable, "setup.py", "sdist", "--dist-dir", str(output)],
                             cwd=package, capture_output=True, text=True)
@@ -49,11 +48,11 @@ def test_source_release_includes_seed_and_public_contracts(tmp_path):
     with tarfile.open(next(output.glob("*.tar.gz"))) as archive:
         files = [member for member in archive.getmembers() if member.isfile()]
         seeds = [member for member in files if "/_data/seeds/" in member.name]
-        assert len(seeds) == 8
+        assert len(seeds) == 4
         assert any(member.name.endswith("/clause-lattice-time-kb.json") for member in seeds)
         for member in seeds:
             relative = member.name.split("/_data/", 1)[1]
-            assert Path(relative).parts[1] in {"bootstrap-v2", "clawbox-qualified-v1"}
+            assert Path(relative).parts[1] == "bootstrap-v2"
             assert archive.extractfile(member).read() == (root / relative).read_bytes()
         schemas = [member for member in files if "/_data/contracts/" in member.name and member.name.endswith(".schema.json")]
         assert {Path(member.name).name for member in schemas} == {p.name for p in (root / "contracts").glob("*.schema.json")}

@@ -1,7 +1,7 @@
-"""Replay the first N qualified trace-v5 cases into the four bundled KBs.
+"""Replay the first N qualified trace-v5 cases into a three-KB seed bundle.
 
 Reads source traces only. Build into a new directory, validate, then publish the
-bundle to seeds/bootstrap-v1. No model calls or recorded commands are executed.
+bundle to the selected output path. No model calls or recorded commands are executed.
 """
 from __future__ import annotations
 

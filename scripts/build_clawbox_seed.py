@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT / "services/sidecar/src"))
 
 from clawtune_kb import FILES, create_seed, validate_seed
 from clawtune_kb.contracts import validate
-from clawtune_kb.store import OPTIONAL_FILES, digest
+from clawtune_kb.store import digest
 from clawtune_sidecar.monitoring.environment_memory import memory_labels
 from tool_resource.runtime_kb import (
     ClauseObservation,
@@ -261,14 +261,6 @@ def build(output: Path, bundle_path: Path, base_seed: Path) -> dict:
     seed_payloads = dict(zip(FILES, (
         clause.to_json_obj(), runtime.to_json_obj(), lattice.to_json_obj(),
     )))
-    retained_optional = [
-        name for name in OPTIONAL_FILES if name in base_manifest["snapshots"]
-    ]
-    for name in retained_optional:
-        seed_payloads[name] = json.loads(
-            (base_seed / name).read_text(encoding="utf-8")
-        )
-    provenance["retained_base_optional_snapshots"] = retained_optional
     manifest = create_seed(output, seed_payloads, provenance=provenance)
     return manifest
 
