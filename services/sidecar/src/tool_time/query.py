@@ -4,13 +4,37 @@ from __future__ import annotations
 import math
 import statistics
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import field, dataclass, replace
+from typing import Any
 
 from command_parser.models import CommandFeatures
 from tool_time._lattice_vendor.features import CoverageIndex
 from tool_time._lattice_vendor.nodes import _loo_mse_log
 from tool_time._lattice_vendor.normalize import FeatureSet
 from tool_time._lattice_vendor.schemas import NodeStats
+
+
+@dataclass
+class LatticeQueryCache:
+    """Scratch data for one prediction, never persisted on a live KB.
+
+    Published node maps are immutable. Identity plus query constraints separates
+    targets, measurement partitions and generations even if this scratch object
+    is passed through multiple KB adapters. Retain owners to prevent id reuse.
+    """
+
+    candidates: dict = field(default_factory=dict)
+    selections: dict = field(default_factory=dict)
+    summaries: dict = field(default_factory=dict)
+    owners: dict[int, Any] = field(default_factory=dict)
+
+    def query(self, nodes, query, *, global_log_std, index=None):
+        key = (id(nodes), id(index), query.features, query.core, global_log_std)
+        if key not in self.candidates:
+            self.owners[id(nodes)] = nodes
+            self.owners[id(index)] = index
+            self.candidates[key] = query_nodes(nodes, query, global_log_std=global_log_std, index=index)
+        return self.candidates[key]
 
 
 def query_nodes(

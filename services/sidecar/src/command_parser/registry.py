@@ -95,6 +95,8 @@ class RuleRegistry:
         if re.fullmatch(r"python(?:[23](?:\.\d+)?)?", name):
             name = "python"
         found = []
+        source_loaded = False
+        source = None
         with self._lock:
             for order, (key, rule) in enumerate(self._rules.items()):
                 scope = rule["scope"]
@@ -111,7 +113,9 @@ class RuleRegistry:
                         if not script:
                             continue
                         from .evidence import source as read_source
-                        source = read_source(executable, context)
+                        if not source_loaded:
+                            source = read_source(executable, context)
+                            source_loaded = True
                         if not source or source["content_hash"] != scope.get("source_hash"):
                             continue
                     priority = 2 if scope["kind"] == "script" else 1

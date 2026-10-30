@@ -21,6 +21,18 @@ clawtune = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(clawtune)
 
 
+@pytest.mark.parametrize('flags,variants,oracle', [
+    ([], False, False), (['--lattice-variants'], True, False),
+    (['--lattice-oracle'], False, True),
+    (['--lattice-variants', '--lattice-oracle'], True, True),
+])
+def test_offline_lattice_flags_are_independent(flags, variants, oracle):
+    from benchmarks.cli import parser
+    args = parser().parse_args(['offline', '--dataset', 'input', '--rss-unit', 'MiB', *flags])
+    assert args.lattice_variants is variants
+    assert args.lattice_oracle is oracle
+
+
 def test_scheduler_declares_python_310_typing_extensions_dependency() -> None:
     pyproject = SCRIPT.parents[1] / "services" / "sidecar" / "pyproject.toml"
     assert '"typing-extensions>=4.12"' in pyproject.read_text(encoding="utf-8")

@@ -46,15 +46,15 @@ def test_oracle_deduplicates_only_identical_ordered_samples_and_preserves_ties(m
     reordered = {"values": (3, 1), "context": ("oracle", "c")}
     kb = fake_kb(((a, duplicate, reordered), (candidate(1),)))
     calls = []
-    original = module.compose
+    original = module.duration_p50
 
     def counted(*args, **kwargs):
-        calls.append(args[1][0]["duration_ms"]["context"])
+        calls.append(tuple(args[0][0]))
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(module, "compose", counted)
+    monkeypatch.setattr(module, "duration_p50", counted)
     evidence = LatticeOracle(kb, 10, EDGES).predict_load_samples("r", [{"argv": ["a"]}, {"argv": ["b"]}], 1)
-    assert calls == [("oracle", "a"), ("oracle", "c")]
+    assert calls == [(1, 3), (3, 1)]
     assert evidence[0]["duration_ms"]["context"] == ("oracle", "a")
 
 

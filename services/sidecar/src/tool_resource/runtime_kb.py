@@ -533,17 +533,21 @@ class RuntimeToolResourceKB(_ReplayHistory):
     def query(self, query: ToolCallQuery) -> dict[str, TargetPrediction]:
         """Predict secondary conditional p90 before ``query.ts_start``."""
 
+        self._advance(query.ts_start)
+        return {target: self._predict_target(query, target) for target in TARGETS}
+
+    def _advance(self, ts_start: float) -> None:
+        """Make causally prior observations visible without computing predictions."""
         if self._frozen:
-            return {target: self._predict_target(query, target) for target in TARGETS}
-        if self._last_query_ts is not None and query.ts_start < self._last_query_ts:
+            return
+        if self._last_query_ts is not None and ts_start < self._last_query_ts:
             raise ValueError(
-                f"backdated query at ts_start {query.ts_start} after a query at "
+                f"backdated query at ts_start {ts_start} after a query at "
                 f"{self._last_query_ts}: repo state already absorbed observations "
                 "completed before the later time"
             )
-        self._last_query_ts = query.ts_start
-        self._absorb_completed(query.ts_start)
-        return {target: self._predict_target(query, target) for target in TARGETS}
+        self._last_query_ts = ts_start
+        self._absorb_completed(ts_start)
 
     def _absorb_completed(self, ts_start: float) -> None:
         # Strictly-completed contract: ts_end < ts_start. Same-start,

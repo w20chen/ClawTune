@@ -8,6 +8,7 @@ import queue
 import shlex
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from dataclasses import asdict, dataclass, fields, replace
@@ -39,7 +40,6 @@ from tool_resource.features import (
     shell_bin_requires_exec_evidence,
 )
 from tool_resource.kv_ttl import evaluate_bucket_ttl
-from tool_resource.metrics import ecdf_quantile
 from tool_resource.runtime_kb import (
     ClauseLatencyBucketOutcome,
     ClauseLatencyBucketPrediction,
@@ -461,6 +461,11 @@ class ToolResourcePredictor:
         self._feature_call_keys: dict[tuple, str] = {}
         self._feature_call_owners: dict[str, tuple[str | None, str | None]] = {}
         self._telemetry_by_execution_id: dict[str, ExecutionTelemetrySummary] = {}
+        # Only processed executions enter this bounded history. Pending work
+        # must never be evicted to make room for already completed calls.
+        self._completed_execution_ids: OrderedDict[str, None] = OrderedDict()
+        # One-use inputs for the later tool completion, kept out of trace payloads.
+        self._completion_inputs: dict[str, tuple[tuple[str | None, str | None] | None, dict]] = {}
         self._memory_targets_committed: set[str] = set()
         self._pending_memory_targets: dict[str, tuple[Any, tuple[ClauseObservation, ...]]] = {}
         self._starts: dict[CorrelationKey, ToolBeforeRequest] = {}
@@ -473,9 +478,11 @@ class ToolResourcePredictor:
         from clawtune_kb import StateStore
         artifact_dir = kwargs.get("artifact_dir")
         if artifact_dir is not None and (artifact_dir / "manifest.json").is_file():
-            from clawtune_kb import validate_seed
-            validate_seed(artifact_dir)
-            if not kwargs.get("frozen", False):
+            from clawtune_kb.store import load_seed, validate_seed
+            if kwargs.get("frozen", False):
+                kwargs["_validated_seed"] = load_seed(artifact_dir)
+            else:
+                validate_seed(artifact_dir)
                 raise ValueError("immutable seed cannot be opened for online learning; initialize a working KB")
         store = None
         if artifact_dir is not None and (artifact_dir / "state.json").is_file() and not kwargs.get("frozen", False):
@@ -509,6 +516,7 @@ class ToolResourcePredictor:
         load_buckets: Mapping[str, Sequence[float]] | None = None,
         frozen: bool = False,
         max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES,
+        _validated_seed: tuple[dict, dict] | None = None,
     ) -> "ToolResourcePredictor":
         validate_max_optional_features(max_optional_features)
         if frozen:
@@ -523,10 +531,14 @@ class ToolResourcePredictor:
                         if seed_manifest_path.is_file() else None)
             payloads = []
             for path in paths:
-                data = path.read_bytes()
-                if expected is not None and hashlib.sha256(data).hexdigest() != expected.get(path.name):
+                if _validated_seed is None:
+                    data = path.read_bytes()
+                    identity = hashlib.sha256(data).hexdigest() if expected is not None else None
+                else:
+                    identity = _validated_seed[0]["snapshots"][path.name]
+                if expected is not None and identity != expected.get(path.name):
                     raise ValueError(f"frozen cold-start snapshot hash mismatch: {path.name}")
-                payloads.append(json.loads(data))
+                payloads.append(json.loads(data) if _validated_seed is None else _validated_seed[1][path.name])
             clause = ClauseResourceKB.from_json_obj(payloads[0])
             runtime = RuntimeToolResourceKB.from_json_obj(payloads[1])
             lattice = LatticeTimeKB.from_json_obj(payloads[2])
@@ -609,20 +621,15 @@ class ToolResourcePredictor:
         else:
             kb = ClauseResourceKB()
 
-        loaded_lattice_snapshot = _load_lattice_kb_snapshot(
-            lattice_snapshot_path,
-            rejections,
-            max_optional_features=max_optional_features,
-            strict=managed,
-        )
         prepared_cache = None
         if managed:
             from clawtune_sidecar.predictors.startup_cache import load_prepared_cache
             prepared_cache = load_prepared_cache(
                 artifact_dir, max_optional_features=max_optional_features,
             )
-            if prepared_cache is not None:
-                loaded_lattice_snapshot = prepared_cache[0]
+        loaded_lattice_snapshot = (prepared_cache[0] if prepared_cache is not None else
+            _load_lattice_kb_snapshot(lattice_snapshot_path, rejections,
+                max_optional_features=max_optional_features, strict=managed))
         if loaded_lattice_snapshot is None:
             lattice_kb = LatticeTimeKB.fit(observations, max_optional_features=max_optional_features)
         else:
@@ -725,18 +732,24 @@ class ToolResourcePredictor:
             validate("command-context", raw_context)
             command_context = ParseContext(**{**raw_context, "repo": request.repo or self.repo,
                                              "runtime_id": request.runtime_id})
-            self._feature_call_keys[(request.gateway_id, request.runtime_id, request.tool_call_id)] = call_key(request)
-            self._feature_call_owners[call_key(request)] = (request.gateway_id, request.runtime_id)
+            feature_key = call_key(request)
+            self._feature_call_keys[(request.gateway_id, request.runtime_id, request.tool_call_id)] = feature_key
+            self._feature_call_owners[feature_key] = (request.gateway_id, request.runtime_id)
             self.command_features.discover(command_context)
-            legacy = self._predict_legacy(request, command_context)
+            from tool_time.query import LatticeQueryCache
+            query_cache = LatticeQueryCache()
+            payload, parsed_execution = self._prediction_diagnostics(
+                request, command_context, query_cache=query_cache, feature_key=feature_key,
+            )
             query = ToolCallQuery(repo=request.repo or self.repo, tool_name=request.tool_name,
                                   command=_command_for_request(request), ts_start=time.time(),
                                   memory_measurement=self.memory_measurement,
                                   )
             call, diagnostics = predict_call_load(runtime=self.continuous_kb, trie=self.kb,
                                                   lattice=self.lattice_kb, query=query, edges=self.load_buckets,
-                                                  feature_call_id=call_key(request),
-                                                  feature_service=self.command_features, command_context=command_context)
+                                                  feature_call_id=feature_key, parsed_execution=parsed_execution,
+                                                  feature_service=self.command_features, command_context=command_context,
+                                                  query_cache=query_cache)
             from clawtune_sidecar.contracts.load_prediction import summarize_pmu_evidence
             try:
                 pmu = summarize_pmu_evidence(self.continuous_kb.predict_pmu_samples(query))
@@ -745,7 +758,6 @@ class ToolResourcePredictor:
             duration = call.targets["duration_ms"]
             p50 = None if duration.p50 is None else int(round(duration.p50))
             p90 = None if duration.p90 is None else int(round(duration.p90))
-            payload = legacy.tool_resource
             if isinstance(payload, dict):
                 # TTL must use the same authoritative duration distribution.
                 payload["kv_ttl_cost"] = None
@@ -764,198 +776,64 @@ class ToolResourcePredictor:
                                   call_prediction=call, pmu_prediction=pmu,
                                   diagnostics=diagnostics, tool_resource=payload)
 
-    def _predict_legacy(
-        self,
-        request: ToolBeforeRequest,
-        command_context=None,
-    ) -> ToolPrediction:
+    def _prediction_diagnostics(self, request, command_context, *, query_cache, feature_key):
+        """Return displayed diagnostics and the successful shared shell parse.
+
+        A native parser failure still permits the historical diagnostic fallback;
+        the load predictor retains its own retry/error handling in that case.
+        """
         command = _command_for_request(request)
         repo = request.repo or self.repo
-        # Host NUMA busyness is captured once per prediction, before any KB
-        # work, so every output path reports the same snapshot.
         numa_usage = self._numa_usage_snapshot()
+        parsed_execution = None
+        error = None
         try:
-            clauses, parse_failed = clauses_from_tool_request(
-                request.tool_name,
-                request.raw_params,
-            )
+            if request.tool_name in {"exec", "terminal_exec"} and command:
+                from tool_resource.commands import parse_execution
+                try:
+                    parsed_execution = parse_execution(command, parser=parse_command_clauses)
+                    clauses, reason = parsed_execution
+                except Exception:
+                    clauses, reason = parse_execution(command, parser=_fallback_parse_command_clauses)
+                parse_failed = reason == "parse_failed"
+            else:
+                clauses, parse_failed = clauses_from_tool_request(request.tool_name, request.raw_params)
         except Exception as exc:
-            # Timestamp acquisition and every KB read form one transaction.
-            # Taking the timestamp only after the lock prevents an older
-            # request from resuming behind a newer request and tripping the
-            # monotonic causal guards.
-            with self._kb_lock:
-                query_ts = time.time()
-                continuous_predictions = self._continuous_predictions_for_request(
-                    request,
-                    command,
-                    query_ts,
-                            )
-                runtime_p50_ms, runtime_p90_ms = self._continuous_latency_topline_ms(
-                    request,
-                    command,
-                    query_ts,
-                )
-                return ToolPrediction(
-                    duration_p50_ms=runtime_p50_ms,
-                    duration_p90_ms=runtime_p90_ms,
-                    resource_class=_resource_class_for_duration_ms(runtime_p90_ms),
-                    tool_resource=_tool_resource_prediction_payload(
-                        _unavailable_prediction_for_request(
-                            request,
-                            repo=repo,
-                            command=command,
-                            reason=_prediction_error_reason(exc),
-                        ),
-                        continuous_predictions=continuous_predictions,
-                        lattice_time_predictions=(),
-                        kv_ttl_cost=None,
-                        numa_usage=numa_usage,
-                    ),
-                )
+            error = exc
+            clauses, parse_failed = (), True
 
-        # The three causal KBs share one wall-clock ordering contract.  Keep
-        # the full prediction transaction under the same re-entrant lock so
-        # their monotonic watermarks cannot be interleaved by another request.
-        with self._kb_lock:
-            query_ts = time.time()
-            if request.tool_name == "exec" and not parse_failed and command_context is not None:
-                # Share the same rule registry with the authoritative load path.
-                # Its parse_execution stage has independent static clause indices.
-                clauses = self.command_features.prepare(clauses, command_context, call_key(request))
-            lattice_time_predictions: tuple[ClauseLatticeTimePredictions, ...] = ()
-            lattice_resource_predictions: tuple[dict[str, Any], ...] = ()
+        query_ts = time.time()
+        lattice_time_predictions = ()
+        lattice_resource_predictions = ()
+        if error is None:
+            if request.tool_name == "exec" and not parse_failed:
+                clauses = self.command_features.prepare(clauses, command_context, feature_key)
             try:
                 if request.tool_name == "exec":
                     lattice_time_predictions = self._lattice_predictions_for_clauses(
-                        clauses,
-                        query_ts,
-                        repo=repo,
-                        parse_failed=parse_failed,
-                        shell_command=True,
+                        clauses, query_ts, repo=repo, parse_failed=parse_failed,
+                        shell_command=True, query_cache=query_cache,
                     )
-                if request.tool_name == "exec":
                     lattice_resource_predictions = self._lattice_resource_predictions_for_clauses(
-                        repo, clauses, query_ts, parse_failed=parse_failed,
+                        repo, clauses, query_ts, parse_failed=parse_failed, query_cache=query_cache,
                     )
                 prediction = self.kb.predict_command_latency_bucket_from_clauses(
-                    repo,
-                    clauses,
-                    query_ts,
-                    self.buckets,
-                    command=command or request.tool_name,
-                    parse_failed=parse_failed,
-                    shell_command=request.tool_name == "exec",
+                    repo, clauses, query_ts, self.buckets, command=command or request.tool_name,
+                    parse_failed=parse_failed, shell_command=request.tool_name == "exec",
                 )
             except Exception as exc:
-                continuous_predictions = self._continuous_predictions_for_request(
-                    request,
-                    command,
-                    query_ts,
-                            )
-                runtime_p50_ms, runtime_p90_ms = self._continuous_latency_topline_ms(
-                    request,
-                    command,
-                    query_ts,
-                )
-                return ToolPrediction(
-                    duration_p50_ms=runtime_p50_ms,
-                    duration_p90_ms=runtime_p90_ms,
-                    resource_class=_resource_class_for_duration_ms(runtime_p90_ms),
-                    tool_resource=_tool_resource_prediction_payload(
-                        _unavailable_prediction_for_request(
-                            request,
-                            repo=repo,
-                            command=command,
-                            reason=_prediction_error_reason(exc),
-                        ),
-                        continuous_predictions=continuous_predictions,
-                        lattice_time_predictions=lattice_time_predictions,
-                        lattice_resource_predictions=lattice_resource_predictions,
-                        kv_ttl_cost=None,
-                        numa_usage=numa_usage,
-                    ),
-                )
-            continuous_predictions = self._continuous_predictions_for_request(
-                request,
-                command,
-                query_ts,
-                    )
-            if prediction.prediction is None:
-                runtime_p50_ms, runtime_p90_ms = self._continuous_latency_topline_ms(
-                    request,
-                    command,
-                    query_ts,
-                )
-                return ToolPrediction(
-                    duration_p50_ms=runtime_p50_ms,
-                    duration_p90_ms=runtime_p90_ms,
-                    resource_class=_resource_class_for_duration_ms(runtime_p90_ms),
-                    tool_resource=_tool_resource_prediction_payload(
-                        prediction,
-                        continuous_predictions=continuous_predictions,
-                        lattice_time_predictions=lattice_time_predictions,
-                        lattice_resource_predictions=lattice_resource_predictions,
-                        kv_ttl_cost=None,
-                        numa_usage=numa_usage,
-                    ),
-                )
-
-            bucket_prediction = prediction.prediction
-            runtime_p50_ms, runtime_p90_ms = self._continuous_latency_topline_ms(
-                request,
-                command,
-                query_ts,
+                error = exc
+        if error is not None:
+            prediction = _unavailable_prediction_for_request(
+                request, repo=repo, command=command, reason=_prediction_error_reason(error),
             )
-            duration_p50_ms = _bucket_percentile_ms(
-                bucket_prediction.probability_by_bucket,
-                self.buckets,
-                0.5,
-            )
-            duration_p90_ms = _bucket_percentile_ms(
-                bucket_prediction.probability_by_bucket,
-                self.buckets,
-                0.9,
-            )
-            uses_continuous_duration = (
-                runtime_p50_ms is not None or runtime_p90_ms is not None
-            )
-            return ToolPrediction(
-                duration_p50_ms=(
-                    runtime_p50_ms
-                    if runtime_p50_ms is not None
-                    else duration_p50_ms
-                ),
-                duration_p90_ms=(
-                    runtime_p90_ms
-                    if runtime_p90_ms is not None
-                    else duration_p90_ms
-                ),
-                resource_class=(
-                    _resource_class_for_duration_ms(runtime_p90_ms)
-                    if runtime_p90_ms is not None
-                    else _resource_class_for_bucket(bucket_prediction.bucket_id)
-                ),
-                confidence=(
-                    None
-                    if uses_continuous_duration or prediction.composed
-                    else max(
-                        bucket_prediction.probability_by_bucket,
-                        default=0.0,
-                    )
-                ),
-                tool_resource=_tool_resource_prediction_payload(
-                    prediction,
-                    continuous_predictions=continuous_predictions,
-                    lattice_time_predictions=lattice_time_predictions,
-                    lattice_resource_predictions=lattice_resource_predictions,
-                    kv_ttl_cost=self._kv_ttl_cost_payload(
-                        bucket_prediction,
-                        reference_runtime_s=duration_p90_ms / 1000.0,
-                    ),
-                    numa_usage=numa_usage,
-                ),
-            )
+        continuous = self._continuous_predictions_for_request(request, command, query_ts)
+        return _tool_resource_prediction_payload(
+            prediction, continuous_predictions=continuous,
+            lattice_time_predictions=lattice_time_predictions,
+            lattice_resource_predictions=lattice_resource_predictions,
+            kv_ttl_cost=None, numa_usage=numa_usage,
+        ), parsed_execution
 
     def _kv_ttl_cost_payload(
         self,
@@ -1045,6 +923,10 @@ class ToolResourcePredictor:
     def finalize_runtime(self, runtime_id: str, gateway_id: str | None) -> None:
         """Retire only the named runtime's unfinished calls and history."""
         self._finalize_memory_targets(runtime_id, gateway_id)
+        with self._execution_lock:
+            for execution_id, owner in list(self._execution_owners.items()):
+                if _execution_owner_matches_runtime(owner, runtime_id=runtime_id, gateway_id=gateway_id):
+                    self._retire_execution_telemetry(execution_id)
         with self._starts_lock, self._kb_lock:
             for key, request in list(self._starts.items()):
                 if (request.gateway_id, request.runtime_id) == (gateway_id, runtime_id):
@@ -1064,7 +946,10 @@ class ToolResourcePredictor:
             if start is None and event.tool_call_id is not None:
                 start = self._pop_start_by_tool_call_id(event.tool_call_id, event)
         try:
-            return self._observe_completion(event, sample, start)
+            result = self._observe_completion(event, sample, start)
+            if event.execution_id:
+                self._retire_execution_telemetry(event.execution_id)
+            return result
         finally:
             self.finalize_call(start or event)
 
@@ -1082,10 +967,13 @@ class ToolResourcePredictor:
         )
         artifact: dict[str, Any] | None = None
         if event.execution_id:
-            summary = self._telemetry_by_execution_id.get(event.execution_id)
-            if summary is not None and summary.artifact_path:
+            with self._execution_lock:
+                pending = self._completion_inputs.get(event.execution_id)
+            if pending is not None:
+                artifact = pending[1]
+            elif execution_summary is not None and execution_summary.artifact_path:
                 try:
-                    artifact = _read_ebpf_artifact(Path(summary.artifact_path))
+                    artifact = _read_ebpf_artifact(Path(execution_summary.artifact_path))
                 except Exception:
                     artifact = None
         completed_call = completed_call_from_completion(
@@ -1183,8 +1071,12 @@ class ToolResourcePredictor:
         previous = self._telemetry_by_execution_id.get(execution_id)
         if previous is not None and previous.started:
             return previous.status != "unavailable"
+        with self._execution_lock:
+            self._completed_execution_ids.pop(execution_id, None)
         host_scope_available = bool(cgroup_path and trusted_root_pid is not None)
         if self.artifact_dir is None or (not container_id and not host_scope_available):
+            with self._execution_lock:
+                self._execution_owners.setdefault(execution_id, (gateway_id, runtime_id))
             reason = (
                 "artifact_dir_unconfigured"
                 if self.artifact_dir is None
@@ -1198,7 +1090,6 @@ class ToolResourcePredictor:
                 status="unavailable",
                 unavailable_reason=reason,
             )
-            self._trim_execution_telemetry()
             return False
         artifact_path = self.artifact_dir / f"{_safe_artifact_name(execution_id)}.json"
         context = DockerExecutionContext(
@@ -1225,6 +1116,8 @@ class ToolResourcePredictor:
                     command,
                 )
             except Exception as exc:
+                with self._execution_lock:
+                    self._execution_owners.setdefault(execution_id, (gateway_id, runtime_id))
                 self._telemetry_by_execution_id[
                     execution_id
                 ] = ExecutionTelemetrySummary(
@@ -1238,7 +1131,6 @@ class ToolResourcePredictor:
                     status="unavailable",
                     unavailable_reason=f"start_failed:{type(exc).__name__}: {exc}",
                 )
-                self._trim_execution_telemetry()
                 return False
             observer = getattr(run, "_observer", None)
             telemetry_available = bool(
@@ -1260,7 +1152,6 @@ class ToolResourcePredictor:
             status="started" if telemetry_available else "unavailable",
             unavailable_reason=unavailable_reason,
         )
-        self._trim_execution_telemetry()
         return telemetry_available
 
     def _reuse_active_execution(
@@ -1323,7 +1214,8 @@ class ToolResourcePredictor:
         )
         with self._execution_lock:
             run = self._runs_by_execution_id.pop(execution_id, None)
-            feature_owner = self._execution_owners.pop(execution_id, None)
+            # Retain ownership until the completion hook or runtime close.
+            feature_owner = self._execution_owners.get(execution_id)
         if run is None:
             summary = self._telemetry_by_execution_id.get(
                 execution_id,
@@ -1336,12 +1228,17 @@ class ToolResourcePredictor:
                     unavailable_reason="no_active_ebpf_run",
                 ),
             )
-            if summary.replay_execution is None or confirmed_timeout:
-                summary = replace(summary, replay_execution=summary.replay_execution or replay_execution,
-                                  confirmed_timeout=summary.confirmed_timeout or confirmed_timeout,
-                                  timeout_duration_lower_bound_ms=timeout_duration_lower_bound_ms or summary.timeout_duration_lower_bound_ms)
-                self._telemetry_by_execution_id[execution_id] = summary
-                self._trim_execution_telemetry()
+            with self._execution_lock:
+                # Re-read under the retirement lock so a retry cannot restore
+                # a detailed summary that completion has just released.
+                summary = self._telemetry_by_execution_id.get(execution_id, summary)
+                if summary.replay_execution is None or confirmed_timeout:
+                    summary = replace(summary, replay_execution=summary.replay_execution or replay_execution,
+                                      confirmed_timeout=summary.confirmed_timeout or confirmed_timeout,
+                                      timeout_duration_lower_bound_ms=timeout_duration_lower_bound_ms or summary.timeout_duration_lower_bound_ms)
+                    self._telemetry_by_execution_id[execution_id] = summary
+                if execution_id not in self._execution_owners:
+                    self._retire_execution_telemetry(execution_id)
             return summary
         try:
             result = self._sdk.finish_command(
@@ -1367,7 +1264,6 @@ class ToolResourcePredictor:
                 timeout_duration_lower_bound_ms=timeout_duration_lower_bound_ms,
             )
             self._telemetry_by_execution_id[execution_id] = summary
-            self._trim_execution_telemetry()
             return summary
         kb_update_errors = [result.kb_update_error] if result.kb_update_error is not None else []
         accepted_observations: list[ClauseObservation] = []
@@ -1428,11 +1324,19 @@ class ToolResourcePredictor:
             confirmed_timeout=confirmed_timeout,
             timeout_duration_lower_bound_ms=timeout_duration_lower_bound_ms,
         )
+        if summary.artifact_path:
+            completion_input = _completion_artifact(result.telemetry_artifact, Path(summary.artifact_path))
+            if completion_input is not None:
+                with self._execution_lock:
+                    self._completion_inputs[execution_id] = (feature_owner, completion_input)
         self._telemetry_by_execution_id[execution_id] = summary
-        self._trim_execution_telemetry()
         return summary
 
     def execution_telemetry(self, execution_id: str) -> ExecutionTelemetrySummary | None:
+        """Return measurements while pending, then status after processing.
+
+        Full measurements remain in the execution artifact and tool trace.
+        """
         return self._telemetry_by_execution_id.get(execution_id)
 
     def execution_active(self, execution_id: str) -> bool:
@@ -1499,11 +1403,33 @@ class ToolResourcePredictor:
                 self._memory_targets_committed.add(execution_id)
                 self._pending_memory_targets.pop(execution_id, None)
 
+    def _retire_execution_telemetry(self, execution_id: str) -> None:
+        with self._execution_lock:
+            summary = self._telemetry_by_execution_id.get(execution_id)
+            if (execution_id in self._runs_by_execution_id
+                    or execution_id in self._pending_memory_targets
+                    or (summary is not None and summary.started and summary.replay_execution is None)):
+                return
+            self._completion_inputs.pop(execution_id, None)
+            self._execution_owners.pop(execution_id, None)
+            if summary is None or execution_id in self._completed_execution_ids:
+                return
+            # Preserve censoring evidence even if only the artifact reported it.
+            artifact_summary = summary.artifact_summary
+            self._telemetry_by_execution_id[execution_id] = replace(
+                summary, call_telemetry=None,
+                artifact_summary=({"replay_execution": artifact_summary["replay_execution"]}
+                                  if artifact_summary and "replay_execution" in artifact_summary else None),
+            )
+            self._completed_execution_ids[execution_id] = None
+            self._trim_execution_telemetry()
+
     def _trim_execution_telemetry(self) -> None:
-        while len(self._telemetry_by_execution_id) > 10_000:
-            oldest = next(iter(self._telemetry_by_execution_id))
-            self._telemetry_by_execution_id.pop(oldest, None)
-            self._memory_targets_committed.discard(oldest)
+        with self._execution_lock:
+            while len(self._completed_execution_ids) > 10_000:
+                oldest, _ = self._completed_execution_ids.popitem(last=False)
+                self._telemetry_by_execution_id.pop(oldest, None)
+                self._memory_targets_committed.discard(oldest)
 
     def flush_kb_updates(self, timeout_seconds: float | None = None) -> None:
         """Wait until every previously queued shared-KB update is durable.
@@ -1540,6 +1466,12 @@ class ToolResourcePredictor:
                 self._starts.clear()
                 self._feature_call_keys.clear()
             self._finalize_memory_targets()
+            with self._execution_lock:
+                self._completion_inputs.clear()
+                self._telemetry_by_execution_id.clear()
+                self._completed_execution_ids.clear()
+                self._execution_owners.clear()
+                self._memory_targets_committed.clear()
             self.command_features.close(timeout_seconds=remaining())
             self._kb_writes.close(remaining())
             store = getattr(self, "_state_store", None)
@@ -1728,11 +1660,11 @@ class ToolResourcePredictor:
 
     def _lattice_resource_predictions_for_clauses(
         self, repo: str, clauses: Sequence[Mapping[str, Any]], query_ts: float,
-        *, parse_failed: bool,
+        *, parse_failed: bool, query_cache=None,
     ) -> tuple[dict[str, Any], ...]:
         try:
             return self.lattice_kb.predict_resource_clauses(
-                repo, clauses, query_ts, parse_failed=parse_failed,
+                repo, clauses, query_ts, parse_failed=parse_failed, query_cache=query_cache,
             )
         except Exception as exc:
             outcomes = LatticeTimeKB().predict_resource_clauses(
@@ -1751,6 +1683,7 @@ class ToolResourcePredictor:
         repo: str,
         parse_failed: bool,
         shell_command: bool,
+        query_cache=None,
     ) -> tuple[ClauseLatticeTimePredictions, ...]:
         try:
             with self._kb_lock:
@@ -1760,6 +1693,7 @@ class ToolResourcePredictor:
                     query_ts,
                     parse_failed=parse_failed,
                     shell_command=shell_command,
+                    query_cache=query_cache,
                 )
         except Exception as exc:
             return _unavailable_lattice_time_predictions(
@@ -1791,13 +1725,7 @@ class ToolResourcePredictor:
     ) -> dict[str, Any]:
         predictions: dict[str, Any] = {}
         try:
-            self.continuous_kb._advance(query.ts_start)  # type: ignore[attr-defined]
-        except AttributeError:
-            # Historical RuntimeToolResourceKB exposes absorption through query().
-            try:
-                self.continuous_kb.query(query)
-            except Exception:
-                pass
+            self.continuous_kb._advance(query.ts_start)
         except Exception:
             pass
         for target in ("latency_ms", "cpu_peak_cores", "memory_total_peak_bytes", "memory_extra_peak_bytes"):
@@ -1816,51 +1744,6 @@ class ToolResourcePredictor:
                 continue
             predictions[target] = _target_prediction_payload(prediction)
         return predictions
-
-    def _continuous_latency_topline_ms(
-        self,
-        request: ToolBeforeRequest,
-        command: str | None,
-        ts_start: float,
-    ) -> tuple[int | None, int | None]:
-        repo = request.repo or self.repo
-        query = ToolCallQuery(
-            repo=repo,
-            tool_name=request.tool_name,
-            command=command,
-            ts_start=ts_start,
-        )
-        with self._kb_lock:
-            return self._continuous_latency_for_query(query)
-
-    def _continuous_latency_for_query(
-        self,
-        query: ToolCallQuery,
-    ) -> tuple[int | None, int | None]:
-        try:
-            self.continuous_kb._advance(query.ts_start)  # type: ignore[attr-defined]
-        except AttributeError:
-            try:
-                self.continuous_kb.query(query)
-            except Exception:
-                pass
-        except Exception:
-            pass
-        try:
-            values, _scope, _kind, _path = self.continuous_kb._select(  # type: ignore[attr-defined]
-                query.repo,
-                "latency_ms",
-                query.tool_name,
-                query.command,
-            )
-        except Exception:
-            return None, None
-        if not values:
-            return None, None
-        return (
-            max(0, int(round(ecdf_quantile(values, 0.5)))),
-            max(0, int(round(ecdf_quantile(values, 0.9)))),
-        )
 
     def _numa_usage_snapshot(self) -> dict[str, Any] | None:
         """Best-effort per-NUMA-node CPU usage snapshot for this prediction.
@@ -2070,6 +1953,37 @@ def observation_from_completion(
         in_subst=False,
         pipeline_position=-1,
     )
+
+
+def _completion_artifact(artifact: Any, path: Path) -> dict[str, Any] | None:
+    """Retain only duration/structure/memory inputs from a finalized artifact.
+
+    Preserve the reader's validation even after a partial SDK failure. Missing
+    or invalid records keep the disk fallback; raw events and timelines are not
+    retained here. Public execution summaries remain unchanged.
+    """
+    from tool_resource.sdk import _validate_artifact
+    from copy import deepcopy
+    if not isinstance(artifact, dict) or artifact.get("version") != 2:
+        return None
+    try:
+        _validate_artifact(path, artifact)
+        fields = (
+            "bin", "argv", "ts_start", "ts_end", "in_pipe", "pipeline_position",
+            "in_loop", "in_subst", "stdin_from_pipe", "clause_index",
+            "memory_total_peak_bytes", "memory_extra_peak_bytes",
+        )
+        calls = []
+        for call in artifact["calls"]:
+            clauses = call.get("clauses", [])
+            if not isinstance(clauses, list) or not all(isinstance(row, Mapping) for row in clauses):
+                return None
+            calls.append({"command": call.get("command"), "clauses": [
+                {name: deepcopy(row[name]) for name in fields if name in row} for row in clauses
+            ]})
+        return {"calls": calls}
+    except (TypeError, ValueError, KeyError):
+        return None
 
 
 def _retained_workload_duration_seconds(
@@ -3120,36 +3034,6 @@ def _cpu_ns(value: Any) -> int | None:
     if parsed is None or parsed < 0:
         return None
     return int(parsed * 1_000_000_000)
-
-
-def _bucket_percentile_ms(
-    probability_by_bucket: Sequence[float],
-    buckets: LatencyBuckets,
-    percentile: float,
-) -> int:
-    cumulative = 0.0
-    for index, probability in enumerate(probability_by_bucket):
-        cumulative += probability
-        if cumulative >= percentile:
-            return int(round(_bucket_representative_ms(index, buckets)))
-    return int(round(_bucket_representative_ms(len(probability_by_bucket) - 1, buckets)))
-
-
-def _bucket_representative_ms(bucket_id: int, buckets: LatencyBuckets) -> float:
-    edges = buckets.edges_ms
-    if bucket_id <= 0:
-        return edges[0] / 2
-    if bucket_id >= len(edges):
-        return edges[-1] * 2
-    return (edges[bucket_id - 1] + edges[bucket_id]) / 2
-
-
-def _resource_class_for_bucket(bucket_id: int) -> str:
-    if bucket_id <= 1:
-        return "latency_short"
-    if bucket_id <= 3:
-        return "latency_medium"
-    return "latency_long"
 
 
 def _resource_class_for_duration_ms(duration_ms: int | None) -> str:

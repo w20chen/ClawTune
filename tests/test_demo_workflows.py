@@ -141,9 +141,11 @@ def test_non_shell_datasets_have_no_offline_scores_and_test_does_not_train(tmp_p
 
 
 @pytest.mark.parametrize("shell_tool", ["exec", "terminal_exec"])
-def test_offline_lattice_variants_share_frozen_statistics_and_preserve_default_results(tmp_path, monkeypatch, shell_tool):
+@pytest.mark.parametrize("variants,oracle", [(True, False), (False, True), (True, True)])
+def test_offline_lattice_variants_share_frozen_statistics_and_preserve_default_results(tmp_path, monkeypatch, shell_tool, variants, oracle):
     from offline.runner import run
     from offline.lattice_oracle import LatticeOracle
+    from tool_resource.runtime_kb import RuntimeToolResourceKB, ClauseResourceKB
     from test_cold_start import trace
 
     dataset = tmp_path / "input"
@@ -176,13 +178,22 @@ def test_offline_lattice_variants_share_frozen_statistics_and_preserve_default_r
         original_oracle(oracle, kb, actual, edges)
 
     monkeypatch.setattr(LatticeOracle, "__init__", record_oracle)
+    backend_calls = {"runtime": 0, "trie": 0}
+    def count_backend(name, original):
+        def counted(*args, **kwargs):
+            backend_calls[name] += 1
+            return original(*args, **kwargs)
+        return counted
+    for name, cls in (("runtime", RuntimeToolResourceKB), ("trie", ClauseResourceKB)):
+        monkeypatch.setattr(cls, "predict_load_samples", count_backend(name, cls.predict_load_samples))
     output = tmp_path / "variants"
-    result = run(dataset, output, benchmark="swe-rebench", lattice_variants=True,
+    result = run(dataset, output, benchmark="swe-rebench", lattice_variants=variants, lattice_oracle=oracle,
                  split_cache_dir=tmp_path / "splits")
+    assert backend_calls == {"runtime": 1, "trie": 1}
     assert len({row[0] for row in observed}) == 1
-    assert {row[1] for row in observed} == {"shrinkage", "loso", "max_cardinality"}
+    assert {row[1] for row in observed} == ({"shrinkage", "loso", "max_cardinality"} if variants else {"shrinkage"})
     assert all(row[2] for row in observed)
-    assert oracle_inputs == [(observed[0][0], 1000., True)]
+    assert oracle_inputs == ([(observed[0][0], 1000., True)] if oracle else [])
     assert result["test_updates"] == 0
     assert result["split_sha256"] == baseline["split_sha256"]
     for model, metrics in baseline["models"].items():
@@ -193,9 +204,18 @@ def test_offline_lattice_variants_share_frozen_statistics_and_preserve_default_r
                for counter in model["availability"].values())
     assert all(row["eligible"] == 1 for model in result["models"].values()
                for row in model["metrics"] if row["target"] == "duration_ms")
-    assert result["models"]["lattice_oracle"]["oracle"]["uses_test_labels"] is True
-    assert "lattice_oracle uses actual test duration" in (output / "report.md").read_text()
-    for model in ("lattice", "lattice_loso", "lattice_max_cardinality", "lattice_oracle"):
+    if oracle:
+        assert result["models"]["lattice_oracle"]["oracle"]["uses_test_labels"] is True
+    else:
+        assert "lattice_oracle" not in result["models"]
+    assert ("lattice_oracle uses actual test duration" in (output / "report.md").read_text()) == oracle
+    expected_models = {"tool", "trie", "lattice"}
+    if variants:
+        expected_models.update(("lattice_loso", "lattice_max_cardinality"))
+    if oracle:
+        expected_models.add("lattice_oracle")
+    assert set(result["models"]) == expected_models
+    for model in expected_models - {"tool", "trie"}:
         duration = [row for row in rows if row["model"] == model and row["target"] == "duration_ms"]
         assert len(duration) == 1
         assert duration[0]["actual_bucket"] == duration[0]["predicted_bucket"] == 2

@@ -47,22 +47,37 @@ def user_state_dir() -> Path:
 
 
 def validate_seed(path: Path) -> dict:
+    return _read_seed(path, retain_payloads=False)[0]
+
+
+def load_seed(path: Path) -> tuple[dict, dict]:
+    """Validate and return the same parsed bytes for an immutable seed load."""
+    return _read_seed(path, retain_payloads=True)
+
+
+def _read_seed(path: Path, *, retain_payloads: bool) -> tuple[dict, dict]:
     path = path.resolve(strict=True)
     manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
     from .contracts import validate
     validate(manifest, "kb-seed.schema.json")
     if manifest.get("schema") != "clawtune.seed.v1" or set(manifest.get("snapshots", {})) != set(FILES):
         raise ValueError(f"invalid seed bundle: {path}")
+    payloads = {}
     for name in manifest["snapshots"]:
         target = (path / name).resolve(strict=True)
-        if not target.is_relative_to(path) or digest(target) != manifest["snapshots"][name]:
+        if not target.is_relative_to(path):
             raise ValueError(f"seed snapshot hash mismatch: {name}")
-        obj = json.loads(target.read_text(encoding="utf-8"))
+        data = target.read_bytes()
+        if hashlib.sha256(data).hexdigest() != manifest["snapshots"][name]:
+            raise ValueError(f"seed snapshot hash mismatch: {name}")
+        obj = json.loads(data)
         if not isinstance(obj, dict) or not isinstance(obj.get("schema"), str):
             raise ValueError(f"invalid KB snapshot: {name}")
         if obj.get("pending"):
             raise ValueError(f"seed must have finalized observations: {name}")
-    return manifest
+        if retain_payloads:
+            payloads[name] = obj
+    return manifest, payloads
 
 
 def create_seed(path: Path, payloads: dict[str, dict], *, provenance: dict) -> dict:

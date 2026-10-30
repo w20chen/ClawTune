@@ -666,6 +666,7 @@ def _render_report(report: dict) -> str:
 def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int = 42,
         rss_unit: str = "MiB", split_cache_dir: Path | None = None,
         train_fraction: float = .8, split_by: str = "task", lattice_variants: bool = False,
+        lattice_oracle: bool = False,
         max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES) -> dict:
     validate_max_optional_features(max_optional_features)
     from clawtune_kb.contracts import validate
@@ -680,7 +681,8 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
         output.mkdir(parents=True, exist_ok=False)
         reports = {name: run(dataset, output / name, benchmark=name, seed=seed, rss_unit=rss_unit,
                              split_cache_dir=split_cache_dir, train_fraction=train_fraction, split_by=split_by,
-                             lattice_variants=lattice_variants, max_optional_features=max_optional_features)
+                             lattice_variants=lattice_variants, lattice_oracle=lattice_oracle,
+                             max_optional_features=max_optional_features)
                    for name in dataset_names}
         report = {"schema": "clawtune.offline-report.v1", "train_tasks": sum(r["train_tasks"] for r in reports.values()),
                   "test_tasks": sum(r["test_tasks"] for r in reports.values()), "test_updates": 0,
@@ -728,7 +730,10 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
     trie.freeze()
     runtime.freeze()
     lattice.freeze()
-    from clawtune_sidecar.predictors.call_load import predict_call_load
+    from clawtune_sidecar.predictors.call_load import (
+        CompositionCache, prepare_call, predict_call_load, predict_clause_load,
+    )
+    from tool_time.query import LatticeQueryCache
     from clawtune_sidecar.prediction_config import load_bucket_edges
     edges = load_bucket_edges((100, 500, 2000, 10000))
     baselines = defaultdict(list)
@@ -746,7 +751,7 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
     if not lattice_variants:
         variants = {}
     model_rows.update({name: [] for name in variants})
-    if lattice_variants:
+    if lattice_oracle:
         model_rows["lattice_oracle"] = []
     availability = {name: _availability_counts() for name in model_rows}
     repository_availability = {name: defaultdict(_availability_counts) for name in model_rows}
@@ -775,27 +780,26 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
             if index < len(loaded.call_actuals):
                 actual_target_values.update(loaded.call_actuals[index])
             parse_before = default_service().metrics()
+            prepared = prepare_call(query, parsed_clauses=known_clauses)
+            query_cache, composition_cache = LatticeQueryCache(), CompositionCache()
             prediction, diagnostics = predict_call_load(
                 runtime=runtime, trie=trie, lattice=lattice, query=query, edges=edges,
-                parsed_clauses=known_clauses,
+                prepared=prepared, query_cache=query_cache, composition_cache=composition_cache,
             )
             parsing_counts.update({name: value - parse_before.get(name, 0)
                                    for name, value in default_service().metrics().items()})
             variant_estimates = {}
             for name, variant in variants.items():
-                _, variant_diagnostics = predict_call_load(
-                    runtime=runtime, trie=trie, lattice=variant, query=query, edges=edges,
-                    parsed_clauses=known_clauses,
-                )
-                variant_estimates[name] = variant_diagnostics.backends["lattice"].targets
-            if lattice_variants:
+                variant_estimates[name] = predict_clause_load(
+                    "lattice", variant, query, edges, prepared,
+                    query_cache=query_cache, composition_cache=composition_cache,
+                ).targets
+            if lattice_oracle:
                 from offline.lattice_oracle import LatticeOracle
-                _, oracle_diagnostics = predict_call_load(
-                    runtime=runtime, trie=trie,
-                    lattice=LatticeOracle(lattice, actual_target_values.get("duration_ms"), edges),
-                    query=query, edges=edges, parsed_clauses=known_clauses,
-                )
-                variant_estimates["lattice_oracle"] = oracle_diagnostics.backends["lattice"].targets
+                variant_estimates["lattice_oracle"] = predict_clause_load(
+                    "lattice", LatticeOracle(lattice, actual_target_values.get("duration_ms"), edges),
+                    query, edges, prepared, query_cache=query_cache, composition_cache=composition_cache,
+                ).targets
             estimates = dict(prediction.targets)
             pmu_evidence = runtime.predict_pmu_samples(query)
             for metric in ("ipc", "llc_mpki", "llc_miss_rate"):
@@ -892,7 +896,7 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
               "split_registry_status": manifest["split_registry_status"],
               "scope": "shell calls only (exec, terminal_exec); prediction using execution-before command features; unavailable targets are not scored",
               "split_sha256": manifest["assignment_sha256"]}
-    if lattice_variants:
+    if lattice_oracle:
         from offline.lattice_oracle import ORACLE_DESCRIPTION
         report["models"]["lattice_oracle"]["oracle"] = dict(ORACLE_DESCRIPTION)
         report["scope"] += "; lattice_oracle uses actual test duration for hindsight selection only"

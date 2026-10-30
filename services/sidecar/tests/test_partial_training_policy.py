@@ -104,6 +104,11 @@ def test_online_memory_target_is_submitted_once_without_duplicate_cpu_zero(tmp_p
         call_telemetry=call, kb_update_error=None))
     try:
         predictor.finish_execution(execution_id="execution", exit_code=0, signal=None)
+        assert "execution" in predictor._completion_inputs
+        if stage in {"completion", "declared-source"}:
+            def no_second_read(*args):
+                raise AssertionError("completion must reuse the finalized artifact")
+            monkeypatch.setattr("clawtune_sidecar.predictors.tool_resource._read_ebpf_artifact", no_second_read)
         sample = replace(_runtime_sample("after", "call"), environment_memory=(
             {"memory_total_peak_bytes": memory, "memory_extra_peak_bytes": memory} if memory is not None else None))
         if stage == "declared-source":
@@ -130,6 +135,7 @@ def test_online_memory_target_is_submitted_once_without_duplicate_cpu_zero(tmp_p
                 predictor.observe_completion(event, sample)
         else:
             predictor.observe_completion(event, sample)
+        assert "execution" not in predictor._completion_inputs
         if stage not in {"close", "drain"}:
             predictor.flush_kb_updates(timeout_seconds=5)
         saved = json.loads((tmp_path / "clause-lattice-time-kb.json").read_text())

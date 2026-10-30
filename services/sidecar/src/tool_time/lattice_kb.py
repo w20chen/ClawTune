@@ -31,7 +31,7 @@ from command_parser.service import observation_features, clause_features
 from tool_time._lattice_vendor.schemas import NodeStats, Observation, PredictionResult
 from tool_time._lattice_vendor.selector import predict as select_prediction
 from tool_time._lattice_vendor.shrinkage import compute_shrinkage_variances
-from tool_time.query import query_nodes
+from tool_time.query import LatticeQueryCache, query_nodes
 from tool_time.build_cache import BuildStatisticsCache
 from kb_common import DEFAULT_MAX_OPTIONAL_FEATURES, validate_max_optional_features
 from tool_time.resource_lattice import (
@@ -255,6 +255,7 @@ class LatticeTimeKB:
         *,
         parse_failed: bool = False,
         shell_command: bool = True,
+        query_cache: LatticeQueryCache | None = None,
     ) -> tuple[ClauseLatticeTimePredictions, ...]:
         """Predict every exec-producing clause independently; never compose them."""
 
@@ -277,7 +278,7 @@ class LatticeTimeKB:
                     for algorithm in LATTICE_TIME_ALGORITHMS
                 )
                 if parse_failed
-                else self._predict_clause(repo, argv, clause_features(clause, repo))
+                else self._predict_clause(repo, argv, clause_features(clause, repo), query_cache=query_cache)
             )
             outcomes.append(
                 ClauseLatticeTimePredictions(
@@ -293,6 +294,7 @@ class LatticeTimeKB:
         self, repo: str, clauses: Sequence[Mapping[str, Any]], ts_start: float,
         *, parse_failed: bool = False, shell_command: bool = True,
         thresholds: Mapping[str, float] | None = None,
+        query_cache: LatticeQueryCache | None = None,
     ) -> tuple[dict[str, Any], ...]:
         """Query independent resource distributions before execution.
 
@@ -301,6 +303,7 @@ class LatticeTimeKB:
         The caller serializes this query with time prediction under the KB lock.
         """
         thresholds = thresholds or {}
+        query_cache = query_cache if query_cache is not None else LatticeQueryCache()
         for target, value in thresholds.items():
             if target not in RESOURCE_TARGETS or not nonnegative(value):
                 raise ValueError("resource thresholds require known targets and finite nonnegative values")
@@ -315,14 +318,19 @@ class LatticeTimeKB:
             if not argv or not bin_ or (shell_command and not shell_bin_requires_exec_evidence(bin_, argv[0])):
                 continue
             predictions = []
+            features = None
             for target, (unit, _scale) in RESOURCE_TARGETS.items():
                 state_key = target + (":" + (clause.get("memory_measurement") or "cgroup_v2_environment_union_v1") if target.startswith("memory_") else "")
-                state = self._resource_states.get(state_key, ResourceState({}, 0.0, 0.5))
+                state = self._resource_states.get(state_key)
+                if state is None:
+                    state = ResourceState({}, 0.0, 0.5)
                 for algorithm in LATTICE_TIME_ALGORITHMS:
                     try:
+                        if not parse_failed and features is None:
+                            features = clause_features(clause, repo)
                         result = (
                             ResourcePrediction(target, unit, algorithm, unavailable_reason="parse_failed", threshold=thresholds.get(target))
-                            if parse_failed else state.predict(repo, argv, target, algorithm, threshold=thresholds.get(target), command_features=clause_features(clause, repo))
+                            if parse_failed else state.predict(repo, argv, target, algorithm, threshold=thresholds.get(target), command_features=features, query_cache=query_cache)
                         )
                     except (KeyError, TypeError, ValueError) as exc:
                         result = ResourcePrediction(target, unit, algorithm, unavailable_reason=f"lattice_resource_error:{type(exc).__name__}")
@@ -336,7 +344,8 @@ class LatticeTimeKB:
         return tuple(outcomes)
 
     def predict_load_samples(self, repo: str, clauses: Sequence[Mapping[str, Any]],
-                             ts_start: float, *, algorithm: str = "shrinkage") -> tuple[dict[str, dict[str, Any]], ...]:
+                             ts_start: float, *, algorithm: str = "shrinkage",
+                             query_cache: LatticeQueryCache | None = None) -> tuple[dict[str, dict[str, Any]], ...]:
         """Full-target standalone clause evidence, selected independently.
 
         The shared call composer owns all call-level statistics. Raw samples
@@ -346,11 +355,13 @@ class LatticeTimeKB:
             raise ValueError("unknown lattice algorithm")
         self._advance(ts_start)
         self._ensure_nodes()
+        query_cache = query_cache if query_cache is not None else LatticeQueryCache()
         outcomes = []
         for clause in clauses:
             if is_pipeline_dependent_consumer(clause):
                 continue
             targets = {}
+            features = None
             for target, (_, scale) in LOAD_TARGETS.items():
                 state_key = "load:" + target
                 if target.startswith("memory_"):
@@ -359,12 +370,15 @@ class LatticeTimeKB:
                 if state is None:
                     continue
                 try:
-                    result = state.predict(repo, clause["argv"], target, algorithm, command_features=clause_features(clause, repo))
-                    if result.unavailable_reason is None:
-                        node = state.nodes[frozenset(result.selected_features)]
-                        samples = node.prediction_samples(clause_features(clause, repo).features)
+                    if features is None:
+                        features = clause_features(clause, repo)
+                    result = state.select(repo, clause["argv"], algorithm, command_features=features, query_cache=query_cache)
+                    if result.node is not None:
+                        selected_features = tuple(sorted(result.node.features))
+                        # Re-fetching an exact match would resolve unused inherited variances.
+                        samples = result.node.prediction_samples(features.features)
                         targets[target] = {"values": tuple(v * scale for v in samples),
-                                           "context": (algorithm, *result.selected_features)}
+                                           "context": (algorithm, *selected_features)}
                 except (KeyError, TypeError, ValueError) as exc:
                     targets[target] = {"values": (), "unavailable_reason": f"target_error:{type(exc).__name__}"}
             outcomes.append(targets)
@@ -372,6 +386,7 @@ class LatticeTimeKB:
 
     def duration_candidate_samples(
         self, repo: str, clauses: Sequence[Mapping[str, Any]], ts_start: float,
+        *, query_cache: LatticeQueryCache | None = None,
     ) -> tuple[tuple[dict[str, Any], ...], ...]:
         """Expose legal duration evidence for offline oracle selection.
 
@@ -386,7 +401,8 @@ class LatticeTimeKB:
             if is_pipeline_dependent_consumer(clause):
                 continue
             query = clause_features(clause, repo)
-            candidates = (query_nodes(state.nodes, query, global_log_std=state.global_log_std,
+            lookup = query_nodes if query_cache is None else query_cache.query
+            candidates = (lookup(state.nodes, query, global_log_std=state.global_log_std,
                                       index=state.query_index)
                           if state is not None else {})
             outcomes.append(tuple({
@@ -400,6 +416,7 @@ class LatticeTimeKB:
         repo: str,
         argv: tuple[str, ...],
         command_features: CommandFeatures | None = None,
+        *, query_cache: LatticeQueryCache | None = None,
     ) -> tuple[LatticeTimePrediction, ...]:
         self._ensure_nodes()
         if not self._nodes:
@@ -411,7 +428,8 @@ class LatticeTimeKB:
         command = shlex.join(argv)
         query = command_features or default_service().argv(argv, ParseContext(repo=repo))
         query_features = query.features
-        candidates = query_nodes(self._nodes, query, global_log_std=self._global_log_std,
+        lookup = query_nodes if query_cache is None else query_cache.query
+        candidates = lookup(self._nodes, query, global_log_std=self._global_log_std,
                                  index=self._query_index)
         if not candidates:
             return tuple(

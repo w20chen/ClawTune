@@ -89,7 +89,9 @@ def parser():
     off.add_argument("--kb-max-optional-features", type=int, default=DEFAULT_MAX_OPTIONAL_FEATURES,
                      help="Fixed optional-feature limit for Lattice (default: 6)")
     off.add_argument("--lattice-variants", action="store_true",
-                     help="Also evaluate LOSO, max-cardinality, and a hindsight duration oracle on the same frozen Lattice KB")
+                     help="Also evaluate LOSO and max-cardinality on the same frozen Lattice KB")
+    off.add_argument("--lattice-oracle", action="store_true",
+                     help="Evaluate the exact hindsight duration oracle (offline only; search can be expensive)")
     off.add_argument("--train-fraction", type=float, default=.8,
                      help="Fraction of tasks within each group, or of repositories with --split-by repository (default: 0.8)")
     off.add_argument("--split-by", choices=("task", "repository"), default="task",
@@ -199,6 +201,7 @@ def main(argv=None):
                          rss_unit=args.rss_unit, split_cache_dir=args.split_cache_dir,
                          train_fraction=args.train_fraction, split_by=args.split_by,
                          lattice_variants=args.lattice_variants,
+                         lattice_oracle=args.lattice_oracle,
                          max_optional_features=args.kb_max_optional_features)
             print(json.dumps(_offline_console_summary(result, output), indent=2))
             return 0

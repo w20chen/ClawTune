@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from clawtune_sidecar.predictors.startup_cache import (
     LATTICE_FILE,
@@ -67,3 +70,41 @@ def test_incompatible_cache_version_is_rejected_before_unpickling(tmp_path, monk
         raise AssertionError("incompatible cache must not be deserialized")
     monkeypatch.setattr(startup_cache.pickle, "loads", forbidden)
     assert load_prepared_cache(tmp_path, max_optional_features=6) is None
+
+
+@pytest.mark.parametrize("cache_state", ["valid", "missing", "corrupt", "stale"])
+def test_managed_startup_skips_json_only_when_cache_is_valid(tmp_path, cache_state):
+    from clawtune_kb.contracts import data_root
+    from clawtune_kb.store import StateStore, initialize_state
+    from clawtune_sidecar.predictors import startup_cache
+    from clawtune_sidecar.predictors.tool_resource import ToolResourcePredictor
+    from tool_resource.runtime_kb import LatencyBuckets
+
+    state = tmp_path / "state"
+    initialize_state(state, data_root() / "seeds/bootstrap-v2", owner="test")
+    build_prepared_cache(state, max_optional_features=6)
+    if cache_state == "missing":
+        (state / startup_cache.CACHE_FILE).unlink()
+    elif cache_state == "corrupt":
+        (state / startup_cache.CACHE_FILE).write_bytes(b"bad pickle")
+    elif cache_state == "stale":
+        with StateStore(state) as store:
+            with (state / LATTICE_FILE).open("a") as output:
+                output.write("\n")
+            store.checkpoint()
+    reads = []
+    original = Path.open
+    def read(path, *args, **kwargs):
+        if path.name == startup_cache.CACHE_FILE:
+            reads.append(path)
+        return original(path, *args, **kwargs)
+    with patch.object(LatticeTimeKB, "from_json_obj", wraps=LatticeTimeKB.from_json_obj) as restore, \
+         patch.object(Path, "open", read):
+        predictor = ToolResourcePredictor.from_traces(openclaw_trace_paths=(), ebpf_trace_paths=(),
+            artifact_dir=state, buckets=LatencyBuckets((100, 500, 2000)))
+    try:
+        assert restore.call_count == (0 if cache_state == "valid" else 1)
+        assert len(reads) <= 1
+        assert predictor.lattice_kb.observation_count > 0
+    finally:
+        predictor.close()

@@ -24,7 +24,7 @@ from tool_time._lattice_vendor.normalize import FeatureSet
 from tool_time._lattice_vendor.schemas import NodeStats, Observation
 from tool_time._lattice_vendor.selector import predict as select_prediction
 from tool_time._lattice_vendor.shrinkage import compute_shrinkage_variances
-from tool_time.query import query_nodes
+from tool_time.query import LatticeQueryCache, query_nodes
 from kb_common import DEFAULT_MAX_OPTIONAL_FEATURES, validate_max_optional_features
 
 # Scales are numerical conditioning only; public predictions use declared units.
@@ -87,6 +87,13 @@ class ResourcePrediction:
         return result
 
 
+@dataclass(frozen=True)
+class ResourceSelection:
+    node: NodeStats | None = None
+    risk: float | None = None
+    unavailable_reason: str | None = None
+
+
 @dataclass
 class ResourceState:
     nodes: Mapping[FeatureSet, NodeStats]
@@ -99,32 +106,40 @@ class ResourceState:
         if self.query_index is None:
             self.query_index = CoverageIndex(self.nodes)
 
-    def predict(
-        self, repo: str, argv: Sequence[str], target: str, algorithm: str,
-        *, threshold: float | None = None, command_features: CommandFeatures | None = None,
-    ) -> ResourcePrediction:
+    def select(
+        self, repo: str, argv: Sequence[str], algorithm: str, *,
+        command_features: CommandFeatures | None = None,
+        query_cache: LatticeQueryCache | None = None,
+    ) -> ResourceSelection:
+        if not self.nodes:
+            return ResourceSelection(unavailable_reason="no_lattice_resource_evidence")
+        query = command_features or default_service().argv(argv, ParseContext(repo=repo))
+        key = (id(self), repo, tuple(argv), query, algorithm)
+        if query_cache is not None and key in query_cache.selections:
+            return query_cache.selections[key]
+        result = self._select(repo, argv, algorithm, query, query_cache)
+        if query_cache is not None:
+            query_cache.owners[id(self)] = self
+            query_cache.selections[key] = result
+        return result
+
+    def _select(self, repo, argv, algorithm, query, query_cache):
         from tool_time import lattice_kb as config
 
-        unit, scale = LOAD_TARGETS[target]
-        def unavailable(reason: str) -> ResourcePrediction:
-            return ResourcePrediction(
-                target, unit, algorithm, unavailable_reason=reason, threshold=threshold
-            )
         if not self.nodes:
-            return unavailable("no_lattice_resource_evidence")
+            return ResourceSelection(unavailable_reason="no_lattice_resource_evidence")
         command = shlex.join(argv)
-        query = command_features or default_service().argv(argv, ParseContext(repo=repo))
         features = query.features
-        candidates = query_nodes(self.nodes, query, global_log_std=self.global_log_std,
-                                 index=self.query_index)
+        lookup = query_nodes if query_cache is None else query_cache.query
+        candidates = lookup(self.nodes, query, global_log_std=self.global_log_std, index=self.query_index)
         # An unrelated global workload is not a resource estimate for this tool.
         if not candidates:
-            return unavailable("no_matching_resource_context")
+            return ResourceSelection(unavailable_reason="no_matching_resource_context")
         if (
             algorithm == "shrinkage" and features not in self.nodes
             and len(candidates) > config._MAX_SHRINKAGE_CANDIDATES
         ):
-            return unavailable("lattice_candidate_limit_exceeded")
+            return ResourceSelection(unavailable_reason="lattice_candidate_limit_exceeded")
         if algorithm == "max_cardinality":
             selected = max(candidates.values(), key=lambda node: (
                 len(node.features), node.count, tuple(sorted(node.features))
@@ -143,18 +158,42 @@ class ResourceState:
             )
             selected = candidates[frozenset(result.selected_features)]
             risk = result.selected_risk
-        values = sorted(value * scale for value in selected.durations)
+        return ResourceSelection(selected, risk)
+
+    def predict(
+        self, repo: str, argv: Sequence[str], target: str, algorithm: str,
+        *, threshold: float | None = None, command_features: CommandFeatures | None = None,
+        query_cache: LatticeQueryCache | None = None,
+    ) -> ResourcePrediction:
+        unit, scale = LOAD_TARGETS[target]
+        if not self.nodes:
+            return ResourcePrediction(target, unit, algorithm,
+                                      unavailable_reason="no_lattice_resource_evidence", threshold=threshold)
+        query = command_features or default_service().argv(argv, ParseContext(repo=repo))
+        selection = self.select(repo, argv, algorithm, command_features=query, query_cache=query_cache)
+        if selection.node is None:
+            return ResourcePrediction(target, unit, algorithm,
+                                      unavailable_reason=selection.unavailable_reason, threshold=threshold)
+        selected = selection.node
+        key = (id(selected), scale, threshold)
+        summary = query_cache.summaries.get(key) if query_cache is not None else None
+        if summary is None:
+            values = sorted(value * scale for value in selected.durations)
+            middle = len(values) // 2
+            p50 = values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) / 2
+            summary = (p50, values[max(0, math.ceil(0.9 * len(values)) - 1)],
+                       len(values), sum(value >= threshold for value in values) / len(values)
+                       if threshold is not None else None)
+            if query_cache is not None:
+                query_cache.owners[id(selected)] = selected
+                query_cache.summaries[key] = summary
         return ResourcePrediction(
             target, unit, algorithm,
-            p50=statistics.median(values),
-            p90=values[max(0, math.ceil(0.9 * len(values)) - 1)],
-            selected_features=tuple(sorted(selected.features)), evidence_count=len(values),
-            selected_risk=risk, exact_match=selected.features == features,
+            p50=summary[0], p90=summary[1],
+            selected_features=tuple(sorted(selected.features)), evidence_count=summary[2],
+            selected_risk=selection.risk, exact_match=selected.features == query.features,
             threshold=threshold,
-            probability_ge=(
-                sum(value >= threshold for value in values) / len(values)
-                if threshold is not None else None
-            ),
+            probability_ge=summary[3],
         )
 
 

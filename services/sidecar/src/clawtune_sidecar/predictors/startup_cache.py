@@ -105,8 +105,10 @@ def load_prepared_cache(
             manifest.get("schema") != SCHEMA
             or manifest.get("python_cache_tag") != sys.implementation.cache_tag
             or manifest.get("max_optional_features") != maximum
-            or manifest.get("cache_sha256") != _digest(cache_path)
         ):
+            return None
+        cache_bytes = cache_path.read_bytes()
+        if manifest.get("cache_sha256") != hashlib.sha256(cache_bytes).hexdigest():
             return None
         expected = manifest.get("source_sha256")
         if not isinstance(expected, dict) or any(
@@ -114,7 +116,7 @@ def load_prepared_cache(
             for name in (LATTICE_FILE,)
         ):
             return None
-        payload = pickle.loads(cache_path.read_bytes())
+        payload = pickle.loads(cache_bytes)
         lattice = payload.get("lattice") if isinstance(payload, dict) else None
         command_rules = payload.get("command_rules") if isinstance(payload, dict) else None
         if (

@@ -349,9 +349,10 @@ class IncrementalLatticeState:
         # Match the existing public resource view order, including memory partitions.
         names = [t for t in RESOURCE_TARGETS if not t.startswith('memory_')]
         names += ['load:' + t for t in LOAD_TARGETS if not t.startswith('memory_')]
-        from tool_time.lattice_kb import _observation_sort_key
-        ordered = sorted(self.rows, key=_observation_sort_key)
-        for measurement in {row.memory_measurement or 'cgroup_v2_environment_union_v1' for row in ordered}:
+        # Partition names already identify every measurement source; do not
+        # scan or sort the full observation history just to recover that set.
+        measurements = {name.partition(':')[2] for name in self.views if name.startswith('memory_')}
+        for measurement in measurements:
             for prefix in ('', 'load:'):
                 names += [prefix + t + ':' + measurement for t in RESOURCE_TARGETS if t.startswith('memory_')]
         for name in names:

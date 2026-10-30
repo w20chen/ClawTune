@@ -75,8 +75,8 @@ def _predict_reliable_specificity(
     def _score(stats: NodeStats) -> float:
         return len(stats.features) - risk_weight * _risk(stats)
 
-    candidates.sort(key=lambda s: (-_score(s), -s.count))
-    best = candidates[0]
+    # min preserves the first encountered tie, just like the stable sort.
+    best = min(candidates, key=lambda s: (-_score(s), -s.count))
 
     # ── Build result ────────────────────────────────────────────────
     prediction_s = get_estimate(best, estimator=estimator)

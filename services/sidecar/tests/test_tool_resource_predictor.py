@@ -2914,7 +2914,7 @@ def test_completed_failures_preserve_independent_backend_predictions(tmp_path, m
     monkeypatch.setattr(predictor.kb, "predict_load_samples",
                         lambda *args: ({"duration_ms": {"values": [5000]}},))
     monkeypatch.setattr(predictor.lattice_kb, "predict_load_samples",
-                        lambda *args: ({"duration_ms": {"values": [7000]}},))
+                        lambda *args, **kwargs: ({"duration_ms": {"values": [7000]}},))
     try:
         for i in range(6):
             request = _tool_request(f"event-{i}", f"call-{i}", "python3 -m pytest").model_copy(

@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+from functools import lru_cache
 
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
@@ -17,11 +18,24 @@ def data_root() -> Path:
     return module.parent / "_data"
 
 
-def validate(value: dict, name: str) -> None:
-    root = data_root() / "contracts"
+@lru_cache(maxsize=4)
+def _schemas(root: Path) -> tuple[dict, Registry]:
     resources = []
+    schemas = {}
     for path in root.glob("*.schema.json"):
         schema = json.loads(path.read_text(encoding="utf-8"))
+        schemas[path.name] = schema
         resources.append((schema["$id"], Resource.from_contents(schema)))
-    schema = json.loads((root / name).read_text(encoding="utf-8"))
-    Draft202012Validator(schema, registry=Registry().with_resources(resources)).validate(value)
+    return schemas, Registry().with_resources(resources)
+
+
+@lru_cache(maxsize=128)
+def _validator(root: Path, name: str) -> Draft202012Validator:
+    schemas, registry = _schemas(root)
+    return Draft202012Validator(schemas[name], registry=registry)
+
+
+def validate(value: dict, name: str) -> None:
+    # Installed contracts are immutable for this process. Separate checkout and
+    # wheel roots so one cannot accidentally use the other's protocol registry.
+    _validator((data_root() / "contracts").resolve(), name).validate(value)

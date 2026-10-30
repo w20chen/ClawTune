@@ -429,7 +429,7 @@ def test_resource_only_training_and_per_target_fault_isolation(monkeypatch):
     lattice.prepare()
     def fail(*args, **kwargs):
         raise ValueError("bad resource state")
-    monkeypatch.setattr(lattice._resource_states["load:cpu_peak_cores"], "predict", fail)
+    monkeypatch.setattr(lattice._resource_states["load:cpu_peak_cores"], "select", fail)
     result = lattice.predict_load_samples("repo", clause, 3)[0]
     assert result["duration_ms"]["values"] == (1000,)
     assert result["cpu_peak_cores"]["unavailable_reason"] == "target_error:ValueError"

@@ -73,12 +73,21 @@ class CommandFeatureService:
         with self._lock:
             bound = self._calls.pop(call_id, {}) if release else self._calls.get(call_id, {})
             output = []
+            normalized = {}
             for row in observations:
                 from tool_resource.commands import unwrap_argv
-                matches = [(i, value) for i, value in bound.items() if value[0] == row.argv or
-                           tuple(unwrap_argv(value[0])[0]) == row.argv]
-                if row.clause_index is not None:
-                    matches = [(i, v) for i, v in matches if i == row.clause_index]
+                candidates = (bound.items() if row.clause_index is None else
+                              ((row.clause_index, bound[row.clause_index]),)
+                              if row.clause_index in bound else ())
+                matches = []
+                for index, value in candidates:
+                    if value[0] == row.argv:
+                        matches.append((index, value))
+                        continue
+                    if index not in normalized:
+                        normalized[index] = tuple(unwrap_argv(value[0])[0])
+                    if normalized[index] == row.argv:
+                        matches.append((index, value))
                 if len(matches) == 1:
                     index, (_, features) = matches[0]
                     output.append(replace(row, command_features=features, clause_index=index))
