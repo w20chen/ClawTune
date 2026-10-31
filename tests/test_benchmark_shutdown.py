@@ -19,13 +19,13 @@ def test_sidecar_stop_waits_for_save_longer_than_five_seconds(tmp_path):
     script = tmp_path / "sidecar.py"
     script.write_text(
         "import signal,sys,time,pathlib\n"
-        "def shutdown(*args):\n"
-        "    time.sleep(6)\n"
-        "    pathlib.Path(sys.argv[1]).write_text('committed')\n"
-        "    sys.exit(0)\n"
-        "signal.signal(signal.SIGTERM, shutdown)\n"
+        # Block before announcing readiness: termination may arrive before the
+        # child starts waiting. sigwait consumes that pending signal atomically.
+        "signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})\n"
         "print('ready', flush=True)\n"
-        "signal.pause()\n"
+        "signal.sigwait({signal.SIGTERM})\n"
+        "time.sleep(6)\n"
+        "pathlib.Path(sys.argv[1]).write_text('committed')\n"
     )
     saved = tmp_path / "saved"
     process = subprocess.Popen([sys.executable, str(script), str(saved)],

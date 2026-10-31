@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -641,16 +642,19 @@ def test_launcher_does_not_report_exit_after_unconfirmed_cleanup(monkeypatch, mo
 
 
 def test_subprocess_cleanup_requires_a_successful_wait(monkeypatch):
+    waits = []
     class Child:
         def terminate(self):
             pass
         def kill(self):
             pass
         def wait(self, **kwargs):
+            waits.append(kwargs)
             raise subprocess.TimeoutExpired("payload", 1)
     monkeypatch.setattr(launcher, "_exclusive_child_pgid", lambda child: None)
     with pytest.raises(launcher._CleanupUnconfirmed):
         launcher._terminate_child_and_confirm(Child())
+    assert waits == [{"timeout": 1}, {"timeout": 1}]
 
 
 def test_failed_fork_exec_claim_allows_runtime_drain(monkeypatch, tmp_path) -> None:

@@ -303,6 +303,12 @@ def test_fallback_marks_missing_completion_but_retains_observations(
             assert summary.replay_execution == ("completed" if exit_code == 0 else "failed")
         artifact = json.loads(Path(summary.artifact_path).read_text())
         assert artifact["replay_execution"] == summary.replay_execution
+        if before != "matching":
+            assert summary.call_telemetry is None
+            assert "execution" in state.predictor._completed_execution_ids
+            assert "execution" not in state.predictor._execution_owners
+            assert "execution" not in state.predictor._completion_inputs
+            assert "execution" not in state.predictor._pending_memory_targets
         snapshot = tmp_path / "kb/clause-lattice-time-kb.json"
         lattice = json.loads(snapshot.read_text()) if snapshot.exists() else {}
         assert bool(lattice.get("observations") or lattice.get("pending"))

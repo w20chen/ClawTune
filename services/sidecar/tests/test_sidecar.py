@@ -2055,6 +2055,7 @@ def test_running_exec_completion_waits_for_real_exit_fallback(
             "execution_id": "call-exec",
             "exit_code": 0,
             "signal": None,
+            "completion_expected": False,
         }
     ]
 

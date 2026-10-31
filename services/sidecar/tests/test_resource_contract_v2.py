@@ -212,9 +212,10 @@ def test_environment_memory_contract():
 
 @pytest.mark.parametrize("frozen", [False, True])
 def test_live_clause_memory_reloads_from_trace_without_copying_cpu(tmp_path, monkeypatch, frozen):
-    from types import SimpleNamespace
     from test_tool_resource_predictor import _tool_request, _tool_completion, _runtime_sample
-    from clawtune_sidecar.predictors.tool_resource import ToolResourcePredictor, load_openclaw_trace_observations
+    from clawtune_sidecar.predictors.tool_resource import (
+        ExecutionTelemetrySummary, ToolResourcePredictor, load_openclaw_trace_observations,
+    )
     from clawtune_sidecar.trace import AgentTestBenchTraceWriter
     from tool_resource.runtime_kb import LatencyBuckets
     if frozen:
@@ -236,7 +237,10 @@ def test_live_clause_memory_reloads_from_trace_without_copying_cpu(tmp_path, mon
         "memory_timeline": [(1000, 100), (1000.1, 300), (1000.2, 200)]})
     artifact = {"calls": [{"eligible_for_kb": True, "clauses": [
         {"bin": "pytest", "argv": ["pytest", "tests/"], "ts_start": 1000.01, "ts_end": 1000.21}]}]}
-    predictor._telemetry_by_execution_id["x"] = SimpleNamespace(artifact_path="test.json")
+    predictor._telemetry_by_execution_id["x"] = ExecutionTelemetrySummary(
+        execution_id="x", tool_call_id="c", artifact_path="test.json",
+        started=True, status="ok", replay_execution="completed",
+    )
     monkeypatch.setattr("clawtune_sidecar.predictors.tool_resource._read_ebpf_artifact", lambda _: artifact)
     predictor.record_tool_started(request)
     predictor.observe_completion(event, sample)

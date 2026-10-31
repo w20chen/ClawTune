@@ -842,6 +842,10 @@ def create_app(state: AppState | None = None) -> FastAPI:
     app.state.sidecar = app_state
     finishing_tasks: dict[str, asyncio.Task[None]] = {}
     starting_tasks: dict[str, asyncio.Task[bool]] = {}
+    completions_inflight: set[tuple[str | None, ...]] = set()
+    # Mutations can fail after partial learning/writing. Retain a compact error
+    # receipt rather than replaying the event and potentially double-counting.
+    completion_failures: dict[tuple[str | None, ...], str] = {}
     kb_owner = None
     kb_store = getattr(app_state.predictor, "_state_store", None)
     if kb_store is not None:
@@ -903,6 +907,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 Path(path).rmdir()
             except OSError:
                 pass
+        if completion_failures:
+            raise RuntimeError("tool completion processing incomplete; inspect sidecar errors and retained traces")
 
     def get_state() -> AppState:
         return app.state.sidecar
@@ -1133,6 +1139,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
             finish_kwargs = {}
             if record is not None and s.predictor.awaiting_tool_completion(record.request):
                 finish_kwargs["incomplete_reason"] = "completion_hook_missing"
+            elif record is not None:
+                finish_kwargs["completion_expected"] = False
             if record is not None and record.confirmed_timeout:
                 finish_kwargs.update(confirmed_timeout=True,
                     timeout_duration_lower_bound_ms=record.timeout_duration_lower_bound_ms)
@@ -1646,6 +1654,10 @@ def create_app(state: AppState | None = None) -> FastAPI:
         timeout_seconds = min(max(timeout_seconds, 0.0), 60.0)
         deadline = time.monotonic() + timeout_seconds
         while True:
+            if any(flush_kb or (key[1] == runtime_id and (gateway_id is None or key[0] in (None, gateway_id)))
+                   for key in completion_failures):
+                return {"drained": False, "gateway_id": gateway_id, "runtime_id": runtime_id,
+                        "kb_flushed": False, "trace_flushed": False}
             records = s.executions.for_runtime(runtime_id, gateway_id)
             record_ids = {record.request.execution_id for record in records}
             claimed_unexited_ids = [
@@ -1839,6 +1851,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
                         "reason": request.reason, "aborted_execution_ids": sorted(aborted_ids),
                         "pmu_profiles": pmu_profiles, "observation_errors": observation_errors,
                         "trace_flushed": s.trace_writer is None}
+            observation_errors.extend({"execution_id": "", "error": reason}
+                for key, reason in completion_failures.items()
+                if key[1] == runtime_id and key[0] in (None, gateway_id))
             if s.trace_writer is not None:
                 try:
                     s.trace_writer.finalize_pending(runtime_id, gateway_id, reason=request.reason)
@@ -2042,17 +2057,15 @@ def create_app(state: AppState | None = None) -> FastAPI:
         # Dedup before touching the deferred eBPF finalizer. A duplicate
         # completion must not cancel the only remaining fallback task.
         completion_key = correlation_key(event, event.event_id)
+        if completion_key in completion_failures:
+            raise HTTPException(status_code=503, detail=completion_failures[completion_key])
+        if completion_key in completions_inflight:
+            raise HTTPException(status_code=503, detail="tool_completion_in_progress")
         if completion_key in s._completed_tool_event_ids:
             return {"stored": False}
-        s._completed_tool_event_ids.add(completion_key)
-        if len(s._completed_tool_event_ids) > 10_000:
-            oldest_unknown = next(
-                key
-                for key in s._completed_tool_event_ids
-                if key != completion_key
-            )
-            s._completed_tool_event_ids.discard(oldest_unknown)
         activity_key = begin_runtime_activity(event)
+        completions_inflight.add(completion_key)
+        learning_started = False
         if event.execution_id is not None:
             # The delayed exit fallback must not race the final resource
             # snapshot or trace flush performed by this completion.
@@ -2192,8 +2205,10 @@ def create_app(state: AppState | None = None) -> FastAPI:
                             pmu_profile=pmu_profile.to_dict(),
                         )
                 try:
+                    learning_started = True
                     await predictor_operation(s.predictor.observe_completion, event, sample)
                 except Exception:
+                    completion_failures[completion_key] = "tool_completion_learning_failed"
                     logger.exception("KB observation failed for execution %s", event.execution_id)
                 s.metrics.observe_tool_runtime(sample)
                 s._recent_samples.insert(0, _sample_summary(sample))
@@ -2203,8 +2218,10 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     try:
                         s.trace_writer.record_tool(event, sample)
                         if not await asyncio.to_thread(s.trace_writer.flush):
+                            completion_failures[completion_key] = "tool_completion_trace_persistence_failed"
                             logger.error("Trace persistence incomplete for execution %s", event.execution_id)
                     except Exception:
+                        completion_failures[completion_key] = "tool_completion_trace_persistence_failed"
                         logger.exception("Trace persistence failed for execution %s", event.execution_id)
             if event.execution_id is not None:
                 s.executions.mark_completed(event.execution_id)
@@ -2212,11 +2229,18 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     schedule_owned_cgroup_cleanup(s, event.execution_id)
             s.metrics.inc("scheduler_tool_completions_total")
             s.metrics.tool_durations.append(event.duration_ms / 1000)
+            if completion_key in completion_failures:
+                raise HTTPException(status_code=503, detail=completion_failures[completion_key])
+            s._completed_tool_event_ids.add(completion_key)
+            if len(s._completed_tool_event_ids) > 10_000:
+                oldest = next(key for key in s._completed_tool_event_ids if key != completion_key)
+                s._completed_tool_event_ids.discard(oldest)
             return {"stored": True}
         except BaseException:
-            # Permit a genuine retry when a fallible downstream step failed.
-            # If finalization itself did not acquire the run, restore its
-            # launcher-exit fallback as well.
+            if learning_started:
+                completion_failures.setdefault(completion_key, "tool_completion_processing_failed")
+            # Only pre-learning failures can be replayed safely. Restore the
+            # launcher fallback when finalization did not acquire the run.
             s._completed_tool_event_ids.discard(completion_key)
             if event.execution_id is not None:
                 record = s.executions.get(event.execution_id)
@@ -2235,6 +2259,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     )
             raise
         finally:
+            completions_inflight.discard(completion_key)
             try:
                 await asyncio.to_thread(s.predictor.finalize_call, event)
             finally:

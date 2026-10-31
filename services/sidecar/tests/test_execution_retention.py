@@ -1,5 +1,6 @@
 """Completed history must neither retain payloads nor evict pending measurements."""
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from clawtune_sidecar.predictors.tool_resource import ExecutionTelemetrySummary
 from test_execution_interruption_regressions import predictor_at
 from test_tool_resource_predictor import _runtime_sample, _tool_completion
+from tool_resource.runtime_kb import ClauseObservation
 
 
 def install_pending(predictor, key="execution"):
@@ -123,5 +125,100 @@ def test_runtime_close_retires_unavailable_executions_only_for_its_owner(tmp_pat
         assert predictor._execution_owners == {"two": ("other", "same-runtime")}
         assert predictor.execution_telemetry("one").unavailable_reason
         assert not predictor.execution_telemetry("one").started
+    finally:
+        predictor.close()
+
+
+def stub_collector(predictor, monkeypatch, *, rows=()):
+    call = {"command": "sleep 1", "clauses": [{"bin": "sleep", "argv": ["sleep", "1"],
+            "ts_start": 1., "ts_end": 2., "latency_ms": 1000}]}
+    result = SimpleNamespace(kb_observations_added=len(rows), kb_observations=rows,
+        telemetry_artifact={"version": 2, "mode": "clause", "calls": [call]},
+        call_telemetry=call, kb_update_error=None)
+    monkeypatch.setattr(predictor._sdk, "start_command", lambda context, call_id, command:
+        SimpleNamespace(tool_call_id=call_id, _observer=SimpleNamespace(context=context)))
+    monkeypatch.setattr(predictor._sdk, "finish_command", lambda *args, **kwargs: result)
+    return result
+
+
+@pytest.mark.parametrize("frozen", [False, True])
+@pytest.mark.parametrize("completion_expected", [False, True])
+def test_explicit_no_hook_finish_retires_only_its_own_inputs(tmp_path, monkeypatch, frozen, completion_expected):
+    predictor = predictor_at(tmp_path)
+    predictor.frozen = frozen
+    row = ClauseObservation("review", "sleep", ("sleep", "1"), 1, 2,
+                            latency_ms=1000, cpu_ns_cumulative=500000000)
+    stub_collector(predictor, monkeypatch, rows=(row,))
+    other = install_pending(predictor, "other")
+    other_rows = (("other-gateway", "same-runtime"), (replace(row, ts_start=3, ts_end=4),))
+    predictor._pending_memory_targets["other"] = other_rows
+    try:
+        assert predictor.begin_execution(execution_id="direct", tool_call_id="direct-call",
+            container_id="container", command="sleep 1", gateway_id="g", runtime_id="same-runtime")
+        # The handoff path only retains validated artifacts that exist on disk.
+        (tmp_path / "direct.json").write_text('{"version": 2, "mode": "clause", "calls": []}')
+        returned = predictor.finish_execution(execution_id="direct", exit_code=0, signal=None,
+                                             completion_expected=completion_expected)
+        stored = predictor.execution_telemetry("direct")
+        assert returned.call_telemetry is not None  # trace serialization still owns full data
+        assert (stored.call_telemetry is not None) is completion_expected
+        assert ("direct" in predictor._execution_owners) is completion_expected
+        assert ("direct" in predictor._completion_inputs) is completion_expected
+        assert ("direct" in predictor._pending_memory_targets) is (completion_expected and not frozen)
+        assert ("direct" in predictor._completed_execution_ids) is (not completion_expected)
+        assert predictor.execution_telemetry("other") is other
+        assert predictor._pending_memory_targets["other"] is other_rows
+        if not completion_expected:
+            predictor.finish_execution(execution_id="direct", exit_code=0, signal=None,
+                                       completion_expected=False)
+            observations = predictor.kb.to_json_obj()
+            rows = observations["pending"]
+            assert len(rows) == (0 if frozen else 2)
+            if not frozen:
+                assert [r["cpu_ns_cumulative"] for r in rows if r["cpu_ns_cumulative"] is not None] == [500000000]
+                memory = [r for r in rows if r["memory_total_peak_bytes"] is not None]
+                assert len(memory) == 1 and memory[0]["memory_total_peak_bytes"] == 0
+                assert "memory_total_peak_bytes" in memory[0]["imputed_targets"]
+    finally:
+        predictor.close()
+
+
+@pytest.mark.parametrize("failure", ["start", "finish"])
+def test_no_hook_failed_collector_is_retired(tmp_path, monkeypatch, failure):
+    predictor = predictor_at(tmp_path)
+    stub_collector(predictor, monkeypatch)
+    def fail(*args, **kwargs):
+        raise RuntimeError("collector failed")
+    monkeypatch.setattr(predictor._sdk, failure + "_command", fail)
+    try:
+        predictor.begin_execution(execution_id="direct", tool_call_id="call", container_id="c", command="sleep 1")
+        returned = predictor.finish_execution(execution_id="direct", exit_code=0, signal=None,
+                                             completion_expected=False)
+        assert returned.status == "unavailable" and "failed" in returned.unavailable_reason
+        assert list(predictor._completed_execution_ids) == ["direct"]
+        assert not predictor._execution_owners and not predictor._completion_inputs
+    finally:
+        predictor.close()
+
+
+def test_direct_execution_history_is_bounded_without_evicting_pending_hook(tmp_path, monkeypatch):
+    predictor = predictor_at(tmp_path)
+    predictor.frozen = True
+    stub_collector(predictor, monkeypatch)
+    pending = install_pending(predictor, "pending-hook")
+    try:
+        for i in range(10_005):
+            key = str(i)
+            assert predictor.begin_execution(execution_id=key, tool_call_id=key,
+                container_id="container", command="sleep 1")
+            predictor.finish_execution(execution_id=key, exit_code=0, signal=None,
+                                       completion_expected=False)
+        assert len(predictor._completed_execution_ids) == 10_000
+        assert len(predictor._telemetry_by_execution_id) == 10_001
+        assert predictor.execution_telemetry("0") is None
+        assert predictor.execution_telemetry("pending-hook") is pending
+        assert list(predictor._execution_owners) == ["pending-hook"]
+        assert list(predictor._completion_inputs) == ["pending-hook"]
+        assert not predictor._runs_by_execution_id
     finally:
         predictor.close()

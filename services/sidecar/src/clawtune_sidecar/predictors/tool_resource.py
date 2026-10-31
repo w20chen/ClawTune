@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import queue
@@ -187,6 +188,9 @@ class _KnowledgeBaseWriteCoordinator:
         self._inflight = False
         self._accepting = True
         self._shutdown: Future[None] | None = None
+        # apply_batch must publish atomically. Failed input stays ordered ahead
+        # of new work; a later update or explicit barrier retries it once.
+        self._retry_observations: tuple[ClauseObservation, ...] = ()
 
     def enqueue(
         self,
@@ -245,7 +249,7 @@ class _KnowledgeBaseWriteCoordinator:
 
     def pending(self) -> bool:
         with self._state_lock:
-            return self._inflight or not self._queue.empty()
+            return self._inflight or bool(self._retry_observations) or not self._queue.empty()
 
     def _ensure_worker(self) -> None:
         with self._state_lock:
@@ -298,7 +302,7 @@ class _KnowledgeBaseWriteCoordinator:
         self,
         items: Sequence[_KnowledgeBaseUpdate | _KnowledgeBaseBarrier],
     ) -> None:
-        observations: list[ClauseObservation] = []
+        observations: list[ClauseObservation] = list(self._retry_observations)
         barriers: list[Future[None]] = []
         for item in items:
             if isinstance(item, _KnowledgeBaseBarrier):
@@ -309,7 +313,9 @@ class _KnowledgeBaseWriteCoordinator:
         try:
             # Even an empty barrier batch retries snapshots left dirty by a
             # prior transient persistence error.
-            self._apply_batch(tuple(observations))
+            self._retry_observations = tuple(observations)
+            self._apply_batch(self._retry_observations)
+            self._retry_observations = ()
             if barriers and self._persist is not None:
                 self._persist()
         except BaseException as exc:
@@ -445,8 +451,6 @@ class ToolResourcePredictor:
         self._clause_kb_persisted_version = 0
         self._lattice_kb_version = 0
         self._lattice_kb_persisted_version = 0
-        self._lattice_needs_prepare = False
-        self._lattice_staged: LatticeTimeKB | None = None
         self._sdk = ToolResourceSDK(  # type: ignore[arg-type]
             _DeferredSdkClauseKb(self),
             buckets,
@@ -467,6 +471,8 @@ class ToolResourcePredictor:
         # One-use inputs for the later tool completion, kept out of trace payloads.
         self._completion_inputs: dict[str, tuple[tuple[str | None, str | None] | None, dict]] = {}
         self._memory_targets_committed: set[str] = set()
+        self._startup_cache_command_rules: dict | None = None
+        self._startup_cache_rule_fingerprint: dict | None = None
         self._pending_memory_targets: dict[str, tuple[Any, tuple[ClauseObservation, ...]]] = {}
         self._starts: dict[CorrelationKey, ToolBeforeRequest] = {}
         self._kb_writes = _KnowledgeBaseWriteCoordinator(
@@ -622,11 +628,16 @@ class ToolResourcePredictor:
             kb = ClauseResourceKB()
 
         prepared_cache = None
+        cache_sources = None
         if managed:
-            from clawtune_sidecar.predictors.startup_cache import load_prepared_cache
-            prepared_cache = load_prepared_cache(
-                artifact_dir, max_optional_features=max_optional_features,
-            )
+            from clawtune_sidecar.predictors.startup_cache import load_prepared_cache, prepared_cache_sources
+            try:
+                cache_sources = prepared_cache_sources(artifact_dir)
+                prepared_cache = load_prepared_cache(
+                    artifact_dir, max_optional_features=max_optional_features, sources=cache_sources,
+                )
+            except Exception as exc:
+                logging.getLogger(__name__).warning("Startup cache unavailable: %s", exc)
         loaded_lattice_snapshot = (prepared_cache[0] if prepared_cache is not None else
             _load_lattice_kb_snapshot(lattice_snapshot_path, rejections,
                 max_optional_features=max_optional_features, strict=managed))
@@ -685,6 +696,16 @@ class ToolResourcePredictor:
             predictor._runtime_kb_version += 1
         if observations or loaded_lattice_snapshot is not None:
             predictor._lattice_kb_version += 1
+        if managed and cache_sources is not None:
+            try:
+                # Preserve bundled rules before the online generator can add
+                # private runtime rules to the mutable service registry.
+                predictor._startup_cache_command_rules = predictor.command_features.registry.prepared_snapshot()
+                predictor._startup_cache_rule_fingerprint = cache_sources["command_rules_sha256"]
+                if prepared_cache is None:
+                    predictor._save_startup_cache(sources=cache_sources, force=True)
+            except Exception as exc:
+                logging.getLogger(__name__).warning("Startup cache unavailable: %s", exc)
         return predictor
 
     @classmethod
@@ -1196,7 +1217,15 @@ class ToolResourcePredictor:
         incomplete_reason: str | None = None,
         confirmed_timeout: bool = False,
         timeout_duration_lower_bound_ms: float | None = None,
+        completion_expected: bool = True,
     ) -> ExecutionTelemetrySummary:
+        """Finish collection, retaining inputs until completion unless explicitly closed.
+
+        A missing before-hook does not rule out a later completion with real
+        memory labels. Only the caller that owns the terminal lifecycle may
+        declare that no completion is expected. The returned summary retains
+        the full trace payload even when the stored history is compacted.
+        """
         workload_result = _ebpf_workload_result(
             raw_result, exit_code=exit_code, signal=signal,
             succeeded=None if incomplete_reason is not None else succeeded,
@@ -1239,6 +1268,8 @@ class ToolResourcePredictor:
                     self._telemetry_by_execution_id[execution_id] = summary
                 if execution_id not in self._execution_owners:
                     self._retire_execution_telemetry(execution_id)
+            if not completion_expected:
+                self._finalize_execution_without_completion(execution_id)
             return summary
         try:
             result = self._sdk.finish_command(
@@ -1264,6 +1295,8 @@ class ToolResourcePredictor:
                 timeout_duration_lower_bound_ms=timeout_duration_lower_bound_ms,
             )
             self._telemetry_by_execution_id[execution_id] = summary
+            if not completion_expected:
+                self._finalize_execution_without_completion(execution_id)
             return summary
         kb_update_errors = [result.kb_update_error] if result.kb_update_error is not None else []
         accepted_observations: list[ClauseObservation] = []
@@ -1324,13 +1357,19 @@ class ToolResourcePredictor:
             confirmed_timeout=confirmed_timeout,
             timeout_duration_lower_bound_ms=timeout_duration_lower_bound_ms,
         )
-        if summary.artifact_path:
+        if completion_expected and summary.artifact_path:
             completion_input = _completion_artifact(result.telemetry_artifact, Path(summary.artifact_path))
             if completion_input is not None:
                 with self._execution_lock:
                     self._completion_inputs[execution_id] = (feature_owner, completion_input)
         self._telemetry_by_execution_id[execution_id] = summary
+        if not completion_expected:
+            self._finalize_execution_without_completion(execution_id)
         return summary
+
+    def _finalize_execution_without_completion(self, execution_id: str) -> None:
+        self._finalize_memory_targets(execution_id=execution_id)
+        self._retire_execution_telemetry(execution_id)
 
     def execution_telemetry(self, execution_id: str) -> ExecutionTelemetrySummary | None:
         """Return measurements while pending, then status after processing.
@@ -1371,7 +1410,8 @@ class ToolResourcePredictor:
                 )
             )
 
-    def _finalize_memory_targets(self, runtime_id: str | None = None, gateway_id: str | None = None) -> None:
+    def _finalize_memory_targets(self, runtime_id: str | None = None, gateway_id: str | None = None,
+                                 *, execution_id: str | None = None) -> None:
         """Fill absent clause memory only when no later completion is expected.
 
         A drain is a flush barrier, not a runtime close. Keeping these rows
@@ -1379,7 +1419,10 @@ class ToolResourcePredictor:
         or a second CPU sample for the same clause.
         """
         with self._kb_lock:
-            for execution_id, (owner, rows) in list(self._pending_memory_targets.items()):
+            pending = (list(self._pending_memory_targets.items()) if execution_id is None else
+                       [(execution_id, self._pending_memory_targets[execution_id])]
+                       if execution_id in self._pending_memory_targets else [])
+            for execution_id, (owner, rows) in pending:
                 if runtime_id is not None and not _execution_owner_matches_runtime(
                         owner, runtime_id=runtime_id, gateway_id=gateway_id):
                     continue
@@ -1474,11 +1517,31 @@ class ToolResourcePredictor:
                 self._memory_targets_committed.clear()
             self.command_features.close(timeout_seconds=remaining())
             self._kb_writes.close(remaining())
+            # Optional serialization must not extend an explicitly bounded
+            # shutdown. Ordinary shutdown refreshes the cache under ownership.
+            if timeout_seconds is None:
+                self._save_startup_cache()
             store = getattr(self, "_state_store", None)
             if store is not None:
                 store.__exit__(None, None, None)
                 self._state_store = None
             self._closed = True
+
+    def _save_startup_cache(self, *, sources: dict | None = None, force: bool = False) -> None:
+        if self.frozen or self.artifact_dir is None or self._startup_cache_command_rules is None:
+            return
+        try:
+            from clawtune_sidecar.predictors.startup_cache import prepared_cache_sources, save_prepared_cache
+            sources = sources if sources is not None else prepared_cache_sources(self.artifact_dir)
+            if sources["command_rules_sha256"] != self._startup_cache_rule_fingerprint:
+                # Rules changed while this process was alive; let the next
+                # startup load the new rules instead of mislabeling old ones.
+                return
+            save_prepared_cache(self.artifact_dir, lattice=self.lattice_kb,
+                command_rules=self._startup_cache_command_rules, sources=sources,
+                max_optional_features=self.max_optional_features, skip_if_current=not force)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Could not save optional startup cache: %s", exc)
 
     def kb_updates_pending(self) -> bool:
         """Return whether updates or an explicit save are queued/in flight.
@@ -1500,42 +1563,22 @@ class ToolResourcePredictor:
         self,
         lattice_observations: tuple[ClauseObservation, ...],
     ) -> None:
-        if self.frozen:
+        if self.frozen or not lattice_observations:
             return
-        errors: list[str] = []
-
         with self._kb_lock:
-            candidate = self._lattice_staged
-            if candidate is None and lattice_observations:
-                candidate = self.lattice_kb.fork_for_update()
-        if candidate is not None:
+            candidate = self.lattice_kb.fork_for_update()
+        accepted_count = 0
+        try:
             for observation in lattice_observations:
-                try:
-                    accepted = candidate.observe_completed_clause(observation)
-                except Exception as exc:
-                    errors.append(
-                        "lattice_kb_update_failed:"
-                        f"{type(exc).__name__}: {exc}"
-                    )
-                    continue
-                if accepted:
-                    self._lattice_kb_version += 1
-            # The coordinator is a single writer. Readers continue to use the
-            # previous prepared generation while this potentially slow build runs.
-            self._lattice_staged = candidate
-            self._lattice_needs_prepare = True
-            try:
-                candidate.prepare()
-            except Exception as exc:
-                errors.append(f"lattice_prepare_failed:{type(exc).__name__}: {exc}")
-            else:
-                with self._kb_lock:
-                    self.lattice_kb = candidate
-                    self._lattice_staged = None
-                    self._lattice_needs_prepare = False
-
-        if errors:
-            raise KnowledgeBaseFlushError("; ".join(errors))
+                accepted_count += bool(candidate.observe_completed_clause(observation))
+            candidate.prepare()
+        except Exception as exc:
+            # Discard the unpublished candidate, including partially accepted
+            # rows. The coordinator retains the original batch for a safe retry.
+            raise KnowledgeBaseFlushError(f"lattice_update_failed:{type(exc).__name__}: {exc}") from exc
+        with self._kb_lock:
+            self.lattice_kb = candidate
+            self._lattice_kb_version += accepted_count
 
     def _persist_kb_snapshots(self) -> None:
         if self.frozen:
@@ -1561,16 +1604,15 @@ class ToolResourcePredictor:
                 persisted_version=self._clause_kb_persisted_version,
                 serializer=self.kb.to_json_obj,
             )
-            if not self._lattice_needs_prepare:
-                self._capture_kb_snapshot_locked(
-                    snapshots,
-                    errors,
-                    name="lattice",
-                    path=self.lattice_kb_snapshot_path,
-                    version=self._lattice_kb_version,
-                    persisted_version=self._lattice_kb_persisted_version,
-                    serializer=self.lattice_kb.to_json_obj,
-                )
+            self._capture_kb_snapshot_locked(
+                snapshots,
+                errors,
+                name="lattice",
+                path=self.lattice_kb_snapshot_path,
+                version=self._lattice_kb_version,
+                persisted_version=self._lattice_kb_persisted_version,
+                serializer=self.lattice_kb.to_json_obj,
+            )
 
         for name, path, payload, version in snapshots:
             try:

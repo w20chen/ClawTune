@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 import threading
@@ -11,6 +12,13 @@ from .validation import validate_rule
 
 
 class RuleRegistry:
+    @staticmethod
+    def bundled_fingerprint() -> dict[str, str]:
+        """Fingerprint the exact file set used by the bundled registry."""
+        return {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in sorted((Path(__file__).parent / "rules").glob("*.json"))
+                if path.name != "manifest.json"}
+
     def __init__(self, cache_dir: Path | None = None, *, bundled: bool = True,
                  read_only: bool = False) -> None:
         self.cache_dir = cache_dir

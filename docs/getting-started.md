@@ -192,6 +192,13 @@ shutdown and benchmark completion save the knowledge base; a forced exit can
 lose changes since the last save. Large knowledge bases can delay shutdown.
 Unreadable saved state stops startup rather than silently starting empty.
 
+The sidecar automatically creates or replaces its startup cache when loading a
+writable KB without a compatible cache, and refreshes it after normal shutdown
+when the saved state changes. Existing seed snapshots remain usable and are not
+modified. Cache writes are optional: if they fail, the sidecar continues using
+the JSON snapshots, with slower startup. Frozen offline evaluation does not
+write caches into its seed.
+
 ### Default knowledge base and custom initialization
 
 New daily state and online runs copy `seeds/bootstrap-v2` by default. This

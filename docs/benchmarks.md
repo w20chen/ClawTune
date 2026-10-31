@@ -374,6 +374,8 @@ Each task has one `trace.jsonl` containing all turns, full captured LLM messages
 
 Timeout finalization follows confirmed producer shutdown. Incomplete tools retain their available observations for training and their interruption markers; unavailable numeric targets use the documented zero-fill policy. Abrupt failures can lose unacknowledged events; `trace_flushed: false` or `kb_flush_complete: false` means persistence is incomplete. A successful exit without tool calls or measurements does not validate collection.
 
+A completion response with HTTP 503 and `tool_completion_*_failed` means learning or trace persistence failed. The sidecar keeps that failure visible through retries, drain, and shutdown; it does not replay potentially partial learning. Retain the run's traces and logs for recovery and treat the run as incomplete. Restarting the sidecar does not recover missing observations. `tool_completion_in_progress` is a temporary response while the original request is still processing.
+
 ## 5. Fixed-trace offline evaluation
 
 `scripts/clawtune.py offline` evaluates the three base prediction models and
