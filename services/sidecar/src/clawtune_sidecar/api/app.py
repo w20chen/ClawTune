@@ -889,11 +889,15 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 "docker_exec_observer_diagnostics.json",
                 app_state.docker_exec_observer.diagnostics(),
             )
-        if app_state.trace_writer is not None:
-            await asyncio.to_thread(app_state.trace_writer.close)
-        close_predictor = getattr(app_state.predictor, "close", None)
-        if callable(close_predictor):
-            await asyncio.to_thread(close_predictor)
+        try:
+            if app_state.trace_writer is not None:
+                await asyncio.to_thread(app_state.trace_writer.close)
+        finally:
+            # Trace and KB storage can fail independently. Always attempt the
+            # final KB save, while preserving any trace shutdown exception.
+            close_predictor = getattr(app_state.predictor, "close", None)
+            if callable(close_predictor):
+                await asyncio.to_thread(close_predictor)
         for execution_id in list(app_state._owned_cgroup_paths):
             await cleanup_owned_cgroup(app_state, execution_id)
         for scope in app_state._native_runtime_scopes.values():
@@ -1135,12 +1139,11 @@ def create_app(state: AppState | None = None) -> FastAPI:
             await asyncio.sleep(_EBPF_COMPLETION_GRACE_SECONDS)
             record = s.executions.get(execution_id)
             # Preserve missing-hook provenance without dropping the measured
-            # prefix. Direct execution clients need no completion hook.
+            # prefix. An absent before-hook does not rule out a late completion;
+            # retain its memory inputs until completion or explicit runtime close.
             finish_kwargs = {}
             if record is not None and s.predictor.awaiting_tool_completion(record.request):
                 finish_kwargs["incomplete_reason"] = "completion_hook_missing"
-            elif record is not None:
-                finish_kwargs["completion_expected"] = False
             if record is not None and record.confirmed_timeout:
                 finish_kwargs.update(confirmed_timeout=True,
                     timeout_duration_lower_bound_ms=record.timeout_duration_lower_bound_ms)

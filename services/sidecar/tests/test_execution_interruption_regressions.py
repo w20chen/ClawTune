@@ -304,6 +304,14 @@ def test_fallback_marks_missing_completion_but_retains_observations(
         artifact = json.loads(Path(summary.artifact_path).read_text())
         assert artifact["replay_execution"] == summary.replay_execution
         if before != "matching":
+            assert summary.call_telemetry is not None
+            assert "execution" not in state.predictor._completed_execution_ids
+            assert "execution" in state.predictor._execution_owners
+            assert "execution" in state.predictor._completion_inputs
+            assert "execution" in state.predictor._pending_memory_targets
+            response = client.delete("/v1/gateways/swe-rebench/runtimes/task-a/sandbox-scope")
+            assert response.status_code == 200, response.text
+            summary = state.predictor.execution_telemetry("execution")
             assert summary.call_telemetry is None
             assert "execution" in state.predictor._completed_execution_ids
             assert "execution" not in state.predictor._execution_owners

@@ -1052,7 +1052,8 @@ class ToolResourcePredictor:
                                 with self._kb_lock:
                                     self.kb.observe_completed_clause(observation)
                                     self._clause_kb_version += 1
-                                self._kb_writes.enqueue((observation,))
+                                    self._kb_writes.enqueue((observation,))
+                                    self._remove_pending_memory_target(event.execution_id, observation)
                     self._memory_targets_committed.add(event.execution_id)
                     self._pending_memory_targets.pop(event.execution_id, None)
                 except Exception:
@@ -1409,6 +1410,22 @@ class ToolResourcePredictor:
                     )
                 )
             )
+
+    def _remove_pending_memory_target(self, execution_id: str, observation: ClauseObservation) -> None:
+        """Under the KB lock, retire one successfully learned clause's fallback."""
+        pending = self._pending_memory_targets.get(execution_id)
+        if pending is None:
+            return
+        owner, rows = pending
+        for index, row in enumerate(rows):
+            if ((row.bin, row.argv, row.ts_start, row.ts_end)
+                    == (observation.bin, observation.argv, observation.ts_start, observation.ts_end)
+                    and (row.clause_index is None or observation.clause_index is None
+                         or row.clause_index == observation.clause_index)):
+                # Remove one occurrence, preserving repeated executions of the
+                # same command and unrelated clauses if a later label fails.
+                self._pending_memory_targets[execution_id] = (owner, rows[:index] + rows[index + 1:])
+                return
 
     def _finalize_memory_targets(self, runtime_id: str | None = None, gateway_id: str | None = None,
                                  *, execution_id: str | None = None) -> None:
