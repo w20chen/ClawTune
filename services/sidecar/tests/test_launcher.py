@@ -4,12 +4,65 @@ import os
 import shlex
 import subprocess
 import time
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from clawtune_sidecar import launcher
+
+
+def test_cpu_tool_signals_use_schema_v1_and_real_progress(monkeypatch, tmp_path) -> None:
+    rows = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def post(request, timeout):
+        assert timeout == 1
+        rows.append(json.loads(request.data))
+        return Response()
+
+    progress = tmp_path / "remaining-seconds"
+    progress.write_text("1.5")
+    monkeypatch.setenv("CLAWTUNE_GPU_SIGNAL_ENDPOINT", "http://gpu/request-signals/cpu-events")
+    monkeypatch.setenv("CLAWTUNE_PREDICTED_TOOL_DURATION_MS", "5000")
+    monkeypatch.setenv("CLAWTUNE_TOOL_PROGRESS_PATH", str(progress))
+    monkeypatch.setenv("CLAWTUNE_TOOL_CALL_ID", "tool-1")
+    monkeypatch.setattr(launcher.urllib.request, "urlopen", post)
+
+    signal = launcher._CpuToolSignal.from_environment("exec-1")
+    assert signal is not None
+    signal.send_start()
+    launcher._send_finishing_soon(signal, lambda: True)
+
+    assert rows[0] == {
+        "schema_version": 1,
+        "request_id": "tool-1",
+        "engine_request_id": "exec-1",
+        "agent_request_id": "tool-1",
+        "session_id": None,
+        "event": "tool_start",
+        "t": rows[0]["t"],
+        "engine_id": "cpu-tool",
+        "role": "A",
+        "engine_step": 0,
+        "predicted_duration_ms": 5000.0,
+    }
+    assert rows[1]["event"] == "tool_finishing_soon"
+    assert rows[1]["remaining_duration_ms"] == 1500.0
+    assert rows[1]["remaining_source"] == "tool_progress"
+
+
+def test_missing_tool_progress_file_means_remaining_time_is_unavailable(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CLAWTUNE_TOOL_PROGRESS_PATH", str(tmp_path / "remaining-seconds"))
+
+    assert launcher._tool_remaining_seconds() is None
 
 
 @pytest.mark.skipif(os.name != "posix", reason="requires real POSIX payload processes")

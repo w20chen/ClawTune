@@ -215,6 +215,9 @@ export async function instrumentExecParams(
   const launcherEndpoint = process.env.CLAWTUNE_LAUNCHER_ENDPOINT
     ?? inheritedLauncherEnv.CLAWTUNE_ENDPOINT
     ?? config.endpoint;
+  const predictedDurationMs = decision?.prediction.resource_class === "latency_long"
+    ? decision.prediction.duration_p90_ms
+    : null;
   params.env = {
     ...safeExecEnv(params.env),
     ...inheritedLauncherEnv,
@@ -232,7 +235,13 @@ export async function instrumentExecParams(
     CLAWTUNE_TOOL_CALL_ID: payload.tool_call_id ?? "",
     CLAWTUNE_RUN_ID: runId ?? "",
     CLAWTUNE_SESSION_HASH: sessionKeyHash ?? "",
-    CLAWTUNE_COMMAND_DIGEST: commandDigest
+    CLAWTUNE_COMMAND_DIGEST: commandDigest,
+    ...(predictedDurationMs !== null && inheritedLauncherEnv.CLAWTUNE_GPU_SIGNAL_ENDPOINT
+      ? {
+          CLAWTUNE_GPU_SIGNAL_ENDPOINT: inheritedLauncherEnv.CLAWTUNE_GPU_SIGNAL_ENDPOINT,
+          CLAWTUNE_PREDICTED_TOOL_DURATION_MS: String(predictedDurationMs),
+        }
+      : {}),
   };
 
   let effectiveCommand: string | null = params.command as string;
@@ -434,6 +443,8 @@ function launcherEnv(): Record<string, string> {
     "CLAWTUNE_LAUNCH_DEBUG",
     "CLAWTUNE_TASK_PYTHON",
     "CLAWTUNE_ENDPOINT",
+    "CLAWTUNE_GPU_SIGNAL_ENDPOINT",
+    "CLAWTUNE_TOOL_PROGRESS_PATH",
     // The launcher makes authenticated claim/started/exited requests. It
     // removes this bearer credential before execing the untrusted payload.
     "CLAWTUNE_TOKEN",
