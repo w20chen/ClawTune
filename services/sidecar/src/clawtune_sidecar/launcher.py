@@ -7,7 +7,6 @@ import signal
 import stat
 import subprocess
 import sys
-import threading
 import time
 import tempfile
 import urllib.error
@@ -17,88 +16,13 @@ from pathlib import Path
 from shutil import which
 from typing import Any
 
+from clawtune_sidecar.tool_signals import wrap_tool_command
+
 
 _SUBPROCESS_EXIT_REPORT_TIMEOUTS_SECONDS = (0.75, 10.0)
 _FORK_EXEC_EXIT_REPORT_TIMEOUTS_SECONDS = (0.75, 3.0, 10.0)
 _EXIT_REPORT_RETRY_DELAY_SECONDS = 0.05
 _START_REPORT_TIMEOUT_SECONDS = 60.0
-_TOOL_PROGRESS_POLL_SECONDS = 0.05
-
-
-class _CpuToolSignal:
-    def __init__(self, endpoint: str, execution_id: str, predicted_duration_ms: float) -> None:
-        self.endpoint = endpoint
-        self.execution_id = execution_id
-        self.predicted_duration_ms = predicted_duration_ms
-        self.request_id = os.environ.get("CLAWTUNE_TOOL_CALL_ID") or execution_id
-        self.session_id = os.environ.get("CLAWTUNE_SESSION_ID") or None
-
-    @classmethod
-    def from_environment(cls, execution_id: str) -> _CpuToolSignal | None:
-        endpoint = os.environ.get("CLAWTUNE_GPU_SIGNAL_ENDPOINT")
-        predicted_duration_ms = os.environ.get("CLAWTUNE_PREDICTED_TOOL_DURATION_MS")
-        if endpoint is None or predicted_duration_ms is None:
-            return None
-        return cls(endpoint, execution_id, float(predicted_duration_ms))
-
-    def send_start(self) -> None:
-        self._send("tool_start", predicted_duration_ms=self.predicted_duration_ms)
-
-    def send_finishing_soon(self, remaining_duration_ms: float) -> None:
-        self._send(
-            "tool_finishing_soon",
-            remaining_duration_ms=remaining_duration_ms,
-            remaining_source="tool_progress",
-        )
-
-    def _send(self, event: str, **fields: Any) -> None:
-        payload = dict(
-            schema_version=1,
-            request_id=self.request_id,
-            engine_request_id=self.execution_id,
-            agent_request_id=self.request_id,
-            session_id=self.session_id,
-            event=event,
-            t=time.time(),
-            engine_id="cpu-tool",
-            role="A",
-            engine_step=0,
-            **fields,
-        )
-        request = urllib.request.Request(
-            self.endpoint,
-            data=json.dumps(payload).encode(),
-            headers={"content-type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=1):
-            pass
-
-
-def _tool_remaining_seconds() -> float | None:
-    """Progress-bar adapter: the tool writes its real remaining seconds here."""
-    path = os.environ.get("CLAWTUNE_TOOL_PROGRESS_PATH")
-    if not path:
-        return None
-    progress = Path(path)
-    return float(progress.read_text()) if progress.exists() else None
-
-
-def _send_finishing_soon(signal: _CpuToolSignal, is_running: Callable[[], bool]) -> None:
-    while is_running():
-        remaining_seconds = _tool_remaining_seconds()
-        if remaining_seconds is not None and 0 < remaining_seconds <= 2:
-            signal.send_finishing_soon(remaining_seconds * 1000)
-            return
-        time.sleep(_TOOL_PROGRESS_POLL_SECONDS)
-
-
-def _pid_is_running(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
 
 
 class _CleanupUnconfirmed(RuntimeError):
@@ -211,7 +135,7 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
         {"execution_id": execution_id, "token": token, "launcher_pid": launcher_pid},
     )
     if claim is None:
-        return _run_unobserved(os.environ["CLAWTUNE_PAYLOAD_COMMAND"])
+        return _run_unobserved(os.environ["CLAWTUNE_PAYLOAD_COMMAND"], execution_id)
     try:
         return _run_forkexec_claimed(endpoint, execution_id, claim, launcher_pid)
     except _CleanupUnconfirmed:
@@ -230,11 +154,10 @@ def _run_forkexec_claimed(
     endpoint: str, execution_id: str, claim: dict[str, Any], launcher_pid: int,
 ) -> int:
     _validate_profiling_mode(claim.get("profiling"))
-    command = str(claim["command"])
+    command = wrap_tool_command(str(claim["command"]), execution_id)
     workdir = claim.get("workdir")
     cwd = str(workdir) if isinstance(workdir, str) and workdir else None
     update_token = str(claim["update_token"])
-    cpu_signal = _CpuToolSignal.from_environment(execution_id)
 
     read_fd, write_fd = os.pipe()
     try:
@@ -327,17 +250,9 @@ def _run_forkexec_claimed(
             response_cgroup = started_response.get("cgroup_path")
             if isinstance(response_cgroup, str) and response_cgroup:
                 cgroup_path = response_cgroup
-        if cpu_signal is not None:
-            cpu_signal.send_start()
         # Release the child only after successful registration.
         if os.write(write_fd, b"1") != 1:
             raise RuntimeError("failed to release the forked execution gate")
-        if cpu_signal is not None and os.environ.get("CLAWTUNE_TOOL_PROGRESS_PATH"):
-            threading.Thread(
-                target=_send_finishing_soon,
-                args=(cpu_signal, lambda: _pid_is_running(pid)),
-                daemon=True,
-            ).start()
     except BaseException:
         # EOF is a failure signal: the child must exit without executing.
         try:
@@ -442,7 +357,7 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
         {"execution_id": execution_id, "token": token, "launcher_pid": launcher_pid},
     )
     if claim is None:
-        return _run_unobserved(os.environ["CLAWTUNE_PAYLOAD_COMMAND"])
+        return _run_unobserved(os.environ["CLAWTUNE_PAYLOAD_COMMAND"], execution_id)
     try:
         return _run_subprocess_claimed(endpoint, execution_id, claim, launcher_pid)
     except _CleanupUnconfirmed:
@@ -459,7 +374,7 @@ def _run_subprocess_claimed(
     endpoint: str, execution_id: str, claim: dict[str, Any], launcher_pid: int,
 ) -> int:
     _validate_profiling_mode(claim.get("profiling"))
-    command = str(claim["command"])
+    command = wrap_tool_command(str(claim["command"]), execution_id)
     workdir = claim.get("workdir")
     cwd = str(workdir) if isinstance(workdir, str) and workdir else None
     update_token = str(claim["update_token"])
@@ -476,7 +391,6 @@ def _run_subprocess_claimed(
     parsed_affinity = _parse_cpu_list(cpu_set) if _enabled(profiling, "enable_affinity", True) else set()
     affinity_cpus = parsed_affinity or None
     started_reported = False
-    cpu_signal = _CpuToolSignal.from_environment(execution_id)
 
     def report_started(
         child_pid: int,
@@ -587,17 +501,9 @@ def _run_subprocess_claimed(
             response_cgroup = started_response.get("cgroup_path")
             if isinstance(response_cgroup, str) and response_cgroup:
                 cgroup_path = response_cgroup
-        if cpu_signal is not None:
-            cpu_signal.send_start()
         if release_gate is not None:
             release_gate(True)
             release_gate = None
-        if cpu_signal is not None and os.environ.get("CLAWTUNE_TOOL_PROGRESS_PATH"):
-            threading.Thread(
-                target=_send_finishing_soon,
-                args=(cpu_signal, lambda: child.poll() is None),
-                daemon=True,
-            ).start()
     except Exception:
         if release_gate is not None:
             release_gate(False)
@@ -631,6 +537,7 @@ def _run_degraded(endpoint: str, execution_id: str, command: str) -> int:
 
     Returns the shell exit code of the payload command.
     """
+    command = wrap_tool_command(command, execution_id)
     cwd = os.environ.pop("CLAWTUNE_EXEC_WORKDIR", None) or None
     # In degraded mode we always attempt cgroup isolation since that is the
     # primary reason for wrapping the command with the launcher.  Placement
@@ -684,8 +591,9 @@ def _run_degraded(endpoint: str, execution_id: str, command: str) -> int:
     return _shell_exit_code(returncode)
 
 
-def _run_unobserved(command: str) -> int:
+def _run_unobserved(command: str, execution_id: str) -> int:
     """Only entered before any payload was released; never retry a command."""
+    command = wrap_tool_command(command, execution_id)
     child = _spawn_shell(command, os.environ.get("CLAWTUNE_EXEC_WORKDIR") or None,
                          cgroup_path=None, affinity_cpus=None)
     _install_signal_forwarders(child)

@@ -236,6 +236,8 @@ export async function instrumentExecParams(
     CLAWTUNE_RUN_ID: runId ?? "",
     CLAWTUNE_SESSION_HASH: sessionKeyHash ?? "",
     CLAWTUNE_COMMAND_DIGEST: commandDigest,
+    // Clear inherited eligibility on short/unknown calls as well.
+    CLAWTUNE_PREDICTED_TOOL_DURATION_MS: "",
     ...(predictedDurationMs !== null && inheritedLauncherEnv.CLAWTUNE_GPU_SIGNAL_ENDPOINT
       ? {
           CLAWTUNE_GPU_SIGNAL_ENDPOINT: inheritedLauncherEnv.CLAWTUNE_GPU_SIGNAL_ENDPOINT,
@@ -444,7 +446,6 @@ function launcherEnv(): Record<string, string> {
     "CLAWTUNE_TASK_PYTHON",
     "CLAWTUNE_ENDPOINT",
     "CLAWTUNE_GPU_SIGNAL_ENDPOINT",
-    "CLAWTUNE_TOOL_PROGRESS_PATH",
     // The launcher makes authenticated claim/started/exited requests. It
     // removes this bearer credential before execing the untrusted payload.
     "CLAWTUNE_TOKEN",

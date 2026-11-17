@@ -55,6 +55,31 @@ const payload = {
   resource_scope: null
 };
 
+test("CPU signals require a long prediction and never inherit stale eligibility", async () => {
+  const beforeEndpoint = process.env.CLAWTUNE_GPU_SIGNAL_ENDPOINT;
+  const beforeProgress = process.env.CLAWTUNE_TOOL_PROGRESS_PATH;
+  process.env.CLAWTUNE_GPU_SIGNAL_ENDPOINT = "http://gpu/request-signals/cpu-events";
+  process.env.CLAWTUNE_TOOL_PROGRESS_PATH = "/obsolete/progress";
+  try {
+    for (const resourceClass of ["latency_long", "latency_short", "latency_medium", "unknown"]) {
+      const result = await instrumentExecParams(
+        {toolName: "exec", params: {command: "pytest -v", env: {CLAWTUNE_PREDICTED_TOOL_DURATION_MS: "999"}}},
+        {}, payload, {prediction: {resource_class: resourceClass, duration_p90_ms: 5000}},
+        {async registerExecution() { return {one_time_token: "test"}; }},
+        {...baseConfig, executionBackend: "managed-wrapper"},
+      );
+      assert.equal(result.params.env.CLAWTUNE_PREDICTED_TOOL_DURATION_MS,
+        resourceClass === "latency_long" ? "5000" : "");
+      assert.equal(result.params.env.CLAWTUNE_TOOL_PROGRESS_PATH, undefined);
+    }
+  } finally {
+    if (beforeEndpoint === undefined) delete process.env.CLAWTUNE_GPU_SIGNAL_ENDPOINT;
+    else process.env.CLAWTUNE_GPU_SIGNAL_ENDPOINT = beforeEndpoint;
+    if (beforeProgress === undefined) delete process.env.CLAWTUNE_TOOL_PROGRESS_PATH;
+    else process.env.CLAWTUNE_TOOL_PROGRESS_PATH = beforeProgress;
+  }
+});
+
 test("managed launch retains fallback payload and policy after successful registration", async () => {
   for (const [mode, failOpen, expected] of [["observe", false, "1"], ["enforce", true, "1"], ["enforce", false, "0"]]) {
     const result = await instrumentExecParams(

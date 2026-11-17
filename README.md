@@ -28,6 +28,9 @@ for seed selection and updates.
 
 [JSON Schemas](contracts/) define the public protocol.
 
+See [CPU tool signals](docs/cpu-tool-signals.md) for tool-specific live-progress
+adapters, GPU notification configuration, supported tools and unavailable cases.
+
 See [command rules](docs/command-parsing.md) for parsing inspection, automatic rule generation, and workspace configuration.
 
 Start with the [trace measurement and prediction quick guide](docs/tool-profile.md#quick-guide-measurements-and-predictions), then use the same field reference for trace fields, units, attribution boundaries, and unavailable values.
