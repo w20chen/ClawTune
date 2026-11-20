@@ -846,7 +846,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
     app.state.sidecar = app_state
     signals = SignalHub(app_state.config.signal_endpoint, app_state.config.signal_token,
                         queue_size=app_state.config.signal_queue_size,
-                        timeout=app_state.config.signal_timeout_s)
+                        timeout=app_state.config.signal_timeout_s,
+                        tool_events=app_state.config.signal_tool_events)
     app.state.signals = signals
     finishing_tasks: dict[str, asyncio.Task[None]] = {}
     starting_tasks: dict[str, asyncio.Task[bool]] = {}
@@ -862,6 +863,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
 
     @app.on_event("startup")
     async def prepare_collectors() -> None:
+        signals.start_sessions()
         # Uvicorn does not accept requests until startup finishes. Compilation
         # must not be charged to the first native tool or block its decision.
         await asyncio.to_thread(app_state.tool_monitor.prepare)
@@ -2319,6 +2321,11 @@ def create_app(state: AppState | None = None) -> FastAPI:
         verify_bearer(app_state.config.auth_token, request.headers.get("authorization"))
         return signals.status()
 
+    @app.get("/v1/sessions")
+    async def session_snapshots(request: Request):
+        verify_bearer(app_state.config.auth_token, request.headers.get("authorization"))
+        return {"publisher_id": signals.publisher_id, "sessions": signals.sessions.snapshots()}
+
     @app.post("/v1/signals")
     async def receive_signal(request: Request):
         # JSON Schema, not a second independently evolving model, defines ingress.
@@ -2332,6 +2339,12 @@ def create_app(state: AppState | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail="published_signal_not_an_observation")
         kind, owner = message["type"], message["identity"]
         authorization = request.headers.get("authorization")
+        if kind == "session.observation":
+            verify_bearer(app_state.config.auth_token, authorization)
+            try:
+                return {"stored": signals.sessions.observe(message)}
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         if kind in {"execution.started", "execution.progress"}:
             if message["source"] != "launcher" or not owner["execution_id"]:
                 raise HTTPException(status_code=422, detail="invalid_execution_signal_identity")

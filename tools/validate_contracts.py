@@ -31,7 +31,9 @@ EXAMPLES = {
     "execution-exited.schema.json": "execution-exited.json",
     "pmu-profile.schema.json": "pmu-profile.json",
     "signal.schema.json": ("signal-prediction-created.json", "signal-progress.json",
-                           "signal-prediction-updated.json", "signal-finishing-soon.json"),
+                           "signal-prediction-updated.json", "signal-finishing-soon.json",
+                           "signal-session-observation.json", "signal-session-state.json",
+                           "signal-session-forecast.json"),
     "execution-claim-response.schema.json": "execution-claim-response.json",
 }
 

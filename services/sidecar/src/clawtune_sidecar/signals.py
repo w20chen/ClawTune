@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from clawtune_sidecar.session_state import SessionStateManager, session_key
 from clawtune_sidecar.signal_protocol import IDENTITY_FIELDS, envelope, event_timestamp
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ class ExecutionSignals:
     last_observed_at: float = -1
     finishing_sent: bool = False
     update_sent: bool = False
+    session_batch: tuple | None = None
 
 
 class SignalHub:
@@ -52,8 +54,9 @@ class SignalHub:
     """
 
     def __init__(self, endpoint=None, token=None, *, queue_size=1024, timeout=1.0,
-                 client=None):
+                 client=None, tool_events=True):
         self.endpoint, self.token, self.timeout = endpoint, token, timeout
+        self.tool_events = tool_events
         self.publisher_id = str(uuid.uuid4())
         self.sequence = 0
         self.queue = asyncio.Queue(maxsize=queue_size)
@@ -65,6 +68,13 @@ class SignalHub:
         self.baselines = OrderedDict()
         self.executions = OrderedDict()
         self.receipts = OrderedDict()
+        self.sessions = SessionStateManager(self.publish)
+        self.session_pending = OrderedDict()
+        self.session_task = None
+
+    def start_sessions(self):
+        if self.session_task is None:
+            self.session_task = asyncio.create_task(self._deliver_sessions())
 
     def publish(self, kind, payload, *, source="sidecar", owner=None, observed_at=None,
                 expires_at=None, signal_id=None):
@@ -76,7 +86,11 @@ class SignalHub:
         message["published_at"] = time.time()
         self.recent.append(message)
         self.counts["published"] += 1
-        if self.endpoint and not self.closed:
+        if kind.startswith("session."):
+            if self.endpoint and not self.closed:
+                self.session_pending[session_key(message["identity"])] = message
+            return message
+        if self.endpoint and not self.closed and self.tool_events:
             try:
                 self.queue.put_nowait(message)
             except asyncio.QueueFull:
@@ -111,7 +125,8 @@ class SignalHub:
         baseline_id = request.prediction_id
         _, baseline = self.baselines.get(baseline_id, (None, None))
         self.validate_registration(request)
-        self.executions[request.execution_id] = ExecutionSignals(owner, baseline_id, baseline)
+        self.executions[request.execution_id] = ExecutionSignals(
+            owner, baseline_id, baseline, session_batch=self.sessions.batch_key(owner))
         # Remove only terminated entries. Active execution state must not vanish.
         if len(self.executions) > 10000:
             for key in list(self.executions):
@@ -179,6 +194,8 @@ class SignalHub:
         if expires <= now:
             self.counts["stale_observation"] += 1
             return False
+        if state.session_batch is not None and state.session_batch == self.sessions.batch_key(state.identity):
+            self.sessions.progress(state.identity, data, observed, expires)
         estimate = {**data, "scope": "tool_call", "statistic": "point_estimate",
                     "predicted_total_duration_ms": elapsed + remaining}
         if (state.baseline_ms is not None and not state.update_sent
@@ -204,6 +221,7 @@ class SignalHub:
         # fact as an authenticated process exit.  Publish each fact once.
         state.exited = True
         state.exit_sent = True
+        self.sessions.process_exited(state.identity)
         self.publish(
             "execution.exited",
             payload,
@@ -216,6 +234,7 @@ class SignalHub:
         state = self.executions.get(event.execution_id)
         if state is not None:
             state.exited = True
+            self.sessions.process_exited(state.identity)
         self.publish("tool.completed", {
             "tool_name": event.tool_name, "duration_ms": event.duration_ms,
             "error_type": event.error_type,
@@ -228,6 +247,7 @@ class SignalHub:
         state = self.executions.get(execution_id)
         if state is not None and not state.exited:
             state.exited = True
+            self.sessions.process_exited(state.identity)
             self.publish("execution.aborted", {"reason": reason}, owner=state.identity)
 
     def _obsolete(self, message):
@@ -276,8 +296,52 @@ class SignalHub:
             if owned:
                 await client.aclose()
 
+    async def _deliver_sessions(self):
+        """Independent, coalesced delivery; periodic full snapshots repair disconnects.
+
+        Neither this path nor the plugin promises historical event replay.
+        A short per-request bound prevents one receiver failure consuming an ETA.
+        """
+        owned = self.client is None
+        client = self.client or httpx.AsyncClient(follow_redirects=False, trust_env=False)
+        resync_at = time.monotonic() + 5
+        tick_at = 0
+        try:
+            while True:
+                if time.monotonic() >= tick_at:
+                    self.sessions.tick()
+                    tick_at = time.monotonic() + .1
+                if time.monotonic() >= resync_at:
+                    if self.endpoint:
+                        for message in self.sessions.snapshots():
+                            self.session_pending[session_key(message["identity"])] = message
+                    resync_at = time.monotonic() + 5
+                if not self.session_pending or not self.endpoint:
+                    await asyncio.sleep(.1)
+                    continue
+                _, message = self.session_pending.popitem(last=False)
+                if self._obsolete(message):
+                    continue
+                try:
+                    headers = {"Authorization": "Bearer " + self.token} if self.token else {}
+                    response = await asyncio.wait_for(client.post(
+                        self.endpoint, json=message, headers=headers, timeout=min(.2, self.timeout)),
+                        timeout=min(.2, self.timeout))
+                    self.counts["session_delivered" if 200 <= response.status_code < 300
+                                else "session_failed"] += 1
+                except (httpx.HTTPError, OSError, asyncio.TimeoutError, httpx.InvalidURL,  # noqa: UP041 - Python 3.10
+                        ValueError, TypeError):
+                    self.counts["session_failed"] += 1
+                # Failed state is retried by periodic resync, never by blocking newer state.
+        finally:
+            if owned:
+                await client.aclose()
+
     async def close(self):
         self.closed = True
+        if self.session_task is not None:
+            self.session_task.cancel()
+            await asyncio.gather(self.session_task, return_exceptions=True)
         if self.task is not None:
             try:
                 await asyncio.wait_for(self.queue.join(), timeout=1.1)
@@ -289,4 +353,5 @@ class SignalHub:
     def status(self):
         return {"publisher_id": self.publisher_id, "sequence": self.sequence,
                 "enabled": bool(self.endpoint), "queued": self.queue.qsize(),
+                "session_queued": len(self.session_pending),
                 "counters": dict(self.counts)}

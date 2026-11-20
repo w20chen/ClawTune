@@ -1,0 +1,41 @@
+{
+  "schema_version": "clawtune.signal.v1",
+  "signal_id": "session-signal-1",
+  "type": "session.observation",
+  "source": "plugin",
+  "identity": {
+    "gateway_id": "gateway-1",
+    "runtime_id": "runtime-1",
+    "session_id": "session-1",
+    "run_id": "run-1",
+    "agent_id": null,
+    "tool_call_id": null,
+    "call_id": null,
+    "execution_id": null,
+    "prediction_id": null
+  },
+  "observed_at": 1800000000,
+  "published_at": null,
+  "publisher_id": null,
+  "sequence": 0,
+  "expires_at": null,
+  "payload": {
+    "revision": 1,
+    "observer_id": "plugin-1",
+    "observer_started_at": 1799999990,
+    "session_key": "agent:main:main",
+    "parent_session_key": null,
+    "run_status": "active",
+    "model_call_id": null,
+    "batch": {
+      "batch_id": "run-1:message-1",
+      "tools": [
+        {
+          "tool_call_id": "tool-1",
+          "settled": false,
+          "foreground": true
+        }
+      ]
+    }
+  }
+}

@@ -22,7 +22,10 @@
         "execution.aborted",
         "tool.completed",
         "model.started",
-        "model.completed"
+        "model.completed",
+        "session.observation",
+        "session.state",
+        "session.handoff_forecast"
       ]
     },
     "source": {
@@ -161,6 +164,49 @@
   ],
   "additionalProperties": false,
   "allOf": [
+    {
+      "if": {"properties": {"type": {"enum": ["session.observation", "session.state", "session.handoff_forecast"]}}},
+      "then": {
+        "properties": {
+          "identity": {"properties": {
+            "gateway_id": {"type": "string", "minLength": 1},
+            "runtime_id": {"type": "string", "minLength": 1},
+            "session_id": {"type": "string", "minLength": 1},
+            "run_id": {"type": "string", "minLength": 1},
+            "tool_call_id": {"type": "null"},
+            "execution_id": {"type": "null"},
+            "prediction_id": {"type": "null"},
+            "call_id": {"type": "null"}
+          }}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "session.observation"}}},
+      "then": {"properties": {
+        "source": {"const": "plugin"}, "publisher_id": {"type": "null"},
+        "expires_at": {"type": "null"},
+        "payload": {"$ref": "session-observation.schema.json"}
+      }}
+    },
+    {
+      "if": {"properties": {"type": {"enum": ["session.state", "session.handoff_forecast"]}}},
+      "then": {"properties": {
+        "source": {"const": "sidecar"}, "publisher_id": {"type": "string", "minLength": 1},
+        "payload": {"$ref": "session-state.schema.json"}
+      }}
+    },
+    {
+      "if": {"properties": {"type": {"const": "session.state"}}},
+      "then": {"properties": {"expires_at": {"type": "null"},
+        "payload": {"properties": {"remaining_ms": {"type": "null"}}}}}
+    },
+    {
+      "if": {"properties": {"type": {"const": "session.handoff_forecast"},
+        "payload": {"properties": {"remaining_ms": {"type": "number"}}}}},
+      "then": {"properties": {"expires_at": {"type": "number"},
+        "payload": {"properties": {"phase": {"const": "TOOLS"}}}}}
+    },
     {
       "if": {
         "properties": {

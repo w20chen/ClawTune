@@ -42,6 +42,7 @@ class SidecarConfig:
     signal_token: str | None = None
     signal_queue_size: int = 1024
     signal_timeout_s: float = 1.0
+    signal_tool_events: bool = True
     trace_dir: Path = Path("traces")
     trace_runtime_paths: dict[str, str] = field(default_factory=dict)
     trace_max_messages_bytes: int = 131_072  # 128 KiB, matches plugin default
@@ -172,6 +173,8 @@ class SidecarConfig:
             signal_token=os.getenv("CLAWTUNE_SIGNAL_TOKEN") or None,
             signal_queue_size=int(os.getenv("CLAWTUNE_SIGNAL_QUEUE_SIZE", "1024")),
             signal_timeout_s=float(os.getenv("CLAWTUNE_SIGNAL_TIMEOUT_S", "1")),
+            signal_tool_events=os.getenv("CLAWTUNE_SIGNAL_TOOL_EVENTS", "true").lower()
+            in {"1", "true", "yes", "on"},
             trace_dir=_resolve_path(trace, env_base) if trace else Path("traces"),
             trace_runtime_paths=json.loads(os.getenv("CLAWTUNE_TRACE_RUNTIME_PATHS", "{}")),
             trace_max_messages_bytes=int(os.getenv("CLAWTUNE_TRACE_MAX_MESSAGES_BYTES", "131072")),

@@ -58,9 +58,10 @@ def test_progress_update_and_finishing_have_distinct_semantics_and_same_stream()
 
 def test_strict_overrun_boundary_and_finishing_without_any_history():
     hub, owner = prepared(0)
-    hub.observe(progress(owner, elapsed=1000, remaining=4000))
+    observed = time.time() - .01
+    hub.observe(progress(owner, elapsed=1000, remaining=4000, observed_at=observed))
     assert len(hub.recent) == 1
-    hub.observe(progress(owner, elapsed=1001, remaining=4000))
+    hub.observe(progress(owner, elapsed=1001, remaining=4000, observed_at=observed + .001))
     assert hub.recent[-1]["type"] == "prediction.updated"
     hub, owner = prepared(None)
     hub.observe(progress(owner, remaining=2000))

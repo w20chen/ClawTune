@@ -22,7 +22,8 @@ The plugin sends model and tool completion observations to sidecar
 `POST /v1/signals`. The POSIX managed launcher reports actual payload creation
 and fresh tool progress to the same endpoint. The sidecar authenticates these
 observations, associates them with its stored prediction, and publishes all
-downstream messages through one asynchronous sender.
+downstream messages asynchronously. Session snapshots use a separate sender
+from the legacy tool/model FIFO.
 
 `POST /v1/decisions/tool` remains a synchronous control request. Its prediction
 is calculated once; the same object is returned to the plugin and published as
@@ -130,7 +131,8 @@ unauthenticated observations.
 
 ## Delivery and diagnostics
 
-The sidecar has one FIFO queue (default 1024 messages) and one sender. Each message
+Legacy tool/model publications use one FIFO queue per sidecar process (default
+1024 messages) and one sender, shared across sessions. Each message
 gets up to three attempts, retaining its identity and sequence. Only connection
 errors, timeouts, HTTP 408/429 and 5xx responses are retried. Redirects are not
 followed. Default per-attempt total timeout is one second; attempts for one message
@@ -154,3 +156,83 @@ The tests cover schema validation, API correlation/authentication, retry identit
 strict thresholds, stale progress, terminal-state fences, bounded shutdown, real
 curl/wget/pytest output, binary output preservation and process-group cancellation.
 HTTP fixtures do not establish integration with an external GPU scheduler.
+
+## Session scheduling signals
+
+The plugin sends complete `session.observation` snapshots using the same
+authenticated ingress. The sidecar aggregates them into two downstream types:
+`session.state` and `session.handoff_forecast`. Both carry the complete current
+state. Their payloads are defined by
+[session-state.schema.json](../contracts/session-state.schema.json); plugin
+snapshots use [session-observation.schema.json](../contracts/session-observation.schema.json).
+Examples are in `contracts/examples/signal-session-*.json`.
+
+| Phase | Meaning and trigger |
+| --- | --- |
+| `CONTROL` | Run active without a current model call or known tool batch, including attempt finishing/retry preparation |
+| `LLM` | Actual `model_call_started` observed; this is client-side request activity, not GPU admission |
+| `TOOLS` | Full assistant tool-call list observed, with at least one logical call unsettled |
+| `HANDOFF` | Every call in that batch has logically returned; another model request is possible, not guaranteed |
+| `WAIT_EVENT` | Successful `sessions_yield` or explicit yielded lifecycle; retained at run end |
+| `IDLE` | Final run end, error, cancellation, or session close without explicit yield; not proof of whole-task completion |
+| `UNKNOWN` | No fresh plugin snapshot for 15 seconds |
+
+The public runtime transcript subscription supplies the full native assistant
+`toolCall` list before tool execution. `before_tool_call` only records applicability
+of process progress; it does not prove execution started. `after_tool_call`
+settles logical calls, including failures and returned background handles.
+Process exit invalidates ETA but never settles a logical tool. Final runtime
+lifecycle events reconcile skipped/cancelled members without inventing HANDOFF.
+The attempt-level `agent_end`/`llm_output` hooks do not establish these boundaries.
+Missing batch/identity evidence therefore never produces a guessed HANDOFF.
+
+Sessions are isolated by `(gateway_id, runtime_id, session_id)`; `run_id` and
+`batch_id` fence old work. Child sessions are independent; `session_key` and
+`parent_session_key` provide an explicit relation without parsing IDs. A parent
+waits only for its spawn call to return, unless it explicitly yields.
+
+`remaining_ms` estimates completion of the current logical batch, not the arrival
+time of the next model request. It is numeric only when **every unfinished member**
+has fresh accepted process progress and known foreground semantics. The estimate
+uses the latest predicted end across these members; its expiry is the earliest
+evidence expiry. Pending serial members, unknown/background policy, unsupported
+progress, process exit and expired evidence yield `null`. The MVP does not infer
+an execution mode from IDs or predict durations for not-yet-started serial tools.
+Currently foreground eligibility is proven only for `exec` when OpenClaw's global
+`tools.deny` explicitly includes `process`; otherwise ETA remains null. Existing
+POSIX managed-wrapper progress coverage still applies. Repeated raw progress
+refreshes the forecast even after a one-shot tool finishing notification.
+Execution registration must already match a known batch; otherwise its ETA is
+unavailable. This fences delayed progress even when a later batch reuses a tool ID.
+
+Session delivery keeps only the latest snapshot per session in a separate
+sidecar-wide pending map. It bypasses the legacy retry queue; each attempt is
+bounded by 200 ms or the configured timeout, whichever is shorter. Plugin ingress
+attempts are bounded by 500 ms. Both links resend current snapshots every five
+seconds to recover from disconnects. This is eventual latest-state recovery,
+not historical transition replay or a two-second end-to-end delivery guarantee
+under arbitrary session counts/network delays. The plugin and sidecar each
+retain at most 10,000 tracked sessions per lifetime; no durable history or
+automatic session eviction is implemented.
+
+Receiver rules:
+
+- Compare `payload.revision` across both session message types, within one owner
+  and `publisher_id`. Apply newer full snapshots; ignore duplicates/older ones.
+  `state_revision` changes only when state changes. Do not use the legacy global
+  `sequence` as a per-session version.
+- Treat `remaining_ms: null` as forecast withdrawal. Numeric estimates are valid
+  only before `expires_at`; `observed_at + remaining_ms / 1000` is the predicted
+  end. Resending an identical snapshot does not renew its ETA.
+- On receiver reconnect or publisher change, reconcile against authenticated
+  `GET /v1/sessions`, which returns `{publisher_id, sessions: [full envelopes]}`.
+  Adopt that publisher and reject late messages from retired publishers. Missing
+  sessions after restart are unknown until the plugin resends them, not IDLE.
+  If deliveries/polls stop, invalidate locally retained state after 15 seconds;
+  a dead sidecar cannot publish UNKNOWN itself.
+
+`GET /v1/signals/status` includes `session_queued` and session delivery counters.
+Set sidecar `CLAWTUNE_SIGNAL_TOOL_EVENTS=false` for session-only downstream
+delivery. The default `true` preserves existing tool/model publications; internal
+observations and training remain active with either setting. This implementation
+provides scheduling evidence only; no GPU/KV policy or receiver is installed.

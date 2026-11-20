@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/session-observation.schema.json",
+  "description": "Complete plugin control snapshot. Revision increases within one runtime/session. Repeated identical revisions renew liveness, not ETA. Contains no tool arguments or output text.",
+  "type": "object",
+  "required": ["revision", "observer_id", "observer_started_at", "session_key", "parent_session_key", "run_status", "model_call_id", "batch"],
+  "additionalProperties": false,
+  "properties": {
+    "revision": {"type": "integer", "minimum": 1},
+    "observer_id": {"type": "string", "minLength": 1},
+    "observer_started_at": {"type": "number", "minimum": 0},
+    "session_key": {"type": ["string", "null"]},
+    "parent_session_key": {"type": ["string", "null"]},
+    "run_status": {"enum": ["active", "finishing", "ended", "error", "cancelled", "yielded", "closed"]},
+    "model_call_id": {"type": ["string", "null"]},
+    "batch": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["batch_id", "tools"],
+          "properties": {
+            "batch_id": {"type": "string", "minLength": 1},
+            "tools": {
+              "type": "array", "minItems": 1, "maxItems": 1024,
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["tool_call_id", "settled", "foreground"],
+                "properties": {
+                  "tool_call_id": {"type": "string", "minLength": 1},
+                  "settled": {"type": "boolean"},
+                  "foreground": {"type": "boolean", "description": "Process progress is applicable to logical completion; false when background policy is unknown."}
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

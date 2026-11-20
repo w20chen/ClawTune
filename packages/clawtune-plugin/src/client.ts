@@ -30,6 +30,11 @@ export class SidecarClient {
     await this.post<unknown>("/v1/signals", eventSignal(payload), this.config.reportTimeoutMs, 3);
   }
 
+  async reportSession(message: unknown): Promise<void> {
+    // Full snapshots are periodically refreshed; never retry an obsolete transition.
+    await this.post<unknown>("/v1/signals", message, Math.min(this.config.reportTimeoutMs, 500));
+  }
+
   async registerExecution(payload: ExecutionRegistrationRequest): Promise<ExecutionRegistrationResponse> {
     return this.post<ExecutionRegistrationResponse>("/v2/executions", payload, this.config.decisionTimeoutMs, 3);
   }

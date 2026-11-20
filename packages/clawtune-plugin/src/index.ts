@@ -2,6 +2,7 @@ import {definePluginEntry, type HookApi} from "openclaw/plugin-sdk/plugin-entry"
 import {randomUUID} from "node:crypto";
 import {readFileSync} from "node:fs";
 import {SidecarClient} from "./client.js";
+import {SessionObservations} from "./session-observations.js";
 import {registerBenchmarkTools} from "./benchmark-tools.js";
 import {formatCallLoadPrediction, formatTimeBuckets} from "./prediction-format.js";
 import {loadConfig, isRecord} from "./config.js";
@@ -195,6 +196,12 @@ export default definePluginEntry({
   }, {priority: 1000, timeoutMs: config.sidecarStartupTimeoutMs + 5_000});
 
   const client = new SidecarClient(config);
+  const sessionObservations = new SessionObservations(
+    (event, context) => hookIdentity(event, context, runtimeId, gatewayId),
+    message => client.reportSession(message), api.runtime?.events,
+    api.config?.tools?.deny?.includes("process") === true,
+  );
+  api.on("subagent_spawned", (event, context) => sessionObservations.spawned(event, context));
   const correlation = new CorrelationMap(300_000, 10_000);
 
   // Initialize trace v6 if trace_dir is configured
@@ -465,6 +472,7 @@ export default definePluginEntry({
   // ── before_tool_call ──────────────────────────────────────────────
 
   api.on("before_tool_call", async (event: unknown, context: unknown) => {
+    sessionObservations.beforeTool(event, context);
     dumpHookShape(event, context, "before_tool_call");
     const toolName = extractString(event, ["tool_name", "toolName", "name"]) ?? "unknown";
     const toolCallId = extractString(event, ["tool_call_id", "toolCallId", "id"]);
@@ -680,6 +688,7 @@ export default definePluginEntry({
   // ── after_tool_call ───────────────────────────────────────────────
 
   api.on("after_tool_call", async (event: unknown, context: unknown) => {
+    sessionObservations.afterTool(event, context);
     dumpHookShape(event, context, "after_tool_call");
     const toolName = extractString(event, ["tool_name", "toolName", "name"]) ?? "unknown";
     const toolCallId = extractString(event, ["tool_call_id", "toolCallId", "id"]);
@@ -919,6 +928,7 @@ export default definePluginEntry({
   let llmSeqCounter = 0;
 
   api.on("model_call_started", async (event: unknown, context: unknown) => {
+    sessionObservations.model(event, context, true);
     dumpHookShape(event, context, "model_call_started");
     const callId = extractString(event, ["call_id", "callId", "id"]);
     const identity = hookIdentity(event, context, runtimeId, gatewayId);
@@ -1009,6 +1019,7 @@ export default definePluginEntry({
   // ── model_call_ended ──────────────────────────────────────────────
 
   api.on("model_call_ended", async (event: unknown, context: unknown) => {
+    sessionObservations.model(event, context, false);
     dumpHookShape(event, context, "model_call_ended");
     const callId = extractString(event, ["call_id", "callId", "id"]);
     const identity = hookIdentity(event, context, runtimeId, gatewayId);
@@ -1223,6 +1234,7 @@ export default definePluginEntry({
   // Older/partial hook payloads may not expose runId. Session end is the safe
   // fallback for writer and registry state, and is idempotent after agent_end.
   api.on("session_end", async (event: unknown, context: unknown) => {
+    sessionObservations.endSession(event, context);
     await finalizeSessionTrace(hookIdentity(event, context, runtimeId, gatewayId));
   });
 
@@ -1236,6 +1248,7 @@ export default definePluginEntry({
   }
 
   async function shutdown(): Promise<void> {
+    await sessionObservations.close();
     // Wait for the sidecar launch to complete (or fail) so the
     // launcher reference is populated before we try to clean it up.
     if (sidecarLaunchPromise) {
