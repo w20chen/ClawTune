@@ -44,7 +44,7 @@ class CurlProgress(ToolProgress):
         # curl's regular meter: % total ... time-total time-spent time-left speed.
         fields = line.split()
         if (len(fields) == 12 and fields[0].isdigit() and 0 < int(fields[0]) < 100
-                and re.fullmatch(r"\d+:\d\d:\d\d", fields[10])):
+                and re.fullmatch(r"(?:\d+:)?\d\d:\d\d", fields[10])):
             return RemainingTime(clock_seconds(fields[10]), "curl.time_left")
         return None
 

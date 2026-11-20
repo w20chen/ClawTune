@@ -330,7 +330,7 @@ def _install_fork_signal_forwarders(child_pid: int) -> Callable[[], None]:
         except OSError:
             pass
 
-    for signum in (signal.SIGTERM, signal.SIGINT):
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         try:
             previous[signum] = signal.getsignal(signum)
             signal.signal(signum, forward)

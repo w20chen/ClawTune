@@ -5,9 +5,15 @@ for example `http://127.0.0.1:8000/request-signals/cpu-events`. Rebuild the plug
 and restart the gateway after updating this checkout. No progress file is used;
 `CLAWTUNE_TOOL_PROGRESS_PATH` is obsolete and ignored.
 
-The existing eligibility rule is unchanged: only `latency_long` predictions
-(p90 > 2000 ms) enable signals. Short, medium and unavailable predictions do not.
-The supported execution path is `managed-wrapper` for instrumented shell tools.
+The existing `tool_start` and `tool_finishing_soon` eligibility rule is unchanged:
+only `latency_long` predictions (the primary backend's p90 > 2000 ms) enable them.
+The independent overrun update uses an available **LatticeKB p50** and covers
+short, medium, long and primary-backend-unknown calls. It never falls back to
+the primary backend, trie, or LatticeKB p90 when the LatticeKB p50 is unavailable.
+The plugin reads `prediction.lattice.targets.duration_ms.p50`, requiring an
+available target with backend `lattice`, unit `ms`, and a finite nonnegative value.
+The supported execution path is `managed-wrapper` for instrumented POSIX shell tools.
+On Windows, the launcher preserves the original command without signal supervision.
 The plugin's default tool/host filters are `exec` and `gateway`; configure them
 for your deployment. `hook-only`, `marker`, native in-process tools and ClawBox's
 bridge are not automatically covered by this launcher implementation.
@@ -24,6 +30,35 @@ the first usable observation in `0 < remaining_seconds <= 2`. It includes:
 - `remaining_source`: the specific tool and observed progress field;
 - `remaining_kind`: `exact` or `estimated`.
 
+`tool_prediction_updated` is attempted once per execution, at the first usable
+fresh progress observation for which:
+
+```text
+elapsed_ms > original_lattice_p50_ms + 1000
+remaining_ms > 0, finite
+predicted_total_duration_ms = elapsed_ms + remaining_ms
+```
+
+Elapsed time uses a monotonic clock starting at payload process creation. The
+event carries `baseline_source=lattice`, `baseline_statistic=p50`,
+`baseline_prediction_ms`, `overrun_threshold_ms=1000`, `elapsed_duration_ms`,
+`remaining_duration_ms`, `predicted_total_duration_ms`, `remaining_source` and
+`remaining_kind`, plus the same execution/session identity and observation time
+as the other events. The current-progress prediction is remaining wall time,
+not a fabricated percentage of work completed. For example, a 5000 ms baseline,
+6200 ms elapsed and a fresh 4000 ms ETA produce a 10200 ms predicted total.
+That total is an estimate for this execution, not a new p50/p90 or a KB training label.
+
+Merely crossing the deadline does not produce a prediction: an unsupported or
+silent tool sends no update, and an old ETA is not counted down or reused as a
+new observation. A zero LatticeKB p50 is valid and gives a 1000 ms threshold.
+The overrun update is independent of the finishing notification: either may
+precede the other, and both may arise from the same observation. If a call is
+eligible only through LatticeKB, it sends only the overrun update, without adding
+start/finishing notifications to the existing policy. Neither update changes
+the original baseline or schedules repeated overrun updates.
+
+The public event contract is [cpu-tool-signal.schema.json](../contracts/cpu-tool-signal.schema.json).
 Identity and transport retain schema v1 (`request_id`, `engine_request_id`,
 `agent_request_id`, `session_id`, `t`, `engine_id`, `role`, `engine_step`). The GPU
 receiver must include the CPU event route introduced with this feature.
@@ -66,9 +101,16 @@ process tree. Output is piped for supported adapters: tools which only display
 progress on a TTY may require their own force-progress option. No PTY is fabricated.
 
 Each execution has its own adapter state and at most one ending notification.
-SIGINT/SIGTERM/SIGHUP are forwarded to the payload process group. Signal HTTP
-failures are logged and do not cancel or replay the tool. A failed delivery is
-not retried. Silent/unavailable progress is reported on stderr; tools still run.
+SIGINT/SIGTERM/SIGHUP are forwarded to the payload process group. The launcher
+retains the distinction between a normal exit code and termination by a signal.
+Signal HTTP failures are logged and do not cancel or replay the tool. Waiting
+for delivery at shutdown is bounded to 1.1 seconds; undelivered events may be lost.
+A failed delivery is not retried. A faulty progress parser is disabled while
+output forwarding and tool execution continue. Silent/unavailable progress is
+reported on stderr; tools still run.
+Queued finishing and overrun events are dropped if the payload exits before
+their delivery attempt. The receiving service must accept `tool_prediction_updated`
+to use the new estimates; older event types keep their existing fields.
 
 ## Verification
 
@@ -88,6 +130,10 @@ simulation or kernel-collector validation. The pre-execution prediction is set
 to 999999 ms, deliberately unrelated to those workloads. Tests also verify that
 an obsolete progress file cannot cause a signal, missing eligibility sends
 nothing, and HTTP delivery failure leaves tool execution intact.
+Additional real pytest workloads exceed a deliberately small LatticeKB baseline
+and validate exactly one overrun update in both launcher modes, with and without
+legacy long-call notifications. Boundary tests cover the strict one-second
+threshold, unavailable baselines, stale/missing progress, and events queued at exit.
 
 The `exact` interface is unit-tested as an extension contract only; that test
 does not establish an exact-time implementation for any real tool.

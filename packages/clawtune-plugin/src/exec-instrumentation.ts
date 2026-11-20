@@ -218,6 +218,12 @@ export async function instrumentExecParams(
   const predictedDurationMs = decision?.prediction.resource_class === "latency_long"
     ? decision.prediction.duration_p90_ms
     : null;
+  const latticeDuration = decision?.prediction.lattice?.targets.duration_ms;
+  const latticeDurationMs = latticeDuration?.status === "available"
+    && latticeDuration.backend === "lattice" && latticeDuration.unit === "ms"
+    && typeof latticeDuration.p50 === "number" && Number.isFinite(latticeDuration.p50)
+    && latticeDuration.p50 >= 0
+    ? latticeDuration.p50 : null;
   params.env = {
     ...safeExecEnv(params.env),
     ...inheritedLauncherEnv,
@@ -238,6 +244,12 @@ export async function instrumentExecParams(
     CLAWTUNE_COMMAND_DIGEST: commandDigest,
     // Clear inherited eligibility on short/unknown calls as well.
     CLAWTUNE_PREDICTED_TOOL_DURATION_MS: "",
+    // Overrun updates use only the independent LatticeKB p50, including short
+    // calls. Never substitute the primary backend's duration or a stale env.
+    CLAWTUNE_LATTICE_PREDICTED_TOOL_DURATION_MS:
+      config.executionBackend === "managed-wrapper"
+      && inheritedLauncherEnv.CLAWTUNE_GPU_SIGNAL_ENDPOINT && latticeDurationMs !== null
+        ? String(latticeDurationMs) : "",
     ...(predictedDurationMs !== null && inheritedLauncherEnv.CLAWTUNE_GPU_SIGNAL_ENDPOINT
       ? {
           CLAWTUNE_GPU_SIGNAL_ENDPOINT: inheritedLauncherEnv.CLAWTUNE_GPU_SIGNAL_ENDPOINT,

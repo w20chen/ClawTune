@@ -1,9 +1,21 @@
 import pytest
 
 from clawtune_sidecar.tool_progress import (
-    CMakeProgress, CargoProgress, CurlProgress, FfmpegProgress, GitProgress,
-    MakeProgress, NinjaProgress, NpmProgress, PipProgress, PytestProgress,
-    PythonProgress, RsyncProgress, ToolProgress, WgetProgress, adapter_for,
+    CargoProgress,
+    CMakeProgress,
+    CurlProgress,
+    FfmpegProgress,
+    GitProgress,
+    MakeProgress,
+    NinjaProgress,
+    NpmProgress,
+    PipProgress,
+    PytestProgress,
+    PythonProgress,
+    RsyncProgress,
+    ToolProgress,
+    WgetProgress,
+    adapter_for,
 )
 
 
@@ -39,6 +51,15 @@ def test_curl_reads_native_remaining_field_not_total_duration():
     assert result.source == "curl.time_left"
     assert result.kind == "estimated"
     assert adapter.observe(" 100 1024k 100 1024k 0 0 200k 0 0:00:05 0:00:05 0:00:00 200k", 99) is None
+
+
+def test_curl_reads_compact_time_left_from_curl_8_18():
+    progress = CurlProgress()
+    value = progress.observe(
+        "31 512.0k 31 160.0k 0 0 147.6k 0 00:03 00:01 00:02 147.7k", 1)
+    assert value.seconds == 2
+    assert progress.observe(
+        "87 512.0k 87 448.0k 0 0 137.8k 0 00:03 00:03 137.8k", 3) is None
 
 
 def test_wget_distinguishes_eta_from_completed_elapsed_time():

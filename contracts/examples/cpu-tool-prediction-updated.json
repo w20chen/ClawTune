@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "event": "tool_prediction_updated",
+  "request_id": "call-1",
+  "engine_request_id": "execution-1",
+  "agent_request_id": "call-1",
+  "session_id": "session-1",
+  "t": 1795132806.2,
+  "engine_id": "cpu-tool",
+  "role": "A",
+  "engine_step": 0,
+  "baseline_source": "lattice",
+  "baseline_statistic": "p50",
+  "baseline_prediction_ms": 5000,
+  "overrun_threshold_ms": 1000,
+  "elapsed_duration_ms": 6200,
+  "remaining_duration_ms": 4000,
+  "predicted_total_duration_ms": 10200,
+  "remaining_source": "curl.time_left",
+  "remaining_kind": "estimated"
+}

@@ -94,6 +94,50 @@ test("managed launch retains fallback payload and policy after successful regist
   }
 });
 
+test("overrun updates use only available LatticeKB p50 for every duration class", async () => {
+  const beforeEndpoint = process.env.CLAWTUNE_GPU_SIGNAL_ENDPOINT;
+  process.env.CLAWTUNE_GPU_SIGNAL_ENDPOINT = "http://gpu/cpu-events";
+  const duration = {status: "available", backend: "lattice", unit: "ms", p50: 250, p90: 9000};
+  async function instrument(resourceClass, latticeDuration, backend = "managed-wrapper") {
+    return instrumentExecParams(
+      {toolName: "exec", params: {command: "pytest -v", env: {
+        CLAWTUNE_LATTICE_PREDICTED_TOOL_DURATION_MS: "stale",
+      }}}, {}, payload, {prediction: {
+        resource_class: resourceClass, duration_p50_ms: 1234, duration_p90_ms: 5000,
+        lattice: latticeDuration === null ? null : {targets: {duration_ms: latticeDuration}},
+        tool: {targets: {duration_ms: {...duration, backend: "runtime", p50: 888}}},
+        trie: {targets: {duration_ms: {...duration, backend: "trie", p50: 777}}},
+      }},
+      {async registerExecution() { return {one_time_token: "test"}; }},
+      {...baseConfig, executionBackend: backend},
+    );
+  }
+  try {
+    for (const resourceClass of ["latency_long", "latency_short", "latency_medium", "unknown"]) {
+      const result = await instrument(resourceClass, duration);
+      assert.equal(result.params.env.CLAWTUNE_LATTICE_PREDICTED_TOOL_DURATION_MS, "250");
+      assert.equal(result.params.env.CLAWTUNE_PREDICTED_TOOL_DURATION_MS,
+        resourceClass === "latency_long" ? "5000" : "");
+    }
+    for (const invalid of [null, {...duration, status: "unavailable"},
+      {...duration, backend: "runtime"}, {...duration, unit: "cores"},
+      ...[null, -1, NaN, Infinity].map(p50 => ({...duration, p50}))]) {
+      const result = await instrument("latency_long", invalid);
+      assert.equal(result.params.env.CLAWTUNE_LATTICE_PREDICTED_TOOL_DURATION_MS, "");
+    }
+    assert.equal((await instrument("latency_short", {...duration, p50: 0}))
+      .params.env.CLAWTUNE_LATTICE_PREDICTED_TOOL_DURATION_MS, "0");
+    assert.equal((await instrument("latency_long", duration, "marker"))
+      .params.env.CLAWTUNE_LATTICE_PREDICTED_TOOL_DURATION_MS, "");
+    delete process.env.CLAWTUNE_GPU_SIGNAL_ENDPOINT;
+    assert.equal((await instrument("latency_short", duration))
+      .params.env.CLAWTUNE_LATTICE_PREDICTED_TOOL_DURATION_MS, "");
+  } finally {
+    if (beforeEndpoint === undefined) delete process.env.CLAWTUNE_GPU_SIGNAL_ENDPOINT;
+    else process.env.CLAWTUNE_GPU_SIGNAL_ENDPOINT = beforeEndpoint;
+  }
+});
+
 test("completion prefers the execution scope over shared OpenClaw scopes", async (t) => {
   const executionScope = {
     kind: "cgroup-v2",
