@@ -16,6 +16,8 @@ from pathlib import Path
 from shutil import which
 from typing import Any
 
+from clawtune_sidecar.tool_signals import wrap_tool_command
+
 
 _SUBPROCESS_EXIT_REPORT_TIMEOUTS_SECONDS = (0.75, 10.0)
 _FORK_EXEC_EXIT_REPORT_TIMEOUTS_SECONDS = (0.75, 3.0, 10.0)
@@ -133,7 +135,7 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
         {"execution_id": execution_id, "token": token, "launcher_pid": launcher_pid},
     )
     if claim is None:
-        return _run_unobserved(os.environ["CLAWTUNE_PAYLOAD_COMMAND"])
+        return _run_unobserved(os.environ["CLAWTUNE_PAYLOAD_COMMAND"], execution_id)
     try:
         return _run_forkexec_claimed(endpoint, execution_id, claim, launcher_pid)
     except _CleanupUnconfirmed:
@@ -152,7 +154,7 @@ def _run_forkexec_claimed(
     endpoint: str, execution_id: str, claim: dict[str, Any], launcher_pid: int,
 ) -> int:
     _validate_profiling_mode(claim.get("profiling"))
-    command = str(claim["command"])
+    command = wrap_tool_command(str(claim["command"]), execution_id)
     workdir = claim.get("workdir")
     cwd = str(workdir) if isinstance(workdir, str) and workdir else None
     update_token = str(claim["update_token"])
@@ -328,7 +330,7 @@ def _install_fork_signal_forwarders(child_pid: int) -> Callable[[], None]:
         except OSError:
             pass
 
-    for signum in (signal.SIGTERM, signal.SIGINT):
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         try:
             previous[signum] = signal.getsignal(signum)
             signal.signal(signum, forward)
@@ -355,7 +357,7 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
         {"execution_id": execution_id, "token": token, "launcher_pid": launcher_pid},
     )
     if claim is None:
-        return _run_unobserved(os.environ["CLAWTUNE_PAYLOAD_COMMAND"])
+        return _run_unobserved(os.environ["CLAWTUNE_PAYLOAD_COMMAND"], execution_id)
     try:
         return _run_subprocess_claimed(endpoint, execution_id, claim, launcher_pid)
     except _CleanupUnconfirmed:
@@ -372,7 +374,7 @@ def _run_subprocess_claimed(
     endpoint: str, execution_id: str, claim: dict[str, Any], launcher_pid: int,
 ) -> int:
     _validate_profiling_mode(claim.get("profiling"))
-    command = str(claim["command"])
+    command = wrap_tool_command(str(claim["command"]), execution_id)
     workdir = claim.get("workdir")
     cwd = str(workdir) if isinstance(workdir, str) and workdir else None
     update_token = str(claim["update_token"])
@@ -535,6 +537,7 @@ def _run_degraded(endpoint: str, execution_id: str, command: str) -> int:
 
     Returns the shell exit code of the payload command.
     """
+    command = wrap_tool_command(command, execution_id)
     cwd = os.environ.pop("CLAWTUNE_EXEC_WORKDIR", None) or None
     # In degraded mode we always attempt cgroup isolation since that is the
     # primary reason for wrapping the command with the launcher.  Placement
@@ -588,8 +591,9 @@ def _run_degraded(endpoint: str, execution_id: str, command: str) -> int:
     return _shell_exit_code(returncode)
 
 
-def _run_unobserved(command: str) -> int:
+def _run_unobserved(command: str, execution_id: str) -> int:
     """Only entered before any payload was released; never retry a command."""
+    command = wrap_tool_command(command, execution_id)
     child = _spawn_shell(command, os.environ.get("CLAWTUNE_EXEC_WORKDIR") or None,
                          cgroup_path=None, affinity_cpus=None)
     _install_signal_forwarders(child)

@@ -55,6 +55,31 @@ const payload = {
   resource_scope: null
 };
 
+test("CPU signals require a long prediction and never inherit stale eligibility", async () => {
+  const beforeEndpoint = process.env.CLAWTUNE_GPU_SIGNAL_ENDPOINT;
+  const beforeProgress = process.env.CLAWTUNE_TOOL_PROGRESS_PATH;
+  process.env.CLAWTUNE_GPU_SIGNAL_ENDPOINT = "http://gpu/request-signals/cpu-events";
+  process.env.CLAWTUNE_TOOL_PROGRESS_PATH = "/obsolete/progress";
+  try {
+    for (const resourceClass of ["latency_long", "latency_short", "latency_medium", "unknown"]) {
+      const result = await instrumentExecParams(
+        {toolName: "exec", params: {command: "pytest -v", env: {CLAWTUNE_PREDICTED_TOOL_DURATION_MS: "999"}}},
+        {}, payload, {prediction: {resource_class: resourceClass, duration_p90_ms: 5000}},
+        {async registerExecution() { return {one_time_token: "test"}; }},
+        {...baseConfig, executionBackend: "managed-wrapper"},
+      );
+      assert.equal(result.params.env.CLAWTUNE_PREDICTED_TOOL_DURATION_MS,
+        resourceClass === "latency_long" ? "5000" : "");
+      assert.equal(result.params.env.CLAWTUNE_TOOL_PROGRESS_PATH, undefined);
+    }
+  } finally {
+    if (beforeEndpoint === undefined) delete process.env.CLAWTUNE_GPU_SIGNAL_ENDPOINT;
+    else process.env.CLAWTUNE_GPU_SIGNAL_ENDPOINT = beforeEndpoint;
+    if (beforeProgress === undefined) delete process.env.CLAWTUNE_TOOL_PROGRESS_PATH;
+    else process.env.CLAWTUNE_TOOL_PROGRESS_PATH = beforeProgress;
+  }
+});
+
 test("managed launch retains fallback payload and policy after successful registration", async () => {
   for (const [mode, failOpen, expected] of [["observe", false, "1"], ["enforce", true, "1"], ["enforce", false, "0"]]) {
     const result = await instrumentExecParams(
@@ -66,6 +91,50 @@ test("managed launch retains fallback payload and policy after successful regist
     assert.equal(result.params.env.CLAWTUNE_EXECUTION_TOKEN, "registered");
     assert.equal(result.params.env.CLAWTUNE_PAYLOAD_COMMAND, "printf original");
     assert.equal(result.params.env.CLAWTUNE_TELEMETRY_FAIL_OPEN, expected);
+  }
+});
+
+test("overrun updates use only available LatticeKB p50 for every duration class", async () => {
+  const beforeEndpoint = process.env.CLAWTUNE_GPU_SIGNAL_ENDPOINT;
+  process.env.CLAWTUNE_GPU_SIGNAL_ENDPOINT = "http://gpu/cpu-events";
+  const duration = {status: "available", backend: "lattice", unit: "ms", p50: 250, p90: 9000};
+  async function instrument(resourceClass, latticeDuration, backend = "managed-wrapper") {
+    return instrumentExecParams(
+      {toolName: "exec", params: {command: "pytest -v", env: {
+        CLAWTUNE_LATTICE_PREDICTED_TOOL_DURATION_MS: "stale",
+      }}}, {}, payload, {prediction: {
+        resource_class: resourceClass, duration_p50_ms: 1234, duration_p90_ms: 5000,
+        lattice: latticeDuration === null ? null : {targets: {duration_ms: latticeDuration}},
+        tool: {targets: {duration_ms: {...duration, backend: "runtime", p50: 888}}},
+        trie: {targets: {duration_ms: {...duration, backend: "trie", p50: 777}}},
+      }},
+      {async registerExecution() { return {one_time_token: "test"}; }},
+      {...baseConfig, executionBackend: backend},
+    );
+  }
+  try {
+    for (const resourceClass of ["latency_long", "latency_short", "latency_medium", "unknown"]) {
+      const result = await instrument(resourceClass, duration);
+      assert.equal(result.params.env.CLAWTUNE_LATTICE_PREDICTED_TOOL_DURATION_MS, "250");
+      assert.equal(result.params.env.CLAWTUNE_PREDICTED_TOOL_DURATION_MS,
+        resourceClass === "latency_long" ? "5000" : "");
+    }
+    for (const invalid of [null, {...duration, status: "unavailable"},
+      {...duration, backend: "runtime"}, {...duration, unit: "cores"},
+      ...[null, -1, NaN, Infinity].map(p50 => ({...duration, p50}))]) {
+      const result = await instrument("latency_long", invalid);
+      assert.equal(result.params.env.CLAWTUNE_LATTICE_PREDICTED_TOOL_DURATION_MS, "");
+    }
+    assert.equal((await instrument("latency_short", {...duration, p50: 0}))
+      .params.env.CLAWTUNE_LATTICE_PREDICTED_TOOL_DURATION_MS, "0");
+    assert.equal((await instrument("latency_long", duration, "marker"))
+      .params.env.CLAWTUNE_LATTICE_PREDICTED_TOOL_DURATION_MS, "");
+    delete process.env.CLAWTUNE_GPU_SIGNAL_ENDPOINT;
+    assert.equal((await instrument("latency_short", duration))
+      .params.env.CLAWTUNE_LATTICE_PREDICTED_TOOL_DURATION_MS, "");
+  } finally {
+    if (beforeEndpoint === undefined) delete process.env.CLAWTUNE_GPU_SIGNAL_ENDPOINT;
+    else process.env.CLAWTUNE_GPU_SIGNAL_ENDPOINT = beforeEndpoint;
   }
 });
 

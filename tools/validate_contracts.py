@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
-from copy import deepcopy
-
 from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
-
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACTS = ROOT / "contracts"
@@ -30,6 +28,9 @@ EXAMPLES = {
     "execution-started.schema.json": "execution-started.json",
     "execution-exited.schema.json": "execution-exited.json",
     "pmu-profile.schema.json": "pmu-profile.json",
+    "cpu-tool-signal.schema.json": (
+        "cpu-tool-start.json", "cpu-tool-finishing-soon.json", "cpu-tool-prediction-updated.json",
+    ),
 }
 
 TRACE_FIELD_REFERENCE_SCHEMAS = (
@@ -46,11 +47,12 @@ def main() -> None:
         store[path.name] = schema
         if "$id" in schema:
             store[schema["$id"]] = schema
-    for schema_name, example_name in EXAMPLES.items():
+    for schema_name, examples in EXAMPLES.items():
         schema = inline_local_refs(store[schema_name], store)
-        example = json.loads((CONTRACTS / "examples" / example_name).read_text(encoding="utf-8"))
-        Draft202012Validator(schema).validate(example)
-        print(f"validated {example_name} against {schema_name}")
+        for example_name in (examples,) if isinstance(examples, str) else examples:
+            example = json.loads((CONTRACTS / "examples" / example_name).read_text(encoding="utf-8"))
+            Draft202012Validator(schema).validate(example)
+            print(f"validated {example_name} against {schema_name}")
     for schema_name in TRACE_FIELD_REFERENCE_SCHEMAS:
         missing = list(properties_without_descriptions(store[schema_name]))
         if missing:
