@@ -167,8 +167,7 @@ additional external profiler, not execution eBPF collection or configured PMU
 counters. `proc`, `perf`, `ksys`, and `vtune` are rejected because their external
 profiler backends are not implemented. Configure the existing PMU collector
 with the sidecar PMU settings instead. `enableNuma: false` prevents explicit
-memory-node placement in the launcher; ordinary placement advice remains
-advisory regardless of this switch.
+memory-node placement in the launcher.
 
 ## 3. Output and persistent state
 

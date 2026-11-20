@@ -130,7 +130,7 @@ def test_eight_owners_keep_exclusive_scope_against_late_docker_events():
                               cgroup_path=f"/sys/fs/cgroup/test-{index}",
                               attribution_source="exclusive-execution-cgroup")
         request = _request(scope).model_copy(update={"runtime_id": f"runtime-{index}"})
-        monitor.begin(request, "unknown")
+        monitor.begin(request)
         overlap.wait(timeout=5)
         weak = ResourceScope(kind="pid", pid=123, attribution_source="docker-events")
         assert monitor.bind_scope("call-1", weak, request.runtime_id, owner=request) is False
@@ -181,7 +181,7 @@ def test_bind_scope_switches_unattributed_start_to_cgroup_baseline() -> None:
         ]
     )
     monitor = RealtimeToolMonitor(sampler=sampler, poll_interval_s=60)
-    monitor.begin(_request(), "unknown")
+    monitor.begin(_request())
     monitor.bind_scope(
         "call-1",
         ResourceScope(
@@ -264,7 +264,6 @@ def test_docker_exec_pid_binding_rebases_shared_cgroup_sample() -> None:
                 attribution_source="shared-sandbox-container",
             )
         ),
-        "unknown",
     )
     pid_scope = ResourceScope(
         kind="pid",
@@ -349,7 +348,6 @@ def test_trusted_exec_pid_binding_rebases_shared_cgroup_baseline() -> None:
                 attribution_source="shared-sandbox-container",
             )
         ),
-        "unknown",
     )
     pid_scope = ResourceScope(
         kind="pid",
@@ -429,7 +427,6 @@ def test_complete_cross_source_guard_emits_none_not_garbage(same_source: bool) -
                 attribution_source="shared-sandbox-container",
             )
         ),
-        "unknown",
     )
     pid_scope = ResourceScope(
         kind="cgroup-v2" if same_source else "pid",
@@ -515,7 +512,7 @@ def test_complete_cgroup_net_does_not_invent_zero_from_missing_endpoint() -> Non
         source="clawtune-sidecar-host-derived",
         attribution_source="trusted-execution-root-pid",
     )
-    monitor.begin(_request(cgroup_scope), "unknown")
+    monitor.begin(_request(cgroup_scope))
     sample = monitor.complete(
         ToolCompletedEvent(
             schema_version="clawtune.v1",
@@ -790,7 +787,7 @@ def test_monitor_passes_net_modes() -> None:
         ]
     )
     monitor = RealtimeToolMonitor(sampler=sampler, poll_interval_s=60)
-    monitor.begin(_request(), "unknown")
+    monitor.begin(_request())
     pid_scope = ResourceScope(
         kind="pid",
         pid=123,

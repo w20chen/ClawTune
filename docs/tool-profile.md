@@ -22,7 +22,7 @@ Read one tool call in three parts. `span_start.prediction` is the forecast made 
 | What was the environment's highest charge? | `memory_total_peak_bytes` | `memory_total_peak_bytes` | Peak sampled cgroup or guest-environment usage, including pre-existing processes and charged cache. |
 | How much did environment memory rise during this tool? | `memory_extra_peak_bytes` together with `memory_baseline_bytes` | `memory_extra_peak_bytes` | `max(0, total_peak - baseline)`. This is the closest prediction to tool-caused extra memory, but it is an environment delta rather than exclusive attribution to the tool. |
 | What storage or network traffic was observed? | `metrics.disk_io`, `metrics.network_io`, and compatibility delta fields | No target in the seven-target load prediction | These remain measured diagnostics and training inputs only where a separate contract explicitly says so. |
-| What hardware events occurred? | `resources.pmu` | `pmu_prediction` | Separate ToolKB hardware prediction; do not mix it with the seven load targets. |
+| What hardware events occurred? | `resources.pmu` | `prediction.tool.pmu` | Separate ToolKB hardware prediction; do not mix it with the seven load targets. |
 
 For extra memory, always read `memory_baseline_bytes`, `memory_total_peak_bytes`, `memory_extra_peak_bytes`, `memory_measurement`, `memory_environment_id`, and `memory_eligible` together. Total and extra samples from different `memory_measurement` values are different metrics. Prediction evidence is namespaced by the same value, so an unavailable prediction can mean that history exists only under another measurement source.
 
@@ -268,7 +268,6 @@ When `resource_observation` is present, its per-metric values and attribution de
 | `net_rx_bytes_per_s`, `net_tx_bytes_per_s` | bytes/s; the above differences divided by the action duration in seconds. |
 | `ctx_switches_delta` | count; cumulative context-switch difference over the sampling interval; may miss processes that have exited. |
 | `process_count_before`, `process_count_after` | count; number of visible processes at start and end, not the total created during the interval. |
-| `resource_class` | Category based on predicted latency, not a measured CPU / memory classification. |
 | `resource_timeline`, `resource_timeline_truncated` | Resource sample list from the legacy polling path and whether it exceeded the storage cap (2000 points by default); new eBPF call observations do not copy the timeline here. When a legacy record is truncated, peak labels are unavailable. |
 | `resource_observation` | Authoritative per-metric resource observation; see the previous section for the fields and precedence. |
 | `cgroup_resource`, `pmu` | Legacy sampling summary and independent hardware-counter profile; see below for details. |
@@ -342,9 +341,9 @@ Three independent outputs use the [call-load contract](../contracts/call-load.sc
 
 | Field | Model | Supported targets |
 | --- | --- | --- |
-| `prediction.tool` | ToolKB | All seven load targets; separate `pmu_prediction` for hardware metrics |
-| `prediction.trie` | TrieKB | All seven load targets from clause evidence |
-| `prediction.lattice` | LatticeKB | All seven load targets from clause evidence |
+| `prediction.tool.load` | ToolKB | All seven load targets; separate `prediction.tool.pmu` for hardware metrics |
+| `prediction.trie.load` | TrieKB | All seven load targets from clause evidence |
+| `prediction.lattice.load` | LatticeKB | All seven load targets from clause evidence |
 
 Every `targets` object contains the seven entries defined in the [quick guide](#quick-guide-measurements-and-predictions), including unavailable entries. Models never fill missing targets or clauses from one another.
 
@@ -352,19 +351,24 @@ Each target has `status`, `unit`, `metric_definition`, `avg`, `p50`, `p90`, `buc
 
 `buckets.edges`, `interval`, `probabilities` are the boundaries, the left-closed right-open rule, and the probability of each bucket; there is one bucket from 0 to the first boundary, one between adjacent boundaries, and one from the last boundary to positive infinity. The probabilities sum to 1.
 
-`schema_version` in each model output, `scope`, `lifecycle`, `cpu_peak_window_ms`, `quantile_method`, `memory_measurement` declare the protocol, call scope, lifecycle, peak window, quantile method, and memory source. Each item in `clause_predictions[]` has `clause_index`, `argv`, `cwd`, `env_names`, `scope`, `targets`, `memory_measurement`, representing the subcommand index, arguments, working directory, environment variable names, and the same seven-target prediction; subcommand duration and call duration are not interchangeable.
+`schema_version` in each model's `load`, `scope`, `lifecycle`, `cpu_peak_window_ms`, `quantile_method`, `memory_measurement` declare the protocol, call scope, lifecycle, peak window, quantile method, and memory source. Each item in `clause_predictions[]` has `clause_index`, `argv`, `cwd`, `env_names`, `scope`, `targets`, `memory_measurement`, representing the subcommand index, arguments, working directory, environment variable names, and the same seven-target prediction; subcommand duration and call duration are not interchangeable.
 
-`pmu_prediction.targets` contains the nine PMU targets above. Each item has `status`, `unit`, `metric_definition`, `avg`, `p50`, `p90`, `backend`, `method`, `evidence_count`, `context`, `calibration`, `unavailable_reason`. Note that this is the singular `evidence_count` and has no `sample_count` or `buckets` from the load prediction. Its `schema_version`, `scope`, `lifecycle`, `quantile_method` declare the protocol, scope, complete-execution-profile lifecycle, and quantile method.
+`prediction.tool.pmu.targets` contains the nine PMU targets above. Each item has `status`, `unit`, `metric_definition`, `avg`, `p50`, `p90`, `backend`, `method`, `evidence_count`, `context`, `calibration`, `unavailable_reason`. Note that this is the singular `evidence_count` and has no `sample_count` or `buckets` from the load prediction. Its `schema_version`, `scope`, `lifecycle`, `quantile_method` declare the protocol, scope, complete-execution-profile lifecycle, and quantile method.
 
 Clause-derived tool predictions cover only the retained workload. Their composition ignores hook overhead and cross-clause correlation; individual clause predictions can remain available when a complete composition is unavailable. See [composition rules and exclusions](technical-report.md#5-from-commands-to-tool-calls).
 
 Memory evidence is separated by `memory_measurement`. Select the query source with `CLAWTUNE_TOOL_RESOURCE_MEMORY_MEASUREMENT`; the default is `cgroup_v2_environment_union_v1`. History stored under another source can leave total/extra memory unavailable. Selection does not convert measurements between sources.
 
-## Compatibility Prediction and Other Diagnostics
+## Prediction structure and policy metadata
 
-Use the three model outputs above for load estimates. `call_prediction` aliases `tool`; `diagnostics.backends.runtime`, `.trie`, and `.lattice` copy the corresponding outputs. Top-level `duration_p50_ms` and `duration_p90_ms` are rounded ToolKB summaries, not a choice among models. `confidence` is not a calibrated probability.
+The [prediction contract](../contracts/tool-prediction.schema.json) permits only
+`tool`, `trie`, and `lattice` at the prediction root. Each branch has its own
+`load`; ToolKB also contains `pmu`. There are no primary
+model summaries, aliases, mixed diagnostics, or cross-model fallback. See the
+[pre-execution format](predictions.md) and [complete example](../contracts/examples/tool-prediction.json).
 
-`prediction.tool_resource` retains legacy clause, Lattice method, and TTL diagnostics defined by the [tool decision schema](../contracts/tool-decision.schema.json). `kv_ttl_cost` is a cache-policy simulation, not measured cache performance. Decision, lease, and placement fields are scheduler metadata; `placement_advisory` does not promise actual CPU pinning.
+Decision and lease fields are scheduler metadata outside the prediction.
+Explicit execution placement settings are also separate from predictions.
 
 ## Service Aggregate Metrics
 

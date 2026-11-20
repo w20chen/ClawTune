@@ -16,7 +16,7 @@ from clawtune_sidecar.policies.concurrency import ConcurrencyPolicy
 from clawtune_sidecar.policies.observe import ObserveOnlyPolicy
 from clawtune_sidecar.predictors.tool_resource import ToolResourcePredictor
 from clawtune_sidecar.telemetry.metrics import Metrics
-from clawtune_sidecar.topology.linux import NumaCpuUsageSampler, read_topology
+from clawtune_sidecar.topology.linux import read_topology
 from clawtune_sidecar.trace import AgentTestBenchTraceWriter
 from tool_resource.runtime_kb import LatencyBuckets
 
@@ -117,9 +117,6 @@ def build_state(config: SidecarConfig | None = None) -> AppState:
             else cfg.trace_dir / "tool-resource"
         ),
         container_executable=cfg.tool_resource_container_executable,
-        ttl_by_bucket_s=cfg.tool_resource_ttl_by_bucket_s,
-        miss_penalty_s=cfg.tool_resource_miss_penalty_s,
-        numa_usage_sampler=NumaCpuUsageSampler(),
     )
     if predictor.artifact_dir is not None and not cfg.tool_resource_frozen:
         predictor.artifact_dir.mkdir(parents=True, exist_ok=True)

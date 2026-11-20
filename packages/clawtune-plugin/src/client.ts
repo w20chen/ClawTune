@@ -9,6 +9,7 @@ import type {
   ToolDecision
 } from "./contracts.js";
 import {sidecarRequestHeaders} from "./sidecar-auth.js";
+import {eventSignal} from "./signals.js";
 
 export class SidecarClient {
   constructor(private readonly config: PluginConfig) {}
@@ -22,11 +23,11 @@ export class SidecarClient {
   }
 
   async reportCompletion(payload: ToolCompletedEvent): Promise<void> {
-    await this.post<unknown>("/v1/events/tool-completed", payload, this.config.reportTimeoutMs, 3);
+    await this.post<unknown>("/v1/signals", eventSignal(payload), this.config.reportTimeoutMs, 3);
   }
 
   async reportModel(payload: unknown): Promise<void> {
-    await this.post<unknown>("/v1/events/model", payload, this.config.reportTimeoutMs, 3);
+    await this.post<unknown>("/v1/signals", eventSignal(payload), this.config.reportTimeoutMs, 3);
   }
 
   async registerExecution(payload: ExecutionRegistrationRequest): Promise<ExecutionRegistrationResponse> {

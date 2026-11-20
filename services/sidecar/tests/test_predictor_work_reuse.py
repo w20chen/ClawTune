@@ -34,19 +34,19 @@ def test_advancing_without_predictions_preserves_strict_causality():
 
 
 @pytest.mark.parametrize("command", ["python -m pytest -q", "git status | cat", "git status && git diff", "for x in a b; do echo $x; done"])
-def test_online_prediction_parses_once_and_only_queries_retained_diagnostics(tmp_path, command):
+def test_online_prediction_parses_once_and_queries_each_runtime_output_once(tmp_path, command):
     from tool_resource.features import get_mvdan_client
     predictor = predictor_at(tmp_path)
     try:
         with patch.object(get_mvdan_client(), "parse", wraps=get_mvdan_client().parse) as parse, \
              patch.object(predictor.continuous_kb, "query", side_effect=AssertionError("discarded full prediction")), \
-             patch.object(predictor.continuous_kb, "_predict_target", wraps=predictor.continuous_kb._predict_target) as target, \
-             patch.object(predictor, "_kv_ttl_cost_payload", wraps=predictor._kv_ttl_cost_payload) as ttl:
+             patch.object(predictor.continuous_kb, "predict_load_samples", wraps=predictor.continuous_kb.predict_load_samples) as load, \
+             patch.object(predictor.continuous_kb, "predict_pmu_samples", wraps=predictor.continuous_kb.predict_pmu_samples) as pmu:
             result = predictor.predict(_tool_request("before", "call", command))
         assert result.tool is not None and result.trie is not None and result.lattice is not None
         assert parse.call_count == 1
-        assert target.call_count == 4
-        assert ttl.call_count <= 1
+        assert load.call_count == 1
+        assert pmu.call_count == 1
     finally:
         predictor.close()
 
@@ -96,9 +96,7 @@ def test_seed_bytes_are_validated_and_loaded_once():
             artifact_dir=seed, frozen=True, buckets=LatencyBuckets((100, 500, 2000)))
     try:
         assert sorted(reads) == sorted(FILES)
-        with patch.object(predictor, "_kv_ttl_cost_payload", wraps=predictor._kv_ttl_cost_payload) as ttl:
-            assert predictor.predict(_tool_request("before", "call", "python -m pytest -q")).lattice is not None
-        assert ttl.call_count == 1
+        assert predictor.predict(_tool_request("before", "call", "python -m pytest -q")).lattice is not None
     finally:
         predictor.close()
 

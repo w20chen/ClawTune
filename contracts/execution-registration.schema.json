@@ -16,6 +16,7 @@
     "backend"
   ],
   "properties": {
+    "prediction_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 128, "description": "decision_id of the prediction for this execution; null when unavailable."},
     "execution_id": {"type": "string", "minLength": 1, "maxLength": 128},
     "gateway_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 128},
     "runtime_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 128},

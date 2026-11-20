@@ -1,4 +1,4 @@
-"""Typed mirror of contracts/tool-decision.schema.json's callLoad definitions."""
+"""Typed mirror of contracts/call-load.schema.json and pmu-prediction.schema.json."""
 from __future__ import annotations
 
 import math
@@ -183,7 +183,7 @@ class PmuPrediction(StrictModel):
     @model_validator(mode="after")
     def complete_targets(self) -> "PmuPrediction":
         if set(self.targets) != set(PMU_UNITS):
-            raise ValueError("PMU prediction requires all three targets")
+            raise ValueError("PMU prediction requires all nine targets")
         for target, estimate in self.targets.items():
             if estimate.unit != PMU_UNITS[target] or estimate.metric_definition != PMU_DEFINITIONS[target]:
                 raise ValueError("PMU target unit or measurement definition mismatch")
@@ -210,7 +210,3 @@ def summarize_pmu_evidence(evidence: dict[str, dict[str, object]]) -> PmuPredict
                 unavailable_reason="no_compatible_quality_gated_pmu_evidence", **common,
             )
     return PmuPrediction(targets=targets)
-
-
-class LoadDiagnostics(StrictModel):
-    backends: dict[Literal["runtime", "trie", "lattice"], CallLoadPrediction]

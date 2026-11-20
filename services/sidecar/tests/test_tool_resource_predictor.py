@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from clawtune_sidecar.signal_protocol import event_signal
+
 import concurrent.futures
 import json
 import shlex
@@ -30,7 +32,6 @@ from clawtune_sidecar.predictors.tool_resource import (
     load_openclaw_trace_observations,
 )
 from tool_resource.runtime_kb import (
-    ClauseLatencyBucketPrediction,
     ClauseObservation,
     ClauseResourceKB,
     CompletedCall,
@@ -59,9 +60,9 @@ def test_lattice_prediction_uses_configured_guest_memory_measurement(monkeypatch
         result = predictor.predict(_tool_request("evt-memory", "call-memory", "python job.py"))
     finally:
         predictor.close()
-    assert result.lattice.memory_measurement == "guest_memtotal_minus_memavailable"
-    assert result.lattice.targets["memory_extra_peak_bytes"].p90 == 50
-    assert result.lattice.targets["memory_extra_peak_bytes"].backend == "lattice"
+    assert result.lattice.load.memory_measurement == "guest_memtotal_minus_memavailable"
+    assert result.lattice.load.targets["memory_extra_peak_bytes"].p90 == 50
+    assert result.lattice.load.targets["memory_extra_peak_bytes"].backend == "lattice"
 
 
 def test_normalize_clause_preserves_pipeline_structure() -> None:
@@ -384,8 +385,8 @@ def test_concurrent_predictions_share_one_causal_kb_transaction(monkeypatch) -> 
         buckets=LatencyBuckets((100.0, 500.0)),
         repo="repo-1",
     )
-    original_lattice = predictor._lattice_predictions_for_clauses
-    original_clause = predictor.kb.predict_command_latency_bucket_from_clauses
+    original_lattice = predictor.continuous_kb.predict_load_samples
+    original_clause = predictor.kb.predict_load_samples
     first_lattice_done = threading.Event()
     second_clause_done = threading.Event()
 
@@ -404,8 +405,8 @@ def test_concurrent_predictions_share_one_causal_kb_transaction(monkeypatch) -> 
             second_clause_done.set()
         return result
 
-    predictor._lattice_predictions_for_clauses = interleaved_lattice
-    predictor.kb.predict_command_latency_bucket_from_clauses = observed_clause
+    predictor.continuous_kb.predict_load_samples = interleaved_lattice
+    predictor.kb.predict_load_samples = observed_clause
     monkeypatch.setattr(
         tool_resource_predictor.time,
         "time",
@@ -437,12 +438,11 @@ def test_concurrent_predictions_share_one_causal_kb_transaction(monkeypatch) -> 
 
     assert not first.is_alive()
     assert not second.is_alive()
-    assert results["first"].tool_resource["unavailable_reason"] == (
-        "no_clause_latency_evidence"
-    )
-    assert results["second"].tool_resource["unavailable_reason"] == (
-        "no_clause_latency_evidence"
-    )
+    for result in results.values():
+        for name in ("tool", "trie", "lattice"):
+            duration = getattr(result, name).load.targets["duration_ms"]
+            assert duration.status == "unavailable"
+            assert not duration.unavailable_reason.startswith("backend_error:")
 
 
 def test_sanitized_execution_ids_cannot_collide_artifact_paths(tmp_path: Path) -> None:
@@ -561,12 +561,8 @@ def test_openclaw_trace_span_repo_overrides_batch_fallback(tmp_path: Path) -> No
     owner = predictor.predict(owner_request)
     batch = predictor.predict(batch_request)
 
-    assert owner.tool_resource["continuous_predictions"]["latency_ms"][
-        "scope"
-    ] == "repo"
-    assert batch.tool_resource["continuous_predictions"]["latency_ms"][
-        "scope"
-    ] is None
+    assert (owner.tool.load.targets["duration_ms"].context[0] if owner.tool.load.targets["duration_ms"].context else None) == "repo"
+    assert (batch.tool.load.targets["duration_ms"].context[0] if batch.tool.load.targets["duration_ms"].context else None) is None
 
 
 def test_openclaw_trace_memory_observation_accepts_producer_metadata(tmp_path: Path) -> None:
@@ -690,10 +686,10 @@ def test_openclaw_trace_shared_scope_keeps_only_runtime_latency(
     prediction = predictor.predict(
         _tool_request("evt-next", "call-next", "python -m pytest tests -q"),
     )
-    continuous = prediction.tool_resource["continuous_predictions"]
-    assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
-    assert continuous["cpu_peak_cores"]["conditional_p90"] == 0
-    assert continuous["memory_total_peak_bytes"]["conditional_p90"] == 0
+    continuous = prediction.tool.load.targets
+    assert continuous["duration_ms"].p90 == pytest.approx(1200.0)
+    assert continuous["cpu_peak_cores"].p90 == 0
+    assert continuous["memory_total_peak_bytes"].p90 == 0
 
 
 def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) -> None:
@@ -731,117 +727,17 @@ def test_tool_resource_predictor_predicts_from_openclaw_trace(tmp_path: Path) ->
 
     result = predictor.predict(request)
 
-    assert result.resource_class == "latency_medium"
-    assert result.duration_p50_ms == 1200
-    assert result.duration_p90_ms == 1200
-    assert result.confidence is None
-    continuous = result.tool_resource["continuous_predictions"]
-    assert result.tool_resource["kv_ttl_cost"]["reference_runtime_s"] == pytest.approx(1.2)
-    without_continuous = result.tool_resource | {"continuous_predictions": {}, "kv_ttl_cost": None}
-    resources = without_continuous.pop("lattice_resource_predictions")
-    assert resources
-    assert all(item["p50"] is None for clause in resources for item in clause["predictions"])
-    assert without_continuous == {
-        "repo": "repo-1",
-        "command": "python -m pytest tests -q",
-        "parse_failed": False,
-        "clause_bins": ["python"],
-        "clause_predictions": [
-            {
-                "clause_index": 0,
-                "bin": "python",
-                "argv": ["python", "-m", "pytest", "tests", "-q"],
-                "prediction": None,
-                "unavailable_reason": "no_clause_latency_evidence",
-            }
-        ],
-        "prediction": None,
-        "unavailable_reason": "no_clause_latency_evidence",
-        "continuous_predictions": {},
-        "lattice_time_predictions": _unavailable_lattice_time_predictions(
-            [("python", ["python", "-m", "pytest", "tests", "-q"])]
-        ),
-        "kv_ttl_cost": None,
-        "prediction_algorithms": _prediction_algorithms(),
-    }
-    assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
-    assert continuous["latency_ms"]["scope"] == "repo"
-    assert continuous["latency_ms"]["key_kind"] == "exact_command"
-    assert continuous["cpu_peak_cores"]["conditional_p90"] == 0
-    assert continuous["cpu_peak_cores"]["scope"] == "repo"
-    assert continuous["cpu_peak_cores"]["key_kind"] == "exact_command"
-    assert continuous["memory_total_peak_bytes"]["conditional_p90"] == 0
-    assert continuous["memory_total_peak_bytes"]["evidence_count"] == 1
-
-
-class _FakeNumaSampler:
-    """Duck-typed stand-in for NumaCpuUsageSampler used in predictor tests."""
-
-    def sample(self) -> dict[str, object]:
-        return {
-            "available": True,
-            "sampled": True,
-            "node_count": 2,
-            "window_s": 1.0,
-            "user_hz": 100,
-            "nodes": [
-                {
-                    "node": 0,
-                    "cpulist": "0-1",
-                    "online_cpus": 2,
-                    "cpu_utilization_pct": 50.0,
-                    "busy_cores": 1.0,
-                },
-                {
-                    "node": 1,
-                    "cpulist": "2-3",
-                    "online_cpus": 2,
-                    "cpu_utilization_pct": 0.0,
-                    "busy_cores": 0.0,
-                },
-            ],
-        }
-
-
-def test_predict_includes_numa_usage_when_sampler_configured(tmp_path: Path) -> None:
-    predictor = ToolResourcePredictor.from_traces(
-        openclaw_trace_paths=(),
-        ebpf_trace_paths=(),
-        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
-        repo="repo-1",
-        numa_usage_sampler=_FakeNumaSampler(),  # type: ignore[arg-type]
-    )
-
-    result = predictor.predict(
-        _tool_request("evt-1", "call-1", "python -m pytest tests -q")
-    )
-
-    assert result.tool_resource is not None
-    assert result.tool_resource["numa_usage"]["available"] is True
-    assert result.tool_resource["numa_usage"]["sampled"] is True
-    assert result.tool_resource["numa_usage"]["node_count"] == 2
-    assert result.tool_resource["numa_usage"]["nodes"][0]["node"] == 0
-    assert result.tool_resource["numa_usage"]["nodes"][0][
-        "cpu_utilization_pct"
-    ] == 50.0
-    assert result.tool_resource["numa_usage"]["nodes"][0]["busy_cores"] == 1.0
-    assert len(result.tool_resource["numa_usage"]["nodes"]) == 2
-
-
-def test_predict_omits_numa_usage_without_sampler(tmp_path: Path) -> None:
-    predictor = ToolResourcePredictor.from_traces(
-        openclaw_trace_paths=(),
-        ebpf_trace_paths=(),
-        buckets=LatencyBuckets((100.0, 500.0, 2_000.0)),
-        repo="repo-1",
-    )
-
-    result = predictor.predict(
-        _tool_request("evt-1", "call-1", "python -m pytest tests -q")
-    )
-
-    assert result.tool_resource is not None
-    assert "numa_usage" not in result.tool_resource
+    assert result.tool.load.targets["duration_ms"].p50 == pytest.approx(1200)
+    assert result.tool.load.targets["duration_ms"].p90 == pytest.approx(1200)
+    assert result.tool.load.targets["cpu_peak_cores"].p90 == 0
+    assert result.tool.load.targets["memory_total_peak_bytes"].p90 == 0
+    for name in ("trie", "lattice"):
+        load = getattr(result, name).load
+        assert load.targets["duration_ms"].status == "unavailable"
+        assert load.targets["duration_ms"].unavailable_reason
+        assert load.clause_predictions
+        assert all(c.targets["duration_ms"].status == "unavailable" for c in load.clause_predictions)
+    assert set(result.model_dump()) == {"tool", "trie", "lattice"}
 
 
 def test_ebpf_clause_identity_matches_online_prediction(tmp_path: Path, monkeypatch) -> None:
@@ -913,42 +809,20 @@ def test_ebpf_clause_identity_matches_online_prediction(tmp_path: Path, monkeypa
     result = predictor.predict(_tool_request("evt-1", "call-1", "python -m pytest tests -q"))
 
     assert predictor.report.observations_loaded == 2
-    assert result.resource_class == "unknown"
-    assert result.duration_p50_ms is None  # ToolKB has no whole-tool history.
-    assert result.call_prediction == result.tool
-    assert result.tool.targets["duration_ms"].status == "unavailable"
-    assert result.trie.targets["duration_ms"].p50 == 1200
-    assert result.lattice.targets["duration_ms"].p50 == 1200
-    assert result.confidence is None  # bucket mass is not calibrated confidence
-    assert result.tool_resource is not None
-    assert result.tool_resource["prediction"]["scope"] == "repo"
-    assert result.tool_resource["prediction"]["key_kind"] == "exact_clause"
-    assert result.tool_resource["prediction"]["evidence_count"] == 1
-    assert result.tool_resource["clause_predictions"] == [
-        {
-            "clause_index": 0,
-            "bin": "python",
-            "argv": ["python", "-m", "pytest", "tests", "-q"],
-            "prediction": result.tool_resource["prediction"],
-            "unavailable_reason": None,
-        }
-    ]
-    lattice = result.tool_resource["lattice_time_predictions"]
+    assert result.tool.load.targets["duration_ms"].status == "unavailable"
+    assert result.tool.load.targets["duration_ms"].p50 is None  # ToolKB has no whole-tool history.
+    assert set(result.model_dump()) == {"tool", "trie", "lattice"}
+    assert result.tool.load.targets["duration_ms"].status == "unavailable"
+    assert result.trie.load.targets["duration_ms"].p50 == 1200
+    assert result.lattice.load.targets["duration_ms"].p50 == 1200
+    assert result.tool.load.targets["duration_ms"].calibration == "unvalidated"  # bucket mass is not calibrated confidence
+    assert result.trie.load.targets["duration_ms"].context[:2] == ["repo", "exact_clause"]
+    assert result.trie.load.targets["duration_ms"].evidence_counts == [1]
+    assert result.trie.load.clause_predictions[0].argv == ["python", "-m", "pytest", "tests", "-q"]
     assert predictor.report.lattice_observations_loaded == 2
     assert predictor.report.lattice_kb_available is True
-    assert len(lattice) == 1
-    assert lattice[0]["clause_index"] == 0
-    assert [item["algorithm"] for item in lattice[0]["predictions"]] == [
-        "shrinkage",
-        "loso",
-        "max_cardinality",
-    ]
-    assert [item["prediction_ms"] for item in lattice[0]["predictions"]] == pytest.approx(
-        [1200.0, 1200.0, 1200.0]
-    )
-    assert result.tool_resource["continuous_predictions"]["cpu_peak_cores"][
-        "conditional_p90"
-    ] is None
+    assert result.lattice.load.clause_predictions[0].targets["duration_ms"].p50 == 1200
+    assert result.tool.load.targets["cpu_peak_cores"].p90 is None
 
     predictor.continuous_kb.observe_completed_call(
         CompletedCall(
@@ -967,10 +841,10 @@ def test_ebpf_clause_identity_matches_online_prediction(tmp_path: Path, monkeypa
         _tool_request("evt-2", "call-2", "python -m pytest tests -q")
     )
 
-    assert continuous_result.duration_p50_ms == 900
-    assert continuous_result.duration_p90_ms == 900
-    assert continuous_result.confidence is None
-    assert continuous_result.tool_resource["prediction"] is not None
+    assert continuous_result.tool.load.targets["duration_ms"].p50 == pytest.approx(900)
+    assert continuous_result.tool.load.targets["duration_ms"].p90 == pytest.approx(900)
+    assert continuous_result.tool.load.targets["duration_ms"].calibration == "unvalidated"
+    assert continuous_result.trie.load.targets["duration_ms"].status == "available"
 
 
 def test_openclaw_trace_history_populates_repo_argv_prefix(tmp_path: Path) -> None:
@@ -984,16 +858,10 @@ def test_openclaw_trace_history_populates_repo_argv_prefix(tmp_path: Path) -> No
 
     result = predictor.predict(_tool_request("evt-prefix", "call-prefix", "python -m pytest integration -q"))
 
-    assert result.resource_class == "latency_medium"
-    assert result.tool_resource["prediction"] is None
-    latency = result.tool_resource["continuous_predictions"]["latency_ms"]
-    assert latency["scope"] == "repo"
-    assert latency["key_kind"] == "command_prefix_depth_3"
-    assert latency["fallback_path"] == [
-        "repo:exact_command",
-        "repo:command_prefix_depth_4",
-        "repo:command_prefix_depth_3",
-    ]
+    duration = result.tool.load.targets["duration_ms"]
+    assert duration.p90 == 1200
+    assert duration.context == ["repo", "command_prefix_depth_3"]
+    assert result.trie.load.targets["duration_ms"].status == "unavailable"
 
 
 def test_openclaw_trace_cold_start_persists_runtime_kb(tmp_path: Path) -> None:
@@ -1023,9 +891,9 @@ def test_openclaw_trace_cold_start_persists_runtime_kb(tmp_path: Path) -> None:
     )
     result = reloaded.predict(_tool_request("evt-prefix", "call-prefix", "python -m pytest integration -q"))
 
-    assert result.resource_class == "latency_medium"
-    assert result.tool_resource["prediction"] is None
-    assert result.tool_resource["continuous_predictions"]["latency_ms"]["key_kind"] == "command_prefix_depth_3"
+    assert result.tool.load.targets["duration_ms"].status == "available"
+    assert result.trie.load.targets["duration_ms"].status == "unavailable"
+    assert (result.tool.load.targets["duration_ms"].context[1] if len(result.tool.load.targets["duration_ms"].context)>1 else None) == "command_prefix_depth_3"
 
 
 def test_restarting_with_the_same_trace_does_not_duplicate_runtime_history(tmp_path):
@@ -1072,17 +940,12 @@ def test_clause_only_seed_does_not_fabricate_whole_call_predictions(
     finally:
         predictor.close()
 
-    # Clause seed data must not be fabricated into whole-call labels.
-    assert result.tool_resource["prediction"] is not None
-    continuous = result.tool_resource["continuous_predictions"]
-    latency = continuous["latency_ms"]
-    assert latency["scope"] is None
-    assert latency["evidence_count"] == 0
-    assert latency["conditional_p90"] is None
-    cpu = continuous["cpu_peak_cores"]
-    assert cpu["scope"] is None
-    assert cpu["evidence_count"] == 0
-    assert cpu["conditional_p90"] is None
+    assert result.trie.load.targets["duration_ms"].status == "available"
+    for target in ("duration_ms", "cpu_peak_cores"):
+        estimate = result.tool.load.targets[target]
+        assert estimate.status == "unavailable"
+        assert estimate.p90 is None
+        assert estimate.evidence_counts == []
 
 
 def test_shared_snapshots_reuse_same_repo_evidence_but_isolate_other_repos() -> None:
@@ -1181,22 +1044,14 @@ def test_public_clause_snapshot_produces_public_global_single_clause_bucket(
 
     result = predictor.predict(_tool_request("evt-public", "call-public", "python -V"))
 
-    prediction = result.tool_resource["prediction"]
-    assert predictor.report.kb_available is True
-    assert prediction is not None
-    assert 0 <= prediction["bucket_id"] < 5
-    assert prediction["scope"] == "public"
-    assert prediction["key_kind"] in {"bin", "global"}
-    assert prediction["evidence_count"] > 0
-    assert result.tool_resource["clause_predictions"] == [
-        {
-            "clause_index": 0,
-            "bin": "python",
-            "argv": ["python", "-V"],
-            "prediction": prediction,
-            "unavailable_reason": None,
-        }
-    ]
+    duration = result.trie.load.targets["duration_ms"]
+    assert predictor.report.kb_available
+    assert duration.status == "available"
+    assert duration.p50 == 100
+    assert duration.context[0] == "public"
+    assert duration.context[1] in {"bin", "global", "semantic_core"}
+    assert duration.evidence_counts[0] > 0
+    assert result.trie.load.clause_predictions[0].argv == ["python", "-V"]
 
 
 def test_public_clause_snapshot_uses_global_for_missing_entry_in_real_command(
@@ -1227,19 +1082,12 @@ def test_public_clause_snapshot_uses_global_for_missing_entry_in_real_command(
         )
     )
 
-    tool_resource = result.tool_resource
-    assert tool_resource["clause_bins"] == ["python3"]
-    assert tool_resource["prediction"] is not None
-    assert tool_resource["prediction"]["scope"] == "public"
-    assert tool_resource["prediction"]["key_kind"] == "global"
-    assert tool_resource["unavailable_reason"] is None
-    assert tool_resource.get("composed", False) is False
-    assert len(tool_resource["clause_predictions"]) == 1
-    clause = tool_resource["clause_predictions"][0]
-    assert clause["clause_index"] == 0
-    assert clause["bin"] == "python3"
-    assert clause["prediction"] == tool_resource["prediction"]
-    assert clause["unavailable_reason"] is None
+    load = result.trie.load
+    assert load.targets["duration_ms"].status == "available"
+    assert load.targets["duration_ms"].context == ["public", "global"]
+    assert len(load.clause_predictions) == 1
+    assert load.clause_predictions[0].argv[0] == "python3"
+    assert load.clause_predictions[0].targets["duration_ms"].p50 == 100
 
 
 def test_ebpf_loader_uses_native_sdk_artifact_validation(tmp_path: Path) -> None:
@@ -1304,51 +1152,17 @@ def test_tool_resource_predictor_exposes_native_unavailable_reason(
 
     result = predictor.predict(_tool_request("evt-1", "call-1", "python -m pytest && git status"))
 
-    assert result.resource_class == "latency_medium"
-    continuous = result.tool_resource["continuous_predictions"]
-    assert result.tool_resource["kv_ttl_cost"]["reference_runtime_s"] == pytest.approx(1.2)
-    without_continuous = result.tool_resource | {"continuous_predictions": {}, "kv_ttl_cost": None}
-    resources = without_continuous.pop("lattice_resource_predictions")
-    assert resources
-    assert all(item["p50"] is None for clause in resources for item in clause["predictions"])
-    assert without_continuous == {
-        "repo": "repo-1",
-        "command": "python -m pytest && git status",
-        "parse_failed": False,
-        "clause_bins": ["python", "git"],
-        "clause_predictions": [
-            {
-                "clause_index": 0,
-                "bin": "python",
-                "argv": ["python", "-m", "pytest"],
-                "prediction": None,
-                "unavailable_reason": "no_clause_latency_evidence",
-            },
-            {
-                "clause_index": 1,
-                "bin": "git",
-                "argv": ["git", "status"],
-                "prediction": None,
-                "unavailable_reason": "no_clause_latency_evidence",
-            },
-        ],
-        "prediction": None,
-        "unavailable_reason": "compound_clause_evidence_incomplete",
-        "continuous_predictions": {},
-        "lattice_time_predictions": _unavailable_lattice_time_predictions(
-            [
-                ("python", ["python", "-m", "pytest"]),
-                ("git", ["git", "status"]),
-            ]
-        ),
-        "kv_ttl_cost": None,
-        "prediction_algorithms": _prediction_algorithms(),
-    }
-    assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
-    assert continuous["latency_ms"]["key_kind"] == "command_prefix_depth_3"
-    assert continuous["cpu_peak_cores"]["conditional_p90"] == 0
-    assert continuous["cpu_peak_cores"]["key_kind"] == "command_prefix_depth_3"
-    assert continuous["memory_total_peak_bytes"]["conditional_p90"] == 0
+    assert result.tool.load.targets["duration_ms"].p50 == pytest.approx(1200)
+    assert result.tool.load.targets["duration_ms"].p90 == pytest.approx(1200)
+    assert result.tool.load.targets["cpu_peak_cores"].p90 == 0
+    assert result.tool.load.targets["memory_total_peak_bytes"].p90 == 0
+    for name in ("trie", "lattice"):
+        load = getattr(result, name).load
+        assert load.targets["duration_ms"].status == "unavailable"
+        assert load.targets["duration_ms"].unavailable_reason
+        assert load.clause_predictions
+        assert all(c.targets["duration_ms"].status == "unavailable" for c in load.clause_predictions)
+    assert set(result.model_dump()) == {"tool", "trie", "lattice"}
 
 
 def test_compound_prediction_requires_evidence_for_every_effective_clause() -> None:
@@ -1859,17 +1673,13 @@ def test_tool_resource_predictor_learns_from_completion_without_cold_start() -> 
     result = predictor.predict(_tool_request("evt-2", "call-2", "python -m pytest tests -q"))
 
     assert added == 1
-    assert result.resource_class == "latency_medium"
-    assert result.duration_p50_ms == 1200
-    assert result.duration_p90_ms == 1200
-    assert result.tool_resource["prediction"] is None
-    assert result.tool_resource["unavailable_reason"] == "no_clause_latency_evidence"
-    assert result.tool_resource["continuous_predictions"]["cpu_peak_cores"][
-        "conditional_p90"
-    ] == 0
-    assert result.tool_resource["continuous_predictions"]["memory_total_peak_bytes"][
-        "conditional_p90"
-    ] == 0
+    assert result.tool.load.targets["duration_ms"].status == "available"
+    assert result.tool.load.targets["duration_ms"].p50 == pytest.approx(1200)
+    assert result.tool.load.targets["duration_ms"].p90 == pytest.approx(1200)
+    assert result.trie.load.targets["duration_ms"].status == "unavailable"
+    assert result.trie.load.targets["duration_ms"].unavailable_reason
+    assert result.tool.load.targets["cpu_peak_cores"].p90 == 0
+    assert result.tool.load.targets["memory_total_peak_bytes"].p90 == 0
 
 
 @pytest.mark.parametrize("error_type,censored", [(None, False), ("ValueError", False), ("TimeoutError", True), ("CancelledError", True)])
@@ -2035,10 +1845,10 @@ def test_live_shared_scope_keeps_only_runtime_latency(
             "python -m pytest tests -q",
         ),
     )
-    continuous = prediction.tool_resource["continuous_predictions"]
-    assert continuous["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
-    assert continuous["cpu_peak_cores"]["conditional_p90"] == 0
-    assert continuous["memory_total_peak_bytes"]["conditional_p90"] == 0
+    continuous = prediction.tool.load.targets
+    assert continuous["duration_ms"].p90 == pytest.approx(1200.0)
+    assert continuous["cpu_peak_cores"].p90 == 0
+    assert continuous["memory_total_peak_bytes"].p90 == 0
 
 
 def test_tool_resource_predictor_explains_unknown_without_cold_start() -> None:
@@ -2051,23 +1861,10 @@ def test_tool_resource_predictor_explains_unknown_without_cold_start() -> None:
 
     result = predictor.predict(_tool_request("evt-1", "call-1", "python -m pytest tests -q"))
 
-    assert result.resource_class == "unknown"
-    assert result.tool_resource["repo"] == "repo-1"
-    assert result.tool_resource["command"] == "python -m pytest tests -q"
-    assert result.tool_resource["clause_bins"] == ["python"]
-    assert result.tool_resource["prediction"] is None
-    assert result.tool_resource["unavailable_reason"] == "no_clause_latency_evidence"
-    continuous = result.tool_resource["continuous_predictions"]
-    assert continuous["latency_ms"]["note"] == "no continuous evidence for target"
-    assert continuous["cpu_peak_cores"]["note"] == "no continuous evidence for target"
-    assert continuous["memory_total_peak_bytes"]["note"] == "no continuous evidence for target"
-    assert [item["name"] for item in result.tool_resource["prediction_algorithms"]["enabled"]] == [
-        "clause_latency_bucket",
-        "lattice_shrinkage",
-        "lattice_loso",
-        "lattice_max_cardinality",
-        "runtime_tool_resource_conditional_p90",
-    ]
+    for name in ("tool", "trie", "lattice"):
+        load = getattr(result, name).load
+        assert load.targets["duration_ms"].status == "unavailable"
+        assert all(target.status == "unavailable" and target.unavailable_reason for target in load.targets.values())
 
 
 def test_lattice_time_predictions_are_limited_to_ebpf_exec_clauses() -> None:
@@ -2099,8 +1896,8 @@ def test_lattice_time_predictions_are_limited_to_ebpf_exec_clauses() -> None:
 
     result = predictor.predict(request)
 
-    assert result.tool_resource["lattice_time_predictions"] == []
-    assert result.tool_resource["lattice_resource_predictions"] == []
+    assert result.lattice.load.clause_predictions == []
+    assert all(target.status == "unavailable" for target in result.lattice.load.targets.values())
 
 
 def test_resource_lattice_predictions_reach_before_call_payload_and_fail_independently(monkeypatch) -> None:
@@ -2118,18 +1915,22 @@ def test_resource_lattice_predictions_reach_before_call_payload_and_fail_indepen
     )])
     request = _tool_request("resource-event", "resource-call", "python task.py")
     result = predictor.predict(request)
-    output = result.tool_resource["lattice_resource_predictions"][0]
-    by_target = {row["target"]: row for row in output["predictions"] if row["algorithm"] == "shrinkage"}
-    assert by_target["cpu_time_seconds"]["p50"] == 2
-    assert by_target["cpu_avg_cores"]["p50"] == 2
-    assert by_target["memory_total_peak_bytes"]["p90"] == 128 * 1024**2
-    assert all(row["prediction_ms"] == 1000 for row in result.tool_resource["lattice_time_predictions"][0]["predictions"])
-    def fail(*args, **kwargs):
-        raise ValueError("resource-only failure")
-    monkeypatch.setattr(predictor.lattice_kb, "predict_resource_clauses", fail)
+    targets = result.lattice.load.targets
+    assert targets["cpu_time_seconds"].p50 == 2
+    assert targets["cpu_avg_cores"].p50 == 2
+    assert targets["memory_total_peak_bytes"].p90 == 128 * 1024**2
+    assert targets["duration_ms"].p50 == 1000
+    state = predictor.lattice_kb._resource_states["load:cpu_time_seconds"]
+    original = type(state).select
+    def fail_cpu(self, *args, **kwargs):
+        if self is state:
+            raise ValueError("resource-only failure")
+        return original(self, *args, **kwargs)
+    monkeypatch.setattr(type(state), "select", fail_cpu)
     result = predictor.predict(request)
-    assert result.tool_resource["lattice_time_predictions"][0]["predictions"][0]["prediction_ms"] == 1000
-    assert result.tool_resource["lattice_resource_predictions"][0]["predictions"][0]["unavailable_reason"] == "lattice_resource_error:ValueError"
+    assert result.lattice.load.targets["duration_ms"].p50 == 1000
+    assert result.lattice.load.targets["cpu_time_seconds"].status == "unavailable"
+    assert "target_error:ValueError" in result.lattice.load.targets["cpu_time_seconds"].unavailable_reason
 
 
 def test_online_prediction_returns_quality_gated_pmu_history() -> None:
@@ -2146,10 +1947,10 @@ def test_online_prediction_returns_quality_gated_pmu_history() -> None:
 
     result = predictor.predict(_tool_request("pmu-event", "pmu-call", "python task.py"))
 
-    assert result.pmu_prediction is not None
-    assert result.pmu_prediction.targets["ipc"].p50 == 1.25
-    assert result.pmu_prediction.targets["llc_mpki"].p90 == 2.5
-    assert result.pmu_prediction.targets["llc_miss_rate"].p50 == .125
+    assert result.tool.pmu is not None
+    assert result.tool.pmu.targets["ipc"].p50 == 1.25
+    assert result.tool.pmu.targets["llc_mpki"].p90 == 2.5
+    assert result.tool.pmu.targets["llc_miss_rate"].p50 == .125
 
 
 @pytest.mark.parametrize("frozen", [False, True])
@@ -2261,10 +2062,8 @@ def test_finish_execution_feeds_and_persists_the_shared_lattice_kb(
     )
 
     prediction = predictor.predict(_tool_request("evt-online", "call-next", "python task.py"))
-    outcomes = prediction.tool_resource["lattice_time_predictions"][0]["predictions"]
-    assert [item["prediction_ms"] for item in outcomes] == pytest.approx(
-        [250.0, 250.0, 250.0]
-    )
+    assert prediction.lattice.load.targets["duration_ms"].p50 == pytest.approx(250.0)
+    assert prediction.lattice.load.clause_predictions[0].targets["duration_ms"].p50 == pytest.approx(250.0)
 
 
 def test_tool_resource_predictor_explains_empty_continuous_memory_with_anchor() -> None:
@@ -2279,9 +2078,9 @@ def test_tool_resource_predictor_explains_empty_continuous_memory_with_anchor() 
         _tool_request("evt-1", "call-1", "python -m pytest tests -q"),
     )
 
-    memory = result.tool_resource["continuous_predictions"]["memory_total_peak_bytes"]
-    assert memory["conditional_p90"] is None
-    assert memory["note"] == "no continuous evidence for target"
+    memory = result.tool.load.targets["memory_total_peak_bytes"]
+    assert memory.p90 is None
+    assert memory.unavailable_reason == "no_compatible_evidence"
 
 
 def test_exec_prediction_uses_fallback_parser_when_mvdan_fails(
@@ -2305,11 +2104,11 @@ def test_exec_prediction_uses_fallback_parser_when_mvdan_fails(
 
     result = predictor.predict(_tool_request("evt-1", "call-1", command))
 
-    assert result.resource_class == "latency_medium"
-    assert result.tool_resource["unavailable_reason"] == "no_clause_latency_evidence"
-    assert result.tool_resource["prediction"] is None
-    assert result.tool_resource["continuous_predictions"]["latency_ms"]["scope"] == "repo"
-    assert result.tool_resource["continuous_predictions"]["latency_ms"]["key_kind"] == "exact_command"
+    assert result.tool.load.targets["duration_ms"].status == "available"
+    assert result.trie.load.targets["duration_ms"].unavailable_reason
+    assert result.trie.load.targets["duration_ms"].status == "unavailable"
+    assert (result.tool.load.targets["duration_ms"].context[0] if result.tool.load.targets["duration_ms"].context else None) == "repo"
+    assert (result.tool.load.targets["duration_ms"].context[1] if len(result.tool.load.targets["duration_ms"].context)>1 else None) == "exact_command"
 
 
 def test_tool_resource_predictor_persists_clause_kb_prefixes(tmp_path: Path) -> None:
@@ -2363,10 +2162,10 @@ def test_tool_resource_predictor_persists_clause_kb_prefixes(tmp_path: Path) -> 
     )
     result = reloaded.predict(_tool_request("evt-2", "call-2", "python -m pytest integration -q"))
 
-    assert result.resource_class == "latency_medium"
-    assert result.tool_resource["prediction"] is None
-    assert result.tool_resource["unavailable_reason"] == "no_clause_latency_evidence"
-    assert result.tool_resource["continuous_predictions"]["latency_ms"]["key_kind"] == "command_prefix_depth_3"
+    assert result.tool.load.targets["duration_ms"].status == "available"
+    assert result.trie.load.targets["duration_ms"].status == "unavailable"
+    assert result.trie.load.targets["duration_ms"].unavailable_reason
+    assert (result.tool.load.targets["duration_ms"].context[1] if len(result.tool.load.targets["duration_ms"].context)>1 else None) == "command_prefix_depth_3"
 
 
 @pytest.mark.parametrize("workers", [2, 8])
@@ -2466,7 +2265,7 @@ def test_tool_resource_predictor_concurrent_completions_persist_without_lost_upd
     assert reloaded.continuous_kb.to_json_obj() == predictor.continuous_kb.to_json_obj()
     for index in range(workers):
         prediction = reloaded.predict(_tool_request(f"next-{index}", f"next-{index}", f"python task_{index}.py"))
-        assert prediction.tool_resource["continuous_predictions"]["latency_ms"]["conditional_p90"] == pytest.approx(1200.0)
+        assert prediction.tool.load.targets["duration_ms"].p90 == pytest.approx(1200.0)
 
 
 def test_tool_resource_predictor_does_not_relabel_rss_using_ambient_anchor() -> None:
@@ -2509,11 +2308,11 @@ def test_tool_resource_predictor_does_not_relabel_rss_using_ambient_anchor() -> 
         _tool_request("evt-2", "call-2", "python -m pytest tests -q"),
     )
 
-    memory = result.tool_resource["continuous_predictions"]["memory_total_peak_bytes"]
-    assert memory["conditional_p90"] == 0
-    assert memory["scope"] == "repo"
-    assert memory["key_kind"] == "exact_command"
-    assert memory["evidence_count"] == 1
+    memory = result.tool.load.targets["memory_total_peak_bytes"]
+    assert memory.p90 == 0
+    assert (memory.context[0] if memory.context else None) == "repo"
+    assert (memory.context[1] if len(memory.context)>1 else None) == "exact_command"
+    assert (memory.evidence_counts[0] if memory.evidence_counts else 0) == 1
 
 
 def test_sidecar_uses_tool_resource_predictor_when_configured(tmp_path: Path) -> None:
@@ -2570,8 +2369,8 @@ def test_sidecar_uses_tool_resource_predictor_when_configured(tmp_path: Path) ->
                (Path(__file__).resolve().parents[3] / "contracts").glob("*.schema.json")]
     registry = Registry().with_resources((s["$id"], Resource.from_contents(s)) for s in schemas)
     Draft202012Validator(schema, registry=registry).validate(response.json())
-    assert response.json()["prediction"]["resource_class"] == "latency_medium"
-    pmu = response.json()["prediction"]["pmu_prediction"]
+    assert response.json()["prediction"]["tool"]["load"]["targets"]["duration_ms"]["p90"] == 1200
+    pmu = response.json()["prediction"]["tool"]["pmu"]
     assert set(pmu["targets"]) == {"cycles", "instructions", "llc_read_accesses", "llc_read_misses", "ipc", "llc_mpki", "llc_miss_rate", "llc_read_accesses_per_cpu_second", "llc_read_misses_per_cpu_second"}
     assert all(value["p50"] == 0 for value in pmu["targets"].values())
 
@@ -2789,13 +2588,10 @@ def test_sidecar_does_not_invent_environment_memory_from_rss(tmp_path: Path) -> 
     )
 
     assert response.status_code == 200
-    memory = response.json()["prediction"]["tool_resource"]["continuous_predictions"][
-        "memory_total_peak_bytes"
-    ]
-    assert memory["conditional_p90"] == 0
-    assert memory["scope"] == "repo"
-    assert memory["key_kind"] == "exact_command"
-    assert memory["evidence_count"] == 1
+    memory = response.json()["prediction"]["tool"]["load"]["targets"]["memory_total_peak_bytes"]
+    assert memory["p90"] == 0
+    assert memory["context"] == ["repo", "exact_command"]
+    assert memory["evidence_counts"] == [1]
 
 
 def test_trace_writes_tool_prediction_payload(tmp_path: Path) -> None:
@@ -2837,7 +2633,7 @@ def test_trace_writes_tool_prediction_payload(tmp_path: Path) -> None:
         "resource_scope": None,
     }
     decision = client.post("/v1/decisions/tool", json=request).json()
-    assert decision["prediction"]["resource_class"] == "latency_medium"
+    assert decision["prediction"]["tool"]["load"]["targets"]["duration_ms"]["p90"] == pytest.approx(1200)
 
     completion = {
         "schema_version": "clawtune.v1",
@@ -2861,7 +2657,7 @@ def test_trace_writes_tool_prediction_payload(tmp_path: Path) -> None:
         "raw_result": None,
         "resource_scope": None,
     }
-    assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(completion)).json() == {"stored": True}
 
     records = [
         json.loads(line)
@@ -2874,32 +2670,15 @@ def test_trace_writes_tool_prediction_payload(tmp_path: Path) -> None:
         if record.get("record_type") == "span_start" and record.get("kind") == "tool"
     )
     assert tool_start["prediction"] == decision["prediction"]
-    assert tool_start["prediction"]["duration_p50_ms"] == 1200
-    assert tool_start["prediction"]["duration_p90_ms"] == 1200
-    assert set(tool_start["prediction"]["pmu_prediction"]["targets"]) == {
+    assert tool_start["prediction"]["tool"]["load"]["targets"]["duration_ms"]["p50"] == 1200
+    assert tool_start["prediction"]["tool"]["load"]["targets"]["duration_ms"]["p90"] == 1200
+    assert set(tool_start["prediction"]["tool"]["pmu"]["targets"]) == {
         "cycles", "instructions", "llc_read_accesses", "llc_read_misses", "ipc", "llc_mpki", "llc_miss_rate",
         "llc_read_accesses_per_cpu_second", "llc_read_misses_per_cpu_second",
     }
-    assert tool_start["prediction"]["tool_resource"]["prediction"] is None
-    assert (
-        tool_start["prediction"]["tool_resource"]["continuous_predictions"]["latency_ms"]["key_kind"]
-        == "exact_command"
-    )
-    algorithms = tool_start["prediction"]["tool_resource"]["prediction_algorithms"]
-    assert [item["name"] for item in algorithms["enabled"]] == [
-        "clause_latency_bucket",
-        "lattice_shrinkage",
-        "lattice_loso",
-        "lattice_max_cardinality",
-        "runtime_tool_resource_conditional_p90",
-    ]
-    assert algorithms["excluded"] == [
-        {
-            "name": "quantile_mlp",
-            "source": "tool_resource.mlp",
-            "reason": "not enabled by the sidecar; this integration uses non-MLP empirical predictors only",
-        }
-    ]
+    assert set(tool_start["prediction"]) == {"tool", "trie", "lattice"}
+    assert tool_start["prediction"]["tool"]["load"]["targets"]["duration_ms"]["context"] == ["repo", "exact_command"]
+    assert tool_start["prediction"]["trie"]["load"]["targets"]["duration_ms"]["status"] == "unavailable"
 
 
 def test_completed_failures_preserve_independent_backend_predictions(tmp_path, monkeypatch):
@@ -2920,9 +2699,9 @@ def test_completed_failures_preserve_independent_backend_predictions(tmp_path, m
             request = _tool_request(f"event-{i}", f"call-{i}", "python3 -m pytest").model_copy(
                 update={"run_id": f"run-{i}", "session_id": f"session-{i}"})
             prediction = predictor.predict(request)
-            assert prediction.duration_p50_ms == prediction.duration_p90_ms == 3000
+            assert prediction.tool.load.targets["duration_ms"].p50 == prediction.tool.load.targets["duration_ms"].p90 == 3000
             for name, expected in (("tool", 3000), ("trie", 5000), ("lattice", 7000)):
-                duration = getattr(prediction, name).targets["duration_ms"]
+                duration = getattr(prediction, name).load.targets["duration_ms"]
                 assert (duration.avg, duration.p50, duration.p90) == (expected,) * 3
                 assert duration.sample_count == 1
             predictor.record_tool_started(request)
@@ -3035,7 +2814,6 @@ def _runtime_sample(event_id: str, tool_call_id: str) -> ToolRuntimeSample:
         sampling_quality="ok",
         resource_timeline=[],
         resource_timeline_truncated=False,
-        resource_class="unknown",
         target_pid=123,
         process_count_before=1,
         process_count_after=1,
@@ -3057,7 +2835,6 @@ def _prediction_algorithms() -> dict:
                     "probability_by_bucket",
                     "duration_p50_ms",
                     "duration_p90_ms",
-                    "resource_class",
                 ],
             },
             {
@@ -3123,172 +2900,6 @@ def _unavailable_lattice_time_predictions(
         }
         for clause_index, (bin_, argv) in enumerate(clauses)
     ]
-
-
-# ---------------------------------------------------------------------------
-# KV-TTL cost proxy integration tests
-# ---------------------------------------------------------------------------
-
-
-def _bucket_prediction(
-    bucket_id: int = 1,
-    *,
-    probability_by_bucket: tuple[float, ...] = (0.1, 0.8, 0.05, 0.05),
-) -> ClauseLatencyBucketPrediction:
-    return ClauseLatencyBucketPrediction(
-        bucket_id=bucket_id,
-        probability_by_bucket=probability_by_bucket,
-        scope="exact_clause",
-        key_kind="exact_clause",
-        evidence_count=10,
-        fallback_path=(),
-    )
-
-
-def _edge_predictor(
-    edges_ms: tuple[float, ...] = (100.0, 500.0, 2_000.0),
-    **kwargs,
-) -> ToolResourcePredictor:
-    return ToolResourcePredictor.from_traces(
-        openclaw_trace_paths=(),
-        ebpf_trace_paths=(),
-        buckets=LatencyBuckets(edges_ms),
-        repo="test-repo",
-        **kwargs,
-    )
-
-
-def test_kv_ttl_cost_payload_with_derived_ttl() -> None:
-    predictor = _edge_predictor()
-    bp = _bucket_prediction(bucket_id=1)
-    cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=0.3)
-
-    assert cost is not None
-    # Derived TTL: buckets_s = [0.1, 0.5, 2.0] → ttl[1] = 0.5
-    assert cost["buckets_s"] == [0.1, 0.5, 2.0]
-    assert cost["ttl_by_bucket_s"] == [0.1, 0.5, 2.0, 0.0]
-    assert cost["initial_bucket_index"] == 1
-    assert cost["ttl_s"] == 0.5
-    assert cost["kv_eviction_time_s"] == 2.0
-    assert cost["reference_runtime_s"] == 0.3
-    # 0.3 < dynamic eviction D = 2.0s → no miss, retention = min(0.3, 2.0) = 0.3
-    assert cost["kv_retention_time_s"] == 0.3
-    assert cost["kv_cache_miss"] is False
-    assert cost["num_bucket_jumps"] == 0
-    assert cost["proxy_cost_s"] is None
-    assert cost["miss_penalty_s"] is None
-
-
-def test_kv_ttl_cost_payload_with_miss_penalty() -> None:
-    predictor = _edge_predictor(miss_penalty_s=2.0)
-    bp = _bucket_prediction(bucket_id=0)
-    # reference_runtime 0.6s < dynamic eviction D = 2.0s → no miss,
-    # retention = min(0.6, 2.0) = 0.6
-    cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=0.6)
-
-    assert cost is not None
-    assert cost["ttl_s"] == 0.1
-    assert cost["kv_eviction_time_s"] == 2.0
-    assert cost["kv_retention_time_s"] == 0.6
-    assert cost["kv_cache_miss"] is False
-    assert cost["proxy_cost_s"] == 0.6
-    assert cost["miss_penalty_s"] == 2.0
-
-
-def test_kv_ttl_cost_payload_jumps_multiple_buckets() -> None:
-    predictor = _edge_predictor()
-    bp = _bucket_prediction(bucket_id=0)
-    # p90 = 3.0s → advances through buckets 0..3 into the open tail (3 jumps)
-    cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=3.0)
-
-    assert cost is not None
-    assert cost["initial_bucket_index"] == 0
-    assert cost["final_bucket_index"] == 3
-    assert cost["num_bucket_jumps"] == 3
-    assert cost["bucket_exhausted"] is True
-    # TTL from initial bucket 0 = 0.1s, actual 3.0s → miss
-    assert cost["kv_cache_miss"] is True
-    assert cost["kv_eviction_time_s"] == 2.0
-    assert cost["kv_retention_time_s"] == 2.0
-
-
-def test_kv_ttl_cost_payload_supports_open_ended_last_bucket() -> None:
-    predictor = _edge_predictor(edges_ms=(100.0, 500.0))
-    bp = _bucket_prediction(bucket_id=2)
-    cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=5.0)
-
-    assert cost is not None
-    assert cost["initial_bucket_index"] == 2
-    assert cost["ttl_s"] == 0.0
-    assert cost["kv_eviction_time_s"] == 0.0
-    assert cost["kv_cache_miss"] is True
-
-
-def test_kv_ttl_cost_payload_with_custom_ttl_by_bucket() -> None:
-    predictor = _edge_predictor(
-        edges_ms=(100.0, 500.0, 2_000.0),
-        ttl_by_bucket_s=(2.0, 1.0, 0.0, 0.0),
-    )
-    bp = _bucket_prediction(bucket_id=2)
-    cost = predictor._kv_ttl_cost_payload(bp, reference_runtime_s=0.5)
-
-    assert cost is not None
-    assert cost["ttl_by_bucket_s"] == [2.0, 1.0, 0.0, 0.0]
-    # Initial bucket 2 → TTL = 0.0 (immediate evict)
-    assert cost["ttl_s"] == 0.0
-    assert cost["kv_cache_miss"] is True
-    assert cost["kv_retention_time_s"] == 0.0
-
-
-def test_sidecar_response_includes_kv_ttl_cost_key(tmp_path: Path) -> None:
-    """Prediction payload always carries the ``kv_ttl_cost`` key, even when
-    None (no eBPF data available for a bucket prediction)."""
-    trace = tmp_path / "trace.jsonl"
-    _write_trace(trace)
-    state = build_state(
-        SidecarConfig(
-            tool_resource_trace_paths=(trace,),
-            tool_resource_latency_buckets_ms=(100.0, 500.0, 2_000.0),
-            tool_resource_artifact_dir=tmp_path / "tool-resource",
-        )
-    )
-    client = TestClient(create_app(state))
-
-    response = client.post(
-        "/v1/decisions/tool",
-        json={
-            "schema_version": "clawtune.v1",
-            "event_id": "evt-1",
-            "occurred_at": "2026-07-24T17:29:44Z",
-            "plugin_version": "0.1.0",
-            "run_id": "run-2",
-            "session_id": "session-1",
-            "session_key": None,
-            "agent_id": "main",
-            "tool_call_id": "call-2",
-            "tool_name": "exec",
-            "tool_kind": "shell",
-            "tool_input_kind": "json",
-            "operation_hint": None,
-            "derived_paths": [],
-            "params_digest": "sha256:" + "a" * 64,
-            "param_features": {
-                "serialized_size_bytes": 10,
-                "string_length": 10,
-                "list_item_count": 0,
-                "path_count": 0,
-                "has_command_like_field": True,
-            },
-            "raw_params": {"command": "python -m pytest tests -q"},
-            "resource_scope": None,
-        },
-    )
-
-    assert response.status_code == 200
-    tr = response.json()["prediction"]["tool_resource"]
-    assert "kv_ttl_cost" in tr
-    # Compatible runtime evidence now also supplies duration buckets for TTL.
-    assert tr["kv_ttl_cost"]["reference_runtime_s"] == pytest.approx(1.2)
 
 
 @pytest.mark.parametrize("cleanup,error_kind", [("ok", "incomplete"), ("failed", "incomplete"), ("ok", "invalid"), ("failed", "invalid"), ("ok", "io")])

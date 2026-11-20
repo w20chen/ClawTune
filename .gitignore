@@ -47,6 +47,7 @@ deep_research_bench/.runtime/
 # Keep reusable tooling outside research/; keep release seeds and fixtures tracked.
 /research/
 /legacy_eval/
+/.artifacts/
 *.log
 
 # Local agent instructions and development planning documents.

@@ -30,13 +30,6 @@ class SidecarConfig:
     tool_resource_ebpf_trace_paths: tuple[Path, ...] = ()
     tool_resource_latency_buckets_ms: tuple[float, ...] = (100.0, 500.0, 2_000.0, 10_000.0)
     tool_resource_load_buckets: dict[str, tuple[float, ...]] = field(default_factory=lambda: dict(DEFAULT_RESOURCE_BUCKETS))
-    # KV-TTL cost proxy policy for the tool-resource prediction output.
-    # ``tool_resource_ttl_by_bucket_s`` holds one KV TTL (seconds) per latency
-    # bucket, including the open-ended tail bucket. Legacy edge-count policies
-    # imply a zero TTL for that tail. ``tool_resource_miss_penalty_s`` is an
-    # optional non-negative miss penalty added to the compatibility proxy cost.
-    tool_resource_ttl_by_bucket_s: tuple[float, ...] | None = None
-    tool_resource_miss_penalty_s: float | None = None
     tool_resource_repo: str = "openclaw"
     tool_resource_frozen: bool = False
     kb_max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES
@@ -45,6 +38,10 @@ class SidecarConfig:
     tool_resource_ebpf_enabled: bool = True
     tool_resource_ebpf_required: bool = False
     auth_token: str | None = None
+    signal_endpoint: str | None = None
+    signal_token: str | None = None
+    signal_queue_size: int = 1024
+    signal_timeout_s: float = 1.0
     trace_dir: Path = Path("traces")
     trace_runtime_paths: dict[str, str] = field(default_factory=dict)
     trace_max_messages_bytes: int = 131_072  # 128 KiB, matches plugin default
@@ -80,6 +77,14 @@ class SidecarConfig:
     llm_proxy_upstream_model: str | None = None
 
     def __post_init__(self) -> None:
+        from urllib.parse import urlsplit
+        if self.signal_endpoint:
+            url = urlsplit(self.signal_endpoint)
+            if (url.scheme not in {"http", "https"} or not url.hostname
+                    or url.username or url.password or url.fragment or url.port == 0):
+                raise ValueError("signal_endpoint must be an HTTP(S) URL without credentials or fragment")
+        if self.signal_queue_size < 1 or not math.isfinite(self.signal_timeout_s) or self.signal_timeout_s <= 0:
+            raise ValueError("signal queue size and timeout must be positive")
         validate_max_optional_features(self.kb_max_optional_features)
         load_bucket_edges(self.tool_resource_latency_buckets_ms, self.tool_resource_load_buckets)
         if self.tool_resource_ebpf_required and not self.tool_resource_ebpf_enabled:
@@ -98,9 +103,6 @@ class SidecarConfig:
         # Runtime KB ownership is independent of trace export configuration.
         if not tool_resource_artifact_dir:
             tool_resource_artifact_dir = str(user_state_dir() / "kb")
-        tool_resource_ttl_by_bucket_raw = os.getenv(
-            "CLAWTUNE_TOOL_RESOURCE_TTL_BY_BUCKET_S"
-        )
         return cls(
             policy=os.getenv("CLAWTUNE_POLICY", "observe-only"),
             max_global_concurrency=_nonnegative_int_from_env(
@@ -133,12 +135,6 @@ class SidecarConfig:
                     default=(100.0, 500.0, 2_000.0, 10_000.0),
                 )
             ),
-            tool_resource_ttl_by_bucket_s=(
-                tuple(_parse_float_list(tool_resource_ttl_by_bucket_raw, default=()))
-                if tool_resource_ttl_by_bucket_raw is not None
-                and tool_resource_ttl_by_bucket_raw.strip()
-                else None
-            ),
             tool_resource_load_buckets={
                 target: tuple(_parse_float_list(os.getenv(env), default=DEFAULT_RESOURCE_BUCKETS[target]))
                 for target, env in {
@@ -150,9 +146,6 @@ class SidecarConfig:
                     "memory_extra_peak_bytes": "CLAWTUNE_TOOL_RESOURCE_MEMORY_EXTRA_BUCKETS_BYTES",
                 }.items()
             },
-            tool_resource_miss_penalty_s=_optional_nonnegative_float_from_env(
-                "CLAWTUNE_TOOL_RESOURCE_MISS_PENALTY_S"
-            ),
             kb_max_optional_features=_nonnegative_int_from_env(
                 "CLAWTUNE_KB_MAX_OPTIONAL_FEATURES", DEFAULT_MAX_OPTIONAL_FEATURES),
             tool_resource_repo=os.getenv("CLAWTUNE_TOOL_RESOURCE_REPO", "openclaw"),
@@ -175,6 +168,10 @@ class SidecarConfig:
             ).lower()
             in {"1", "true", "yes", "on"},
             auth_token=os.getenv("CLAWTUNE_TOKEN"),
+            signal_endpoint=os.getenv("CLAWTUNE_SIGNAL_ENDPOINT") or None,
+            signal_token=os.getenv("CLAWTUNE_SIGNAL_TOKEN") or None,
+            signal_queue_size=int(os.getenv("CLAWTUNE_SIGNAL_QUEUE_SIZE", "1024")),
+            signal_timeout_s=float(os.getenv("CLAWTUNE_SIGNAL_TIMEOUT_S", "1")),
             trace_dir=_resolve_path(trace, env_base) if trace else Path("traces"),
             trace_runtime_paths=json.loads(os.getenv("CLAWTUNE_TRACE_RUNTIME_PATHS", "{}")),
             trace_max_messages_bytes=int(os.getenv("CLAWTUNE_TRACE_MAX_MESSAGES_BYTES", "131072")),

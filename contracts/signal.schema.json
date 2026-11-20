@@ -1,0 +1,731 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/signal.schema.json",
+  "description": "Unified observation and publication envelope. Unix seconds for timestamps; elapsed durations use the producer monotonic clock. Ingress uses null publisher_id/published_at. Egress sequence is global within publisher_id; retries keep the same envelope. Estimates expire and never become training labels.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "clawtune.signal.v1"
+    },
+    "signal_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "type": {
+      "enum": [
+        "prediction.created",
+        "execution.started",
+        "execution.progress",
+        "prediction.updated",
+        "execution.finishing_soon",
+        "execution.exited",
+        "execution.aborted",
+        "tool.completed",
+        "model.started",
+        "model.completed"
+      ]
+    },
+    "source": {
+      "enum": [
+        "plugin",
+        "launcher",
+        "sidecar"
+      ]
+    },
+    "identity": {
+      "type": "object",
+      "properties": {
+        "gateway_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "runtime_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "run_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "agent_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "tool_call_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "execution_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "call_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "prediction_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      },
+      "required": [
+        "gateway_id",
+        "runtime_id",
+        "run_id",
+        "session_id",
+        "agent_id",
+        "tool_call_id",
+        "execution_id",
+        "call_id",
+        "prediction_id"
+      ],
+      "additionalProperties": false
+    },
+    "observed_at": {
+      "type": "number",
+      "minimum": 0
+    },
+    "published_at": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "publisher_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "expires_at": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "signal_id",
+    "type",
+    "source",
+    "identity",
+    "observed_at",
+    "published_at",
+    "publisher_id",
+    "sequence",
+    "expires_at",
+    "payload"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "publisher_id": {
+            "type": "null"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "published_at": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "published_at": {
+            "type": "number",
+            "minimum": 0
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "prediction.created"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "prediction_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "prediction": {
+                "$ref": "tool-decision.schema.json#/properties/prediction"
+              },
+              "scope": {
+                "const": "tool_call"
+              },
+              "phase": {
+                "const": "before_execution"
+              }
+            },
+            "required": [
+              "prediction_id",
+              "prediction",
+              "scope",
+              "phase"
+            ],
+            "additionalProperties": false
+          },
+          "source": {
+            "const": "sidecar"
+          },
+          "publisher_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "identity": {
+            "properties": {
+              "prediction_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "expires_at": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "execution.started"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "pid": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "progress_adapter": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "pid",
+              "progress_adapter"
+            ],
+            "additionalProperties": false
+          },
+          "source": {
+            "const": "launcher"
+          },
+          "identity": {
+            "properties": {
+              "execution_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "expires_at": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "execution.progress"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "elapsed_duration_ms": {
+                "type": "number",
+                "minimum": 0
+              },
+              "remaining_duration_ms": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "remaining_source": {
+                "type": "string",
+                "minLength": 1
+              },
+              "remaining_kind": {
+                "enum": [
+                  "estimated",
+                  "exact"
+                ]
+              }
+            },
+            "required": [
+              "elapsed_duration_ms",
+              "remaining_duration_ms",
+              "remaining_source",
+              "remaining_kind"
+            ],
+            "additionalProperties": false
+          },
+          "source": {
+            "const": "launcher"
+          },
+          "identity": {
+            "properties": {
+              "execution_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "expires_at": {
+            "type": "number",
+            "minimum": 0
+          },
+          "publisher_id": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "prediction.updated"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "elapsed_duration_ms": {
+                "type": "number",
+                "minimum": 0
+              },
+              "remaining_duration_ms": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "remaining_source": {
+                "type": "string",
+                "minLength": 1
+              },
+              "remaining_kind": {
+                "enum": [
+                  "estimated",
+                  "exact"
+                ]
+              },
+              "scope": {
+                "const": "tool_call"
+              },
+              "statistic": {
+                "const": "point_estimate"
+              },
+              "predicted_total_duration_ms": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "baseline_prediction_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "baseline_source": {
+                "const": "lattice"
+              },
+              "baseline_statistic": {
+                "const": "p50"
+              },
+              "baseline_prediction_ms": {
+                "type": "number",
+                "minimum": 0
+              },
+              "overrun_threshold_ms": {
+                "const": 1000
+              }
+            },
+            "required": [
+              "elapsed_duration_ms",
+              "remaining_duration_ms",
+              "remaining_source",
+              "remaining_kind",
+              "scope",
+              "statistic",
+              "predicted_total_duration_ms",
+              "baseline_prediction_id",
+              "baseline_source",
+              "baseline_statistic",
+              "baseline_prediction_ms",
+              "overrun_threshold_ms"
+            ],
+            "additionalProperties": false
+          },
+          "source": {
+            "const": "sidecar"
+          },
+          "identity": {
+            "properties": {
+              "execution_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "expires_at": {
+            "type": "number",
+            "minimum": 0
+          },
+          "publisher_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "execution.finishing_soon"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "elapsed_duration_ms": {
+                "type": "number",
+                "minimum": 0
+              },
+              "remaining_duration_ms": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 2000
+              },
+              "remaining_source": {
+                "type": "string",
+                "minLength": 1
+              },
+              "remaining_kind": {
+                "enum": [
+                  "estimated",
+                  "exact"
+                ]
+              },
+              "scope": {
+                "const": "tool_call"
+              },
+              "statistic": {
+                "const": "point_estimate"
+              },
+              "predicted_total_duration_ms": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "elapsed_duration_ms",
+              "remaining_duration_ms",
+              "remaining_source",
+              "remaining_kind",
+              "scope",
+              "statistic",
+              "predicted_total_duration_ms"
+            ],
+            "additionalProperties": false
+          },
+          "source": {
+            "const": "sidecar"
+          },
+          "identity": {
+            "properties": {
+              "execution_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "expires_at": {
+            "type": "number",
+            "minimum": 0
+          },
+          "publisher_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "execution.exited"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "exit_code": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "signal": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "confirmed_timeout": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "exit_code",
+              "signal",
+              "confirmed_timeout"
+            ],
+            "additionalProperties": false
+          },
+          "source": {
+            "const": "launcher"
+          },
+          "identity": {
+            "properties": {
+              "execution_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "publisher_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expires_at": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "execution.aborted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "reason"
+            ],
+            "additionalProperties": false
+          },
+          "source": {
+            "const": "sidecar"
+          },
+          "identity": {
+            "properties": {
+              "execution_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "publisher_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expires_at": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "tool.completed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "oneOf": [
+              {
+                "$ref": "tool-completed-event.schema.json"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "tool_name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "duration_ms": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "error_type": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "measurement": {
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "tool_name",
+                  "duration_ms",
+                  "error_type",
+                  "measurement"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "source": {
+            "const": "plugin"
+          },
+          "expires_at": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "model.started"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "model-event.schema.json"
+          },
+          "source": {
+            "const": "plugin"
+          },
+          "expires_at": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "model.completed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "model-event.schema.json"
+          },
+          "source": {
+            "const": "plugin"
+          },
+          "expires_at": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

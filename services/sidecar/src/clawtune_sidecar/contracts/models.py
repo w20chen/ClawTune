@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any, Literal
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-from clawtune_sidecar.contracts.load_prediction import CallLoadPrediction, LoadDiagnostics, PmuPrediction
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from clawtune_sidecar.contracts.load_prediction import CallLoadPrediction, PmuPrediction
 
 SCHEMA_VERSION = "clawtune.v1"
 
@@ -77,36 +77,41 @@ class ToolBeforeRequest(CommonEvent):
     resource_scope: ResourceScope | None = None
 
 
+class ClauseKBPrediction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    load: CallLoadPrediction
+
+
+class ToolKBPrediction(ClauseKBPrediction):
+    pmu: PmuPrediction
+
+
 class ToolPrediction(BaseModel):
+    """Three peer model outputs; consumers must select a model explicitly."""
+
     model_config = ConfigDict(extra="forbid")
 
-    duration_p50_ms: int | None = Field(default=None, ge=0)
-    duration_p90_ms: int | None = Field(default=None, ge=0)
-    resource_class: str = "unknown"
-    confidence: float | None = Field(default=None, ge=0, le=1)
-    tool: CallLoadPrediction | None = None
-    trie: CallLoadPrediction | None = None
-    lattice: CallLoadPrediction | None = None
-    # Compatibility alias of ToolKB, never a selection across backends.
-    call_prediction: CallLoadPrediction | None = None
-    pmu_prediction: PmuPrediction | None = None
-    diagnostics: LoadDiagnostics | None = None
-    tool_resource: Any | None = None
+    tool: ToolKBPrediction
+    trie: ClauseKBPrediction
+    lattice: ClauseKBPrediction
 
-
-class PlacementAdvice(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    cpu_set: str | None = None
-    numa_node: int | None = Field(default=None, ge=0)
-    llc_cluster: str | None = None
-    advisory: Literal[True] = True
+    @model_validator(mode="after")
+    def independent_backends(self):
+        for name, backend in (("tool", "runtime"), ("trie", "trie"), ("lattice", "lattice")):
+            load = getattr(self, name).load
+            estimates = list(load.targets.values())
+            estimates.extend(estimate for clause in load.clause_predictions for estimate in clause.targets.values())
+            if any(estimate.backend != backend for estimate in estimates):
+                raise ValueError(f"{name} prediction contains another backend's estimate")
+        return self
 
 
 class ToolDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision_id: str
+    prediction_signal_id: str | None = None
     action: Literal["allow", "block"]
     reason_code: str
     reason: str
@@ -114,7 +119,6 @@ class ToolDecision(BaseModel):
     policy_version: str
     lease_id: str | None
     prediction: ToolPrediction
-    placement_advice: PlacementAdvice
     placement: Any | None = None
     profiling: Any | None = None
 
@@ -182,6 +186,7 @@ class ExecutionRegistrationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     execution_id: str = Field(min_length=1, max_length=128)
+    prediction_id: str | None = Field(default=None, min_length=1, max_length=128)
     gateway_id: str | None = Field(default=None, min_length=1, max_length=128)
     runtime_id: str | None = Field(default=None, min_length=1, max_length=128)
     repo: str | None = Field(default=None, min_length=1, max_length=512)
@@ -227,6 +232,7 @@ class ExecutionClaimResponse(BaseModel):
     host: str
     placement: Any | None
     profiling: Any | None
+    signals_enabled: bool = False
 
 
 class NativeRuntimeScopeRequest(BaseModel):

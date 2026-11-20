@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from clawtune_sidecar.signal_protocol import event_signal
+
 import json
 import os
 import time
@@ -917,15 +919,15 @@ def test_decision_and_completion_round_trip(tmp_path: Path) -> None:
         "error_digest": None,
         "result_size_bytes": None,
     }
-    assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
-    assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": False}
+    assert client.post("/v1/signals", json=event_signal(completion)).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(completion)).json() == {"stored": False}
     recent = client.get("/v1/tools/recent").json()
     assert len(recent["samples"]) == 1
     sample = recent["samples"][0]
     assert sample["tool_call_id"] == "call-1"
     assert sample["tool_name"] == "exec"
     assert sample["duration_ms"] == 100
-    assert sample["resource_class"] == "unknown"
+    assert "resource_class" not in sample
     assert sample["attribution_status"] == "unattributed"
 
     request_without_tool_call_id = request | {
@@ -947,7 +949,7 @@ def test_decision_and_completion_round_trip(tmp_path: Path) -> None:
         "decision_id": second_decision["decision_id"],
         "lease_id": second_decision["lease_id"],
     }
-    assert client.post("/v1/events/tool-completed", json=completion_without_tool_call_id).json() == {
+    assert client.post("/v1/signals", json=event_signal(completion_without_tool_call_id)).json() == {
         "stored": True
     }
     recent = client.get("/v1/tools/recent").json()
@@ -1063,7 +1065,7 @@ def test_internal_tool_prefers_shared_sandbox_over_shared_runtime_scope(
     }
 
     completion["tool_name"] = tool_name
-    assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(completion)).json() == {"stored": True}
 
     trace_records = _read_trace_records(trace_dir)
     tool_start = [
@@ -1167,7 +1169,7 @@ def test_internal_tool_uses_docker_exec_inferred_scope_before_fallback(tmp_path:
         "resource_scope": None,
     }
 
-    assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(completion)).json() == {"stored": True}
 
     tool_end = [
         record
@@ -1274,7 +1276,7 @@ def test_internal_tool_overrides_shared_runtime_scope_with_docker_exec(tmp_path:
         "resource_scope": shared_runtime_scope,
     }
 
-    assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(completion)).json() == {"stored": True}
 
     tool_end = [
         record
@@ -1383,7 +1385,7 @@ def test_host_openclaw_scoped_read_gets_docker_exec_pid(tmp_path: Path) -> None:
         "resource_scope": sandbox_scope,
     }
 
-    assert client.post("/v1/events/tool-completed", json=completion).json() == {
+    assert client.post("/v1/signals", json=event_signal(completion)).json() == {
         "stored": True
     }
 
@@ -1566,7 +1568,7 @@ def test_exec_tool_can_use_shared_sandbox_cgroup_fallback(tmp_path: Path) -> Non
         "resource_scope": None,
     }
 
-    assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(completion)).json() == {"stored": True}
 
     tool_end = next(
         r
@@ -1681,7 +1683,7 @@ def test_exec_unusable_launcher_scope_falls_back_to_shared_sandbox(
         "resource_scope": None,
     }
 
-    assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(completion)).json() == {"stored": True}
 
     tool_end = next(
         r
@@ -1936,7 +1938,7 @@ def test_execution_exit_waits_for_completion_result_before_ebpf_finish(
         },
         "resource_scope": None,
     }
-    assert client.post("/v1/events/tool-completed", json=completion).json() == {
+    assert client.post("/v1/signals", json=event_signal(completion)).json() == {
         "stored": True
     }
     assert finish_calls == [
@@ -2035,7 +2037,7 @@ def test_running_exec_completion_waits_for_real_exit_fallback(
             },
         }
 
-        assert client.post("/v1/events/tool-completed", json=completion).json() == {
+        assert client.post("/v1/signals", json=event_signal(completion)).json() == {
             "stored": True
         }
         assert finish_calls == []
@@ -2160,8 +2162,8 @@ def test_completion_prefers_authoritative_execution_scope_over_supplied_scope(
 
     state.tool_monitor.complete = capture_completion  # type: ignore[method-assign]
     response = client.post(
-        "/v1/events/tool-completed",
-        json={
+        "/v1/signals",
+        json=event_signal({
             "schema_version": "clawtune.v1",
             "event_id": "evt-exec-end",
             "occurred_at": "2026-07-16T03:23:01Z",
@@ -2197,7 +2199,7 @@ def test_completion_prefers_authoritative_execution_scope_over_supplied_scope(
                 "source": shared_source,
                 "attribution_source": shared_attribution,
             },
-        },
+        }),
     )
 
     assert response.status_code == 200
@@ -2390,8 +2392,8 @@ def test_owned_cgroup_survives_exited_until_completion_final_snapshot(
         )
 
         completed = client.post(
-            "/v1/events/tool-completed",
-            json={
+            "/v1/signals",
+            json=event_signal({
                 "schema_version": "clawtune.v1",
                 "event_id": "evt-owned-end",
                 "occurred_at": datetime.now(timezone.utc).isoformat(),
@@ -2414,7 +2416,7 @@ def test_owned_cgroup_survives_exited_until_completion_final_snapshot(
                 "runtime_id": "runtime-1",
                 "gateway_id": "gateway-1",
                 "resource_scope": None,
-            },
+            }),
         )
         assert completed.status_code == 200
         assert completed.json() == {"stored": True}
@@ -3162,7 +3164,7 @@ def test_exec_completion_uses_registered_launcher_scope(tmp_path: Path, monkeypa
         "resource_scope": None,
     }
 
-    assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(completion)).json() == {"stored": True}
 
     tool_end = next(
         r
@@ -3281,7 +3283,7 @@ def test_agent_test_bench_trace_jsonl_records_tool_and_model_events(tmp_path: Pa
         "raw_result": "2 passed",
         "raw_event": {"result": "2 passed"},
     }
-    assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(completion)).json() == {"stored": True}
 
     model_started = {
         "schema_version": "clawtune.v1",
@@ -3313,8 +3315,8 @@ def test_agent_test_bench_trace_jsonl_records_tool_and_model_events(tmp_path: Pa
         "raw_output": "done",
         "raw_event": {"content": "done"},
     }
-    assert client.post("/v1/events/model", json=model_started).json() == {"stored": True}
-    assert client.post("/v1/events/model", json=model_ended).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(model_started)).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(model_ended)).json() == {"stored": True}
 
     # Find the per-run trace file
     records = _read_trace_records(trace_dir)
@@ -3343,6 +3345,12 @@ def test_agent_test_bench_trace_jsonl_records_tool_and_model_events(tmp_path: Pa
     assert tool_end["resources"]["sampling_point_count"] is None
     assert isinstance(tool_end["resources"]["resource_timeline"], list)
     assert tool_end["resources"]["resource_timeline_truncated"] is False
+    assert "resource_class" not in tool_end["resources"]
+    assert tool_start["prediction"] == decision["prediction"]
+    for branch in ("tool", "trie", "lattice"):
+        duration = tool_start["prediction"][branch]["load"]["targets"]["duration_ms"]
+        assert {"p50", "p90", "buckets"} <= duration.keys()
+        assert {"edges", "interval", "probabilities"} == duration["buckets"].keys()
 
     model_starts = [r for r in records if r.get("record_type") == "span_start" and r.get("kind") == "llm"]
     assert len(model_starts) == 1
@@ -3394,8 +3402,8 @@ def test_llm_span_monotonic_invariant_holds_when_duration_absent(tmp_path: Path)
         "raw_output": "ok",
         "raw_event": {"content": "ok"},
     }
-    assert client.post("/v1/events/model", json=started).json() == {"stored": True}
-    assert client.post("/v1/events/model", json=ended).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(started)).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(ended)).json() == {"stored": True}
 
     records = _read_trace_records(trace_dir)
     llm_starts = [r for r in records if r.get("record_type") == "span_start" and r.get("kind") == "llm"]
@@ -3471,7 +3479,7 @@ def test_trace_marks_raw_exec_exit_code_failure(tmp_path: Path) -> None:
         "resource_scope": None,
     }
 
-    assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(completion)).json() == {"stored": True}
 
     records = _read_trace_records(trace_dir)
     tool_end = next(r for r in records if r.get("record_type") == "span_end" and r.get("kind") == "tool")
@@ -3543,7 +3551,7 @@ def test_trace_marks_shared_runtime_process_scope(tmp_path: Path) -> None:
         "raw_result": "ok",
     }
 
-    assert client.post("/v1/events/tool-completed", json=completion).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(completion)).json() == {"stored": True}
 
     records = _read_trace_records(trace_dir)
     tool_end = next(r for r in records if r.get("record_type") == "span_end" and r.get("kind") == "tool")
@@ -3729,8 +3737,8 @@ def test_model_hook_record_is_enriched_from_proxy_capture(tmp_path: Path, monkey
         "outcome": "completed",
         "raw_event": {"runId": "run-proxy", "sessionId": "session-proxy"},
     }
-    assert client.post("/v1/events/model", json=started).json() == {"stored": True}
-    assert client.post("/v1/events/model", json=ended).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(started)).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(ended)).json() == {"stored": True}
 
     records = _read_trace_records(trace_dir)
     llm_starts = [r for r in records if r.get("record_type") == "span_start" and r.get("kind") == "llm"]
@@ -3838,8 +3846,8 @@ def _drive_proxy_and_model_events(
         "outcome": "completed",
         "raw_event": {"runId": "run-proxy", "sessionId": "session-proxy"},
     }
-    assert client.post("/v1/events/model", json=started).json() == {"stored": True}
-    assert client.post("/v1/events/model", json=ended).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(started)).json() == {"stored": True}
+    assert client.post("/v1/signals", json=event_signal(ended)).json() == {"stored": True}
 
 
 def test_model_proxy_capture_correlates_when_events_carry_gateway_id(
@@ -4339,15 +4347,15 @@ def test_slow_completion_keeps_event_loop_responsive(tmp_path, parallelism):
                 "succeeded": True, "error_type": None, "error_digest": None,
                 "result_size_bytes": None, "resource_scope": None,
             })
-        futures = [pool.submit(client.post, "/v1/events/tool-completed", json=c) for c in completions]
+        futures = [pool.submit(client.post, "/v1/signals", json=event_signal(c)) for c in completions]
         try:
             assert entered.wait(2), "finalization serialized the event loop"
             health = pool.submit(client.get, "/health/live")
             assert health.result(timeout=1).status_code == 200
             assert not any(f.done() for f in futures)
-            duplicate = pool.submit(client.post, "/v1/events/tool-completed", json={
+            duplicate = pool.submit(client.post, "/v1/signals", json=event_signal({
                 **completions[0], "event_id": "evt-duplicate-completion",
-            })
+            }))
             with pytest.raises(TimeoutError):
                 duplicate.result(timeout=0.1)
         finally:

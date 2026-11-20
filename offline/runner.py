@@ -782,7 +782,7 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
             parse_before = default_service().metrics()
             prepared = prepare_call(query, parsed_clauses=known_clauses)
             query_cache, composition_cache = LatticeQueryCache(), CompositionCache()
-            prediction, diagnostics = predict_call_load(
+            predictions = predict_call_load(
                 runtime=runtime, trie=trie, lattice=lattice, query=query, edges=edges,
                 prepared=prepared, query_cache=query_cache, composition_cache=composition_cache,
             )
@@ -800,7 +800,7 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
                     "lattice", LatticeOracle(lattice, actual_target_values.get("duration_ms"), edges),
                     query, edges, prepared, query_cache=query_cache, composition_cache=composition_cache,
                 ).targets
-            estimates = dict(prediction.targets)
+            estimates = dict(predictions["runtime"].targets)
             pmu_evidence = runtime.predict_pmu_samples(query)
             for metric in ("ipc", "llc_mpki", "llc_miss_rate"):
                 values = sorted(pmu_evidence.get(metric, {}).get("values", ()))
@@ -816,8 +816,8 @@ def run(dataset: Path, output: Path, *, benchmark: str | None = None, seed: int 
             for metric in pmu_availability:
                 pmu_availability[metric]["labeled"] += int("pmu_" + metric in actual_target_values)
             for model, model_estimates in (("tool", estimates),
-                                           ("trie", diagnostics.backends["trie"].targets),
-                                           ("lattice", diagnostics.backends["lattice"].targets),
+                                           ("trie", predictions["trie"].targets),
+                                           ("lattice", predictions["lattice"].targets),
                                            *variant_estimates.items()):
                 repo_counts = repository_availability[model][(task["benchmark"], task["group"])]
                 for target in availability[model]:

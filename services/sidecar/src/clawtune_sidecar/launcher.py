@@ -154,7 +154,9 @@ def _run_forkexec_claimed(
     endpoint: str, execution_id: str, claim: dict[str, Any], launcher_pid: int,
 ) -> int:
     _validate_profiling_mode(claim.get("profiling"))
-    command = wrap_tool_command(str(claim["command"]), execution_id)
+    command = wrap_tool_command(str(claim["command"]), execution_id,
+                                endpoint=endpoint if claim.get("signals_enabled") else None,
+                                update_token=str(claim["update_token"]))
     workdir = claim.get("workdir")
     cwd = str(workdir) if isinstance(workdir, str) and workdir else None
     update_token = str(claim["update_token"])
@@ -374,7 +376,9 @@ def _run_subprocess_claimed(
     endpoint: str, execution_id: str, claim: dict[str, Any], launcher_pid: int,
 ) -> int:
     _validate_profiling_mode(claim.get("profiling"))
-    command = wrap_tool_command(str(claim["command"]), execution_id)
+    command = wrap_tool_command(str(claim["command"]), execution_id,
+                                endpoint=endpoint if claim.get("signals_enabled") else None,
+                                update_token=str(claim["update_token"]))
     workdir = claim.get("workdir")
     cwd = str(workdir) if isinstance(workdir, str) and workdir else None
     update_token = str(claim["update_token"])
@@ -1675,6 +1679,8 @@ def _payload_environment() -> dict[str, str]:
     for key in (
         "CLAWTUNE_EXECUTION_TOKEN",
         "CLAWTUNE_TOKEN",
+        "CLAWTUNE_SIGNAL_TOKEN",
+        "CLAWTUNE_SIGNAL_ENDPOINT",
     ):
         env.pop(key, None)
     launcher_pythonpath = env.pop("CLAWTUNE_LAUNCHER_PYTHONPATH", None)

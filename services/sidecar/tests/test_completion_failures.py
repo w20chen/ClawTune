@@ -1,4 +1,6 @@
 """Failure receipts must not acknowledge lost work or replay partial learning."""
+
+from clawtune_sidecar.signal_protocol import event_signal
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
@@ -39,8 +41,8 @@ def test_failed_completion_remains_visible_without_replaying_mutations(tmp_path,
         monkeypatch.setattr(state.trace_writer, "flush", lambda *args: False)
     with pytest.raises(RuntimeError, match="tool completion processing incomplete"):
         with TestClient(create_app(state)) as client:
-            first = client.post("/v1/events/tool-completed", json=event.model_dump(mode="json"))
-            retry = client.post("/v1/events/tool-completed", json=event.model_dump(mode="json"))
+            first = client.post("/v1/signals", json=event_signal(event.model_dump(mode="json")))
+            retry = client.post("/v1/signals", json=event_signal(event.model_dump(mode="json")))
             assert first.status_code == retry.status_code == 503
             assert first.json() == retry.json()
             assert counts == {"sample": 1, "learn": 1, "trace": 1}
@@ -73,16 +75,16 @@ def test_concurrent_retry_does_not_acknowledge_inflight_completion(tmp_path, mon
         return 1
     monkeypatch.setattr(state.predictor, "observe_completion", learn)
     with TestClient(create_app(state)) as client, ThreadPoolExecutor() as pool:
-        first = pool.submit(client.post, "/v1/events/tool-completed", json=event)
+        first = pool.submit(client.post, "/v1/signals", json=event_signal(event))
         try:
             assert started.wait(10)
-            pending = client.post("/v1/events/tool-completed", json=event)
+            pending = client.post("/v1/signals", json=event_signal(event))
             assert pending.status_code == 503
             assert pending.json()["detail"] == "tool_completion_in_progress"
         finally:
             release.set()
         assert first.result(timeout=10).json() == {"stored": True}
-        assert client.post("/v1/events/tool-completed", json=event).json() == {"stored": False}
+        assert client.post("/v1/signals", json=event_signal(event)).json() == {"stored": False}
         assert calls == [1]
 
 
@@ -92,6 +94,6 @@ def test_closed_runtime_rejection_does_not_leave_an_inflight_receipt(tmp_path):
     event = _tool_completion("done", "call").model_copy(update={"gateway_id": "g", "runtime_id": "r"})
     with TestClient(create_app(state)) as client:
         for _ in range(2):
-            response = client.post("/v1/events/tool-completed", json=event.model_dump(mode="json"))
+            response = client.post("/v1/signals", json=event_signal(event.model_dump(mode="json")))
             assert response.status_code == 409
             assert response.json()["detail"] == "runtime_finalized"

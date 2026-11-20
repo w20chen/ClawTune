@@ -487,7 +487,6 @@ class AgentTestBenchTraceWriter:
                 "sampling_quality": sample.sampling_quality,
                 "resource_timeline": sample.resource_timeline,
                 "resource_timeline_truncated": sample.resource_timeline_truncated,
-                "resource_class": sample.resource_class,
                 "target_pid": sample.target_pid,
                 "process_count_before": sample.process_count_before,
                 "process_count_after": sample.process_count_after,

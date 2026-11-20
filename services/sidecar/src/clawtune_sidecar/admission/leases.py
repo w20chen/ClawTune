@@ -11,7 +11,6 @@ from clawtune_sidecar.identity import OwnerKey
 @dataclass
 class Lease:
     lease_id: str
-    resource_class: str
     demand_mcpu: int
     owner: OwnerKey | None
     execution_id: str | None
@@ -33,7 +32,6 @@ class LeaseManager:
 
     async def acquire(
         self,
-        resource_class: str,
         wait_ms: int,
         *,
         demand_mcpu: int = 1_000,
@@ -59,7 +57,6 @@ class LeaseManager:
                     lease_id = str(uuid.uuid4())
                     self._leases[lease_id] = Lease(
                         lease_id=lease_id,
-                        resource_class=resource_class,
                         demand_mcpu=demand_mcpu,
                         owner=owner,
                         execution_id=None,

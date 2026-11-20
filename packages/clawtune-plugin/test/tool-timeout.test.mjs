@@ -44,7 +44,7 @@ test("real completion hook retains timeout when tool output recording is disable
     await hooks.get("after_tool_call")({toolName: "exec", toolCallId: "timeout-test", durationMs: 2800,
       result: {details: {exitReason: "overall-timeout", exitCode: 0},
         content: [{type: "text", text: "Command timed out after 2.5 seconds. More details."}]}}, {});
-    const event = requests.find(row => row.url.endsWith("/v1/events/tool-completed")).body;
+    const event = requests.find(row => row.url.endsWith("/v1/signals")).body.payload;
     assert.equal(event.raw_result, null);
     assert.equal(event.confirmed_timeout, true);
     assert.equal(event.timeout_duration_lower_bound_ms, 2500);

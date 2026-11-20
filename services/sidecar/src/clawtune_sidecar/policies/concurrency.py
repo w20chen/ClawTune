@@ -20,9 +20,8 @@ class ConcurrencyPolicy:
 
     async def decide(self, request: ToolBeforeRequest, context: SchedulingContext) -> ToolDecision:
         lease_id = await self.leases.acquire(
-            context.prediction.resource_class,
             self.admission_wait_ms,
-            demand_mcpu=_predicted_cpu_millis(context.prediction.tool or context.prediction.call_prediction),
+            demand_mcpu=_predicted_cpu_millis(context.prediction.tool.load),
             owner=owner_key(request),
         )
         if lease_id is None:
@@ -35,7 +34,6 @@ class ConcurrencyPolicy:
                 policy_version=self.version,
                 lease_id=None,
                 prediction=context.prediction,
-                placement_advice=context.placement,
             )
         return ToolDecision(
             decision_id=str(uuid.uuid4()),
@@ -46,7 +44,6 @@ class ConcurrencyPolicy:
             policy_version=self.version,
             lease_id=lease_id,
             prediction=context.prediction,
-            placement_advice=context.placement,
         )
 
 

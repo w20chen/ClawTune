@@ -1,4 +1,6 @@
 """Prediction ownership, shutdown fencing, and command-rule lifecycle."""
+
+from clawtune_sidecar.signal_protocol import event_signal
 import asyncio
 import copy
 import threading
@@ -265,7 +267,7 @@ def test_missing_monitor_sample_still_releases_prediction_state(tmp_path, monkey
         client.post("/v1/decisions/tool", json=req.model_dump(mode="json"))
         monkeypatch.setattr(state.tool_monitor, "complete", lambda *args, **kwargs: None)
         event = _tool_completion("done", "call").model_copy(update={"gateway_id": "gateway", "runtime_id": "runtime"})
-        assert client.post("/v1/events/tool-completed", json=event.model_dump(mode="json")).status_code == 200
+        assert client.post("/v1/signals", json=event_signal(event.model_dump(mode="json"))).status_code == 200
         assert_released(state.predictor)
 
 

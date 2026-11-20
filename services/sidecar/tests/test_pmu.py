@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from clawtune_sidecar.signal_protocol import event_signal
+
 import errno
 import copy
 import ctypes
@@ -108,8 +110,9 @@ def test_openclaw_timeout_closes_normal_counting_window(failure_kind, monkeypatc
             "gateway_id": "test", "runtime_id": "runtime", "tool_call_id": "call-timeout",
             "decision_id": None, "lease_id": None, "execution_id": "timeout", "tool_name": "exec",
             "duration_ms": 8000, "succeeded": False, "error_type": "timeout", "error_digest": None,
+            "result_size_bytes": None,
             "raw_result": {"details": {"status": "error", "failureKind": failure_kind}}}
-        response = client.post("/v1/events/tool-completed", json=body)
+        response = client.post("/v1/signals", json=event_signal(body))
         assert response.status_code == 200, response.text
         result = state.pmu_collector.take("timeout")
         assert result.coverage.status == "reliable"
@@ -117,7 +120,7 @@ def test_openclaw_timeout_closes_normal_counting_window(failure_kind, monkeypatc
         assert _quality_gated_pmu_metrics(result.to_dict())["eligible"]
         validate(json.loads(json.dumps(result.to_dict())), "pmu-profile.schema.json")
         assert len(backend.closed) == 4
-        assert client.post("/v1/events/tool-completed", json=body).json() == {"stored": False}
+        assert client.post("/v1/signals", json=event_signal(body)).json() == {"stored": False}
         assert len(backend.closed) == 4
     assert not _completion_reports_timeout({"content": "overall-timeout"})
     assert not _completion_reports_timeout({"details": {"status": "running", "failureKind": failure_kind}})

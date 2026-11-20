@@ -1,3 +1,5 @@
+
+from clawtune_sidecar.signal_protocol import event_signal
 import importlib
 import json
 import time
@@ -49,7 +51,7 @@ def test_late_completion_without_before_hook_preserves_real_memory(tmp_path, mon
         event = _tool_completion('done', 'call-x').model_copy(update={
             'execution_id': 'x', 'gateway_id': 'g', 'runtime_id': 'r', 'run_id': 'run',
             'raw_event': {'params': {'command': 'sleep 1'}}})
-        response = client.post('/v1/events/tool-completed', json=event.model_dump(mode='json'))
+        response = client.post("/v1/signals", json=event_signal(event.model_dump(mode='json')))
         assert response.status_code == 200, response.text
         snapshot = p.kb.to_json_obj()
         memory = [r['memory_total_peak_bytes'] for r in snapshot['pending']

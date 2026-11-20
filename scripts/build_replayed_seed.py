@@ -169,7 +169,7 @@ def _causal_payloads(tasks):
             events.append((action.ts_end, 1, action.identity, action))
     for timestamp, phase, identity, action in sorted(events, key=lambda event: event[:3]):
         if phase == 0:
-            _prediction, diagnostics = predict_call_load(
+            predictions = predict_call_load(
                 runtime=runtime,
                 trie=trie,
                 lattice=lattice,
@@ -185,7 +185,7 @@ def _causal_payloads(tasks):
                 ),
                 edges=edges,
             )
-            for backend, result in diagnostics.backends.items():
+            for backend, result in predictions.items():
                 for target, prediction in result.targets.items():
                     reason = prediction.unavailable_reason or ""
                     if reason.startswith(("backend_error:", "parse_error:")):

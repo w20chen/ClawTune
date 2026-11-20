@@ -11,7 +11,7 @@
     "protocol_versions": {
       "type": "array",
       "items": {"type": "string"},
-      "description": "Protocol versions this sidecar supports (clawtune.api.v1, trace.v6, execution.v1)."
+      "description": "Protocol versions this sidecar supports (clawtune.api.v1, trace.v6, execution.v1, clawtune.signal.v1, clawtune.prediction.v1)."
     },
     "live": {"type": "boolean"},
     "ready": {"type": "boolean"}

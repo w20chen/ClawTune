@@ -326,7 +326,7 @@ def test_completion_clock_does_not_rewind_to_last_live_sample():
     monitor = RealtimeToolMonitor(sampler=sampler, poll_interval_s=60)
     try:
         request = _request()
-        monitor.begin(request, "unknown")
+        monitor.begin(request)
         data = {k: v for k, v in request.model_dump().items() if k in ToolCompletedEvent.model_fields}
         data.update(event_id="end", occurred_at=datetime.fromtimestamp(20, timezone.utc).isoformat(),
                     duration_ms=5000, succeeded=True, decision_id=None, lease_id=None,
@@ -349,7 +349,7 @@ def test_memory_polling_continues_while_process_sampling_is_blocked(monkeypatch)
     from clawtune_sidecar.contracts.models import ResourceScope
     monitor = RealtimeToolMonitor(sampler=SlowSampler(), poll_interval_s=.01)
     try:
-        monitor.begin(_request(ResourceScope(pid=123)), "unknown")
+        monitor.begin(_request(ResourceScope(pid=123)))
         assert entered.wait(1)
         monkeypatch.setattr(monitor.environment_memory, "poll", memory_polled.set)
         assert memory_polled.wait(1)
@@ -405,7 +405,7 @@ def test_sparse_cpu_counter_is_unavailable_even_when_endpoints_look_aligned(dura
     monitor = RealtimeToolMonitor(sampler=sampler, poll_interval_s=60)
     try:
         request = _request()
-        monitor.begin(request, "unknown")
+        monitor.begin(request)
         event = ToolCompletedEvent.model_validate(completion_data(duration_ms=duration))
         sample = monitor.complete(event)
         assert sample.cpu_time_delta_s is None
@@ -433,7 +433,7 @@ def test_dense_cpu_counter_is_interpolated_to_action_boundaries():
     ])
     monitor = RealtimeToolMonitor(sampler=sampler, poll_interval_s=60)
     try:
-        monitor.begin(_request(), "unknown")
+        monitor.begin(_request())
         key = next(iter(monitor._active))
         points = [
             {"ts": 9.95 + i * .05, "cpu_time_s": i * .025,
@@ -470,7 +470,7 @@ def test_cpu_peak_excludes_samples_outside_action():
     ])
     monitor = RealtimeToolMonitor(sampler=sampler, poll_interval_s=60)
     try:
-        monitor.begin(_request(), "unknown")
+        monitor.begin(_request())
         key = next(iter(monitor._active))
         points = [{"ts": 10 + i / 20, "cpu_time_s": i * 5 if i <= 20 else 100 + (i - 20) / 20,
                    "source": "psutil-process-tree", "available": True} for i in range(40)]

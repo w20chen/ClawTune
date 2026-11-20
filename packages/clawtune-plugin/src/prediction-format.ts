@@ -17,11 +17,6 @@ function bucket(id: number | null | undefined): string {
   return id != null && Number.isInteger(id) && id >= 0 && id < timeRanges.length
     ? `#${id} ${timeRanges[id]}` : "unavailable";
 }
-function pointBucket(ms: number | null | undefined): string {
-  if (ms == null || !Number.isFinite(ms) || ms < 0) return "unavailable";
-  const id = timeEdges.findIndex(edge => ms < edge);
-  return bucket(id < 0 ? timeEdges.length : id);
-}
 function modalBucket(estimate: LoadEstimate | undefined): string {
   if (estimate?.status !== "available") return "unavailable";
   const {edges, probabilities} = estimate.buckets;
@@ -38,20 +33,11 @@ export function formatTimeBuckets(prediction: ToolDecision["prediction"], callId
   const row = (name: string, scope: string, value: string): void => {
     lines.push(`${name.padEnd(26)} ${scope.padEnd(10)} ${value}`);
   };
-  for (const backend of ["runtime", "trie", "lattice"] as const) {
-    const result = prediction[backend === "runtime" ? "tool" : backend]
-      ?? prediction.diagnostics?.backends[backend];
-    row(`${backend} (mode)`, "call", modalBucket(result?.targets.duration_ms));
-  }
-  const resource = prediction.tool_resource;
-  row("clause_latency_bucket", "command", bucket(resource?.prediction?.bucket_id));
-  row("runtime (p90)", "call", pointBucket(resource?.continuous_predictions?.latency_ms?.conditional_p90));
-  const clauses = resource?.lattice_time_predictions ?? [];
-  for (const algorithm of ["shrinkage", "loso", "max_cardinality"] as const) {
-    if (!clauses.length) row(`lattice_${algorithm}`, "clause", "unavailable");
-    for (const clause of clauses) {
-      const value = clause.predictions.find(p => p.algorithm === algorithm)?.prediction_ms;
-      row(`lattice_${algorithm}`, `clause ${clause.clause_index}`, pointBucket(value));
+  for (const name of ["tool", "trie", "lattice"] as const) {
+    const result = prediction[name]?.load;
+    row(`${name} (mode)`, "call", modalBucket(result?.targets.duration_ms));
+    for (const clause of result?.clause_predictions ?? []) {
+      row(`${name} (mode)`, `clause ${clause.clause_index}`, modalBucket(clause.targets.duration_ms));
     }
   }
   return lines;
@@ -97,7 +83,7 @@ function formatBackend(title: string, prediction: CallLoadPrediction): string[] 
 
 function formatPmu(prediction: ToolDecision["prediction"]): string[] {
   const lines = ["  PMU - quality-gated ToolKB history, uncalibrated"];
-  const pmu = prediction.pmu_prediction;
+  const pmu = prediction.tool?.pmu;
   if (!pmu) return [...lines, "    unavailable: prediction not supplied"];
   const labels: Record<PmuTarget, string> = {
     cycles: "cycles",
@@ -124,21 +110,15 @@ function formatPmu(prediction: ToolDecision["prediction"]): string[] {
   return lines;
 }
 
-/** Independent tool-level results; legacy fields support older sidecars. */
+/** Every model is presented separately; no primary or compatibility prediction. */
 export function formatCallLoadPrediction(prediction: ToolDecision["prediction"]): string[] {
-  if (!prediction.tool && !prediction.trie && !prediction.lattice && !prediction.call_prediction
-      && !prediction.diagnostics) return formatPmu(prediction);
   const lines = ["  CALL LOAD - independent empirical estimates, uncalibrated"];
-  const results = [
-    ["ToolKB", prediction.tool ?? prediction.call_prediction],
-    ["TrieKB", prediction.trie ?? prediction.diagnostics?.backends.trie],
-    ["LatticeKB", prediction.lattice ?? prediction.diagnostics?.backends.lattice],
-  ] as const;
-  for (const [name, result] of results) {
+  for (const [name, key] of [["ToolKB", "tool"], ["TrieKB", "trie"], ["LatticeKB", "lattice"]] as const) {
+    const result = prediction[key]?.load;
     lines.push("");
     if (result) lines.push(...formatBackend(`${name} - tool-level prediction`, result));
     else lines.push(`  ${name} - prediction not supplied`);
+    if (key === "tool") lines.push(...formatPmu(prediction));
   }
-  lines.push("", ...formatPmu(prediction));
   return lines;
 }

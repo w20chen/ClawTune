@@ -11,10 +11,6 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from tool_resource.kv_ttl import (  # noqa: F401
-        BucketTTLEvaluation,
-        evaluate_bucket_ttl,
-    )
     from tool_resource.runtime_kb import (  # noqa: F401
         ClauseObservation,
         ClauseResourceKB,
@@ -32,8 +28,6 @@ if TYPE_CHECKING:
     )
 
 _EXPORTS = {
-    "BucketTTLEvaluation": ("tool_resource.kv_ttl", "BucketTTLEvaluation"),
-    "evaluate_bucket_ttl": ("tool_resource.kv_ttl", "evaluate_bucket_ttl"),
     "ClauseObservation": ("tool_resource.runtime_kb", "ClauseObservation"),
     "ClauseResourceKB": ("tool_resource.runtime_kb", "ClauseResourceKB"),
     "CommandLatencyBucketPrediction": (

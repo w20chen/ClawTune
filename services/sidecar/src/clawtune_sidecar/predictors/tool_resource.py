@@ -21,6 +21,8 @@ from clawtune_sidecar.contracts.models import (
     ToolBeforeRequest,
     ToolCompletedEvent,
     ToolPrediction,
+    ToolKBPrediction,
+    ClauseKBPrediction,
 )
 from clawtune_sidecar.identity import (
     CorrelationKey,
@@ -34,13 +36,11 @@ from clawtune_sidecar.identity import call_key
 from kb_common import (
     DEFAULT_MAX_OPTIONAL_FEATURES, require_same_feature_limit, validate_max_optional_features,
 )
-from clawtune_sidecar.topology.linux import NumaCpuUsageSampler
 from clawtune_sidecar.tool_resource_commands import extract_command
 from tool_resource.features import (
     parse_command_clauses,
     shell_bin_requires_exec_evidence,
 )
-from tool_resource.kv_ttl import evaluate_bucket_ttl
 from tool_resource.runtime_kb import (
     ClauseLatencyBucketOutcome,
     ClauseLatencyBucketPrediction,
@@ -363,9 +363,6 @@ class ToolResourcePredictor:
         runtime_kb_snapshot_path: Path | None = None,
         lattice_kb: LatticeTimeKB | None = None,
         lattice_kb_snapshot_path: Path | None = None,
-        ttl_by_bucket_s: tuple[float, ...] | None = None,
-        miss_penalty_s: float | None = None,
-        numa_usage_sampler: NumaCpuUsageSampler | None = None,
         load_buckets: Mapping[str, Sequence[float]] | None = None,
         frozen: bool = False,
         max_optional_features: int | None = None,
@@ -406,36 +403,6 @@ class ToolResourcePredictor:
             self.continuous_kb.freeze()
             self.lattice_kb.freeze()
         self.lattice_kb_snapshot_path = lattice_kb_snapshot_path
-        self.numa_usage_sampler = numa_usage_sampler
-        # KV-TTL policy.  Finite bucket boundaries are derived from the
-        # configured latency edges.  There is one TTL per resulting bucket,
-        # including the open-ended tail bucket.  Legacy configurations with
-        # one value per edge remain valid and imply immediate tail eviction.
-        self.buckets_s = tuple(edge / 1000.0 for edge in buckets.edges_ms)
-        configured_ttls = (
-            ttl_by_bucket_s
-            if ttl_by_bucket_s is not None
-            else (*self.buckets_s, 0.0)
-        )
-        self.ttl_by_bucket_s = (
-            (*configured_ttls, 0.0)
-            if len(configured_ttls) == len(self.buckets_s)
-            else configured_ttls
-        )
-        self.miss_penalty_s = miss_penalty_s
-        if self.miss_penalty_s is not None and (
-            not math.isfinite(self.miss_penalty_s) or self.miss_penalty_s < 0.0
-        ):
-            raise ValueError(
-                "tool_resource_miss_penalty_s must be finite and non-negative"
-            )
-        expected_ttl_count = len(self.buckets_s) + 1
-        if len(self.ttl_by_bucket_s) != expected_ttl_count:
-            raise ValueError(
-                "tool_resource_ttl_by_bucket_s must have one entry per latency "
-                f"bucket (got {len(self.ttl_by_bucket_s)} entries for "
-                f"{expected_ttl_count} buckets)"
-            )
         self._kb_lock = threading.RLock()
         self._execution_lock = threading.RLock()
         self._execution_start_lock = threading.Lock()
@@ -516,9 +483,6 @@ class ToolResourcePredictor:
         repo: str = "openclaw",
         artifact_dir: Path | None = None,
         container_executable: str = "docker",
-        ttl_by_bucket_s: tuple[float, ...] | None = None,
-        miss_penalty_s: float | None = None,
-        numa_usage_sampler: NumaCpuUsageSampler | None = None,
         load_buckets: Mapping[str, Sequence[float]] | None = None,
         frozen: bool = False,
         max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES,
@@ -553,8 +517,8 @@ class ToolResourcePredictor:
             runtime.freeze()
             result = cls(kb=clause, lattice_kb=lattice, buckets=buckets, repo=repo,
                 artifact_dir=artifact_dir, container_executable=container_executable,
-                load_buckets=load_buckets, ttl_by_bucket_s=ttl_by_bucket_s, miss_penalty_s=miss_penalty_s,
-                numa_usage_sampler=numa_usage_sampler, frozen=True,
+                load_buckets=load_buckets,
+                frozen=True,
                 max_optional_features=max_optional_features,
                 report=ToolResourceLoadReport(ebpf_traces_seen=0, ebpf_traces_loaded=0,
                     openclaw_traces_seen=0, openclaw_traces_accepted=0, openclaw_tool_spans_seen=0,
@@ -680,9 +644,6 @@ class ToolResourcePredictor:
             runtime_kb_snapshot_path=runtime_snapshot_path,
             lattice_kb=lattice_kb,
             lattice_kb_snapshot_path=lattice_snapshot_path,
-            ttl_by_bucket_s=ttl_by_bucket_s,
-            miss_penalty_s=miss_penalty_s,
-            numa_usage_sampler=numa_usage_sampler,
             load_buckets=load_buckets,
         )
         if loaded_runtime_snapshot is not None:
@@ -715,9 +676,6 @@ class ToolResourcePredictor:
         *,
         buckets: LatencyBuckets,
         repo: str = "openclaw",
-        ttl_by_bucket_s: tuple[float, ...] | None = None,
-        miss_penalty_s: float | None = None,
-        numa_usage_sampler: NumaCpuUsageSampler | None = None,
         max_optional_features: int = DEFAULT_MAX_OPTIONAL_FEATURES,
     ) -> "ToolResourcePredictor":
         return cls.from_traces(
@@ -725,9 +683,6 @@ class ToolResourcePredictor:
             ebpf_trace_paths=(),
             buckets=buckets,
             repo=repo,
-            ttl_by_bucket_s=ttl_by_bucket_s,
-            miss_penalty_s=miss_penalty_s,
-            numa_usage_sampler=numa_usage_sampler,
             max_optional_features=max_optional_features,
         )
 
@@ -744,8 +699,7 @@ class ToolResourcePredictor:
     def _predict(
         self, request: ToolBeforeRequest,
     ) -> ToolPrediction:
-        # All backends and diagnostics see one serialized causal transaction.
-        # Legacy payload is migration-only; no policy consumes its clause data.
+        # All three backends see one serialized causal transaction.
         with self._kb_lock:
             from command_parser import ParseContext
             from command_parser.validation import validate
@@ -759,16 +713,13 @@ class ToolResourcePredictor:
             self.command_features.discover(command_context)
             from tool_time.query import LatticeQueryCache
             query_cache = LatticeQueryCache()
-            payload, parsed_execution = self._prediction_diagnostics(
-                request, command_context, query_cache=query_cache, feature_key=feature_key,
-            )
             query = ToolCallQuery(repo=request.repo or self.repo, tool_name=request.tool_name,
                                   command=_command_for_request(request), ts_start=time.time(),
                                   memory_measurement=self.memory_measurement,
                                   )
-            call, diagnostics = predict_call_load(runtime=self.continuous_kb, trie=self.kb,
+            predictions = predict_call_load(runtime=self.continuous_kb, trie=self.kb,
                                                   lattice=self.lattice_kb, query=query, edges=self.load_buckets,
-                                                  feature_call_id=feature_key, parsed_execution=parsed_execution,
+                                                  feature_call_id=feature_key,
                                                   feature_service=self.command_features, command_context=command_context,
                                                   query_cache=query_cache)
             from clawtune_sidecar.contracts.load_prediction import summarize_pmu_evidence
@@ -776,26 +727,11 @@ class ToolResourcePredictor:
                 pmu = summarize_pmu_evidence(self.continuous_kb.predict_pmu_samples(query))
             except Exception:
                 pmu = summarize_pmu_evidence({})
-            duration = call.targets["duration_ms"]
-            p50 = None if duration.p50 is None else int(round(duration.p50))
-            p90 = None if duration.p90 is None else int(round(duration.p90))
-            if isinstance(payload, dict):
-                # TTL must use the same authoritative duration distribution.
-                payload["kv_ttl_cost"] = None
-                if duration.buckets.probabilities is not None and duration.p90 is not None:
-                    probabilities = duration.buckets.probabilities
-                    bucket = max(range(len(probabilities)), key=probabilities.__getitem__)
-                    derived = ClauseLatencyBucketPrediction(
-                        bucket_id=bucket, probability_by_bucket=tuple(probabilities), scope="composed",
-                        key_kind="compound_composed", evidence_count=min(duration.evidence_counts),
-                        fallback_path=("call_load.v2",))
-                    payload["kv_ttl_cost"] = self._kv_ttl_cost_payload(derived, reference_runtime_s=duration.p90 / 1000)
-            return ToolPrediction(duration_p50_ms=p50, duration_p90_ms=p90,
-                                  resource_class=_resource_class_for_duration_ms(p90), confidence=None,
-                                  tool=call, trie=diagnostics.backends["trie"],
-                                  lattice=diagnostics.backends["lattice"],
-                                  call_prediction=call, pmu_prediction=pmu,
-                                  diagnostics=diagnostics, tool_resource=payload)
+            return ToolPrediction(
+                tool=ToolKBPrediction(load=predictions["runtime"], pmu=pmu),
+                trie=ClauseKBPrediction(load=predictions["trie"]),
+                lattice=ClauseKBPrediction(load=predictions["lattice"]),
+            )
 
     def _prediction_diagnostics(self, request, command_context, *, query_cache, feature_key):
         """Return displayed diagnostics and the successful shared shell parse.
@@ -805,7 +741,6 @@ class ToolResourcePredictor:
         """
         command = _command_for_request(request)
         repo = request.repo or self.repo
-        numa_usage = self._numa_usage_snapshot()
         parsed_execution = None
         error = None
         try:
@@ -853,59 +788,7 @@ class ToolResourcePredictor:
             prediction, continuous_predictions=continuous,
             lattice_time_predictions=lattice_time_predictions,
             lattice_resource_predictions=lattice_resource_predictions,
-            kv_ttl_cost=None, numa_usage=numa_usage,
         ), parsed_execution
-
-    def _kv_ttl_cost_payload(
-        self,
-        bucket_prediction: ClauseLatencyBucketPrediction,
-        *,
-        reference_runtime_s: float,
-    ) -> dict[str, Any] | None:
-        """Prediction-time KV-TTL cost estimate against the predicted runtime.
-
-        The reference runtime is the prediction's p90 duration, so this is a
-        planning estimate.  The pure evaluator advances through right-open
-        runtime buckets and applies each new bucket's absolute TTL.  The final
-        open-ended bucket has its own policy entry.
-        """
-
-        if bucket_prediction.bucket_id >= len(self.ttl_by_bucket_s):
-            return {
-                "unavailable_reason": "initial_bucket_out_of_range",
-                "initial_bucket_index": bucket_prediction.bucket_id,
-            }
-        try:
-            evaluation = evaluate_bucket_ttl(
-                actual_time_s=reference_runtime_s,
-                initial_bucket_index=bucket_prediction.bucket_id,
-                buckets=list(self.buckets_s),
-                ttl_by_bucket=list(self.ttl_by_bucket_s),
-            )
-        except ValueError as exc:
-            return {"unavailable_reason": f"evaluation_error:{type(exc).__name__}"}
-        return {
-            "reference_runtime_s": evaluation.actual_time_s,
-            "initial_bucket_index": evaluation.initial_bucket_index,
-            "final_bucket_index": evaluation.final_bucket_index,
-            "num_bucket_jumps": evaluation.num_bucket_jumps,
-            "bucket_exhausted": evaluation.bucket_exhausted,
-            "ttl_s": evaluation.ttl_s,
-            "kv_eviction_time_s": evaluation.kv_eviction_time_s,
-            "kv_retention_time_s": evaluation.kv_retention_time_s,
-            "kv_cache_miss": evaluation.kv_cache_miss,
-            # Compatibility-only aggregate kept outside the reusable TTL
-            # evaluator. Offline evaluation should report C_R and C_M directly.
-            "proxy_cost_s": (
-                None
-                if self.miss_penalty_s is None
-                else evaluation.kv_retention_time_s
-                + self.miss_penalty_s * float(evaluation.kv_cache_miss)
-            ),
-            "buckets_s": list(self.buckets_s),
-            "ttl_by_bucket_s": list(self.ttl_by_bucket_s),
-            "miss_penalty_s": self.miss_penalty_s,
-        }
 
     @_open_operation
     def record_tool_started(self, request: ToolBeforeRequest) -> None:
@@ -1803,20 +1686,6 @@ class ToolResourcePredictor:
                 continue
             predictions[target] = _target_prediction_payload(prediction)
         return predictions
-
-    def _numa_usage_snapshot(self) -> dict[str, Any] | None:
-        """Best-effort per-NUMA-node CPU usage snapshot for this prediction.
-
-        Returns ``None`` when no sampler is configured so existing deployments
-        and tests see no new payload key.  A sampler failure degrades to
-        ``None`` rather than failing the prediction.
-        """
-        if self.numa_usage_sampler is None:
-            return None
-        try:
-            return self.numa_usage_sampler.sample()
-        except Exception:
-            return None
 
     def _pop_start_by_tool_call_id(
         self,
@@ -3095,24 +2964,12 @@ def _cpu_ns(value: Any) -> int | None:
     return int(parsed * 1_000_000_000)
 
 
-def _resource_class_for_duration_ms(duration_ms: int | None) -> str:
-    if duration_ms is None:
-        return "unknown"
-    if duration_ms <= 500:
-        return "latency_short"
-    if duration_ms <= 2_000:
-        return "latency_medium"
-    return "latency_long"
-
-
 def _tool_resource_prediction_payload(
     prediction: CommandLatencyBucketPrediction,
     *,
     continuous_predictions: dict[str, Any] | None = None,
     lattice_time_predictions: Sequence[ClauseLatticeTimePredictions] = (),
     lattice_resource_predictions: Sequence[dict[str, Any]] = (),
-    kv_ttl_cost: dict[str, Any] | None = None,
-    numa_usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     clause_prediction = prediction.prediction
     payload = {
@@ -3138,13 +2995,8 @@ def _tool_resource_prediction_payload(
             _clause_lattice_time_predictions_payload(item)
             for item in lattice_time_predictions
         ],
-        "kv_ttl_cost": kv_ttl_cost,
         "prediction_algorithms": _prediction_algorithms_payload(),
     }
-    # Host NUMA busyness is only present when a sampler is configured, so
-    # existing consumers (and deployments without the sampler) see no new key.
-    if numa_usage is not None:
-        payload["numa_usage"] = numa_usage
     # Derived compound composition: only present when the command-level
     # bucket was actually composed from per-clause medians. Kept out of the
     # payload otherwise so existing consumers see no new keys.
@@ -3440,7 +3292,6 @@ def _prediction_algorithms_payload() -> dict[str, Any]:
                     "probability_by_bucket",
                     "duration_p50_ms",
                     "duration_p90_ms",
-                    "resource_class",
                 ],
             },
             {

@@ -1,4 +1,6 @@
 """Complete failure labels, interrupted labels, and unavailable trace evidence."""
+
+from clawtune_sidecar.signal_protocol import event_signal
 import json
 import importlib
 import time
@@ -164,7 +166,7 @@ def test_completion_preserves_exit_evidence_and_marks_explicit_interruptions(tmp
             "run_id": "run", "session_id": None, "agent_id": None,
             "error_type": error, "raw_result": raw, "succeeded": False,
         })
-        response = client.post("/v1/events/tool-completed", json=completion.model_dump(mode="json"))
+        response = client.post("/v1/signals", json=event_signal(completion.model_dump(mode="json")))
         assert response.status_code == 200, response.text
     assert len(finished) == 1
     assert finished[0]["exit_code"] == 7
@@ -289,7 +291,7 @@ def test_fallback_marks_missing_completion_but_retains_observations(
                 "raw_result": ({"details": {"exitReason": "overall-timeout"}, "exit_code": exit_code}
                                if timeout else {"exit_code": exit_code}),
                 "decision_id": decision["decision_id"], "lease_id": decision["lease_id"]})
-            response = client.post("/v1/events/tool-completed", json=event.model_dump(mode="json"))
+            response = client.post("/v1/signals", json=event_signal(event.model_dump(mode="json")))
             assert response.status_code == 200, response.text
         response = client.post("/v1/gateways/swe-rebench/runtimes/task-a/drain?timeout_seconds=5&flush_kb=true")
         assert response.status_code == 200 and response.json()["drained"], response.text

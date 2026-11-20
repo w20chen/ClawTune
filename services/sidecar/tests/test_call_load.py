@@ -254,14 +254,15 @@ def test_all_backends_full_targets_and_schema():
         cpu_peak_window_ms=500, sampled_peak_rss_bytes=64 * 1024**2,
         sampled_peak_rss_eligible=True, memory_total_peak_bytes=64 * 1024**2,
         memory_eligible=True, memory_measurement="cgroup_v2_environment_union_v1", memory_baseline_bytes=0, memory_extra_peak_bytes=64 * 1024**2, memory_environment_id="test"))
-    result, diagnostics = predict_call_load(runtime=runtime, trie=trie, lattice=lattice,
+    diagnostics = predict_call_load(runtime=runtime, trie=trie, lattice=lattice,
         query=ToolCallQuery("repo", "exec", "python job.py", 10), edges=EDGES)
+    result = diagnostics["runtime"]
     assert all(v.backend == "runtime" for v in result.targets.values())
     root = Path(__file__).resolve().parents[3]
     schemas = [json.loads(p.read_text()) for p in (root / "contracts").glob("*.schema.json")]
     registry = Registry().with_resources((s["$id"], Resource.from_contents(s)) for s in schemas)
     schema = next(s for s in schemas if s["$id"].endswith("/call-load.schema.json"))
-    for prediction in [result, *diagnostics.backends.values()]:
+    for prediction in [result, *diagnostics.values()]:
         assert set(prediction.targets) == set(TARGET_UNITS)
         if prediction is result:
             assert all(t.status == "available" for t in prediction.targets.values())
@@ -273,12 +274,14 @@ def test_all_backends_full_targets_and_schema():
             assert prediction.clause_predictions[0].targets["cpu_avg_cores"].avg == 2
         Draft202012Validator(schema, registry=registry).validate(prediction.model_dump())
         assert CallLoadPrediction.model_validate(prediction.model_dump()) == prediction
-    from clawtune_sidecar.contracts.models import ToolPrediction
-    public = ToolPrediction(tool=result, trie=diagnostics.backends["trie"],
-                            lattice=diagnostics.backends["lattice"], call_prediction=result)
+    from clawtune_sidecar.contracts.models import ToolPrediction, ToolKBPrediction, ClauseKBPrediction
+    from clawtune_sidecar.contracts.load_prediction import summarize_pmu_evidence
+    public = ToolPrediction(tool=ToolKBPrediction(load=result, pmu=summarize_pmu_evidence({})),
+                            trie=ClauseKBPrediction(load=diagnostics["trie"]),
+                            lattice=ClauseKBPrediction(load=diagnostics["lattice"]))
     decision_schema = next(s for s in schemas if s["$id"].endswith("/tool-decision.schema.json"))
     prediction_schema = dict(decision_schema["properties"]["prediction"], **{
-        "$id": decision_schema["$id"], "$defs": decision_schema["$defs"],
+        "$id": decision_schema["$id"],
     })
     Draft202012Validator(prediction_schema, registry=registry).validate(public.model_dump())
 
@@ -386,12 +389,12 @@ def test_only_downstream_consumers_are_excluded_from_learning_and_prediction(hea
                                 memory_extra_peak_bytes=90_000_000_000))
     trie = ClauseResourceKB.fit_public(observations)
     trie.merge_historical(observations)
-    _, diagnostics = predict_call_load(runtime=RuntimeToolResourceKB(),
+    diagnostics = predict_call_load(runtime=RuntimeToolResourceKB(),
         trie=trie, lattice=LatticeTimeKB.fit(observations),
         query=ToolCallQuery("repo", "exec", " ".join(argv), 10), edges=EDGES,
         parsed_clauses=clauses)
     for name in ("trie", "lattice"):
-        prediction = diagnostics.backends[name]
+        prediction = diagnostics[name]
         assert prediction.targets["duration_ms"].p50 == 1000
         assert all(target.status == "available" for target in prediction.targets.values())
         assert prediction.targets["cpu_time_seconds"].p50 == 2
@@ -560,26 +563,27 @@ def test_models_never_fill_missing_tool_or_clause_targets_from_each_other():
     runtime = SimpleNamespace(predict_load_samples=lambda query: {})
     trie = SimpleNamespace(predict_load_samples=lambda *args: ({"cpu_time_seconds": {"values": [2]}},))
     lattice = SimpleNamespace(predict_load_samples=lambda *args: ({"sampled_peak_rss_bytes": {"values": [64]}},))
-    result, diagnostics = predict_call_load(runtime=runtime, trie=trie, lattice=lattice,
+    diagnostics = predict_call_load(runtime=runtime, trie=trie, lattice=lattice,
         query=ToolCallQuery("repo", "exec", "python job.py", 10), edges=EDGES)
+    result = diagnostics["runtime"]
     assert all(t.status == "unavailable" for t in result.targets.values())
     assert result.clause_predictions == []
-    assert diagnostics.backends["trie"].targets["cpu_time_seconds"].p50 == 2
-    assert diagnostics.backends["trie"].targets["sampled_peak_rss_bytes"].status == "unavailable"
-    assert diagnostics.backends["lattice"].targets["cpu_time_seconds"].status == "unavailable"
-    assert diagnostics.backends["lattice"].targets["sampled_peak_rss_bytes"].p50 == 64
-    assert diagnostics.backends["trie"].clause_predictions[0].targets["sampled_peak_rss_bytes"].status == "unavailable"
+    assert diagnostics["trie"].targets["cpu_time_seconds"].p50 == 2
+    assert diagnostics["trie"].targets["sampled_peak_rss_bytes"].status == "unavailable"
+    assert diagnostics["lattice"].targets["cpu_time_seconds"].status == "unavailable"
+    assert diagnostics["lattice"].targets["sampled_peak_rss_bytes"].p50 == 64
+    assert diagnostics["trie"].clause_predictions[0].targets["sampled_peak_rss_bytes"].status == "unavailable"
 
 
 def test_excluded_consumer_is_not_claimed_as_complete_tool_workload():
     from types import SimpleNamespace
     runtime = SimpleNamespace(predict_load_samples=lambda query: {})
     kb = SimpleNamespace(predict_load_samples=lambda *args: ({"cpu_time_seconds": {"values": [2]}},))
-    _, diagnostics = predict_call_load(runtime=runtime, trie=kb, lattice=kb,
+    diagnostics = predict_call_load(runtime=runtime, trie=kb, lattice=kb,
         query=ToolCallQuery("repo", "exec", "python job.py | cat", 10), edges=EDGES)
     for name in ("trie", "lattice"):
-        target = diagnostics.backends[name].targets["cpu_time_seconds"]
+        target = diagnostics[name].targets["cpu_time_seconds"]
         assert target.p50 == 2
         assert "listed_downstream_consumers_excluded" in target.assumptions
         assert "foreground_clause_lineage_covers_call_workload" not in target.assumptions
-        assert diagnostics.backends[name].clause_predictions[0].targets["cpu_time_seconds"].p50 == 2
+        assert diagnostics[name].clause_predictions[0].targets["cpu_time_seconds"].p50 == 2

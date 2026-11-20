@@ -47,7 +47,6 @@ class ToolRuntimeSample:
     sampling_quality: str
     resource_timeline: list[dict[str, Any]]
     resource_timeline_truncated: bool
-    resource_class: str
     target_pid: int | None
     process_count_before: int | None
     process_count_after: int | None
@@ -68,7 +67,6 @@ class _ActiveTool:
     timeline: list[dict[str, Any]]
     snapshot_count: int
     timeline_truncated: bool
-    resource_class: str
     operation: str | None
 
 
@@ -111,7 +109,7 @@ class RealtimeToolMonitor:
         if self.ebpf_monitor is not None:
             self.ebpf_monitor.prepare()
 
-    def begin(self, request: ToolBeforeRequest, resource_class: str) -> None:
+    def begin(self, request: ToolBeforeRequest) -> None:
         key = correlation_key(request)
         self.environment_memory.begin(key, request.resource_scope)
         if self.ebpf_monitor is not None:
@@ -134,7 +132,6 @@ class RealtimeToolMonitor:
                 timeline=[_timeline_point(snapshot)],
                 snapshot_count=1,
                 timeline_truncated=False,
-                resource_class=resource_class,
                 operation=operation_from_request(request),
             )
 
@@ -208,7 +205,6 @@ class RealtimeToolMonitor:
         if active is None:
             start = end
             operation = None
-            resource_class = "unknown"
             rss_bytes_peak = end.rss_bytes
             timeline = [_timeline_point(end)]
             snapshot_count = 1
@@ -216,7 +212,6 @@ class RealtimeToolMonitor:
         else:
             start = active.snapshot
             operation = active.operation
-            resource_class = active.resource_class
             rss_bytes_peak = active.rss_bytes_peak
             timeline = list(active.timeline)
             snapshot_count = active.snapshot_count
@@ -357,7 +352,6 @@ class RealtimeToolMonitor:
             ),
             resource_timeline=normalized_timeline,
             resource_timeline_truncated=timeline_truncated,
-            resource_class=resource_class,
             target_pid=end.target_pid if end.target_pid is not None else start.target_pid,
             process_count_before=start.process_count,
             process_count_after=end.process_count,
@@ -426,7 +420,6 @@ class RealtimeToolMonitor:
                     timeline=active.timeline,
                     snapshot_count=active.snapshot_count,
                     timeline_truncated=active.timeline_truncated,
-                    resource_class=active.resource_class,
                     operation=active.operation,
                 )
                 # Scope association succeeded even when this host cannot open
@@ -474,7 +467,6 @@ class RealtimeToolMonitor:
                     timeline=[_timeline_point(snapshot)],
                     snapshot_count=1,
                     timeline_truncated=False,
-                    resource_class=active.resource_class,
                     operation=active.operation,
                 )
                 return True
@@ -500,7 +492,6 @@ class RealtimeToolMonitor:
                 timeline=timeline,
                 snapshot_count=snapshot_count,
                 timeline_truncated=timeline_truncated,
-                resource_class=active.resource_class,
                 operation=active.operation,
             )
             return snapshot.available
@@ -572,7 +563,6 @@ class RealtimeToolMonitor:
                         timeline=timeline,
                         snapshot_count=current.snapshot_count + 1,
                         timeline_truncated=timeline_truncated,
-                        resource_class=current.resource_class,
                         operation=current.operation,
                     )
 
@@ -724,7 +714,6 @@ def _sample_from_ebpf(
         sampling_quality=values["sampling_quality"],
         resource_timeline=[],
         resource_timeline_truncated=False,
-        resource_class=active.resource_class if active else "unknown",
         target_pid=(scope.root_pid or scope.pid) if scope else None,
         process_count_before=None,
         process_count_after=None,

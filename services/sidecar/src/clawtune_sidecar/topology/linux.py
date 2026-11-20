@@ -30,7 +30,7 @@ def read_topology(
     allowed to use.  Capacity is therefore based on the intersection of
     online CPUs, the process affinity mask, and cgroup-v2's effective cpuset,
     then capped by the tightest ``cpu.max`` quota in the current cgroup chain.
-    Placement remains advisory; this function never changes affinity/cgroups.
+    This function only reads topology; it never changes affinity/cgroups.
     """
 
     _validate_capacity_options(reserve_ratio, reserve_cores, cpu_budget_cores)

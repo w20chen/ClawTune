@@ -128,12 +128,13 @@ def test_both_tool_names_use_clauses_with_environment_preparation(monkeypatch):
     monkeypatch.setattr("clawtune_sidecar.predictors.call_load.parse_command_clauses", parse)
     results = []
     for name in ("exec", "terminal_exec"):
-        pred, diagnostics = predict_call_load(runtime=RuntimeToolResourceKB(), trie=ClauseResourceKB.fit_public([observation()]),
+        diagnostics = predict_call_load(runtime=RuntimeToolResourceKB(), trie=ClauseResourceKB.fit_public([observation()]),
             lattice=LatticeTimeKB.fit([observation()]), query=ToolCallQuery("r", name, command, 10), edges=EDGES)
+        pred = diagnostics["runtime"]
         assert pred.targets["cpu_peak_cores"].status == "unavailable"
         assert pred.clause_predictions == []
         for backend in ("trie", "lattice"):
-            candidate = diagnostics.backends[backend]
+            candidate = diagnostics[backend]
             assert candidate.targets["cpu_peak_cores"].p50 == 3
             assert "listed_downstream_consumers_excluded" in candidate.targets["cpu_peak_cores"].assumptions
             assert candidate.clause_predictions[0].targets["cpu_peak_cores"].p50 == 3

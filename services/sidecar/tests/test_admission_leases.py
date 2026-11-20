@@ -16,7 +16,6 @@ def test_weighted_cpu_budget_blocks_until_capacity_is_released() -> None:
         owner_a = ("gateway-a", "runtime-a", "agent", "session", "run")
         owner_b = ("gateway-b", "runtime-b", "agent", "session", "run")
         first = await leases.acquire(
-            "cpu",
             0,
             demand_mcpu=3_000,
             owner=owner_a,
@@ -25,7 +24,6 @@ def test_weighted_cpu_budget_blocks_until_capacity_is_released() -> None:
         assert await leases.active_mcpu() == 3_000
         assert (
             await leases.acquire(
-                "cpu",
                 0,
                 demand_mcpu=1_001,
                 owner=owner_b,
@@ -36,7 +34,6 @@ def test_weighted_cpu_budget_blocks_until_capacity_is_released() -> None:
         assert await leases.release(first, owner=owner_a) is True
         assert (
             await leases.acquire(
-                "cpu",
                 0,
                 demand_mcpu=1_001,
                 owner=owner_b,
@@ -51,7 +48,7 @@ def test_bound_execution_does_not_expire_on_provisional_decision_ttl() -> None:
     async def exercise() -> None:
         leases = LeaseManager(max_global=1, ttl_ms=1, cpu_budget_mcpu=1_000)
         owner = ("gateway", "runtime", "agent", "session", "run")
-        lease_id = await leases.acquire("cpu", 0, owner=owner)
+        lease_id = await leases.acquire(0, owner=owner)
         assert lease_id is not None
         assert await leases.bind_execution(
             lease_id,
@@ -71,7 +68,6 @@ def test_runtime_teardown_is_exact_across_gateways() -> None:
         leases = LeaseManager(max_global=4, ttl_ms=60_000)
         for gateway in ("gateway-a", "gateway-b"):
             assert await leases.acquire(
-                "cpu",
                 0,
                 owner=(gateway, "same-runtime", None, None, None),
             )

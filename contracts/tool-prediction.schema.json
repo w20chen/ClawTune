@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/tool-prediction.schema.json",
+  "description": "Three independent pre-execution model results. No primary model, aliases or cross-model fallback. Each load has seven explicit targets; missing evidence is unavailable, never a missing model.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tool",
+    "trie",
+    "lattice"
+  ],
+  "properties": {
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "load",
+        "pmu"
+      ],
+      "properties": {
+        "load": {
+          "allOf": [
+            {
+              "$ref": "call-load.schema.json"
+            },
+            {
+              "properties": {
+                "targets": {
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "backend": {
+                        "const": "runtime"
+                      }
+                    }
+                  }
+                },
+                "clause_predictions": {
+                  "items": {
+                    "properties": {
+                      "targets": {
+                        "additionalProperties": {
+                          "type": "object",
+                          "properties": {
+                            "backend": {
+                              "const": "runtime"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "pmu": {
+          "$ref": "pmu-prediction.schema.json"
+        }
+      }
+    },
+    "trie": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "load"
+      ],
+      "properties": {
+        "load": {
+          "allOf": [
+            {
+              "$ref": "call-load.schema.json"
+            },
+            {
+              "properties": {
+                "targets": {
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "backend": {
+                        "const": "trie"
+                      }
+                    }
+                  }
+                },
+                "clause_predictions": {
+                  "items": {
+                    "properties": {
+                      "targets": {
+                        "additionalProperties": {
+                          "type": "object",
+                          "properties": {
+                            "backend": {
+                              "const": "trie"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "lattice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "load"
+      ],
+      "properties": {
+        "load": {
+          "allOf": [
+            {
+              "$ref": "call-load.schema.json"
+            },
+            {
+              "properties": {
+                "targets": {
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "backend": {
+                        "const": "lattice"
+                      }
+                    }
+                  }
+                },
+                "clause_predictions": {
+                  "items": {
+                    "properties": {
+                      "targets": {
+                        "additionalProperties": {
+                          "type": "object",
+                          "properties": {
+                            "backend": {
+                              "const": "lattice"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

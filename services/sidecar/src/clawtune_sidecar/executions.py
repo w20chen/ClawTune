@@ -293,6 +293,10 @@ class ExecutionRegistry:
         self.require_runtime_open(record.request.gateway_id, record.request.runtime_id)
         return record
 
+    def authenticate_observer(self, execution_id: str, update_token: str) -> ExecutionRecord:
+        """Execution-scoped authentication for the signal observation endpoint."""
+        return self._require_update(execution_id, update_token)
+
     def _sweep(self) -> None:
         now = datetime.now(UTC)
         completed_cutoff = now - timedelta(seconds=self.completed_retention_s)

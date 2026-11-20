@@ -1,0 +1,31 @@
+{
+  "schema_version": "clawtune.signal.v1",
+  "signal_id": "signal-3",
+  "type": "execution.finishing_soon",
+  "source": "sidecar",
+  "identity": {
+    "gateway_id": "gateway-1",
+    "runtime_id": "runtime-1",
+    "run_id": "run-1",
+    "session_id": "session-1",
+    "agent_id": "agent-1",
+    "tool_call_id": "tool-1",
+    "execution_id": "execution-1",
+    "call_id": null,
+    "prediction_id": "prediction-1"
+  },
+  "observed_at": 1795132800,
+  "published_at": 1795132800.01,
+  "publisher_id": "publisher-1",
+  "sequence": 4,
+  "expires_at": 1795132801.5,
+  "payload": {
+    "elapsed_duration_ms": 6200,
+    "remaining_duration_ms": 1500,
+    "remaining_source": "pytest.completed_percent",
+    "remaining_kind": "estimated",
+    "scope": "tool_call",
+    "statistic": "point_estimate",
+    "predicted_total_duration_ms": 7700
+  }
+}

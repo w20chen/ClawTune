@@ -15,7 +15,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from clawtune_sidecar.contracts.load_prediction import (
-    ClauseLoadPrediction, CallLoadPrediction, LoadBuckets, LoadDiagnostics, LoadEstimate, TARGET_DEFINITIONS, TARGET_UNITS,
+    ClauseLoadPrediction, CallLoadPrediction, LoadBuckets, LoadEstimate, TARGET_DEFINITIONS, TARGET_UNITS,
 )
 from tool_resource.features import parse_command_clauses, shell_bin_requires_exec_evidence
 from tool_resource.runtime_kb import ToolCallQuery, is_pipeline_dependent_consumer
@@ -427,8 +427,8 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
                       feature_call_id: str | None = None,
                       feature_service: Any = None, command_context: Any = None,
                       prepared: PreparedCall | None = None, query_cache=None, composition_cache=None,
-                      ) -> tuple[CallLoadPrediction, LoadDiagnostics]:
-    """Return ToolKB for existing consumers and each configured independent result.
+                      ) -> dict[str, CallLoadPrediction]:
+    """Return all three peer results keyed by backend, without a primary model.
 
     The historical name "runtime" is retained in backend metadata and snapshots.
     No target or clause is filled using another model's evidence.
@@ -452,4 +452,4 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
         backends[backend] = predict_clause_load(backend, kb, query, edges, prepared,
             query_cache=query_cache, composition_cache=composition_cache)
     backends = {name: value.model_copy(update={"memory_measurement": query.memory_measurement}) for name, value in backends.items()}
-    return backends["runtime"], LoadDiagnostics(backends=backends)
+    return backends

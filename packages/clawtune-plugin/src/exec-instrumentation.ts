@@ -15,6 +15,7 @@ export type ExecutionScopeLookup = {
 
 type ToolRegistrationFunction = (payload: {
   execution_id: string;
+  prediction_id?: string | null;
   gateway_id?: string | null;
   runtime_id?: string | null;
   repo?: string | null;
@@ -61,8 +62,8 @@ export const CLAWBOX_EXEC_ENVELOPE_PREFIX = "__CBX_EXEC_1__";
  */
 export function buildSandboxExecEnvelope(command: string, executionId: string, decision?: ToolDecision | null,
   model: PluginConfig["sandboxExecPredictionModel"] = "tool"): string {
-  const tool = model === "lattice" ? decision?.prediction.lattice
-    : decision?.prediction.tool ?? decision?.prediction.call_prediction;
+  const tool = model === "lattice" ? decision?.prediction.lattice?.load
+    : decision?.prediction.tool?.load;
   const header = Buffer.from(JSON.stringify({
     v: 1,
     execution_id: executionId,
@@ -175,6 +176,7 @@ export async function instrumentExecParams(
   try {
     const registration = await client.registerExecution({
       execution_id: executionId,
+      prediction_id: decision?.decision_id ?? null,
       gateway_id: payload.gateway_id,
       runtime_id: payload.runtime_id,
       repo: payload.repo,
@@ -188,8 +190,7 @@ export async function instrumentExecParams(
       command: requestedCommand,
       workdir: typeof params.workdir === "string" ? params.workdir : null,
       host: typeof params.host === "string" ? params.host : "gateway",
-      // placement_advice is deliberately observational in this MVP.  Only a
-      // separately authorized placement object may reach the launcher.
+      // Only explicit placement settings may reach the launcher.
       placement: decision?.placement ?? null,
       profiling: decision?.profiling ?? {
         mode: config.profilingMode,
@@ -215,15 +216,6 @@ export async function instrumentExecParams(
   const launcherEndpoint = process.env.CLAWTUNE_LAUNCHER_ENDPOINT
     ?? inheritedLauncherEnv.CLAWTUNE_ENDPOINT
     ?? config.endpoint;
-  const predictedDurationMs = decision?.prediction.resource_class === "latency_long"
-    ? decision.prediction.duration_p90_ms
-    : null;
-  const latticeDuration = decision?.prediction.lattice?.targets.duration_ms;
-  const latticeDurationMs = latticeDuration?.status === "available"
-    && latticeDuration.backend === "lattice" && latticeDuration.unit === "ms"
-    && typeof latticeDuration.p50 === "number" && Number.isFinite(latticeDuration.p50)
-    && latticeDuration.p50 >= 0
-    ? latticeDuration.p50 : null;
   params.env = {
     ...safeExecEnv(params.env),
     ...inheritedLauncherEnv,
@@ -242,20 +234,7 @@ export async function instrumentExecParams(
     CLAWTUNE_RUN_ID: runId ?? "",
     CLAWTUNE_SESSION_HASH: sessionKeyHash ?? "",
     CLAWTUNE_COMMAND_DIGEST: commandDigest,
-    // Clear inherited eligibility on short/unknown calls as well.
-    CLAWTUNE_PREDICTED_TOOL_DURATION_MS: "",
-    // Overrun updates use only the independent LatticeKB p50, including short
-    // calls. Never substitute the primary backend's duration or a stale env.
-    CLAWTUNE_LATTICE_PREDICTED_TOOL_DURATION_MS:
-      config.executionBackend === "managed-wrapper"
-      && inheritedLauncherEnv.CLAWTUNE_GPU_SIGNAL_ENDPOINT && latticeDurationMs !== null
-        ? String(latticeDurationMs) : "",
-    ...(predictedDurationMs !== null && inheritedLauncherEnv.CLAWTUNE_GPU_SIGNAL_ENDPOINT
-      ? {
-          CLAWTUNE_GPU_SIGNAL_ENDPOINT: inheritedLauncherEnv.CLAWTUNE_GPU_SIGNAL_ENDPOINT,
-          CLAWTUNE_PREDICTED_TOOL_DURATION_MS: String(predictedDurationMs),
-        }
-      : {}),
+
   };
 
   let effectiveCommand: string | null = params.command as string;
@@ -457,7 +436,6 @@ function launcherEnv(): Record<string, string> {
     "CLAWTUNE_LAUNCH_DEBUG",
     "CLAWTUNE_TASK_PYTHON",
     "CLAWTUNE_ENDPOINT",
-    "CLAWTUNE_GPU_SIGNAL_ENDPOINT",
     // The launcher makes authenticated claim/started/exited requests. It
     // removes this bearer credential before execing the untrusted payload.
     "CLAWTUNE_TOKEN",

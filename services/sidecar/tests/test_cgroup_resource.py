@@ -50,7 +50,6 @@ def _sample(*, monitor_source: str = "cgroup-v2") -> ToolRuntimeSample:
         sampling_quality="ok",
         resource_timeline=[],
         resource_timeline_truncated=False,
-        resource_class="latency_medium",
         target_pid=None,
         process_count_before=None,
         process_count_after=None,

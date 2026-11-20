@@ -13,113 +13,111 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 if __package__:
+    from .signal_protocol import envelope
     from .tool_progress import RemainingTime, ToolProgress, adapter_for
 else:  # Executed by absolute path, including inside a launcher-only sandbox.
+    from signal_protocol import envelope
     from tool_progress import RemainingTime, ToolProgress, adapter_for
 
 
-def _duration_from_env(name: str, *, allow_zero: bool = False) -> float | None:
-    try:
-        value = float(os.environ.get(name, ""))
-    except ValueError:
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
-    if not math.isfinite(value) or value < 0 or (value == 0 and not allow_zero):
-        return None
-    return value
 
 
-def wrap_tool_command(command: str, execution_id: str) -> str:
-    if os.name != "posix" or not os.environ.get("CLAWTUNE_GPU_SIGNAL_ENDPOINT"):
+_open_request = urllib.request.build_opener(_NoRedirect()).open
+
+
+def wrap_tool_command(command: str, execution_id: str, *, endpoint=None, update_token=None) -> str:
+    if os.name != "posix" or not endpoint or not update_token:
         return command
-    if (_duration_from_env("CLAWTUNE_PREDICTED_TOOL_DURATION_MS") is None
-            and _duration_from_env("CLAWTUNE_LATTICE_PREDICTED_TOOL_DURATION_MS", allow_zero=True) is None):
-        return command
-    # The launcher signals and waits for this PID. Leaving a shell between it
-    # and the supervisor loses cancellation and reports exit before the payload.
+    # The execution-scoped token is passed only to the trusted supervisor and
+    # removed before it creates the user's process tree. Never put it in argv.
+    os.environ["CLAWTUNE_SIGNAL_INGRESS"] = endpoint.rstrip("/") + "/v1/signals"
+    os.environ["CLAWTUNE_SIGNAL_UPDATE_TOKEN"] = update_token
     return "exec " + shlex.join([
         sys.executable, str(Path(__file__).resolve()), execution_id, command,
     ])
 
 
-class CpuToolSignals:
+class ToolObservations:
     def __init__(self, execution_id, is_running):
-        self.endpoint = os.environ["CLAWTUNE_GPU_SIGNAL_ENDPOINT"]
-        self.predicted_ms = _duration_from_env("CLAWTUNE_PREDICTED_TOOL_DURATION_MS")
-        self.lattice_predicted_ms = _duration_from_env(
-            "CLAWTUNE_LATTICE_PREDICTED_TOOL_DURATION_MS", allow_zero=True)
-        request_id = os.environ.get("CLAWTUNE_TOOL_CALL_ID") or execution_id
-        self.identity = {
-            "schema_version": 1, "request_id": request_id,
-            "engine_request_id": execution_id, "agent_request_id": request_id,
-            "session_id": os.environ.get("CLAWTUNE_SESSION_ID") or None,
-            "engine_id": "cpu-tool", "role": "A", "engine_step": 0,
-        }
+        self.endpoint = os.environ["CLAWTUNE_SIGNAL_INGRESS"]
+        self.token = os.environ["CLAWTUNE_SIGNAL_UPDATE_TOKEN"]
+        self.identity = {"execution_id": execution_id}
         self.is_running = is_running
-        self.finishing_sent = False
-        self.update_sent = False
-        self.pending = queue.Queue()
+        self.pending = queue.Queue(maxsize=128)
+        self.sequence = 0
         self.worker = threading.Thread(target=self._deliver, daemon=True)
         self.worker.start()
 
-    def start(self, adapter):
-        if self.predicted_ms is None:
-            return
-        self.pending.put({"event": "tool_start", "t": time.time(),
-                          "predicted_duration_ms": self.predicted_ms,
-                          "progress_adapter": type(adapter).__name__})
+    def _put(self, kind, payload, expires_at=None):
+        self.sequence += 1
+        message = envelope(kind, payload, source="launcher", identity=self.identity,
+                           sequence=self.sequence, expires_at=expires_at)
+        try:
+            self.pending.put_nowait(message)
+        except queue.Full:
+            print("clawtune observation queue full", file=sys.stderr)
+
+    def start(self, adapter, pid):
+        self._put("execution.started", {"pid": pid, "progress_adapter": type(adapter).__name__})
 
     def remaining(self, value: RemainingTime | None, elapsed_seconds: float | None = None):
-        if (value is None or not self.is_running()
+        if (value is None or not self.is_running() or elapsed_seconds is None
+                or not math.isfinite(elapsed_seconds) or elapsed_seconds < 0
                 or not math.isfinite(value.seconds) or value.seconds <= 0):
             return
-        # Only fresh progress observations reach here; do not count down an old
-        # ETA or the original KB prediction to manufacture an overrun update.
-        if (not self.update_sent and self.lattice_predicted_ms is not None
-                and elapsed_seconds is not None and math.isfinite(elapsed_seconds)):
-            elapsed_ms = elapsed_seconds * 1000
-            remaining_ms = value.seconds * 1000
-            total_ms = elapsed_ms + remaining_ms
-            if (elapsed_ms > self.lattice_predicted_ms + 1000 and math.isfinite(total_ms)):
-                self.update_sent = True
-                self.pending.put({
-                    "event": "tool_prediction_updated", "t": time.time(),
-                    "baseline_source": "lattice", "baseline_statistic": "p50",
-                    "baseline_prediction_ms": self.lattice_predicted_ms,
-                    "overrun_threshold_ms": 1000, "elapsed_duration_ms": elapsed_ms,
-                    "remaining_duration_ms": remaining_ms,
-                    "predicted_total_duration_ms": total_ms,
-                    "remaining_source": value.source, "remaining_kind": value.kind,
-                })
-        if self.predicted_ms is None or self.finishing_sent or value.seconds > 2:
-            return
-        self.finishing_sent = True
-        self.pending.put({"event": "tool_finishing_soon", "t": time.time(),
-                          "remaining_duration_ms": value.seconds * 1000,
-                          "remaining_source": value.source, "remaining_kind": value.kind})
+        self._put("execution.progress", {
+            "elapsed_duration_ms": elapsed_seconds * 1000,
+            "remaining_duration_ms": value.seconds * 1000,
+            "remaining_source": value.source, "remaining_kind": value.kind,
+        }, expires_at=time.time() + min(2, value.seconds))
 
     def close(self):
-        self.pending.put(None)
-        # urllib's timeout bounds individual socket operations, not the whole
-        # response. An unhealthy receiver must not hold the execution open.
+        try:
+            self.pending.put_nowait(None)
+        except queue.Full:
+            # The daemon must stop after draining its bounded queue.
+            self.stopping = True
         self.worker.join(timeout=1.1)
 
     def _deliver(self):
-        while (event := self.pending.get()) is not None:
-            if event["event"] != "tool_start" and not self.is_running():
-                continue
+        while True:
             try:
-                request = urllib.request.Request(self.endpoint,
-                    data=json.dumps({**self.identity, **event}).encode(),
-                    headers={"content-type": "application/json"}, method="POST")
-                with urllib.request.urlopen(request, timeout=1):
+                message = self.pending.get(timeout=.1)
+            except queue.Empty:
+                if getattr(self, "stopping", False):
+                    return
+                continue
+            if message is None:
+                return
+            for attempt in range(2):
+                if message["type"] == "execution.progress" and (
+                        not self.is_running() or message["expires_at"] <= time.time()):
+                    break
+                retry = True
+                try:
+                    request = urllib.request.Request(self.endpoint,
+                        data=json.dumps(message, allow_nan=False).encode(),
+                        headers={"content-type": "application/json",
+                                 "Authorization": "Bearer " + self.token}, method="POST")
+                    with _open_request(request, timeout=.5):
+                        pass
+                    break
+                except urllib.error.HTTPError as exc:
+                    retry = exc.code in {408, 429} or exc.code >= 500
+                except (OSError, ValueError):
                     pass
-            except (OSError, ValueError) as exc:
-                # Signal delivery must not cancel or replay the actual tool.
-                print(f"clawtune signal {event['event']} failed: {exc}", file=sys.stderr)
+                if attempt == 1 or not retry:
+                    print("clawtune observation delivery failed: " + message["type"], file=sys.stderr)
+                    break
+                time.sleep(.05)
 
 
 def _forward(fd, data):
@@ -153,8 +151,12 @@ def run_tool(command: str, execution_id: str) -> int:
     # Children must not inherit eligibility and accidentally emit this call's
     # signals again if they themselves use a ClawTune launcher.
     env = dict(os.environ)
-    env.pop("CLAWTUNE_PREDICTED_TOOL_DURATION_MS", None)
-    env.pop("CLAWTUNE_LATTICE_PREDICTED_TOOL_DURATION_MS", None)
+    env.pop("CLAWTUNE_SIGNAL_INGRESS", None)
+    env.pop("CLAWTUNE_SIGNAL_UPDATE_TOKEN", None)
+    env.pop("CLAWTUNE_TOKEN", None)
+    env.pop("CLAWTUNE_EXECUTION_TOKEN", None)
+    env.pop("CLAWTUNE_SIGNAL_TOKEN", None)
+    env.pop("CLAWTUNE_SIGNAL_ENDPOINT", None)
     child = None
     signals = None
     pending_signals = []
@@ -178,8 +180,8 @@ def run_tool(command: str, execution_id: str) -> int:
                                  start_new_session=True, **outputs)
         for signum in pending_signals:
             forward(signum, None)
-        signals = CpuToolSignals(execution_id, lambda: child.poll() is None)
-        signals.start(adapter)
+        signals = ToolObservations(execution_id, lambda: child.poll() is None)
+        signals.start(adapter, child.pid)
         progress = _ProgressReader(adapter)
         if observes_output:
             _observe_output(child, adapter, progress, signals, started)
@@ -189,9 +191,6 @@ def run_tool(command: str, execution_id: str) -> int:
                 signals.remaining(progress.remaining(), time.monotonic() - started)
                 time.sleep(0.05)
         returncode = child.wait()
-        if observes_output and signals.predicted_ms is not None and not signals.finishing_sent:
-            print(f"clawtune progress: no usable <=2s observation from {type(adapter).__name__}",
-                  file=sys.stderr)
     finally:
         if child is not None and child.poll() is None:
             forward(signal.SIGTERM, None)

@@ -126,12 +126,12 @@ def replay(selected, *, progress=print):
                     events.append((timestamp, phase, index, identity, task["group"], action, loaded))
     for timestamp, phase, _, identity, repo, action, loaded in sorted(events, key=lambda e: e[:4]):
         if phase == 0:
-            _, diagnostics = predict_call_load(
+            predictions = predict_call_load(
                 runtime=tool, trie=trie, lattice=lattice,
                 query=ToolCallQuery(repo, action.tool_name, action.command, timestamp),
                 edges=edges,
             )
-            for backend, result in diagnostics.backends.items():
+            for backend, result in predictions.items():
                 for target, prediction in result.targets.items():
                     reason = prediction.unavailable_reason or ""
                     if reason.startswith(("backend_error:", "parse_error:")):

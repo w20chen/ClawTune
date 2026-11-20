@@ -266,7 +266,7 @@ def _inspect_trace(path: Path, task_id: str) -> dict[str, Any]:
             report["has_tool_span"] = True
             if record_type == "span_start":
                 for name, counts in report["prediction_models"].items():
-                    candidate = _nested_get(record, ("prediction", name))
+                    candidate = _nested_get(record, ("prediction", name, "load"))
                     if candidate is None:
                         continue
                     counts["span_starts"] += 1

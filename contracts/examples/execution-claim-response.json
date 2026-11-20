@@ -1,0 +1,11 @@
+{
+  "execution_id": "execution-1",
+  "update_token": "example-only",
+  "command": "pytest -v",
+  "command_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "workdir": null,
+  "host": "gateway",
+  "placement": null,
+  "profiling": null,
+  "signals_enabled": true
+}

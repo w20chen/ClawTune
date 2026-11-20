@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from clawtune_sidecar.signal_protocol import event_signal
+
 import concurrent.futures
 import json
 from pathlib import Path
@@ -223,6 +225,10 @@ def test_shared_sidecar_isolates_scopes_and_traces_for_two_runtimes(
         assert decision_b_response.status_code == 200
         decision_a = decision_a_response.json()
         decision_b = decision_b_response.json()
+        predictions_by_runtime = {
+            "runtime-a": decision_a["prediction"],
+            "runtime-b": decision_b["prediction"],
+        }
 
         (cgroup_a / "cpu.stat").write_text("usage_usec 200000\n", encoding="utf-8")
         (cgroup_b / "cpu.stat").write_text("usage_usec 800000\n", encoding="utf-8")
@@ -230,12 +236,12 @@ def test_shared_sidecar_isolates_scopes_and_traces_for_two_runtimes(
         # Complete in reverse order so a registry keyed only by tool_call_id
         # cannot accidentally appear correct.
         completed_b = client.post(
-            "/v1/events/tool-completed",
-            json=_tool_completed(before_b, decision_b, event_id="after-b"),
+            "/v1/signals",
+            json=event_signal(_tool_completed(before_b, decision_b, event_id="after-b")),
         )
         completed_a = client.post(
-            "/v1/events/tool-completed",
-            json=_tool_completed(before_a, decision_a, event_id="after-a"),
+            "/v1/signals",
+            json=event_signal(_tool_completed(before_a, decision_a, event_id="after-a")),
         )
         assert completed_b.status_code == 200
         assert completed_b.json() == {"stored": True}
@@ -270,7 +276,7 @@ def test_shared_sidecar_isolates_scopes_and_traces_for_two_runtimes(
         end = _tool_record(records, "span_end")
         assert start["span_id"] == "shared-tool-call"
         assert start["input"] == {"requested_args": {"path": marker}}
-        assert start["prediction"]["tool_resource"]["repo"] == repo
+        assert start["prediction"] == predictions_by_runtime[runtime_id]
         assert end["span_id"] == "shared-tool-call"
         assert end["execution"]["cgroup_path"] == cgroup_path
         assert end["resources"]["scope"] == "none"
@@ -310,8 +316,8 @@ def test_runtime_less_events_keep_the_legacy_scope_and_trace_prefix(tmp_path: Pa
         decision = decision_response.json()
         (legacy_cgroup / "cpu.stat").write_text("usage_usec 200000\n", encoding="utf-8")
         completion_response = client.post(
-            "/v1/events/tool-completed",
-            json=_tool_completed(before, decision, event_id="legacy-after"),
+            "/v1/signals",
+            json=event_signal(_tool_completed(before, decision, event_id="legacy-after")),
         )
         assert completion_response.status_code == 200
         assert completion_response.json() == {"stored": True}
@@ -386,8 +392,8 @@ def test_same_gateway_sessions_cannot_cross_execution_owner(
         )
         foreign_completion["execution_id"] = "shared-execution-id"
         rejected = client.post(
-            "/v1/events/tool-completed",
-            json=foreign_completion,
+            "/v1/signals",
+            json=event_signal(foreign_completion),
         )
         assert rejected.status_code == 409
 
@@ -487,12 +493,12 @@ def test_shared_sidecar_isolates_128_overlapping_sessions_across_gateways(
             ordinal = case["ordinal"]
             assert isinstance(ordinal, int)
             response = client.post(
-                "/v1/events/tool-completed",
-                json=_tool_completed(
+                "/v1/signals",
+                json=event_signal(_tool_completed(
                     case["before"],
                     decision,
                     event_id=f"after-{ordinal:03d}",
-                ),
+                )),
             )
             assert response.status_code == 200, response.text
             assert response.json() == {"stored": True}

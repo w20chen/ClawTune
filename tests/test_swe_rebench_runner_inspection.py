@@ -1029,10 +1029,11 @@ def _canonical_prediction():
     runtime.freeze()
     query = ToolCallQuery("review", "read_file", None, 1)
     assert runtime.query(query)["cpu_peak_cores"].conditional_p90 == 0
-    prediction, _ = predict_call_load(
+    _ = predict_call_load(
         runtime=runtime, trie=ClauseResourceKB(), lattice=LatticeTimeKB(), query=query,
         edges=load_bucket_edges((100, 500, 2000, 10000)),
     )
+    prediction = _["runtime"]
     assert prediction.targets["duration_ms"].status == "available"
     assert prediction.targets["cpu_peak_cores"].status == "available"
     return prediction.model_dump()
@@ -1661,8 +1662,8 @@ def test_trace_counts_each_independent_prediction_without_filling_missing_models
         }).model_dump()
     trace = tmp_path / "trace.jsonl"
     trace.write_text(json.dumps({"record_type": "span_start", "kind": "tool", "prediction": {
-        "tool": prediction("runtime", "duration_ms"),
-        "trie": prediction("trie", "cpu_time_seconds"),
+        "tool": {"load": prediction("runtime", "duration_ms")},
+        "trie": {"load": prediction("trie", "cpu_time_seconds")},
     }}) + "\n", encoding="utf-8")
     report = _inspect_trace(trace, "")
     summary = _resource_summary([report, report])["prediction_models"]
@@ -1691,24 +1692,25 @@ def test_independent_prediction_audit_allows_cold_start_but_requires_each_model(
     initialize_state(state, seed, owner="test")
     trie, tool, lattice = [json.loads((state / name).read_text(encoding="utf-8")) for name in FILES]
     edges = load_bucket_edges((100, 500, 2000, 10000))
-    result, diagnostics = predict_call_load(
+    diagnostics = predict_call_load(
         runtime=RuntimeToolResourceKB.from_json_obj(tool),
         trie=ClauseResourceKB.from_json_obj(trie), lattice=LatticeTimeKB.from_json_obj(lattice),
         query=ToolCallQuery("new-repo", "exec", "find .", 1), edges=edges,
         parsed_clauses=[{"bin": "find", "argv": ["find", "."]}],
     )
+    result = diagnostics["runtime"]
     assert all(t.status == "unavailable" for t in result.targets.values())
-    assert diagnostics.backends["trie"].targets["duration_ms"].status == "unavailable"
+    assert diagnostics["trie"].targets["duration_ms"].status == "unavailable"
     record = _ebpf_prediction_start()
     record["prediction"].update({
-        "tool": result.model_dump(), "trie": diagnostics.backends["trie"].model_dump(),
-        "lattice": diagnostics.backends["lattice"].model_dump(),
+        "tool": {"load": result.model_dump()}, "trie": {"load": diagnostics["trie"].model_dump()},
+        "lattice": {"load": diagnostics["lattice"].model_dump()},
         "call_prediction": result.model_dump(),
     })
     expected_model = None
     if case == "all_unavailable":
         for name, backend in (("tool", "runtime"), ("trie", "trie"), ("lattice", "lattice")):
-            record["prediction"][name] = compose(backend, (), edges).model_dump()
+            record["prediction"][name] = {"load": compose(backend, (), edges).model_dump()}
     elif case.startswith("missing_"):
         expected_model = case.removeprefix("missing_")
         del record["prediction"][expected_model]
@@ -1721,7 +1723,7 @@ def test_independent_prediction_audit_allows_cold_start_but_requires_each_model(
             record["prediction"]["call_prediction"] = {"schema_version": "invalid"}
         else:
             expected_model = name
-            del record["prediction"][name]["targets"]["cpu_time_seconds"]
+            del record["prediction"][name]["load"]["targets"]["cpu_time_seconds"]
             # A healthy compatibility alias cannot rescue a broken formal model.
             record["prediction"]["call_prediction"] = _canonical_prediction()
     records = [record]

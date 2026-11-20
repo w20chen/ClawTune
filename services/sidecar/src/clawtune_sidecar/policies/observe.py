@@ -15,10 +15,9 @@ class ObserveOnlyPolicy:
             decision_id=str(uuid.uuid4()),
             action="allow",
             reason_code="observe_only",
-            reason="Observe-only policy records advice but does not block tool execution.",
+            reason="Observe-only policy records predictions but does not block tool execution.",
             policy_name=self.name,
             policy_version=self.version,
             lease_id=None,
             prediction=context.prediction,
-            placement_advice=context.placement,
         )

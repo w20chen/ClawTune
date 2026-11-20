@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/clawtune/execution-claim-response.schema.json",
+  "type": "object",
+  "properties": {
+    "execution_id": {
+      "type": "string"
+    },
+    "update_token": {
+      "type": "string"
+    },
+    "command": {
+      "type": "string"
+    },
+    "command_digest": {
+      "type": "string"
+    },
+    "workdir": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "host": {
+      "type": "string"
+    },
+    "placement": {},
+    "profiling": {},
+    "signals_enabled": {
+      "type": "boolean",
+      "description": "Run the POSIX observer after the execution gate. It reports to this sidecar using the execution update token; no downstream credentials are passed to it."
+    }
+  },
+  "required": [
+    "execution_id",
+    "update_token",
+    "command",
+    "command_digest",
+    "workdir",
+    "host",
+    "placement",
+    "profiling",
+    "signals_enabled"
+  ],
+  "additionalProperties": false
+}

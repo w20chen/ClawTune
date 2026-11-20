@@ -5,6 +5,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
+from referencing import Registry, Resource
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACTS = ROOT / "contracts"
@@ -21,6 +22,7 @@ EXAMPLES = {
     "clause-telemetry.schema.json": "clause-telemetry.json",
     "tool-before-request.schema.json": "tool-before-request.json",
     "tool-decision.schema.json": "tool-decision.json",
+    "tool-prediction.schema.json": "tool-prediction.json",
     "tool-completed-event.schema.json": "tool-completed-event.json",
     "model-event.schema.json": "model-event.json",
     "execution-registration.schema.json": "execution-registration.json",
@@ -28,9 +30,9 @@ EXAMPLES = {
     "execution-started.schema.json": "execution-started.json",
     "execution-exited.schema.json": "execution-exited.json",
     "pmu-profile.schema.json": "pmu-profile.json",
-    "cpu-tool-signal.schema.json": (
-        "cpu-tool-start.json", "cpu-tool-finishing-soon.json", "cpu-tool-prediction-updated.json",
-    ),
+    "signal.schema.json": ("signal-prediction-created.json", "signal-progress.json",
+                           "signal-prediction-updated.json", "signal-finishing-soon.json"),
+    "execution-claim-response.schema.json": "execution-claim-response.json",
 }
 
 TRACE_FIELD_REFERENCE_SCHEMAS = (
@@ -47,11 +49,13 @@ def main() -> None:
         store[path.name] = schema
         if "$id" in schema:
             store[schema["$id"]] = schema
+    registry = Registry().with_resources((schema["$id"], Resource.from_contents(schema))
+                                          for schema in store.values())
     for schema_name, examples in EXAMPLES.items():
-        schema = inline_local_refs(store[schema_name], store)
+        schema = store[schema_name]
         for example_name in (examples,) if isinstance(examples, str) else examples:
             example = json.loads((CONTRACTS / "examples" / example_name).read_text(encoding="utf-8"))
-            Draft202012Validator(schema).validate(example)
+            Draft202012Validator(schema, registry=registry).validate(example)
             print(f"validated {example_name} against {schema_name}")
     for schema_name in TRACE_FIELD_REFERENCE_SCHEMAS:
         missing = list(properties_without_descriptions(store[schema_name]))

@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "services/sidecar/src"))
 
+from clawtune_sidecar.signal_protocol import event_signal
+
 import uvicorn
 from benchmarks.backends import TerminalBackend
 from benchmarks.exec_control import SidecarExecutions
@@ -111,7 +113,7 @@ def main() -> int:
         decision = client._request("POST", "/v1/decisions/tool", before)
         if mode == "subprocess":
             # Earlier waves must feed real evidence into later predictions.
-            targets = decision["prediction"]["pmu_prediction"]["targets"]
+            targets = decision["prediction"]["tool"]["pmu"]["targets"]
             for metric in ("ipc", "llc_mpki", "llc_miss_rate"):
                 assert targets[metric]["evidence_count"] > 0, targets
                 for quantile in ("avg", "p50", "p90"):
@@ -158,7 +160,7 @@ def main() -> int:
                           duration_ms=int((time.monotonic()-started)*1000), succeeded=True,
                           error_type=None, error_digest=None, result_size_bytes=len(result["stdout"]),
                           raw_result=result, resource_scope=None)
-        client._request("POST", "/v1/events/tool-completed", completion, timeout=60)
+        client._request("POST", "/v1/signals", event_signal(completion), timeout=60)
         if mode == "terminal" and index == 0:
             timeout_command = "sleep 30 & echo $! > /tmp/clawtune-timeout-child; wait"
             timed_before = dict(before, tool_call_id="timeout-call", event_id=runtime_id+"-timeout-before",
@@ -186,7 +188,7 @@ def main() -> int:
                 lease_id=timed_decision["lease_id"], duration_ms=int((time.monotonic()-timed_started)*1000),
                 succeeded=False, error_type="timeout", raw_result=None, confirmed_timeout=True,
                 timeout_duration_lower_bound_ms=timed.timeout_duration_lower_bound_ms)
-            client._request("POST", "/v1/events/tool-completed", timeout_completion, timeout=60)
+            client._request("POST", "/v1/signals", event_signal(timeout_completion), timeout=60)
             cancel_command = "sleep 60 & echo $! > /tmp/clawtune-cancel-child; wait"
             cancel_before = dict(before, tool_call_id="cancel-call", event_id=runtime_id+"-cancel-before",
                                  raw_params={"command": cancel_command})
@@ -220,11 +222,11 @@ def main() -> int:
                              if r.request.tool_call_id == "cancel-call")
             assert cancelled.exited and cancelled.signal
             assert state.pmu_collector.take(cancelled.request.execution_id) is not None
-            client._request("POST", "/v1/events/tool-completed", dict(completion,
+            client._request("POST", "/v1/signals", event_signal(dict(completion,
                 tool_call_id="cancel-call", event_id=runtime_id+"-cancel-after",
                 execution_id=cancelled.request.execution_id, decision_id=cancel_decision["decision_id"],
                 lease_id=cancel_decision["lease_id"], duration_ms=int((time.monotonic()-cancel_started)*1000),
-                succeeded=False, error_type="cancelled", raw_result=None), timeout=60)
+                succeeded=False, error_type="cancelled", raw_result=None)), timeout=60)
             drained = client._request("POST", f"/v1/gateways/swe-rebench/runtimes/{runtime_id}/drain?timeout_seconds=15&flush_kb=true", {}, timeout=20)
             assert drained["drained"], drained
             for interrupted in (timed, cancelled):

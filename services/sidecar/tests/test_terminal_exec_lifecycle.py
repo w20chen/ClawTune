@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from clawtune_sidecar.signal_protocol import event_signal
+
 import json
 import os
 from pathlib import Path
@@ -231,7 +233,7 @@ def test_bridge_completion_adopts_the_registered_execution(tmp_path: Path) -> No
         "resource_scope": None,
     }
 
-    assert client.post("/v1/events/tool-completed", json=completion).json() == {
+    assert client.post("/v1/signals", json=event_signal(completion)).json() == {
         "stored": True
     }
     # PMU evidence is only consumed for a named execution; adoption is what

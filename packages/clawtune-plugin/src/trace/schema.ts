@@ -208,7 +208,6 @@ export interface SpanEndResources {
   sampling_quality?: string | null;
   resource_timeline?: unknown[] | null;
   resource_timeline_truncated?: boolean | null;
-  resource_class?: string | null;
   target_pid?: number | null;
   process_count_before?: number | null;
   process_count_after?: number | null;

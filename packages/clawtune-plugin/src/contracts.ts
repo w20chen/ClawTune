@@ -132,6 +132,7 @@ export type ToolBeforeRequest = CommonEvent & {
 };
 
 export type ToolDecision = {
+  prediction_signal_id?: string | null;
   decision_id: string;
   action: "allow" | "block";
   reason_code: string;
@@ -140,31 +141,15 @@ export type ToolDecision = {
   policy_version: string;
   lease_id: string | null;
   prediction: {
-    duration_p50_ms: number | null;
-    duration_p90_ms: number | null;
-    resource_class: string;
-    confidence: number | null;
-    tool?: CallLoadPrediction | null;
-    trie?: CallLoadPrediction | null;
-    lattice?: CallLoadPrediction | null;
-    /** Compatibility alias of tool. */
-    call_prediction?: CallLoadPrediction | null;
-    pmu_prediction?: PmuPrediction | null;
-    diagnostics?: { backends: Partial<Record<LoadBackend, CallLoadPrediction>> } | null;
-    tool_resource?: ToolResourceCommandPrediction | null;
-  };
-  placement_advice: {
-    cpu_set: string | null;
-    numa_node: number | null;
-    llc_cluster: string | null;
-    advisory: true;
+    tool: {load: CallLoadPrediction; pmu: PmuPrediction};
+    trie: {load: CallLoadPrediction};
+    lattice: {load: CallLoadPrediction};
   };
   placement?: unknown | null;
   profiling?: unknown | null;
 };
 
-// Mirror of contracts/call-load.schema.json. Native KB payloads below are
-// migration diagnostics; consumers should use prediction.tool, prediction.trie, or prediction.lattice.
+// Mirrors contracts/tool-prediction.schema.json and call-load.schema.json.
 export type LoadBackend = "runtime" | "trie" | "lattice";
 export type LoadTarget = "duration_ms" | "cpu_time_seconds" | "cpu_avg_cores" | "cpu_peak_cores" | "sampled_peak_rss_bytes" | "memory_total_peak_bytes" | "memory_extra_peak_bytes";
 export type LoadEstimate = {
@@ -222,103 +207,6 @@ export type PmuPrediction = {
   targets: Record<PmuTarget, PmuEstimate>;
 };
 
-export type ToolResourceCommandPrediction = {
-  repo: string;
-  command: string;
-  parse_failed: boolean;
-  clause_bins: string[];
-  clause_predictions: ToolResourceClausePredictionOutcome[];
-  prediction: ToolResourceClausePrediction | null;
-  unavailable_reason: string | null;
-  continuous_predictions?: Record<string, ToolResourceContinuousPrediction> | null;
-  lattice_time_predictions?: ToolResourceClauseLatticeTimePredictions[];
-  lattice_resource_predictions?: ToolResourceClauseLatticeResourcePredictions[];
-  prediction_algorithms?: ToolResourcePredictionAlgorithms | null;
-  composed?: boolean;
-  composed_total_ms?: number | null;
-  composition?: Array<{
-    kind: "single" | "pipeline";
-    bins: string[];
-    time_ms: number;
-    dropped_viewer_bins: string[];
-  }>;
-};
-
-export type ToolResourceClausePredictionOutcome = {
-  clause_index: number;
-  bin: string;
-  argv: string[];
-} & (
-  | {
-      prediction: ToolResourceClausePrediction;
-      unavailable_reason: null;
-    }
-  | {
-      prediction: null;
-      unavailable_reason: string;
-    }
-);
-
-export type ToolResourceClausePrediction = {
-  bucket_id: number;
-  probability_by_bucket: number[];
-  scope: string;
-  key_kind: string;
-  evidence_count: number;
-  fallback_path: string[];
-};
-
-export type ToolResourceContinuousPrediction = {
-  target: string;
-  conditional_p90: number | null;
-  scope: string | null;
-  key_kind: string | null;
-  evidence_count: number;
-  fallback_path: string[];
-  note: string | null;
-};
-
-export type ToolResourceClauseLatticeTimePredictions = {
-  clause_index: number;
-  bin: string;
-  argv: string[];
-  predictions: ToolResourceLatticeTimePrediction[];
-};
-
-export type ToolResourceLatticeTimePrediction = {
-  algorithm: "shrinkage" | "loso" | "max_cardinality";
-  selected_features: string[];
-  evidence_count: number;
-  selected_risk: number | null;
-  fallback: string | null;
-} & (
-  | {
-      prediction_ms: number;
-      exact_match: boolean;
-      unavailable_reason: null;
-    }
-  | {
-      prediction_ms: null;
-      exact_match: null;
-      unavailable_reason: string;
-    }
-);
-
-export type ToolResourcePredictionAlgorithms = {
-  enabled?: Array<{
-    name?: string;
-    family?: string;
-    source?: string;
-    targets?: string[];
-    outputs?: string[];
-  }>;
-  excluded?: Array<{
-    name?: string;
-    source?: string;
-    reason?: string;
-  }>;
-};
-
 export type ToolCompletedEvent = CommonEvent & {
   tool_call_id: string | null;
   decision_id: string | null;
@@ -369,6 +257,7 @@ export type ModelEvent = CommonEvent & {
 };
 
 export type ExecutionRegistrationRequest = {
+  prediction_id?: string | null;
   execution_id: string;
   gateway_id?: string | null;
   runtime_id?: string | null;
@@ -409,31 +298,6 @@ export type SidecarHealth = {
 export const MIN_COMPATIBLE_SIDECAR_VERSION = "0.1.0";
 
 /** Protocol versions the plugin expects from the sidecar. */
-export const REQUIRED_PROTOCOL_VERSIONS = ["clawtune.api.v1", "execution.v1"];
+export const REQUIRED_PROTOCOL_VERSIONS = ["clawtune.api.v1", "execution.v1", "clawtune.signal.v1", "clawtune.prediction.v1"];
 
 /** Clause-lineage sampled RSS and CPU; never whole-call/cgroup estimates. */
-export type ToolResourceClauseLatticeResourcePredictions = {
-  clause_index: number;
-  bin: string;
-  argv: string[];
-  scope: "clause_owned_lineage";
-  memory_metric: "environment_memory";
-  cpu_peak_window_ms: 500;
-  quantile_method: "median_p50_nearest_rank_p90";
-  predictions: ToolResourceLatticeResourcePrediction[];
-};
-
-export type ToolResourceLatticeResourcePrediction = {
-  target: "cpu_time_seconds" | "cpu_avg_cores" | "cpu_peak_cores" | "memory_total_peak_bytes" | "memory_extra_peak_bytes";
-  unit: "core_seconds" | "cores" | "bytes";
-  algorithm: "shrinkage" | "loso" | "max_cardinality";
-  p50: number | null;
-  p90: number | null;
-  selected_features: string[];
-  evidence_count: number;
-  selected_risk: number | null;
-  exact_match: boolean | null;
-  unavailable_reason: string | null;
-  threshold: number | null;
-  probability_ge: number | null;
-};

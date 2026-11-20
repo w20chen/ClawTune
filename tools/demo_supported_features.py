@@ -14,6 +14,9 @@ from uuid import uuid4
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "services/sidecar/src"))
+
+from clawtune_sidecar.signal_protocol import event_signal
 
 
 def main() -> None:
@@ -108,7 +111,7 @@ def decision_demo(endpoint: str) -> None:
         "resource_scope": None,
     }
     print("completion:")
-    print_json(post_json(endpoint, "/v1/events/tool-completed", completion))
+    print_json(post_json(endpoint, "/v1/signals", event_signal(completion)))
     recent = get_json(endpoint, "/v1/tools/recent?limit=1")
     print("latest runtime sample:")
     print_json(recent)

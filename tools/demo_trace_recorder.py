@@ -12,6 +12,9 @@ from uuid import uuid4
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "services/sidecar/src"))
+
+from clawtune_sidecar.signal_protocol import event_signal
 
 
 def main() -> None:
@@ -41,8 +44,8 @@ def emit_model_turn(endpoint: str, run_id: str, agent_id: str) -> None:
     started_at = utc_now()
     post_json(
         endpoint,
-        "/v1/events/model",
-        {
+        "/v1/signals",
+        event_signal({
             **common("evt-model-start", run_id, agent_id),
             "occurred_at": started_at,
             "event_type": "model_call_started",
@@ -55,13 +58,13 @@ def emit_model_turn(endpoint: str, run_id: str, agent_id: str) -> None:
             "raw_input": messages,
             "raw_output": None,
             "raw_event": {"messages": messages},
-        },
+        }),
     )
     time.sleep(0.05)
     post_json(
         endpoint,
-        "/v1/events/model",
-        {
+        "/v1/signals",
+        event_signal({
             **common("evt-model-end", run_id, agent_id),
             "event_type": "model_call_ended",
             "call_id": call_id,
@@ -73,7 +76,7 @@ def emit_model_turn(endpoint: str, run_id: str, agent_id: str) -> None:
             "raw_input": None,
             "raw_output": "I will run the heavier Python demo tool.",
             "raw_event": {"content": "I will run the heavier Python demo tool."},
-        },
+        }),
     )
 
 
@@ -181,7 +184,7 @@ def emit_tool_turn(endpoint: str, run_id: str, agent_id: str) -> None:
     print("\n== decision ==")
     print_json(decision)
     print("\n== completion ==")
-    print_json(post_json(endpoint, "/v1/events/tool-completed", completion))
+    print_json(post_json(endpoint, "/v1/signals", event_signal(completion)))
     if process.poll() is None:
         process.terminate()
     process.communicate(timeout=5)

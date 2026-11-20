@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 from dataclasses import replace
 import os
@@ -29,7 +30,6 @@ from clawtune_sidecar.contracts.models import (
     ExecutionUpdateResponse,
     ModelEvent,
     NativeRuntimeScopeRequest,
-    PlacementAdvice,
     ResourceScope,
     RuntimeAbortRequest,
     StatusResponse,
@@ -42,6 +42,11 @@ from clawtune_sidecar.identity import correlation_key, owner_key, owners_compati
 from clawtune_sidecar.monitoring.tool_runtime import ToolRuntimeSample
 from clawtune_sidecar.policies.base import SchedulingContext
 from clawtune_sidecar.security.auth import verify_bearer
+from clawtune_sidecar.signals import SignalHub, identity as signal_identity
+from clawtune_sidecar.signal_protocol import event_timestamp
+from clawtune_kb.contracts import validate as validate_contract
+from jsonschema import ValidationError as SchemaValidationError
+from pydantic import ValidationError as ModelValidationError
 
 
 _EBPF_COMPLETION_GRACE_SECONDS = 10.0
@@ -50,7 +55,7 @@ _OWNED_CGROUP_CLEANUP_GRACE_SECONDS = 10.0
 _OWNED_CGROUP_CLEANUP_RETRY_SECONDS = 0.02
 _HEALTH_SERVICE = "clawtune-sidecar"
 _HEALTH_SCHEMA_VERSION = "clawtune.health.v1"
-_PROTOCOL_VERSIONS = ["clawtune.api.v1", "trace.v6", "execution.v1"]
+_PROTOCOL_VERSIONS = ["clawtune.api.v1", "trace.v6", "execution.v1", "clawtune.signal.v1", "clawtune.prediction.v1"]
 _PROC_ROOT = Path("/proc")
 _CGROUP_V2_ROOT = Path("/sys/fs/cgroup")
 _AUTHORITATIVE_EXECUTION_ATTRIBUTION_SOURCES = frozenset(
@@ -70,7 +75,6 @@ def _sample_summary(sample: ToolRuntimeSample) -> dict[str, object]:
         "tool_call_id": sample.tool_call_id,
         "tool_name": sample.tool_name,
         "duration_ms": sample.duration_ms,
-        "resource_class": sample.resource_class,
         "attribution_status": sample.attribution_status,
         "target_pid": sample.target_pid,
         "cpu_time_delta_s": sample.cpu_time_delta_s,
@@ -840,16 +844,20 @@ def create_app(state: AppState | None = None) -> FastAPI:
     app_state = state or build_state()
     app = FastAPI(title="ClawTune Sidecar", version="0.1.0")
     app.state.sidecar = app_state
+    signals = SignalHub(app_state.config.signal_endpoint, app_state.config.signal_token,
+                        queue_size=app_state.config.signal_queue_size,
+                        timeout=app_state.config.signal_timeout_s)
+    app.state.signals = signals
     finishing_tasks: dict[str, asyncio.Task[None]] = {}
     starting_tasks: dict[str, asyncio.Task[bool]] = {}
     completions_inflight: set[tuple[str | None, ...]] = set()
+    signals_inflight: dict[tuple, str] = {}
     # Mutations can fail after partial learning/writing. Retain a compact error
     # receipt rather than replaying the event and potentially double-counting.
     completion_failures: dict[tuple[str | None, ...], str] = {}
     kb_owner = None
     kb_store = getattr(app_state.predictor, "_state_store", None)
     if kb_store is not None:
-        import json
         kb_owner = json.loads((kb_store.path / "state.json").read_text(encoding="utf-8"))["owner"]
 
     @app.on_event("startup")
@@ -893,6 +901,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             if app_state.trace_writer is not None:
                 await asyncio.to_thread(app_state.trace_writer.close)
         finally:
+            await signals.close()
             # Trace and KB storage can fail independently. Always attempt the
             # final KB save, while preserving any trace shutdown exception.
             close_predictor = getattr(app_state.predictor, "close", None)
@@ -917,8 +926,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
     def get_state() -> AppState:
         return app.state.sidecar
 
-    def auth(s: AppState = Depends(get_state)) -> None:
-        verify_bearer(s.config.auth_token)
+    def auth(request: Request, s: AppState = Depends(get_state)) -> None:
+        verify_bearer(s.config.auth_token, request.headers.get("authorization"))
 
     def sandbox_fallback_scope(
         s: AppState,
@@ -1834,6 +1843,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 # owner is still known; absent exit evidence it stays incomplete.
                 if record is not None:
                     s.executions.abort(execution_id, request.reason)
+                    signals.aborted(execution_id, request.reason)
                 aborted_ids.append(execution_id)
                 cancel_ebpf_fallback(s, execution_id)
                 try:
@@ -1961,17 +1971,17 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 s.trace_writer.record_tool_started(request)
             s.predictor.record_tool_started(request)
             prediction = await predictor_operation(s.predictor.predict, request)
+            prediction_observed_at = time.time()
             if s.trace_writer is not None:
                 s.trace_writer.record_tool_prediction(request, prediction)
             decision = await s.policy.decide(
                 request,
                 SchedulingContext(
                     prediction=prediction,
-                    placement=PlacementAdvice(),
                 ),
             )
             if decision.action == "allow":
-                s.tool_monitor.begin(request, prediction.resource_class)
+                s.tool_monitor.begin(request)
                 if s.docker_exec_observer is not None and request.tool_name not in {"web_search", "web_fetch"}:
                     s.docker_exec_observer.begin_tool(request)
             s.metrics.inc("scheduler_tool_decisions_total")
@@ -1979,6 +1989,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
             s._tool_decisions_by_event_id[decision_key] = (
                 request.params_digest, request.tool_name, decision,
             )
+            published = signals.prediction(request, prediction, decision.decision_id,
+                                           observed_at=prediction_observed_at)
+            decision.prediction_signal_id = published["signal_id"]
             while len(s._tool_decisions_by_event_id) > 10_000:
                 oldest = next(iter(s._tool_decisions_by_event_id))
                 s._tool_decisions_by_event_id.pop(oldest, None)
@@ -2025,7 +2038,6 @@ def create_app(state: AppState | None = None) -> FastAPI:
             if task.done() and s._decision_tasks.get(decision_key) is task:
                 s._decision_tasks.pop(decision_key, None)
 
-    @app.post("/v1/events/tool-completed")
     async def complete_tool(
         event: ToolCompletedEvent,
         s: AppState = Depends(get_state),
@@ -2238,6 +2250,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             if len(s._completed_tool_event_ids) > 10_000:
                 oldest = next(key for key in s._completed_tool_event_ids if key != completion_key)
                 s._completed_tool_event_ids.discard(oldest)
+            signals.completed(event, _sample_summary(sample) if sample is not None else None)
             return {"stored": True}
         except BaseException:
             if learning_started:
@@ -2268,7 +2281,6 @@ def create_app(state: AppState | None = None) -> FastAPI:
             finally:
                 end_runtime_activity(activity_key)
 
-    @app.post("/v1/events/model")
     async def model_event(
         event: ModelEvent,
         s: AppState = Depends(get_state),
@@ -2289,6 +2301,12 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 # is durable before the plugin proceeds.
                 if not await asyncio.to_thread(s.trace_writer.flush):
                     raise HTTPException(status_code=503, detail="trace_persistence_failed")
+            signals.publish(
+                "model.started" if event.event_type == "model_call_started" else "model.completed",
+                event.model_dump(mode="json", exclude={"raw_input", "raw_output", "raw_event"}),
+                source="plugin", owner=signal_identity(event),
+                observed_at=event_timestamp(event.occurred_at),
+            )
             return {"stored": True}
         except BaseException:
             s._model_event_ids.discard(model_key)
@@ -2296,12 +2314,89 @@ def create_app(state: AppState | None = None) -> FastAPI:
         finally:
             end_runtime_activity(activity_key)
 
+    @app.get("/v1/signals/status")
+    async def signal_status(request: Request):
+        verify_bearer(app_state.config.auth_token, request.headers.get("authorization"))
+        return signals.status()
+
+    @app.post("/v1/signals")
+    async def receive_signal(request: Request):
+        # JSON Schema, not a second independently evolving model, defines ingress.
+        try:
+            message = await request.json()
+            json.dumps(message, allow_nan=False)
+            validate_contract(message, "signal.schema.json")
+        except (ValueError, SchemaValidationError) as exc:
+            raise HTTPException(status_code=422, detail="invalid_signal") from exc
+        if message["publisher_id"] is not None or message["published_at"] is not None:
+            raise HTTPException(status_code=422, detail="published_signal_not_an_observation")
+        kind, owner = message["type"], message["identity"]
+        authorization = request.headers.get("authorization")
+        if kind in {"execution.started", "execution.progress"}:
+            if message["source"] != "launcher" or not owner["execution_id"]:
+                raise HTTPException(status_code=422, detail="invalid_execution_signal_identity")
+            token = authorization[7:] if authorization and authorization.startswith("Bearer ") else ""
+            record = app_state.executions.authenticate_observer(owner["execution_id"], token)
+            canonical = signal_identity(record.request)
+            if any(value is not None and value != canonical[key] for key, value in owner.items()):
+                raise HTTPException(status_code=409, detail="signal_execution_owner_mismatch")
+        elif kind in {"tool.completed", "model.started", "model.completed"}:
+            verify_bearer(app_state.config.auth_token, authorization)
+            if message["source"] != "plugin":
+                raise HTTPException(status_code=422, detail="invalid_signal_source")
+            try:
+                event = (ToolCompletedEvent if kind == "tool.completed" else ModelEvent).model_validate(message["payload"])
+                canonical = signal_identity(event)
+                if owner != canonical or message["signal_id"] != event.event_id:
+                    raise ValueError("signal event identity mismatch")
+                observed = event_timestamp(event.occurred_at)
+                if abs(observed - message["observed_at"]) > .001:
+                    raise ValueError("signal event time mismatch")
+                if kind.startswith("model.") and (kind == "model.started") != (event.event_type == "model_call_started"):
+                    raise ValueError("signal event type mismatch")
+            except (ValueError, ModelValidationError) as exc:
+                raise HTTPException(status_code=422, detail="invalid_signal_payload") from exc
+        else:
+            raise HTTPException(status_code=422, detail="signal_type_is_sidecar_owned")
+        try:
+            key, digest, duplicate = signals.duplicate(message)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if duplicate:
+            return {"stored": False}
+        if key in signals_inflight:
+            if signals_inflight[key] != digest:
+                raise HTTPException(status_code=409, detail="signal_id_payload_mismatch")
+            raise HTTPException(status_code=503, detail=("tool_completion_in_progress"
+                                if kind == "tool.completed" else "signal_in_progress"))
+        signals_inflight[key] = digest
+        try:
+            if kind == "tool.completed":
+                result = await complete_tool(event, app_state)
+            elif kind.startswith("model."):
+                result = await model_event(event, app_state)
+            else:
+                # A queued observation must not reactivate a completed execution.
+                if record.exited:
+                    state = signals.executions.get(owner["execution_id"])
+                    if state is not None:
+                        state.exited = True
+                result = {"stored": signals.observe(message)}
+            signals.acknowledge(key, digest)
+            return result
+        finally:
+            signals_inflight.pop(key, None)
+
     @app.post("/v2/executions", response_model=ExecutionRegistrationResponse)
     async def register_execution(
         request: ExecutionRegistrationRequest,
         s: AppState = Depends(get_state),
         _: None = Depends(auth),
     ) -> ExecutionRegistrationResponse:
+        try:
+            signals.validate_registration(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         activity_record = request
         activity_key = begin_runtime_activity(activity_record)
         try:
@@ -2339,6 +2434,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
             # For marker-backend executions, start eBPF eBPF telemetry
             # immediately if the sandbox container is already known.  (For
             # managed-wrapper, telemetry starts at claim/started time.)
+            signals.register(request)
             if (
                 getattr(request, "backend", None) == "marker"
             ):
@@ -2387,6 +2483,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         activity_key = begin_runtime_activity(activity_record)
         try:
             response = s.executions.claim(request)
+            response.signals_enabled = bool(s.config.signal_endpoint)
             record = s.executions.get(request.execution_id)
             if record is not None:
                 container_id = sandbox_container_id(
@@ -2738,6 +2835,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
         activity_key = begin_runtime_activity(activity_record)
         try:
             response = s.executions.exited(execution_id, request)
+            signals.exited(execution_id, {"exit_code": request.exit_code,
+                                         "signal": request.signal,
+                                         "confirmed_timeout": request.confirmed_timeout})
             # Disable/read before any cgroup cleanup. perf task FDs retain counts
             # after process exit, so this is a constant-cost, non-polling read.
             # The exit code/signal belongs to the tool outcome, not counter

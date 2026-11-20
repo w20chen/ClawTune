@@ -155,7 +155,7 @@ def test_realtime_default_path_uses_ebpf_without_sampling_fallback(monkeypatch):
     )
     monitor = RealtimeToolMonitor(ebpf_monitor=Ebpf())
     request = _request()
-    monitor.begin(request, "unknown")
+    monitor.begin(request)
     data = {
         key: value for key, value in request.model_dump().items()
         if key in ToolCompletedEvent.model_fields
@@ -501,7 +501,7 @@ def test_default_ebpf_path_completes_and_preserves_environment_memory(monkeypatc
                 succeeded=True, decision_id=None, lease_id=None, error_type=None, error_digest=None)
     try:
         assert monitor._memory_poller.is_alive()
-        monitor.begin(request, "unknown")
+        monitor.begin(request)
         sample = monitor.complete(
             ToolCompletedEvent.model_validate(data),
             environment_memory_window=(12, 18),

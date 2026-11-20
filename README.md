@@ -2,7 +2,7 @@
 
 ClawTune is a standalone library and local service for monitoring tool execution and predicting resource use, with an OpenClaw plugin for agent integration. It correlates model requests, tool calls, and operating-system measurements, then uses historical observations to estimate execution time, CPU use, and memory consumption before subsequent calls.
 
-Live collectors target Linux. The OpenClaw integration does not modify OpenClaw core, and resource-placement advice is advisory.
+Live collectors target Linux. The OpenClaw integration does not modify OpenClaw core.
 
 | Path | Purpose | Main command | Read next |
 | --- | --- | --- | --- |
@@ -28,8 +28,9 @@ for seed selection and updates.
 
 [JSON Schemas](contracts/) define the public protocol.
 
-See [CPU tool signals](docs/cpu-tool-signals.md) for tool-specific live-progress
-adapters, GPU notification configuration, supported tools and unavailable cases.
+See [pre-execution predictions](docs/predictions.md) for the three independent
+model branches and their fields. See [unified signals](docs/signals.md) for the prediction and lifecycle protocol,
+receiver configuration, live-progress adapters and delivery guarantees.
 
 See [command rules](docs/command-parsing.md) for parsing inspection, automatic rule generation, and workspace configuration.
 

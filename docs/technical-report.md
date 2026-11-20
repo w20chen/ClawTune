@@ -2,7 +2,7 @@
 
 ## 1. System design
 
-ClawTune provides a Python library, a local monitoring service, evaluation programs, and an OpenClaw integration plugin. The plugin correlates model requests and tool calls; the service collects execution measurements and predicts subsequent calls from historical evidence. It does not modify OpenClaw core. Placement advice is advisory.
+ClawTune provides a Python library, a local monitoring service, evaluation programs, and an OpenClaw integration plugin. The plugin correlates model requests and tool calls; the service collects execution measurements and predicts subsequent calls from historical evidence. It does not modify OpenClaw core.
 
 Docker supplies task environments, cgroups bound resource accounting, eBPF attributes executable clauses to processes, and perf supplies hardware counters. Daily operation learns continuously; online benchmarks share run-local history; the standard offline evaluation freezes models during testing.
 
