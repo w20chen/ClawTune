@@ -2835,9 +2835,16 @@ def create_app(state: AppState | None = None) -> FastAPI:
         activity_key = begin_runtime_activity(activity_record)
         try:
             response = s.executions.exited(execution_id, request)
-            signals.exited(execution_id, {"exit_code": request.exit_code,
-                                         "signal": request.signal,
-                                         "confirmed_timeout": request.confirmed_timeout})
+            signals.exited(
+                execution_id,
+                {
+                    "exit_code": request.exit_code,
+                    "signal": request.signal,
+                    "confirmed_timeout": request.confirmed_timeout,
+                    "elapsed_duration_ms": request.elapsed_duration_ms,
+                },
+                observed_at=request.observed_at,
+            )
             # Disable/read before any cgroup cleanup. perf task FDs retain counts
             # after process exit, so this is a constant-cost, non-polling read.
             # The exit code/signal belongs to the tool outcome, not counter

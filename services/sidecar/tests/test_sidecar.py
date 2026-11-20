@@ -113,7 +113,8 @@ def test_runtime_drain_keeps_claimed_execution_out_of_kb_barrier(monkeypatch, tm
         assert flushes == []
         exited = client.post(
             "/v2/executions/exec-a/exited",
-            json={"update_token": claim.json()["update_token"], "exit_code": 125, "signal": None},
+            json={"update_token": claim.json()["update_token"], "exit_code": 125,
+                  "signal": None, "observed_at": 1, "elapsed_duration_ms": None},
         )
         assert exited.status_code == 200
         assert client.post(path).json()["drained"] is True
@@ -968,6 +969,8 @@ def test_metrics_endpoint(tmp_path: Path) -> None:
     assert "scheduler_tool_memory_rss_bytes" in response.text
     assert "scheduler_tool_memory_rss_peak_bytes" in response.text
     assert "scheduler_tool_process_count" in response.text
+    assert "scheduler_admission_wait_seconds" not in response.text
+    assert "scheduler_calibration_updates_total" not in response.text
     assert "scheduler_tool_cpu_utilization_avg_cores" in response.text
     assert "scheduler_tool_net_rx_bytes_total" in response.text
     assert "scheduler_tool_net_tx_bytes_total" in response.text
@@ -1081,11 +1084,14 @@ def test_internal_tool_prefers_shared_sandbox_over_shared_runtime_scope(
     expected_cgroup = runtime_cgroup if tool_name in {"web_search", "web_fetch"} else cgroup
     assert tool_end["execution"]["cgroup_path"] == str(expected_cgroup)
     assert tool_end["resources"]["attribution_status"] == "partially_attributed"
-    assert tool_end["resources"]["scope"] == "none"
+    assert tool_end["resources"]["scope"] == "cgroup-v2"
     assert tool_end["resources"]["coverage_reason"] == ("shared_runtime_process" if tool_name in {"web_search", "web_fetch"} else "shared_sandbox_container")
     assert tool_end["resources"]["monitor_duration_ns"] is not None
     assert tool_end["resources"]["cgroup_cpu_time_s"] is None
-    assert tool_end["resources"]["resource_observation"]["fallback_used"] is False
+    observation = tool_end["resources"]["resource_observation"]
+    assert observation["fallback_used"] is True
+    assert observation["attribution"] == "shared_scope"
+    assert not any(metric["eligible"] for metric in observation["metrics"].values())
     assert (
         int(tool_end["monotonic_time_ns"]) - int(tool_start["monotonic_time_ns"])
         == int(tool_end["duration_ns"])
@@ -1577,8 +1583,12 @@ def test_exec_tool_can_use_shared_sandbox_cgroup_fallback(tmp_path: Path) -> Non
     )
     assert tool_end["execution"]["mode"] == "launcher"
     assert tool_end["resources"]["attribution_status"] == "partially_attributed"
-    assert tool_end["resources"]["scope"] == "none"
+    assert tool_end["resources"]["scope"] == "cgroup-v2"
     assert tool_end["resources"]["coverage_reason"] == "shared_sandbox_container"
+    observation = tool_end["resources"]["resource_observation"]
+    assert observation["fallback_used"] is True
+    assert observation["attribution"] == "shared_scope"
+    assert not any(metric["eligible"] for metric in observation["metrics"].values())
 
 
 @pytest.mark.parametrize("launcher_cgroup_path", ["/sys/fs/cgroup", None])
@@ -1894,6 +1904,8 @@ def test_execution_exit_waits_for_completion_result_before_ebpf_finish(
             "update_token": claim["update_token"],
             "exit_code": 0,
             "signal": None,
+            "observed_at": 1,
+            "elapsed_duration_ms": None,
         },
     ).json() == {"stored": True}
     assert finish_calls == []
@@ -2048,6 +2060,8 @@ def test_running_exec_completion_waits_for_real_exit_fallback(
                 "update_token": claim["update_token"],
                 "exit_code": 0,
                 "signal": None,
+                "observed_at": 1,
+                "elapsed_duration_ms": None,
             },
         ).json() == {"stored": True}
         assert finalized.wait(timeout=1.0)
@@ -2134,6 +2148,8 @@ def test_completion_prefers_authoritative_execution_scope_over_supplied_scope(
             "update_token": claim["update_token"],
             "exit_code": 0,
             "signal": None,
+            "observed_at": 1,
+            "elapsed_duration_ms": None,
         },
     )
     assert exited.status_code == 200
@@ -2378,6 +2394,8 @@ def test_owned_cgroup_survives_exited_until_completion_final_snapshot(
                 "update_token": claim["update_token"],
                 "exit_code": 0,
                 "signal": None,
+                "observed_at": 1,
+                "elapsed_duration_ms": None,
             },
         )
         assert exited.status_code == 200
@@ -2482,6 +2500,8 @@ def test_owned_cgroup_delayed_gc_when_completion_is_lost(
                 "update_token": claim["update_token"],
                 "exit_code": 0,
                 "signal": None,
+                "observed_at": 1,
+                "elapsed_duration_ms": None,
             },
         )
         assert exited.status_code == 200
@@ -3139,6 +3159,8 @@ def test_exec_completion_uses_registered_launcher_scope(tmp_path: Path, monkeypa
             "update_token": claim["update_token"],
             "exit_code": 0,
             "signal": None,
+            "observed_at": 1,
+            "elapsed_duration_ms": None,
         },
     ).json() == {"stored": True}
     completion = {
@@ -4303,7 +4325,8 @@ def test_execution_registration_round_trip(tmp_path: Path) -> None:
 
     exited = client.post(
         "/v2/executions/exec-1/exited",
-        json={"update_token": spec["update_token"], "exit_code": 0, "signal": None},
+        json={"update_token": spec["update_token"], "exit_code": 0, "signal": None,
+              "observed_at": 1, "elapsed_duration_ms": None},
     )
     assert exited.status_code == 200
     assert exited.json() == {"stored": True}
@@ -4337,7 +4360,8 @@ def test_slow_completion_keeps_event_loop_responsive(tmp_path, parallelism):
             claim = client.post("/v2/executions/claim", json={"execution_id": eid,
                 "token": registration["one_time_token"], "launcher_pid": 100}).json()
             client.post(f"/v2/executions/{eid}/exited", json={
-                "update_token": claim["update_token"], "exit_code": 0, "signal": None})
+                "update_token": claim["update_token"], "exit_code": 0, "signal": None,
+                "observed_at": 1, "elapsed_duration_ms": None})
             completions.append({
                 "schema_version": "clawtune.v1", "event_id": "evt-" + eid,
                 "occurred_at": "2026-07-29T00:00:00Z", "plugin_version": "0.1.0",

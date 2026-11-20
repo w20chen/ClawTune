@@ -10,7 +10,6 @@ class Metrics:
         self.counters: Counter[str] = Counter()
         self.decision_latencies: list[float] = []
         self.tool_durations: list[float] = []
-        self.admission_waits: list[float] = []
         self.tool_cpu_seconds_total = 0.0
         self.tool_io_read_bytes_total = 0
         self.tool_io_write_bytes_total = 0
@@ -78,7 +77,6 @@ class Metrics:
             "scheduler_tool_runtime_unattributed_samples_total",
             "scheduler_tool_runtime_pid_unavailable_samples_total",
             "scheduler_sidecar_errors_total",
-            "scheduler_calibration_updates_total",
         ]
         for name in names:
             lines.append(f"# TYPE {name} counter")
@@ -123,7 +121,4 @@ class Metrics:
         lines.append("# TYPE scheduler_tool_duration_seconds summary")
         lines.append(f"scheduler_tool_duration_seconds_count {len(self.tool_durations)}")
         lines.append(f"scheduler_tool_duration_seconds_sum {sum(self.tool_durations):.6f}")
-        lines.append("# TYPE scheduler_admission_wait_seconds summary")
-        lines.append(f"scheduler_admission_wait_seconds_count {len(self.admission_waits)}")
-        lines.append(f"scheduler_admission_wait_seconds_sum {sum(self.admission_waits):.6f}")
         return "\n".join(lines) + "\n"

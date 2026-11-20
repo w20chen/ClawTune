@@ -48,7 +48,9 @@ def test_abort_closes_only_unfinished_owner_and_preserves_completed_data(monkeyp
         token = register(client, "unfinished")
         done_token = register(client, "done")
         register(client, "foreign", gateway="another-gateway")
-        client.post("/v2/executions/done/exited", json={"update_token": done_token, "exit_code": 0, "signal": None})
+        client.post("/v2/executions/done/exited", json={"update_token": done_token,
+            "exit_code": 0, "signal": None, "observed_at": 1,
+            "elapsed_duration_ms": None})
         assert client.post(PATH + "/drain?timeout_seconds=0").json()["drained"] is False
         result = client.post(PATH + "/abort", json=BODY)
         assert result.status_code == 200, result.text
@@ -66,6 +68,7 @@ def test_abort_closes_only_unfinished_owner_and_preserves_completed_data(monkeyp
         assert flushes == [True]
         assert client.post("/v2/executions/unfinished/exited", json={
             "update_token": token, "exit_code": 0, "signal": None,
+            "observed_at": 1, "elapsed_duration_ms": None,
         }).status_code == 409
         contracts = Path(__file__).resolve().parents[3] / "contracts"
         schema = json.loads((contracts / "runtime-abort-response.schema.json").read_text())

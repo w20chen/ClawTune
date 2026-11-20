@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import concurrent.futures
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -105,6 +106,70 @@ def _request(scope: ResourceScope | None = None) -> ToolBeforeRequest:
         raw_params={"command": "ls"},
         resource_scope=scope,
     )
+
+
+@pytest.mark.parametrize("tool_name", ["read", "edit", "process"])
+def test_in_process_tool_attaches_partial_pmu_window(tool_name: str) -> None:
+    class Pmu:
+        def __init__(self) -> None:
+            self.begun = []
+            self.finished = []
+
+        def begin_window(self, key, pid):
+            self.begun.append((key, pid))
+
+        def finish_window(self, key, *, reason):
+            self.finished.append((key, reason))
+            return SimpleNamespace(to_dict=lambda: {
+                "schema": "pmu_profile_v1",
+                "scope": "task-inherit-window",
+                "coverage": {"status": "partial", "eligible_for_kb": False},
+            })
+
+    snapshots = [
+        _snapshot(captured_at=10.0, cpu_s=1.0, rss=4096, available=True,
+                  source="psutil-process-tree"),
+        _snapshot(captured_at=10.1, cpu_s=1.1, rss=4096, available=True,
+                  source="psutil-process-tree"),
+    ]
+    pmu = Pmu()
+    monitor = RealtimeToolMonitor(
+        sampler=QueueSampler(snapshots), poll_interval_s=60, pmu_collector=pmu,
+    )
+    request = _request(ResourceScope(kind="pid", pid=123, root_pid=123)).model_copy(
+        update={"tool_name": tool_name}
+    )
+    monitor.begin(request)
+    completion = ToolCompletedEvent(
+        schema_version="clawtune.v1",
+        event_id="evt-end",
+        occurred_at="2026-07-16T03:23:01Z",
+        plugin_version="0.1.0",
+        run_id="run-1",
+        session_id="session-1",
+        session_key=None,
+        agent_id=None,
+        tool_call_id="call-1",
+        decision_id=None,
+        lease_id=None,
+        execution_id=None,
+        tool_name=tool_name,
+        duration_ms=100,
+        succeeded=True,
+        error_type=None,
+        error_digest=None,
+        result_size_bytes=None,
+        resource_scope=request.resource_scope,
+    )
+    try:
+        sample = monitor.complete(completion)
+    finally:
+        monitor.stop()
+
+    assert len(pmu.begun) == 1 and pmu.begun[0][1] == 123
+    assert pmu.finished == [(pmu.begun[0][0], "tool_window_completed")]
+    assert sample.pmu_profile["scope"] == "task-inherit-window"
+    assert not sample.pmu_profile["coverage"]["eligible_for_kb"]
 
 
 def test_eight_owners_keep_exclusive_scope_against_late_docker_events():

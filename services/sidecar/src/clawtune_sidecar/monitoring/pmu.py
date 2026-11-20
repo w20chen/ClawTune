@@ -1,10 +1,15 @@
-"""Low-overhead, per-execution Linux PMU counting.
+"""Low-overhead Linux PMU counting for execution and tool windows.
 
 The collector deliberately uses task-scoped ``perf_event_open`` groups with
 ``inherit`` and ``enable_on_exec``.  A gated execution root therefore owns one
 fixed four-FD group which starts at the payload exec and follows future
 threads/processes.  This avoids both polling and the ``events x online CPUs``
 FD growth of perf's cgroup mode.
+
+In-process tools have no exec gate. Their groups are enabled immediately on
+the shared runtime PID and stopped at the tool hook's completion. Those counts
+can include unrelated runtime work, so they are always partial diagnostic
+profiles and are never eligible for the KB.
 
 The public result is ``pmu_profile_v1``.  Counts are never silently scaled:
 ``raw_count`` is what hardware actually counted and ``scaled_count`` is kept
@@ -48,6 +53,7 @@ PERF_COUNT_HW_CACHE_RESULT_MISS = 1
 
 PERF_FORMAT_TOTAL_TIME_ENABLED = 1 << 0
 PERF_FORMAT_TOTAL_TIME_RUNNING = 1 << 1
+PERF_EVENT_IOC_ENABLE = 0x2400
 PERF_EVENT_IOC_DISABLE = 0x2401
 PERF_IOC_FLAG_GROUP = 1
 
@@ -119,7 +125,9 @@ class _PerfEventAttr(ctypes.Structure):
 
 class PerfBackend(Protocol):
     def open_event(self, spec: EventSpec, pid: int, group_fd: int, *,
-                   leader: bool, exclude_kernel: bool) -> int: ...
+                   leader: bool, exclude_kernel: bool,
+                   enable_on_exec: bool = True) -> int: ...
+    def enable_group(self, leader_fd: int) -> None: ...
     def disable_group(self, leader_fd: int) -> None: ...
     def read_event(self, fd: int) -> tuple[int, int, int]: ...
     def close(self, fd: int) -> None: ...
@@ -149,7 +157,8 @@ class LinuxPerfBackend:
         self._libc.syscall.restype = ctypes.c_long
 
     def open_event(self, spec: EventSpec, pid: int, group_fd: int, *,
-                   leader: bool, exclude_kernel: bool) -> int:
+                   leader: bool, exclude_kernel: bool,
+                   enable_on_exec: bool = True) -> int:
         attr = _PerfEventAttr()
         attr.type = spec.event_type
         attr.size = ctypes.sizeof(_PerfEventAttr)
@@ -157,7 +166,9 @@ class LinuxPerfBackend:
         attr.read_format = _READ_FORMAT
         attr.flags = _FLAG_INHERIT | _FLAG_EXCLUDE_HV
         if leader:
-            attr.flags |= _FLAG_DISABLED | _FLAG_ENABLE_ON_EXEC
+            attr.flags |= _FLAG_DISABLED
+            if enable_on_exec:
+                attr.flags |= _FLAG_ENABLE_ON_EXEC
         if exclude_kernel:
             attr.flags |= _FLAG_EXCLUDE_KERNEL
         fd = int(self._libc.syscall(
@@ -172,6 +183,10 @@ class LinuxPerfBackend:
             code = ctypes.get_errno()
             raise OSError(code, os.strerror(code))
         return fd
+
+    def enable_group(self, leader_fd: int) -> None:
+        assert fcntl is not None
+        fcntl.ioctl(leader_fd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP)
 
     def disable_group(self, leader_fd: int) -> None:
         assert fcntl is not None
@@ -242,6 +257,7 @@ class _ActiveGroup:
     errors: dict[str, str]
     kernel_included: bool
     process_identity: str | None
+    scope: str
 
 
 def sys_platform_linux() -> bool:
@@ -268,7 +284,8 @@ def _error_text(exc: BaseException) -> str:
 
 
 def _unavailable_profile(execution_id: str, reason: str, *, root_pid: int | None = None,
-                         errors: tuple[str, ...] = ()) -> PmuProfile:
+                         errors: tuple[str, ...] = (),
+                         scope: str = "task-inherit-enable-on-exec") -> PmuProfile:
     readings = {
         spec.name: PmuEventReading(False, spec.semantics, error=reason)
         for spec in EVENT_SPECS
@@ -278,7 +295,7 @@ def _unavailable_profile(execution_id: str, reason: str, *, root_pid: int | None
         execution_id=execution_id,
         source="perf_event_open",
         mode="counting",
-        scope="task-inherit-enable-on-exec",
+        scope=scope,
         root_pid=root_pid,
         started_at=None,
         ended_at=None,
@@ -341,7 +358,7 @@ class PmuCollector:
             except BaseException as exc:
                 profile = _unavailable_profile(
                     execution_id, "collector_failure", root_pid=group.root_pid,
-                    errors=(_error_text(exc),),
+                    errors=(_error_text(exc),), scope=group.scope,
                 )
             self._remember_completed_locked(profile)
 
@@ -357,6 +374,9 @@ class PmuCollector:
             "enabled": self.enabled,
             "mode": "counting",
             "scope": "task-inherit-enable-on-exec",
+            "supported_scopes": [
+                "task-inherit-enable-on-exec", "task-inherit-window"
+            ],
             "events_per_execution": _EVENT_FDS,
             "max_active": self.max_active,
             "max_fds": self.max_fds,
@@ -375,6 +395,29 @@ class PmuCollector:
 
     def begin(self, execution_id: str, root_pid: int) -> PmuProfile | None:
         """Arm one group while the execution root is still behind its exec gate."""
+        return self._begin(
+            execution_id,
+            root_pid,
+            enable_on_exec=True,
+            scope="task-inherit-enable-on-exec",
+        )
+
+    def begin_window(self, tool_window_id: str, root_pid: int) -> PmuProfile | None:
+        """Count an already-running task for one shared tool-hook window.
+
+        Unlike managed executions, in-process tools have no future exec boundary.
+        The group is enabled immediately and its profile stays diagnostic-only:
+        the long-lived runtime can perform unrelated concurrent work.
+        """
+        return self._begin(
+            tool_window_id,
+            root_pid,
+            enable_on_exec=False,
+            scope="task-inherit-window",
+        )
+
+    def _begin(self, execution_id: str, root_pid: int, *, enable_on_exec: bool,
+               scope: str) -> PmuProfile | None:
         with self._lock:
             if execution_id in self._active:
                 return None
@@ -388,14 +431,16 @@ class PmuCollector:
             ) * _EVENT_FDS > self.max_fds:
                 self._reap_exited_locked()
             if not self.enabled:
-                profile = _unavailable_profile(execution_id, "disabled", root_pid=root_pid)
+                profile = _unavailable_profile(
+                    execution_id, "disabled", root_pid=root_pid, scope=scope
+                )
                 self._remember_completed_locked(profile)
                 return profile
             if len(self._active) >= self.max_active or (
                 len(self._active) + 1
             ) * _EVENT_FDS > self.max_fds:
                 profile = _unavailable_profile(
-                    execution_id, "resource_budget", root_pid=root_pid
+                    execution_id, "resource_budget", root_pid=root_pid, scope=scope
                 )
                 self._remember_completed_locked(profile)
                 return profile
@@ -406,32 +451,52 @@ class PmuCollector:
                 self._backend_error = _error_text(exc)
                 profile = _unavailable_profile(
                     execution_id, reason, root_pid=root_pid,
-                    errors=(self._backend_error,),
+                    errors=(self._backend_error,), scope=scope,
                 )
                 self._remember_completed_locked(profile)
                 return profile
 
             group, permission_error = self._open_group(
-                backend, execution_id, root_pid, exclude_kernel=False
+                backend, execution_id, root_pid, exclude_kernel=False,
+                enable_on_exec=enable_on_exec, scope=scope,
             )
             if permission_error:
                 self._close_group(backend, group)
                 group, _ = self._open_group(
-                    backend, execution_id, root_pid, exclude_kernel=True
+                    backend, execution_id, root_pid, exclude_kernel=True,
+                    enable_on_exec=enable_on_exec, scope=scope,
                 )
             if not group.fds:
                 errors = tuple(sorted(set(group.errors.values())))
                 profile = _unavailable_profile(
                     execution_id, "events_unavailable", root_pid=root_pid,
-                    errors=errors,
+                    errors=errors, scope=scope,
                 )
                 self._remember_completed_locked(profile)
                 return profile
+            if not enable_on_exec:
+                leader_fd = group.fds.get("cycles")
+                try:
+                    if leader_fd is None:
+                        raise OSError(errno.EIO, "PMU group leader is unavailable")
+                    backend.enable_group(leader_fd)
+                except BaseException as exc:
+                    self._close_group(backend, group)
+                    profile = _unavailable_profile(
+                        execution_id,
+                        "collector_failure",
+                        root_pid=root_pid,
+                        errors=(_error_text(exc),),
+                        scope=scope,
+                    )
+                    self._remember_completed_locked(profile)
+                    return profile
             self._active[execution_id] = group
             return None
 
     def _open_group(self, backend: PerfBackend, execution_id: str, root_pid: int,
-                    *, exclude_kernel: bool) -> tuple[_ActiveGroup, bool]:
+                    *, exclude_kernel: bool, enable_on_exec: bool,
+                    scope: str) -> tuple[_ActiveGroup, bool]:
         fds: dict[str, int] = {}
         errors: dict[str, str] = {}
         leader_fd = -1
@@ -442,6 +507,7 @@ class PmuCollector:
                     spec, root_pid, leader_fd,
                     leader=leader_fd < 0,
                     exclude_kernel=exclude_kernel,
+                    enable_on_exec=enable_on_exec,
                 )
             except BaseException as exc:
                 errors[spec.name] = _error_text(exc)
@@ -463,23 +529,55 @@ class PmuCollector:
             errors=errors,
             kernel_included=not exclude_kernel,
             process_identity=_process_identity(root_pid),
+            scope=scope,
         ), permission_error
 
     def finish(self, execution_id: str, *, reason: str = "execution_exited") -> PmuProfile:
+        return self._finish(
+            execution_id,
+            reason=reason,
+            missing_scope="task-inherit-enable-on-exec",
+        )
+
+    def finish_window(
+        self,
+        tool_window_id: str,
+        *,
+        reason: str = "tool_window_completed",
+    ) -> PmuProfile:
+        """Finish a diagnostic tool window without retaining execution tombstones."""
+        profile = self._finish(
+            tool_window_id,
+            reason=reason,
+            missing_scope="task-inherit-window",
+        )
+        with self._lock:
+            self._completed.pop(tool_window_id, None)
+        return profile
+
+    def _finish(
+        self,
+        execution_id: str,
+        *,
+        reason: str,
+        missing_scope: str,
+    ) -> PmuProfile:
         with self._lock:
             previous = self._completed.get(execution_id)
             if previous is not None:
                 return previous
             group = self._active.pop(execution_id, None)
             if group is None:
-                profile = _unavailable_profile(execution_id, "not_started")
+                profile = _unavailable_profile(
+                    execution_id, "not_started", scope=missing_scope
+                )
             else:
                 try:
                     profile = self._finish_group(group, reason)
                 except BaseException as exc:
                     profile = _unavailable_profile(
                         execution_id, "collector_failure", root_pid=group.root_pid,
-                        errors=(_error_text(exc),),
+                        errors=(_error_text(exc),), scope=group.scope,
                     )
             self._remember_completed_locked(profile)
         return profile
@@ -553,7 +651,10 @@ class PmuCollector:
             )
         elif errors:
             status, quality_reason = "partial", "collector_error"
-        elif reason not in {"execution_exited", "tool_timeout"}:
+        elif (
+            group.scope != "task-inherit-enable-on-exec"
+            or reason not in {"execution_exited", "tool_timeout"}
+        ):
             status, quality_reason = "partial", reason
         elif not group.kernel_included:
             status, quality_reason = "partial", "kernel_excluded"
@@ -595,7 +696,7 @@ class PmuCollector:
             execution_id=group.execution_id,
             source="perf_event_open",
             mode="counting",
-            scope="task-inherit-enable-on-exec",
+            scope=group.scope,
             root_pid=group.root_pid,
             started_at=group.started_at,
             ended_at=time.time(),

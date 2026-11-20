@@ -1,4 +1,4 @@
-"""Native tools share SWE monitoring without inventing exec/PMU events."""
+"""Native tools share SWE monitoring without inventing execution events."""
 import json
 from pathlib import Path
 

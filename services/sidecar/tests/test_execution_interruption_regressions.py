@@ -160,7 +160,8 @@ def test_completion_preserves_exit_evidence_and_marks_explicit_interruptions(tmp
     with TestClient(create_app(state)) as client:
         token = register(client, "execution")
         assert client.post("/v2/executions/execution/exited", json={
-            "update_token": token, "exit_code": 7, "signal": None}).status_code == 200
+            "update_token": token, "exit_code": 7, "signal": None,
+            "observed_at": 1, "elapsed_duration_ms": None}).status_code == 200
         completion = _tool_completion("done", "call-execution").model_copy(update={
             "execution_id": "execution", "runtime_id": "task-a", "gateway_id": "swe-rebench",
             "run_id": "run", "session_id": None, "agent_id": None,
@@ -273,7 +274,8 @@ def test_fallback_marks_missing_completion_but_retains_observations(
         assert state.predictor.begin_execution(execution_id="execution", tool_call_id="call-execution",
             command="sleep 30", container_id="a" * 64, gateway_id="swe-rebench", runtime_id="task-a")
         response = client.post("/v2/executions/execution/exited", json={
-            "update_token": token, "exit_code": exit_code, "signal": None})
+            "update_token": token, "exit_code": exit_code, "signal": None,
+            "observed_at": 1, "elapsed_duration_ms": None})
         assert response.status_code == 200, response.text
         if late:
             deadline = time.monotonic() + 5

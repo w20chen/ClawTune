@@ -114,7 +114,8 @@
     },
     "observed_at": {
       "type": "number",
-      "minimum": 0
+      "minimum": 0,
+      "description": "Producer observation time in Unix seconds, captured before transport to the sidecar. It is not a receipt timestamp and must not be used instead of a producer-monotonic elapsed duration."
     },
     "published_at": {
       "type": [
@@ -551,12 +552,21 @@
               },
               "confirmed_timeout": {
                 "type": "boolean"
+              },
+              "elapsed_duration_ms": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "description": "Launcher monotonic time from payload release or confirmed start to process exit; null when setup failed before that boundary."
               }
             },
             "required": [
               "exit_code",
               "signal",
-              "confirmed_timeout"
+              "confirmed_timeout",
+              "elapsed_duration_ms"
             ],
             "additionalProperties": false
           },

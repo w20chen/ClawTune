@@ -75,6 +75,18 @@ class _FakeChild:
         return 7
 
 
+def _assert_setup_failure_exit(exits: list[dict[str, Any]]) -> None:
+    assert len(exits) == 1
+    payload = dict(exits[0])
+    assert payload.pop("observed_at") > 0
+    assert payload == {
+        "update_token": "update-1",
+        "exit_code": 125,
+        "signal": None,
+        "elapsed_duration_ms": None,
+    }
+
+
 def test_launcher_selects_explicit_fork_exec_mode(monkeypatch) -> None:
     monkeypatch.setenv("CLAWTUNE_LAUNCH_MODE", "fork-exec")
     monkeypatch.setattr(launcher, "_supports_posix_controls", lambda: True)
@@ -596,7 +608,7 @@ def test_fork_exec_reaps_child_without_release_when_started_fails(
 
     assert writes == []
     assert waits == [4242]
-    assert exits == [{"update_token": "update-1", "exit_code": 125, "signal": None}]
+    _assert_setup_failure_exit(exits)
 
 
 def test_fork_exec_closes_claim_when_cgroup_setup_fails(monkeypatch) -> None:
@@ -628,7 +640,7 @@ def test_fork_exec_closes_claim_when_cgroup_setup_fails(monkeypatch) -> None:
         launcher._run_forkexec("http://sidecar", "exec-1", "token-1")
 
     assert waits == [4242]
-    assert exits == [{"update_token": "update-1", "exit_code": 125, "signal": None}]
+    _assert_setup_failure_exit(exits)
 
 
 @pytest.mark.parametrize("mode", ["forkexec", "subprocess"])
@@ -839,10 +851,29 @@ def test_launcher_claims_starts_and_returns_child_exit_code(monkeypatch) -> None
             "cgroup_required": False,
         },
     )
-    assert posts[2] == (
-        "/v2/executions/exec-1/exited",
-        {"update_token": "update-1", "exit_code": 7, "signal": None},
-    )
+    assert posts[2][0] == "/v2/executions/exec-1/exited"
+    assert posts[2][1]["update_token"] == "update-1"
+    assert posts[2][1]["exit_code"] == 7
+    assert posts[2][1]["signal"] is None
+    assert posts[2][1]["observed_at"] > 0
+    assert posts[2][1]["elapsed_duration_ms"] >= 0
+
+
+def test_exit_payload_separates_source_wall_time_from_monotonic_duration(monkeypatch) -> None:
+    monotonic = iter((10.0, 10.25))
+    monkeypatch.setattr(launcher.time, "time", lambda: 1234.5)
+    monkeypatch.setattr(launcher.time, "monotonic", lambda: next(monotonic))
+
+    started = launcher.time.monotonic()
+    assert launcher._execution_exit_payload(
+        "private", exit_code=0, term_signal=None, started_monotonic=started
+    ) == {
+        "update_token": "private",
+        "exit_code": 0,
+        "signal": None,
+        "observed_at": 1234.5,
+        "elapsed_duration_ms": 250.0,
+    }
 
 
 def test_launcher_reports_container_id_from_environment(monkeypatch) -> None:
@@ -1398,7 +1429,7 @@ def test_launcher_terminates_gated_payload_when_started_is_rejected(
 
     assert child.terminated is True
     assert released == [False]
-    assert exits == [{"update_token": "update-1", "exit_code": 125, "signal": None}]
+    _assert_setup_failure_exit(exits)
 
 
 def test_launcher_join_failure_restarts_in_systemd_scope(monkeypatch, tmp_path) -> None:

@@ -37,6 +37,7 @@ class CgroupFallbackWindow:
         if (scope is None or scope.kind != "cgroup-v2" or not scope.cgroup_path
                 or scope.attribution_source not in {
                     "exclusive-execution-cgroup", "exclusive-task-cgroup",
+                    "shared-runtime-process", "shared-sandbox-container",
                 }):
             return None
         path = Path(scope.cgroup_path)

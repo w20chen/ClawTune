@@ -196,7 +196,7 @@ class SignalHub:
                          observed_at=observed, expires_at=expires)
         return True
 
-    def exited(self, execution_id, payload):
+    def exited(self, execution_id, payload, *, observed_at):
         state = self.executions.get(execution_id)
         if state is None or state.exit_sent:
             return
@@ -204,7 +204,13 @@ class SignalHub:
         # fact as an authenticated process exit.  Publish each fact once.
         state.exited = True
         state.exit_sent = True
-        self.publish("execution.exited", payload, source="launcher", owner=state.identity)
+        self.publish(
+            "execution.exited",
+            payload,
+            source="launcher",
+            owner=state.identity,
+            observed_at=observed_at,
+        )
 
     def completed(self, event, sample=None):
         state = self.executions.get(event.execution_id)

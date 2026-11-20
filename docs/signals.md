@@ -52,7 +52,7 @@ Every observation and publication has these fields:
 | `signal_id` | Unique message ID; unchanged on retry |
 | `type`, `source` | Message kind and evidence producer (`plugin`, `launcher`, `sidecar`) |
 | `identity` | Gateway, runtime, run, session, agent, tool call, model call, execution and prediction IDs; unavailable IDs are null |
-| `observed_at` | Observation time in Unix seconds |
+| `observed_at` | Producer observation time in Unix seconds; for `execution.exited`, the launcher captures it immediately after observing process exit and before reporting to the sidecar |
 | `published_at` | Sidecar publication time in Unix seconds; null on ingress |
 | `publisher_id` | Sidecar process-lifetime UUID; null on ingress |
 | `sequence` | Strictly increasing publication sequence within that publisher; producer sequence is not reused |
@@ -80,7 +80,7 @@ the unified downstream lifecycle messages.
 | `execution.progress` | Ingress-only fresh remaining-time observation, elapsed time, source and `estimated`/`exact` kind |
 | `prediction.updated` | At most once per execution when elapsed time is strictly greater than the original LatticeKB p50 + 1000 ms and fresh progress provides positive remaining time |
 | `execution.finishing_soon` | At most once per execution when fresh progress reports `0 < remaining_ms <= 2000`; independent of historical duration predictions |
-| `execution.exited` | Authenticated process exit, exit code or signal and timeout classification |
+| `execution.exited` | Authenticated process exit, exit code or signal, timeout classification, and launcher-monotonic elapsed duration; elapsed duration is null only when setup failed before a payload start boundary existed |
 | `execution.aborted` | Runtime cleanup confirms termination without an ordinary process exit report |
 | `tool.completed` | Tool hook completion and call-level measurement summary; distinct from process exit |
 | `model.started`, `model.completed` | Model request lifecycle, not internal GPU prefill/decode transitions |

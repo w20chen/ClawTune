@@ -226,7 +226,13 @@ def test_cancel_reaches_payload_tree_and_preserves_exit_signal(service, tmp_path
         while any(_running(pid) for pid in pids) and time.monotonic() < deadline:
             time.sleep(.02)
         assert not any(_running(pid) for pid in pids), "cancelled payload survived launcher exit"
-        assert service[4] == [{"update_token": "test", "exit_code": None, "signal": signum}]
+        assert len(service[4]) == 1
+        exit_payload = service[4][0]
+        assert exit_payload["update_token"] == "test"
+        assert exit_payload["exit_code"] is None
+        assert exit_payload["signal"] == signum
+        assert exit_payload["observed_at"] > 0
+        assert exit_payload["elapsed_duration_ms"] > 0
     finally:
         if pids:
             try:
@@ -247,7 +253,13 @@ def test_normal_exit_code_and_shell_output_are_preserved(service, tmp_path, mode
         expected_returncode=exit_code)
     assert result.stdout == b"one\x00two"
     assert b"error" in result.stderr
-    assert service[4] == [{"update_token": "test", "exit_code": exit_code, "signal": None}]
+    assert len(service[4]) == 1
+    exit_payload = service[4][0]
+    assert exit_payload["update_token"] == "test"
+    assert exit_payload["exit_code"] == exit_code
+    assert exit_payload["signal"] is None
+    assert exit_payload["observed_at"] > 0
+    assert exit_payload["elapsed_duration_ms"] > 0
 
 
 @requires_posix

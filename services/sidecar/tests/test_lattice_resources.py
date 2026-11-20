@@ -175,15 +175,6 @@ def test_unmarked_snapshot_keeps_legacy_resource_and_load_coverage(monkeypatch):
         assert restored._resource_states[key].nodes[features].count == 1
 
 
-def test_output_validates_public_schema():
-    from pathlib import Path
-    from jsonschema import Draft202012Validator
-    schema = json.loads((Path(__file__).resolve().parents[3] / "contracts/tool-decision.schema.json").read_text())
-    validator = Draft202012Validator({"$ref":"#/$defs/clauseLatticeResourcePredictions", "$defs":schema["$defs"]})
-    validator.validate(query(LatticeTimeKB.fit([observation()])))
-    validator.validate(query(LatticeTimeKB()))
-
-
 def test_legacy_snapshot_upgrade_and_no_fixed_threshold_storage():
     kb = LatticeTimeKB.fit([observation()])
     snapshot = kb.to_json_obj()

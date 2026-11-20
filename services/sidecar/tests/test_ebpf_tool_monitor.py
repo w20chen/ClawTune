@@ -379,12 +379,20 @@ def test_collector_failure_uses_dedicated_cgroup_with_truthful_window(
     assert not any(m["eligible"] for m in result["metrics"].values())
 
 
-def test_shared_scope_never_falls_back_to_container_counters(tmp_path):
+def test_shared_scope_cgroup_fallback_is_diagnostic_only(tmp_path):
     from clawtune_sidecar.monitoring.cgroup_fallback import CgroupFallbackWindow
     _cgroup_files(tmp_path, 0, 0, 200)
-    assert CgroupFallbackWindow.open(ResourceScope(
+    window = CgroupFallbackWindow.open(ResourceScope(
         kind="cgroup-v2", cgroup_path=str(tmp_path), attribution_source="shared-sandbox-container",
-    )) is None
+    ))
+    assert window is not None
+    _cgroup_files(tmp_path, 100, 100, 300)
+    result = window.finish()
+    assert result is not None
+    assert result["attribution"] == "shared_scope"
+    assert result["metrics"]["cpu_time"]["available"]
+    assert result["metrics"]["disk_io"]["available"]
+    assert not any(metric["eligible"] for metric in result["metrics"].values())
 
 
 def test_fallback_does_not_reuse_old_memory_high_water_mark_or_reset_counters(tmp_path):

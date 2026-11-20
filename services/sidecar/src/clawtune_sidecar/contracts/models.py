@@ -263,6 +263,8 @@ class ExecutionExitedRequest(BaseModel):
     update_token: str
     exit_code: int | None = None
     signal: int | None = Field(default=None, ge=0)
+    observed_at: float = Field(ge=0, allow_inf_nan=False)
+    elapsed_duration_ms: float | None = Field(ge=0, allow_inf_nan=False)
     confirmed_timeout: bool = False
     timeout_duration_lower_bound_ms: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 

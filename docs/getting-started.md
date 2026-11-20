@@ -62,7 +62,7 @@ The last command should print `cgroup2fs`. Docker must reach a running daemon. T
 Obtain the source and install:
 
 ```bash
-git clone https://github.com/w20chen/claw.git ClawTune
+git clone https://github.com/w20chen/ClawTune.git
 cd ClawTune
 python3 scripts/clawtune.py setup
 python3 scripts/clawtune.py doctor

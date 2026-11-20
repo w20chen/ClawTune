@@ -1,7 +1,8 @@
 """Default eBPF resource windows for OpenClaw tool calls.
 
-eBPF is preferred; dedicated cgroup windows provide an explicit fallback
-when the collector fails.  Procfs is used only to resolve an already authenticated PID to its
+eBPF is preferred; cgroup windows provide an explicit fallback when the
+collector fails. Shared runtime/container cgroups remain diagnostic-only.
+Procfs is used only to resolve an already authenticated PID to its
 cgroup identity and to seed the set of descendants which existed when the
 window opened. Sampling gaps alone never trigger a different backend.
 """

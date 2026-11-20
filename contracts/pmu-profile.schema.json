@@ -14,7 +14,10 @@
     "execution_id": {"type": "string", "minLength": 1, "maxLength": 128},
     "source": {"const": "perf_event_open"},
     "mode": {"const": "counting"},
-    "scope": {"const": "task-inherit-enable-on-exec"},
+    "scope": {
+      "enum": ["task-inherit-enable-on-exec", "task-inherit-window"],
+      "description": "enable-on-exec is an execution-owned process-tree measurement. window is an immediately enabled shared-runtime tool window and is diagnostic-only."
+    },
     "root_pid": {"type": ["integer", "null"], "minimum": 1},
     "started_at": {"type": ["number", "null"], "minimum": 0},
     "ended_at": {"type": ["number", "null"], "minimum": 0},
@@ -134,6 +137,7 @@
       },
       "then": {
         "properties": {
+          "scope": {"const": "task-inherit-enable-on-exec"},
           "llc_semantics_confirmed": {"const": true},
           "collector_errors": {"maxItems": 0},
           "events": {"additionalProperties": {"$ref": "#/$defs/reliable_event"}},
@@ -153,6 +157,22 @@
         "properties": {
           "coverage": {
             "properties": {"eligible_for_kb": {"const": false}}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"scope": {"const": "task-inherit-window"}},
+        "required": ["scope"]
+      },
+      "then": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "status": {"enum": ["multiplexed", "partial", "unavailable"]},
+              "eligible_for_kb": {"const": false}
+            }
           }
         }
       }

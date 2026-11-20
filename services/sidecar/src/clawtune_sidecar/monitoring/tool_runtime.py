@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import threading
+import hashlib
 import math
+import threading
 import time
-from datetime import datetime
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any, Mapping
 
 from clawtune_sidecar.contracts.models import ResourceScope, ToolBeforeRequest, ToolCompletedEvent
@@ -68,6 +69,7 @@ class _ActiveTool:
     snapshot_count: int
     timeline_truncated: bool
     operation: str | None
+    pmu_key: str | None = None
 
 
 class RealtimeToolMonitor:
@@ -79,6 +81,7 @@ class RealtimeToolMonitor:
         poll_interval_s: float = 0.05,
         max_timeline_points: int = 2_000,
         enable_ebpf: bool = True,
+        pmu_collector: Any | None = None,
     ) -> None:
         # Passing a sampler explicitly selects the legacy diagnostic path used
         # by focused tests. Production constructs this class without one and
@@ -91,6 +94,7 @@ class RealtimeToolMonitor:
             self.ebpf_monitor = ebpf_monitor
         from clawtune_sidecar.monitoring.environment_memory import EnvironmentMemoryMonitor
         self.environment_memory = EnvironmentMemoryMonitor()
+        self.pmu_collector = pmu_collector
         self.max_active = max_active
         self.poll_interval_s = poll_interval_s
         self.max_timeline_points = max_timeline_points
@@ -111,6 +115,7 @@ class RealtimeToolMonitor:
 
     def begin(self, request: ToolBeforeRequest) -> None:
         key = correlation_key(request)
+        pmu_key = self._begin_window_pmu(request)
         self.environment_memory.begin(key, request.resource_scope)
         if self.ebpf_monitor is not None:
             self.ebpf_monitor.begin(key, request.resource_scope)
@@ -120,10 +125,12 @@ class RealtimeToolMonitor:
         with self._lock:
             if len(self._active) >= self.max_active:
                 oldest = next(iter(self._active))
-                self._active.pop(oldest, None)
+                evicted = self._active.pop(oldest, None)
                 self.environment_memory.discard(oldest)
                 if self.ebpf_monitor is not None:
                     self.ebpf_monitor.discard(oldest)
+                if evicted is not None:
+                    self._finish_window_pmu(evicted, "tool_window_evicted")
             self._active[key] = _ActiveTool(
                 request=request,
                 snapshot=snapshot,
@@ -133,6 +140,7 @@ class RealtimeToolMonitor:
                 snapshot_count=1,
                 timeline_truncated=False,
                 operation=operation_from_request(request),
+                pmu_key=pmu_key,
             )
 
     def complete(
@@ -188,7 +196,11 @@ class RealtimeToolMonitor:
             memory = self.environment_memory.complete(
                 active_key, started_at=memory_start, ended_at=memory_end,
             )
-            return replace(sample, environment_memory=memory)
+            return replace(
+                sample,
+                environment_memory=memory,
+                pmu_profile=self._finish_window_pmu(active, "tool_window_completed"),
+            )
         completion_scope = completion.resource_scope
         if (active is not None and active.request.resource_scope is not None
                 and active.request.resource_scope.attribution_source == "exclusive-execution-cgroup"
@@ -357,6 +369,7 @@ class RealtimeToolMonitor:
             process_count_after=end.process_count,
             attribution_status=_attribution_status(start, end),
             monitor_source=end.source if end.available else start.source,
+            pmu_profile=self._finish_window_pmu(active, "tool_window_completed"),
         )
 
     def active_count(self) -> int:
@@ -371,6 +384,34 @@ class RealtimeToolMonitor:
             self._memory_poller.join(timeout=max(0.1, self.poll_interval_s * 2))
         if self.ebpf_monitor is not None:
             self.ebpf_monitor.stop()
+        with self._lock:
+            active = tuple(self._active.values())
+            self._active.clear()
+        for item in active:
+            self._finish_window_pmu(item, "tool_window_aborted")
+
+    def _begin_window_pmu(self, request: ToolBeforeRequest) -> str | None:
+        if self.pmu_collector is None or request.tool_name == "exec":
+            return None
+        scope = request.resource_scope
+        root_pid = (scope.root_pid or scope.pid) if scope is not None else None
+        if root_pid is None or root_pid <= 0:
+            return None
+        digest = hashlib.sha256(repr(correlation_key(request)).encode()).hexdigest()
+        key = f"tool-{digest}"
+        self.pmu_collector.begin_window(key, root_pid)
+        return key
+
+    def _finish_window_pmu(
+        self,
+        active: _ActiveTool | None,
+        reason: str,
+    ) -> dict[str, Any] | None:
+        if self.pmu_collector is None or active is None or active.pmu_key is None:
+            return None
+        return self.pmu_collector.finish_window(
+            active.pmu_key, reason=reason
+        ).to_dict()
 
     def bind_scope(
         self,
@@ -403,6 +444,11 @@ class RealtimeToolMonitor:
                 # execution scope or reset a long-running command's baseline.
                 self._active[correlation_key(active.request)] = active
                 return False
+            pmu_key = active.pmu_key or self._begin_window_pmu(
+                active.request.model_copy(update={"resource_scope": scope})
+            )
+            if pmu_key != active.pmu_key:
+                active = replace(active, pmu_key=pmu_key)
             if self.ebpf_monitor is not None:
                 if memory_execution_parent_path and memory_environment_id:
                     self.environment_memory.bind_environment(
@@ -421,6 +467,7 @@ class RealtimeToolMonitor:
                     snapshot_count=active.snapshot_count,
                     timeline_truncated=active.timeline_truncated,
                     operation=active.operation,
+                    pmu_key=active.pmu_key,
                 )
                 # Scope association succeeded even when this host cannot open
                 # an eBPF window. The observation records that collector
@@ -468,6 +515,7 @@ class RealtimeToolMonitor:
                     snapshot_count=1,
                     timeline_truncated=False,
                     operation=active.operation,
+                    pmu_key=active.pmu_key,
                 )
                 return True
             timeline = list(active.timeline)
@@ -493,6 +541,7 @@ class RealtimeToolMonitor:
                 snapshot_count=snapshot_count,
                 timeline_truncated=timeline_truncated,
                 operation=active.operation,
+                pmu_key=active.pmu_key,
             )
             return snapshot.available
 
@@ -564,6 +613,7 @@ class RealtimeToolMonitor:
                         snapshot_count=current.snapshot_count + 1,
                         timeline_truncated=timeline_truncated,
                         operation=current.operation,
+                        pmu_key=current.pmu_key,
                     )
 
     def _poll_memory(self) -> None:

@@ -73,12 +73,14 @@ def test_stale_out_of_order_and_post_exit_progress_never_reopens_execution():
     assert not hub.observe(progress(owner, observed_at=time.time() + 3))
     hub.observe(progress(owner, elapsed=1000, remaining=4000))
     assert not hub.observe(progress(owner, elapsed=999))
-    hub.exited("exec", {"exit_code": 0, "signal": None, "confirmed_timeout": False})
+    exit_payload = {"exit_code": 0, "signal": None, "confirmed_timeout": False,
+                    "elapsed_duration_ms": 250.0}
+    hub.exited("exec", exit_payload, observed_at=time.time())
     assert not hub.observe(progress(owner))
     late_start = envelope("execution.started", {"pid": 456, "progress_adapter": "PytestProgress"},
                           source="launcher", identity=owner)
     assert not hub.observe(late_start)
-    hub.exited("exec", {"exit_code": 0, "signal": None, "confirmed_timeout": False})
+    hub.exited("exec", exit_payload, observed_at=time.time())
     assert [m["type"] for m in hub.recent] == ["execution.started", "execution.exited"]
 
 
@@ -102,10 +104,15 @@ def test_completion_fences_progress_without_suppressing_later_process_exit():
         "execution.started", {"pid": 123, "progress_adapter": "ToolProgress"},
         source="launcher", identity=owner,
     ))
-    hub.exited("exec", {"exit_code": 0, "signal": None, "confirmed_timeout": False})
-    hub.exited("exec", {"exit_code": 0, "signal": None, "confirmed_timeout": False})
+    exit_observed_at = time.time() - .25
+    exit_payload = {"exit_code": 0, "signal": None, "confirmed_timeout": False,
+                    "elapsed_duration_ms": 250.0}
+    hub.exited("exec", exit_payload, observed_at=exit_observed_at)
+    hub.exited("exec", exit_payload, observed_at=exit_observed_at)
 
     assert [m["type"] for m in hub.recent] == ["tool.completed", "execution.exited"]
+    assert hub.recent[-1]["observed_at"] == exit_observed_at
+    assert hub.recent[-1]["payload"]["elapsed_duration_ms"] == 250.0
 
 
 def test_receipt_rejects_payload_reuse_and_isolates_runtime():
@@ -178,7 +185,12 @@ def test_delivery_retries_same_id_and_drops_eta_after_exit():
             first = hub.publish("execution.started", {"pid": 123, "progress_adapter": "ToolProgress"}, source="launcher", owner=owner)
             await entered.wait()
             hub.observe(progress(owner))
-            hub.exited("exec", {"exit_code": 0, "signal": None, "confirmed_timeout": False})
+            hub.exited(
+                "exec",
+                {"exit_code": 0, "signal": None, "confirmed_timeout": False,
+                 "elapsed_duration_ms": 250.0},
+                observed_at=time.time(),
+            )
             release.set()
             await asyncio.wait_for(hub.queue.join(), 2)
             assert [m["type"] for m in received] == ["execution.started", "execution.started", "execution.exited"]
@@ -369,6 +381,9 @@ def test_real_launcher_sidecar_and_receiver_end_to_end(tmp_path, monkeypatch):
             assert all(m["identity"]["runtime_id"] == "runtime" for m in received)
             assert all(m["identity"]["execution_id"] == "exec" for m in received[1:])
             assert [m["sequence"] for m in received] == list(range(1, 7))
+            exited = received[kinds.index("execution.exited")]
+            assert exited["observed_at"] <= exited["published_at"]
+            assert exited["payload"]["elapsed_duration_ms"] > 0
     finally:
         if process is not None and process.poll() is None:
             process.terminate()

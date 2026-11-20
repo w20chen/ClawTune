@@ -2,11 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://openclaw.ai/schemas/clawtune/execution-exited.schema.json",
   "type": "object",
-  "required": ["update_token", "exit_code", "signal"],
+  "required": ["update_token", "exit_code", "signal", "observed_at", "elapsed_duration_ms"],
   "properties": {
     "update_token": {"type": "string", "minLength": 1},
     "exit_code": {"type": ["integer", "null"]},
     "signal": {"type": ["integer", "null"], "minimum": 0},
+    "observed_at": {"type": "number", "minimum": 0, "description": "Unix time when the launcher observed process exit, captured before reporting to the sidecar."},
+    "elapsed_duration_ms": {"type": ["number", "null"], "minimum": 0, "description": "Launcher monotonic time from payload release or confirmed start to process exit. Null when setup failed before a payload start boundary was established."},
     "confirmed_timeout": {"type": "boolean", "default": false},
     "timeout_duration_lower_bound_ms": {"type": ["number", "null"], "exclusiveMinimum": 0, "description": "Actual effective timeout budget that triggered this exit, when known."}
   },

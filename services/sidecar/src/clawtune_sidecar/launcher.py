@@ -145,7 +145,9 @@ def _run_forkexec(endpoint: str, execution_id: str, token: str) -> int:
         # sidecar claim even when cgroup setup or /started failed.
         _post_json_best_effort(
             endpoint, f"/v2/executions/{execution_id}/exited",
-            {"update_token": str(claim["update_token"]), "exit_code": 125, "signal": None},
+            _execution_exit_payload(
+                str(claim["update_token"]), exit_code=125, term_signal=None
+            ),
         )
         raise
 
@@ -252,7 +254,9 @@ def _run_forkexec_claimed(
             response_cgroup = started_response.get("cgroup_path")
             if isinstance(response_cgroup, str) and response_cgroup:
                 cgroup_path = response_cgroup
-        # Release the child only after successful registration.
+        # Release the child only after successful registration.  This is the
+        # launcher's monotonic execution boundary for the exit duration.
+        started_monotonic = time.monotonic()
         if os.write(write_fd, b"1") != 1:
             raise RuntimeError("failed to release the forked execution gate")
     except BaseException:
@@ -294,7 +298,12 @@ def _run_forkexec_claimed(
         term_signal = None
     _post_json_best_effort(
         endpoint, f"/v2/executions/{execution_id}/exited",
-        {"update_token": update_token, "exit_code": exit_code, "signal": term_signal},
+        _execution_exit_payload(
+            update_token,
+            exit_code=exit_code,
+            term_signal=term_signal,
+            started_monotonic=started_monotonic,
+        ),
     )
     if local_cgroup_owned:
         _cleanup_cgroup(cgroup_path)
@@ -367,7 +376,9 @@ def _run_subprocess(endpoint: str, execution_id: str, token: str) -> int:
     except Exception:
         _post_json_best_effort(
             endpoint, f"/v2/executions/{execution_id}/exited",
-            {"update_token": str(claim["update_token"]), "exit_code": 125, "signal": None},
+            _execution_exit_payload(
+                str(claim["update_token"]), exit_code=125, term_signal=None
+            ),
         )
         raise
 
@@ -395,6 +406,7 @@ def _run_subprocess_claimed(
     parsed_affinity = _parse_cpu_list(cpu_set) if _enabled(profiling, "enable_affinity", True) else set()
     affinity_cpus = parsed_affinity or None
     started_reported = False
+    started_monotonic: float | None = None
 
     def report_started(
         child_pid: int,
@@ -439,6 +451,7 @@ def _run_subprocess_claimed(
             affinity_cpus=affinity_cpus,
         )
     else:
+        started_monotonic = time.monotonic()
         child = _spawn_shell(command, cwd, cgroup_path=cgroup_path, affinity_cpus=affinity_cpus)
     cgroup_owned = _prepared_cgroup_is_launcher_owned(cgroup_path)
     try:
@@ -475,6 +488,9 @@ def _run_subprocess_claimed(
                     release_gate = None
                 child, cgroup_path = fallback
                 cgroup_owned = False
+                # The replacement is already running when the systemd helper
+                # returns, so this is a conservative confirmed-start boundary.
+                started_monotonic = time.monotonic()
     except Exception:
         if release_gate is not None:
             release_gate(False)
@@ -506,6 +522,7 @@ def _run_subprocess_claimed(
             if isinstance(response_cgroup, str) and response_cgroup:
                 cgroup_path = response_cgroup
         if release_gate is not None:
+            started_monotonic = time.monotonic()
             release_gate(True)
             release_gate = None
     except Exception:
@@ -525,7 +542,12 @@ def _run_subprocess_claimed(
     term_signal = -returncode if returncode < 0 else None
     _post_json_best_effort(
         endpoint, f"/v2/executions/{execution_id}/exited",
-        {"update_token": update_token, "exit_code": exit_code, "signal": term_signal},
+        _execution_exit_payload(
+            update_token,
+            exit_code=exit_code,
+            term_signal=term_signal,
+            started_monotonic=started_monotonic,
+        ),
     )
     _cleanup_cgroup(cgroup_path) if cgroup_owned else None
     return _shell_exit_code(returncode)
@@ -1032,6 +1054,27 @@ def _install_signal_forwarders(child: subprocess.Popen[bytes]) -> None:
 
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, forward)
+
+
+def _execution_exit_payload(
+    update_token: str,
+    *,
+    exit_code: int | None,
+    term_signal: int | None,
+    started_monotonic: float | None = None,
+) -> dict[str, Any]:
+    """Build source-timed exit evidence without deriving duration from wall time."""
+    observed_at = time.time()
+    elapsed_duration_ms = None
+    if started_monotonic is not None:
+        elapsed_duration_ms = max(0.0, (time.monotonic() - started_monotonic) * 1000)
+    return {
+        "update_token": update_token,
+        "exit_code": exit_code,
+        "signal": term_signal,
+        "observed_at": observed_at,
+        "elapsed_duration_ms": elapsed_duration_ms,
+    }
 
 
 def _post_json_best_effort(endpoint: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:

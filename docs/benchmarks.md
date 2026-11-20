@@ -260,7 +260,7 @@ A Compose build failure fails that case and allows the batch to continue after s
 
 ### PMU results
 
-Terminal and repository shell commands can supply tool-level PMU profiles; BFCL functions and native research tools have no per-call PMU measurement. Compound commands produce one execution-tree profile, not per-clause counters. Collector quality is separate from the available-or-zero training policy; imputed labels are not measured hardware counts. Its nine PMU targets include LLC accesses and misses per counter running second; see [definitions and units](tool-profile.md#pmu-resourcespmu). On ARM hosts running amd64 images, counters include QEMU overhead. Availability does not establish prediction accuracy.
+Terminal and repository shell commands can supply execution-owned PMU profiles. In-process OpenClaw tools can supply shared-runtime, per-hook PMU windows, but those diagnostic profiles are always partial and never eligible for the KB. BFCL functions and research adapters without live OpenClaw hooks have no per-call PMU measurement. Compound commands produce one execution-tree profile, not per-clause counters. Collector quality is separate from the available-or-zero training policy; imputed labels are not measured hardware counts. Its nine PMU targets include LLC accesses and misses per counter running second; see [definitions and units](tool-profile.md#pmu-resourcespmu). On ARM hosts running amd64 images, counters include QEMU overhead. Availability does not establish prediction accuracy.
 
 ## 3. Selection, concurrency, and resume
 

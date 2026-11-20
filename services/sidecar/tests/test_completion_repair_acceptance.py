@@ -43,7 +43,8 @@ def test_late_completion_without_before_hook_preserves_real_memory(tmp_path, mon
         p.begin_execution(execution_id='x', tool_call_id='call-x', container_id='c',
             command='sleep 1', gateway_id='g', runtime_id='r')
         assert client.post('/v2/executions/x/exited', json={
-            'update_token': token, 'exit_code': 0, 'signal': None}).status_code == 200
+            'update_token': token, 'exit_code': 0, 'signal': None,
+            'observed_at': 1, 'elapsed_duration_ms': None}).status_code == 200
         deadline = time.monotonic() + 5
         while 'x' in state._ebpf_finalize_tasks or p.execution_active('x'):
             assert time.monotonic() < deadline

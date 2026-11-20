@@ -1,5 +1,7 @@
 {
   "update_token": "update-token",
   "exit_code": 0,
-  "signal": null
+  "signal": null,
+  "observed_at": 1795132801.25,
+  "elapsed_duration_ms": 1250
 }

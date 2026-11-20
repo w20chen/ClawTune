@@ -25,6 +25,7 @@ class FakePerfBackend:
         self.names: dict[int, str] = {}
         self.opens: list[tuple[str, int, int, bool, bool]] = []
         self.closed: list[int] = []
+        self.enabled: list[int] = []
         self.disabled: list[int] = []
         self.values = {
             "cycles": 2_000_000,
@@ -33,7 +34,8 @@ class FakePerfBackend:
             "llc_read_accesses": 10_000,
         }
 
-    def open_event(self, spec, pid, group_fd, *, leader, exclude_kernel):
+    def open_event(self, spec, pid, group_fd, *, leader, exclude_kernel,
+                   enable_on_exec=True):
         self.opens.append((spec.name, pid, group_fd, leader, exclude_kernel))
         if self.deny_kernel and not exclude_kernel:
             raise OSError(errno.EACCES, "denied")
@@ -43,6 +45,9 @@ class FakePerfBackend:
         self.next_fd += 1
         self.names[fd] = spec.name
         return fd
+
+    def enable_group(self, leader_fd):
+        self.enabled.append(leader_fd)
 
     def disable_group(self, leader_fd):
         self.disabled.append(leader_fd)
@@ -76,7 +81,8 @@ def test_authenticated_timeout_exit_keeps_valid_pmu(signal, exit_code, tmp_path)
         assert claimed.status_code == 200, claimed.text
         state.pmu_collector.begin("timeout", 4242)
         response = client.post("/v2/executions/timeout/exited", json={
-            "update_token": claimed.json()["update_token"], "exit_code": exit_code, "signal": signal})
+            "update_token": claimed.json()["update_token"], "exit_code": exit_code,
+            "signal": signal, "observed_at": 1, "elapsed_duration_ms": None})
         assert response.status_code == 200, response.text
         profile = state.pmu_collector.take("timeout")
         assert profile.coverage.status == "reliable"
@@ -147,6 +153,50 @@ def test_native_perf_attributes_preserve_inheritance_compatible_read_format():
     backend.open_event(EVENT_SPECS[1], 123, 10, leader=False, exclude_kernel=False)
     assert captured[0] == (112, 3, (1 << 0) | (1 << 1) | (1 << 6) | (1 << 12), 123, -1, -1, 8)
     assert captured[1] == (112, 3, (1 << 1) | (1 << 6), 123, -1, 10, 8)
+
+
+def test_in_process_tool_window_enables_immediately_and_stays_partial():
+    backend = FakePerfBackend()
+    collector = PmuCollector(max_active=1, backend=backend)
+
+    assert collector.begin_window("tool-window", 123) is None
+    profile = collector.finish_window("tool-window", reason="tool_window_completed")
+
+    assert backend.enabled == [10]
+    assert profile.scope == "task-inherit-window"
+    assert profile.coverage.status == "partial"
+    assert profile.coverage.reason == "tool_window_completed"
+    assert not profile.coverage.eligible_for_kb
+    assert not _quality_gated_pmu_metrics(profile.to_dict())["eligible"]
+    assert collector.take("tool-window") is None
+
+    from clawtune_kb.contracts import validate
+    validate(json.loads(json.dumps(profile.to_dict())), "pmu-profile.schema.json")
+
+
+def test_in_process_tool_window_schema_rejects_reliable_or_eligible_claims():
+    from pathlib import Path
+
+    import jsonschema
+
+    backend = FakePerfBackend()
+    collector = PmuCollector(max_active=1, backend=backend)
+    collector.begin_window("tool-window-schema", 123)
+    profile = collector.finish_window(
+        "tool-window-schema", reason="tool_window_completed"
+    ).to_dict()
+    profile = json.loads(json.dumps(profile))
+    schema_path = Path(__file__).resolve().parents[3] / "contracts/pmu-profile.schema.json"
+    schema = json.loads(schema_path.read_text())
+
+    for coverage_patch in (
+        {"status": "reliable"},
+        {"eligible_for_kb": True},
+    ):
+        invalid = copy.deepcopy(profile)
+        invalid["coverage"].update(coverage_patch)
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(invalid, schema)
 
 
 def test_counting_group_attributes_four_events_and_derives_metrics() -> None:

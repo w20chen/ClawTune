@@ -143,11 +143,6 @@ def build_state(config: SidecarConfig | None = None) -> AppState:
         policy = ConcurrencyPolicy(leases, cfg.admission_wait_ms)
     else:
         policy = ObserveOnlyPolicy()
-    tool_monitor = RealtimeToolMonitor(
-        poll_interval_s=max(0.01, cfg.resource_poll_interval_ms / 1000),
-        max_timeline_points=max(1, cfg.resource_timeline_max_points),
-        enable_ebpf=cfg.tool_resource_ebpf_enabled,
-    )
     pmu_max_active = cfg.pmu_max_active or max_active_tools
     pmu_max_fds = (
         cfg.pmu_max_fds
@@ -159,6 +154,12 @@ def build_state(config: SidecarConfig | None = None) -> AppState:
         max_active=pmu_max_active,
         max_fds=pmu_max_fds,
         reliable_ratio=cfg.pmu_reliable_running_ratio,
+    )
+    tool_monitor = RealtimeToolMonitor(
+        poll_interval_s=max(0.01, cfg.resource_poll_interval_ms / 1000),
+        max_timeline_points=max(1, cfg.resource_timeline_max_points),
+        enable_ebpf=cfg.tool_resource_ebpf_enabled,
+        pmu_collector=pmu_collector,
     )
     topology["pmu"] = pmu_collector.diagnostics()
     docker_exec_observer = (
