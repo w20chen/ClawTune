@@ -2,6 +2,7 @@ import type {
   ExecutionRegistrationRequest,
   ExecutionRegistrationResponse,
   ExecutionTelemetryResponse,
+  CallLoadPrediction,
   PluginConfig,
   ResourceScope,
   ToolBeforeRequest,
@@ -20,6 +21,12 @@ export class SidecarClient {
     // task, so additional retries would only re-await that same task.  The
     // extra attempt here covers transient localhost connection refusals.
     return this.post<ToolDecision>("/v1/decisions/tool", payload, this.config.decisionTimeoutMs, 2);
+  }
+
+  async predict(payload: ToolBeforeRequest): Promise<CallLoadPrediction> {
+    return this.post<CallLoadPrediction>(
+      "/v1/predictions/tool", payload, this.config.decisionTimeoutMs
+    );
   }
 
   async reportCompletion(payload: ToolCompletedEvent): Promise<void> {

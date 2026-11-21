@@ -79,7 +79,7 @@ the unified downstream lifecycle messages.
 | `prediction.created` | One initial prediction per decision, including independent ToolKB, TrieKB and LatticeKB branches; PMU belongs to ToolKB; unavailable targets remain explicit |
 | `execution.started` | Actual payload process creation, with PID and adapter name; independent of prediction availability |
 | `execution.progress` | Ingress-only fresh remaining-time observation, elapsed time, source and `estimated`/`exact` kind |
-| `prediction.updated` | At most once per execution when elapsed time is strictly greater than the original LatticeKB p50 + 1000 ms and fresh progress provides positive remaining time |
+| `prediction.updated` | At most once per execution when elapsed time is strictly greater than the selected LatticeKB→ToolKB p50 + 1000 ms and fresh progress provides positive remaining time |
 | `execution.finishing_soon` | At most once per execution when fresh progress reports `0 < remaining_ms <= 2000`; independent of historical duration predictions |
 | `execution.exited` | Authenticated process exit, exit code or signal, timeout classification, and launcher-monotonic elapsed duration; elapsed duration is null only when setup failed before a payload start boundary existed |
 | `execution.aborted` | Runtime cleanup confirms termination without an ordinary process exit report |
@@ -93,9 +93,10 @@ smaller of two seconds and its reported remaining time. These are conservative
 delivery limits, not accuracy guarantees. Old ETA observations are never counted
 down to manufacture another observation.
 
-An overrun update uses only an available LatticeKB duration p50 (unit `ms`, finite
-and nonnegative); no ToolKB, TrieKB or p90 fallback applies. A zero baseline is
-valid. The event references the original prediction and carries
+An overrun update selects an available LatticeKB duration p50 first and falls back
+to ToolKB only when that Lattice value is unavailable (unit `ms`, finite and
+nonnegative); TrieKB and p90 do not participate. A zero baseline is valid. The
+event records the selected source, references the original prediction and carries
 `predicted_total_duration_ms = elapsed_duration_ms + remaining_duration_ms`,
 marked `statistic=point_estimate`. This estimate is neither a new percentile nor
 a training label. Finishing and overrun notifications are independent and can
@@ -178,8 +179,9 @@ Examples are in `contracts/examples/signal-session-*.json`.
 | `UNKNOWN` | No fresh plugin snapshot for 15 seconds |
 
 The public runtime transcript subscription supplies the full native assistant
-`toolCall` list before tool execution. `before_tool_call` only records applicability
-of process progress; it does not prove execution started. `after_tool_call`
+`toolCall` list before tool execution. OpenClaw-authored `delivery-mirror` and
+`gateway-injected` assistant messages are excluded. `before_tool_call` records
+that execution started and whether process progress applies. `after_tool_call`
 settles logical calls, including failures and returned background handles.
 Process exit invalidates ETA but never settles a logical tool. Final runtime
 lifecycle events reconcile skipped/cancelled members without inventing HANDOFF.
@@ -191,17 +193,38 @@ Sessions are isolated by `(gateway_id, runtime_id, session_id)`; `run_id` and
 `parent_session_key` provide an explicit relation without parsing IDs. A parent
 waits only for its spawn call to return, unless it explicitly yields.
 
-`remaining_ms` estimates completion of the current logical batch, not the arrival
-time of the next model request. It is numeric only when **every unfinished member**
-has fresh accepted process progress and known foreground semantics. The estimate
-uses the latest predicted end across these members; its expiry is the earliest
-evidence expiry. Pending serial members, unknown/background policy, unsupported
-progress, process exit and expired evidence yield `null`. The MVP does not infer
-an execution mode from IDs or predict durations for not-yet-started serial tools.
-Currently foreground eligibility is proven only for `exec` when OpenClaw's global
-`tools.deny` explicitly includes `process`; otherwise ETA remains null. Existing
-POSIX managed-wrapper progress coverage still applies. Repeated raw progress
-refreshes the forecast even after a one-shot tool finishing notification.
+`remaining_ms` targets the first observed `model_call_started` after the active
+batch. At batch discovery the plugin makes side-effect-free preview requests for
+every member and selects LatticeKB `duration_ms.p50`, falling back to ToolKB
+`duration_ms.p50` only when the Lattice value is unavailable. It does not create
+a decision, lease, monitor, training observation, or duplicate tool-level signal.
+TrieKB is not part of this fallback chain. When the actual tool starts, the normal
+decision path still publishes the complete tool-level `prediction.created` signal
+with the independent ToolKB, TrieKB, and LatticeKB results. If both Session-selected
+backends lack duration evidence, the aggregate is unavailable.
+
+OpenClaw defaults to parallel execution, so the initial forecast uses the maximum
+member duration and labels the mode as an assumption. Observed overlap confirms
+parallel execution. Observed successor execution after a predecessor settles
+changes the mode to sequential; the estimate then sums the active remainder and
+all pending member predictions. Fresh process progress replaces that member's
+historical remainder. Settled members contribute zero. Expired progress falls
+back to the still-valid selected historical evidence; an overrun without new
+evidence yields `null`. `prediction_source` reports `lattice`, `tool`, or `mixed`
+for the current aggregate. Background policy only controls whether process progress applies; the
+historical prediction still describes the logical tool-hook interval.
+
+The Session manager separately learns the delay from the last logical tool return
+to the next model start, using the runtime's strictly prior process-lifetime
+samples. This handoff component is added to the tool-batch estimate and remains
+as a `post_tools` forecast in `HANDOFF`. A cold runtime has no such evidence, so
+the total next-model forecast is `null` until the first completed handoff. The
+next `model_call_started` carries `handoff_from_batch_id`, closes that batch's
+forecast, and supplies the next calibration sample. Run termination, cancellation
+and yield withdraw the target without adding a sample.
+
+Existing POSIX managed-wrapper progress coverage still applies. Repeated raw
+progress refreshes the forecast even after a one-shot tool finishing notification.
 Execution registration must already match a known batch; otherwise its ETA is
 unavailable. This fences delayed progress even when a later batch reuses a tool ID.
 

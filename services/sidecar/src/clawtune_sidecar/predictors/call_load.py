@@ -420,6 +420,23 @@ def predict_clause_load(backend: str, kb: Any, query: ToolCallQuery,
     return prediction.model_copy(update={"memory_measurement": query.memory_measurement})
 
 
+def predict_runtime_load(runtime: Any, query: ToolCallQuery,
+                         edges: Mapping[str, Sequence[float]], *,
+                         composition_cache=None) -> CallLoadPrediction:
+    """Evaluate ToolKB without querying either clause backend."""
+    composition_cache = composition_cache if composition_cache is not None else CompositionCache()
+    try:
+        direct = runtime.predict_load_samples(query)
+        prediction = CallLoadPrediction(targets={
+            target: summarize(target, boundaries, "runtime", direct.get(target, {}).get("values", ()),
+                              context=direct.get(target, {}).get("context", ()), cache=composition_cache)
+            for target, boundaries in edges.items()
+        })
+    except Exception as exc:
+        prediction = compose("runtime", (), edges, reason=f"backend_error:{type(exc).__name__}")
+    return prediction.model_copy(update={"memory_measurement": query.memory_measurement})
+
+
 def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQuery,
                       edges: Mapping[str, Sequence[float]],
                       parsed_clauses: Sequence[Mapping[str, Any]] | None = None,
@@ -434,16 +451,9 @@ def predict_call_load(*, runtime: Any, trie: Any, lattice: Any, query: ToolCallQ
     No target or clause is filled using another model's evidence.
     """
     composition_cache = composition_cache if composition_cache is not None else CompositionCache()
-    backends = {}
-    try:
-        direct = runtime.predict_load_samples(query)
-        backends["runtime"] = CallLoadPrediction(targets={
-            target: summarize(target, boundaries, "runtime", direct.get(target, {}).get("values", ()),
-                              context=direct.get(target, {}).get("context", ()), cache=composition_cache)
-            for target, boundaries in edges.items()
-        })
-    except Exception as exc:
-        backends["runtime"] = compose("runtime", (), edges, reason=f"backend_error:{type(exc).__name__}")
+    backends = {"runtime": predict_runtime_load(
+        runtime, query, edges, composition_cache=composition_cache,
+    )}
     prepared = prepared if prepared is not None else prepare_call(
         query, parsed_clauses=parsed_clauses, parsed_execution=parsed_execution, feature_call_id=feature_call_id,
         feature_service=feature_service, command_context=command_context,

@@ -18,19 +18,36 @@
         {"type": "null"},
         {
           "type": "object", "additionalProperties": false,
-          "required": ["batch_id", "tools"],
+          "required": ["batch_id", "execution_mode", "mode_source", "tools"],
           "properties": {
             "batch_id": {"type": "string", "minLength": 1},
+            "execution_mode": {"enum": ["parallel", "sequential", "unknown"]},
+            "mode_source": {"type": "string", "minLength": 1},
             "tools": {
               "type": "array", "minItems": 1, "maxItems": 1024,
               "items": {
                 "type": "object", "additionalProperties": false,
-                "required": ["tool_call_id", "settled", "foreground"],
+                "required": ["tool_call_id", "started", "settled", "foreground", "predicted_duration_ms", "prediction_source"],
                 "properties": {
                   "tool_call_id": {"type": "string", "minLength": 1},
+                  "started": {"type": "boolean"},
                   "settled": {"type": "boolean"},
-                  "foreground": {"type": "boolean", "description": "Process progress is applicable to logical completion; false when background policy is unknown."}
-                }
+                  "foreground": {"type": "boolean", "description": "Process progress is applicable to logical completion; false when background policy is unknown."},
+                  "predicted_duration_ms": {"type": ["number", "null"], "minimum": 0,
+                    "description": "duration_ms p50 selected by the LatticeKB then ToolKB fallback chain."},
+                  "prediction_source": {"type": ["string", "null"], "enum": ["lattice", "tool", null]}
+                },
+                "allOf": [
+                  {
+                    "if": {"properties": {"settled": {"const": true}}},
+                    "then": {"properties": {"started": {"const": true}}}
+                  },
+                  {
+                    "if": {"properties": {"predicted_duration_ms": {"type": "number"}}},
+                    "then": {"properties": {"prediction_source": {"enum": ["lattice", "tool"]}}},
+                    "else": {"properties": {"prediction_source": {"type": "null"}}}
+                  }
+                ]
               }
             }
           }

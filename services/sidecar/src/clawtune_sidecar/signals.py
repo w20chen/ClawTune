@@ -36,6 +36,7 @@ class ExecutionSignals:
     identity: dict
     baseline_id: str | None = None
     baseline_ms: float | None = None
+    baseline_source: str | None = None
     started: bool = False
     exited: bool = False
     exit_sent: bool = False
@@ -108,13 +109,21 @@ class SignalHub:
             "prediction_id": decision_id, "prediction": prediction.model_dump(mode="json"),
             "scope": "tool_call", "phase": "before_execution",
         }, owner=owner, observed_at=observed_at)
-        target = prediction.lattice.load.targets.get("duration_ms")
         baseline = None
-        if (target and target.status == "available" and target.backend == "lattice"
-                and target.unit == "ms" and target.p50 is not None
-                and math.isfinite(target.p50) and target.p50 >= 0):
-            baseline = target.p50
-        self.baselines[decision_id] = (owner, baseline)
+        baseline_source = None
+        for source, load in (
+            ("lattice", prediction.lattice.load),
+            ("tool", prediction.tool.load),
+        ):
+            target = load.targets.get("duration_ms")
+            if (target and target.status == "available"
+                    and target.backend == ("lattice" if source == "lattice" else "runtime")
+                    and target.unit == "ms" and target.p50 is not None
+                    and math.isfinite(target.p50) and target.p50 >= 0):
+                baseline = target.p50
+                baseline_source = source
+                break
+        self.baselines[decision_id] = (owner, baseline, baseline_source)
         self._bound(self.baselines)
         return message
 
@@ -123,10 +132,11 @@ class SignalHub:
             return
         owner = identity(request)
         baseline_id = request.prediction_id
-        _, baseline = self.baselines.get(baseline_id, (None, None))
+        _, baseline, baseline_source = self.baselines.get(baseline_id, (None, None, None))
         self.validate_registration(request)
         self.executions[request.execution_id] = ExecutionSignals(
-            owner, baseline_id, baseline, session_batch=self.sessions.batch_key(owner))
+            owner, baseline_id, baseline, baseline_source,
+            session_batch=self.sessions.batch_key(owner))
         # Remove only terminated entries. Active execution state must not vanish.
         if len(self.executions) > 10000:
             for key in list(self.executions):
@@ -136,7 +146,7 @@ class SignalHub:
                         break
 
     def validate_registration(self, request):
-        owner, _ = self.baselines.get(request.prediction_id, (None, None))
+        owner, *_ = self.baselines.get(request.prediction_id, (None, None, None))
         if owner is not None and call_key(owner) != call_key(identity(request)):
             raise ValueError("prediction_execution_owner_mismatch")
 
@@ -203,7 +213,7 @@ class SignalHub:
             state.update_sent = True
             self.publish("prediction.updated", {
                 **estimate, "baseline_prediction_id": state.baseline_id,
-                "baseline_source": "lattice", "baseline_statistic": "p50",
+                "baseline_source": state.baseline_source, "baseline_statistic": "p50",
                 "baseline_prediction_ms": state.baseline_ms, "overrun_threshold_ms": 1000,
             }, owner=state.identity, observed_at=observed, expires_at=expires)
         # Remaining-time evidence is useful even without a historical prediction.
@@ -235,12 +245,13 @@ class SignalHub:
         if state is not None:
             state.exited = True
             self.sessions.process_exited(state.identity)
+        completed_at = event_timestamp(event.occurred_at)
+        self.sessions.tool_completed(identity(event), completed_at)
         self.publish("tool.completed", {
             "tool_name": event.tool_name, "duration_ms": event.duration_ms,
             "error_type": event.error_type,
             "measurement": sample,
-        }, source="plugin", owner=identity(event),
-            observed_at=event_timestamp(event.occurred_at))
+        }, source="plugin", owner=identity(event), observed_at=completed_at)
         self.baselines.pop(getattr(event, "decision_id", None), None)
 
     def aborted(self, execution_id, reason):

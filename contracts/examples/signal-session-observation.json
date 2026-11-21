@@ -29,11 +29,16 @@
     "model_call_id": null,
     "batch": {
       "batch_id": "run-1:message-1",
+      "execution_mode": "parallel",
+      "mode_source": "openclaw_default_assumption",
       "tools": [
         {
           "tool_call_id": "tool-1",
+          "started": true,
           "settled": false,
-          "foreground": true
+          "foreground": true,
+          "predicted_duration_ms": 1700,
+          "prediction_source": "lattice"
         }
       ]
     }

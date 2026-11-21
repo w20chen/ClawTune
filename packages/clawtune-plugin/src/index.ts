@@ -8,7 +8,7 @@ import {formatCallLoadPrediction, formatTimeBuckets} from "./prediction-format.j
 import {loadConfig, isRecord} from "./config.js";
 import {configSchema} from "./config-schema.js";
 import {CorrelationMap} from "./correlation.js";
-import type {CommonEvent, ModelEvent, PluginConfig, SidecarHealth, ToolBeforeRequest, ToolCompletedEvent, ToolDecision} from "./contracts.js";
+import type {CallLoadPrediction, CommonEvent, ModelEvent, PluginConfig, SidecarHealth, ToolBeforeRequest, ToolCompletedEvent, ToolDecision} from "./contracts.js";
 import {MIN_COMPATIBLE_SIDECAR_VERSION, REQUIRED_PROTOCOL_VERSIONS} from "./contracts.js";
 import type {ResourceScope} from "./contracts.js";
 import {
@@ -49,6 +49,21 @@ import type {
 import { TRACE_SCHEMA_VERSION } from "./trace/schema.js";
 
 const pluginVersion = "0.1.0";
+
+type SessionDurationPrediction = {durationMs: number; source: "lattice" | "tool"};
+
+function durationP50(load: CallLoadPrediction): SessionDurationPrediction | null {
+  const estimate = load.targets.duration_ms;
+  const source = estimate?.backend === "lattice" ? "lattice"
+    : estimate?.backend === "runtime" ? "tool" : null;
+  return estimate?.status === "available" && source !== null &&
+    estimate.unit === "ms" && estimate.p50 !== null && Number.isFinite(estimate.p50) &&
+    estimate.p50 >= 0 ? {durationMs: estimate.p50, source} : null;
+}
+
+function sessionDuration(prediction: ToolDecision["prediction"]): SessionDurationPrediction | null {
+  return durationP50(prediction.lattice.load) ?? durationP50(prediction.tool.load);
+}
 
 // ── Plugin-wide state ──────────────────────────────────────────────────
 
@@ -200,6 +215,14 @@ export default definePluginEntry({
     (event, context) => hookIdentity(event, context, runtimeId, gatewayId),
     message => client.reportSession(message), api.runtime?.events,
     api.config?.tools?.deny?.includes("process") === true,
+    async (toolCall, owner) => {
+      const context = {runId: owner.runId, sessionId: owner.sessionId,
+        sessionKey: owner.sessionKey, agentId: owner.agentId};
+      const prediction = await client.predict(
+        buildToolBefore(toolCall, context, config, runtimeId, gatewayId, runtimeRepo)
+      );
+      return durationP50(prediction);
+    },
   );
   api.on("subagent_spawned", (event, context) => sessionObservations.spawned(event, context));
   const correlation = new CorrelationMap(300_000, 10_000);
@@ -575,6 +598,7 @@ export default definePluginEntry({
       const tDecide = monotonicNowNs();
       const decision = await client.decide(payload);
       decisionOverheadNs += monotonicNowNs() - tDecide;
+      sessionObservations.prediction(event, context, sessionDuration(decision.prediction));
       consoleVerbose(summarizePrediction(decision));
       for (const line of formatTimeBuckets(decision.prediction, toolCallId ?? toolName)) {
         consoleVerbose(`[clawtune-time-buckets] ${line}`);

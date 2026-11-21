@@ -19,11 +19,11 @@ from clawtune_sidecar.signals import SignalHub
 from prediction_fixtures import prediction_example
 
 
-def prepared(baseline=5000):
+def prepared(baseline=5000, source="lattice"):
     hub = SignalHub()
     owner = {"gateway_id": "g", "runtime_id": "r", "run_id": None, "session_id": None,
              "tool_call_id": "call", "prediction_id": "prediction", "execution_id": "exec"}
-    hub.baselines["prediction"] = (owner, baseline)
+    hub.baselines["prediction"] = (owner, baseline, source if baseline is not None else None)
     hub.register(SimpleNamespace(**owner))
     assert hub.observe(envelope("execution.started", {"pid": 123, "progress_adapter": "PytestProgress"},
                                 source="launcher", identity=owner))
@@ -48,6 +48,7 @@ def test_progress_update_and_finishing_have_distinct_semantics_and_same_stream()
     update = messages[1]
     assert update["payload"]["predicted_total_duration_ms"] == 7700
     assert update["payload"]["baseline_prediction_id"] == "prediction"
+    assert update["payload"]["baseline_source"] == "lattice"
     assert update["payload"]["statistic"] == "point_estimate"
     assert len({m["publisher_id"] for m in messages}) == 1
     for m in messages:
@@ -66,6 +67,40 @@ def test_strict_overrun_boundary_and_finishing_without_any_history():
     hub, owner = prepared(None)
     hub.observe(progress(owner, remaining=2000))
     assert [m["type"] for m in hub.recent] == ["execution.started", "execution.finishing_soon"]
+
+
+def test_toolkb_fallback_can_drive_tool_level_overrun_update():
+    hub, owner = prepared(5000, "tool")
+    assert hub.observe(progress(owner))
+    update = next(message for message in hub.recent if message["type"] == "prediction.updated")
+    assert update["payload"]["baseline_source"] == "tool"
+    validate(update, "signal.schema.json")
+
+
+def test_initial_prediction_selects_toolkb_baseline_only_when_lattice_is_unavailable():
+    from clawtune_sidecar.predictors.call_load import summarize
+
+    prediction = prediction_example()
+    lattice_load = prediction.lattice.load
+    targets = dict(lattice_load.targets)
+    targets["duration_ms"] = summarize(
+        "duration_ms", targets["duration_ms"].buckets.edges, "lattice", (),
+    )
+    prediction = prediction.model_copy(update={
+        "lattice": prediction.lattice.model_copy(update={
+            "load": lattice_load.model_copy(update={"targets": targets}),
+        }),
+    })
+    hub = SignalHub()
+    request = SimpleNamespace(
+        gateway_id="g", runtime_id="r", run_id="run", session_id="session",
+        agent_id="agent", tool_call_id="call", call_id=None, execution_id=None,
+        prediction_id=None,
+    )
+    hub.prediction(request, prediction, "prediction")
+    _, baseline, source = hub.baselines["prediction"]
+    assert baseline == prediction.tool.load.targets["duration_ms"].p50
+    assert source == "tool"
 
 
 def test_stale_out_of_order_and_post_exit_progress_never_reopens_execution():

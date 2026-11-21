@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 from clawtune_sidecar import __version__ as _sidecar_version
 from clawtune_sidecar.api.dependencies import AppState, build_state
+from clawtune_sidecar.contracts.load_prediction import CallLoadPrediction
 from clawtune_sidecar.contracts.models import (
     ExecutionClaimRequest,
     ExecutionClaimResponse,
@@ -2008,6 +2009,19 @@ def create_app(state: AppState | None = None) -> FastAPI:
             finally:
                 end_runtime_activity(activity_key)
 
+    @app.post("/v1/predictions/tool", response_model=CallLoadPrediction)
+    async def predict_tool(
+        request: ToolBeforeRequest,
+        s: AppState = Depends(get_state),
+        _: None = Depends(auth),
+    ) -> CallLoadPrediction:
+        """Read-only LatticeKB -> ToolKB preview for complete Session batches."""
+        activity_key = begin_runtime_activity(request)
+        try:
+            return await predictor_operation(s.predictor.predict_session_load, request)
+        finally:
+            end_runtime_activity(activity_key)
+
     @app.post("/v1/decisions/tool")
     async def decide_tool(
         request: ToolBeforeRequest,
@@ -2303,11 +2317,16 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 # is durable before the plugin proceeds.
                 if not await asyncio.to_thread(s.trace_writer.flush):
                     raise HTTPException(status_code=503, detail="trace_persistence_failed")
+            observed_at = event_timestamp(event.occurred_at)
+            owner = signal_identity(event)
+            if event.event_type == "model_call_started":
+                signals.sessions.model_started(owner, event.call_id, observed_at)
+            else:
+                signals.sessions.model_completed(owner, event.call_id, observed_at)
             signals.publish(
                 "model.started" if event.event_type == "model_call_started" else "model.completed",
                 event.model_dump(mode="json", exclude={"raw_input", "raw_output", "raw_event"}),
-                source="plugin", owner=signal_identity(event),
-                observed_at=event_timestamp(event.occurred_at),
+                source="plugin", owner=owner, observed_at=observed_at,
             )
             return {"stored": True}
         except BaseException:

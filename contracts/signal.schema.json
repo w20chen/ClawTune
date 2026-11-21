@@ -199,13 +199,30 @@
     {
       "if": {"properties": {"type": {"const": "session.state"}}},
       "then": {"properties": {"expires_at": {"type": "null"},
-        "payload": {"properties": {"remaining_ms": {"type": "null"}}}}}
+        "payload": {"properties": {
+          "remaining_ms": {"type": "null"},
+          "forecast_basis": {"type": "null"},
+          "prediction_source": {"type": "null"},
+          "unavailable_reason": {"type": "null"}
+        }}}}
+    },
+    {
+      "if": {"properties": {"type": {"const": "session.handoff_forecast"}}},
+      "then": {"properties": {"payload": {"properties": {
+        "phase": {"enum": ["TOOLS", "HANDOFF"]},
+        "forecast_basis": {"enum": ["pre_execution", "live_progress", "post_tools"]}
+      }}}}
     },
     {
       "if": {"properties": {"type": {"const": "session.handoff_forecast"},
         "payload": {"properties": {"remaining_ms": {"type": "number"}}}}},
       "then": {"properties": {"expires_at": {"type": "number"},
-        "payload": {"properties": {"phase": {"const": "TOOLS"}}}}}
+        "payload": {"properties": {"unavailable_reason": {"type": "null"}}}}},
+      "else": {"if": {"properties": {"type": {"const": "session.handoff_forecast"}}},
+        "then": {"properties": {"payload": {"properties": {
+          "remaining_ms": {"type": "null"},
+          "unavailable_reason": {"type": "string", "minLength": 1}
+        }}}}}
     },
     {
       "if": {
@@ -443,7 +460,7 @@
                 "minLength": 1
               },
               "baseline_source": {
-                "const": "lattice"
+                "enum": ["lattice", "tool"]
               },
               "baseline_statistic": {
                 "const": "p50"

@@ -12,7 +12,7 @@ const message = (id, tools, extra = {}) => ({sessionKey: "key", messageId: id,
   message: {role: "assistant", content: tools.map(id => ({type: "toolCall", id, name: "exec"})), ...extra}});
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-function fixture(foreground = true) {
+function fixture(foreground = true, preview) {
   const sent = [];
   let transcript, lifecycle;
   const observer = new SessionObservations((event, context) => ({...owner,
@@ -20,7 +20,7 @@ function fixture(foreground = true) {
     async value => { sent.push(value); }, {
       onAgentEvent(fn) { lifecycle = fn; return () => {}; },
       onSessionTranscriptUpdate(fn) { transcript = fn; return () => {}; },
-    }, foreground);
+    }, foreground, preview);
   return {observer, sent, transcript: e => transcript(e), lifecycle: e => lifecycle(e)};
 }
 
@@ -35,12 +35,71 @@ test("native transcript builds full batch; hooks settle logical calls including 
     await flush();
     const snapshot = sent.at(-1).payload;
     assert.equal(snapshot.batch.batch_id, "r:assistant-1");
+    assert.equal(snapshot.batch.execution_mode, "parallel");
+    assert.equal(snapshot.batch.mode_source, "openclaw_default_assumption");
     assert.deepEqual(snapshot.batch.tools, [
-      {tool_call_id: "a", foreground: true, settled: true},
-      {tool_call_id: "b", foreground: false, settled: false},
+      {tool_call_id: "a", started: true, foreground: true, settled: true,
+        predicted_duration_ms: null, prediction_source: null},
+      {tool_call_id: "b", started: false, foreground: false, settled: false,
+        predicted_duration_ms: null, prediction_source: null},
     ]);
     assert.equal(snapshot.model_call_id, null);
     assert.ok(!JSON.stringify(snapshot).includes("details"));
+  } finally { await observer.close(); }
+});
+
+test("batch preview records Lattice then Tool fallback results and fences stale results", async () => {
+  const pending = new Map();
+  const {observer, sent, transcript} = fixture(true, call => new Promise(resolve => {
+    pending.set(call.id, resolve);
+  }));
+  try {
+    observer.model(model(), {}, true);
+    transcript(message("assistant-1", ["a", "b"]));
+    observer.beforeTool({toolName: "exec", toolCallId: "a"}, {});
+    observer.prediction({toolCallId: "a"}, {}, {durationMs: 1500, source: "tool"});
+    pending.get("a")({durationMs: 1200, source: "lattice"});
+    pending.get("b")({durationMs: 800, source: "tool"});
+    await flush(); await flush();
+    assert.deepEqual(sent.at(-1).payload.batch.tools.map(t => t.predicted_duration_ms), [1500, 800]);
+    assert.deepEqual(sent.at(-1).payload.batch.tools.map(t => t.prediction_source), ["tool", "tool"]);
+
+    transcript(message("assistant-2", ["c"]));
+    assert.equal(sent.at(-1).payload.batch.batch_id, "r:assistant-2");
+  } finally { await observer.close(); }
+});
+
+test("OpenClaw transcript mirrors do not clear an active batch", async () => {
+  const {observer, sent, transcript} = fixture();
+  try {
+    observer.model(model(), {}, true);
+    transcript(message("assistant-1", ["a"]));
+    transcript({sessionKey: "key", messageId: "mirror", message: {role: "assistant",
+      provider: "openclaw", model: "delivery-mirror", content: []}});
+    transcript({sessionKey: "key", messageId: "injected", message: {role: "assistant",
+      provider: "openclaw", model: "gateway-injected", content: []}});
+    await flush();
+    assert.equal(sent.at(-1).payload.batch.batch_id, "r:assistant-1");
+  } finally { await observer.close(); }
+});
+
+test("observed overlap and succession revise the default execution-mode assumption", async () => {
+  const {observer, sent, transcript} = fixture();
+  try {
+    observer.model(model(), {}, true);
+    transcript(message("parallel", ["a", "b"]));
+    observer.beforeTool({toolName: "exec", toolCallId: "a"}, {});
+    observer.beforeTool({toolName: "exec", toolCallId: "b"}, {});
+    await flush();
+    assert.equal(sent.at(-1).payload.batch.mode_source, "observed_overlap");
+
+    transcript(message("sequential", ["c", "d"]));
+    observer.beforeTool({toolName: "exec", toolCallId: "c"}, {});
+    observer.afterTool({toolName: "exec", toolCallId: "c", result: {}}, {});
+    observer.beforeTool({toolName: "exec", toolCallId: "d"}, {});
+    await flush();
+    assert.equal(sent.at(-1).payload.batch.execution_mode, "sequential");
+    assert.equal(sent.at(-1).payload.batch.mode_source, "observed_sequence");
   } finally { await observer.close(); }
 });
 

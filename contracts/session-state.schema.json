@@ -1,19 +1,28 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://openclaw.ai/schemas/clawtune/session-state.schema.json",
-  "description": "Both session publications carry a complete state snapshot. Compare revision across both types, scoped by publisher_id and owner; never compare with the legacy global sequence. remaining_ms estimates batch logical completion, not guaranteed model arrival.",
+  "description": "Both session publications carry a complete state snapshot. remaining_ms targets the first observed model_call_started after the active tool batch.",
   "type": "object", "additionalProperties": false,
-  "required": ["revision", "state_revision", "phase", "reason", "batch_id", "session_key", "parent_session_key", "run_status", "model_call_id", "remaining_ms"],
+  "required": ["revision", "state_revision", "phase", "reason", "batch_id", "handoff_from_batch_id", "session_key", "parent_session_key", "run_status", "model_call_id", "target", "execution_mode", "mode_source", "remaining_ms", "forecast_basis", "prediction_model", "prediction_statistic", "prediction_source", "unavailable_reason"],
   "properties": {
     "revision": {"type": "integer", "minimum": 1},
     "state_revision": {"type": "integer", "minimum": 1},
     "phase": {"enum": ["UNKNOWN", "IDLE", "CONTROL", "LLM", "TOOLS", "HANDOFF", "WAIT_EVENT"]},
     "reason": {"type": "string", "minLength": 1},
     "batch_id": {"type": ["string", "null"]},
+    "handoff_from_batch_id": {"type": ["string", "null"]},
     "session_key": {"type": ["string", "null"]},
     "parent_session_key": {"type": ["string", "null"]},
     "run_status": {"enum": ["active", "finishing", "ended", "error", "cancelled", "yielded", "closed"]},
     "model_call_id": {"type": ["string", "null"]},
-    "remaining_ms": {"type": ["number", "null"], "minimum": 0}
+    "target": {"const": "next_model_call_started"},
+    "execution_mode": {"type": ["string", "null"], "enum": ["parallel", "sequential", "unknown", null]},
+    "mode_source": {"type": ["string", "null"]},
+    "remaining_ms": {"type": ["number", "null"], "minimum": 0},
+    "forecast_basis": {"type": ["string", "null"], "enum": ["pre_execution", "live_progress", "post_tools", null]},
+    "prediction_model": {"const": "lattice_then_tool"},
+    "prediction_statistic": {"const": "p50"},
+    "prediction_source": {"type": ["string", "null"], "enum": ["lattice", "tool", "mixed", null]},
+    "unavailable_reason": {"type": ["string", "null"]}
   }
 }

@@ -42,6 +42,62 @@ from tool_resource.runtime_kb import (
 import tool_resource.runtime_kb as tool_resource_runtime_kb
 
 
+@pytest.mark.parametrize(
+    "lattice_ms,tool_ms,expected_backend,expected_ms,expected_calls",
+    [
+        (1200, 2000, "lattice", 1200, ["lattice"]),
+        (None, 2000, "runtime", 2000, ["lattice", "runtime"]),
+        (None, None, "runtime", None, ["lattice", "runtime"]),
+    ],
+)
+def test_session_preview_uses_strict_lattice_then_tool_fallback(
+    monkeypatch, lattice_ms, tool_ms, expected_backend, expected_ms, expected_calls,
+) -> None:
+    from clawtune_sidecar.contracts.load_prediction import CallLoadPrediction
+    from clawtune_sidecar.predictors.call_load import summarize
+
+    predictor = ToolResourcePredictor.from_traces(
+        openclaw_trace_paths=(), ebpf_trace_paths=(),
+        buckets=LatencyBuckets((100.0, 500.0)), repo="repo-1",
+    )
+    calls = []
+
+    def prediction(backend, duration):
+        return CallLoadPrediction(targets={
+            target: summarize(
+                target, edges, backend,
+                [duration] if target == "duration_ms" and duration is not None else (),
+            )
+            for target, edges in predictor.load_buckets.items()
+        })
+
+    def lattice(*args, **kwargs):
+        calls.append("lattice")
+        return prediction("lattice", lattice_ms)
+
+    def runtime(*args, **kwargs):
+        calls.append("runtime")
+        return prediction("runtime", tool_ms)
+
+    monkeypatch.setattr(tool_resource_predictor, "prepare_call", lambda *args, **kwargs: object())
+    monkeypatch.setattr(tool_resource_predictor, "predict_clause_load", lattice)
+    monkeypatch.setattr(tool_resource_predictor, "predict_runtime_load", runtime)
+    monkeypatch.setattr(
+        predictor.kb, "predict_load_samples",
+        lambda *args, **kwargs: pytest.fail("TrieKB must not participate in Session fallback"),
+    )
+    try:
+        result = predictor.predict_session_load(
+            _tool_request("session-preview", "session-call", "python job.py")
+        )
+    finally:
+        predictor.close()
+    duration = result.targets["duration_ms"]
+    assert calls == expected_calls
+    assert duration.backend == expected_backend
+    assert duration.p50 == expected_ms
+
+
 def test_lattice_prediction_uses_configured_guest_memory_measurement(monkeypatch) -> None:
     from tool_time.lattice_kb import LatticeTimeKB
     monkeypatch.setenv("CLAWTUNE_TOOL_RESOURCE_MEMORY_MEASUREMENT", "guest_memtotal_minus_memavailable")

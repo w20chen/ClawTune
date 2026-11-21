@@ -1,7 +1,9 @@
 """Scheduling facts, freshness, restart recovery and independent delivery."""
 import asyncio
+import json
 import time
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -13,28 +15,38 @@ from clawtune_kb.contracts import validate
 from clawtune_sidecar.api.app import create_app
 from clawtune_sidecar.api.dependencies import build_state
 from clawtune_sidecar.config import SidecarConfig
+from clawtune_sidecar.contracts.models import ToolPrediction
 from clawtune_sidecar.session_state import SessionStateManager
 from clawtune_sidecar.signal_protocol import envelope
 from clawtune_sidecar.signals import SignalHub
 
 
 def observation(*, revision=1, run="run", session="session", tools=("a", "b"),
-                settled=(), foreground=True, status="active", model=None, epoch=1):
+                started=(), settled=(), foreground=True, predicted=1000,
+                mode="parallel", mode_source="openclaw_default_assumption",
+                status="active", model=None, epoch=1):
+    durations = predicted if isinstance(predicted, dict) else {tool: predicted for tool in tools}
     return envelope("session.observation", {
         "revision": revision, "observer_id": f"observer-{epoch}", "observer_started_at": epoch,
         "session_key": "key-" + session, "parent_session_key": None,
         "run_status": status, "model_call_id": model,
-        "batch": {"batch_id": run + ":batch", "tools": [
-            {"tool_call_id": t, "settled": t in settled, "foreground": foreground}
+        "batch": {"batch_id": run + ":batch", "execution_mode": mode,
+                  "mode_source": mode_source, "tools": [
+            {"tool_call_id": t, "started": t in started or t in settled,
+             "settled": t in settled, "foreground": foreground,
+             "predicted_duration_ms": durations.get(t),
+             "prediction_source": "lattice" if durations.get(t) is not None else None}
             for t in tools]} if tools else None,
     }, source="plugin", identity={"gateway_id": "gateway", "runtime_id": "runtime",
                                   "session_id": session, "run_id": run})
 
 
-def setup():
+def setup(*, overhead=100):
     hub = SignalHub()
     now = [100.0]
     hub.sessions = SessionStateManager(hub.publish, clock=lambda: now[0])
+    if overhead is not None:
+        hub.sessions.handoff_history[("gateway", "runtime")].append(overhead)
     return hub, hub.sessions, now
 
 
@@ -47,42 +59,98 @@ def latest(manager):
     return manager.snapshots()[-1]
 
 
-def test_parallel_requires_all_members_and_completion_is_logical():
+def test_parallel_uses_all_lattice_predictions_and_live_revisions():
     hub, manager, now = setup()
-    message = observation()
+    message = observation(predicted={"a": 1200, "b": 1800})
     manager.observe(message)
+    assert latest(manager)["payload"]["remaining_ms"] == pytest.approx(1900)
+    assert latest(manager)["payload"]["prediction_model"] == "lattice_then_tool"
+    assert latest(manager)["payload"]["prediction_source"] == "lattice"
     progress(manager, message, "a", now[0])
-    assert latest(manager)["payload"]["remaining_ms"] is None
+    assert latest(manager)["payload"]["remaining_ms"] == pytest.approx(1900)
     progress(manager, message, "b", now[0], remaining=1800)
-    assert latest(manager)["payload"]["remaining_ms"] == pytest.approx(1800)
+    assert latest(manager)["payload"]["remaining_ms"] == pytest.approx(1900)
     manager.process_exited({**message["identity"], "tool_call_id": "a"})
     assert latest(manager)["payload"]["phase"] == "TOOLS"
-    assert latest(manager)["payload"]["remaining_ms"] is None
-    manager.observe(observation(revision=2, settled=("a",)))
+    assert latest(manager)["payload"]["remaining_ms"] == pytest.approx(1900)
+    manager.observe(observation(revision=2, settled=("a",),
+                                predicted={"a": 1200, "b": 1800}))
     assert latest(manager)["payload"]["phase"] == "TOOLS"
-    manager.observe(observation(revision=3, settled=("a", "b")))
+    assert latest(manager)["payload"]["remaining_ms"] == pytest.approx(1900)
+    manager.observe(observation(revision=3, settled=("a", "b"),
+                                predicted={"a": 1200, "b": 1800}))
     assert latest(manager)["payload"]["phase"] == "HANDOFF"
+    assert latest(manager)["payload"]["remaining_ms"] == pytest.approx(100)
     for m in hub.recent:
         validate(m, "signal.schema.json")
 
 
-def test_serial_pending_unknown_background_and_expiry():
-    _, manager, now = setup()
-    message = observation()
+def test_batch_reports_mixed_when_lattice_and_tool_fallback_are_both_used():
+    _, manager, _ = setup()
+    message = observation(predicted={"a": 1200, "b": 1800})
+    message["payload"]["batch"]["tools"][1]["prediction_source"] = "tool"
     manager.observe(message)
+    assert latest(manager)["payload"]["prediction_source"] == "mixed"
+
+
+def test_sequential_includes_pending_lattice_predictions_and_expires_stale_evidence():
+    _, manager, now = setup()
+    message = observation(started=("a",), predicted={"a": 1000, "b": 500},
+                          mode="sequential", mode_source="observed_sequence")
+    manager.observe(message)
+    assert latest(manager)["payload"]["remaining_ms"] == pytest.approx(1600)
     progress(manager, message, "a", now[0])
-    assert latest(manager)["payload"]["remaining_ms"] is None  # b has not started
-    manager.observe(observation(revision=2, settled=("a",)))
+    assert latest(manager)["payload"]["remaining_ms"] == pytest.approx(2100)
+    manager.observe(observation(revision=2, started=("a",), settled=("a",),
+                                predicted={"a": 1000, "b": 500}, mode="sequential",
+                                mode_source="observed_sequence"))
+    assert latest(manager)["payload"]["remaining_ms"] == pytest.approx(600)
+    manager.observe(observation(revision=3, started=("a", "b"), settled=("a",),
+                                predicted={"a": 1000, "b": 500}, mode="sequential",
+                                mode_source="observed_sequence"))
     progress(manager, message, "b", now[0], remaining=500)
-    assert latest(manager)["payload"]["remaining_ms"] == 500
+    assert latest(manager)["payload"]["remaining_ms"] == pytest.approx(600)
     now[0] += 1.1
     assert latest(manager)["payload"]["remaining_ms"] is None
-    manager.observe(observation(revision=3, foreground=False))
-    progress(manager, message, "a", now[0])
-    progress(manager, message, "b", now[0])
-    assert latest(manager)["payload"]["remaining_ms"] is None
-    manager.observe(observation(revision=4, foreground=False, settled=("a", "b")))
+    manager.observe(observation(revision=4, foreground=False, settled=("a", "b"),
+                                predicted={"a": 1000, "b": 500}, mode="sequential",
+                                mode_source="observed_sequence"))
     assert latest(manager)["payload"]["phase"] == "HANDOFF"  # background handle returned
+    assert latest(manager)["payload"]["remaining_ms"] == pytest.approx(100)
+
+
+def test_expired_live_progress_falls_back_to_selected_historical_prediction():
+    _, manager, now = setup()
+    message = observation(tools=("a",), started=("a",), predicted=3000)
+    manager.observe(message)
+    progress(manager, message, "a", now[0], remaining=500, validity=.5)
+    assert latest(manager)["payload"]["forecast_basis"] == "live_progress"
+    now[0] += .6
+    payload = latest(manager)["payload"]
+    assert payload["forecast_basis"] == "pre_execution"
+    assert payload["remaining_ms"] == pytest.approx(2500)
+
+
+def test_consumed_or_withdrawn_batch_cannot_reappear_or_calibrate():
+    _, manager, now = setup()
+    first = observation(tools=("a",), settled=("a",))
+    manager.observe(first)
+    now[0] += .1
+    manager.model_started(first["identity"], "model-next", now[0])
+    assert latest(manager)["payload"]["phase"] == "LLM"
+    samples = list(manager.handoff_history[("gateway", "runtime")])
+    manager.model_completed(first["identity"], "model-next", now[0])
+    assert latest(manager)["payload"]["phase"] == "CONTROL"
+    assert latest(manager)["payload"]["reason"] == "batch_target_resolved"
+    assert list(manager.handoff_history[("gateway", "runtime")]) == samples
+
+    second = observation(revision=2, tools=("b",))
+    manager.observe(second)
+    manager.observe(observation(revision=3, tools=("b",), status="yielded"))
+    now[0] += .2
+    manager.model_started(second["identity"], "late-model", now[0])
+    assert list(manager.handoff_history[("gateway", "runtime")]) == samples
+    assert latest(manager)["payload"]["phase"] == "WAIT_EVENT"
 
 
 def test_foreground_retraction_and_stale_heartbeat():
@@ -90,14 +158,31 @@ def test_foreground_retraction_and_stale_heartbeat():
     message = observation(tools=("a",))
     manager.observe(message)
     progress(manager, message, "a", now[0])
-    assert latest(manager)["payload"]["remaining_ms"] == 1500
-    manager.observe(observation(revision=2, tools=("a",), foreground=False))
-    assert latest(manager)["payload"]["remaining_ms"] is None
+    assert latest(manager)["payload"]["remaining_ms"] == pytest.approx(1600)
+    manager.observe(observation(revision=2, tools=("a",), foreground=False,
+                                predicted=2000))
+    assert latest(manager)["payload"]["remaining_ms"] == pytest.approx(2100)
+    assert latest(manager)["payload"]["forecast_basis"] == "pre_execution"
     now[0] += 16
     stale = observation(revision=3, status="ended")
     stale["observed_at"] = 100
     assert not manager.observe(stale)
     assert latest(manager)["payload"]["phase"] == "UNKNOWN"
+
+
+def test_cold_handoff_stays_unknown_then_first_model_start_calibrates():
+    _, manager, now = setup(overhead=None)
+    first = observation(tools=("a",), started=("a",), predicted=800)
+    manager.observe(first)
+    assert latest(manager)["payload"]["remaining_ms"] is None
+    assert latest(manager)["payload"]["unavailable_reason"] == "handoff_overhead_unavailable"
+    manager.observe(observation(revision=2, tools=("a",), settled=("a",), predicted=800))
+    now[0] += .25
+    manager.model_started(first["identity"], "model-next", now[0])
+    payload = latest(manager)["payload"]
+    assert payload["phase"] == "LLM"
+    assert payload["handoff_from_batch_id"] == "run:batch"
+    assert manager.handoff_history[("gateway", "runtime")][0] == pytest.approx(250)
 
 
 def test_session_only_delivery_keeps_internal_tool_observations(monkeypatch):
@@ -109,11 +194,13 @@ def test_session_only_delivery_keeps_internal_tool_observations(monkeypatch):
     assert hub.queue.empty()
     assert hub.task is None
     assert len(hub.session_pending) == 1
-    assert [m["type"] for m in hub.recent] == ["model.started", "session.state"]
+    assert [m["type"] for m in hub.recent] == [
+        "model.started", "session.state", "session.handoff_forecast"]
 
 
 def test_raw_progress_refreshes_session_after_one_shot_tool_notification():
     hub = SignalHub()
+    hub.sessions.handoff_history[("gateway", "runtime")].append(100)
     snapshot = observation(tools=("a",))
     hub.sessions.observe(snapshot)
     owner = {**snapshot["identity"], "tool_call_id": "a", "execution_id": "exec"}
@@ -130,8 +217,8 @@ def test_raw_progress_refreshes_session_after_one_shot_tool_notification():
             expires_at=observed + 1))
     assert sum(m["type"] == "execution.finishing_soon" for m in hub.recent) == 1
     forecasts = [m for m in hub.recent if m["type"] == "session.handoff_forecast"]
-    assert len(forecasts) == 2
-    assert forecasts[-1]["payload"]["remaining_ms"] > forecasts[0]["payload"]["remaining_ms"]
+    assert len(forecasts) >= 3
+    assert forecasts[-1]["payload"]["remaining_ms"] > forecasts[-2]["payload"]["remaining_ms"]
     # Reused call IDs must not attach an old execution to a later assistant batch.
     next_batch = observation(revision=2, tools=("a",))
     next_batch["payload"]["batch"]["batch_id"] = "run:next-batch"
@@ -140,7 +227,8 @@ def test_raw_progress_refreshes_session_after_one_shot_tool_notification():
         "elapsed_duration_ms": 600, "remaining_duration_ms": 1800,
         "remaining_source": "pytest.completed_percent", "remaining_kind": "estimated",
     }, source="launcher", identity=owner, observed_at=now + .002, expires_at=now + 1))
-    assert latest(hub.sessions)["payload"]["remaining_ms"] is None
+    assert latest(hub.sessions)["payload"]["batch_id"] == "run:next-batch"
+    assert latest(hub.sessions)["payload"]["forecast_basis"] == "pre_execution"
 
 
 @pytest.mark.parametrize("status,phase", [("yielded", "WAIT_EVENT"), ("cancelled", "IDLE"),
@@ -210,6 +298,31 @@ def test_api_auth_snapshots_and_sidecar_restart(tmp_path):
         restored = client.get("/v1/sessions", headers=headers).json()
         assert snapshot["publisher_id"] != restored["publisher_id"]
         assert restored["sessions"][0]["payload"]["phase"] == "TOOLS"
+
+
+def test_read_only_preview_uses_predictor_without_execution_side_effects(tmp_path, monkeypatch):
+    config = SidecarConfig(trace_dir=tmp_path / "traces", auth_token="secret",
+                           tool_resource_ebpf_enabled=False, pmu_enabled=False)
+    state = build_state(config)
+    root = Path(__file__).resolve().parents[3]
+    request = json.loads((root / "contracts/examples/tool-before-request.json").read_text())
+    prediction = ToolPrediction.model_validate(json.loads(
+        (root / "contracts/examples/tool-prediction.json").read_text()))
+    predicted = []
+    monkeypatch.setattr(state.predictor, "predict_session_load",
+                        lambda value: predicted.append(value) or prediction.lattice.load)
+    monkeypatch.setattr(state.predictor, "record_tool_started",
+                        lambda *_: pytest.fail("preview recorded a tool start"))
+    monkeypatch.setattr(state.tool_monitor, "begin",
+                        lambda *_: pytest.fail("preview started monitoring"))
+    with TestClient(create_app(state)) as client:
+        response = client.post("/v1/predictions/tool", json=request,
+                               headers={"Authorization": "Bearer secret"})
+    assert response.status_code == 200
+    assert response.json()["targets"]["duration_ms"] == (
+        prediction.lattice.load.targets["duration_ms"].model_dump(mode="json"))
+    assert len(predicted) == 1
+    assert predicted[0].tool_call_id == request["tool_call_id"]
 
 
 def test_session_delivery_bypasses_blocked_legacy_and_resyncs_latest():

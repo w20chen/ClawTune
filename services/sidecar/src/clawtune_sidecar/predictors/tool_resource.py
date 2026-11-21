@@ -17,6 +17,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
 
+from clawtune_sidecar.contracts.load_prediction import CallLoadPrediction
 from clawtune_sidecar.contracts.models import (
     ToolBeforeRequest,
     ToolCompletedEvent,
@@ -26,13 +27,18 @@ from clawtune_sidecar.contracts.models import (
 )
 from clawtune_sidecar.identity import (
     CorrelationKey,
+    call_key,
     correlation_key,
     owners_compatible,
 )
 from clawtune_sidecar.monitoring.tool_runtime import ToolRuntimeSample
 from clawtune_sidecar.prediction_config import load_bucket_edges
-from clawtune_sidecar.predictors.call_load import predict_call_load
-from clawtune_sidecar.identity import call_key
+from clawtune_sidecar.predictors.call_load import (
+    predict_call_load,
+    predict_clause_load,
+    predict_runtime_load,
+    prepare_call,
+)
 from kb_common import (
     DEFAULT_MAX_OPTIONAL_FEATURES, require_same_feature_limit, validate_max_optional_features,
 )
@@ -732,6 +738,48 @@ class ToolResourcePredictor:
                 trie=ClauseKBPrediction(load=predictions["trie"]),
                 lattice=ClauseKBPrediction(load=predictions["lattice"]),
             )
+
+    @_open_operation
+    def predict_session_load(self, request: ToolBeforeRequest) -> CallLoadPrediction:
+        """Query LatticeKB first, then ToolKB, without execution state."""
+        with self._kb_lock:
+            from command_parser import ParseContext
+            from command_parser.validation import validate
+            from tool_time.query import LatticeQueryCache
+
+            raw_context = request.command_context or {}
+            validate("command-context", raw_context)
+            command_context = ParseContext(**{
+                **raw_context,
+                "repo": request.repo or self.repo,
+                "runtime_id": request.runtime_id,
+            })
+            self.command_features.discover(command_context)
+            query = ToolCallQuery(
+                repo=request.repo or self.repo,
+                tool_name=request.tool_name,
+                command=_command_for_request(request),
+                ts_start=time.time(),
+                memory_measurement=self.memory_measurement,
+            )
+            prepared = prepare_call(
+                query,
+                feature_service=self.command_features,
+                command_context=command_context,
+            )
+            lattice = predict_clause_load(
+                "lattice",
+                self.lattice_kb,
+                query,
+                self.load_buckets,
+                prepared,
+                query_cache=LatticeQueryCache(),
+            )
+            duration = lattice.targets.get("duration_ms")
+            if (duration is not None and duration.status == "available"
+                    and duration.p50 is not None and math.isfinite(duration.p50)):
+                return lattice
+            return predict_runtime_load(self.continuous_kb, query, self.load_buckets)
 
     def _prediction_diagnostics(self, request, command_context, *, query_cache, feature_key):
         """Return displayed diagnostics and the successful shared shell parse.

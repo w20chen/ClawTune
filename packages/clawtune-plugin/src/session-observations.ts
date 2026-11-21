@@ -8,10 +8,14 @@ const string = (...values: unknown[]): string | null =>
 
 type Owner = {gatewayId: string; runtimeId: string; sessionId: string | null;
   sessionKey: string | null; runId: string | null; agentId: string | null};
-type Tool = {tool_call_id: string; settled: boolean; foreground: boolean};
+type DurationPrediction = {durationMs: number; source: "lattice" | "tool"};
+type Tool = {tool_call_id: string; started: boolean; settled: boolean; foreground: boolean;
+  predicted_duration_ms: number | null; prediction_source: "lattice" | "tool" | null};
+type Batch = {batch_id: string; execution_mode: "parallel" | "sequential" | "unknown";
+  mode_source: string; tools: Tool[]};
 type Observation = {revision: number; observer_id: string; observer_started_at: number;
   session_key: string | null; parent_session_key: string | null;
-  run_status: string; model_call_id: string | null; batch: {batch_id: string; tools: Tool[]} | null};
+  run_status: string; model_call_id: string | null; batch: Batch | null};
 type Entry = {owner: Owner; data: Observation; retiredRuns: Set<string>; messages: Set<string>;
   messageSeq: number; terminal: boolean};
 type Events = {
@@ -37,7 +41,8 @@ export class SessionObservations {
 
   constructor(private resolve: (event: unknown, context: unknown) => Owner,
     private send: (message: unknown) => Promise<void>, events?: Events,
-    private foregroundExec = false) {
+    private foregroundExec = false,
+    private preview?: (toolCall: unknown, owner: Owner) => Promise<DurationPrediction | null>) {
     if (events?.onAgentEvent) this.unsubscribe.push(events.onAgentEvent(e => this.lifecycle(e)));
     if (events?.onSessionTranscriptUpdate) this.unsubscribe.push(
       events.onSessionTranscriptUpdate(e => this.transcript(e)));
@@ -101,11 +106,36 @@ export class SessionObservations {
     const entry = this.entry(event, context);
     const e = record(event);
     const id = string(e.tool_call_id, e.toolCallId, e.id);
-    const tool = entry?.data.batch?.tools.find(t => t.tool_call_id === id);
+    const batch = entry?.data.batch;
+    const tool = batch?.tools.find(t => t.tool_call_id === id);
     if (!entry || !tool || tool.settled || entry.terminal) return;
+    const overlapping = batch!.tools.some(t => t.tool_call_id !== id && t.started && !t.settled);
+    const followsSettled = batch!.tools.some(t => t.tool_call_id !== id && t.settled);
+    tool.started = true;
+    if (overlapping) {
+      batch!.execution_mode = "parallel";
+      batch!.mode_source = "observed_overlap";
+    } else if (followsSettled) {
+      batch!.execution_mode = "sequential";
+      batch!.mode_source = "observed_sequence";
+    }
     // exec's default yield is real. Only an explicit global process-tool deny
     // proves that process ETA also describes this logical invocation.
     tool.foreground = e.toolName === "exec" && this.foregroundExec;
+    this.queue(entry);
+  }
+
+  prediction(event: unknown, context: unknown, prediction: DurationPrediction | null): void {
+    if (prediction === null || !Number.isFinite(prediction.durationMs) || prediction.durationMs < 0) return;
+    const entry = this.entry(event, context);
+    const e = record(event);
+    const id = string(e.tool_call_id, e.toolCallId, e.id);
+    const tool = entry?.data.batch?.tools.find(t => t.tool_call_id === id);
+    if (!entry || !tool || tool.settled || entry.terminal ||
+        (tool.predicted_duration_ms === prediction.durationMs &&
+         tool.prediction_source === prediction.source)) return;
+    tool.predicted_duration_ms = prediction.durationMs;
+    tool.prediction_source = prediction.source;
     this.queue(entry);
   }
 
@@ -116,6 +146,7 @@ export class SessionObservations {
     const tool = entry?.data.batch?.tools.find(t => t.tool_call_id === id);
     if (!entry || !tool || tool.settled || entry.terminal) return;
     const details = record(record(e.result).details);
+    tool.started = true;
     tool.settled = true; // Includes failures, denials, and background handles.
     if ((e.toolName ?? e.tool_name) === "sessions_yield" && details.status === "yielded") {
       entry.data.run_status = "yielded";
@@ -128,6 +159,8 @@ export class SessionObservations {
     const e = record(value), target = record(e.target), message = record(e.message);
     const entry = this.aliases.get(string(e.sessionKey, target.sessionKey) ?? "");
     if (!entry || entry.terminal || message.role !== "assistant") return;
+    if (message.provider === "openclaw" &&
+        ["delivery-mirror", "gateway-injected"].includes(String(message.model ?? ""))) return;
     const sessionId = string(target.sessionId, e.sessionId);
     if (sessionId && sessionId !== entry.owner.sessionId) return;
     const messageId = string(e.messageId, message.id);
@@ -144,11 +177,36 @@ export class SessionObservations {
     const ids = calls.map((c: any) => String(c.id));
     if (new Set(ids).size !== ids.length) return;
     entry.data.model_call_id = null;
+    const batchId = `${entry.owner.runId}:${messageId ?? randomUUID()}`;
     entry.data.batch = ids.length ? {
-      batch_id: `${entry.owner.runId}:${messageId ?? randomUUID()}`,
-      tools: ids.map(tool_call_id => ({tool_call_id, settled: false, foreground: false})),
+      batch_id: batchId,
+      execution_mode: "parallel",
+      mode_source: "openclaw_default_assumption",
+      tools: ids.map(tool_call_id => ({tool_call_id, started: false, settled: false,
+        foreground: false, predicted_duration_ms: null, prediction_source: null})),
     } : null;
     this.queue(entry);
+    if (ids.length && this.preview) void this.previewBatch(entry, batchId, calls);
+  }
+
+  private async previewBatch(entry: Entry, batchId: string, calls: unknown[]): Promise<void> {
+    const owner = {...entry.owner};
+    const durations = await Promise.all(calls.map(async call => {
+      try { return await this.preview!(call, owner); } catch { return null; }
+    }));
+    const batch = entry.data.batch;
+    if (this.closed || entry.owner.runId !== owner.runId || batch?.batch_id !== batchId) return;
+    let changed = false;
+    for (let index = 0; index < batch.tools.length; index++) {
+      const prediction = durations[index];
+      if (batch.tools[index].predicted_duration_ms === null && prediction !== null &&
+          Number.isFinite(prediction.durationMs) && prediction.durationMs >= 0) {
+        batch.tools[index].predicted_duration_ms = prediction.durationMs;
+        batch.tools[index].prediction_source = prediction.source;
+        changed = true;
+      }
+    }
+    if (changed) this.queue(entry);
   }
 
   lifecycle(value: unknown): void {

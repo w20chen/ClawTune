@@ -25,10 +25,19 @@
     "phase": "TOOLS",
     "reason": "batch_active",
     "batch_id": "run-1:message-1",
+    "handoff_from_batch_id": null,
     "session_key": "agent:main:main",
     "parent_session_key": null,
     "run_status": "active",
     "model_call_id": null,
-    "remaining_ms": 1800
+    "target": "next_model_call_started",
+    "execution_mode": "parallel",
+    "mode_source": "openclaw_default_assumption",
+    "remaining_ms": 1800,
+    "forecast_basis": "live_progress",
+    "prediction_model": "lattice_then_tool",
+    "prediction_statistic": "p50",
+    "prediction_source": "lattice",
+    "unavailable_reason": null
   }
 }
