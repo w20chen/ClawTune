@@ -171,6 +171,63 @@ test("parent association can arrive late, and duplicate transcript cannot reopen
   } finally { await observer.close(); }
 });
 
+test("subagent lifecycle exposes active children and only actual parent-wake candidates", async () => {
+  const {observer, sent} = fixture();
+  try {
+    observer.model(model(), {}, true);
+    observer.spawned({childSessionKey: "child-wake", runId: "child-run-1"},
+      {requesterSessionKey: "key"});
+    observer.afterTool({toolName: "sessions_spawn", toolCallId: "spawn-1",
+      params: {mode: "run"}, result: {details: {status: "accepted",
+        childSessionKey: "child-wake", runId: "child-run-1"}}}, {});
+    observer.spawned({childSessionKey: "child-background", runId: "child-run-2"},
+      {requesterSessionKey: "key"});
+    observer.afterTool({toolName: "sessions_spawn", toolCallId: "spawn-2",
+      params: {mode: "run", expectsCompletionMessage: false},
+      result: {details: {status: "accepted", childSessionKey: "child-background",
+        runId: "child-run-2"}}}, {});
+    observer.afterTool({toolName: "sessions_yield", toolCallId: "yield",
+      params: {}, result: {details: {status: "yielded"}}}, {});
+    await flush();
+    assert.deepEqual(sent.at(-1).payload.active_child_session_keys,
+      ["child-background", "child-wake"]);
+    assert.deepEqual(sent.at(-1).payload.wait, {reason: "subagent_completion", mode: "any",
+      session_keys: ["child-wake"]});
+
+    observer.model(model("next", "parent-resumed"), {}, true);
+    await flush();
+    assert.equal(sent.at(-1).payload.wait, null);
+    assert.deepEqual(sent.at(-1).payload.active_child_session_keys,
+      ["child-background", "child-wake"]);
+
+    observer.ended({targetSessionKey: "child-wake", runId: "stale-run"},
+      {requesterSessionKey: "key"});
+    assert.deepEqual(sent.at(-1).payload.active_child_session_keys,
+      ["child-background", "child-wake"]);
+    observer.ended({targetSessionKey: "child-wake", runId: "child-run-1"},
+      {requesterSessionKey: "key"});
+    await flush();
+    assert.deepEqual(sent.at(-1).payload.active_child_session_keys, ["child-background"]);
+  } finally { await observer.close(); }
+});
+
+test("thread-bound child keeps parent wait semantics explicitly unknown", async () => {
+  const {observer, sent} = fixture();
+  try {
+    observer.model(model(), {}, true);
+    observer.spawned({childSessionKey: "child-thread", runId: "child-run"},
+      {requesterSessionKey: "key"});
+    observer.afterTool({toolName: "sessions_spawn", toolCallId: "spawn",
+      params: {mode: "session", thread: true}, result: {details: {status: "accepted",
+        childSessionKey: "child-thread", runId: "child-run"}}}, {});
+    observer.afterTool({toolName: "sessions_yield", toolCallId: "yield",
+      params: {}, result: {details: {status: "yielded"}}}, {});
+    await flush();
+    assert.deepEqual(sent.at(-1).payload.wait, {reason: "subagent_completion", mode: "unknown",
+      session_keys: ["child-thread"]});
+  } finally { await observer.close(); }
+});
+
 test("registered hooks and runtime subscriptions emit schema-valid complete snapshots", async () => {
   register(`data:text/javascript,${encodeURIComponent(`
     export async function resolve(specifier, context, nextResolve) {

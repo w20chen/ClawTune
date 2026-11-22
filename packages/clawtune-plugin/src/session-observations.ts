@@ -13,11 +13,15 @@ type Tool = {tool_call_id: string; started: boolean; settled: boolean; foregroun
   predicted_duration_ms: number | null; prediction_source: "lattice" | "tool" | null};
 type Batch = {batch_id: string; execution_mode: "parallel" | "sequential" | "unknown";
   mode_source: string; tools: Tool[]};
+type SessionWait = {reason: "subagent_completion"; mode: "any" | "unknown";
+  session_keys: string[]};
 type Observation = {revision: number; observer_id: string; observer_started_at: number;
   session_key: string | null; parent_session_key: string | null;
+  active_child_session_keys: string[]; wait: SessionWait | null;
   run_status: string; model_call_id: string | null; batch: Batch | null};
 type Entry = {owner: Owner; data: Observation; retiredRuns: Set<string>; messages: Set<string>;
   messageSeq: number; terminal: boolean};
+type Child = {runId: string | null; completionExpected: boolean | null};
 type Events = {
   onAgentEvent?(handler: (event: unknown) => void): () => void;
   onSessionTranscriptUpdate?(handler: (event: unknown) => void): () => void;
@@ -31,6 +35,7 @@ export class SessionObservations {
   private entries = new Map<string, Entry>();
   private aliases = new Map<string, Entry>();
   private parents = new Map<string, string>();
+  private children = new Map<string, Map<string, Child>>();
   private pending = new Map<Entry, unknown>();
   private unsubscribe: Array<() => void> = [];
   private timer: ReturnType<typeof setInterval>;
@@ -69,6 +74,7 @@ export class SessionObservations {
       entry = {owner, data: {revision: 0, observer_id: this.observerId,
         observer_started_at: this.observerStartedAt, session_key: owner.sessionKey,
         parent_session_key: this.parents.get(owner.sessionKey ?? "") ?? null,
+        active_child_session_keys: this.activeChildren(owner.sessionKey), wait: null,
         run_status: "active", model_call_id: null, batch: null},
         retiredRuns: new Set(), messages: new Set(), messageSeq: -1, terminal: false};
       this.entries.set(key, entry);
@@ -78,7 +84,8 @@ export class SessionObservations {
       // Keep terminal generations fenced; never guess identity from ID string contents.
       entry.owner = owner;
       entry.terminal = false;
-      entry.data = {...entry.data, run_status: "active", model_call_id: null, batch: null};
+      entry.data = {...entry.data, run_status: "active", model_call_id: null,
+        active_child_session_keys: this.activeChildren(owner.sessionKey), wait: null, batch: null};
     }
     if (owner.sessionKey) {
       entry.data.session_key = owner.sessionKey;
@@ -95,6 +102,7 @@ export class SessionObservations {
     if (started) {
       entry.data.run_status = "active";
       entry.data.model_call_id = callId;
+      entry.data.wait = null;
       entry.data.batch = null; // Actual next call reconciles any missed tool completion.
     } else if (entry.data.model_call_id === callId) {
       entry.data.model_call_id = null;
@@ -142,16 +150,31 @@ export class SessionObservations {
   afterTool(event: unknown, context: unknown): void {
     const entry = this.entry(event, context);
     const e = record(event);
+    const toolName = string(e.toolName, e.tool_name);
     const id = string(e.tool_call_id, e.toolCallId, e.id);
-    const tool = entry?.data.batch?.tools.find(t => t.tool_call_id === id);
-    if (!entry || !tool || tool.settled || entry.terminal) return;
-    const details = record(record(e.result).details);
-    tool.started = true;
-    tool.settled = true; // Includes failures, denials, and background handles.
-    if ((e.toolName ?? e.tool_name) === "sessions_yield" && details.status === "yielded") {
+    const result = record(e.result), details = record(result.details);
+    if (entry && !entry.terminal && toolName === "sessions_spawn") {
+      const child = string(details.childSessionKey, details.child_session_key,
+        result.childSessionKey, result.child_session_key);
+      if (child && entry.owner.sessionKey) {
+        const params = record(e.params);
+        const completionExpected = params.expectsCompletionMessage === false ? false
+          : params.mode === "session" && params.thread === true ? null : true;
+        this.setChild(entry.owner.sessionKey, child,
+          string(details.runId, details.run_id, result.runId, result.run_id), completionExpected);
+      }
+    }
+    if (entry && !entry.terminal && toolName === "sessions_yield" &&
+        string(details.status, result.status) === "yielded") {
       entry.data.run_status = "yielded";
       entry.data.model_call_id = null;
+      entry.data.wait = this.subagentWait(entry.owner.sessionKey);
+      this.queue(entry);
     }
+    const tool = entry?.data.batch?.tools.find(t => t.tool_call_id === id);
+    if (!entry || !tool || tool.settled || entry.terminal) return;
+    tool.started = true;
+    tool.settled = true; // Includes failures, denials, and background handles.
     this.queue(entry);
   }
 
@@ -214,12 +237,16 @@ export class SessionObservations {
     if (e.stream !== "lifecycle") return;
     const entry = this.entry(e, {}, data.phase === "start");
     if (!entry || entry.terminal) return;
-    if (data.phase === "start") entry.data.run_status = "active";
+    if (data.phase === "start") {
+      entry.data.run_status = "active";
+      entry.data.wait = null;
+    }
     else if (["finishing", "end", "error"].includes(data.phase)) {
       entry.data.model_call_id = null;
       entry.data.run_status = data.yielded || entry.data.run_status === "yielded" ? "yielded"
         : data.phase === "finishing" ? "finishing"
         : data.aborted ? "cancelled" : data.phase === "error" ? "error" : "ended";
+      if (entry.data.run_status !== "yielded") entry.data.wait = null;
       if (data.phase !== "finishing") entry.terminal = true;
     } else return;
     this.queue(entry);
@@ -231,11 +258,26 @@ export class SessionObservations {
     const parent = string(c.requesterSessionKey);
     if (!child || !parent) return;
     this.parents.set(child, parent);
+    this.setChild(parent, child, string(e.runId, c.runId), null);
     const entry = this.aliases.get(child);
     if (entry) {
       entry.data.parent_session_key = parent;
       this.queue(entry);
     }
+  }
+
+  ended(event: unknown, context: unknown): void {
+    const e = record(event), c = record(context);
+    const child = string(e.targetSessionKey, c.childSessionKey);
+    const parent = string(c.requesterSessionKey, child ? this.parents.get(child) : null);
+    if (!child || !parent) return;
+    const children = this.children.get(parent);
+    const current = children?.get(child);
+    const runId = string(e.runId, c.runId);
+    if (!current || (runId && current.runId && runId !== current.runId)) return;
+    children!.delete(child);
+    if (!children!.size) this.children.delete(parent);
+    this.refreshParent(parent);
   }
 
   endSession(event: unknown, context: unknown): void {
@@ -245,6 +287,46 @@ export class SessionObservations {
     entry.terminal = true;
     entry.data.run_status = "closed";
     entry.data.model_call_id = null;
+    entry.data.wait = null;
+    this.queue(entry);
+  }
+
+  private activeChildren(parent: string | null): string[] {
+    return parent ? [...(this.children.get(parent)?.keys() ?? [])].sort() : [];
+  }
+
+  private setChild(parent: string, child: string, runId: string | null,
+    completionExpected: boolean | null): void {
+    let children = this.children.get(parent);
+    if (!children) this.children.set(parent, children = new Map());
+    const current = children.get(child);
+    const sameRun = current !== undefined && (!runId || !current.runId || runId === current.runId);
+    children.set(child, {
+      runId: runId ?? current?.runId ?? null,
+      completionExpected: completionExpected ?? (sameRun ? current?.completionExpected : null) ?? null,
+    });
+    this.refreshParent(parent);
+  }
+
+  private subagentWait(parent: string | null): SessionWait | null {
+    if (!parent) return null;
+    const candidates = [...(this.children.get(parent)?.entries() ?? [])]
+      .filter(([, child]) => child.completionExpected !== false);
+    if (!candidates.length) return null;
+    return {reason: "subagent_completion",
+      mode: candidates.some(([, child]) => child.completionExpected === null) ? "unknown" : "any",
+      session_keys: candidates.map(([key]) => key).sort()};
+  }
+
+  private refreshParent(parent: string): void {
+    const entry = this.aliases.get(parent);
+    if (!entry) return;
+    const active = this.activeChildren(parent);
+    const wait = entry.data.wait === null ? null : this.subagentWait(parent);
+    if (JSON.stringify(active) === JSON.stringify(entry.data.active_child_session_keys) &&
+        JSON.stringify(wait) === JSON.stringify(entry.data.wait)) return;
+    entry.data.active_child_session_keys = active;
+    entry.data.wait = wait;
     this.queue(entry);
   }
 

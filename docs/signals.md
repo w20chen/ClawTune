@@ -190,8 +190,16 @@ Missing batch/identity evidence therefore never produces a guessed HANDOFF.
 
 Sessions are isolated by `(gateway_id, runtime_id, session_id)`; `run_id` and
 `batch_id` fence old work. Child sessions are independent; `session_key` and
-`parent_session_key` provide an explicit relation without parsing IDs. A parent
-waits only for its spawn call to return, unless it explicitly yields.
+`parent_session_key` provide an explicit relation without parsing IDs.
+`active_child_session_keys` lists direct children whose latest observed run has
+not ended. A successful `sessions_yield` additionally publishes `wait`: ordinary
+one-shot children that requested a completion message use `mode=any`, because
+the first delivered child result can start the next parent turn. Children with
+`expectsCompletionMessage=false` are excluded. Thread-bound persistent children
+use `mode=unknown` because the public hooks do not prove whether completion is
+delivered to the parent or directly to the bound thread. A new parent model call
+clears `wait` without hiding children that are still active. These are observed
+dependencies, not a priority decision or a child-completion ETA.
 
 `remaining_ms` targets the first observed `model_call_started` after the active
 batch. At batch discovery the plugin makes side-effect-free preview requests for

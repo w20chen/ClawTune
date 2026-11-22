@@ -3,7 +3,7 @@
   "$id": "https://openclaw.ai/schemas/clawtune/session-observation.schema.json",
   "description": "Complete plugin control snapshot. Revision increases within one runtime/session. Repeated identical revisions renew liveness, not ETA. Contains no tool arguments or output text.",
   "type": "object",
-  "required": ["revision", "observer_id", "observer_started_at", "session_key", "parent_session_key", "run_status", "model_call_id", "batch"],
+  "required": ["revision", "observer_id", "observer_started_at", "session_key", "parent_session_key", "active_child_session_keys", "wait", "run_status", "model_call_id", "batch"],
   "additionalProperties": false,
   "properties": {
     "revision": {"type": "integer", "minimum": 1},
@@ -11,6 +11,28 @@
     "observer_started_at": {"type": "number", "minimum": 0},
     "session_key": {"type": ["string", "null"]},
     "parent_session_key": {"type": ["string", "null"]},
+    "active_child_session_keys": {
+      "type": "array", "maxItems": 1024, "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1},
+      "description": "Direct child sessions whose latest observed subagent run has not ended."
+    },
+    "wait": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["reason", "mode", "session_keys"],
+          "properties": {
+            "reason": {"const": "subagent_completion"},
+            "mode": {"enum": ["any", "unknown"]},
+            "session_keys": {
+              "type": "array", "minItems": 1, "maxItems": 1024, "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      ]
+    },
     "run_status": {"enum": ["active", "finishing", "ended", "error", "cancelled", "yielded", "closed"]},
     "model_call_id": {"type": ["string", "null"]},
     "batch": {

@@ -25,6 +25,8 @@
     "observer_started_at": 1799999990,
     "session_key": "agent:main:main",
     "parent_session_key": null,
+    "active_child_session_keys": [],
+    "wait": null,
     "run_status": "active",
     "model_call_id": null,
     "batch": {

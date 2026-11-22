@@ -28,6 +28,8 @@
     "handoff_from_batch_id": null,
     "session_key": "agent:main:main",
     "parent_session_key": null,
+    "active_child_session_keys": [],
+    "wait": null,
     "run_status": "active",
     "model_call_id": null,
     "target": "next_model_call_started",

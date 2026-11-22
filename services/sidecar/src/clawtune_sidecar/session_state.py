@@ -56,6 +56,11 @@ class SessionStateManager:
         batch = data.get("batch")
         if batch and len({t["tool_call_id"] for t in batch["tools"]}) != len(batch["tools"]):
             raise ValueError("duplicate_batch_member")
+        wait = data.get("wait")
+        active_children = set(data["active_child_session_keys"])
+        if wait and (data["run_status"] != "yielded" or
+                     any(child not in active_children for child in wait["session_keys"])):
+            raise ValueError("invalid_session_wait")
         current = self.sessions.get(key)
         if current is not None:
             previous = current.observation
@@ -280,6 +285,8 @@ class SessionStateManager:
             "handoff_from_batch_id": session.handoff_from_batch_id if phase == "LLM" else None,
             "parent_session_key": session.observation["parent_session_key"],
             "session_key": session.observation["session_key"],
+            "active_child_session_keys": session.observation["active_child_session_keys"],
+            "wait": session.observation["wait"],
             "run_status": session.observation["run_status"],
             "model_call_id": model_call_id,
             "target": "next_model_call_started",

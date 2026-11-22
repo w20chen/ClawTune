@@ -29,6 +29,7 @@ def observation(*, revision=1, run="run", session="session", tools=("a", "b"),
     return envelope("session.observation", {
         "revision": revision, "observer_id": f"observer-{epoch}", "observer_started_at": epoch,
         "session_key": "key-" + session, "parent_session_key": None,
+        "active_child_session_keys": [], "wait": None,
         "run_status": status, "model_call_id": model,
         "batch": {"batch_id": run + ":batch", "execution_mode": mode,
                   "mode_source": mode_source, "tools": [
@@ -274,6 +275,11 @@ def test_conflicting_revision_duplicate_members_and_protocol_direction():
         manager.observe(changed)
     with pytest.raises(ValueError, match="duplicate_batch_member"):
         manager.observe(observation(revision=2, tools=("a", "a")))
+    invalid_wait = observation(revision=2, status="yielded")
+    invalid_wait["payload"]["wait"] = {
+        "reason": "subagent_completion", "mode": "any", "session_keys": ["missing-child"]}
+    with pytest.raises(ValueError, match="invalid_session_wait"):
+        manager.observe(invalid_wait)
     validate(message, "signal.schema.json")
     message["source"] = "launcher"
     with pytest.raises(ValidationError):
