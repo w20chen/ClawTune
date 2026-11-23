@@ -69,6 +69,10 @@ class AgentTestBenchTraceWriter:
         *,
         scaffold: str = "openclaw",
         max_messages_bytes: int = 131_072,
+        include_llm_messages: bool = False,
+        include_model_outputs: bool = False,
+        include_resource_timeline: bool = False,
+        tool_output_retention: str = "failures",
         default_repo: str = "openclaw",
         runtime_paths: dict[str, str] | None = None,
     ) -> None:
@@ -86,6 +90,12 @@ class AgentTestBenchTraceWriter:
             self._runtime_paths[json.dumps(owner, separators=(",", ":"))] = target
         self.scaffold = scaffold
         self._max_messages_bytes = max_messages_bytes
+        self._include_llm_messages = include_llm_messages
+        self._include_model_outputs = include_model_outputs
+        self._include_resource_timeline = include_resource_timeline
+        if tool_output_retention not in {"failures", "all"}:
+            raise ValueError("tool_output_retention must be failures or all")
+        self._tool_output_retention = tool_output_retention
         self._default_repo = default_repo
         self._instance_id = str(uuid4())
         self._lock = threading.RLock()
@@ -394,6 +404,74 @@ class AgentTestBenchTraceWriter:
         training_provenance = (training_target_provenance(replace(training_call,
             censored=training_call.censored or partial, confirmed_timeout=timeout,
             timeout_duration_lower_bound_ms=timeout_bound)) if training_call is not None else {})
+        resources = {
+            "censored": partial or (training_call.censored if training_call is not None else event.confirmed_timeout),
+            "confirmed_timeout": timeout,
+            "timeout_duration_lower_bound_ms": timeout_bound,
+            "training_target_provenance": training_provenance,
+            "attribution_status": _v6_attribution(sample, scope),
+            "attribution_source": scope.attribution_source if scope is not None else None,
+            "scope": (
+                resource_observation.get("scope", "none")
+                if isinstance(resource_observation, dict)
+                else ("cgroup" if (scope is not None and scope.cgroup_path) else ("process_tree" if has_pid else "none"))
+            ),
+            "quality": _v6_quality(sample.sampling_quality, _cov_reason),
+            "monitor_start_wall_time_ns": str(_mon_start_wall) if _mon_start_wall is not None else None,
+            "monitor_end_wall_time_ns": str(_mon_end_wall) if _mon_end_wall is not None else None,
+            "monitor_start_monotonic_ns": str(_mon_start_mono) if _mon_start_mono is not None else None,
+            "monitor_end_monotonic_ns": str(_mon_end_mono) if _mon_end_mono is not None else None,
+            "monitor_duration_ns": str(sample.monitor_duration_ms * 1_000_000),
+            "coverage_duration_ns": str(_cov_dur_ns) if _cov_dur_ns is not None else None,
+            "action_duration_ns": duration_ns,
+            "plugin_window_ns": event.plugin_window_ns,
+            "tool_body_ns": event.tool_body_ns,
+            "decision_duration_ns": event.decision_duration_ns,
+            "completion_duration_ns": event.completion_duration_ns,
+            "sidecar_overhead_ns": event.sidecar_overhead_ns,
+            "action_monotonic_clock_domain": (
+                event.monotonic_clock_domain
+                if event.monotonic_clock_domain == "linux_monotonic"
+                and producer_mono_start is not None and producer_mono_end is not None
+                and producer_mono_end >= producer_mono_start
+                else "sidecar_synthetic_duration_anchor"
+            ),
+            "cgroup_resource": cgroup_resource,
+            "resource_observation": resource_observation,
+            **(sample.environment_memory or {}),
+            "cpu_peak_cores": sample.cpu_peak_cores,
+            "cpu_peak_window_ms": 500,
+            "pmu": sample.pmu_profile,
+            "coverage_ratio": _cov_ratio,
+            "coverage_reason": _cov_reason,
+            "cpu_time_s": sample.cpu_time_delta_s,
+            "cgroup_cpu_time_s": sample.cpu_time_delta_s if sample.monitor_source == "cgroup-v2" else None,
+            "rss_peak_bytes": sample.rss_bytes_peak,
+            "memory_rss_bytes_before": sample.rss_bytes_before,
+            "memory_rss_bytes_after": sample.rss_bytes_after,
+            "disk_read_bytes_delta": sample.read_bytes_delta,
+            "disk_write_bytes_delta": sample.write_bytes_delta,
+            "net_rx_bytes_delta": sample.net_rx_bytes_delta,
+            "net_tx_bytes_delta": sample.net_tx_bytes_delta,
+            "ctx_switches_delta": sample.ctx_switches_delta,
+            "cpu_utilization_avg_cores": sample.cpu_utilization_avg_cores,
+            "cpu_utilization_avg_pct": sample.cpu_utilization_avg_pct,
+            "disk_read_bytes_per_s": sample.disk_read_bytes_per_s,
+            "disk_write_bytes_per_s": sample.disk_write_bytes_per_s,
+            "net_rx_bytes_per_s": sample.net_rx_bytes_per_s,
+            "net_tx_bytes_per_s": sample.net_tx_bytes_per_s,
+            "sampling_interval_ms": sample.sampling_interval_ms,
+            "sampling_point_count": sample.sampling_point_count,
+            "sampling_quality": sample.sampling_quality,
+            "resource_timeline_truncated": sample.resource_timeline_truncated,
+            "target_pid": sample.target_pid,
+            "process_count_before": sample.process_count_before,
+            "process_count_after": sample.process_count_after,
+            "monitor_source": sample.monitor_source,
+        }
+        if self._include_resource_timeline:
+            resources["resource_timeline"] = sample.resource_timeline
+
         # span_end
         self._append(filepath, {
             "schema_version": 6,
@@ -414,7 +492,14 @@ class AgentTestBenchTraceWriter:
             "monotonic_time_ns": mono_end_ns,
             "duration_ns": duration_ns,
             "status": {"code": status_code, "message": status_message},
-            "output": {"exit_code": _trace_exit_code(event.tool_name, status_code, tool_exit_code), "result": event.raw_result},
+            "output": {
+                "exit_code": _trace_exit_code(event.tool_name, status_code, tool_exit_code),
+                "result": (
+                    event.raw_result
+                    if self._tool_output_retention == "all" or status_code != "ok"
+                    else None
+                ),
+            },
             "execution": {
                 "mode": "launcher" if event.execution_id else "in_process_or_runtime_managed",
                 "execution_id": event.execution_id,
@@ -425,73 +510,7 @@ class AgentTestBenchTraceWriter:
                 "source": scope.source if scope is not None else None,
                 "tool_resource": tool_resource_telemetry,
             },
-            "resources": {
-                "censored": partial or (training_call.censored if training_call is not None else event.confirmed_timeout),
-                "confirmed_timeout": timeout,
-                "timeout_duration_lower_bound_ms": timeout_bound,
-                "training_target_provenance": training_provenance,
-                "attribution_status": _v6_attribution(sample, scope),
-                "attribution_source": scope.attribution_source if scope is not None else None,
-                "scope": (
-                    resource_observation.get("scope", "none")
-                    if isinstance(resource_observation, dict)
-                    else ("cgroup" if (scope is not None and scope.cgroup_path) else ("process_tree" if has_pid else "none"))
-                ),
-                "quality": _v6_quality(sample.sampling_quality, _cov_reason),
-                "monitor_start_wall_time_ns": str(_mon_start_wall) if _mon_start_wall is not None else None,
-                "monitor_end_wall_time_ns": str(_mon_end_wall) if _mon_end_wall is not None else None,
-                "monitor_start_monotonic_ns": str(_mon_start_mono) if _mon_start_mono is not None else None,
-                "monitor_end_monotonic_ns": str(_mon_end_mono) if _mon_end_mono is not None else None,
-                "monitor_duration_ns": str(sample.monitor_duration_ms * 1_000_000),
-                "coverage_duration_ns": str(_cov_dur_ns) if _cov_dur_ns is not None else None,
-                "action_duration_ns": duration_ns,
-                "plugin_window_ns": event.plugin_window_ns,
-                "tool_body_ns": event.tool_body_ns,
-                "decision_duration_ns": event.decision_duration_ns,
-                "completion_duration_ns": event.completion_duration_ns,
-                "sidecar_overhead_ns": event.sidecar_overhead_ns,
-                "action_monotonic_clock_domain": (
-                    event.monotonic_clock_domain
-                    if event.monotonic_clock_domain == "linux_monotonic"
-                    and producer_mono_start is not None and producer_mono_end is not None
-                    and producer_mono_end >= producer_mono_start
-                    else "sidecar_synthetic_duration_anchor"
-                ),
-                "cgroup_resource": cgroup_resource,
-                "resource_observation": resource_observation,
-
-                **(sample.environment_memory or {}),
-                "cpu_peak_cores": sample.cpu_peak_cores,
-                "cpu_peak_window_ms": 500,
-                "pmu": sample.pmu_profile,
-                "coverage_ratio": _cov_ratio,
-                "coverage_reason": _cov_reason,
-                "cpu_time_s": sample.cpu_time_delta_s,
-                "cgroup_cpu_time_s": sample.cpu_time_delta_s if sample.monitor_source == "cgroup-v2" else None,
-                "rss_peak_bytes": sample.rss_bytes_peak,
-                "memory_rss_bytes_before": sample.rss_bytes_before,
-                "memory_rss_bytes_after": sample.rss_bytes_after,
-                "disk_read_bytes_delta": sample.read_bytes_delta,
-                "disk_write_bytes_delta": sample.write_bytes_delta,
-                "net_rx_bytes_delta": sample.net_rx_bytes_delta,
-                "net_tx_bytes_delta": sample.net_tx_bytes_delta,
-                "ctx_switches_delta": sample.ctx_switches_delta,
-                "cpu_utilization_avg_cores": sample.cpu_utilization_avg_cores,
-                "cpu_utilization_avg_pct": sample.cpu_utilization_avg_pct,
-                "disk_read_bytes_per_s": sample.disk_read_bytes_per_s,
-                "disk_write_bytes_per_s": sample.disk_write_bytes_per_s,
-                "net_rx_bytes_per_s": sample.net_rx_bytes_per_s,
-                "net_tx_bytes_per_s": sample.net_tx_bytes_per_s,
-                "sampling_interval_ms": sample.sampling_interval_ms,
-                "sampling_point_count": sample.sampling_point_count,
-                "sampling_quality": sample.sampling_quality,
-                "resource_timeline": sample.resource_timeline,
-                "resource_timeline_truncated": sample.resource_timeline_truncated,
-                "target_pid": sample.target_pid,
-                "process_count_before": sample.process_count_before,
-                "process_count_after": sample.process_count_after,
-                "monitor_source": sample.monitor_source,
-            },
+            "resources": resources,
         })
 
     @_locked
@@ -543,7 +562,13 @@ class AgentTestBenchTraceWriter:
             proxy_data.get("messages_in"),
             None if start is None else start.raw_input,
         )
-        messages = raw_messages if self._runtime_paths else _truncate_messages(raw_messages, self._max_messages_bytes)
+        messages = None
+        if self._include_llm_messages:
+            messages = (
+                raw_messages
+                if self._runtime_paths
+                else _truncate_messages(raw_messages, self._max_messages_bytes)
+            )
 
         filepath = self._file_for_run(
             event.gateway_id,
@@ -577,10 +602,14 @@ class AgentTestBenchTraceWriter:
             "execution": {"mode": None, "execution_id": None},
         })
 
-        output_content = _llm_output_content(
-            _first_present(proxy_data.get("content"), event.raw_output) if self._runtime_paths else event.raw_output,
-            proxy_data,
-        )
+        output_content = None
+        if self._include_model_outputs:
+            output_content = _llm_output_content(
+                _first_present(proxy_data.get("content"), event.raw_output)
+                if self._runtime_paths
+                else event.raw_output,
+                proxy_data,
+            )
 
         self._append(filepath, {
             "schema_version": 6,
@@ -824,9 +853,18 @@ class AgentTestBenchTraceWriter:
             self._ensure_metadata(path)
             persisted = dict(record)
             data = dict(record.get("data") or {})
+            if not self._include_llm_messages:
+                data.pop("messages_in", None)
             raw_request = data.get("raw_request")
             if isinstance(raw_request, dict) and "messages" in raw_request:
                 data.pop("messages_in", None)
+                if not self._include_llm_messages:
+                    raw_request = dict(raw_request)
+                    raw_request.pop("messages", None)
+                    data["raw_request"] = raw_request
+            if not self._include_model_outputs:
+                data.pop("content", None)
+                data.pop("raw_response", None)
             raw_response = data.get("raw_response")
             if isinstance(raw_response, dict) and raw_response.get("choices"):
                 data.pop("content", None)

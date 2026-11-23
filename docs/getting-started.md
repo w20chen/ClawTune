@@ -260,6 +260,10 @@ Common settings belong in root `.env`; restart the service after changes:
 | Setting | Purpose |
 | --- | --- |
 | `CLAWTUNE_TRACE_DIR` | Daily trace output |
+| `CLAWTUNE_TRACE_INCLUDE_LLM_MESSAGES` | Retain complete LLM input messages; defaults to `false` |
+| `CLAWTUNE_TRACE_INCLUDE_MODEL_OUTPUTS` | Retain complete model response content; defaults to `false` |
+| `CLAWTUNE_TRACE_INCLUDE_RESOURCE_TIMELINE` | Retain every per-Tool resource sample; defaults to `false`. Aggregate CPU, memory, PMU, peak, coverage, and sample-count fields remain available. |
+| `CLAWTUNE_TRACE_TOOL_OUTPUT_RETENTION` | `failures` (default) omits successful Tool results but retains failed/timeout results; `all` retains every Tool result |
 | `CLAWTUNE_STATE_DIR` | Daily state root; a new directory starts an independent state |
 | `CLAWTUNE_TOKEN` | Optional local API token; export the same value to OpenClaw and the service, separately from the provider key |
 | `CLAWTUNE_PMU_ENABLED` | Enable best-effort hardware counting |

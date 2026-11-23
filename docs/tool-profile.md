@@ -104,7 +104,7 @@ Only records produced by the sidecar's main writer carry `gateway_id`, `runtime_
 | Field | Meaning |
 | --- | --- |
 | `input.requested_args` | Tool call arguments; `null` for LLM spans. When redaction is enabled, sensitive keys and values are replaced with redaction markers. The inner keys are defined by the tool. |
-| `input.messages` | Optional; a snapshot of the LLM input messages. Message objects are defined by the model interface and may be redacted, truncated, or `null` depending on configuration. |
+| `input.messages` | Optional; a snapshot of the LLM input messages. It is `null` by default and is retained only when `trace.include_llm_messages` is enabled; retained objects may still be redacted or truncated. |
 | `input.request_options` | Optional from the sidecar proxy; the options in the original model request other than `messages`. The inner keys are defined by the provider API. |
 | `prediction` | The optional load / PMU / compatibility prediction saved by the sidecar before the tool executes; see the "Prediction" section for details. The plugin's local writer usually does not have this field, because its start is written to disk before the decision. |
 | `execution.mode` | `launcher`, `marker`, `in_process_or_runtime_managed`, or `null`. It can be `null` when the execution mode is not yet determined at start time. |
@@ -122,8 +122,8 @@ Only records produced by the sidecar's main writer carry `gateway_id`, `runtime_
 | `status.code` | `ok`, `error`, `timeout`, `cancelled`, `interrupted`, or `unknown`. |
 | `status.message` | Error type, non-zero exit code summary, interruption cause, or `null`. It cannot replace the raw output. |
 | `output.exit_code` | The parsed exit code of the tool; built-in non-process tools may use a synthetic success code, and a missing or `null` value cannot by itself imply success. |
-| `output.result` | Optional snapshot of the tool's raw result; the structure is defined by the tool and may be redacted or `null` depending on configuration. |
-| `output.content` | LLM response content or tool-call content; the structure is defined by the model interface. |
+| `output.result` | Optional snapshot of the tool's raw result. With the default `trace.tool_output_retention: failures`, successful results are `null` while failed/timeout results remain available for diagnosis. `all` retains every result; retained values may still be redacted or truncated. |
+| `output.content` | LLM response content or tool-call content; `null` by default and retained only when `trace.include_model_outputs` is enabled. The structure is defined by the model interface. |
 | `output.provider_metadata` | Model response metadata saved by the sidecar proxy; the body and tool calls of the first choice are removed, and the remaining inner keys are defined by the provider. |
 | `output.proxy` | Result of the sidecar proxy request; common keys are `status_code`, `stream`, and `error`. |
 | `execution.mode`, `execution.execution_id` | Final execution mode and execution identity. |

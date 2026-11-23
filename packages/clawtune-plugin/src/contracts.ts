@@ -8,7 +8,9 @@ export type TracePluginConfig = {
   schema_version: number;
   include_raw_events: boolean;
   include_llm_messages: boolean;
+  include_model_outputs: boolean;
   include_tool_outputs: boolean;
+  tool_output_retention: "failures" | "all";
   redact_sensitive_data: boolean;
   flush_span_start: boolean;
   max_string_bytes: number;

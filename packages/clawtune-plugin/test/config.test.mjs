@@ -113,8 +113,10 @@ test("loadConfig deep-merges partial trace config", () => {
 
   assert.equal(config.trace.trace_dir, "/tmp/openclaw-traces");
   assert.equal(config.trace.schema_version, 6);
-  assert.equal(config.trace.include_llm_messages, true);
+  assert.equal(config.trace.include_llm_messages, false);
+  assert.equal(config.trace.include_model_outputs, false);
   assert.equal(config.trace.include_tool_outputs, true);
+  assert.equal(config.trace.tool_output_retention, "failures");
 });
 
 test("loadConfig reads trace capture switches", () => {
@@ -122,13 +124,17 @@ test("loadConfig reads trace capture switches", () => {
     trace: {
       include_raw_events: true,
       include_llm_messages: true,
+      include_model_outputs: true,
       include_tool_outputs: true,
+      tool_output_retention: "all",
     },
   });
 
   assert.equal(config.trace.include_raw_events, true);
   assert.equal(config.trace.include_llm_messages, true);
+  assert.equal(config.trace.include_model_outputs, true);
   assert.equal(config.trace.include_tool_outputs, true);
+  assert.equal(config.trace.tool_output_retention, "all");
 });
 
 test("loadConfig keeps execution placement toggles configurable", () => {

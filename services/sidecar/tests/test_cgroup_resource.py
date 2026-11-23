@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from clawtune_sidecar.contracts.models import ToolBeforeRequest, ToolCompletedEvent
@@ -249,9 +250,65 @@ def test_trace_writer_inlines_cgroup_data_without_duplicate_file(tmp_path: Path)
     res = ends[0]["resources"]
     assert res["cgroup_resource"]["execution_id"] == "exec-abc"
     assert res["cgroup_resource"]["cpu_time_s"] == _sample().cpu_time_delta_s
+    assert "resource_timeline" not in res
+    assert res["resource_timeline_truncated"] is False
     artifact = tmp_path / "tool-resource" / "cgroup-resource-exec-abc.json"
     assert not artifact.exists()
     writer.close()
+
+
+def test_trace_writer_retains_resource_timeline_only_when_requested(tmp_path: Path) -> None:
+    sample = replace(_sample(), resource_timeline=[{"ts": 1.0, "cpu_time_s": 0.1}])
+    writer = AgentTestBenchTraceWriter(
+        tmp_path, include_resource_timeline=True,
+    )
+    writer.record_tool_started(_before_event())
+    writer.record_tool(_completed_event(), sample)
+    assert writer.flush()
+    records = [
+        json.loads(line)
+        for path in tmp_path.glob("*.jsonl")
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    resources = next(
+        row["resources"] for row in records if row.get("record_type") == "span_end"
+    )
+    assert resources["resource_timeline"] == sample.resource_timeline
+    writer.close()
+
+
+def test_trace_writer_keeps_only_failed_tool_output_by_default(tmp_path: Path) -> None:
+    success = _completed_event().model_copy(update={
+        "raw_result": {"details": {"exitCode": 0}, "content": "large success"},
+    })
+    success_writer = AgentTestBenchTraceWriter(tmp_path / "success")
+    success_writer.record_tool_started(_before_event())
+    success_writer.record_tool(success, _sample())
+    success_writer.close()
+
+    success_trace = next((tmp_path / "success").glob("*.jsonl"))
+    success_end = next(
+        row for row in map(json.loads, success_trace.read_text().splitlines())
+        if row.get("record_type") == "span_end"
+    )
+    assert success_end["output"]["result"] is None
+
+    failure = _completed_event().model_copy(update={
+        "succeeded": False,
+        "error_type": "runtime-error",
+        "raw_result": {"details": {"status": "error"}, "content": "diagnostic"},
+    })
+    failure_writer = AgentTestBenchTraceWriter(tmp_path / "failure")
+    failure_writer.record_tool_started(_before_event())
+    failure_writer.record_tool(failure, _sample())
+    failure_writer.close()
+
+    failure_trace = next((tmp_path / "failure").glob("*.jsonl"))
+    failure_end = next(
+        row for row in map(json.loads, failure_trace.read_text().splitlines())
+        if row.get("record_type") == "span_end"
+    )
+    assert failure_end["output"]["result"]["content"] == "diagnostic"
 
 
 def test_compact_clauses_maps_artifact_resource_keys(tmp_path: Path) -> None:

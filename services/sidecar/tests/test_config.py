@@ -52,7 +52,31 @@ def test_scheduler_config_loads_env_file_and_resolves_paths(tmp_path, monkeypatc
 
 
 def test_scheduler_config_allows_fallback_by_default() -> None:
-    assert SidecarConfig().tool_resource_ebpf_required is False
+    config = SidecarConfig()
+    assert config.tool_resource_ebpf_required is False
+    assert config.trace_include_llm_messages is False
+    assert config.trace_include_model_outputs is False
+    assert config.trace_include_resource_timeline is False
+    assert config.trace_tool_output_retention == "failures"
+
+
+def test_sidecar_config_reads_full_trace_content_retention(monkeypatch) -> None:
+    monkeypatch.setenv("CLAWTUNE_TRACE_INCLUDE_LLM_MESSAGES", "true")
+    monkeypatch.setenv("CLAWTUNE_TRACE_INCLUDE_MODEL_OUTPUTS", "true")
+    monkeypatch.setenv("CLAWTUNE_TRACE_INCLUDE_RESOURCE_TIMELINE", "true")
+    monkeypatch.setenv("CLAWTUNE_TRACE_TOOL_OUTPUT_RETENTION", "all")
+
+    config = SidecarConfig.from_env()
+
+    assert config.trace_include_llm_messages is True
+    assert config.trace_include_model_outputs is True
+    assert config.trace_include_resource_timeline is True
+    assert config.trace_tool_output_retention == "all"
+
+
+def test_sidecar_config_rejects_unknown_tool_output_retention() -> None:
+    with pytest.raises(ValueError, match="TOOL_OUTPUT_RETENTION"):
+        SidecarConfig(trace_tool_output_retention="none")
 
 
 def test_scheduler_config_loads_dynamic_cpu_capacity_overrides(monkeypatch) -> None:

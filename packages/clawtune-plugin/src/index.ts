@@ -931,6 +931,7 @@ export default definePluginEntry({
         output: {
           exit_code: traceExitCode,
           result: traceCfg.include_tool_outputs
+            && (traceCfg.tool_output_retention === "all" || statusCode !== "ok")
             ? (traceCfg.redact_sensitive_data
                 ? sanitizeTraceData(completion.raw_result)
                 : completion.raw_result)
@@ -1140,7 +1141,7 @@ export default definePluginEntry({
           message: null,
         },
         output: {
-          content: traceCfg.include_tool_outputs
+          content: traceCfg.include_model_outputs
             ? (traceCfg.redact_sensitive_data
                 ? sanitizeTraceData(hookOutput)
                 : jsonSafe(hookOutput))
@@ -1672,7 +1673,7 @@ async function reportModel(
       raw_input: eventType === "model_call_started" && config.trace.include_llm_messages
         ? jsonSafe(config.trace.redact_sensitive_data ? sanitizeTraceData(extractModelInput(event)) : extractModelInput(event))
         : null,
-      raw_output: eventType === "model_call_ended" && config.trace.include_tool_outputs
+      raw_output: eventType === "model_call_ended" && config.trace.include_model_outputs
         ? jsonSafe(config.trace.redact_sensitive_data ? sanitizeTraceData(extractModelOutput(event)) : extractModelOutput(event))
         : null,
       raw_event: rawEvent

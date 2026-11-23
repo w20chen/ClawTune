@@ -46,6 +46,12 @@ class SidecarConfig:
     trace_dir: Path = Path("traces")
     trace_runtime_paths: dict[str, str] = field(default_factory=dict)
     trace_max_messages_bytes: int = 131_072  # 128 KiB, matches plugin default
+    trace_include_llm_messages: bool = False
+    trace_include_model_outputs: bool = False
+    # Sampling remains enabled for peak/aggregate computation. Normal traces
+    # omit the per-poll series and retain only those aggregates.
+    trace_include_resource_timeline: bool = False
+    trace_tool_output_retention: str = "failures"
     resource_poll_interval_ms: int = 50
     resource_timeline_max_points: int = 2_000
     # Tool-level PMU counting is globally budgeted per sidecar, so all
@@ -91,6 +97,10 @@ class SidecarConfig:
         if self.tool_resource_ebpf_required and not self.tool_resource_ebpf_enabled:
             raise ValueError(
                 "tool_resource_ebpf_required cannot be true when eBPF is disabled"
+            )
+        if self.trace_tool_output_retention not in {"failures", "all"}:
+            raise ValueError(
+                "CLAWTUNE_TRACE_TOOL_OUTPUT_RETENTION must be failures or all"
             )
 
     @classmethod
@@ -178,6 +188,18 @@ class SidecarConfig:
             trace_dir=_resolve_path(trace, env_base) if trace else Path("traces"),
             trace_runtime_paths=json.loads(os.getenv("CLAWTUNE_TRACE_RUNTIME_PATHS", "{}")),
             trace_max_messages_bytes=int(os.getenv("CLAWTUNE_TRACE_MAX_MESSAGES_BYTES", "131072")),
+            trace_include_llm_messages=os.getenv(
+                "CLAWTUNE_TRACE_INCLUDE_LLM_MESSAGES", "false"
+            ).lower() in {"1", "true", "yes", "on"},
+            trace_include_model_outputs=os.getenv(
+                "CLAWTUNE_TRACE_INCLUDE_MODEL_OUTPUTS", "false"
+            ).lower() in {"1", "true", "yes", "on"},
+            trace_include_resource_timeline=os.getenv(
+                "CLAWTUNE_TRACE_INCLUDE_RESOURCE_TIMELINE", "false"
+            ).lower() in {"1", "true", "yes", "on"},
+            trace_tool_output_retention=os.getenv(
+                "CLAWTUNE_TRACE_TOOL_OUTPUT_RETENTION", "failures"
+            ).lower(),
             resource_poll_interval_ms=int(os.getenv("CLAWTUNE_RESOURCE_POLL_INTERVAL_MS", "50")),
             resource_timeline_max_points=int(os.getenv("CLAWTUNE_RESOURCE_TIMELINE_MAX_POINTS", "2000")),
             pmu_enabled=os.getenv("CLAWTUNE_PMU_ENABLED", "true").lower()

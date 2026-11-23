@@ -328,7 +328,9 @@ export interface TraceConfig {
   schema_version: number;
   include_raw_events: boolean;
   include_llm_messages: boolean;
+  include_model_outputs: boolean;
   include_tool_outputs: boolean;
+  tool_output_retention: "failures" | "all";
   redact_sensitive_data: boolean;
   flush_span_start: boolean;
   max_string_bytes: number;
@@ -341,8 +343,10 @@ export interface TraceConfig {
 export const DEFAULT_TRACE_CONFIG: TraceConfig = {
   schema_version: 6,
   include_raw_events: false,
-  include_llm_messages: true,
+  include_llm_messages: false,
+  include_model_outputs: false,
   include_tool_outputs: true,
+  tool_output_retention: "failures",
   redact_sensitive_data: true,
   flush_span_start: true,
   max_string_bytes: 16384,

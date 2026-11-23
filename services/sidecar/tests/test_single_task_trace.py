@@ -13,7 +13,29 @@ from clawtune_sidecar.contracts.models import ModelEvent
 
 def writer_at(root):
     target = root / "traces" / "task" / "trace.jsonl"
-    return AgentTestBenchTraceWriter(root / "sidecar", runtime_paths={json.dumps(["g", "r"]): str(target)}), target
+    return AgentTestBenchTraceWriter(
+        root / "sidecar",
+        runtime_paths={json.dumps(["g", "r"]): str(target)},
+        include_llm_messages=True,
+        include_model_outputs=True,
+        tool_output_retention="all",
+    ), target
+
+
+def test_default_trace_omits_model_content(tmp_path):
+    target = tmp_path / "trace.jsonl"
+    writer = AgentTestBenchTraceWriter(
+        tmp_path / "sidecar",
+        runtime_paths={json.dumps(["g", "r"]): str(target)},
+    )
+    writer.record_model(event(1, "started", "large prompt"))
+    writer.record_model(event(1, "ended"))
+    writer.close()
+    rows = records(target)
+    start = next(row for row in rows if row.get("record_type") == "span_start")
+    end = next(row for row in rows if row.get("record_type") == "span_end")
+    assert start["input"]["messages"] is None
+    assert end["output"]["content"] is None
 
 
 def event(index, phase, text="hello"):
@@ -109,6 +131,28 @@ def test_proxy_without_hook_is_not_lost_on_close(tmp_path):
     assert row["payload"]["data"]["content"] == "response"
     assert row["payload"]["data"]["raw_response"]["usage"]["total_tokens"] == 123
     assert list(tmp_path.rglob("*.jsonl")) == [path]
+
+
+def test_default_unmatched_proxy_record_omits_conversation_content(tmp_path):
+    target = tmp_path / "trace.jsonl"
+    writer = AgentTestBenchTraceWriter(
+        tmp_path / "sidecar",
+        runtime_paths={json.dumps(["g", "r"]): str(target)},
+    )
+    writer.record_llm_proxy_call(
+        runtime_id="r", action_id="proxy-1", provider="test", model="test",
+        messages_in=[{"role": "user", "content": "context"}], content="response",
+        raw_request={"model": "test", "messages": [{"role": "user", "content": "context"}]},
+        raw_response={"usage": {"total_tokens": 123}, "choices": [{"message": {"content": "response"}}]},
+        ts_start=1.0, ts_end=2.0, status_code=200, stream=False,
+    )
+    writer.close()
+
+    data = records(target)[1]["payload"]["data"]
+    assert "messages_in" not in data
+    assert data["raw_request"] == {"model": "test"}
+    assert "content" not in data
+    assert "raw_response" not in data
 
 
 def test_task_trace_suppresses_separate_proxy_debug_dump(tmp_path):

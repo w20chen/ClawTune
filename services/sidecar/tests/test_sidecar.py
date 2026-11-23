@@ -607,6 +607,9 @@ def _trace_proxy_client(tmp_path: Path) -> tuple[TestClient, Path]:
         SidecarConfig(
             trace_dir=trace_dir,
             llm_proxy_upstream_base_url="https://upstream.example/v1",
+            trace_include_llm_messages=True,
+            trace_include_model_outputs=True,
+            trace_include_resource_timeline=True,
         )
     )
     return TestClient(create_app(state)), trace_dir
@@ -3358,14 +3361,14 @@ def test_agent_test_bench_trace_jsonl_records_tool_and_model_events(tmp_path: Pa
     assert len(tool_ends) == 1
     tool_end = tool_ends[0]
     assert tool_end["status"]["code"] == "ok"
-    assert tool_end["output"]["result"] == "2 passed"
+    assert tool_end["output"]["result"] is None
     assert tool_end["output"]["exit_code"] == 0
     assert tool_end["resources"]["cpu_time_s"] is None
     assert tool_end["resources"]["rss_peak_bytes"] is None
     assert tool_end["resources"]["resource_observation"]["fallback_used"] is False
     assert "sampling_interval_ms" in tool_end["resources"]
     assert tool_end["resources"]["sampling_point_count"] is None
-    assert isinstance(tool_end["resources"]["resource_timeline"], list)
+    assert "resource_timeline" not in tool_end["resources"]
     assert tool_end["resources"]["resource_timeline_truncated"] is False
     assert "resource_class" not in tool_end["resources"]
     assert tool_start["prediction"] == decision["prediction"]
@@ -3377,11 +3380,11 @@ def test_agent_test_bench_trace_jsonl_records_tool_and_model_events(tmp_path: Pa
     model_starts = [r for r in records if r.get("record_type") == "span_start" and r.get("kind") == "llm"]
     assert len(model_starts) == 1
     assert model_starts[0]["name"] == "test-model"
-    assert model_starts[0]["input"]["messages"] == [{"role": "user", "content": "run tests"}]
+    assert model_starts[0]["input"]["messages"] is None
 
     model_ends = [r for r in records if r.get("record_type") == "span_end" and r.get("kind") == "llm"]
     assert len(model_ends) == 1
-    assert model_ends[0]["output"]["content"] == "done"
+    assert model_ends[0]["output"]["content"] is None
     # LLM spans must satisfy the same monotonic invariant as tool spans
     # (mono_end - mono_start == duration_ns). Regression for the collapsed
     # monotonic-stamp bug in _record_model_v6.
